@@ -31,21 +31,37 @@ describe('ConnectorHistogram', () => {
     expect(html).not.toContain('no throughput recorded')
   })
 
-  it('still shows hour labels in both empty and non-empty states', () => {
+  it('labels columns as relative rolling hours, never clock hours', () => {
     const emptyHtml = renderToStaticMarkup(<ConnectorHistogram data={ZEROS} />)
     const barsHtml = renderToStaticMarkup(<ConnectorHistogram data={WITH_DATA} />)
-    // HOUR_LABELS = ['00', '03', '06', '09', '12', '15', '18', '21', '23']
-    for (const label of ['00', '03', '12', '23']) {
-      expect(emptyHtml).toContain(label)
-      expect(barsHtml).toContain(label)
+    for (const html of [emptyHtml, barsHtml]) {
+      for (const label of ['-24h', '-12h', 'now']) expect(html).toContain(`>${label}<`)
+      // The old positional strip claimed clock hours its bars did not represent.
+      for (const label of ['00', '12', '23']) expect(html).not.toContain(`>${label}<`)
     }
   })
 
-  it('pads short data arrays to 24 buckets', () => {
-    // 10-element input — should not throw and should render 24 bars
-    const short = Array(10).fill(5)
-    const html = renderToStaticMarkup(<ConnectorHistogram data={short} />)
+  it('draws no bar for an unreported slot, distinct from a measured zero', () => {
+    // Slot 0 measured zero, slot 1 unreported, slot 2 volume; short input pads with null.
+    const html = renderToStaticMarkup(<ConnectorHistogram data={[0, null, 4]} />)
     expect(html).toContain('data-testid="histogram-bars"')
+    expect(html.match(/data-slot="unreported"/g)).toHaveLength(22)
+    expect(html.match(/<rect/g)).toHaveLength(2)
+    expect(html).toContain('fill-border')
+  })
+
+  it('hatches a not-listening slot, distinct in shape from a measured zero (bu-s11n0s.5)', () => {
+    const listening = Array(24).fill('live')
+    listening[5] = listening[6] = listening[7] = 'deaf'
+    listening[23] = 'unknown'
+    // A deaf window with no volume still draws the strip: deafness is not "no throughput".
+    const html = renderToStaticMarkup(<ConnectorHistogram data={ZEROS} listening={listening} />)
+    expect(html).not.toContain('histogram-empty')
+    const slots = html.match(/<g[^>]*>/g) ?? []
+    const deafSlots = slots.flatMap((g, i) => (g.includes('data-slot="deaf"') ? [i] : []))
+    expect(deafSlots).toEqual([5, 6, 7])
+    expect(html.match(/fill="url\(#/g)).toHaveLength(3)
+    expect(html).toContain('not listening 3h')
   })
 
   it('handles a single non-zero bucket (no all-zero false positive)', () => {

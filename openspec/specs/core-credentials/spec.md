@@ -485,7 +485,7 @@ This read-then-write debounce SHALL be operated with one dashboard-API replica. 
 - **AND** after confirmed direct delivery with a successful audit write it appends a new marker with `note="expired"`
 
 ### Requirement: Lifecycle Notification Remediation and Delivery Honesty
-The lifecycle notification SHALL identify the credential state and include a dashboard URL ending in `/secrets?focus=<URL-encoded canonical credential key>`. For a User credential whose catalogued provider is OAuth, it SHALL additionally include a remediation line directing the owner to re-authorize from that credential card; non-OAuth credentials SHALL not receive that line. The notification SHALL NOT embed a dashboard-API URL: `DASHBOARD_URL` is the frontend base and the API is reachable only under a separate, deployment-specific mount that is not derivable from it, so a composed `/api/oauth/<provider>/start` link is dead on every path-mounted deployment. The `/secrets` deep link already lands on the card whose re-authorize control starts the same dance.
+The lifecycle notification SHALL identify the credential state and include, on its own line, a dashboard URL ending in `/secrets?focus=<URL-encoded canonical credential key>`. When `DASHBOARD_URL` is unset the line SHALL be the bare `/secrets?focus=<key>` path (never a localhost URL), so the supersession fragment stays matchable and a warning is logged once. For a User credential whose catalogued provider is OAuth, it SHALL additionally include a remediation line directing the owner to re-authorize from that credential card; non-OAuth credentials SHALL not receive that line. The notification SHALL NOT embed a dashboard-API URL: `DASHBOARD_URL` is the frontend base and the API is reachable only under a separate, deployment-specific mount that is not derivable from it, so a composed `/api/oauth/<provider>/start` link is dead on every path-mounted deployment. The `/secrets` deep link already lands on the card whose re-authorize control starts the same dance.
 
 Lifecycle delivery SHALL use medium-priority owner Telegram delivery and the established notify-boundary order: (1) Switchboard `delivery_preferences` quiet-hours evaluation, (2) owner quiet-hours and context-bus suppression, then (3) recipient resolution and delivery. The first gate defers by placing a `notify.v1` envelope on Switchboard's deferred-notifications queue; the next gates suppress and rely on a later lifecycle scan. Every delivery decision SHALL be recorded to the attention ledger as `delivered`, `deferred`, `suppressed`, or `failed` with a machine-readable reason. A ledger-write failure MUST NOT change the delivery decision or lifecycle-marker behavior it describes; `failed` and `deferred` are never interchangeable.
 
@@ -586,6 +586,39 @@ rotation baseline after a DB-originated write.
 - **THEN** the value-changing write SHALL clear the prior test status, code,
   message, and verification timestamp in the same database statement
 - **AND** B SHALL not inherit A's healthy or failing state
+
+### Requirement: Codex OpenAI API Key Preference
+An OpenAI API key stored as the store-only `cli-auth/openai` credential SHALL
+take precedence over the `cli-auth/codex` device-auth authority for Codex
+invocations. The device-auth authority SHALL remain the fallback, and the
+API-key path SHALL never read, write, rotate, or record health against it. A
+subprocess launched on the API key does not consume the device-auth
+credential, so the Live Codex Device-Auth Reconciliation that precedes a Codex
+launch SHALL apply only to launches that use the device-auth authority.
+
+#### Scenario: Stored key is used first
+- **WHEN** `cli-auth/openai` holds a non-empty key at invocation time
+- **THEN** Codex SHALL run with that key as `CODEX_API_KEY`, with no device-auth
+  `auth.json` in its isolated home and no other Codex auth env var
+- **AND** no device-auth reconciliation, pre-warm, refresh lock, or
+  finalization SHALL run for that attempt
+
+#### Scenario: Rejected key falls back to device auth
+- **WHEN** the API-key attempt exits non-zero before any tool call with an auth
+  or quota rejection
+- **THEN** the invocation SHALL re-run on the device-auth authority
+- **AND** the fallback SHALL be logged without the key value and recorded as a
+  failed test of `cli-auth/openai`
+
+#### Scenario: Other failures do not fall back
+- **WHEN** the API-key attempt times out, is cancelled, fails MCP discovery, or
+  fails for a reason other than an auth or quota rejection
+- **THEN** that failure SHALL propagate without a device-auth attempt
+
+#### Scenario: Missing or unreadable key uses device auth
+- **WHEN** no key is stored or the key lookup fails
+- **THEN** the invocation SHALL use the device-auth authority unchanged, logging
+  only value-free context
 
 #### Scenario: Dashboard Codex probe binds to the canonical authority it tests
 - **WHEN** a dashboard Codex test begins with a shared credential B while the

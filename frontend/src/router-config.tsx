@@ -1,3 +1,4 @@
+import { installDraftNavigationGuard } from "./lib/draft-navigation"
 /**
  * Browser router instance.
  *
@@ -51,6 +52,7 @@ const RuleDetailPage = shellPage('/memory/rules/:ruleId')
 const EpisodeDetailPage = shellPage('/memory/episodes/:episodeId')
 const SettingsConsolePage = shellPage('/settings')
 const SettingsPermissionsPage = shellPage('/settings/permissions')
+const SettingsProjectionsPage = shellPage('/settings/projections')
 const SettingsModelsPage = shellPage('/settings/models')
 const AuditLogPage = shellPage('/audit-log')
 const HealthOverviewPage = shellPage('/health')
@@ -61,8 +63,6 @@ const SymptomsPage = shellPage('/health/symptoms')
 const MealsPage = shellPage('/health/meals')
 const ResearchPage = shellPage('/health/research')
 const ApprovalsPage = shellPage('/approvals')
-const DecisionsPage = shellPage('/decisions')
-const BeadDetailPage = shellPage('/beads/:beadId')
 const SecretsPage = shellPage('/secrets')
 const EducationPage = shellPage('/education')
 const EntitiesIndexPage = shellPage('/entities/index')
@@ -104,8 +104,6 @@ export const routes: RouteObject[] = [
         { path: '/audit-log', element: routeElement(<AuditLogPage />) },
         { path: '/approvals', element: routeElement(<ApprovalsPage />) },
         { path: '/approvals/:id', element: routeElement(<ApprovalsPage />) },
-        { path: '/decisions', element: routeElement(<DecisionsPage />) },
-        { path: '/beads/:beadId', element: routeElement(<BeadDetailPage />) },
         {
           path: '/calendar',
           element: routeElement(<CalendarWorkspacePage />),
@@ -152,6 +150,7 @@ export const routes: RouteObject[] = [
         { path: '/settings', element: routeElement(<SettingsConsolePage />) },
         { path: '/settings/spend', element: <Navigate to="/spend" replace /> },
         { path: '/settings/permissions', element: routeElement(<SettingsPermissionsPage />) },
+        { path: '/settings/projections', element: routeElement(<SettingsProjectionsPage />) },
         { path: '/settings/models', element: routeElement(<SettingsModelsPage />) },
         { path: '/secrets', element: routeElement(<SecretsPage />) },
         { path: '/education', element: routeElement(<EducationPage />) },
@@ -231,3 +230,5 @@ export const routes: RouteObject[] = [
 ]
 
 export const router = createBrowserRouter(routes, { basename: _baseUrl })
+
+installDraftNavigationGuard(router)

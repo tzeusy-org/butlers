@@ -77,6 +77,9 @@ function buildMessagePayload(
 }
 
 export interface UseConversationTurnOptions {
+  /** Existing successful POST response only; not a resolver or reload outcome claim. */
+  onMessageAccepted?: (messageId: string) => void;
+  onMessagePrepared?: (messageId: string) => void;
   butlerName: string;
   activeConversationId: string | null;
   setActiveConversationId: (id: string | null) => void;
@@ -109,7 +112,13 @@ export function useConversationTurn({
   activeConversationId,
   setActiveConversationId,
   messagesData,
+  onMessageAccepted,
+  onMessagePrepared,
 }: UseConversationTurnOptions): UseConversationTurnResult {
+  const preparedRef = useRef(onMessagePrepared);
+  preparedRef.current = onMessagePrepared;
+  const acceptedRef = useRef(onMessageAccepted);
+  acceptedRef.current = onMessageAccepted;
   const queryClient = useQueryClient();
   const capturePageContext = usePageContextCapture();
   const contextPreview = capturePageContext();
@@ -126,6 +135,9 @@ export function useConversationTurn({
   const abortRef = useRef<AbortController | null>(null);
   const interruptedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeMessageIdRef = useRef<string | null>(null);
+  // The butler that owns the in-flight turn, captured at send time so a Stop
+  // keeps addressing it even if the caller's butlerName moves (route change).
+  const turnButlerRef = useRef<string | null>(null);
   const confirmedStopMessageIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -140,6 +152,16 @@ export function useConversationTurn({
       confirmedStopMessageIdRef.current = null;
     };
   }, []);
+
+  // A move between two existing conversations must not leave A's error (and
+  // its Retry text/messageId) visible in B. A null -> id transition is a new
+  // conversation getting its id, not a switch, so it keeps its error.
+  const previousActiveRef = useRef(activeConversationId);
+  useEffect(() => {
+    const previous = previousActiveRef.current;
+    previousActiveRef.current = activeConversationId;
+    if (previous != null && activeConversationId !== previous) setSendError(null);
+  }, [activeConversationId]);
 
   // Sync server messages into local state. Avoid overwriting optimistic/
   // streaming messages while an SSE stream is active. Guards the transient
@@ -229,6 +251,7 @@ export function useConversationTurn({
       setSendError(null);
       const isNew = activeConversationId == null;
       const messageId = retryMessageId ?? createClientMessageId();
+      preparedRef.current?.(messageId);
       if (activeMessageIdRef.current !== null && activeMessageIdRef.current !== messageId) {
         abortRef.current?.abort();
       }
@@ -239,6 +262,7 @@ export function useConversationTurn({
       const controller = new AbortController();
       abortRef.current = controller;
       activeMessageIdRef.current = messageId;
+      turnButlerRef.current = butlerName;
       confirmedStopMessageIdRef.current = null;
 
       const userMessage: Message = {
@@ -316,6 +340,8 @@ export function useConversationTurn({
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
+
+        acceptedRef.current?.(messageId);
 
         // The API creates the durable user-message/turn record before it
         // returns its SSE response. Stop may become actionable now, even
@@ -530,12 +556,13 @@ export function useConversationTurn({
     if (!streaming || !streaming.stopReady || streaming.cancelling) return;
     const messageId = streaming.messageId;
     if (activeMessageIdRef.current !== messageId) return;
+    const turnButler = turnButlerRef.current ?? butlerName;
 
     setStreaming((prev) =>
       prev?.messageId === messageId ? { ...prev, cancelling: true, cancelError: null } : prev,
     );
     try {
-      const result = await cancelConversationMessageTurn(butlerName, messageId);
+      const result = await cancelConversationMessageTurn(turnButler, messageId);
       if (activeMessageIdRef.current !== messageId) return;
       if (!result.cancelled) {
         if (result.already_finished) {

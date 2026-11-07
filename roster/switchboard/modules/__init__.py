@@ -36,8 +36,9 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from butlers.core.dashboard_links import dashboard_base_url
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
 from butlers.credential_store import resolve_owner_telegram_recipient
-from butlers.modules.approvals.notifications import dashboard_base_url
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta
 from butlers.tools.switchboard.runtime_attention.outbox import RuntimeAttentionOutbox
 from butlers.tools.switchboard.runtime_attention.worker import (
@@ -94,20 +95,11 @@ class SwitchboardModule(Module):
         self._db: Any = None
         self._runtime_attention_task: asyncio.Task[None] | None = None
 
-    @property
-    def name(self) -> str:
-        return "switchboard"
+    name = "switchboard"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return SwitchboardModuleConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None  # switchboard tables already exist via separate migrations
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
         """Declare the connector identity as safety-critical for approval rules."""
@@ -170,7 +162,8 @@ class SwitchboardModule(Module):
         while True:
             try:
                 await worker.run_once()
-            except Exception:
+            except (Exception, asyncio.CancelledError) as exc:
+                raise_if_task_cancelled(exc)
                 logger.exception("Runtime-attention delivery worker pass failed")
             try:
                 await asyncio.sleep(_RUNTIME_ATTENTION_POLL_INTERVAL_SECONDS)

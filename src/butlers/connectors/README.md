@@ -2,6 +2,34 @@
 
 Transport-only adapters for external message ingestion.
 
+## What lives here
+
+This package contains connector transport entry points (**E**), their private
+single-connector helper families (**H**, with the entry named as owner), and kit
+shared by connectors (**K**). Private helpers may be read by their existing
+control-plane API callers; that does not make them shared service clients.
+The exact tracked file set and placement decisions live in
+`tests/connectors/test_connectors_package_allowlist.py`.
+
+Framework-wide connector identity, policy, OAuth metadata and public recovery
+projections have one home in `butlers.connector_catalog`. Shared service clients
+live outside this package: `butlers.spotify_client`,
+`butlers.home_assistant_client` and `butlers.whatsapp_bridge_client`.
+Modules, jobs and Chronicler must not import this connector package. The
+import-linter contracts in `pyproject.toml` enforce that direct boundary.
+
+When adding, moving or removing a connector/helper/kit file, update the exact
+allowlist in the same PR and explain its owner. A concurrently landing kit or
+Google fleet PR must update the allowlist when its file actually joins the
+tracked tree; absent future files must not be pre-allowed. Google account
+supervision, account health models, email redaction and source-error classification
+share the kit owner `google_fleet.py`. Adapters retain their health endpoints,
+aggregation policies and diagnostic formatting variants. Entry-point deletion
+(including Live Listener) and connector runtime/kit redesign remain with their
+owning work. Live Listener's transcription client is shared with Telegram and
+remains kit here. This placement guard grants no new transport or credential
+authority and does not enable any connector.
+
 ## Overview
 
 Connectors are responsible for:
@@ -186,3 +214,31 @@ uv run pytest tests/connectors/ -v
 # Run specific connector test
 uv run pytest tests/connectors/test_telegram_bot_connector.py::test_name -v
 ```
+
+## Channel kinds and provider-authored text
+
+The native heartbeat producers declare `capabilities.channel_kind` under
+REQ-connector-base-spec-003 and RFC 0038 D5:
+
+| Connector | Kind | Reason |
+| --- | --- | --- |
+| Spotify | `feed` | Playback observations and listening digests describe account activity; they do not deliver a person's message. Track, playlist and device names remain externally editable data. |
+| Google Calendar | `message` | Event changes and invitations carry organizer-authored content, with that organizer retained as the sender. The same declaration applies to synthesized starting-soon notifications. |
+| Google Drive | `feed` | Change polling emits file metadata and batch digests, not document bodies, comments or a person's addressed message. Both the manager heartbeat and the direct per-account heartbeat update declare this kind. |
+
+A feed declaration establishes neither owner origin nor trusted content or
+recipient ownership. Under D5/D6, editable metadata such as filenames and
+playlist names remains untrusted input; reasoning from a feed requires a
+declared subscription. An undeclared or unreadable registry entry still falls
+back to `message`.
+
+REQ-connector-base-spec-004 marks provider-identified nested messages, rather
+than every externally authored field. These producers currently supply no such
+forwarded, quoted or embedded message: Spotify supplies playback metadata;
+Drive never downloads document bodies or comments; Calendar's normalized title
+and location are the direct organizer's content, not a nested message. Its raw
+event remains provider data, and neither the organizer field nor a `message`
+declaration proves owner authorization. No spans are invented for that content.
+A future content-bearing or provider-marked nested-message path must mark its
+actual normalized-text boundaries (or the whole text when boundaries are
+unknown). This change does not alter ingest routing or owner authorization.

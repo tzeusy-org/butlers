@@ -25,7 +25,7 @@ from butlers.chronicler.contracts import INITIAL_SOURCES, seed_source_registry
 from butlers.chronicler.jobs import run_project_owntracks_ssid
 from butlers.core.state import state_set
 from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.polling import poll_until
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -38,26 +38,28 @@ _NOW = datetime(2026, 7, 15, 1, 0, tzinfo=UTC)
 _ENDPOINT = "owntracks:alice"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "chronicler"],
+@pytest.fixture
+def ssid_url(fresh_db) -> str:
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    url = fresh_db(
+        "core",
+        "chronicler",
+        schemas={"chronicler": "chronicler"},
+        revisions={"chronicler": "chronicler_029"},
     )
+    prepare_chronicler_current_head_sync(url)
+    return url
 
 
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=5, init=register_jsonb_codec
-    )
+async def ssid_pool(db, ssid_url: str):
+    p = await db.open(ssid_url, schema="chronicler", max_size=5)
     await p.execute("TRUNCATE TABLE connectors.owntracks_points CASCADE")
     await p.execute("TRUNCATE TABLE episodes, point_events, projection_checkpoints CASCADE")
     await p.execute("DELETE FROM state WHERE key = $1", SSID_PLACE_STATE_KEY)
     await seed_source_registry(p, sources=INITIAL_SOURCES)
-    yield p
-    await p.close()
+    return p
 
 
 async def _insert_point(
@@ -88,9 +90,9 @@ async def _insert_point(
 
 
 async def test_state_mapping_projects_gapped_runs_and_skips_unlabelled_ssid(
-    pool: asyncpg.Pool,
+    ssid_pool: asyncpg.Pool,
 ) -> None:
-    await state_set(pool, SSID_PLACE_STATE_KEY, {"Corp WiFi": "work"})
+    await state_set(ssid_pool, SSID_PLACE_STATE_KEY, {"Corp WiFi": "work"})
 
     # First mapped run, an unlabelled SSID boundary, then another mapped run.
     # The unlabelled point is within max_gap of both runs but must never bridge them.
@@ -101,14 +103,14 @@ async def test_state_mapping_projects_gapped_runs_and_skips_unlabelled_ssid(
         (30, "Corp WiFi"),
         (40, "Corp WiFi"),
     ]:
-        await _insert_point(pool, minute, ssid)
+        await _insert_point(ssid_pool, minute, ssid)
 
-    await OwnTracksPointAdapter().project(pool, chronicler_pool=pool, since=None)
-    result = await run_project_owntracks_ssid(pool, None)
+    await OwnTracksPointAdapter().project(ssid_pool, chronicler_pool=ssid_pool, since=None)
+    result = await run_project_owntracks_ssid(ssid_pool, None)
 
     assert result["source_name"] == SOURCE_NAME
     assert result["episodes_closed"] == 2
-    rows = await pool.fetch(
+    rows = await ssid_pool.fetch(
         """
         SELECT * FROM episodes
         WHERE source_name = $1 AND episode_type = $2
@@ -131,14 +133,14 @@ async def test_state_mapping_projects_gapped_runs_and_skips_unlabelled_ssid(
     # An empty scheduled poll must not erase the open endpoint carryover. The
     # next point extends the second run in place instead of becoming an
     # unprojected singleton or creating a duplicate episode.
-    empty_result = await run_project_owntracks_ssid(pool, None)
+    empty_result = await run_project_owntracks_ssid(ssid_pool, None)
     assert empty_result["episodes_closed"] == 0
 
-    await _insert_point(pool, 50, "Corp WiFi")
-    resumed_result = await run_project_owntracks_ssid(pool, None)
+    await _insert_point(ssid_pool, 50, "Corp WiFi")
+    resumed_result = await run_project_owntracks_ssid(ssid_pool, None)
     assert resumed_result["episodes_closed"] == 1
 
-    resumed_rows = await pool.fetch(
+    resumed_rows = await ssid_pool.fetch(
         """
         SELECT * FROM episodes
         WHERE source_name = $1 AND episode_type = $2
@@ -152,7 +154,7 @@ async def test_state_mapping_projects_gapped_runs_and_skips_unlabelled_ssid(
     assert resumed_rows[-1]["end_at"] == _NOW + timedelta(minutes=50)
     assert resumed_rows[-1]["payload"]["point_count"] == 3
 
-    source_state = await pool.fetchrow(
+    source_state = await ssid_pool.fetchrow(
         "SELECT * FROM source_adapter_state WHERE source_name = $1",
         SOURCE_NAME,
     )
@@ -160,7 +162,7 @@ async def test_state_mapping_projects_gapped_runs_and_skips_unlabelled_ssid(
     assert source_state["chronicler_compatibility"] == "supported"
     assert source_state["active"] is True
 
-    checkpoint = await pool.fetchrow(
+    checkpoint = await ssid_pool.fetchrow(
         """
         SELECT watermark, carryover
         FROM projection_checkpoints
@@ -175,11 +177,11 @@ async def test_state_mapping_projects_gapped_runs_and_skips_unlabelled_ssid(
     # Removing the owner mapping makes the retained evidence unlabelled. A
     # deterministic replay must retire the previously derived claims rather
     # than leave stale Work-lane episodes active forever.
-    await state_set(pool, SSID_PLACE_STATE_KEY, {})
-    replay_result = await run_project_owntracks_ssid(pool, None)
+    await state_set(ssid_pool, SSID_PLACE_STATE_KEY, {})
+    replay_result = await run_project_owntracks_ssid(ssid_pool, None)
     assert any("SSID place mapping changed" in warning for warning in replay_result["warnings"])
     assert (
-        await pool.fetchval(
+        await ssid_pool.fetchval(
             """
             SELECT count(*) FROM episodes
             WHERE source_name = $1 AND tombstone_at IS NULL
@@ -191,9 +193,9 @@ async def test_state_mapping_projects_gapped_runs_and_skips_unlabelled_ssid(
 
     # Relabelling the same network replays the same stable source refs, revives
     # those canonical rows, and changes their lane/type without duplication.
-    await state_set(pool, SSID_PLACE_STATE_KEY, {"Corp WiFi": "home"})
-    await run_project_owntracks_ssid(pool, None)
-    relabelled_rows = await pool.fetch(
+    await state_set(ssid_pool, SSID_PLACE_STATE_KEY, {"Corp WiFi": "home"})
+    await run_project_owntracks_ssid(ssid_pool, None)
+    relabelled_rows = await ssid_pool.fetch(
         """
         SELECT episode_type, payload, tombstone_at
         FROM episodes
@@ -209,13 +211,13 @@ async def test_state_mapping_projects_gapped_runs_and_skips_unlabelled_ssid(
 
 
 async def test_equal_timestamp_rows_cross_batches_without_loss_or_duplicates(
-    pool: asyncpg.Pool,
+    ssid_pool: asyncpg.Pool,
 ) -> None:
-    await state_set(pool, SSID_PLACE_STATE_KEY, {"Corp WiFi": "work"})
+    await state_set(ssid_pool, SSID_PLACE_STATE_KEY, {"Corp WiFi": "work"})
     boundary_ids = [UUID(int=value) for value in range(1, 6)]
     for index, point_id in enumerate(boundary_ids):
         await _insert_point(
-            pool,
+            ssid_pool,
             0,
             "Corp WiFi",
             point_id=point_id,
@@ -223,7 +225,7 @@ async def test_equal_timestamp_rows_cross_batches_without_loss_or_duplicates(
         )
     final_id = UUID(int=6)
     await _insert_point(
-        pool,
+        ssid_pool,
         10,
         "Corp WiFi",
         point_id=final_id,
@@ -234,7 +236,7 @@ async def test_equal_timestamp_rows_cross_batches_without_loss_or_duplicates(
     # were already incorporated into the open span. The safe upgrade must not
     # count those boundary observations twice while it establishes a UUID
     # tie-breaker and pages through all five rows sharing the same timestamp.
-    await pool.execute(
+    await ssid_pool.execute(
         """
         INSERT INTO projection_checkpoints (source_name, subsource, watermark, carryover)
         VALUES ($1, '', $2, $3)
@@ -255,15 +257,15 @@ async def test_equal_timestamp_rows_cross_batches_without_loss_or_duplicates(
         ssid_places={"Corp WiFi": "work"},
         batch_limit=2,
     )
-    first = await adapter.run(pool=pool, chronicler_pool=pool)
-    second = await adapter.run(pool=pool, chronicler_pool=pool)
-    third = await adapter.run(pool=pool, chronicler_pool=pool)
-    repeated = await adapter.run(pool=pool, chronicler_pool=pool)
+    first = await adapter.run(pool=ssid_pool, chronicler_pool=ssid_pool)
+    second = await adapter.run(pool=ssid_pool, chronicler_pool=ssid_pool)
+    third = await adapter.run(pool=ssid_pool, chronicler_pool=ssid_pool)
+    repeated = await adapter.run(pool=ssid_pool, chronicler_pool=ssid_pool)
 
     assert [first.episodes_closed, second.episodes_closed, third.episodes_closed] == [0, 0, 1]
     assert repeated.episodes_closed == 0
 
-    rows = await pool.fetch(
+    rows = await ssid_pool.fetch(
         "SELECT * FROM episodes WHERE source_name = $1 ORDER BY start_at",
         SOURCE_NAME,
     )
@@ -272,7 +274,7 @@ async def test_equal_timestamp_rows_cross_batches_without_loss_or_duplicates(
     assert rows[0]["end_at"] == _NOW + timedelta(minutes=10)
     assert rows[0]["payload"]["point_count"] == 6
 
-    checkpoint = await pool.fetchrow(
+    checkpoint = await ssid_pool.fetchrow(
         """
         SELECT watermark, carryover
         FROM projection_checkpoints
@@ -295,7 +297,7 @@ async def test_equal_timestamp_rows_cross_batches_without_loss_or_duplicates(
         "watermark": _NOW.isoformat(),
         "uuid": str(final_id),
     }
-    await pool.execute(
+    await ssid_pool.execute(
         """
         UPDATE projection_checkpoints
         SET carryover = $2
@@ -305,13 +307,13 @@ async def test_equal_timestamp_rows_cross_batches_without_loss_or_duplicates(
         interrupted_carryover,
     )
 
-    recovered = [await adapter.run(pool=pool, chronicler_pool=pool) for _ in range(3)]
+    recovered = [await adapter.run(pool=ssid_pool, chronicler_pool=ssid_pool) for _ in range(3)]
     assert any(
         "SSID source cursor missing or invalid" in warning for warning in recovered[0].warnings
     )
     assert [result.episodes_closed for result in recovered] == [0, 0, 1]
 
-    recovered_rows = await pool.fetch(
+    recovered_rows = await ssid_pool.fetch(
         "SELECT * FROM episodes WHERE source_name = $1 ORDER BY start_at",
         SOURCE_NAME,
     )
@@ -320,16 +322,16 @@ async def test_equal_timestamp_rows_cross_batches_without_loss_or_duplicates(
 
 
 async def test_unavailable_source_during_mapping_replay_preserves_prior_projection(
-    pool: asyncpg.Pool,
+    ssid_pool: asyncpg.Pool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     for minute in (0, 10):
-        await _insert_point(pool, minute, "Corp WiFi")
+        await _insert_point(ssid_pool, minute, "Corp WiFi")
 
     original_adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
-    original_result = await original_adapter.run(pool=pool, chronicler_pool=pool)
+    original_result = await original_adapter.run(pool=ssid_pool, chronicler_pool=ssid_pool)
     assert original_result.success
-    original_checkpoint = await pool.fetchrow(
+    original_checkpoint = await ssid_pool.fetchrow(
         """
         SELECT watermark, carryover, last_success_at, rows_projected, run_count
         FROM projection_checkpoints
@@ -344,10 +346,10 @@ async def test_unavailable_source_during_mapping_replay_preserves_prior_projecti
         return None
 
     monkeypatch.setattr(replay_adapter, "_fetch_points", unavailable_source)
-    skipped = await replay_adapter.run(pool=pool, chronicler_pool=pool)
+    skipped = await replay_adapter.run(pool=ssid_pool, chronicler_pool=ssid_pool)
 
     assert skipped.skipped
-    preserved = await pool.fetchrow(
+    preserved = await ssid_pool.fetchrow(
         """
         SELECT episode_type, payload, tombstone_at
         FROM episodes
@@ -360,7 +362,7 @@ async def test_unavailable_source_during_mapping_replay_preserves_prior_projecti
     assert preserved["payload"]["place"] == "work"
     assert preserved["tombstone_at"] is None
     assert (
-        await pool.fetchrow(
+        await ssid_pool.fetchrow(
             """
             SELECT watermark, carryover, last_success_at, rows_projected, run_count
             FROM projection_checkpoints
@@ -371,7 +373,7 @@ async def test_unavailable_source_during_mapping_replay_preserves_prior_projecti
         == original_checkpoint
     )
     assert (
-        await pool.fetchval(
+        await ssid_pool.fetchval(
             "SELECT active FROM source_adapter_state WHERE source_name = $1",
             SOURCE_NAME,
         )
@@ -379,7 +381,9 @@ async def test_unavailable_source_during_mapping_replay_preserves_prior_projecti
     )
 
 
-async def test_overlapping_runs_wait_for_the_source_transaction_lock(pool: asyncpg.Pool) -> None:
+async def test_overlapping_runs_wait_for_the_source_transaction_lock(
+    ssid_pool: asyncpg.Pool,
+) -> None:
     adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
     adapter.project = AsyncMock(
         return_value=owntracks_ssid_module.AdapterResult(
@@ -390,7 +394,7 @@ async def test_overlapping_runs_wait_for_the_source_transaction_lock(pool: async
     task: asyncio.Task | None = None
 
     try:
-        async with pool.acquire() as blocker:
+        async with ssid_pool.acquire() as blocker:
             async with blocker.transaction():
                 await blocker.execute(
                     """
@@ -400,21 +404,24 @@ async def test_overlapping_runs_wait_for_the_source_transaction_lock(pool: async
                     """,
                     SOURCE_NAME,
                 )
-                task = asyncio.create_task(adapter.run(pool=pool, chronicler_pool=pool))
+                task = asyncio.create_task(adapter.run(pool=ssid_pool, chronicler_pool=ssid_pool))
 
                 async with asyncio.timeout(5):
-                    while not await pool.fetchval(
-                        """
-                        SELECT EXISTS (
-                            SELECT 1
-                            FROM pg_locks
-                            WHERE locktype = 'advisory'
-                              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
-                              AND NOT granted
+
+                    async def _condition_met() -> bool:
+                        return await ssid_pool.fetchval(
+                            """
+                            SELECT EXISTS (
+                                SELECT 1
+                                FROM pg_locks
+                                WHERE locktype = 'advisory'
+                                  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                                  AND NOT granted
+                            )
+                            """
                         )
-                        """
-                    ):
-                        await asyncio.sleep(0.01)
+
+                    await poll_until(_condition_met, interval_s=0.01)
 
                 adapter.project.assert_not_awaited()
 
@@ -429,18 +436,19 @@ async def test_overlapping_runs_wait_for_the_source_transaction_lock(pool: async
 
 
 async def test_overlapping_runs_do_not_exhaust_a_two_connection_pool(
-    pool: asyncpg.Pool,
-    migrated_db_url: str,
+    ssid_pool: asyncpg.Pool,
+    ssid_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     for minute in (0, 10):
-        await _insert_point(pool, minute, "Corp WiFi")
+        await _insert_point(ssid_pool, minute, "Corp WiFi")
 
     constrained_pool = await asyncpg.create_pool(
-        migrated_db_url,
+        ssid_url,
         min_size=2,
         max_size=2,
         init=register_jsonb_codec,
+        server_settings={"search_path": "chronicler, public"},
     )
     first_adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
     second_adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
@@ -475,18 +483,21 @@ async def test_overlapping_runs_do_not_exhaust_a_two_connection_pool(
         )
 
         async with asyncio.timeout(5):
-            while not await pool.fetchval(
-                """
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM pg_locks
-                    WHERE locktype = 'advisory'
-                      AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
-                      AND NOT granted
+
+            async def _condition_met() -> bool:
+                return await ssid_pool.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_locks
+                        WHERE locktype = 'advisory'
+                          AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                          AND NOT granted
+                    )
+                    """
                 )
-                """
-            ):
-                await asyncio.sleep(0.01)
+
+            await poll_until(_condition_met, interval_s=0.01)
 
         release_first_project.set()
         results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=3)
@@ -511,18 +522,18 @@ async def test_overlapping_runs_do_not_exhaust_a_two_connection_pool(
     ],
 )
 async def test_mapping_replay_failure_rolls_back_every_persistence_boundary(
-    pool: asyncpg.Pool,
+    ssid_pool: asyncpg.Pool,
     monkeypatch: pytest.MonkeyPatch,
     failure_boundary: str,
 ) -> None:
     for minute in (0, 10):
-        await _insert_point(pool, minute, "Corp WiFi")
+        await _insert_point(ssid_pool, minute, "Corp WiFi")
 
     original_adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
-    original_result = await original_adapter.run(pool=pool, chronicler_pool=pool)
+    original_result = await original_adapter.run(pool=ssid_pool, chronicler_pool=ssid_pool)
     assert original_result.success
 
-    successful_checkpoint = await pool.fetchrow(
+    successful_checkpoint = await ssid_pool.fetchrow(
         """
         SELECT watermark, carryover, last_success_at, rows_projected, run_count
         FROM projection_checkpoints
@@ -594,10 +605,10 @@ async def test_mapping_replay_failure_rolls_back_every_persistence_boundary(
             raising=False,
         )
 
-    failed_result = await replay_adapter.run(pool=pool, chronicler_pool=pool)
+    failed_result = await replay_adapter.run(pool=ssid_pool, chronicler_pool=ssid_pool)
     assert failed_result.error == injected_message
 
-    failed_checkpoint = await pool.fetchrow(
+    failed_checkpoint = await ssid_pool.fetchrow(
         """
         SELECT watermark, carryover, last_success_at, rows_projected, run_count, last_error
         FROM projection_checkpoints
@@ -613,7 +624,7 @@ async def test_mapping_replay_failure_rolls_back_every_persistence_boundary(
     assert failed_checkpoint["run_count"] == successful_checkpoint["run_count"] + 1
     assert failed_checkpoint["last_error"] == injected_message
 
-    after_failure = await pool.fetch(
+    after_failure = await ssid_pool.fetch(
         """
         SELECT episode_type, payload, tombstone_at
         FROM episodes
@@ -627,7 +638,7 @@ async def test_mapping_replay_failure_rolls_back_every_persistence_boundary(
     assert after_failure[0]["payload"]["place"] == "work"
     assert after_failure[0]["tombstone_at"] is None
     assert (
-        await pool.fetchval(
+        await ssid_pool.fetchval(
             "SELECT active FROM source_adapter_state WHERE source_name = $1",
             SOURCE_NAME,
         )
@@ -635,11 +646,11 @@ async def test_mapping_replay_failure_rolls_back_every_persistence_boundary(
     )
 
     monkeypatch.undo()
-    recovered = await replay_adapter.run(pool=pool, chronicler_pool=pool)
-    repeated = await replay_adapter.run(pool=pool, chronicler_pool=pool)
+    recovered = await replay_adapter.run(pool=ssid_pool, chronicler_pool=ssid_pool)
+    repeated = await replay_adapter.run(pool=ssid_pool, chronicler_pool=ssid_pool)
     assert recovered.success and repeated.success
 
-    after_recovery = await pool.fetch(
+    after_recovery = await ssid_pool.fetch(
         """
         SELECT episode_type, payload, tombstone_at
         FROM episodes
@@ -653,7 +664,7 @@ async def test_mapping_replay_failure_rolls_back_every_persistence_boundary(
     assert after_recovery[0]["payload"]["place"] == "home"
     assert after_recovery[0]["tombstone_at"] is None
 
-    recovered_checkpoint = await pool.fetchrow(
+    recovered_checkpoint = await ssid_pool.fetchrow(
         """
         SELECT watermark, carryover
         FROM projection_checkpoints

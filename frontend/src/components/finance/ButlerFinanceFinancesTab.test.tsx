@@ -1,0 +1,1412 @@
+// @vitest-environment jsdom
+/**
+ * ButlerFinanceFinancesTab — RTL tests pinning the five sections.
+ *
+ * Tests:
+ *  - Renders five sections (KPI strip, transactions, upcoming bills,
+ *    subscriptions, category chart)
+ *  - Empty states shown when data is empty
+ *  - Loading state shows placeholders instead of empty-state text
+ *  - KPI values render with data
+ *  - Transaction rows render correctly
+ *  - Upcoming bills urgency chips render
+ *  - Subscription rows render
+ *
+ * bead: bu-nqepq
+ */
+
+import { createElement } from "react";
+import type { ReactNode } from "react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+// ---------------------------------------------------------------------------
+// Mock recharts — avoids SVG/canvas complexity in jsdom
+// ---------------------------------------------------------------------------
+
+vi.mock("recharts", () => {
+  const BarChart = ({
+    children,
+  }: {
+    data?: Array<Record<string, unknown>>;
+    children?: ReactNode;
+  }) => createElement("div", { "data-testid": "recharts-bar-chart" }, children);
+
+  const Bar = ({ dataKey }: { dataKey: string }) =>
+    createElement("div", { "data-testid": `recharts-bar-${dataKey}` });
+
+  const XAxis = () => null;
+  const YAxis = () => null;
+  const Tooltip = () => null;
+  const Legend = () => null;
+  const ResponsiveContainer = ({ children }: { children?: ReactNode }) =>
+    createElement(
+      "div",
+      { "data-testid": "recharts-responsive-container" },
+      children,
+    );
+
+  return { BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer };
+});
+
+// ---------------------------------------------------------------------------
+// Mock finance hooks
+// ---------------------------------------------------------------------------
+
+vi.mock("@/hooks/use-finance", () => ({
+  useFinanceTransactions: vi.fn(),
+  useFinanceSubscriptions: vi.fn(),
+  useFinanceUpcomingBills: vi.fn(),
+  useFinanceSpendingSummary: vi.fn(),
+  useFinanceAccounts: vi.fn(),
+  useFinanceObligations: vi.fn(),
+  useFinanceExpectedSignals: vi.fn(),
+  useBulkUpdateTransactionMetadata: vi.fn(),
+}));
+
+// sonner toast is fire-and-forget; stub it so tests don't depend on a portal.
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
+}));
+
+import {
+  useFinanceTransactions,
+  useFinanceSubscriptions,
+  useFinanceUpcomingBills,
+  useFinanceSpendingSummary,
+  useFinanceAccounts,
+  useFinanceObligations,
+  useFinanceExpectedSignals,
+  useBulkUpdateTransactionMetadata,
+} from "@/hooks/use-finance";
+
+import ButlerFinanceFinancesTab from "./ButlerFinanceFinancesTab";
+
+// ---------------------------------------------------------------------------
+// Test fixtures
+// ---------------------------------------------------------------------------
+
+const TRANSACTIONS = [
+  {
+    id: "tx-1",
+    posted_at: "2026-05-08T10:00:00Z",
+    merchant: "Whole Foods",
+    normalized_merchant: "Whole Foods Market",
+    description: null,
+    amount: "45.32",
+    currency: "USD",
+    direction: "debit",
+    category: "groceries",
+    inferred_category: null,
+    payment_method: null,
+    account_id: null,
+    receipt_url: null,
+    external_ref: null,
+    source_message_id: null,
+    metadata: {},
+    created_at: "2026-05-08T10:01:00Z",
+    updated_at: "2026-05-08T10:01:00Z",
+  },
+  {
+    id: "tx-2",
+    posted_at: "2026-05-07T14:30:00Z",
+    merchant: "Netflix",
+    normalized_merchant: null,
+    description: "Monthly subscription",
+    amount: "15.49",
+    currency: "USD",
+    direction: "debit",
+    category: "subscriptions",
+    inferred_category: null,
+    payment_method: null,
+    account_id: null,
+    receipt_url: null,
+    external_ref: null,
+    source_message_id: null,
+    metadata: {},
+    created_at: "2026-05-07T14:31:00Z",
+    updated_at: "2026-05-07T14:31:00Z",
+  },
+];
+
+const SUBSCRIPTIONS = [
+  {
+    id: "sub-1",
+    service: "Netflix",
+    amount: "15.49",
+    currency: "USD",
+    frequency: "monthly",
+    next_renewal: "2026-06-07",
+    status: "active",
+    auto_renew: true,
+    payment_method: null,
+    account_id: null,
+    source_message_id: null,
+    metadata: {},
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-05-07T14:31:00Z",
+  },
+  {
+    id: "sub-2",
+    service: "Spotify",
+    amount: "9.99",
+    currency: "USD",
+    frequency: "monthly",
+    next_renewal: "2026-06-15",
+    status: "active",
+    auto_renew: true,
+    payment_method: null,
+    account_id: null,
+    source_message_id: null,
+    metadata: {},
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-05-15T00:00:00Z",
+  },
+  {
+    id: "sub-3",
+    service: "Adobe Creative Cloud",
+    amount: "54.99",
+    currency: "USD",
+    frequency: "monthly",
+    next_renewal: "2026-06-20",
+    status: "cancelled",
+    auto_renew: false,
+    payment_method: null,
+    account_id: null,
+    source_message_id: null,
+    metadata: {},
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+];
+
+// Forward obligation ledger fixtures (bu-8cdl1.10 slice 3): sub-1 (Netflix)
+// has no cancellation door on file; sub-2 (Spotify) has a complete door plus
+// a pre-charge price-change flag.
+const OBLIGATIONS = [
+  {
+    subscription_id: "sub-1",
+    service: "Netflix",
+    amount: "15.49",
+    currency: "USD",
+    period: "2026-06-07",
+    cancellation_url: null,
+    notice_period_days: null,
+    cancel_by: null,
+    warn_by: null,
+    unknown_door: true,
+    price_change_amount: null,
+    price_change_direction: null,
+    days_remaining_to_act: null,
+  },
+  {
+    subscription_id: "sub-2",
+    service: "Spotify",
+    amount: "9.99",
+    currency: "USD",
+    period: "2026-06-15",
+    cancellation_url: "https://spotify.com/cancel",
+    notice_period_days: 7,
+    cancel_by: "2026-06-08",
+    warn_by: "2026-06-01",
+    unknown_door: false,
+    price_change_amount: "12.99",
+    price_change_direction: "increase" as const,
+    days_remaining_to_act: 2,
+  },
+];
+
+const UPCOMING_BILLS = [
+  {
+    bill: {
+      id: "bill-1",
+      payee: "Electric Company",
+      amount: "84.00",
+      currency: "USD",
+      due_date: "2026-05-12",
+      frequency: "monthly",
+      status: "pending",
+      payment_method: null,
+      account_id: null,
+      source_message_id: null,
+      statement_period_start: null,
+      statement_period_end: null,
+      paid_at: null,
+      metadata: {},
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: "2026-05-01T00:00:00Z",
+    },
+    urgency: "due_soon",
+    days_until_due: 2,
+  },
+  {
+    bill: {
+      id: "bill-2",
+      payee: "Rent",
+      amount: "1500.00",
+      currency: "USD",
+      due_date: "2026-05-01",
+      frequency: "monthly",
+      status: "overdue",
+      payment_method: null,
+      account_id: null,
+      source_message_id: null,
+      statement_period_start: null,
+      statement_period_end: null,
+      paid_at: null,
+      metadata: {},
+      created_at: "2026-04-01T00:00:00Z",
+      updated_at: "2026-04-01T00:00:00Z",
+    },
+    urgency: "overdue",
+    days_until_due: -9,
+  },
+];
+
+const ACCOUNTS = [
+  {
+    id: "acct-1",
+    institution: "Chase",
+    type: "checking",
+    name: "Everyday Checking",
+    last_four: "4321",
+    currency: "USD",
+    last_synced_at: null,
+    feed_degraded: true,
+    feed_degraded_reason: "never_synced",
+    metadata: {},
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+  {
+    id: "acct-2",
+    institution: "Amex",
+    type: "credit_card",
+    name: null,
+    last_four: "1009",
+    currency: "USD",
+    last_synced_at: "2026-05-10T00:00:00Z",
+    feed_degraded: false,
+    feed_degraded_reason: null,
+    metadata: {},
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+];
+
+const MONTHLY_SUMMARY = {
+  start_date: "2026-05-01",
+  end_date: "2026-05-10",
+  currency: "USD",
+  total_spend: "1243.60",
+  groups: [
+    { key: "groceries", amount: "380.00", count: 8 },
+    { key: "dining", amount: "210.00", count: 12 },
+    { key: "subscriptions", amount: "87.00", count: 4 },
+  ],
+};
+
+const CATEGORY_SUMMARY = {
+  start_date: "2026-04-10",
+  end_date: "2026-05-10",
+  currency: "USD",
+  total_spend: "2800.00",
+  groups: [
+    { key: "groceries", amount: "760.00", count: 18 },
+    { key: "dining", amount: "430.00", count: 24 },
+    { key: "subscriptions", amount: "174.00", count: 8 },
+  ],
+};
+
+// ---------------------------------------------------------------------------
+// Render helpers
+// ---------------------------------------------------------------------------
+
+function makeQueryClient() {
+  return new QueryClient({ defaultOptions: { queries: { retry: false } } });
+}
+
+function renderTab() {
+  return render(
+    <QueryClientProvider client={makeQueryClient()}>
+      <ButlerFinanceFinancesTab />
+    </QueryClientProvider>,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Mock setup helpers
+// ---------------------------------------------------------------------------
+
+// Shared bulk-mutation mock. `mockMutate` captures the payload + callbacks so
+// tests can assert the request shape and drive success.
+let mockMutate: ReturnType<typeof vi.fn>;
+
+function setupBulkMutation(isPending = false) {
+  mockMutate = vi.fn();
+  vi.mocked(useBulkUpdateTransactionMetadata).mockReturnValue({
+    mutate: mockMutate,
+    isPending,
+  } as unknown as ReturnType<typeof useBulkUpdateTransactionMetadata>);
+}
+
+function setupWithData() {
+  setupBulkMutation();
+  vi.mocked(useFinanceTransactions).mockReturnValue({
+    data: { data: TRANSACTIONS, meta: { total: 2, offset: 0, limit: 15 } },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceTransactions>);
+
+  vi.mocked(useFinanceSubscriptions).mockReturnValue({
+    data: { data: SUBSCRIPTIONS, meta: { total: 3, offset: 0, limit: 50 } },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceSubscriptions>);
+  vi.mocked(useFinanceExpectedSignals).mockReturnValue({
+    data: { signals: [], available: true, degraded_reason: null },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useFinanceExpectedSignals>);
+
+  vi.mocked(useFinanceUpcomingBills).mockReturnValue({
+    data: {
+      items: UPCOMING_BILLS,
+      total_amount: "1584.00",
+      count: 2,
+      days_ahead: 30,
+      include_overdue: true,
+    },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceUpcomingBills>);
+
+  // useFinanceSpendingSummary is called twice per render: once for monthly KPI,
+  // then once for the 30-day category chart. Do not key this off dates: on
+  // month-end, the rolling 30-day window can also start on YYYY-MM-01.
+  let spendingSummaryCall = 0;
+  vi.mocked(useFinanceSpendingSummary).mockImplementation(() => {
+    const data = spendingSummaryCall % 2 === 0 ? MONTHLY_SUMMARY : CATEGORY_SUMMARY;
+    spendingSummaryCall += 1;
+    return {
+      data,
+      isLoading: false,
+    } as ReturnType<typeof useFinanceSpendingSummary>;
+  });
+
+  vi.mocked(useFinanceAccounts).mockReturnValue({
+    data: { data: ACCOUNTS, meta: { total: 2, offset: 0, limit: 50 } },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceAccounts>);
+
+  vi.mocked(useFinanceObligations).mockReturnValue({
+    data: { items: OBLIGATIONS, count: OBLIGATIONS.length, available: true, degraded_reason: null },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceObligations>);
+}
+
+function setupEmpty() {
+  setupBulkMutation();
+  vi.mocked(useFinanceTransactions).mockReturnValue({
+    data: { data: [], meta: { total: 0, offset: 0, limit: 15 } },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useFinanceTransactions>);
+
+  vi.mocked(useFinanceSubscriptions).mockReturnValue({
+    data: { data: [], meta: { total: 0, offset: 0, limit: 50 } },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useFinanceSubscriptions>);
+  vi.mocked(useFinanceExpectedSignals).mockReturnValue({
+    data: { signals: [], available: true, degraded_reason: null },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useFinanceExpectedSignals>);
+
+  vi.mocked(useFinanceUpcomingBills).mockReturnValue({
+    data: {
+      items: [],
+      total_amount: "0",
+      count: 0,
+      days_ahead: 30,
+      include_overdue: true,
+    },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useFinanceUpcomingBills>);
+
+  vi.mocked(useFinanceSpendingSummary).mockReturnValue({
+    data: {
+      start_date: "2026-05-01",
+      end_date: "2026-05-10",
+      currency: "USD",
+      total_spend: "0",
+      groups: [],
+    },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useFinanceSpendingSummary>);
+
+  vi.mocked(useFinanceAccounts).mockReturnValue({
+    data: { data: [], meta: { total: 0, offset: 0, limit: 50 } },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useFinanceAccounts>);
+
+  vi.mocked(useFinanceObligations).mockReturnValue({
+    data: { items: [], count: 0, available: true, degraded_reason: null },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useFinanceObligations>);
+}
+
+function setupLoading() {
+  setupBulkMutation();
+  vi.mocked(useFinanceTransactions).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+  } as ReturnType<typeof useFinanceTransactions>);
+
+  vi.mocked(useFinanceSubscriptions).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+  } as ReturnType<typeof useFinanceSubscriptions>);
+  vi.mocked(useFinanceExpectedSignals).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+  } as unknown as ReturnType<typeof useFinanceExpectedSignals>);
+
+  vi.mocked(useFinanceUpcomingBills).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+  } as ReturnType<typeof useFinanceUpcomingBills>);
+
+  vi.mocked(useFinanceSpendingSummary).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+  } as ReturnType<typeof useFinanceSpendingSummary>);
+
+  vi.mocked(useFinanceAccounts).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+  } as ReturnType<typeof useFinanceAccounts>);
+
+  vi.mocked(useFinanceObligations).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+  } as ReturnType<typeof useFinanceObligations>);
+}
+
+// ---------------------------------------------------------------------------
+// Tests: five sections are rendered
+// ---------------------------------------------------------------------------
+
+describe("ButlerFinanceFinancesTab — five sections present", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+
+  afterEach(() => cleanup());
+
+  it("renders the KPI strip section", () => {
+    renderTab();
+    expect(screen.getByTestId("finance-kpi-strip")).toBeDefined();
+  });
+
+  it("renders the transactions section", () => {
+    renderTab();
+    expect(screen.getByTestId("finance-transactions-section")).toBeDefined();
+  });
+
+  it("renders recurrence instrumentation without claiming payment state", () => {
+    vi.mocked(useFinanceExpectedSignals).mockReturnValue({
+      data: {
+        available: true,
+        degraded_reason: null,
+        signals: [
+          {
+            signal_key: "finance:recurrence:group-1",
+            producer: "connector:gmail",
+            producer_endpoint_identity: "gmail:user:owner@example.invalid",
+            expected_cadence_seconds: 2_592_000,
+            last_observed_at: "2026-05-01T00:00:00Z",
+            measurability: "unmeasurable",
+            unmeasurable_reason: "producer_stale_or_offline",
+            evaluated_at: "2026-06-01T00:00:00Z",
+          },
+        ],
+      },
+      isLoading: false,
+    } as ReturnType<typeof useFinanceExpectedSignals>);
+
+    renderTab();
+
+    expect(screen.getByTestId("finance-recurrence-signals")).toBeDefined();
+    expect(
+      screen.getByText(
+        "Recurrence instrumentation is incomplete. Payment-state claims are paused.",
+      ),
+    ).toBeDefined();
+    expect(screen.queryByText(/missed renewal/i)).toBeNull();
+  });
+
+  it("renders the upcoming bills section", () => {
+    renderTab();
+    expect(screen.getByTestId("finance-upcoming-bills-section")).toBeDefined();
+  });
+
+  it("renders the subscriptions section", () => {
+    renderTab();
+    expect(screen.getByTestId("finance-subscriptions-section")).toBeDefined();
+  });
+
+  it("renders the category spend chart section", () => {
+    renderTab();
+    expect(screen.getByTestId("finance-category-chart-section")).toBeDefined();
+  });
+
+  it("renders the outer finances tab container", () => {
+    renderTab();
+    expect(screen.getByTestId("finance-finances-tab")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: KPI strip values
+// ---------------------------------------------------------------------------
+
+describe("ButlerFinanceFinancesTab — KPI strip", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+
+  afterEach(() => cleanup());
+
+  it("renders four KPI value cells (redesigned 4-col strip)", () => {
+    renderTab();
+    const kpiValues = screen.getAllByTestId("kpi-value");
+    expect(kpiValues.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("renders 'Monthly spend' label", () => {
+    renderTab();
+    expect(screen.getByText("Monthly spend")).toBeDefined();
+  });
+
+  it("does not present mixed-currency legacy totals as one amount", () => {
+    const mixed = {
+      start_date: "2026-05-01",
+      end_date: "2026-05-10",
+      currency: null,
+      total_spend: "180.00",
+      groups: [{ key: "groceries", amount: "180.00", count: 2 }],
+      by_currency: [
+        {
+          currency: "EUR",
+          total_spend: "80.00",
+          groups: [{ key: "groceries", amount: "80.00", count: 1 }],
+        },
+        {
+          currency: "USD",
+          total_spend: "100.00",
+          groups: [{ key: "groceries", amount: "100.00", count: 1 }],
+        },
+      ],
+      legacy_aggregate_degraded: true,
+      degraded_reason: "multiple_currencies_unconverted" as const,
+    };
+    vi.mocked(useFinanceSpendingSummary).mockReturnValue({
+      data: mixed,
+      isLoading: false,
+    } as ReturnType<typeof useFinanceSpendingSummary>);
+
+    renderTab();
+
+    expect(screen.getAllByText("By currency").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByTestId("category-spend-by-currency").textContent).toContain("€80.00");
+    expect(screen.getByTestId("category-spend-by-currency").textContent).toContain("$100.00");
+    expect(screen.queryByText("$180.00")).toBeNull();
+  });
+
+  it("does not invent USD for an empty spending result", () => {
+    const empty = {
+      start_date: "2026-05-01",
+      end_date: "2026-05-10",
+      currency: null,
+      total_spend: "0",
+      groups: [],
+      by_currency: [],
+      legacy_aggregate_degraded: false,
+      degraded_reason: null,
+    };
+    vi.mocked(useFinanceSpendingSummary).mockReturnValue({
+      data: empty,
+      isLoading: false,
+    } as unknown as ReturnType<typeof useFinanceSpendingSummary>);
+
+    renderTab();
+
+    expect(screen.queryByText("$0.00")).toBeNull();
+    const kpiStrip = screen.getByTestId("finance-kpi-strip");
+    expect(kpiStrip.textContent).toContain("No spending data");
+  });
+
+  it("renders 'Active subscriptions' label", () => {
+    renderTab();
+    expect(screen.getByText("Active subscriptions")).toBeDefined();
+  });
+
+  it("renders 'Next bill' label", () => {
+    renderTab();
+    expect(screen.getByText("Next bill")).toBeDefined();
+  });
+
+  it("renders 'Top category · 30d' label as the 4th KPI cell", () => {
+    renderTab();
+    // MonoLabel renders text in DOM; CSS uppercase does not change DOM text content.
+    expect(screen.getByText("Top category · 30d")).toBeDefined();
+  });
+
+  it("shows top category value when spend data is available", () => {
+    renderTab();
+    // CATEGORY_SUMMARY has groceries as the top category ($760). The KPI cell
+    // sub-label should contain the category name; the value shows the amount.
+    const kpiStrip = screen.getByTestId("finance-kpi-strip");
+    expect(kpiStrip.textContent).toContain("Groceries");
+    // KPI value: $760.00 formatted by Intl.NumberFormat
+    expect(kpiStrip.textContent).toContain("$760.00");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: KPI strip honesty — bu-t5w6w
+//   Next bill must skip $0 / amount_known:false placeholders.
+//   Active subscriptions must exclude $0 and dummy test subs.
+// ---------------------------------------------------------------------------
+
+// A $0 / amount-unknown placeholder bill that sorts FIRST by due_date, plus a
+// real bill behind it. The KPI must skip the placeholder and surface the real one.
+const NEXT_BILL_PLACEHOLDER = {
+  bill: {
+    id: "bill-zero",
+    payee: "Arta Finance",
+    amount: "0.00",
+    currency: "USD",
+    due_date: "2026-05-09",
+    frequency: "monthly",
+    status: "pending",
+    payment_method: null,
+    account_id: null,
+    source_message_id: null,
+    statement_period_start: null,
+    statement_period_end: null,
+    paid_at: null,
+    metadata: { amount_known: false },
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+  urgency: "due_soon",
+  days_until_due: 1,
+};
+
+const NEXT_BILL_REAL = {
+  bill: {
+    id: "bill-real",
+    payee: "Electric Company",
+    amount: "84.00",
+    currency: "USD",
+    due_date: "2026-05-12",
+    frequency: "monthly",
+    status: "pending",
+    payment_method: null,
+    account_id: null,
+    source_message_id: null,
+    statement_period_start: null,
+    statement_period_end: null,
+    paid_at: null,
+    metadata: {},
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+  urgency: "due_soon",
+  days_until_due: 4,
+};
+
+// Active subs including a $0 placeholder and a literal dummy test record. Only
+// the two real active subs (Netflix, Spotify) should be counted.
+const SUBS_WITH_NOISE = [
+  ...SUBSCRIPTIONS, // Netflix (active), Spotify (active), Adobe (cancelled)
+  {
+    id: "sub-dummy",
+    service: "dummy",
+    amount: "0.00",
+    currency: "USD",
+    frequency: "monthly",
+    next_renewal: "2026-06-30",
+    status: "active",
+    auto_renew: true,
+    payment_method: null,
+    account_id: null,
+    source_message_id: null,
+    metadata: {},
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+  {
+    id: "sub-zero",
+    service: "Mystery $0 Sub",
+    amount: "0.00",
+    currency: "USD",
+    frequency: "monthly",
+    next_renewal: "2026-06-25",
+    status: "active",
+    auto_renew: true,
+    payment_method: null,
+    account_id: null,
+    source_message_id: null,
+    metadata: {},
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+];
+
+function setupKpiNoise() {
+  setupBulkMutation();
+  vi.mocked(useFinanceTransactions).mockReturnValue({
+    data: { data: TRANSACTIONS, meta: { total: 2, offset: 0, limit: 15 } },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceTransactions>);
+
+  vi.mocked(useFinanceSubscriptions).mockReturnValue({
+    data: { data: SUBS_WITH_NOISE, meta: { total: 5, offset: 0, limit: 50 } },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceSubscriptions>);
+  vi.mocked(useFinanceExpectedSignals).mockReturnValue({
+    data: { signals: [], available: true, degraded_reason: null },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useFinanceExpectedSignals>);
+
+  vi.mocked(useFinanceUpcomingBills).mockReturnValue({
+    data: {
+      items: [NEXT_BILL_PLACEHOLDER, NEXT_BILL_REAL],
+      total_amount: "84.00",
+      count: 2,
+      days_ahead: 30,
+      include_overdue: true,
+    },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceUpcomingBills>);
+
+  let spendingSummaryCall = 0;
+  vi.mocked(useFinanceSpendingSummary).mockImplementation(() => {
+    const data = spendingSummaryCall % 2 === 0 ? MONTHLY_SUMMARY : CATEGORY_SUMMARY;
+    spendingSummaryCall += 1;
+    return {
+      data,
+      isLoading: false,
+    } as ReturnType<typeof useFinanceSpendingSummary>;
+  });
+
+  vi.mocked(useFinanceAccounts).mockReturnValue({
+    data: { data: ACCOUNTS, meta: { total: 2, offset: 0, limit: 50 } },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceAccounts>);
+
+  vi.mocked(useFinanceObligations).mockReturnValue({
+    data: { items: OBLIGATIONS, count: OBLIGATIONS.length, available: true, degraded_reason: null },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceObligations>);
+}
+
+describe("ButlerFinanceFinancesTab — KPI strip honesty (bu-t5w6w)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupKpiNoise();
+  });
+
+  afterEach(() => cleanup());
+
+  it("Next bill skips the $0 / amount_known:false placeholder and shows the real bill", () => {
+    renderTab();
+    const kpiStrip = screen.getByTestId("finance-kpi-strip");
+    // Must NOT surface the $0 Arta Finance placeholder as the next bill.
+    expect(kpiStrip.textContent).not.toContain("$0.00");
+    expect(kpiStrip.textContent).not.toContain("Arta Finance");
+    // Must surface the real $84.00 Electric Company bill instead.
+    expect(kpiStrip.textContent).toContain("$84.00");
+    expect(kpiStrip.textContent).toContain("Electric Company");
+  });
+
+  it("Active subscriptions counts only real billable active subs (excludes $0 + dummy)", () => {
+    renderTab();
+    const cells = screen.getAllByTestId("kpi-value");
+    const activeCell = cells.find((c) => c.textContent?.includes("Active subscriptions"));
+    expect(activeCell).toBeDefined();
+    // Netflix + Spotify are active & non-zero & non-dummy → count = 2.
+    // Adobe is cancelled; sub-dummy is service:'dummy'; sub-zero is $0 → all excluded.
+    expect(activeCell?.textContent).toContain("2");
+    expect(activeCell?.textContent).not.toContain("4");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Transaction rows
+// ---------------------------------------------------------------------------
+
+describe("ButlerFinanceFinancesTab — transactions table", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+
+  afterEach(() => cleanup());
+
+  it("renders transaction rows", () => {
+    renderTab();
+    const rows = screen.getAllByTestId("transaction-row");
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows merchant name in a transaction row", () => {
+    renderTab();
+    // Normalized merchant "Whole Foods Market" should appear
+    expect(screen.getByText("Whole Foods Market")).toBeDefined();
+  });
+
+  it("renders the transactions table", () => {
+    renderTab();
+    expect(screen.getByTestId("transactions-table")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Upcoming bills
+// ---------------------------------------------------------------------------
+
+describe("ButlerFinanceFinancesTab — upcoming bills", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+
+  afterEach(() => cleanup());
+
+  it("renders upcoming bill items", () => {
+    renderTab();
+    const items = screen.getAllByTestId("upcoming-bill-item");
+    expect(items.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows Electric Company in the bills list", () => {
+    renderTab();
+    // "Electric Company" may appear in the KPI next-bill sub-label and in the bills list;
+    // verify it appears at least once inside the bills list container.
+    const billsList = screen.getByTestId("upcoming-bills-list");
+    expect(billsList.textContent).toContain("Electric Company");
+  });
+
+  it("renders the upcoming bills list", () => {
+    renderTab();
+    expect(screen.getByTestId("upcoming-bills-list")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Subscriptions roster
+// ---------------------------------------------------------------------------
+
+describe("ButlerFinanceFinancesTab — subscriptions", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+
+  afterEach(() => cleanup());
+
+  it("renders subscription rows", () => {
+    renderTab();
+    const rows = screen.getAllByTestId("subscription-row");
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows Spotify in the subscriptions list", () => {
+    renderTab();
+    // Spotify only appears in subscriptions, not in transactions
+    expect(screen.getByText("Spotify")).toBeDefined();
+  });
+
+  it("renders the subscriptions list", () => {
+    renderTab();
+    expect(screen.getByTestId("subscriptions-list")).toBeDefined();
+  });
+
+  it("renders an enrichment prompt for a subscription with no cancellation door on file", () => {
+    renderTab();
+    // sub-1 (Netflix) has unknown_door: true in OBLIGATIONS.
+    expect(screen.getAllByTestId("subscription-door-unknown").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/No cancellation door on file/)).toBeDefined();
+  });
+
+  it("renders the cancel-by date and days remaining for a known cancellation door", () => {
+    renderTab();
+    // sub-2 (Spotify) has a complete door with cancel_by 2026-06-08 and
+    // days_remaining_to_act: 2 in OBLIGATIONS.
+    const known = screen.getByTestId("subscription-door-known");
+    expect(known.textContent).toContain("Cancel by");
+    expect(known.textContent).toContain("2 days left");
+  });
+
+  it("surfaces a pre-charge price-change flag on the subscription row", () => {
+    renderTab();
+    const flag = screen.getByTestId("subscription-price-change-flag");
+    expect(flag.textContent).toContain("increase");
+    expect(flag.textContent).toContain("$12.99");
+  });
+
+  it("renders subscriptions without a door line when the obligations read is degraded", () => {
+    vi.mocked(useFinanceObligations).mockReturnValue({
+      data: {
+        items: [],
+        count: 0,
+        available: false,
+        degraded_reason: "obligation_ledger_unavailable",
+      },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useFinanceObligations>);
+
+    renderTab();
+
+    expect(screen.getByTestId("subscriptions-list")).toBeDefined();
+    expect(screen.queryByTestId("subscription-door-unknown")).toBeNull();
+    expect(screen.queryByTestId("subscription-door-known")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Accounts panel (bu-alenp)
+// ---------------------------------------------------------------------------
+
+describe("ButlerFinanceFinancesTab — accounts panel", () => {
+  afterEach(() => cleanup());
+
+  it("renders the accounts section", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    renderTab();
+    expect(screen.getByTestId("finance-accounts-section")).toBeDefined();
+  });
+
+  it("renders account rows when accounts are present", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    renderTab();
+    const rows = screen.getAllByTestId("account-row");
+    expect(rows.length).toBe(2);
+  });
+
+  it("shows account institution/name in the accounts list", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    renderTab();
+    const list = screen.getByTestId("accounts-list");
+    // acct-1 has a name ("Everyday Checking"); acct-2 falls back to institution ("Amex").
+    expect(list.textContent).toContain("Everyday Checking");
+    expect(list.textContent).toContain("Amex");
+  });
+
+  it("renders a count summary line when accounts exist", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    renderTab();
+    expect(screen.getByTestId("accounts-summary").textContent).toContain("2 accounts");
+  });
+
+  it("surfaces per-account feed freshness", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    renderTab();
+
+    const states = screen.getAllByTestId("account-feed-freshness");
+    expect(states[0].textContent).toContain("Feed never synced");
+    expect(states[1].textContent).toContain("Feed synced");
+  });
+
+  it("shows the relative sync timestamp for a stale account", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    const staleSyncedAt = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    vi.mocked(useFinanceAccounts).mockReturnValue({
+      data: {
+        data: [
+          {
+            ...ACCOUNTS[1],
+            id: "acct-stale",
+            last_synced_at: staleSyncedAt,
+            feed_degraded: true,
+            feed_degraded_reason: "stale",
+          },
+        ],
+        meta: { total: 1, offset: 0, limit: 50 },
+      },
+      isLoading: false,
+    } as ReturnType<typeof useFinanceAccounts>);
+    renderTab();
+
+    const state = screen.getByTestId("account-feed-freshness");
+    expect(state.textContent).toContain("Feed stale");
+    // Stale is still evidence-bearing: the relative timestamp must render, not be hidden.
+    expect(state.textContent).not.toBe("Feed stale");
+  });
+
+  it("shows an honest empty state when no accounts exist", () => {
+    vi.resetAllMocks();
+    setupEmpty();
+    renderTab();
+    // No list, no fabricated net-worth — just the empty-state line inside the panel.
+    expect(screen.queryByTestId("accounts-list")).toBeNull();
+    const section = screen.getByTestId("finance-accounts-section");
+    expect(section.querySelector('[data-testid="empty-state-line"]')).not.toBeNull();
+  });
+
+  it("shows a loading line in the accounts panel while pending", () => {
+    vi.resetAllMocks();
+    setupLoading();
+    renderTab();
+    const section = screen.getByTestId("finance-accounts-section");
+    expect(section.querySelector('[data-testid="loading-line"]')).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: category chart renders
+// ---------------------------------------------------------------------------
+
+describe("ButlerFinanceFinancesTab — category chart", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+
+  afterEach(() => cleanup());
+
+  it("renders the recharts bar chart when data is present", () => {
+    renderTab();
+    expect(screen.getByTestId("category-spend-chart")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: empty states
+// ---------------------------------------------------------------------------
+
+describe("ButlerFinanceFinancesTab — explicit empty states", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupEmpty();
+  });
+
+  afterEach(() => cleanup());
+
+  it("shows empty state for transactions when none exist", () => {
+    renderTab();
+    expect(screen.queryByTestId("transactions-table")).toBeNull();
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    expect(emptyLines.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows empty state for upcoming bills when none exist", () => {
+    renderTab();
+    expect(screen.queryByTestId("upcoming-bills-list")).toBeNull();
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    expect(emptyLines.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows empty state for subscriptions when none exist", () => {
+    renderTab();
+    expect(screen.queryByTestId("subscriptions-list")).toBeNull();
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    expect(emptyLines.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows empty state for chart when no groups exist", () => {
+    renderTab();
+    expect(screen.queryByTestId("category-spend-chart")).toBeNull();
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    expect(emptyLines.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: loading state
+// ---------------------------------------------------------------------------
+
+describe("ButlerFinanceFinancesTab — loading state", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupLoading();
+  });
+
+  afterEach(() => cleanup());
+
+  it("shows loading placeholders while queries are pending", () => {
+    renderTab();
+    const loadingLines = screen.getAllByTestId("loading-line");
+    expect(loadingLines.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does not show empty-state lines while loading", () => {
+    renderTab();
+    expect(screen.queryByTestId("empty-state-line")).toBeNull();
+  });
+
+  it("does not render transactions table while loading", () => {
+    renderTab();
+    expect(screen.queryByTestId("transactions-table")).toBeNull();
+  });
+
+  it("does not render upcoming-bills list while loading", () => {
+    renderTab();
+    expect(screen.queryByTestId("upcoming-bills-list")).toBeNull();
+  });
+
+  it("does not render subscriptions list while loading", () => {
+    renderTab();
+    expect(screen.queryByTestId("subscriptions-list")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: never-blank floor (bu-nhcp5) — placeholderData + FetchingDim
+//
+// This tab's windows are fixed at mount (no user-navigable date picker), so
+// the only source of a background refetch today is the 60s poll on each
+// hook. placeholderData keeps `data` populated through that poll; FetchingDim
+// dims the whole panel grid for its duration instead of leaving zero visual
+// signal that a refresh is in flight.
+// ---------------------------------------------------------------------------
+
+describe("ButlerFinanceFinancesTab — never-blank floor (bu-nhcp5)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+
+  afterEach(() => cleanup());
+
+  it("dims the panel grid while a background refetch is in flight", () => {
+    vi.mocked(useFinanceTransactions).mockReturnValue({
+      data: { data: TRANSACTIONS, meta: { total: 2, offset: 0, limit: 15 } },
+      isLoading: false,
+      isFetching: true,
+    } as ReturnType<typeof useFinanceTransactions>);
+
+    renderTab();
+    const tab = screen.getByTestId("finance-finances-tab");
+    // FetchingDim wraps the grid container from the outside.
+    expect(tab.parentElement?.className).toContain("opacity-60");
+  });
+
+  it("does not dim when no query is fetching", () => {
+    renderTab();
+    const tab = screen.getByTestId("finance-finances-tab");
+    expect(tab.parentElement?.className).not.toContain("opacity-60");
+  });
+
+  it("keeps rendering the previous data while a background refetch is in flight (never blanks)", () => {
+    vi.mocked(useFinanceAccounts).mockReturnValue({
+      data: { data: ACCOUNTS, meta: { total: 2, offset: 0, limit: 50 } },
+      isLoading: false,
+      isFetching: true,
+    } as ReturnType<typeof useFinanceAccounts>);
+
+    renderTab();
+    expect(screen.getByText("Everyday Checking")).toBeDefined();
+  });
+
+  it("does not dim during the very first load (each panel already shows its own loading line)", () => {
+    setupLoading();
+    // setupLoading's isLoading:true implies isFetching:true too in real
+    // react-query output; assert the wrapper stays undimmed so the initial
+    // per-panel <LoadingLine/> isn't itself dimmed.
+    vi.mocked(useFinanceTransactions).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isFetching: true,
+    } as ReturnType<typeof useFinanceTransactions>);
+    vi.mocked(useFinanceSubscriptions).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isFetching: true,
+    } as ReturnType<typeof useFinanceSubscriptions>);
+    vi.mocked(useFinanceUpcomingBills).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isFetching: true,
+    } as ReturnType<typeof useFinanceUpcomingBills>);
+    vi.mocked(useFinanceSpendingSummary).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isFetching: true,
+    } as ReturnType<typeof useFinanceSpendingSummary>);
+    vi.mocked(useFinanceAccounts).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isFetching: true,
+    } as ReturnType<typeof useFinanceAccounts>);
+
+    renderTab();
+    const tab = screen.getByTestId("finance-finances-tab");
+    expect(tab.parentElement?.className).not.toContain("opacity-60");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: bulk edit / categorize (bu-v3a4x.3)
+//
+// Verifies the Finances tab is no longer read-only: row selection + the bulk
+// action bar drive PATCH /transactions/bulk-metadata through the mutation hook.
+// ---------------------------------------------------------------------------
+
+describe("ButlerFinanceFinancesTab — bulk edit / categorize (bu-v3a4x.3)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  /**
+   * Clicks "Apply to selected" then the ConfirmDialog's confirm action
+   * (bu-ep4ks.11 / bu-3dp0c: the bulk-apply flow used to gate the mutation
+   * behind a synchronous window.confirm; it now stages the op and requires
+   * an explicit confirm click on finance-bulk-confirm-dialog).
+   */
+  function applyAndConfirm() {
+    fireEvent.click(screen.getByTestId("bulk-apply-button"));
+    const confirmBtn = screen.getByTestId("finance-bulk-confirm-dialog-confirm");
+    fireEvent.click(confirmBtn);
+  }
+
+  it("renders the bulk action bar and a checkbox per transaction row", () => {
+    renderTab();
+    expect(screen.getByTestId("finance-bulk-action-bar")).toBeDefined();
+    // One checkbox per data row (2 fixtures) plus the select-all header checkbox.
+    expect(screen.getAllByTestId("transaction-checkbox").length).toBe(2);
+    expect(screen.getByTestId("select-all-checkbox")).toBeDefined();
+  });
+
+  it("disables the apply button with zero selection", () => {
+    renderTab();
+    const btn = screen.getByTestId("bulk-apply-button") as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it("keeps apply disabled when rows are selected but no edit is entered", () => {
+    renderTab();
+    fireEvent.click(screen.getAllByTestId("transaction-checkbox")[0]);
+    const btn = screen.getByTestId("bulk-apply-button") as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it("enables apply once a row is selected and a category is entered", () => {
+    renderTab();
+    fireEvent.click(screen.getAllByTestId("transaction-checkbox")[0]);
+    fireEvent.change(screen.getByTestId("bulk-category-input"), {
+      target: { value: "groceries" },
+    });
+    const btn = screen.getByTestId("bulk-apply-button") as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+  });
+
+  it("does not call the mutation until the confirm dialog is confirmed", () => {
+    renderTab();
+    fireEvent.click(screen.getAllByTestId("transaction-checkbox")[0]);
+    fireEvent.change(screen.getByTestId("bulk-category-input"), {
+      target: { value: "groceries" },
+    });
+    fireEvent.click(screen.getByTestId("bulk-apply-button"));
+
+    // Staged, not yet applied: the dialog is open but the mutation has not
+    // fired.
+    expect(screen.getByTestId("finance-bulk-confirm-dialog-confirm")).toBeDefined();
+    expect(mockMutate).not.toHaveBeenCalled();
+  });
+
+  it("calls the mutation with the correct overlay payload (category + merchant)", () => {
+    renderTab();
+    // Select the first transaction (Whole Foods, raw merchant "Whole Foods").
+    fireEvent.click(screen.getAllByTestId("transaction-checkbox")[0]);
+    fireEvent.change(screen.getByTestId("bulk-category-input"), {
+      target: { value: "groceries" },
+    });
+    fireEvent.change(screen.getByTestId("bulk-merchant-input"), {
+      target: { value: "Whole Foods Market" },
+    });
+    applyAndConfirm();
+
+    expect(mockMutate).toHaveBeenCalledTimes(1);
+    const [payload] = mockMutate.mock.calls[0];
+    expect(payload).toEqual({
+      ops: [
+        {
+          match: { merchant_pattern: "Whole Foods" },
+          set: {
+            inferred_category: "groceries",
+            normalized_merchant: "Whole Foods Market",
+          },
+        },
+      ],
+    });
+  });
+
+  it("collapses a multi-row selection into one op per distinct raw merchant", () => {
+    renderTab();
+    // Select both fixtures: "Whole Foods" and "Netflix" → two distinct merchants.
+    fireEvent.click(screen.getAllByTestId("transaction-checkbox")[0]);
+    fireEvent.click(screen.getAllByTestId("transaction-checkbox")[1]);
+    fireEvent.change(screen.getByTestId("bulk-category-input"), {
+      target: { value: "subscriptions" },
+    });
+    applyAndConfirm();
+
+    const [payload] = mockMutate.mock.calls[0];
+    expect(payload.ops).toHaveLength(2);
+    const patterns = payload.ops.map(
+      (o: { match: { merchant_pattern: string } }) => o.match.merchant_pattern,
+    );
+    expect(patterns).toContain("Whole Foods");
+    expect(patterns).toContain("Netflix");
+    for (const op of payload.ops) {
+      expect(op.set).toEqual({ inferred_category: "subscriptions" });
+    }
+  });
+
+  it("does not call the mutation when the confirmation is cancelled", () => {
+    renderTab();
+    fireEvent.click(screen.getAllByTestId("transaction-checkbox")[0]);
+    fireEvent.change(screen.getByTestId("bulk-category-input"), {
+      target: { value: "groceries" },
+    });
+    fireEvent.click(screen.getByTestId("bulk-apply-button"));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(mockMutate).not.toHaveBeenCalled();
+  });
+
+  it("select-all toggles every row checkbox", () => {
+    renderTab();
+    fireEvent.click(screen.getByTestId("select-all-checkbox"));
+    expect(screen.getByTestId("bulk-selection-count").textContent).toContain("2 selected");
+  });
+
+  it("invalidates transactions on success (mutation onSuccess fires)", () => {
+    renderTab();
+    fireEvent.click(screen.getAllByTestId("transaction-checkbox")[0]);
+    fireEvent.change(screen.getByTestId("bulk-category-input"), {
+      target: { value: "groceries" },
+    });
+    applyAndConfirm();
+
+    // The component passes onSuccess via the mutate options; invoking it must
+    // not throw and should clear the selection. (Query invalidation itself is
+    // wired in the hook, exercised by the hook's own onSuccess.)
+    const [, options] = mockMutate.mock.calls[0];
+    expect(typeof options.onSuccess).toBe("function");
+    act(() => options.onSuccess({ updated_total: 1, results: [] }));
+    expect(screen.getByTestId("bulk-selection-count").textContent).toContain("0 selected");
+  });
+});

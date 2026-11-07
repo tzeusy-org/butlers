@@ -16,7 +16,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.routers.memory import _get_db_manager
+from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.testing.db_manager import db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -109,30 +111,20 @@ class _Pool:
         return _Tx()
 
 
-class _DB:
-    """DatabaseManager stand-in. ``private`` names butlers with a memory-schema override."""
-
-    def __init__(self, pools: dict[str, _Pool], *, private: set[str] = frozenset()) -> None:
-        self._pools = pools
-        self._private = set(private)
-        self.butler_names = list(pools)
-        self.pool_calls: list[str] = []
-
-    def pool(self, name: str) -> _Pool:
-        self.pool_calls.append(name)
-        if name not in self._pools:
-            raise KeyError(name)
-        return self._pools[name]
-
-    def schema_for_butler(self, name: str) -> str:
-        return name
-
-    def memory_schema_for_butler(self, name: str) -> str:
-        return f"{name}_mem" if name in self._private else name
+def _db(pools: dict[str, _Pool], *, private: set[str] = frozenset()) -> DatabaseManager:
+    """Each butler's schema is its name; ``private`` names butlers with a memory-schema
+    override. ``pool`` is wrapped so tests can assert which pools were requested."""
+    manager = db_manager(
+        pools,
+        schemas={name: name for name in pools},
+        memory_schemas={name: f"{name}_mem" for name in private},
+    )
+    manager.pool = MagicMock(wraps=manager.pool)
+    return manager
 
 
-async def _post(app, db: _DB, episode_id: object):
-    app.dependency_overrides[_get_db_manager] = lambda: db
+async def _post(app, db: DatabaseManager, episode_id: object):
+    app.dependency_overrides[get_db] = lambda: db
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -143,7 +135,7 @@ async def test_requeue_resets_a_dead_letter_episode_and_says_nothing_was_run(app
     episode_id = uuid.uuid4()
     pool = _Pool(episode=_episode(episode_id))
 
-    resp = await _post(app, _DB({"atlas": pool}), episode_id)
+    resp = await _post(app, _db({"atlas": pool}), episode_id)
 
     assert resp.status_code == 200
     body = resp.json()
@@ -167,7 +159,7 @@ async def test_requeue_never_returns_lease_internals(app) -> None:
     episode_id = uuid.uuid4()
     pool = _Pool(episode=_episode(episode_id))
 
-    resp = await _post(app, _DB({"atlas": pool}), episode_id)
+    resp = await _post(app, _db({"atlas": pool}), episode_id)
 
     assert "leased_by" not in resp.text and "leased_until" not in resp.text
     update = next(q for q in pool.queries if "UPDATE" in q)
@@ -176,16 +168,16 @@ async def test_requeue_never_returns_lease_internals(app) -> None:
 
 
 async def test_requeue_400_for_a_malformed_id_before_any_pool_access(app) -> None:
-    db = _DB({"atlas": _Pool()})
+    db = _db({"atlas": _Pool()})
 
     resp = await _post(app, db, "not-a-uuid")
 
     assert resp.status_code == 400
-    assert db.pool_calls == []
+    db.pool.assert_not_called()
 
 
 async def test_requeue_404_when_every_eligible_source_answers_without_the_row(app) -> None:
-    db = _DB({"atlas": _Pool(), "bishop": _Pool()})
+    db = _db({"atlas": _Pool(), "bishop": _Pool()})
 
     resp = await _post(app, db, uuid.uuid4())
 
@@ -193,7 +185,7 @@ async def test_requeue_404_when_every_eligible_source_answers_without_the_row(ap
 
 
 async def test_requeue_503_names_the_failed_source_when_ownership_is_unresolved(app) -> None:
-    db = _DB({"atlas": _Pool(), "bishop": _Pool(fail=True)})
+    db = _db({"atlas": _Pool(), "bishop": _Pool(fail=True)})
 
     resp = await _post(app, db, uuid.uuid4())
 
@@ -203,7 +195,7 @@ async def test_requeue_503_names_the_failed_source_when_ownership_is_unresolved(
 
 async def test_requeue_finds_the_row_even_when_an_unrelated_source_failed(app) -> None:
     episode_id = uuid.uuid4()
-    db = _DB({"atlas": _Pool(episode=_episode(episode_id)), "bishop": _Pool(fail=True)})
+    db = _db({"atlas": _Pool(episode=_episode(episode_id)), "bishop": _Pool(fail=True)})
 
     resp = await _post(app, db, episode_id)
 
@@ -214,7 +206,7 @@ async def test_requeue_409_leaves_a_non_dead_letter_episode_untouched(app) -> No
     episode_id = uuid.uuid4()
     pool = _Pool(episode=_episode(episode_id, status="pending"))
 
-    resp = await _post(app, _DB({"atlas": pool}), episode_id)
+    resp = await _post(app, _db({"atlas": pool}), episode_id)
 
     assert resp.status_code == 409
     assert "dead_letter" in resp.json()["detail"]
@@ -226,7 +218,7 @@ async def test_requeue_409_leaves_a_non_dead_letter_episode_untouched(app) -> No
 async def test_a_second_requeue_after_success_is_a_409_with_one_event(app) -> None:
     episode_id = uuid.uuid4()
     pool = _Pool(episode=_episode(episode_id))
-    db = _DB({"atlas": pool})
+    db = _db({"atlas": pool})
 
     first = await _post(app, db, episode_id)
     second = await _post(app, db, episode_id)
@@ -238,7 +230,7 @@ async def test_a_second_requeue_after_success_is_a_409_with_one_event(app) -> No
 async def test_a_private_memory_schema_is_neither_read_nor_mutated_and_reads_as_404(app) -> None:
     episode_id = uuid.uuid4()
     private = _Pool(episode=_episode(episode_id))
-    db = _DB({"atlas": _Pool(), "chronicler": private}, private={"chronicler"})
+    db = _db({"atlas": _Pool(), "chronicler": private}, private={"chronicler"})
 
     resp = await _post(app, db, episode_id)
 
@@ -249,7 +241,7 @@ async def test_a_private_memory_schema_is_neither_read_nor_mutated_and_reads_as_
 
 
 async def test_a_private_source_is_never_reported_as_a_failed_pool(app) -> None:
-    db = _DB({"chronicler": _Pool(fail=True)}, private={"chronicler"})
+    db = _db({"chronicler": _Pool(fail=True)}, private={"chronicler"})
 
     resp = await _post(app, db, uuid.uuid4())
 
@@ -259,7 +251,7 @@ async def test_a_private_source_is_never_reported_as_a_failed_pool(app) -> None:
 
 
 async def test_requeue_503_when_there_is_no_usable_source_at_all(app) -> None:
-    resp = await _post(app, _DB({}), uuid.uuid4())
+    resp = await _post(app, _db({}), uuid.uuid4())
 
     assert resp.status_code == 503
 
@@ -270,7 +262,7 @@ async def test_requeue_runs_nothing(app) -> None:
     with patch(
         "butlers.modules.memory.consolidation.run_consolidation", new_callable=AsyncMock
     ) as run:
-        resp = await _post(app, _DB({"atlas": pool}), episode_id)
+        resp = await _post(app, _db({"atlas": pool}), episode_id)
 
     assert resp.status_code == 200
     run.assert_not_awaited()
@@ -279,7 +271,7 @@ async def test_requeue_runs_nothing(app) -> None:
 async def test_the_per_butler_retry_consolidation_route_is_gone(app) -> None:
     episode_id = uuid.uuid4()
     pool = _Pool(episode=_episode(episode_id))
-    app.dependency_overrides[_get_db_manager] = lambda: _DB({"atlas": pool})
+    app.dependency_overrides[get_db] = lambda: _db({"atlas": pool})
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -292,7 +284,7 @@ async def test_the_per_butler_retry_consolidation_route_is_gone(app) -> None:
 
 
 async def test_there_is_no_collection_requeue_route(app) -> None:
-    app.dependency_overrides[_get_db_manager] = lambda: _DB({"atlas": _Pool()})
+    app.dependency_overrides[get_db] = lambda: _db({"atlas": _Pool()})
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -331,7 +323,7 @@ async def test_detail_and_list_carry_the_dossier_and_never_the_lease(app) -> Non
     db.pool.return_value = pool
     db.schema_for_butler.return_value = "atlas"
     db.memory_schema_for_butler.return_value = "atlas"
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -357,7 +349,7 @@ async def test_the_inspect_embedded_episode_carries_the_dossier_and_never_the_le
     db.pool.return_value = pool
     db.schema_for_butler.return_value = "atlas"
     db.memory_schema_for_butler.return_value = "atlas"
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

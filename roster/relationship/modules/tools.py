@@ -13,16 +13,48 @@ from decimal import Decimal
 from typing import Any
 
 
+def _merge_refusal_message(classification: str, source_id: uuid.UUID, target_id: uuid.UUID) -> str:
+    """Say what a refused ``contact_merge`` means and what to do next.
+
+    The merge authority's classifications are identifier-blind by design, so the text
+    names the contacts the model passed in, never the entities behind them.
+    """
+    refusals = {
+        "same_entity": (
+            f"Source contact {source_id} and target contact {target_id} are the same person."
+        ),
+        "source_missing": (
+            f"Source contact {source_id} has no live linked entity. "
+            "Use contact_search(query=<name>) to find the correct contact ID."
+        ),
+        "target_missing": (
+            f"Target contact {target_id} has no live linked entity. "
+            "Use contact_search(query=<name>) to find the correct contact ID."
+        ),
+        "source_tombstoned": (
+            f"Source contact {source_id} was already merged or deleted. "
+            "Use contact_search(query=<name>) to look for a live contact; there may be none."
+        ),
+        "target_tombstoned": (
+            f"Target contact {target_id} was already merged or deleted. "
+            "Use contact_search(query=<name>) to look for a live contact; there may be none."
+        ),
+        "temporal_occurrence_collision": (
+            f"Contacts {source_id} and {target_id} hold dated records that would collide "
+            "after the merge. Resolve the duplicate dated records first, then retry."
+        ),
+    }
+    detail = refusals.get(classification, f"The merge authority refused it ({classification}).")
+    return f"contact_merge refused; nothing was merged. {detail}"
+
+
 def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: C901
     """Register all relationship MCP tools as closures over *module*."""
 
     from butlers.core.tool_call_capture import get_current_runtime_session_id
-    from butlers.modules.base import group_enabled
+    from butlers.modules.base import tool_registrar
 
-    def _tool(group: str):
-        if group_enabled(config, group):
-            return mcp.tool()
-        return lambda fn: fn
+    _tool = tool_registrar(mcp, config)
 
     # Import sub-modules (deferred to avoid import-time side effects)
     from butlers.tools.relationship import addresses as _addr
@@ -397,15 +429,16 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         records (notes, interactions, reminders, etc.) are re-pointed to
         the target.
         """
-        chronicler_pool = await module._get_or_create_chronicler_pool()
-        # chronicler_pool is None when the DB is not initialised. When provided,
-        # episode_entities rows are re-pointed as part of the entity_merge call.
-        return await _contacts.contact_merge(
-            module._get_pool(),
-            source_id,
-            target_id,
-            chronicler_pool=chronicler_pool,
-        )
+        from butlers.roster_imports import roster_module
+
+        EntityMergeError = roster_module("relationship", "tools/entity_merge").EntityMergeError
+
+        try:
+            return await _contacts.contact_merge(module._get_pool(), source_id, target_id)
+        except EntityMergeError as exc:
+            raise ValueError(
+                _merge_refusal_message(exc.classification, source_id, target_id)
+            ) from exc
 
     # =================================================================
     # Date tools (group: social)
@@ -1150,7 +1183,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             entity_id,
         )
 
-    @_tool("entity")
+    @_tool("entity_write")
     async def entity_update(
         entity_id: str,
         canonical_name: str | None = None,
@@ -1166,7 +1199,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             metadata=metadata,
         )
 
-    @_tool("entity")
+    @_tool("entity_write")
     async def entity_set_posture(entity_id: str, posture: str) -> dict[str, Any]:
         """Record how the owner wants a person treated: active, memorial, quiet or no_contact.
 
@@ -1207,7 +1240,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         )
 
     # =================================================================
-    # Facts triple-store tools (group: entity — central writer)
+    # Facts triple-store tools (unconditional central writer)
     # =================================================================
 
     # Import the library WRITER FUNCTION directly. Note ``butlers.tools.
@@ -1414,7 +1447,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         """
         return await _predicate_coverage(module._get_pool(), entity_id, predicates)
 
-    @_tool("entity")
+    @_tool("entity_write")
     async def relationship_record_coverage(
         entity_id: uuid.UUID,
         predicate: str,

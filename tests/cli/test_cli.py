@@ -201,6 +201,63 @@ memory_schema = "chronicler_mem"
         assert calls == [("core", "chronicler"), ("memory", "chronicler_mem")]
 
 
+class TestChroniclerMemoryPreparation:
+    def _write_config(self, root, *, memory_schema="chronicler_mem"):
+        butler_dir = root / "chronicler"
+        butler_dir.mkdir(parents=True)
+        (butler_dir / "butler.toml").write_text(
+            '[butler]\nname = "chronicler"\nport = 41111\n'
+            'description = "Retrospective time butler"\n'
+            '[butler.db]\nname = "butlers"\nschema = "chronicler"\n'
+            f'[modules.memory]\nmemory_schema = "{memory_schema}"\n'
+        )
+        return root
+
+    def test_prepare_runs_core_then_memory_in_the_declared_private_schema(
+        self, runner, tmp_path, monkeypatch
+    ):
+        butlers_dir = self._write_config(tmp_path / "butlers")
+        calls = []
+
+        async def record_migration(db_url, chain="core", schema=None):
+            del db_url
+            calls.append((chain, schema))
+
+        monkeypatch.setattr(
+            "butlers.db.db_params_from_env",
+            lambda: {
+                "user": "user",
+                "password": "private-password",
+                "host": "localhost",
+                "port": 5432,
+            },
+        )
+        monkeypatch.setattr("butlers.migrations.run_migrations", record_migration)
+        result = runner.invoke(cli, ["db", "prepare-chronicler-memory", "--dir", str(butlers_dir)])
+        assert result.exit_code == 0, result.output
+        assert calls == [("core", "chronicler_mem"), ("memory", "chronicler_mem")]
+        assert "private-password" not in result.output
+
+    def test_prepare_dry_run_does_not_connect(self, runner, tmp_path, monkeypatch):
+        butlers_dir = self._write_config(tmp_path / "butlers")
+        monkeypatch.setattr(
+            "butlers.db.db_params_from_env",
+            lambda: pytest.fail("dry-run must not load database credentials"),
+        )
+        result = runner.invoke(
+            cli,
+            ["db", "prepare-chronicler-memory", "--dir", str(butlers_dir), "--dry-run"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "chronicler (schema=chronicler_mem): core, memory" in result.output
+
+    def test_prepare_refuses_a_missing_or_different_private_schema(self, runner, tmp_path):
+        butlers_dir = self._write_config(tmp_path / "butlers", memory_schema="chronicler")
+        result = runner.invoke(cli, ["db", "prepare-chronicler-memory", "--dir", str(butlers_dir)])
+        assert result.exit_code != 0
+        assert "must explicitly be chronicler_mem" in result.output
+
+
 class TestUpCommand:
     def test_up_error_cases(self, runner, tmp_path, butler_config_dir):
         """up fails with no configs and with nonexistent --only target."""
@@ -225,6 +282,17 @@ class TestUpCommand:
         assert "alpha" in result.output
         assert "gamma" in result.output
         assert result.output.count("beta") == 0
+
+        excluded = runner.invoke(
+            cli, ["up", "--dir", str(multi_butler_dir), "--exclude", "alpha,gamma"]
+        )
+        assert excluded.exit_code == 0
+        assert "Starting 1 butler(s): beta" in excluded.output
+        empty = runner.invoke(
+            cli, ["up", "--dir", str(multi_butler_dir), "--exclude", "alpha,beta,gamma"]
+        )
+        assert empty.exit_code != 0
+        assert "No butlers remain" in empty.output
 
     def test_up_shows_starting_message(self, runner, butler_config_dir, monkeypatch):
         monkeypatch.setattr("asyncio.run", lambda coro: coro.close())

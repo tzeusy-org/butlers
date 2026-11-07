@@ -7,7 +7,7 @@ startup (type='home_assistant_token'). Credentials are never logged in full.
 Transport layer:
 - REST: httpx.AsyncClient with Bearer token, Content-Type: application/json
 - WebSocket: aiohttp.ClientSession for the HA WebSocket API
-  - Auth flow: auth_required → auth → auth_ok
+  - Auth flow: server greeting → auth → auth_ok
   - Background message loop dispatching event/result/pong
   - Keepalive ping task with missed-pong detection
   - Auto-reconnect with exponential backoff (1s → 60s, with jitter)
@@ -18,30 +18,36 @@ Transport layer:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import random
 import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal, NotRequired, TypedDict
 from urllib.parse import quote
 
+import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from butlers.connectors.home_assistant_statistics import (
-    VALID_STATISTICS_PERIODS,
-    HAStatisticsClient,
-)
 from butlers.core import approvals_hooks
 from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
     get_current_runtime_session_id,
 )
+from butlers.home_assistant_client import (
+    VALID_STATISTICS_PERIODS,
+    HAAuthInvalidError,
+    HAHandshakeProtocolError,
+    HAStatisticsClient,
+    authenticate,
+    decode_ws_text,
+    rest_client,
+    ws_url,
+)
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.execution_context import get_approval_execution_context
-from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
+from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, tool_registrar
 
 from .actuation import (
     DATA_TARGET_SELECTORS,
@@ -72,6 +78,30 @@ _WS_RECONNECT_INITIAL = 1.0  # seconds
 _WS_RECONNECT_MAX = 60.0  # seconds
 _WS_RECONNECT_JITTER = 0.5  # fraction of delay added as random jitter
 _WS_PONG_TIMEOUT = 10.0  # seconds to wait for pong before treating as missed
+
+
+class RecordedHomeTransition(TypedDict):
+    entity_id: str
+    state: str | None
+    recorded_at: datetime
+    attributes: NotRequired[dict[str, Any] | None]
+
+
+class RecordedHomeSource(TypedDict):
+    status: Literal["healthy", "error", "stale", "unknown"]
+    last_success_at: datetime | None
+
+
+class RecordedHomeHistory(TypedDict):
+    status: Literal["ok"]
+    transitions: list[RecordedHomeTransition]
+    source: RecordedHomeSource
+    truncated: bool
+
+
+class RecordedHomeHistoryUnavailable(TypedDict):
+    status: Literal["unavailable"]
+    reason: Literal["missing_table", "permission_denied", "database_unavailable"]
 
 
 # ---------------------------------------------------------------------------
@@ -263,9 +293,7 @@ class HomeAssistantModule(Module):
     # Module ABC
     # ------------------------------------------------------------------
 
-    @property
-    def name(self) -> str:
-        return "home_assistant"
+    name = "home_assistant"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -291,7 +319,9 @@ class HomeAssistantModule(Module):
         if self._config and self._config.read_only:
             return {}
         return {
-            "ha_call_service": ToolMeta(arg_sensitivities={"domain": True, "service": True}),
+            "ha_call_service": ToolMeta(
+                arg_sensitivities={"domain": True, "service": True, "target": True, "data": True}
+            ),
         }
 
     def wire_runtime(
@@ -376,13 +406,8 @@ class HomeAssistantModule(Module):
         )
 
         # --- Create HTTP client ---
-        self._client = httpx.AsyncClient(
-            base_url=self._url,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            verify=self._config.verify_ssl,
+        self._client = rest_client(
+            self._url, token, verify_ssl=self._config.verify_ssl, timeout=httpx.Timeout(5.0)
         )
 
         # --- Connect WebSocket and seed entity cache ---
@@ -483,12 +508,7 @@ class HomeAssistantModule(Module):
         self._db = db
         module = self  # capture for closures
 
-        # Build a group-aware tool decorator: returns @mcp.tool() when the
-        # group is enabled, or a no-op passthrough when disabled.
-        def _tool(group: str):
-            if group_enabled(self._config, group):
-                return mcp.tool()
-            return lambda fn: fn  # no-op — function defined but not registered
+        _tool = tool_registrar(mcp, self._config)
 
         async def ha_get_entity_state(entity_id: str) -> dict[str, Any] | None:
             """Return the current state of a Home Assistant entity.
@@ -599,6 +619,31 @@ class HomeAssistantModule(Module):
                 If ``entity_ids`` is empty (unbounded queries are too expensive).
             """
             return await module._get_history(entity_ids=entity_ids, start=start, end=end)
+
+        async def ha_get_recorded_history(
+            entity_ids: list[str],
+            start: str,
+            end: str | None = None,
+            limit: int = 500,
+            include_attributes: bool = False,
+        ) -> RecordedHomeHistory | RecordedHomeHistoryUnavailable:
+            """Read stored HA transitions without contacting Home Assistant.
+
+            Name the entities explicitly and provide timezone-aware ISO 8601
+            timestamps. The window is start-inclusive, end-exclusive, at most
+            31 days; omitted end means now. Limit is 1..2000. Attributes are
+            sensitive source data and are omitted unless requested. Source
+            freshness describes last confirmed HA contact, not completeness of
+            the stored event stream. Outages never suppress stored transitions.
+            Storage/grant failures return unavailable, not an empty history.
+            """
+            return await module._get_recorded_history(
+                entity_ids=entity_ids,
+                start=start,
+                end=end,
+                limit=limit,
+                include_attributes=include_attributes,
+            )
 
         async def ha_get_statistics(
             statistic_ids: list[str],
@@ -747,6 +792,7 @@ class HomeAssistantModule(Module):
         _tool("core")(ha_list_areas)
         _tool("core")(ha_list_services)
         _tool("history")(ha_get_history)
+        _tool("history")(ha_get_recorded_history)
         _tool("history")(ha_get_statistics)
         _tool("history")(ha_render_template)
         _tool("maintenance")(ha_maintenance_list)
@@ -762,19 +808,9 @@ class HomeAssistantModule(Module):
     # ------------------------------------------------------------------
 
     def _ws_url(self) -> str:
-        """Derive the WebSocket URL from the configured HA base URL.
-
-        ``http://`` → ``ws://``, ``https://`` → ``wss://``.
-        """
+        """Return the shared HA WebSocket endpoint."""
         assert self._url is not None
-        url = self._url.rstrip("/")
-        if url.startswith("https://"):
-            ws_url = "wss://" + url[len("https://") :]
-        elif url.startswith("http://"):
-            ws_url = "ws://" + url[len("http://") :]
-        else:
-            ws_url = url  # already ws:// or wss://
-        return ws_url + "/api/websocket"
+        return ws_url(self._url)
 
     async def _ws_connect_and_seed(self) -> None:
         """Connect WebSocket, authenticate, seed caches, start background tasks.
@@ -838,7 +874,7 @@ class HomeAssistantModule(Module):
         """Open WebSocket connection and complete the HA auth handshake.
 
         HA WebSocket auth flow:
-        1. Server sends: ``{"type": "auth_required", "ha_version": "..."}``
+        1. Server sends: the server greeting
         2. Client sends: ``{"type": "auth", "access_token": "..."}``
         3. Server replies: ``{"type": "auth_ok"}`` or ``{"type": "auth_invalid"}``
 
@@ -869,30 +905,17 @@ class HomeAssistantModule(Module):
         )
 
         try:
-            # Step 1: expect auth_required
-            msg = await self._ws_connection.receive_json(timeout=10.0)
-            if msg.get("type") != "auth_required":
-                raise RuntimeError(
-                    f"HomeAssistantModule: expected auth_required, got: {msg.get('type')!r}"
-                )
-
-            # Step 2: send auth
-            await self._ws_connection.send_json({"type": "auth", "access_token": self._token})
-
-            # Step 3: expect auth_ok or auth_invalid
-            msg = await self._ws_connection.receive_json(timeout=10.0)
-            msg_type = msg.get("type")
-            if msg_type == "auth_invalid":
-                raise RuntimeError(
-                    "HomeAssistantModule: WebSocket authentication failed (auth_invalid). "
-                    "Check the home_assistant_token in owner entity_info."
-                )
-            if msg_type != "auth_ok":
-                raise RuntimeError(
-                    f"HomeAssistantModule: unexpected auth response type: {msg_type!r}"
-                )
-        except Exception:
-            # Close the dangling connection before propagating to callers.
+            msg = await authenticate(self._ws_connection, self._token)
+        except HAAuthInvalidError:
+            await self._ws_close()
+            raise RuntimeError(
+                "HomeAssistantModule: authentication failed (auth_invalid). "
+                "Check the home_assistant_token in owner entity_info."
+            ) from None
+        except HAHandshakeProtocolError:
+            await self._ws_close()
+            raise RuntimeError("HomeAssistantModule: unexpected authentication response") from None
+        except (Exception, asyncio.CancelledError):
             await self._ws_close()
             raise
 
@@ -959,21 +982,14 @@ class HomeAssistantModule(Module):
                 except TimeoutError:
                     continue
 
-                if raw.type == aiohttp.WSMsgType.TEXT:
+                if raw.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
                     try:
-                        msg: dict[str, Any] = json.loads(raw.data)
-                    except json.JSONDecodeError:
-                        logger.warning("HomeAssistantModule: invalid JSON from WS: %r", raw.data)
+                        messages = decode_ws_text(raw.data)
+                    except ValueError:
+                        logger.warning("HomeAssistantModule: invalid WebSocket JSON withheld")
                         continue
-                    await self._dispatch_ws_payload(msg)
-
-                elif raw.type == aiohttp.WSMsgType.BINARY:
-                    try:
-                        msg = json.loads(raw.data)
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        logger.warning("HomeAssistantModule: invalid binary WS message")
-                        continue
-                    await self._dispatch_ws_payload(msg)
+                    for msg in messages:
+                        await self._dispatch_ws_message(msg)
 
                 elif raw.type in (
                     aiohttp.WSMsgType.CLOSE,
@@ -1231,7 +1247,7 @@ class HomeAssistantModule(Module):
     async def _ws_command(
         self,
         command: dict[str, Any],
-        timeout: float = 10.0,
+        timeout: float = 10.0,  # noqa: ASYNC109 - HAStatisticsClient command_sender keyword; rename deferred (#4816)
     ) -> dict[str, Any]:
         """Send a WebSocket command and await the correlated result.
 
@@ -1831,6 +1847,13 @@ class HomeAssistantModule(Module):
         }
         effective = effective_actuation_risk(domain, service, target, data, temperature_units=units)
         risk = effective.risk
+        from butlers.modules.party_approval import parties_are_owner
+
+        from .actuation import communication_parties
+
+        communicates, parties = communication_parties(domain, service, target, data)
+        owner_only = await parties_are_owner(pool, parties) if communicates else True
+        communication = {"effect_class": "communicate", "owner_only": owner_only}
         approval_context = get_approval_execution_context(
             tool_name="ha_call_service",
             tool_args={"domain": domain, "service": service, "target": target, "data": data},
@@ -1841,7 +1864,7 @@ class HomeAssistantModule(Module):
             else get_current_runtime_session_id()
         )
 
-        if risk.requires_approval and approval_context is None:
+        if (risk.requires_approval or not owner_only) and approval_context is None:
             action_id = await self._park_actuation_for_approval(
                 pool=pool,
                 domain=domain,
@@ -1850,12 +1873,17 @@ class HomeAssistantModule(Module):
                 data=data,
                 risk=risk,
                 session_id=session_id,
-                why=effective.approval_reason,
+                why=(
+                    "non-owner communication requires owner approval; physical risk: " + risk.value
+                    if not owner_only
+                    else effective.approval_reason
+                ),
             )
             return {
                 "status": "pending_approval",
                 "action_id": str(action_id),
                 "risk": risk.value,
+                **({"communication": communication} if communicates else {}),
                 "message": f"{domain}.{service} requires explicit owner approval",
             }
 
@@ -2377,6 +2405,77 @@ class HomeAssistantModule(Module):
 
         return raw
 
+    async def _get_recorded_history(
+        self,
+        entity_ids: list[str],
+        start: str,
+        end: str | None = None,
+        limit: int = 500,
+        include_attributes: bool = False,
+    ) -> RecordedHomeHistory | RecordedHomeHistoryUnavailable:
+        """Bounded, parameterized read of the connector's durable evidence."""
+        if not entity_ids or any(not _ENTITY_ID_RE.fullmatch(e) for e in entity_ids):
+            raise ValueError("Provide at least one valid Home Assistant entity_id")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 2000:
+            raise ValueError("limit must be between 1 and 2000")
+        lower = datetime.fromisoformat(start)
+        upper = datetime.fromisoformat(end) if end is not None else datetime.now(UTC)
+        if lower.tzinfo is None or upper.tzinfo is None:
+            raise ValueError("History timestamps must include a timezone")
+        if not timedelta(0) < upper - lower <= timedelta(days=31):
+            raise ValueError("History window must be positive and at most 31 days")
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return {"status": "unavailable", "reason": "database_unavailable"}
+        try:
+            health = await pool.fetchrow(
+                "SELECT status, last_success_at, last_success_at IS NOT NULL "
+                "AND last_success_at >= now() - interval '5 minutes' AS lease_current "
+                "FROM ha_source_health WHERE source = $1",
+                "home_assistant",
+            )
+            columns = "entity_id, state, recorded_at"
+            if include_attributes:
+                columns += ", attributes"
+            rows = await pool.fetch(
+                f"SELECT {columns} FROM connectors.home_assistant_history "
+                "WHERE entity_id = ANY($1::text[]) "
+                "AND recorded_at >= $2 AND recorded_at < $3 "
+                "ORDER BY recorded_at ASC, id ASC LIMIT $4",
+                list(dict.fromkeys(entity_ids)),
+                lower,
+                upper,
+                limit + 1,
+            )
+        except asyncpg.UndefinedTableError:
+            return {"status": "unavailable", "reason": "missing_table"}
+        except asyncpg.InsufficientPrivilegeError:
+            return {"status": "unavailable", "reason": "permission_denied"}
+        except (asyncpg.PostgresConnectionError, OSError, TimeoutError):
+            return {"status": "unavailable", "reason": "database_unavailable"}
+        last_success = health["last_success_at"] if health else None
+        status: Literal["healthy", "error", "stale", "unknown"] = "unknown"
+        if health and health["status"] == "error":
+            status = "error"
+        elif health and health["status"] == "healthy" and last_success is not None:
+            status = "healthy" if health["lease_current"] else "stale"
+        transitions: list[RecordedHomeTransition] = []
+        for row in rows[:limit]:
+            transition: RecordedHomeTransition = {
+                "entity_id": row["entity_id"],
+                "state": row["state"],
+                "recorded_at": row["recorded_at"],
+            }
+            if include_attributes:
+                transition["attributes"] = row["attributes"]
+            transitions.append(transition)
+        return {
+            "status": "ok",
+            "transitions": transitions,
+            "source": {"status": status, "last_success_at": last_success},
+            "truncated": len(rows) > limit,
+        }
+
     async def _get_history(
         self,
         entity_ids: list[str],
@@ -2659,7 +2758,7 @@ class HomeAssistantModule(Module):
             logger.debug("HomeAssistantModule: entity cache empty; skipping snapshot.")
             return
 
-        rows: list[tuple[str, str, str, str | None]] = []
+        rows: list[tuple[str, str, str, str | None, str | None]] = []
         for e in entities:
             # Merge registry-derived area data into the persisted attributes so
             # the dashboard/job area filters work against the snapshot table.
@@ -2675,23 +2774,25 @@ class HomeAssistantModule(Module):
                     e.state,
                     _json.dumps(attrs),
                     e.last_updated or None,
+                    e.last_changed or None,
                 )
             )
 
         await pool.executemany(
             """
             INSERT INTO ha_entity_snapshot
-                (entity_id, state, attributes, last_updated, captured_at)
-            -- $3/$4 are bound as text and cast in-SQL.  ``attributes`` is sent as
+                (entity_id, state, attributes, last_updated, last_changed, captured_at)
+            -- $3/$4/$5 are bound as text and cast in-SQL.  ``attributes`` is sent as
             -- a JSON string and cast text->jsonb (binding it as jsonb would route
             -- through the connection's jsonb codec and double-encode the string).
-            -- ``last_updated`` is an ISO 8601 string; binding it as timestamptz
-            -- would make asyncpg's executemany reject the str.
-            VALUES ($1, $2, $3::text::jsonb, $4::text::timestamptz, now())
+            -- ``last_updated`` and ``last_changed`` are ISO 8601 strings; binding them as
+            -- timestamptz would make asyncpg's executemany reject the str.
+            VALUES ($1, $2, $3::text::jsonb, $4::text::timestamptz, $5::text::timestamptz, now())
             ON CONFLICT (entity_id) DO UPDATE SET
                 state        = EXCLUDED.state,
                 attributes   = EXCLUDED.attributes,
                 last_updated = EXCLUDED.last_updated,
+                last_changed = EXCLUDED.last_changed,
                 captured_at  = now()
             """,
             rows,

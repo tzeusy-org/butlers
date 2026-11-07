@@ -15,9 +15,12 @@ Database tables used (all in the ``public`` schema):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
+import uuid
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -33,11 +36,16 @@ from butlers.core.attention_ledger import (
     record_attention_event,
 )
 from butlers.core.baselines import DEVIATION_CATEGORIES, validate_baseline_evidence
+from butlers.core.goal_lineage import taint_insert, taint_read
 from butlers.core.insight_premise import normalize_premise
+from butlers.telegram_api import terminal_telegram_metadata
+from butlers.telegram_text import MAX_VISIBLE_UNITS, PartialDeliveryLatch, text_units
 from butlers.tools.switchboard.insight.catchup import reconcile_catchup_task
 from butlers.tools.switchboard.insight.premises import check_premise
 
 logger = logging.getLogger(__name__)
+_PARTIAL_INSIGHTS = PartialDeliveryLatch()
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -109,16 +117,17 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
             delivery_ref JSONB
         )
     """)
-    # bu-q7vx1q.5: mirrors alembic/versions/core/core_255_insight_premise_binding.py.
+    # bu-q7vx1q.5: mirrors alembic/versions/core/core_255_insight_premise_binding.py as
+    # amended by core_312 (no candidate foreign key; terminal 'orphaned').
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS insight_amendments (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            candidate_id UUID NOT NULL REFERENCES insight_candidates(id) ON DELETE CASCADE,
+            candidate_id UUID NOT NULL,
             episode_key TEXT NOT NULL,
             reason TEXT NOT NULL,
             summary TEXT,
             state TEXT NOT NULL DEFAULT 'pending'
-                CHECK (state IN ('pending', 'applied', 'fold', 'folded')),
+                CHECK (state IN ('pending', 'applied', 'fold', 'folded', 'orphaned')),
             attempts INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             resolved_at TIMESTAMPTZ,
@@ -339,12 +348,16 @@ async def propose_insight_candidate(
         return {"status": "filtered", "reason": "verbosity is off"}
 
     # --- Insert candidate ---
-    await pool.execute(
-        """
+    taint = taint_insert(12)
+    candidate_id = await pool.fetchval(
+        f"""
         INSERT INTO insight_candidates
             (origin_butler, priority, category, dedup_key, cooldown_days,
-             expires_at, message, channel, metadata, status, prepared_action_id, premise)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, 'pending', $10, $11::jsonb)
+             expires_at, message, channel, metadata, status, prepared_action_id,
+             premise{taint.columns})
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, 'pending', $10,
+                $11::jsonb{taint.placeholders})
+        RETURNING id
         """,
         origin_butler,
         priority,
@@ -357,7 +370,12 @@ async def propose_insight_candidate(
         metadata,
         prepared_action_id,
         premise,
+        *taint.values,
     )
+    if isinstance(candidate_id, uuid.UUID):
+        from butlers.core.attention_urgency import remember_candidate_origin
+
+        await remember_candidate_origin(pool, candidate_id)
     return {"status": "accepted", "reason": "candidate queued for delivery cycle"}
 
 
@@ -837,9 +855,16 @@ async def cleanup_old_rows(
     now: datetime | None = None,
     retention_days: int = 30,
 ) -> None:
-    """Delete old insight data to prevent unbounded table growth.
+    """Delete old insight bookkeeping rows to prevent unbounded table growth.
 
-    - insight_candidates: non-pending rows older than retention_days
+    ``insight_candidates`` is never touched here (bu-3jyrqz): terminal
+    candidates are pruned only by the opt-in, default-off, dry-run-first
+    retention pruner [C] (``butlers.jobs.retention.prune_insight_candidates``,
+    90-day bound), per docs/operations/data-retention.md. Amendments are not
+    cascaded since ``core_312`` (no FK to the candidate).
+
+    - insight_amendments: never deleted (kept as evidence); a ``pending`` or ``fold``
+      row whose candidate is gone settles to terminal ``orphaned`` (bu-q7vx1q.32)
     - insight_cooldowns: rows where cooldown_until is older than retention_days
     - insight_engagement: rows older than retention_days, after first rolling
       each affected day's delivered/engaged counts into
@@ -850,12 +875,16 @@ async def cleanup_old_rows(
         now = datetime.now(UTC)
     cutoff = now - timedelta(days=retention_days)
 
+    # Amendment evidence outlives its candidate (core_312 dropped the cascade), but a
+    # correction with nothing left to correct must not wait forever.
     await pool.execute(
         """
-        DELETE FROM insight_candidates
-        WHERE status != 'pending' AND created_at < $1
+        UPDATE insight_amendments a
+        SET state = 'orphaned', resolved_at = $1
+        WHERE a.state IN ('pending', 'fold')
+          AND NOT EXISTS (SELECT 1 FROM insight_candidates c WHERE c.id = a.candidate_id)
         """,
-        cutoff,
+        now,
     )
     await pool.execute(
         """
@@ -1250,6 +1279,247 @@ def _cluster_candidates(candidates: list[dict[str, Any]]) -> list[list[dict[str,
 
 
 # ---------------------------------------------------------------------------
+# Tension clusters (bu-7dpw8 — producer-declared conflicting choices become one
+# owner question instead of several digest lines)
+# ---------------------------------------------------------------------------
+
+TENSION_PRODUCER = "insight_broker"
+TENSION_SINK = "insight_tension"
+_TENSION_MAX_OPTIONS = 4  # ConfirmPrompt allows 2-4 options
+_TENSION_OPTION_LABEL_CHARS = 80
+_TENSION_TIMEOUT_SECONDS = 86400
+
+
+@dataclass(frozen=True, slots=True)
+class TensionOption:
+    value: str  # closed vocabulary ``o0``..``o3``; the label is producer text
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
+class TensionQuestion:
+    """One owner question for a tension cluster; built by code, never a model."""
+
+    ref: str
+    question: str
+    options: tuple[TensionOption, ...]
+    member_ids: tuple[str, ...]
+
+
+def _candidate_choice(candidate: dict[str, Any]) -> tuple[str, str] | None:
+    """Return a candidate's declared ``metadata.choice`` as ``(key, option)``."""
+    metadata = _json_object(candidate.get("metadata"))
+    choice = metadata.get("choice") if metadata else None
+    if not isinstance(choice, dict):
+        return None
+    key, option = choice.get("key"), choice.get("option")
+    if not isinstance(key, str) or not isinstance(option, str):
+        return None
+    key, option = key.strip(), option.strip()
+    return (key, option) if key and option else None
+
+
+def _tension_choices(cluster: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """Group declared options by choice key, keeping only conflicting keys."""
+    by_key: dict[str, set[str]] = {}
+    for candidate in cluster:
+        if (choice := _candidate_choice(candidate)) is not None:
+            by_key.setdefault(choice[0], set()).add(choice[1])
+    return {key: options for key, options in by_key.items() if len(options) > 1}
+
+
+def _is_tension(cluster: list[dict[str, Any]]) -> bool:
+    """True when two or more members declare one choice key with different options."""
+    return bool(_tension_choices(cluster))
+
+
+def _tension_ref(cluster: list[dict[str, Any]]) -> str:
+    """Stable identity of a tension: the sorted member dedup keys, hashed."""
+    keys = "\n".join(sorted(str(c.get("dedup_key")) for c in cluster))
+    return hashlib.sha256(keys.encode()).hexdigest()[:32]
+
+
+def _tension_members(cluster: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Members that declare the asked (first conflicting) choice key.
+
+    A cluster can link unrelated candidates by entity or time; only the members
+    taking part in the conflict belong to the question. The rest stay in the digest.
+    """
+    conflicts = _tension_choices(cluster)
+    if not conflicts:
+        return []
+    key = sorted(conflicts)[0]
+    return [c for c in cluster if (choice := _candidate_choice(c)) and choice[0] == key]
+
+
+def tension_question(cluster: list[dict[str, Any]]) -> TensionQuestion | None:
+    """Build the owner question for a tension cluster, or None if it cannot be asked.
+
+    Only the first conflicting key is asked, over the members declaring it; its
+    distinct options (sorted, so the option vocabulary is stable across cycles)
+    must fit the 2-4 option card.
+    """
+    conflicts = _tension_choices(cluster)
+    if not conflicts:
+        return None
+    cluster = _tension_members(cluster)
+    options = sorted(conflicts[sorted(conflicts)[0]])
+    if len(options) > _TENSION_MAX_OPTIONS:
+        return None
+    labels = [option[:_TENSION_OPTION_LABEL_CHARS] for option in options]
+    if len(set(labels)) != len(labels):
+        return None
+    butlers = sorted({str(c.get("origin_butler") or "") for c in cluster} - {""})
+    source = ", ".join(b.capitalize() for b in butlers) or "Your butlers"
+    return TensionQuestion(
+        ref=_tension_ref(cluster),
+        question=f"{source} suggested {len(options)} options that can't all happen. Which one?",
+        options=tuple(TensionOption(f"o{i}", label) for i, label in enumerate(labels)),
+        member_ids=tuple(sorted(str(c["id"]) for c in cluster)),
+    )
+
+
+async def absorb_tensions(
+    pool: Any,
+    candidates: list[dict[str, Any]],
+    confirm_fn: Any | None,
+    *,
+    budget: int,
+    now: datetime | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Ask one owner question per tension cluster and remove its members.
+
+    ``confirm_fn(question) -> {"status": "asked" | "open" | ...}`` is the owner
+    confirm transport (``None`` when none is wired). ``asked`` is a new question and
+    ``open`` an already-open identical one; both absorb the members, which settle as
+    delivered with ``tension_ref`` stamped so the answer path can find them. Any
+    other result, an exception or a missing transport leaves the members in
+    ``candidates`` so they ride the normal digest (never silent). Each question
+    spends one slot of ``budget``. Returns ``(remaining, questions_absorbed)``.
+    """
+    if confirm_fn is None or budget <= 0:
+        return candidates, 0
+    if now is None:
+        now = datetime.now(UTC)
+    absorbed_ids: set[str] = set()
+    absorbed = 0
+    for cluster in _cluster_candidates(candidates):
+        if absorbed >= budget or not _is_tension(cluster):
+            continue
+        question = tension_question(cluster)
+        if question is None:
+            continue
+        try:
+            outcome = await confirm_fn(question)
+        except Exception:
+            logger.warning("insight tension question transport raised", exc_info=True)
+            continue
+        if not isinstance(outcome, dict) or outcome.get("status") not in {"asked", "open"}:
+            continue
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                """
+                UPDATE insight_candidates
+                SET status = 'delivered', delivered_at = $2, delivery_attempt_count = 0,
+                    metadata = COALESCE(metadata, '{}'::jsonb)
+                               || jsonb_build_object('tension_ref', $3::text)
+                WHERE id = ANY($1::uuid[])
+                """,
+                list(question.member_ids),
+                now,
+                question.ref,
+            )
+            members = _tension_members(cluster)
+            await record_cooldowns(conn, members, now=now)
+            await record_engagement_rows(conn, members, delivered_at=now)
+        absorbed_ids.update(question.member_ids)
+        absorbed += 1
+    return [c for c in candidates if str(c["id"]) not in absorbed_ids], absorbed
+
+
+async def apply_tension_answer(
+    pool: Any, tension_ref: str, value: str, *, confirm_id: Any = None
+) -> dict[str, Any]:
+    """Record the owner's pick as ``useful`` feedback on every member of the tension.
+
+    The options are the cluster's sorted distinct declared options, so ``o<i>`` maps
+    back to one of them. Safe to retry: a member already carrying this confirm's
+    evidence is skipped (the confirm service re-applies after loss or restart).
+    """
+    rows = await pool.fetch(
+        "SELECT id, metadata FROM insight_candidates "
+        "WHERE metadata->>'tension_ref' = $1 ORDER BY id",
+        tension_ref,
+    )
+    members = [{"id": row["id"], "metadata": row["metadata"]} for row in rows]
+    question = tension_question(members)
+    if question is None or value not in {o.value for o in question.options}:
+        raise ValueError("tension answer does not match the recorded options")
+    chosen = next(o.label for o in question.options if o.value == value)
+    evidence = f"tension:{tension_ref}:{chosen}"
+    for member in members:
+        # The confirm service re-invokes this after errors and timeouts, and each
+        # feedback call inserts a row: skip members that already carry this evidence.
+        if await pool.fetchval(
+            "SELECT 1 FROM insight_feedback WHERE insight_id = $1::uuid AND evidence_ref = $2",
+            str(member["id"]),
+            evidence,
+        ):
+            continue
+        result = await record_insight_feedback(
+            pool,
+            insight_id=str(member["id"]),
+            verdict="useful",
+            actor="owner",
+            evidence_ref=evidence,
+        )
+        if result.get("status") != "recorded":
+            raise ValueError("tension feedback was not recorded")
+    return {"status": "applied", "members": len(members), "chosen": chosen}
+
+
+def tension_sink_registration(pool: Any) -> Any:
+    """Confirm-service sink that turns a tension answer into member feedback."""
+    from butlers.core.confirm_service import SinkRegistration
+
+    async def apply(confirm_id: Any, sink_ref: str, value: str) -> dict[str, Any]:
+        return await apply_tension_answer(pool, sink_ref, value, confirm_id=confirm_id)
+
+    return SinkRegistration(
+        producer=TENSION_PRODUCER,
+        values=frozenset(f"o{i}" for i in range(_TENSION_MAX_OPTIONS)),
+        apply=apply,
+    )
+
+
+def make_tension_confirm_fn(service: Any, recipient: Any) -> Any:
+    """Adapt a ``ConfirmService`` and resolved owner ``Recipient`` into ``confirm_fn``.
+
+    The service's per-producer key makes a repeated identical tension return the
+    existing row, so a pending row reports ``open`` rather than a second question.
+    """
+    from butlers.core.confirm_models import ConfirmOption, ConfirmPrompt
+
+    async def confirm_fn(question: TensionQuestion) -> dict[str, Any]:
+        prompt = ConfirmPrompt(
+            question=question.question,
+            options=tuple(ConfirmOption(o.value, o.label) for o in question.options),
+            recipient=recipient,
+            timeout_seconds=_TENSION_TIMEOUT_SECONDS,
+        )
+        row = await service.create(
+            TENSION_PRODUCER,
+            question.ref,
+            prompt,
+            sink=TENSION_SINK,
+            sink_ref=question.ref,
+        )
+        return {"status": "open" if row["status"] == "pending" else "settled"}
+
+    return confirm_fn
+
+
+# ---------------------------------------------------------------------------
 # LLM cluster synthesis (bu-ep4ks.9 slice 3 — one sentence per correlated
 # cluster, best-effort, no new budget knob)
 # ---------------------------------------------------------------------------
@@ -1461,17 +1731,18 @@ async def _get_suppressing_context_signal_detail(
     max-hold suppression-end instant (bu-kqnum.3 slice 3's broker catch-up
     cycle) without a second context-bus read.
     """
+    from butlers.core.approvals_policy import AttentionReadUnavailable
+
     if pool is None:
-        return None
+        raise AttentionReadUnavailable("context_store_unavailable")
     if now is None:
         now = datetime.now(UTC)
     try:
         from butlers.context_bus import get_active_context
 
         signals = await get_active_context(pool)
-    except Exception:
-        logger.debug("insight-delivery-cycle: context bus unavailable; failing open", exc_info=True)
-        return None
+    except Exception as exc:
+        raise AttentionReadUnavailable("context_store_unavailable") from exc
 
     held = [
         s
@@ -1496,8 +1767,8 @@ async def get_suppressing_context_signal(
     (sub-urgent) insight delivery, or None.
 
     Deterministic, zero-LLM read of ``public.user_context`` via the existing
-    context-bus module. Fails open (returns None) on any error, matching
-    every other context-bus reader in this codebase.
+    context-bus module. Unavailable reads raise; they cannot authorize routine
+    delivery. A successful empty read returns None.
     """
     detail = await _get_suppressing_context_signal_detail(pool, now=now)
     return detail[0] if detail is not None else None
@@ -1590,9 +1861,19 @@ async def _schedule_insight_catchup(
     scheduled" like every other path in this module if the signal cannot be
     re-resolved (e.g. it cleared between the two reads).
     """
+    from butlers.core.approvals_policy import AttentionReadUnavailable
+
     context_signal_set_at: datetime | None = None
     if suppression_signal in _CONTEXT_MAX_HOLD:
-        detail = await _get_suppressing_context_signal_detail(pool, now=now)
+        try:
+            detail = await _get_suppressing_context_signal_detail(pool, now=now)
+        except AttentionReadUnavailable:
+            # The primary read already chose suppression. An unavailable
+            # optional reread cannot supply a finite catch-up anchor.
+            logger.warning(
+                "insight-delivery-cycle: context detail unavailable; no catch-up scheduled"
+            )
+            return
         if detail is not None and detail[0] == suppression_signal:
             context_signal_set_at = detail[1]
     deliver_at = _compute_catchup_deliver_at(
@@ -1643,7 +1924,7 @@ def _json_object(value: Any) -> dict[str, Any] | None:
 
 
 async def _revalidate_premises(
-    pool: asyncpg.Pool, *, now: datetime, urgent_only: bool
+    pool: asyncpg.Pool, *, now: datetime, urgent_only: bool, finance_warning_reader=None
 ) -> tuple[dict[str, bool | None], int]:
     """Re-check every pending candidate's premise; withdraw those whose fact is false.
 
@@ -1675,7 +1956,9 @@ async def _revalidate_premises(
     verdicts: dict[str, bool | None] = {}
     withdrawn = 0
     for row in rows:
-        verdict = await check_premise(pool, _json_object(row["premise"]))
+        verdict = await check_premise(
+            pool, _json_object(row["premise"]), finance_warning_reader=finance_warning_reader
+        )
         if verdict is not False:
             verdicts[str(row["id"])] = verdict
             continue
@@ -1753,6 +2036,8 @@ def _build_delivery_ref(
     standalone: bool,
     digest_line_index: int | None,
     delivered_at: datetime,
+    line_text: str | None = None,
+    delivery_text: str | None = None,
 ) -> dict[str, Any]:
     """Describe where a delivered candidate landed, for later in-place amendment.
 
@@ -1766,6 +2051,11 @@ def _build_delivery_ref(
         "digest_line_index": digest_line_index,
         "delivered_at": delivered_at.isoformat(),
     }
+    if digest_line_index is not None:
+        # bu-q7vx1q.31: a digest edit re-renders the whole message with this
+        # line struck, so the sent text and the line's own text are kept.
+        ref["line_text"] = line_text
+        ref["delivery_text"] = delivery_text
     if isinstance(notify_result, dict):
         ref["notification_id"] = notify_result.get("notification_id")
         found = _find_provider_message(notify_result.get("result"))
@@ -1804,8 +2094,10 @@ async def apply_pending_amendments(
 
     ``amend_fn(delivery_ref, text)`` returns ``{"status": "edited" | "rejected"
     | "error"}``. A standalone Telegram delivery is edited to a struck-through
-    "Resolved HH:MM" form with no new ping. A delivery that cannot be edited
-    (email, a digest line, a rejected edit, three transport failures) becomes a
+    "Resolved HH:MM" form with no new ping. A Telegram digest is edited once per
+    message, striking every resolved line and keeping earlier strikes. A
+    delivery that cannot be edited (email, a rejected edit, three transport
+    failures) becomes a
     ``fold`` amendment instead: it rides the next delivery as a "since last
     digest" line, never a standalone message. Every state change is guarded on
     ``state = 'pending'``, so a replayed cycle neither double-edits nor
@@ -1824,38 +2116,109 @@ async def apply_pending_amendments(
         """,
         _AMENDMENT_BATCH,
     )
+    # Group pending digest-line amendments by the Telegram message they sit in:
+    # one edit per message carries every strike.
+    digest_groups: dict[tuple[str, int], list[Any]] = {}
+    units: list[tuple[Any, list[Any]]] = []
     for row in rows:
         ref = _json_object(row["delivery_ref"]) or {}
-        premise = _json_object(row["premise"])
-        note = await _resolution_note(pool, premise)
-        editable = bool(
-            ref.get("standalone")
-            and ref.get("channel") == "telegram"
-            and ref.get("chat_id")
-            and ref.get("provider_message_id")
-        )
-        next_state = "fold"
-        if editable:
-            try:
-                result = await amend_fn(ref, f"~~{row['message']}~~\n{note}")
-                status = result.get("status") if isinstance(result, dict) else "error"
-            except Exception:
-                logger.warning(
-                    "insight-delivery-cycle: amend of candidate %s raised",
-                    row["candidate_id"],
-                    exc_info=True,
-                )
-                status = "error"
-            if status == "edited":
-                next_state = "applied"
-            elif status == "error" and row["attempts"] + 1 < _MAX_AMEND_ATTEMPTS:
+        if _is_editable_digest_ref(ref):
+            key = (str(ref["chat_id"]), int(ref["provider_message_id"]))
+            if key not in digest_groups:
+                digest_groups[key] = []
+                units.append((ref, digest_groups[key]))
+            digest_groups[key].append(row)
+        else:
+            units.append((ref, [row]))
+    for ref, group in units:
+        if _is_editable_digest_ref(ref):
+            # The daily cycle and the urgent subcycle can overlap; one lock per
+            # message keeps the later run rendering from the earlier run's
+            # applied strikes instead of overwriting them.
+            lock_key = f"insight-digest-amend:{ref['chat_id']}:{ref['provider_message_id']}"
+            async with pool.acquire() as lock_conn, lock_conn.transaction():
+                if not await lock_conn.fetchval(
+                    "SELECT pg_try_advisory_xact_lock(hashtext($1))", lock_key
+                ):
+                    continue  # another run owns this message; rows stay pending
+                still_pending = {
+                    r["id"]
+                    for r in await pool.fetch(
+                        "SELECT id FROM insight_amendments "
+                        "WHERE id = ANY($1::uuid[]) AND state = 'pending'",
+                        [r["id"] for r in group],
+                    )
+                }
+                group = [r for r in group if r["id"] in still_pending]
+                if group:
+                    await _settle_amendment_unit(pool, amend_fn, ref, group, now, counts)
+        else:
+            await _settle_amendment_unit(pool, amend_fn, ref, group, now, counts)
+    return counts
+
+
+async def _settle_amendment_unit(
+    pool: asyncpg.Pool,
+    amend_fn: Any,
+    ref: dict[str, Any],
+    group: list[Any],
+    now: datetime,
+    counts: dict[str, int],
+) -> None:
+    """Edit one delivered message for ``group`` (or fold what cannot be edited)."""
+    notes = {r["id"]: await _resolution_note(pool, _json_object(r["premise"])) for r in group}
+    is_digest = _is_editable_digest_ref(ref)
+    fold_rows: list[Any] = []
+    edit_rows = group
+    text = ""
+    if is_digest:
+        text, edit_rows, fold_rows = await _render_struck_digest(pool, ref, group, notes)
+    elif not (
+        ref.get("standalone")
+        and ref.get("channel") == "telegram"
+        and ref.get("chat_id")
+        and ref.get("provider_message_id")
+    ):
+        fold_rows, edit_rows = group, []
+    else:
+        text = f"~~{group[0]['message']}~~\n{notes[group[0]['id']]}"
+    if edit_rows:
+        first = edit_rows[0]
+        try:
+            result = await amend_fn(ref, text)
+            status = result.get("status") if isinstance(result, dict) else "error"
+        except Exception:
+            logger.warning(
+                "insight-delivery-cycle: amend of candidate %s raised",
+                first["candidate_id"],
+                exc_info=True,
+            )
+            status = "error"
+        if status == "edited":
+            await _settle_rows(pool, edit_rows, "applied", notes, now, counts)
+        elif status == "error" and first["attempts"] + 1 < _MAX_AMEND_ATTEMPTS:
+            for row in edit_rows:
                 await pool.execute(
                     "UPDATE insight_amendments SET attempts = attempts + 1 "
                     "WHERE id = $1 AND state = 'pending'",
                     row["id"],
                 )
-                counts["retry"] += 1
-                continue
+            counts["retry"] += len(edit_rows)
+        else:
+            fold_rows = fold_rows + edit_rows
+    if fold_rows:
+        await _settle_rows(pool, fold_rows, "fold", notes, now, counts)
+
+
+async def _settle_rows(
+    pool: asyncpg.Pool,
+    rows: list[Any],
+    next_state: str,
+    notes: dict[Any, str],
+    now: datetime,
+    counts: dict[str, int],
+) -> None:
+    for row in rows:
         updated = await pool.execute(
             """
             UPDATE insight_amendments
@@ -1864,7 +2227,7 @@ async def apply_pending_amendments(
             """,
             row["id"],
             next_state,
-            note,
+            notes[row["id"]],
             now,
         )
         if not str(updated).endswith(" 1"):
@@ -1885,7 +2248,86 @@ async def apply_pending_amendments(
             )
         else:
             counts["folded"] += 1
-    return counts
+
+
+def _is_editable_digest_ref(ref: dict[str, Any]) -> bool:
+    """A Telegram digest line whose sent text and line text were recorded."""
+    return bool(
+        not ref.get("standalone")
+        and ref.get("digest_line_index") is not None
+        and ref.get("channel") == "telegram"
+        and ref.get("chat_id")
+        and ref.get("provider_message_id")
+        and ref.get("delivery_text")
+        and ref.get("line_text")
+    )
+
+
+def strike_digest_lines(
+    delivery_text: str, strikes: list[tuple[str, str]]
+) -> tuple[str, list[bool]]:
+    """Strike each ``(line_text, note)`` on its own whole digest line.
+
+    A line is the numbered or bulleted ``[Butler] message`` row, so a message
+    that is a prefix or substring of another row never matches it. A strike
+    whose line is not found exactly once is left out and reported ``False``.
+    """
+    lines = delivery_text.split("\n")
+    anchored = [False] * len(strikes)
+    for n, (line_text, note) in enumerate(strikes):
+        pattern = re.compile(r"^(?:\d+\. |- )(?:\[[^\]]*\] )?" + re.escape(line_text) + r"$")
+        hits = [i for i, row in enumerate(lines) if pattern.match(row)]
+        if len(hits) != 1 or "~~" in lines[hits[0]]:
+            continue
+        i = hits[0]
+        prefix = lines[i][: len(lines[i]) - len(line_text)]
+        lines[i] = f"{prefix}~~{line_text}~~ {note}"
+        anchored[n] = True
+    return "\n".join(lines), anchored
+
+
+async def _render_struck_digest(
+    pool: asyncpg.Pool,
+    ref: dict[str, Any],
+    pending: list[Any],
+    notes: dict[Any, str],
+) -> tuple[str, list[Any], list[Any]]:
+    """Re-render a delivered digest with every resolved line struck through.
+
+    Returns ``(text, rows_to_edit, rows_to_fold)``. Earlier strikes come from
+    already-applied amendments on the same message, so a later edit keeps them
+    and replays are idempotent. Rows whose line is not uniquely anchored, or
+    every row when the original or re-rendered text exceeds one Telegram
+    message (an edit cannot be truncated or chunked), fold instead.
+    """
+    applied = await pool.fetch(
+        """
+        SELECT a.summary, c.delivery_ref
+        FROM insight_amendments a
+        JOIN insight_candidates c ON c.id = a.candidate_id
+        WHERE a.state = 'applied'
+          AND c.delivery_ref ->> 'provider_message_id' = $1
+          AND c.delivery_ref ->> 'chat_id' = $2
+        """,
+        str(ref["provider_message_id"]),
+        str(ref["chat_id"]),
+    )
+    strikes = [
+        ((_json_object(r["delivery_ref"]) or {}).get("line_text") or "", r["summary"] or "Resolved")
+        for r in applied
+    ]
+    earlier = len(strikes)
+    strikes += [
+        ((_json_object(r["delivery_ref"]) or {}).get("line_text") or "", notes[r["id"]])
+        for r in pending
+    ]
+    original = str(ref["delivery_text"])
+    text, anchored = strike_digest_lines(original, strikes)
+    edit = [r for r, ok in zip(pending, anchored[earlier:], strict=True) if ok]
+    fold = [r for r, ok in zip(pending, anchored[earlier:], strict=True) if not ok]
+    if text_units(original) > MAX_VISIBLE_UNITS or text_units(text) > MAX_VISIBLE_UNITS:
+        return text, [], pending
+    return text, edit, fold
 
 
 async def _pending_fold_lines(pool: asyncpg.Pool) -> list[tuple[Any, str]]:
@@ -1916,8 +2358,14 @@ async def delivery_cycle(
     daily_hold_mode: bool = False,
     credential_store: Any | None = None,
     amend_fn: Any | None = None,
+    finance_warning_reader: Any | None = None,
+    tension_confirm_fn: Any | None = None,
 ) -> dict[str, Any]:
     """Orchestrate the full insight delivery pipeline.
+
+    ``tension_confirm_fn`` (bu-7dpw8): optional owner-confirm transport; a cluster
+    whose members declare conflicting ``metadata.choice`` options becomes one owner
+    question (one budget slot) instead of digest lines. ``None`` keeps the digest.
 
     Steps (per spec §Delivery cycle execution order):
     1. Check quiet hours — if active, skip and return
@@ -1941,56 +2389,15 @@ async def delivery_cycle(
     now:
         Reference time (defaults to UTC now). Used in tests to control time.
     urgent_only:
-        bu-o8233 (JARVIS pursuit move 8 slice 4) — hourly urgent sub-cycle mode.
-        Today's single daily cron slot means a priority>=90 candidate proposed
-        minutes after the daily run can sit ``pending`` for nearly 24h before
-        the existing priority-urgent bypass (which only affects quiet-hours/
-        context-bus *suppression*, not cadence) ever gets a chance to consider
-        it. When True, this cycle:
-          - narrows candidate selection to ``priority >= URGENT_PRIORITY_THRESHOLD``
-            from the start (routine candidates are never touched by this mode —
-            they stay untouched ``pending`` for the next daily cycle);
-          - skips the quiet-hours/context-bus consult entirely (urgent
-            candidates always bypass both per RFC 0011 Amendment 1, so the
-            reads would be pure overhead);
-          - still honours an explicit ``verbosity=off`` opt-out (that is a
-            hard user preference, not a time-based deferral the urgent bypass
-            is meant to override);
-          - has no daily budget cap — every eligible urgent candidate is
-            delivered (or folded into one digest) this cycle, not just the
-            top-B;
-          - skips end-of-cycle maintenance (``cleanup_old_rows``,
-            disengagement auto-off) — the daily cycle already covers those
-            once a day; running them hourly too would be redundant.
-        Idempotency across the two cycles needs no extra bookkeeping: both
-        select ``WHERE status = 'pending'`` and this cycle's own delivery step
-        flips delivered candidates to ``status = 'delivered'`` before
-        returning, so a later daily cycle (or the next hourly tick) simply
-        never sees them again — the same row-status guard the daily cycle
-        already relies on.
+        The existing hourly sub-cycle admits only a current verified producer
+        or persisted owner cause. Numeric priority ranks candidates; it never
+        authorizes interruption. Quiet/context reads and explicit verbosity
+        opt-out apply in both modes. Routine candidates remain pending for a
+        later normal cycle. Existing per-cycle budgets and maintenance cadence
+        are unchanged.
     daily_hold_mode:
-        bu-ep4ks.9 slice 5 — hold-until-first-active daily cadence. The
-        production cron companion replaces the old single fixed 08:00 UTC
-        slot with a windowed cron (several ticks across the morning); each
-        tick calls this with ``daily_hold_mode=True``. No new persistent
-        "already ran today" flag is needed: once a tick delivers, the
-        delivered candidates flip to ``status = 'delivered'`` (the same
-        idempotency ``urgent_only`` already relies on), so a later tick that
-        same morning simply finds nothing pending and no-ops. Only changes
-        behaviour when this cycle would otherwise be fully suppressed with
-        no urgent candidate pending (see ``get_suppressing_context_signal``):
-          - if the active suppressing signal is ``traveling``, the routine
-            digest is deferred outright (never force-delivered by the hard
-            fallback deadline below) — a home-life digest is not useful
-            mid-trip, so a travel day skips/defers rather than eventually
-            firing anyway;
-          - otherwise (dnd/focused/meeting/sleeping/quiet_hours), suppression is
-            bypassed once :func:`_daily_hold_fallback_reached` returns True
-            for ``now`` — the hard fallback deadline — so a held digest is
-            never silently skipped for the entire day just because the
-            owner stayed unreachable past the deadline.
-        No effect when ``urgent_only=True`` (that mode skips the whole
-        suppression consult) or when this cycle isn't suppressed at all.
+        Retained caller compatibility. A daily fallback deadline does not grant
+        interruption authority; held work remains pending with catch-up custody.
     credential_store:
         Optional ``CredentialStore`` forwarded to slice 3's cluster
         synthesis (see ``_synthesize_cluster_sentence``) for resolving the
@@ -2016,6 +2423,7 @@ async def delivery_cycle(
         - ``delivery_message``: the formatted message sent (or None)
         - ``effective_budget``: the computed budget
     """
+    use_current_clock = now is None
     if now is None:
         now = datetime.now(UTC)
 
@@ -2040,14 +2448,9 @@ async def delivery_cycle(
 
     # Step 1: Check Owner Attention Policy + context bus (bu-qvnce.8 slices 1-2;
     # extended to meeting/traveling with per-signal max-hold TTL by
-    # bu-ep4ks.9 slice 2). Both are deterministic, non-LLM reads. Neither
-    # suppresses a candidate at or above URGENT_PRIORITY_THRESHOLD (RFC 0011
-    # Amendment 1: fail-open for urgent, budgeted for routine) — that check
-    # happens below, once pending candidates are known, so a single urgent
-    # candidate doesn't skip the whole cycle's suppression bookkeeping. In
-    # urgent_only mode every candidate this cycle considers is already >= the
-    # urgent threshold, so the suppression consult is skipped outright rather
-    # than computed and then ignored.
+    # bu-ep4ks.9 slice 2). Both are deterministic, non-LLM reads.
+    # Suppression is evaluated for every cycle. Only a current verified
+    # creation stamp or matching owner clause can override it; ranking cannot.
     _suppression_reason: str | None = None
     # The signal that is "holding" this cycle, in isolation from the
     # human-readable reason string above — recorded as structured
@@ -2055,22 +2458,23 @@ async def delivery_cycle(
     # is queryable without parsing `reason`.
     _suppression_signal: str | None = None
     policy: dict[str, Any] | None = None
-    if not urgent_only:
+    try:
         policy = await get_approvals_policy_quiet_hours(pool)
         _quiet_hours_active = is_policy_quiet_now(policy, now=now)
         _context_signal = await get_suppressing_context_signal(pool, now=now)
-        if _quiet_hours_active:
-            _suppression_reason = "quiet_hours"
-            _suppression_signal = "quiet_hours"
-        elif _context_signal is not None:
-            _suppression_reason = f"context_bus:{_context_signal}"
-            _suppression_signal = _context_signal
+    except Exception:
+        result.update(skipped=True, reason="attention_store_unavailable")
+        return result
+    if _context_signal is not None:
+        _suppression_reason = f"context_bus:{_context_signal}"
+        _suppression_signal = _context_signal
+    elif _quiet_hours_active:
+        _suppression_reason = "quiet_hours"
+        _suppression_signal = "quiet_hours"
 
     # Check verbosity=off early. This is a hard user opt-out (distinct from
     # the time-based quiet-hours/context-bus deferral above), so it applies
-    # even in urgent_only mode — the priority-urgent bypass fails open past
-    # quiet hours and dnd/sleeping signals, not past the owner's own "insights
-    # off" setting.
+    # even in urgent_only mode: a verified cause never overrides this opt-out.
     configured_budget = _get_configured_budget(settings)
     if configured_budget == 0:
         if urgent_only:
@@ -2101,6 +2505,37 @@ async def delivery_cycle(
         result["skipped"] = True
         return result
 
+    async def settle_terminal_insights(ids: list[str], metadata: dict[str, bool]) -> None:
+        await pool.execute(
+            "UPDATE insight_candidates SET status = 'filtered', "
+            "metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb "
+            "WHERE id = ANY($1::uuid[])",
+            ids,
+            {"delivery_failure": True, **metadata},
+        )
+        for item in ids:
+            _PARTIAL_INSIGHTS.clear(pool, str(item))
+
+    quarantined = _PARTIAL_INSIGHTS.keys(pool)
+    for item in quarantined:
+        metadata = _PARTIAL_INSIGHTS.metadata(pool, item)
+        await settle_terminal_insights([item], metadata)
+        await record_attention_event(
+            pool,
+            origin_butler="switchboard",
+            source="insight",
+            outcome="failed",
+            channel="telegram",
+            intent="insight",
+            notification_ref=item,
+            reason=(
+                "telegram_partial_delivery"
+                if metadata.get("partial_delivery")
+                else "telegram_delivery_uncertain"
+            ),
+            metadata=metadata,
+        )
+
     # Step 2: Expire candidates. Runs unconditionally — expiry bookkeeping
     # must not stall just because this cycle is (or may be) suppressed.
     expired = await expire_candidates(pool, now=now)
@@ -2110,139 +2545,82 @@ async def delivery_cycle(
     # before suppression, cooldown, dedup and budget ever see it, so it can
     # neither be sent nor consume a delivery slot.
     premise_verdicts, result["withdrawn"] = await _revalidate_premises(
-        pool, now=now, urgent_only=urgent_only
+        pool, now=now, urgent_only=False, finance_warning_reader=finance_warning_reader
     )
 
-    # Fetch pending candidates. urgent_only narrows this to priority>=90 from
-    # the start — routine candidates are never selected, filtered, or
-    # otherwise touched by this cycle.
-    if urgent_only:
-        rows = await pool.fetch(
-            """
-            SELECT id FROM insight_candidates
-            WHERE status = 'pending' AND priority >= $1
-            ORDER BY priority DESC, created_at ASC
-            """,
-            URGENT_PRIORITY_THRESHOLD,
-        )
-    else:
-        rows = await pool.fetch(
-            """
-            SELECT id FROM insight_candidates
-            WHERE status = 'pending'
-            ORDER BY priority DESC, created_at ASC
-            """
-        )
+    # Priority remains a ranking signal, never an authorization selector.
+    rows = await pool.fetch(
+        "SELECT id FROM insight_candidates WHERE status = 'pending' "
+        "ORDER BY priority DESC, created_at ASC"
+    )
     pending_ids = [str(row["id"]) for row in rows]
-
     if not pending_ids:
         return result
+    from butlers.core.attention_urgency import candidate_interruption
 
-    if not urgent_only and _suppression_reason is not None:
-        urgent_rows = await pool.fetch(
-            """
-            SELECT id FROM insight_candidates
-            WHERE id = ANY($1::uuid[]) AND priority >= $2
-            """,
-            pending_ids,
-            URGENT_PRIORITY_THRESHOLD,
-        )
-        if urgent_rows:
-            # At least one urgent candidate is pending — narrow this cycle's
-            # working set to urgent candidates only. Routine (sub-threshold)
-            # candidates remain 'pending' untouched for a later, non-suppressed
-            # cycle rather than being silently dropped.
-            logger.info(
-                "insight-delivery-cycle: suppressed (%s) but %d urgent (priority>=%d) "
-                "candidate(s) pending — bypassing suppression for those only",
-                _suppression_reason,
-                len(urgent_rows),
-                URGENT_PRIORITY_THRESHOLD,
+    async def authorized(candidate_id: str) -> bool:
+        gates = []
+        if _quiet_hours_active:
+            gates.append("quiet_hours")
+        if _context_signal is not None:
+            gates.append("context")
+        if not gates:
+            gates.append("context")  # urgent-only requires a real cause even outside quiet hours
+        for gate in gates:
+            if not (
+                await candidate_interruption(pool, uuid.UUID(candidate_id), gate=gate)
+            ).interrupts:
+                return False
+        return True
+
+    if urgent_only or _suppression_reason is not None:
+        retained = []
+        held_ids = []
+        for candidate_id in pending_ids:
+            if await authorized(candidate_id):
+                retained.append(candidate_id)
+            elif _suppression_reason is not None:
+                held_ids.append(candidate_id)
+        # Only candidates actually denied by a current hold acquire this
+        # diagnostic cause. Authorized candidates and awake hourly filtering
+        # retain their metadata; this label grants no interruption authority.
+        if held_ids:
+            await pool.execute(
+                """
+                UPDATE insight_candidates
+                SET metadata = COALESCE(metadata, '{}'::jsonb)
+                    || jsonb_build_object('blocked_by', 'held_by')
+                WHERE id = ANY($1::uuid[]) AND status = 'pending'
+                """,
+                held_ids,
             )
-            pending_ids = [str(row["id"]) for row in urgent_rows]
-        elif daily_hold_mode and _suppression_signal == "traveling":
-            # Slice 5 travel-day skip/defer: a routine home-life digest is
-            # not useful mid-trip, so a travel day fully defers the digest —
-            # unlike dnd/focused/meeting/sleeping/quiet_hours below, this is never
-            # force-delivered by the hard fallback deadline. Each windowed
-            # tick re-checks; once `traveling` clears (or its own slice-2
-            # max-hold TTL lapses), a later tick the same day can still
-            # succeed before the window closes.
-            logger.info(
-                "insight-delivery-cycle: travel day — deferring routine digest, "
-                "no urgent (priority>=%d) candidates pending",
-                URGENT_PRIORITY_THRESHOLD,
-            )
+        pending_ids = retained
+        if not pending_ids:
             await record_attention_event(
                 pool,
                 origin_butler="switchboard",
                 source="insight",
                 outcome="suppressed",
                 intent="insight",
-                reason="travel_day_defer",
-                metadata={"held_by": "traveling"},
+                reason=(
+                    "travel_day_defer"
+                    if daily_hold_mode and not urgent_only and _suppression_signal == "traveling"
+                    else _suppression_reason or "unverified_urgency"
+                ),
+                metadata={
+                    **({"held_by": _suppression_signal} if _suppression_signal is not None else {}),
+                    "attention_cause": "routine",
+                    "downgrade": "unverified_urgency",
+                },
             )
-            await pool.execute(
-                """
-                UPDATE insight_candidates
-                SET metadata = COALESCE(metadata, '{}'::jsonb)
-                               || jsonb_build_object('blocked_by', 'held_by')
-                WHERE id = ANY($1::uuid[]) AND status = 'pending'
-                """,
-                pending_ids,
-            )
-            await _schedule_insight_catchup(
-                pool,
-                suppression_signal=_suppression_signal,
-                suppression_reason=_suppression_reason,
-                policy=policy,
-                now=now,
-            )
-            result["skipped"] = True
-            return result
-        elif daily_hold_mode and _daily_hold_fallback_reached(now):
-            # Hard fallback deadline reached: bypass suppression for the
-            # FULL routine pending set (not just urgent) rather than holding
-            # the digest hostage for the rest of the day. pending_ids stays
-            # as the full routine set already computed above.
-            logger.info(
-                "insight-delivery-cycle: hard fallback deadline reached (now=%s); "
-                "bypassing suppression (%s) for routine delivery",
-                now.isoformat(),
-                _suppression_reason,
-            )
-        else:
-            logger.info(
-                "insight-delivery-cycle: suppressed (%s), no urgent (priority>=%d) "
-                "candidates pending — skipping",
-                _suppression_reason,
-                URGENT_PRIORITY_THRESHOLD,
-            )
-            await record_attention_event(
-                pool,
-                origin_butler="switchboard",
-                source="insight",
-                outcome="suppressed",
-                intent="insight",
-                reason=_suppression_reason,
-                metadata={"held_by": _suppression_signal},
-            )
-            await pool.execute(
-                """
-                UPDATE insight_candidates
-                SET metadata = COALESCE(metadata, '{}'::jsonb)
-                               || jsonb_build_object('blocked_by', 'held_by')
-                WHERE id = ANY($1::uuid[]) AND status = 'pending'
-                """,
-                pending_ids,
-            )
-            await _schedule_insight_catchup(
-                pool,
-                suppression_signal=_suppression_signal,
-                suppression_reason=_suppression_reason,
-                policy=policy,
-                now=now,
-            )
+            if _suppression_reason is not None:
+                await _schedule_insight_catchup(
+                    pool,
+                    suppression_signal=_suppression_signal,
+                    suppression_reason=_suppression_reason,
+                    policy=policy,
+                    now=now,
+                )
             result["skipped"] = True
             return result
 
@@ -2273,16 +2651,24 @@ async def delivery_cycle(
     # an equal-priority candidate that cannot survive until the next regular
     # cycle wins the deadline tiebreak.
     rows = await pool.fetch(
-        """
+        f"""
         SELECT id, origin_butler, priority, category, dedup_key,
                cooldown_days, expires_at, message, channel, metadata,
-               prepared_action_id, created_at, premise
-        FROM insight_candidates
+               prepared_action_id, created_at, premise, {taint_read("c")}
+        FROM insight_candidates c
         WHERE id = ANY($1::uuid[]) AND status = 'pending'
         """,
         eligible_ids,
     )
     candidates = [dict(row) for row in rows]
+    candidates, tensions_asked = await absorb_tensions(
+        pool, candidates, tension_confirm_fn, budget=effective_budget, now=now
+    )
+    if tensions_asked:
+        result["tensions_asked"] = tensions_asked
+        effective_budget -= tensions_asked
+        if not candidates:
+            return result
     weights = await compute_category_budget_weights(
         pool,
         [candidate["category"] for candidate in candidates],
@@ -2410,6 +2796,78 @@ async def delivery_cycle(
         ],
     }
 
+    try:
+        final_policy = await get_approvals_policy_quiet_hours(pool)
+        dispatch_now = datetime.now(UTC) if use_current_clock else now
+        final_quiet = is_policy_quiet_now(final_policy, now=dispatch_now)
+        final_context = await get_suppressing_context_signal(pool, now=dispatch_now)
+    except Exception:
+        result.update(skipped=True, reason="attention_store_unavailable")
+        return result
+    delivery_causes: dict[str, dict[str, str]] = {}
+    for candidate_id in selected_ids:
+        gates = (["quiet_hours"] if final_quiet else []) + (["context"] if final_context else [])
+        if urgent_only and not gates:
+            gates = ["context"]
+        evidence = {"attention_cause": "routine"}
+        for gate in gates or ["context"]:
+            cause = await candidate_interruption(pool, uuid.UUID(candidate_id), gate=gate)
+            if gate in gates and not cause.interrupts:
+                result.update(skipped=True, reason="attention_cause_changed")
+                return result
+            if cause.interrupts:
+                evidence = {"attention_cause": cause.cause, "cause_ref": cause.ref}
+        if evidence["attention_cause"] == "routine":
+            evidence["downgrade"] = "unverified_urgency"
+        delivery_causes[candidate_id] = evidence
+
+    # Final dispatch barrier: owner confirmation may have committed during selection,
+    # suppression, synthesis or restart. Re-read the stored exact tuple immediately
+    # before send; no public candidate supplies this trusted reader.
+    for candidate in selected:
+        premise = _json_object(candidate.get("premise"))
+        if premise and (premise.get("butler"), premise.get("probe")) == (
+            "finance",
+            "subscription_warning_still_relevant",
+        ):
+            current = await check_premise(
+                pool, premise, finance_warning_reader=finance_warning_reader
+            )
+            if current is False:
+                # The known-false final observation is itself the receipt; never
+                # replace it with a second potentially UNKNOWN read.
+                updated = await pool.execute(
+                    "UPDATE insight_candidates SET status = 'withdrawn', "
+                    "metadata = COALESCE(metadata, '{}'::jsonb) || "
+                    "jsonb_build_object('withdrawn_at', $2::text, "
+                    "'withdrawn_reason', 'premise_false') "
+                    "WHERE id = $1 AND status = 'pending'",
+                    candidate["id"],
+                    dispatch_now.isoformat(),
+                )
+                if str(updated).endswith(" 1"):
+                    await record_attention_event(
+                        pool,
+                        origin_butler=candidate["origin_butler"],
+                        source="insight",
+                        outcome="withdrawn",
+                        channel=candidate.get("channel"),
+                        intent="insight",
+                        priority=candidate["priority"],
+                        dedup_key=candidate.get("dedup_key"),
+                        notification_ref=str(candidate["id"]),
+                        reason="premise_false",
+                    )
+                result.update(skipped=True, reason="finance_warning_superseded")
+                return result
+            if current is None and premise_verdicts.get(str(candidate["id"])) is True:
+                # Synthesis may already have run. Add the same explicit as-of floor
+                # to the final wire, without changing the durable candidate or
+                # claiming that an unavailable read confirmed its current state.
+                stamp = _stamp_unverified(candidate)["message"]
+                delivery_message += "\n\nUnverified Finance report: " + stamp
+                result["delivery_message"] = delivery_message
+
     # notify_fn is guaranteed non-None here (None case returns early above)
     deliver_success = True
     notify_result: Any = None
@@ -2420,7 +2878,12 @@ async def delivery_cycle(
     failure_reason: str | None = None
     try:
         notify_result = await notify_fn(delivery_message, notify_metadata)
-        if isinstance(notify_result, dict) and notify_result.get("status") == "error":
+        if terminal_metadata := terminal_telegram_metadata(notify_result):
+            for item in selected_ids:
+                _PARTIAL_INSIGHTS.mark(pool, str(item), terminal_metadata)
+        if terminal_metadata or (
+            isinstance(notify_result, dict) and notify_result.get("status") == "error"
+        ):
             deliver_success = False
             failure_reason = f"delivery_error:{notify_result.get('error', 'unknown')}"
             logger.error(
@@ -2479,6 +2942,8 @@ async def delivery_cycle(
                                     standalone=deliver_count == 1,
                                     digest_line_index=None if deliver_count == 1 else line_index,
                                     delivered_at=delivered_at,
+                                    line_text=_c["message"],
+                                    delivery_text=delivery_message,
                                 ),
                             )
                         if fold_lines:
@@ -2516,8 +2981,12 @@ async def delivery_cycle(
                 priority=_c.get("priority"),
                 dedup_key=_c.get("dedup_key"),
                 notification_ref=str(_c["id"]),
+                metadata=delivery_causes[str(_c["id"])],
             )
     else:
+        if terminal_metadata := terminal_telegram_metadata(notify_result):
+            await settle_terminal_insights(selected_ids, terminal_metadata)
+            result.update(terminal_metadata)
         # Delivery failed — increment attempt counter; filter candidates that have
         # reached the 3-consecutive-failure threshold
         await pool.execute(
@@ -2604,9 +3073,11 @@ async def delivery_cycle(
                 notification_ref=str(_r["id"]),
                 reason=reason,
                 metadata={
+                    **delivery_causes[str(_r["id"])],
                     "failed_attempts": _r["delivery_attempt_count"],
                     "terminally_filtered": _terminally_filtered,
                     "retryable": not _terminally_filtered,
+                    **terminal_telegram_metadata(notify_result),
                 },
             )
 

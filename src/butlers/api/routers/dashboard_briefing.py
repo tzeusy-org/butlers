@@ -74,12 +74,14 @@ from butlers.api.briefing.prompts import elaborate_llm
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
+    Db,
     MCPClientManager,
     get_butler_configs,
     get_mcp_manager,
     get_pricing,
 )
 from butlers.api.models import ApiResponse
+from butlers.api.projection_grants import ACTIVE_GRANTS_LIVENESS_SQL, liveness_attention_items
 from butlers.core.general_settings import load_general_settings
 from butlers.core.pricing import PricingConfig
 from butlers.core.qa.patrol_status import is_valid_patrol_status
@@ -109,11 +111,6 @@ class Briefing(BaseModel):
 # ---------------------------------------------------------------------------
 # Dependency stub (overridden at startup or in tests)
 # ---------------------------------------------------------------------------
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +145,7 @@ async def _assert_owner_contact(pool: Any) -> Any:
         raise HTTPException(
             status_code=403,
             detail={"code": "forbidden", "message": "Owner contact assertion failed"},
-        )
+        ) from exc
 
     if row is None:
         raise HTTPException(
@@ -222,6 +219,7 @@ async def _fetch_dashboard_state(
         pending approvals across all butler pools
         failed-notification count (GET /api/notifications/stats)
         QA state (circuit breaker, recent failed patrol, active investigations)
+        ambient projection liveness (one item per grant whose surface lapsed)
 
     The public API still returns the six-field Briefing object. This richer
     state is intentionally internal so the local runtime has enough context to
@@ -244,7 +242,7 @@ async def _fetch_dashboard_state(
         },
     }
 
-    # Run all five independent fetches concurrently; each is internally
+    # Run all six independent fetches concurrently; each is internally
     # guarded and never raises (a failure degrades that source's contribution
     # to empty/None plus a `degraded=True` flag -- see classify.classify).
     (
@@ -253,12 +251,14 @@ async def _fetch_dashboard_state(
         approvals_result,
         notifications_result,
         qa_result,
+        projections_result,
     ) = await asyncio.gather(
         _fetch_audit_issues(pool),
         _fetch_board_state(configs, mgr, db, pricing),
         _fetch_approvals_state(db),
         _fetch_notifications_state(db, now=now),
         _fetch_qa_state(db),
+        _fetch_projection_liveness(pool, now),
         return_exceptions=False,
     )
 
@@ -267,6 +267,7 @@ async def _fetch_dashboard_state(
     approvals_pending, approvals_degraded = approvals_result
     failed_notifications, notifications_degraded = notifications_result
     qa_state, qa_degraded = qa_result
+    projection_attention, projections_degraded = projections_result
 
     attention_items: list[dict] = []
 
@@ -316,6 +317,8 @@ async def _fetch_dashboard_state(
     if qa_item is not None:
         attention_items.append(qa_item)
 
+    attention_items.extend(projection_attention)
+
     degraded_sources = []
     if audit_degraded:
         degraded_sources.append("audit")
@@ -327,6 +330,8 @@ async def _fetch_dashboard_state(
         degraded_sources.append("notifications")
     if qa_degraded:
         degraded_sources.append("qa")
+    if projections_degraded:
+        degraded_sources.append("projections")
 
     state["attention_items"] = attention_items
     state["audit_issues"] = audit_issues
@@ -361,6 +366,23 @@ async def _fetch_audit_issues(pool: Any) -> tuple[list, list, bool]:
     except Exception as exc:
         logger.warning("Could not fetch audit-derived attention items: %s", exc)
         return [], [], True
+
+
+async def _fetch_projection_liveness(pool: Any, now: datetime) -> tuple[list[dict], bool]:
+    """Return (attention_items, degraded) for ambient projections that stopped fetching.
+
+    REQ-ambient-projections-004: derived at read time from
+    ``public.ambient_projections``, so it writes nothing and needs no schedule.
+    """
+    try:
+        rows = await pool.fetch(ACTIVE_GRANTS_LIVENESS_SQL)
+        current = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
+        return liveness_attention_items(list(rows), current), False
+    except Exception as exc:
+        if _is_missing_relation_error(exc, "ambient_projections"):
+            return [], False
+        logger.warning("Could not fetch ambient projection liveness: %s", exc)
+        return [], True
 
 
 def _map_board_rows(
@@ -839,7 +861,8 @@ async def _compose_briefing(
 
 @router.get("/briefing", response_model=ApiResponse[Briefing])
 async def get_dashboard_briefing(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     cache: BriefingCache = Depends(get_cache),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mgr: MCPClientManager = Depends(get_mcp_manager),
@@ -855,8 +878,10 @@ async def get_dashboard_briefing(
     """
     try:
         sw_pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
     codex_auth_authority: CredentialStore | None = None
     try:
         settings_pool = db.credential_shared_pool()

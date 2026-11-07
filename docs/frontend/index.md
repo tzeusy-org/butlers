@@ -69,3 +69,4 @@ docker compose --profile dev up frontend-dev
 - [Dashboard API](../api_and_protocols/dashboard-api.md) -- Backend REST API documentation
 - [Environment Config](../operations/environment-config.md) -- Frontend environment variables
 - [Docker Deployment](../operations/docker-deployment.md) -- Frontend container setup
+- [Implementation Notes](implementation-notes.md) -- Type-check, lint-gate, test-mock and library traps

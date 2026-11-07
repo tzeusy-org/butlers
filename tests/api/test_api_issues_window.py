@@ -16,8 +16,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_butler_configs, get_mcp_manager
-from butlers.api.routers.issues import _MAX_AUDIT_GROUP_ROWS, _get_db_manager
+from butlers.api.deps import get_butler_configs, get_db_optional, get_mcp_manager
+from butlers.api.routers.issues import _MAX_AUDIT_GROUP_ROWS
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -36,7 +36,7 @@ def _build_app(fetch_rows: list[dict[str, Any]] | None = None) -> tuple[Any, Mag
     mock_db.pool.return_value = mock_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db_optional] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
     app.dependency_overrides[get_butler_configs] = lambda: []
     return app, mock_pool

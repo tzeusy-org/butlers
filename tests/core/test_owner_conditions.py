@@ -67,7 +67,7 @@ class TestReconcileSnapshotValidation:
     async def test_rejects_metadata_claiming_a_reserved_resolution_key(self, reserved_key: str):
         """REQ-owner-condition-ledger-006: the resolver's keys are not the producer's.
 
-        Creation-wins (REQ-004) is the right rule for producer evidence and the
+        Creation-wins (REQ-owner-condition-ledger-004) is the right rule for producer evidence and the
         wrong one for the keys resolution writes, where it would silently
         discard the closing evidence in favour of whatever the producer put
         there first. Rejecting here is what keeps the two rules compatible.
@@ -176,9 +176,40 @@ class TestExplicitResolutionValidation:
                 "source": "finance:commitment",
                 "fingerprint": "fp-1",
                 "resolution_metadata": None,
+                # bu-q7vx1q.32: explicit resolution amends delivered insights too.
+                "post_write": owner_conditions.enqueue_premise_amendments,
             }
         ]
         assert "resolve_condition" in owner_conditions.__all__
+
+
+async def test_the_ledger_opt_ins_default_to_shared_behavior_and_pass_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A producer that omits the opt-ins keeps the shared ladder and replace semantics."""
+    engine = AsyncMock(return_value=[])
+    monkeypatch.setattr(owner_conditions, "_reconcile_snapshot", engine)
+    common = {
+        "source": "finance:bill-overdue",
+        "observations": [Observation(fingerprint="f")],
+        "snapshot_complete": False,
+        "initial_grace_seconds": 0,
+    }
+
+    await reconcile_snapshot(AsyncMock(), **common)
+    defaults = engine.await_args.kwargs
+    await reconcile_snapshot(
+        AsyncMock(),
+        **common,
+        escalation_advance=condition_ledger.ESCALATION_ADVANCE,
+        preserve_metadata_keys=("notified_at",),
+    )
+    given = engine.await_args.kwargs
+
+    assert defaults["escalation_advance"] is None  # engine resolves None to the shared ladder
+    assert tuple(defaults["preserve_metadata_keys"]) == ()
+    assert given["escalation_advance"] is condition_ledger.ESCALATION_ADVANCE
+    assert tuple(given["preserve_metadata_keys"]) == ("notified_at",)
 
 
 def test_reuses_the_same_engine_as_infra_conditions():

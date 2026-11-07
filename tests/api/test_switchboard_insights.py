@@ -19,7 +19,7 @@ Coverage:
 from __future__ import annotations
 
 import datetime
-import importlib.util
+import importlib
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -28,6 +28,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -38,22 +40,8 @@ _router_path = _roster_root / "switchboard" / "api" / "router.py"
 
 def _get_db_dep():
     if _MODULE_NAME not in sys.modules:
-        spec = importlib.util.spec_from_file_location(_MODULE_NAME, _router_path)
-        if spec is None or spec.loader is None:
-            raise ValueError(f"Could not load spec from {_router_path}")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[_MODULE_NAME] = module
-        spec.loader.exec_module(module)
-    return sys.modules[_MODULE_NAME]._get_db_manager
-
-
-def _make_row(data: dict):
-    row = MagicMock()
-    row.__getitem__ = lambda self, k: data[k]
-    row.get = lambda k, default=None: data.get(k, default)
-    row.keys = lambda: data.keys()
-    row.__iter__ = lambda self: iter(data)
-    return row
+        importlib.import_module("butlers.api._roster.switchboard.router")
+    return get_db
 
 
 def _app_with_mock(
@@ -107,7 +95,7 @@ def _sample_row(**overrides):
 
 
 async def test_insights_happy_path_maps_all_fields(app):
-    app, _ = _app_with_mock(app, fetch_rows=[_make_row(_sample_row())])
+    app, _ = _app_with_mock(app, fetch_rows=[Record(_sample_row())])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -136,9 +124,7 @@ async def test_insights_happy_path_maps_all_fields(app):
 
 async def test_insights_surfaces_prepared_action_id(app):
     prepared_id = "22222222-2222-2222-2222-222222222222"
-    app, _ = _app_with_mock(
-        app, fetch_rows=[_make_row(_sample_row(prepared_action_id=prepared_id))]
-    )
+    app, _ = _app_with_mock(app, fetch_rows=[Record(_sample_row(prepared_action_id=prepared_id))])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

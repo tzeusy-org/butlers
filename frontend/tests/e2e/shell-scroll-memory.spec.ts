@@ -1,3 +1,6 @@
+import { mockJson, type ResponseOf } from "./fixtures/api-responses";
+import { makeFact } from "./fixtures/memory";
+import { fulfillEmptyApi } from "./fixtures/empty-api";
 import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 
 const SESSION_ID = "scroll-session-1";
@@ -8,10 +11,6 @@ const SHELL_SCROLL_OFFSET = 640;
 const SCROLLABLE_ROUTE_CONTENT_HEIGHT = 3600;
 const SCROLL_FIXTURE_STYLE_ID = "shell-scroll-memory-route-fixture";
 const SCROLL_RESTORATION_TOLERANCE = 4;
-
-function envelope(data: unknown, meta: Record<string, unknown> = {}): string {
-  return JSON.stringify({ data, meta });
-}
 
 function sessionSummary() {
   return {
@@ -30,7 +29,7 @@ function sessionSummary() {
     model: "fixture-model",
     complexity: null,
     purpose_lane: "standard",
-  };
+  } satisfies ResponseOf<"getSessions">["data"][number];
 }
 
 async function mockScrollMemoryApis(page: Page): Promise<void> {
@@ -45,11 +44,12 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: envelope([sessionSummary()], {
+        body: mockJson("getSessions", { data: [sessionSummary()], meta: {
+          limit: 50,
           has_more: false,
           next_cursor: null,
           sources_degraded: [],
-        }),
+        } }),
       });
       return;
     }
@@ -57,7 +57,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: envelope({
+        body: mockJson("getSessionAggregate", { data: {
           total: 1,
           success_count: 0,
           failed_count: 1,
@@ -68,7 +68,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
           by_butler: [{ butler: "home", count: 1 }],
           by_trigger_source: [],
           trigger_breakdown_degraded_sources: [],
-        }),
+        }, meta: {} }),
       });
       return;
     }
@@ -76,7 +76,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: envelope({
+        body: mockJson("getSession", { data: {
           ...sessionSummary(),
           butler: "home",
           result: "fixture result",
@@ -88,7 +88,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
           resolution_source: null,
           linked_message: null,
           process_log: null,
-        }),
+        }, meta: {} }),
       });
       return;
     }
@@ -98,8 +98,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: envelope(
-          [
+        body: mockJson("getTimeline", { data: [
             {
               id: TIMELINE_EVENT_ID,
               type: "notification",
@@ -109,15 +108,13 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
               is_heartbeat: false,
               data: {},
             },
-          ],
-          {
+          ], meta: {
             cursor: null,
             has_more: false,
             heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
             degraded_sources: [],
             degraded_butlers: [],
-          },
-        ),
+          } }),
       });
       return;
     }
@@ -125,7 +122,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: envelope([], { degraded_sources: [], degraded_butlers: [] }),
+        body: mockJson("getTimelineHistogram", { data: [], meta: { since: new Date(Date.now() - 3600000).toISOString(), until: new Date().toISOString(), bucket_seconds: 60, availability: "complete", expected_sources: 1, healthy_sources: 1, degraded_sources: [], degraded_butlers: [] } }),
       });
       return;
     }
@@ -133,7 +130,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: envelope([], { degraded_sources: [], degraded_butlers: [] }),
+        body: mockJson("getTimelineAttention", { data: [], meta: { since: new Date(Date.now() - 3600000).toISOString(), until: new Date().toISOString(), failed_sessions: 0, failed_notifications: 0, total: 0, has_more: false, availability: "complete", expected_sources: 1, healthy_sources: 1, degraded_sources: [], degraded_butlers: [] } }),
       });
       return;
     }
@@ -142,7 +139,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: envelope({
+        body: mockJson("getMemoryStats", { data: {
           total_episodes: 0,
           unconsolidated_episodes: 0,
           total_facts: 1,
@@ -160,7 +157,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
           expired_retained_episodes: null,
           retention_eligible_episodes: null,
           expired_retained_ratio: null,
-        }),
+        }, meta: {} }),
       });
       return;
     }
@@ -168,7 +165,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: envelope([
+        body: mockJson("getFacts", { data: [
           {
             id: FACT_ID,
             subject: "owner",
@@ -197,7 +194,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
             tags: [],
             metadata: {},
           },
-        ], { has_more: false, total: 1 }),
+        ], meta: { has_more: false, total: 1, offset: 0, limit: 50 } }),
       });
       return;
     }
@@ -205,7 +202,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: envelope({ id: FACT_ID, subject: "owner", predicate: "prefers", content: "Scroll memory" }),
+        body: mockJson("getFact", { data: makeFact({ id: FACT_ID, subject: "owner", predicate: "prefers", content: "Scroll memory" }), meta: {} }),
       });
       return;
     }
@@ -214,7 +211,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: envelope([
+        body: mockJson("getIssues", { data: [
           {
             severity: "warning",
             type: ISSUE_KEY,
@@ -228,7 +225,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
             issue_key: ISSUE_KEY,
             dismissed: false,
           },
-        ]),
+        ], meta: {} }),
       });
       return;
     }
@@ -236,24 +233,20 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: envelope([
+        body: mockJson("getIssueOccurrences", { data: [
           {
             id: 1,
             ts: new Date().toISOString(),
             actor: "home",
-            action: "fixture",
+            action: "fixture", target: null, note: null, ip: null,
             request_id: "scroll-request-1",
           },
-        ], { total: 1, has_more: false }),
+        ], meta: { total: 1, has_more: false, offset: 0, limit: 50 } }),
       });
       return;
     }
 
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: envelope([]),
-    });
+    await fulfillEmptyApi(route);
   });
 }
 

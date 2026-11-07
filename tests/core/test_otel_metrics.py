@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock
 
 import pytest
@@ -57,19 +57,42 @@ def _collect_metrics(reader: InMemoryMetricReader) -> dict[str, Any]:
     return result
 
 
-def test_domain_event_failed_permanent_counter_uses_only_bounded_labels() -> None:
-    """Terminal domain-event failures have one low-cardinality counter contract."""
-    record = getattr(_metrics_mod, "record_domain_event_delivery_failed_permanent", None)
-    assert callable(record), "domain-event failed_permanent metric recorder is required"
+def test_domain_event_failed_permanent_counter_uses_only_bounded_labels(monkeypatch) -> None:
+    """Terminal domain-event failures have one low-cardinality, per-emitter counter.
+
+    Each daemon primes the routes it can emit at zero, so increase() sees the first
+    failure, and two emitters of one route never share a cumulative series.
+    """
+    from types import SimpleNamespace
+
+    from butlers.core_tools import _domain_events
+
+    record = _metrics_mod.record_domain_event_delivery_failed_permanent
+    contracts = [
+        SimpleNamespace(publisher="travel", permitted_subscribers=("finance", "travel")),
+        SimpleNamespace(publisher="health", permitted_subscribers=("finance",)),
+    ]
+    monkeypatch.setattr(
+        _domain_events,
+        "get_contract_registry",
+        lambda: SimpleNamespace(contracts=lambda: iter(contracts)),
+    )
 
     _provider, reader = _make_in_memory_provider()
     try:
+        # A butler primes only its own routes, never a self-route; the daemon
+        # that schedules the sweep also primes every publisher's routes.
+        prime = _domain_events.prime_failed_permanent_delivery_series
+        assert prime("travel", runs_reconciliation_sweep=False) == 1
+        assert prime("switchboard", runs_reconciliation_sweep=True) == 2
         record(
+            emitter_butler="travel",
             source_butler="travel",
             destination_butler="finance",
             reason="non_retryable",
         )
         record(
+            emitter_butler="switchboard",
             source_butler="travel",
             destination_butler="finance",
             reason="attempts_exhausted",
@@ -78,20 +101,29 @@ def test_domain_event_failed_permanent_counter_uses_only_bounded_labels() -> Non
         data = _collect_metrics(reader)
         data_points = data["butlers.domain_event.delivery_failed_permanent_total"]
         observed = {
-            (data_point.attributes["source_butler"], data_point.attributes["reason"])
+            (
+                data_point.attributes["emitter_butler"],
+                data_point.attributes["source_butler"],
+                data_point.attributes["destination_butler"],
+                data_point.attributes["reason"],
+            ): data_point.value
             for data_point in data_points
         }
-        assert observed == {("travel", "non_retryable"), ("travel", "attempts_exhausted")}
-        for data_point in data_points:
-            assert dict(data_point.attributes) == {
-                "source_butler": "travel",
-                "destination_butler": "finance",
-                "reason": data_point.attributes["reason"],
-            }
-            assert data_point.value == 1
+        assert observed == {
+            ("travel", "travel", "finance", "non_retryable"): 1,
+            ("travel", "travel", "finance", "attempts_exhausted"): 0,
+            ("switchboard", "travel", "finance", "non_retryable"): 0,
+            ("switchboard", "travel", "finance", "attempts_exhausted"): 1,
+            ("switchboard", "health", "finance", "non_retryable"): 0,
+            ("switchboard", "health", "finance", "attempts_exhausted"): 0,
+        }
+        assert {frozenset(data_point.attributes) for data_point in data_points} == {
+            frozenset({"emitter_butler", "source_butler", "destination_butler", "reason"})
+        }
 
         with pytest.raises(ValueError, match="unsupported failed-permanent reason"):
             record(
+                emitter_butler="travel",
                 source_butler="travel",
                 destination_butler="finance",
                 reason="RuntimeError: arbitrary exception text",
@@ -105,6 +137,7 @@ class MockAdapter(RuntimeAdapter):
     def binary_name(self) -> str:
         return "mock"
 
+    @override
     async def invoke(
         self,
         prompt,
@@ -495,102 +528,5 @@ def test_recovery_phase_duration_ms() -> None:
         ]
         assert len(failed_dps) == 1
         assert failed_dps[0].sum == pytest.approx(500.0, rel=1e-3)
-    finally:
-        _reset_metrics_global_state()
-
-
-def test_healing_dispatch_emits_dispatch_decision_metric() -> None:
-    """dispatch_healing emits dispatch_decisions_total on gate rejections."""
-    import asyncio
-    import uuid
-    from pathlib import Path
-    from unittest.mock import AsyncMock, MagicMock, patch
-
-    from butlers.core.healing.dispatch import HealingConfig, dispatch_healing
-    from butlers.core.healing.fingerprint import FingerprintResult
-
-    _provider, reader = _make_in_memory_provider()
-    try:
-        m = ButlerMetrics("test-butler")
-
-        fp = FingerprintResult(
-            fingerprint="a" * 64,
-            severity=2,
-            exception_type="builtins.ValueError",
-            call_site="src/module.py:func",
-            sanitized_message="error",
-        )
-        config = HealingConfig(
-            enabled=True,
-            severity_threshold=2,
-            cooldown_minutes=60,
-            max_concurrent=2,
-            circuit_breaker_threshold=5,
-            timeout_minutes=30,
-        )
-
-        pool = MagicMock()
-
-        async def fetchrow(*args, **kwargs):
-            return {"status": "pr_open"}  # simulate recent attempt → cooldown
-
-        async def fetchval(*args, **kwargs):
-            return 0
-
-        async def fetch(*args, **kwargs):
-            return []
-
-        async def execute(*args, **kwargs):
-            pass
-
-        pool.fetchrow = AsyncMock(side_effect=fetchrow)
-        pool.fetchval = AsyncMock(side_effect=fetchval)
-        pool.fetch = AsyncMock(side_effect=fetch)
-        pool.execute = AsyncMock(side_effect=execute)
-
-        # Patch create_or_join_attempt to return is_new=True, then patch get_recent_attempt
-        # to return a record so the cooldown gate triggers.
-        with (
-            patch(
-                "butlers.core.healing.dispatch.create_or_join_attempt",
-                new=AsyncMock(return_value=(uuid.uuid4(), True)),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_attempt",
-                new=AsyncMock(return_value={"status": "pr_open"}),
-            ),
-            patch("butlers.core.healing.dispatch.delete_orphaned_attempt", new=AsyncMock()),
-            patch("butlers.core.healing.dispatch.create_dispatch_event", new=AsyncMock()),
-            patch(
-                "butlers.core.healing.dispatch.session_set_healing_fingerprint",
-                new=AsyncMock(),
-            ),
-        ):
-            result = asyncio.run(
-                dispatch_healing(
-                    pool=pool,
-                    butler_name="test-butler",
-                    session_id=uuid.uuid4(),
-                    fingerprint_input=fp,
-                    config=config,
-                    repo_root=Path("/tmp"),
-                    spawner=MagicMock(),
-                    metrics=m,
-                )
-            )
-
-        assert result.reason == "cooldown"
-        assert not result.accepted
-
-        data = _collect_metrics(reader)
-        dps = data.get("butlers.recovery.dispatch_decisions_total", [])
-        cooldown_dps = [
-            dp
-            for dp in dps
-            if dp.attributes.get("workflow") == "healing"
-            and dp.attributes.get("decision") == "cooldown"
-        ]
-        assert len(cooldown_dps) == 1 and cooldown_dps[0].value == 1
-        assert cooldown_dps[0].attributes.get("butler") == "test-butler"
     finally:
         _reset_metrics_global_state()

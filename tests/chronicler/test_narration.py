@@ -89,24 +89,24 @@ def _episode(
 def test_selects_top_n_titles_by_duration_per_lane() -> None:
     episodes = [
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             layer="activity",
             title="short session",
             start=_DAY_START,
             end=_DAY_START.replace(hour=18),
         ),
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             layer="activity",
             title="long session",
             start=_DAY_START.replace(hour=19),
             end=_DAY_START.replace(hour=23),
         ),
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             layer="activity",
             title="third session",
             start=_DAY_START.replace(hour=23),
@@ -127,8 +127,8 @@ def test_selects_top_n_titles_by_duration_per_lane() -> None:
 def test_untitled_episodes_are_excluded() -> None:
     episodes = [
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             layer="activity",
             title="",
             start=_DAY_START,
@@ -137,6 +137,10 @@ def test_untitled_episodes_are_excluded() -> None:
     ]
     result = select_top_episode_titles(episodes, day_start_utc=_DAY_START, day_end_utc=_DAY_END)
     assert result == {}
+    titled = [{**episodes[0], "title": "counted Play"}]
+    assert select_top_episode_titles(titled, day_start_utc=_DAY_START, day_end_utc=_DAY_END) == {
+        "play": ["counted Play"]
+    }
 
 
 def test_episodes_with_no_lane_are_excluded() -> None:
@@ -159,8 +163,8 @@ def test_episodes_outside_window_are_excluded() -> None:
     outside_end = datetime(2026, 6, 1, 1, 0, tzinfo=UTC)
     episodes = [
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             layer="activity",
             title="way before the window",
             start=outside_start,
@@ -169,6 +173,9 @@ def test_episodes_outside_window_are_excluded() -> None:
     ]
     result = select_top_episode_titles(episodes, day_start_utc=_DAY_START, day_end_utc=_DAY_END)
     assert result == {}
+    assert select_top_episode_titles(
+        episodes, day_start_utc=outside_start, day_end_utc=outside_end
+    ) == {"play": ["way before the window"]}
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +278,27 @@ class _FakeDispatcher:
         return self._response
 
 
+class _AsyncContext:
+    def __init__(self, value):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, *_args):
+        return None
+
+
+class _NarrationConnection:
+    def transaction(self):
+        return _AsyncContext(self)
+
+
+class _NarrationPool:
+    def acquire(self):
+        return _AsyncContext(_NarrationConnection())
+
+
 def _patch_common(monkeypatch, *, rollups, flags, top_episodes=None) -> dict[str, Any]:
     written: dict[str, Any] = {"day_narrative": None, "flag_narratives": {}}
 
@@ -291,6 +319,12 @@ def _patch_common(monkeypatch, *, rollups, flags, top_episodes=None) -> dict[str
         written["flag_narratives"][flag_type] = narrative
         return DailyRollupFlag(local_date=local_date, flag_type=flag_type, narrative=narrative)
 
+    async def _fake_capture_fact_write_token(_pool, **_kwargs):
+        return object()
+
+    async def _allow_fact_write(_conn):
+        return None
+
     monkeypatch.setattr("butlers.chronicler.narration.list_daily_rollups", _fake_list_daily_rollups)
     monkeypatch.setattr(
         "butlers.chronicler.narration.list_daily_rollup_flags", _fake_list_daily_rollup_flags
@@ -304,12 +338,18 @@ def _patch_common(monkeypatch, *, rollups, flags, top_episodes=None) -> dict[str
     monkeypatch.setattr(
         "butlers.chronicler.narration.set_daily_rollup_flag_narrative", _fake_set_flag_narrative
     )
+    monkeypatch.setattr(
+        "butlers.chronicler.narration.capture_fact_write_token", _fake_capture_fact_write_token
+    )
+    monkeypatch.setattr(
+        "butlers.chronicler.narration.make_fact_write_guard", lambda _token: _allow_fact_write
+    )
     return written
 
 
 async def test_narrate_daily_rollup_disabled(monkeypatch) -> None:
     monkeypatch.setenv("CHRONICLER_NARRATION_ENABLED", "false")
-    result = await narrate_daily_rollup(AsyncMock(), local_date=_LOCAL_DATE)
+    result = await narrate_daily_rollup(_NarrationPool(), local_date=_LOCAL_DATE)
     assert result == {"local_date": "2026-07-05", "status": "disabled"}
 
 
@@ -317,7 +357,7 @@ async def test_narrate_daily_rollup_skips_no_rollup_data(monkeypatch) -> None:
     monkeypatch.delenv("CHRONICLER_NARRATION_ENABLED", raising=False)
     _patch_common(monkeypatch, rollups=[], flags=[])
 
-    result = await narrate_daily_rollup(AsyncMock(), local_date=_LOCAL_DATE)
+    result = await narrate_daily_rollup(_NarrationPool(), local_date=_LOCAL_DATE)
 
     assert result == {"local_date": "2026-07-05", "status": "skipped_no_rollup_data"}
 
@@ -377,7 +417,7 @@ async def test_narrate_daily_rollup_labels_successfully(monkeypatch) -> None:
         lambda *a, **kw: _FakeDispatcher(response=response),
     )
 
-    result = await narrate_daily_rollup(AsyncMock(), local_date=_LOCAL_DATE)
+    result = await narrate_daily_rollup(_NarrationPool(), local_date=_LOCAL_DATE)
 
     assert result["status"] == "labeled"
     assert result["day_summary_written"] is True
@@ -399,9 +439,88 @@ async def test_narrate_daily_rollup_never_writes_unknown_flag_label(monkeypatch)
         lambda *a, **kw: _FakeDispatcher(response=response),
     )
 
-    result = await narrate_daily_rollup(AsyncMock(), local_date=_LOCAL_DATE)
+    result = await narrate_daily_rollup(_NarrationPool(), local_date=_LOCAL_DATE)
 
     assert result["status"] == "labeled"
     assert result["flags_labeled"] == []
     assert written["flag_narratives"] == {}
     assert written["day_narrative"] == "Busy day."
+
+
+async def test_narration_refuses_to_publish_after_source_generation_changes(monkeypatch) -> None:
+    from butlers.chronicler.history_repair import RepairAdmissionError
+
+    monkeypatch.delenv("CHRONICLER_NARRATION_ENABLED", raising=False)
+    events: list[str] = []
+    rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="sleep", seconds=100)]
+    written = _patch_common(monkeypatch, rollups=rollups, flags=[])
+
+    async def capture(_pool, **_kwargs):
+        events.append("capture")
+        return object()
+
+    async def guard(_conn):
+        events.append("guard")
+        raise RepairAdmissionError("daily repair state changed")
+
+    async def list_rollups(_pool, *, local_date):
+        events.append("rollups")
+        return rollups
+
+    async def list_flags(_pool, *, local_date):
+        events.append("flags")
+        return []
+
+    class Context:
+        def __init__(self, value):
+            self.value = value
+
+        async def __aenter__(self):
+            return self.value
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Connection:
+        def transaction(self):
+            return Context(self)
+
+    class Pool:
+        def acquire(self):
+            return Context(Connection())
+
+    async def call(_prompt, system_prompt=""):
+        events.append("llm")
+        return '{"day_summary":"A quiet day.","flag_labels":{}}'
+
+    monkeypatch.setattr(
+        "butlers.chronicler.narration.capture_fact_write_token", capture, raising=False
+    )
+    monkeypatch.setattr(
+        "butlers.chronicler.narration.make_fact_write_guard", lambda _token: guard, raising=False
+    )
+    monkeypatch.setattr("butlers.chronicler.narration.list_daily_rollups", list_rollups)
+    monkeypatch.setattr("butlers.chronicler.narration.list_daily_rollup_flags", list_flags)
+    monkeypatch.setattr(
+        "butlers.chronicler.narration._fetch_top_episode_titles", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr(
+        "butlers.chronicler.narration.DiscretionDispatcher",
+        lambda *args, **kwargs: type("Dispatcher", (), {"call": staticmethod(call)})(),
+    )
+
+    result = await narrate_daily_rollup(Pool(), local_date=_LOCAL_DATE)
+
+    assert result == {
+        "local_date": _LOCAL_DATE.isoformat(),
+        "status": "waiting_repair",
+        "reason": "daily repair state changed",
+    }
+    assert (
+        events.index("capture")
+        < events.index("rollups")
+        < events.index("llm")
+        < events.index("guard")
+    )
+    assert written["day_narrative"] is None
+    assert written["flag_narratives"] == {}

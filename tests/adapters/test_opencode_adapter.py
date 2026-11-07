@@ -13,6 +13,7 @@ Covers unique OpenCode behaviors not in test_adapter_contract.py:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -544,7 +545,9 @@ async def test_invoke_spills_large_prompt_to_attachment():
         prompt_file = Path(cmd[cmd.index("--file") + 1])
         captured["cmd"] = cmd
         captured["kwargs"] = kwargs
-        captured["prompt_file_text"] = prompt_file.read_text(encoding="utf-8")
+        captured["prompt_file_text"] = await asyncio.to_thread(
+            prompt_file.read_text, encoding="utf-8"
+        )
         return mock_proc
 
     with patch(_EXEC, side_effect=fake_exec):

@@ -9,10 +9,11 @@ daemon through ``butler_chronicler_rw``).
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import asyncpg
@@ -38,6 +39,241 @@ from butlers.chronicler.models import (
     RoutineOrigin,
     SourceAdapterState,
 )
+
+if TYPE_CHECKING:
+    from butlers.chronicler.adapters.base import AdapterResult
+
+
+@asynccontextmanager
+async def owntracks_connection(
+    pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+) -> AsyncIterator[asyncpg.Connection | asyncpg.pool.PoolConnectionProxy]:
+    """Use a pinned OwnTracks transaction connection without acquiring again."""
+    if isinstance(pool, asyncpg.Pool):
+        async with pool.acquire() as conn:
+            yield conn
+    else:
+        yield pool
+
+
+@asynccontextmanager
+async def owntracks_transaction(
+    pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+    source_name: str,
+) -> AsyncIterator[asyncpg.Connection | asyncpg.pool.PoolConnectionProxy]:
+    """Serialize this projection and atomically commit its state/evidence writes.
+
+    Transaction-scoped locks release on error/cancellation and pool release;
+    the namespace is separate from every other adapter's scheduling contract.
+    """
+    if source_name not in {"owntracks.points", "owntracks.place_cluster"}:
+        raise ValueError("OwnTracks transaction requires an OwnTracks source")
+    async with owntracks_connection(pool) as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                "chronicler:trail:" + source_name,
+            )
+            yield conn
+
+
+async def run_owntracks_projection(
+    pool: asyncpg.Pool,
+    source_name: str,
+    project: Callable[
+        [asyncpg.Connection | asyncpg.pool.PoolConnectionProxy, datetime | None, int | None],
+        Awaitable[AdapterResult],
+    ],
+    probe: Callable[[], None],
+) -> AdapterResult:
+    """OwnTracks-only run boundary: lock BEFORE checkpoint read, through outcome.
+
+    A savepoint rolls back failed projection writes while retaining the lock
+    to record the failure. Cancellation rolls back the entire transaction.
+    """
+    from butlers.chronicler.adapters.base import AdapterResult
+
+    async with owntracks_transaction(pool, source_name) as conn:
+        checkpoint = await get_checkpoint(conn, source_name)
+        probe()
+        try:
+            async with conn.transaction():
+                result = await project(
+                    conn,
+                    checkpoint.watermark if checkpoint else None,
+                    checkpoint.watermark_id if checkpoint else None,
+                )
+        except Exception as exc:
+            await upsert_checkpoint(conn, source_name, success=False, error=str(exc))
+            return AdapterResult(source_name=source_name, error=str(exc))
+        if result.skipped:
+            await mark_source_active(
+                conn,
+                source_name,
+                active=False,
+                inactive_reason=result.skipped_reason or "adapter skipped",
+            )
+            return result
+        await mark_source_active(conn, source_name, active=True)
+        await upsert_checkpoint(
+            conn,
+            source_name,
+            watermark=result.watermark,
+            watermark_id=result.watermark_id,
+            success=result.success,
+            rows_projected=result.rows_projected,
+            error=result.error,
+        )
+        return result
+
+
+async def get_owntracks_carryover(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool, source_name: str
+) -> dict:
+    """Strict counterpart: missing state is empty, an unreadable DB is failure."""
+    raw = await conn.fetchval(
+        "SELECT carryover FROM projection_checkpoints WHERE source_name=$1 AND subsource=''",
+        source_name,
+    )
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    return _without_cursor(raw) if isinstance(raw, dict) else {}
+
+
+async def save_owntracks_carryover(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
+    source_name: str,
+    carryover: dict,
+) -> None:
+    """Never acknowledge a lost bootstrap decision as successful projection."""
+    await conn.execute(
+        "INSERT INTO projection_checkpoints (source_name, subsource, carryover) VALUES ($1,'',$2) "
+        "ON CONFLICT (source_name,subsource) DO UPDATE SET "
+        f"carryover=EXCLUDED.carryover || {_KEEP_CURSOR_SQL}",
+        source_name,
+        carryover,
+    )
+
+
+# ── Keyset cursor tiebreaker (bu-f9ob67) ──────────────────────────────────
+#
+# Adapters over UUID/composite-keyed evidence tables cannot use the BIGINT
+# ``watermark_id``. Their ``(ts, key)`` cursor tiebreaker lives in the
+# ``carryover`` JSONB under a reserved key — no schema change. It records the
+# ``ts`` it belongs to, and is honoured only while that equals the checkpoint
+# watermark, so a cursor and watermark that ever disagree degrade to the old
+# ``ts > watermark`` read instead of skipping rows. Carryover getters hide the
+# key and carryover writers keep it, so adapter carryover logic never sees it.
+
+CURSOR_CARRYOVER_KEY = "__cursor"
+_KEEP_CURSOR_SQL = (
+    "(CASE WHEN projection_checkpoints.carryover ? '__cursor' THEN "
+    "jsonb_build_object('__cursor', projection_checkpoints.carryover -> '__cursor') "
+    "ELSE '{}'::jsonb END)"
+)
+
+
+def _without_cursor(carryover: dict) -> dict:
+    return {k: v for k, v in carryover.items() if k != CURSOR_CARRYOVER_KEY}
+
+
+async def get_cursor(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
+    source_name: str,
+) -> tuple[datetime, list[str]] | None:
+    """Return the stored ``(ts, key parts)`` tiebreaker, or ``None`` if absent or malformed."""
+    try:
+        raw = await conn.fetchval(
+            "SELECT carryover ->> '__cursor' FROM projection_checkpoints "
+            "WHERE source_name = $1 AND subsource = ''",
+            source_name,
+        )
+    except asyncpg.PostgresError:
+        return None
+    if not raw:
+        return None
+    try:
+        loaded = json.loads(raw)
+        ts = datetime.fromisoformat(loaded["ts"])
+        key = [str(part) for part in loaded["key"]]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return (ts, key) if ts.tzinfo is not None and key else None
+
+
+async def set_cursor(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
+    source_name: str,
+    ts: datetime,
+    key: Sequence[str],
+) -> None:
+    """Store the tiebreaker for the row at ``ts``, leaving other carryover untouched."""
+    payload = json.dumps({"ts": ts.isoformat(), "key": [str(part) for part in key]})
+    await conn.execute(
+        """
+        INSERT INTO projection_checkpoints (source_name, subsource, carryover)
+        VALUES ($1, '', jsonb_build_object('__cursor', $2::text::jsonb))
+        ON CONFLICT (source_name, subsource) DO UPDATE
+        SET carryover = COALESCE(projection_checkpoints.carryover, '{}'::jsonb)
+                        || jsonb_build_object('__cursor', $2::text::jsonb)
+        """,
+        source_name,
+        payload,
+    )
+
+
+async def retained_owntracks_rows(
+    pool: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
+    state: dict[str, dict[str, Any]],
+) -> list[asyncpg.Record]:
+    """Read only bounded exact bootstrap identities, never rediscover history."""
+    identities: set[UUID] = set()
+    for entry in state.values():
+        for value in [entry["seed_id"], *entry["pending_ids"]]:
+            if value is not None:
+                try:
+                    identities.add(UUID(value))
+                except ValueError:
+                    continue
+    if not identities:
+        return []
+    async with owntracks_connection(pool) as conn:
+        return list(
+            await conn.fetch(
+                "SELECT * FROM connectors.owntracks_points WHERE id=ANY($1::uuid[]) ORDER BY ts,id",
+                list(identities),
+            )
+        )
+
+
+async def get_owntracks_point(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
+    source_ref: str,
+) -> PointEvent | None:
+    row = await conn.fetchrow(
+        "SELECT * FROM point_events WHERE source_name='owntracks.points' AND source_ref=$1",
+        source_ref,
+    )
+    return _row_to_point_event(row) if row is not None else None
+
+
+async def revise_owntracks_point(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
+    source_ref: str,
+    marker: dict | None,
+) -> UUID | None:
+    """Revise ONLY the marker of an existing live own-source location event.
+
+    Privacy/retention/UUID/title/other payload/links/owner/tombstones stay held.
+    Missing or tombstoned projections are never resurrected.
+    """
+    return await conn.fetchval(
+        "UPDATE point_events SET payload=(payload - 'trail_outlier') || $2::jsonb "
+        "WHERE source_name='owntracks.points' AND source_ref=$1 AND event_type='location' "
+        "AND tombstone_at IS NULL RETURNING id",
+        source_ref,
+        {"trail_outlier": marker} if marker is not None else {},
+    )
 
 
 def _utcnow() -> datetime:
@@ -233,7 +469,7 @@ async def register_source(
 
 
 async def mark_source_active(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
     source_name: str,
     *,
     active: bool,
@@ -255,7 +491,7 @@ async def mark_source_active(
 
 
 async def get_source_state(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
     source_name: str,
 ) -> SourceAdapterState | None:
     row = await conn.fetchrow(
@@ -282,7 +518,7 @@ async def get_source_state(
 
 
 async def upsert_checkpoint(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
     source_name: str,
     *,
     watermark: datetime | None = None,
@@ -319,7 +555,7 @@ async def upsert_checkpoint(
 
 
 async def upsert_checkpoint_subsource(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
     source_name: str,
     subsource: str,
     *,
@@ -354,7 +590,7 @@ async def upsert_checkpoint_subsource(
 
 
 async def _upsert_checkpoint_row(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
     *,
     source_name: str,
     subsource: str,
@@ -443,7 +679,7 @@ def _row_to_checkpoint(row: asyncpg.Record) -> ProjectionCheckpoint:
 
 
 async def get_checkpoint(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
     source_name: str,
 ) -> ProjectionCheckpoint | None:
     """Fetch the global checkpoint (``subsource = ''``) for a source."""
@@ -478,7 +714,7 @@ async def get_checkpoint_subsource(
 
 
 async def upsert_point_event(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
     event: PointEvent,
 ) -> PointEvent:
     """Idempotent upsert on ``(source_name, source_ref)``.
@@ -531,7 +767,7 @@ async def upsert_point_event(
 
 
 async def upsert_episode(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
     episode: Episode,
 ) -> Episode:
     """Idempotent upsert on ``(source_name, source_ref)``.
@@ -587,7 +823,7 @@ async def upsert_episode(
 
 
 async def link_event_to_episode(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
     *,
     episode_id: UUID,
     event_id: UUID,
@@ -623,7 +859,7 @@ async def list_episode_events(
 
 
 async def refresh_episode_evidence_refs(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
     episode_id: UUID,
 ) -> list[str]:
     """Populate ``episodes.evidence_refs`` from ``episode_event_links``.
@@ -674,7 +910,7 @@ async def get_episode(
 
 
 async def list_episodes(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
     *,
     start_from: datetime | None = None,
     start_to: datetime | None = None,
@@ -997,9 +1233,9 @@ async def get_carryover(
             loaded = json.loads(raw)
         except json.JSONDecodeError:
             return {}
-        return loaded if isinstance(loaded, dict) else {}
+        return _without_cursor(loaded) if isinstance(loaded, dict) else {}
     if isinstance(raw, dict):
-        return raw
+        return _without_cursor(raw)
     return {}
 
 
@@ -1016,11 +1252,11 @@ async def save_carryover(
     """
     try:
         await conn.execute(
-            """
+            f"""
             INSERT INTO projection_checkpoints (source_name, subsource, carryover)
             VALUES ($1, '', $2)
             ON CONFLICT (source_name, subsource) DO UPDATE
-            SET carryover = EXCLUDED.carryover
+            SET carryover = EXCLUDED.carryover || {_KEEP_CURSOR_SQL}
             """,
             source_name,
             carryover,
@@ -1224,7 +1460,7 @@ async def create_declared_routine(
 
 
 async def list_routines(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
     *,
     enabled_only: bool = False,
 ) -> list[Routine]:
@@ -1393,7 +1629,7 @@ def _row_to_daily_rollup(row: asyncpg.Record) -> DailyRollup:
 
 
 async def upsert_daily_rollup(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
     *,
     local_date: Any,
     lane: str,
@@ -1434,7 +1670,7 @@ async def upsert_daily_rollup(
 
 
 async def list_daily_rollups(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
     *,
     local_date: Any | None = None,
 ) -> list[DailyRollup]:
@@ -1489,7 +1725,7 @@ def _row_to_daily_rollup_flag(row: asyncpg.Record) -> DailyRollupFlag:
 
 
 async def upsert_daily_rollup_flag(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
     *,
     local_date: Any,
     flag_type: str,
@@ -1524,7 +1760,7 @@ async def upsert_daily_rollup_flag(
 
 
 async def delete_daily_rollup_flag(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
     *,
     local_date: Any,
     flag_type: str,
@@ -1588,7 +1824,7 @@ async def list_daily_rollup_flags_range(
 
 
 async def set_daily_rollup_day_narrative(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.Pool | asyncpg.pool.PoolConnectionProxy,
     *,
     local_date: Any,
     narrative: str,
@@ -1615,7 +1851,7 @@ async def set_daily_rollup_day_narrative(
 
 
 async def set_daily_rollup_flag_narrative(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.Pool | asyncpg.pool.PoolConnectionProxy,
     *,
     local_date: Any,
     flag_type: str,
@@ -1648,6 +1884,7 @@ __all__: Sequence[str] = (
     "delete_daily_rollup_flag",
     "delete_routine",
     "get_carryover",
+    "get_cursor",
     "get_checkpoint",
     "get_checkpoint_subsource",
     "get_episode",
@@ -1669,6 +1906,7 @@ __all__: Sequence[str] = (
     "record_idempotency",
     "register_source",
     "save_carryover",
+    "set_cursor",
     "set_daily_rollup_day_narrative",
     "set_daily_rollup_flag_narrative",
     "update_routine",

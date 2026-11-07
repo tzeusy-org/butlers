@@ -13,7 +13,6 @@ import errno
 import logging
 import shutil
 import uuid
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -33,6 +32,7 @@ from butlers.core_tools._domain_events import (
     run_domain_event_reconciliation_sweep,
 )
 from butlers.db import register_jsonb_codec
+from butlers.testing.fake_pool import AsyncCtx
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 pytestmark = pytest.mark.unit
@@ -80,9 +80,8 @@ class _SweepLockPool:
             side_effect=[lock_acquired, True] if lock_acquired else [False]
         )
 
-    @asynccontextmanager
-    async def acquire(self):
-        yield self.connection
+    def acquire(self):
+        return AsyncCtx(self.connection)
 
 
 # ---------------------------------------------------------------------------
@@ -766,6 +765,7 @@ class TestFanOutEvent:
             max_attempts=_domain_events._MAX_DELIVERY_RETRY_ATTEMPTS,
         )
         metric_record_mock.assert_called_once_with(
+            emitter_butler="travel",
             source_butler="travel",
             destination_butler="health",
             reason="non_retryable",
@@ -822,6 +822,7 @@ class TestFanOutEvent:
         assert repeat["deliveries"][0]["status"] == "failed_permanent"
         observed_status_mock.assert_awaited_once_with(pool, "d-attempts")
         metric_record_mock.assert_called_once_with(
+            emitter_butler="travel",
             source_butler="travel",
             destination_butler="finance",
             reason="attempts_exhausted",
@@ -907,6 +908,7 @@ class TestFanOutEvent:
         assert result["deliveries"][0]["status"] == "failed_permanent"
         mark_failed_mock.assert_awaited_once()
         metric_record_mock.assert_called_once_with(
+            emitter_butler="travel",
             source_butler="travel",
             destination_butler="finance",
             reason="non_retryable",
@@ -967,6 +969,7 @@ class TestFanOutEvent:
             max_attempts=_domain_events._MAX_DELIVERY_RETRY_ATTEMPTS,
         )
         metric_record_mock.assert_called_once_with(
+            emitter_butler="travel",
             source_butler="travel",
             destination_butler="finance",
             reason="non_retryable",
@@ -1491,6 +1494,7 @@ class TestRunDomainEventReconciliationSweep:
             max_attempts=_domain_events._MAX_DELIVERY_RETRY_ATTEMPTS,
         )
         metric_record_mock.assert_called_once_with(
+            emitter_butler="switchboard",
             source_butler="travel",
             destination_butler="health",
             reason="attempts_exhausted",

@@ -12,7 +12,7 @@ Acceptance criteria (bu-4zu95):
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import sys
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -24,6 +24,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -37,19 +39,6 @@ _NOW = datetime(2026, 4, 29, 10, 0, 0, tzinfo=UTC)
 # ---------------------------------------------------------------------------
 
 
-class _Row(dict):
-    """dict subclass that mimics asyncpg Record."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return super().get(key, default)
-
-
 def _session_row(
     *,
     session_id: str | None = None,
@@ -59,8 +48,8 @@ def _session_row(
     duration_ms: int | None = 500,
     success: bool = True,
     model: str = "claude-sonnet-4-6",
-) -> _Row:
-    return _Row(
+) -> Record:
+    return Record(
         {
             "id": uuid.UUID(session_id) if session_id else uuid.uuid4(),
             "trigger_source": trigger_source,
@@ -79,13 +68,13 @@ def _episode_row(
     source_name: str = "core.sessions",
     episode_type: str = "work",
     trigger_source: str | None = "route",
-) -> _Row:
+) -> Record:
     """Return a mock episode row as returned by v_episodes_corrected."""
     now = _NOW
     payload: dict[str, Any] = {}
     if trigger_source is not None:
         payload["trigger_source"] = trigger_source
-    return _Row(
+    return Record(
         {
             "id": uuid.UUID(episode_id) if episode_id else uuid.uuid4(),
             "source_name": source_name,
@@ -115,20 +104,17 @@ def _load_chronicler_router():
     module_name = "chronicler_api_router"
     if module_name in sys.modules:
         return sys.modules[module_name]
-    spec = importlib.util.spec_from_file_location(module_name, _ROUTER_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = mod
-    spec.loader.exec_module(mod)
+    mod = importlib.import_module("butlers.api._roster.chronicler.router")
     return mod
 
 
 def _make_app(
     *,
-    fan_out_results: dict[str, list[_Row]] | None = None,
-    episodes_rows: list[_Row] | None = None,
+    fan_out_results: dict[str, list[Record]] | None = None,
+    episodes_rows: list[Record] | None = None,
 ) -> tuple[Any, MagicMock]:
     """Build a test app wiring fan_out and pool.fetch/fetchval mocks."""
-    chronicler_mod = _load_chronicler_router()
+    _chronicler_mod = _load_chronicler_router()
 
     pool = AsyncMock()
     # For /episodes: fetchval returns total count, fetch returns episode rows.
@@ -143,7 +129,7 @@ def _make_app(
     db.fan_out_with_status = AsyncMock(return_value=(fan_out_results or {}, []))
 
     app = create_app(api_key="")
-    app.dependency_overrides[chronicler_mod._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     return app, db
 
 

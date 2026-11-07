@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from butlers.config import ScheduleConfig, load_config
-from butlers.core.scheduler import _effective_schedule_timezone, _next_run
+from butlers.config import ScheduleSpec, load_config
+from butlers.core.scheduler.timing import _effective_schedule_timezone, _next_run
 
 pytestmark = pytest.mark.unit
 
@@ -26,11 +26,11 @@ OWNER_ZONE = "Asia/Singapore"
 REFERENCE = datetime(2026, 10, 19, 5, 0, tzinfo=UTC)
 
 
-def _schedules(butler: str) -> dict[str, ScheduleConfig]:
+def _schedules(butler: str) -> dict[str, ScheduleSpec]:
     return {s.name: s for s in load_config(ROSTER / butler).schedules}
 
 
-def _fires_at(schedule: ScheduleConfig, *, zone: str = OWNER_ZONE) -> datetime:
+def _fires_at(schedule: ScheduleSpec, *, zone: str = OWNER_ZONE) -> datetime:
     effective = _effective_schedule_timezone(schedule.timezone, zone)
     return _next_run(schedule.cron, timezone=effective, max_stagger_seconds=0, now=REFERENCE)
 
@@ -58,7 +58,6 @@ def test_owner_facing_schedules_fire_at_their_stated_local_hour(
         ("switchboard", "spend-rule-savings", 4, 15),
         ("switchboard", "fleet-case-lapse-sweep", 4, 10),
         ("switchboard", "commitment-escalation", 5, 40),
-        ("switchboard", "decision-review-digest", 9, 0),
         ("health", "insight_scan", 7, 0),
     ],
 )

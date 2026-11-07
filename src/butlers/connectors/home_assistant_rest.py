@@ -57,11 +57,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import aiohttp
 from prometheus_client import Counter, Gauge
 
 from butlers.connectors.cursor_store import load_cursor, save_cursor
 from butlers.connectors.home_assistant_wellness import WellnessClassifier
+from butlers.home_assistant_client import get_json, rest_client
 
 logger = logging.getLogger(__name__)
 
@@ -386,16 +386,15 @@ class HARestPoller:
             Exception: Any network or HTTP error is propagated to the caller.
         """
         url = f"{self._base_url}/api/states"
-        headers = {
-            "Authorization": f"Bearer {self._access_token}",
-            "Content-Type": "application/json",
-        }
-
-        timeout = aiohttp.ClientTimeout(total=30)
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=timeout) as resp:
-                resp.raise_for_status()
-                raw_states: list[dict[str, Any]] = await resp.json()
+        async with asyncio.timeout(30.0):
+            async with rest_client(
+                self._base_url,
+                self._access_token,
+                timeout=30.0,
+                trust_env=False,
+                follow_redirects=True,
+            ) as client:
+                raw_states: list[dict[str, Any]] = await get_json(client, url)
 
         snapshots = [EntityStateSnapshot.from_ha_state(s) for s in raw_states if s.get("entity_id")]
 
@@ -641,15 +640,15 @@ class HAMeasurementHistoryRecovery:
         *,
         params: dict[str, str] | None = None,
     ) -> Any:
-        headers = {
-            "Authorization": f"Bearer {self._access_token}",
-            "Content-Type": "application/json",
-        }
-        timeout = aiohttp.ClientTimeout(total=30)
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, params=params, timeout=timeout) as resp:
-                resp.raise_for_status()
-                return await resp.json()
+        async with asyncio.timeout(30.0):
+            async with rest_client(
+                self._base_url,
+                self._access_token,
+                timeout=30.0,
+                trust_env=False,
+                follow_redirects=True,
+            ) as client:
+                return await get_json(client, url, params=params)
 
     async def recover_once(self) -> HAMeasurementHistoryResult:
         now = self._now().astimezone(UTC)

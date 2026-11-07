@@ -12,14 +12,15 @@ tests protect the migration from the retired Switchboard connector routes:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.ingestion_connectors import ConnectorSettingsUpdateRequest, _get_db_manager
+from butlers.api.deps import get_db
+from butlers.api.routers.ingestion_connectors import ConnectorSettingsUpdateRequest
 
 pytestmark = pytest.mark.unit
 
@@ -60,7 +61,7 @@ def _connector_row(**overrides: object) -> dict[str, object]:
 def _wire_db(app, pool: AsyncMock) -> MagicMock:
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     return db
 
 
@@ -216,11 +217,96 @@ async def test_canonical_stats_preserve_distinct_filtered_series(app) -> None:
     bucket = response.json()["data"][0]
     assert bucket["messages_ingested"] == 2
     assert bucket["messages_filtered"] == 3
-    assert bucket["heartbeat_count"] == 0
-    assert bucket["healthy_count"] == 0
+    # No fabricated liveness counters: listening state is the only liveness field.
+    assert not {"heartbeat_count", "healthy_count", "degraded_count", "error_count"} & set(bucket)
     assert response.json()["meta"]["hourly_events_available"] is True
     assert "connectors.filtered_events" in connection.fetch.await_args.args[0]
-    assert "FOR UPDATE" in connection.fetchrow.await_args.args[0]
+    assert "FOR UPDATE" in connection.fetchrow.await_args_list[0].args[0]
+
+
+async def test_canonical_stats_derive_per_bucket_listening_from_heartbeats(app) -> None:
+    """Events at hours 2 and 20 stay keyed; hours 5-7 without a heartbeat are deaf.
+
+    Before recording began, and in the still-open newest hour, a missing
+    heartbeat is ``unknown`` rather than ``deaf``. A bucket with traffic but no
+    heartbeat is ``unknown`` too: traffic contradicts deafness.
+    """
+    start = datetime(2026, 9, 10, 0, 0, tzinfo=UTC)
+    hours = [start + timedelta(hours=i) for i in range(24)]
+    counts = {2: 4, 20: 1}
+    pool = AsyncMock()
+    stats_rows = [
+        {
+            "bucket": hour,
+            "messages_ingested": counts.get(i, 0),
+            "messages_failed": 0,
+            "messages_filtered": 1 if i == 12 else 0,
+        }
+        for i, hour in enumerate(hours)
+    ]
+    heartbeat_hours = [h for i, h in enumerate(hours) if i >= 2 and i not in (5, 6, 7, 12, 23)]
+    pool.fetchrow = AsyncMock(
+        side_effect=[
+            {"connector_type": "gmail"},
+            {
+                "as_of": hours[23] + timedelta(minutes=10),
+                "recording_since": hours[1] + timedelta(minutes=30),
+                "heartbeat_buckets": heartbeat_hours,
+            },
+        ]
+    )
+    pool.fetch = AsyncMock(return_value=stats_rows)
+    connection = _wire_stats_connection(pool)
+    _wire_db(app, pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/ingestion/connectors/gmail/owner/stats?period=24h")
+
+    assert response.status_code == 200
+    body = response.json()
+    data = body["data"]
+    assert [row["hour"] for row in data] == [h.isoformat() for h in hours]
+    assert [row["messages_ingested"] for row in data].count(0) == 22
+    assert data[2]["messages_ingested"] == 4 and data[20]["messages_ingested"] == 1
+    listening = [row["listening"] for row in data]
+    assert listening[5:8] == ["deaf", "deaf", "deaf"]
+    assert listening[0] == listening[1] == "unknown"  # before recording began
+    assert listening[12] == "unknown"  # filtered traffic contradicts deafness
+    assert listening[23] == "unknown"  # open hour, its heartbeat may still come
+    assert listening.count("live") == 24 - 7
+    assert body["meta"]["listening_available"] is True
+    heartbeat_sql = connection.fetchrow.await_args_list[1].args[0]
+    assert "connector_heartbeat_log" in heartbeat_sql
+
+
+async def test_canonical_stats_listening_unknown_when_heartbeat_read_fails(app) -> None:
+    """A failed heartbeat read never turns into deaf buckets; counts still return."""
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(side_effect=[{"connector_type": "gmail"}, RuntimeError("down")])
+    pool.fetch = AsyncMock(
+        return_value=[
+            {
+                "bucket": datetime(2026, 9, 10, 10, 0, tzinfo=UTC),
+                "messages_ingested": 0,
+                "messages_failed": 0,
+                "messages_filtered": 0,
+            }
+        ]
+    )
+    _wire_stats_connection(pool)
+    _wire_db(app, pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/ingestion/connectors/gmail/owner/stats?period=24h")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [row["listening"] for row in body["data"]] == ["unknown"]
+    assert body["meta"] == {"hourly_events_available": True, "listening_available": False}
 
 
 async def test_canonical_settings_keep_validation_and_content_blind_audit(app) -> None:

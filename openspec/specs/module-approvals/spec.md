@@ -149,6 +149,8 @@ Scope: v1-mandatory
 #### Scenario: Dashboard defer schedules a guarded re-presentation
 - **WHEN** an authenticated dashboard actor defers a still-pending action for `1 ≤ hours ≤ 168`
 - **THEN** the same action/intent transaction extends expiry, supersedes an unstarted current presentation, and appends the next presentation generation for `now + hours`
+- **AND** the new expiry is that time plus the action's original decision window, so the re-sent card can still decide; an action with no expiry keeps none
+- **AND** the same transaction stales every owner-delivery token minted so far, so the old card is retracted and the re-sent card carries fresh tokens and its own provider reference
 - **AND** it keeps the logical action key, cannot route through generic notifications, and does not grant the worker ability to defer or schedule future presentations
 
 #### Scenario: Already-executed action is replayed
@@ -265,6 +267,42 @@ Scope: v1-mandatory
 - **THEN** the sensitivity classifier returns per-arg constraints without creating a rule
 - **AND** sensitive args (heuristic or module-declared) suggest `exact` pinned to current value
 - **AND** non-sensitive args suggest `any`
+
+### Requirement: Inactive Standing-Reply Template Drafts
+
+The owner MUST be able to save, edit, inspect and revoke typed standing-reply template drafts through the dashboard, and a draft MUST carry no approval authority. A draft is stored in `standing_reply_template_drafts`, outside `approval_rules`, with the send tool, one canonical typed template per content-bearing argument, the resolved recipient entities it is pinned to, a `revision` and audit timestamps. A template matches a whole argument value: fixed text plus typed slots (`date`, `time`, `datetime`, `duration`, `amount`, `count`) only; free-text, identifier, URL and recipient slots are refused (`REQ-capability-authorization-006`). Personal WhatsApp and Telegram user-client send tools are refused (owner decision bu-bup68v); a Telegram bot or email draft does not imply permission to send. A draft has three distinguishable stages, of which this slice implements two: drafted (saved, inactive), previewed (a hypothetical call reported as matching or ineligible, with `authority: "none"`), and activated. There is no activation path, no promotion into `approval_rules` and no caller-controlled active flag; activation, broker enforcement, per-window limits and receipts are deferred to a separately adopted contract (bu-jv1moa.28). Third-party-fillability and category choices are not persisted until their contract is adopted (bu-dhloi1.19).
+
+ID: REQ-module-approvals-007
+Source: security.md Approval Gates; RFC 0038 D4 and D13; owner decisions bu-o3638f and bu-bup68v; bu-jv1moa.10
+Scope: v1-mandatory
+
+#### Scenario: Only the owner's dashboard session authors drafts
+
+- **WHEN** a caller without a verified owner dashboard session (an API key, connector callback or runtime session) calls any `/api/approvals/reply-templates` route
+- **THEN** it is refused with 403 `owner_dashboard_session_required` before any draft is read or written
+- **AND** no MCP tool exposes draft authoring
+
+#### Scenario: Draft writes are revisioned and idempotent
+
+- **WHEN** two edits race with the same `expected_revision`
+- **THEN** exactly one commits and the other returns 409 `stale_revision`
+- **AND** a create replayed with the same `idempotency_key` and the same create request returns the draft that key created, in its current state, even after it was edited or revoked; the key is bound to a digest of the original create request, so the same key with a different request returns 409 `idempotency_key_reused`
+- **AND** an edit carries no idempotency key, so retrying an edit that already committed returns 409 `stale_revision`
+- **AND** an invalid template, an unresolved recipient or an unsupported send tool is refused without persistence
+- **AND** revoke marks the draft `revoked` and retains it
+
+#### Scenario: A draft never approves or executes a call
+
+- **WHEN** a gated send matches a saved draft exactly
+- **THEN** the approval gate parks it as it would with no draft
+- **AND** no standing rule is created or claimed and the executor is not reached
+- **AND** a request carrying `active`, or a call naming a draft id, gains no authority
+
+#### Scenario: Preview reports eligibility without authority
+
+- **WHEN** the owner previews a hypothetical call against a draft
+- **THEN** the result reports `matched`, `eligible` and reasons, and `authority` is always `none`
+- **AND** an unresolved or unpinned recipient, a missing content argument or an unknown parameter makes the preview ineligible
 
 ### Requirement: Risk Tier Enforcement
 
@@ -485,8 +523,19 @@ Module config MUST be declared under `[modules.approvals]` in `butler.toml`.
 
 #### Scenario: Missing or disabled config
 
-- **WHEN** `[modules.approvals]` is absent or `enabled = false`
+- **WHEN** `[modules.approvals]` is absent or `enabled = false`, with `domain_producers` omitted or empty
 - **THEN** the module does not wrap any tools and no approval gates are active
+- **AND** a missing configuration declares no domain producers
+
+#### Scenario: Explicit domain producer capability
+
+- **WHEN** configuration declares `domain_producers`
+- **THEN** it MUST be a unique typed list containing only `calendar` and/or `google_drive`, defaulting to empty
+- **AND** only those owning domain enqueuers MAY be wired when generic `enabled` is false
+- **AND** wiring MUST require the actual active owning approvals module, callable executor and owning pool
+- **AND** this declaration MUST NOT grant approval authority, create a standing rule or bypass any domain gate
+- **AND** generic `enabled = true` MUST retain its full existing gated-tool completeness validation
+- **AND** unrelated tools MUST retain their existing gating behavior
 
 #### Scenario: Gated tools completeness for outbound butlers
 
@@ -712,3 +761,61 @@ immediate execution when approval is not required.
 - **THEN** dispatch MUST fail without rewriting or guessing its executable arguments
 - **AND** the action MUST remain `approved` with `execution_result = null`
 - **AND** an immutable `action_execution_failed` event MUST be recorded
+
+### Requirement: Approval Cards Show the Exact Stored Call
+
+An owner-targeted `approval_request` card for a single parked action SHALL render
+its recipients and content from the stored, unredacted `pending_actions.tool_args`
+through a deterministic per-tool preview registry, never from model-written text.
+The model-written `why`, `blast_radius` and `reversibility` fields SHALL appear
+only under an "Assistant says" label as claims, with URLs defanged and the text
+rendered inert. The "Started by" line SHALL come from server rows, not from
+message text. The card SHALL offer Approve and Reject only when the whole stored
+call is shown and fits within about 3,500 rendered characters; in every other
+case it SHALL offer Open only: no registered preview, a renderer error, an
+argument or recipient the preview cannot enumerate, a shown value containing a C0/C1
+control character (other than a newline) or a Unicode format character, an
+over-budget call, and any tool whose effect class is `administer` or protected or
+consequential actuation. The budget SHALL be measured in UTF-16 code units.
+The RFC 0023 `presentation_key` and the HMAC callback token SHALL be unchanged.
+
+Each presentation SHALL record `args_digest`, the SHA-256 of the canonical JSON
+(sorted keys, no whitespace) of the stored `tool_args` it rendered, under the
+pending action's row lock when the handoff starts. If the stored call no longer
+matches the rendered digest, the handoff SHALL NOT start, and a card SHALL NOT be
+handed off with a NULL digest. A connector-authenticated card decision SHALL take
+the pending action's row lock and refuse with HTTP 409 "changed since shown" when
+any recorded presentation digest differs from the digest of the stored call,
+executing nothing; a dashboard approval binds to the call the dashboard displayed
+and does not use that check. Both dashboard approval routes SHALL compare the
+owner-safe displayed tool identity and argument digest against the locked pending
+row before edits, approval, audit or dispatch. Summary-only surfaces SHALL show
+the complete safe stored-call preview before enabling approval, and delayed undo
+callbacks SHALL retain that reviewed snapshot rather than substitute a refreshed
+call. Missing, stale, malformed or unshowable snapshots SHALL execute nothing.
+Downgrading the migration that adds the digest column
+SHALL refuse while any presentation carries a digest.
+
+#### Scenario: Email card shows the call
+
+- **WHEN** an email send is parked and its card is rendered
+- **THEN** the card lists every To and Cc address, the subject and the full body from stored `tool_args`
+- **AND** the assistant's explanation appears only under "Assistant says"
+- **AND** Approve, Reject and Open are offered
+
+#### Scenario: Call cannot be shown whole
+
+- **WHEN** the body exceeds the fit budget, the tool has no registered preview, or the tool is `administer`
+- **THEN** the card offers Open only
+
+#### Scenario: Telegram reaction card shows the exact native call
+
+- **WHEN** a `telegram_react_to_message` call is parked with nonempty text `chat_id` and `emoji` and a positive integer `message_id` excluding booleans
+- **THEN** Telegram and dashboard previews show all three exact stored arguments through the shared registry
+- **AND** a Telegram card that passes the existing safety and fit checks offers Approve, Reject and Open
+- **AND** missing or malformed arguments or unknown reaction kwargs, including empty future arguments, offer Open only
+
+#### Scenario: Stored call changed after presentation
+
+- **WHEN** the stored `tool_args` change after a card was presented and the owner taps Approve
+- **THEN** nothing executes, the action stays pending, and the reply says the call changed since shown

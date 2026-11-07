@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import BaseModel
@@ -18,6 +18,8 @@ from pydantic import BaseModel
 from butlers.daemon import ButlerDaemon
 from butlers.modules.base import Module
 from butlers.modules.registry import ModuleRegistry
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.tool_host import host_tools
 
 pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
@@ -38,10 +40,9 @@ class StrictModule(Module):
     def __init__(self) -> None:
         self._startup_config: Any = None
         self._tools_config: Any = None
+        self.started = False
 
-    @property
-    def name(self) -> str:
-        return "strict_mod"
+    name = "strict_mod"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -60,6 +61,7 @@ class StrictModule(Module):
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
     ) -> None:
+        self.started = True
         self._startup_config = config
 
     async def on_shutdown(self) -> None:
@@ -80,9 +82,7 @@ class AllDefaultsModule(Module):
         self._startup_config: Any = None
         self._tools_config: Any = None
 
-    @property
-    def name(self) -> str:
-        return "defaults_mod"
+    name = "defaults_mod"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -114,9 +114,7 @@ class NoSchemaModule(Module):
         self._startup_config: Any = None
         self._tools_config: Any = None
 
-    @property
-    def name(self) -> str:
-        return "no_schema_mod"
+    name = "no_schema_mod"
 
     @property
     def config_schema(self) -> type[BaseModel] | None:
@@ -180,70 +178,43 @@ def _make_registry(*module_classes: type[Module]) -> ModuleRegistry:
     return registry
 
 
-def _patch_infra():
-    """Return a dict of patches for all infrastructure dependencies."""
-    mock_pool = AsyncMock()
-    # pool.acquire() must return a proper async context manager (not a coroutine)
-    # so that ``async with pool.acquire() as conn:`` works in route_inbox recovery.
-    mock_conn = AsyncMock()
-    mock_conn.fetch.return_value = []
-    mock_pool.acquire = MagicMock(
-        return_value=AsyncMock(
-            __aenter__=AsyncMock(return_value=mock_conn),
-            __aexit__=AsyncMock(return_value=False),
-        )
+async def _run_module_phases(butler_dir: Path, registry: ModuleRegistry) -> ButlerDaemon:
+    """Run the daemon's own module phases on a DB-free host, with no boot.
+
+    Module selection, config validation, module startup and tool registration are
+    the subject; the first case in this file boots for real (bu-rvgzmf.2).
+    """
+    import butlers.lifecycle as lifecycle
+
+    daemon = (await host_tools(butler_dir, pool=fake_pool())).daemon
+    daemon._registry = registry
+    state = lifecycle.StartupState()
+    await lifecycle._startup_modules(daemon, state)
+    await lifecycle._startup_module_config(daemon, state)
+    await lifecycle._startup_module_startup(daemon, state)
+    await daemon._register_module_tools()
+    return daemon
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_real_boot_hands_validated_config_to_startup_and_tools(
+    booted_daemon, tmp_path: Path
+) -> None:
+    """The real startup validates a module's config once and hands that instance on."""
+    from butlers.testing.daemon import write_butler_config
+
+    config_dir = write_butler_config(
+        tmp_path, "general", extra_toml='[modules.strict_mod]\napi_key = "sk-123"\n'
     )
+    booted = await booted_daemon(config_dir, registry=_make_registry(StrictModule))
+    mod = booted.daemon._modules[0]
 
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-
-    class MockAdapter:
-        binary_name = "claude"
-
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            pass
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "get_adapter": patch(
-            "butlers.lifecycle.get_adapter",
-            return_value=MockAdapter,
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "mock_db": mock_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
+    assert isinstance(mod._startup_config, StrictConfig)
+    assert mod._startup_config.api_key == "sk-123"
+    assert mod._startup_config.timeout == 30  # default
+    assert mod._tools_config is mod._startup_config
+    assert booted.daemon._module_statuses["strict_mod"].status == "active"
 
 
 class TestValidConfigPasses:
@@ -255,24 +226,7 @@ class TestValidConfigPasses:
             tmp_path, modules={"strict_mod": {"api_key": "sk-123", "timeout": 60}}
         )
         registry = _make_registry(StrictModule)
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-        ):
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()
+        daemon = await _run_module_phases(butler_dir, registry)
 
         mod = daemon._modules[0]
         assert isinstance(mod._startup_config, StrictConfig)
@@ -283,24 +237,7 @@ class TestValidConfigPasses:
         """register_tools should receive the validated Pydantic instance."""
         butler_dir = _make_butler_toml(tmp_path, modules={"strict_mod": {"api_key": "sk-abc"}})
         registry = _make_registry(StrictModule)
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-        ):
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()
+        daemon = await _run_module_phases(butler_dir, registry)
 
         mod = daemon._modules[0]
         assert isinstance(mod._tools_config, StrictConfig)
@@ -311,24 +248,7 @@ class TestValidConfigPasses:
         """Omitting a defaulted field should use the default value."""
         butler_dir = _make_butler_toml(tmp_path, modules={"defaults_mod": {}})
         registry = _make_registry(AllDefaultsModule)
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-        ):
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()
+        daemon = await _run_module_phases(butler_dir, registry)
 
         mod = daemon._modules[0]
         assert isinstance(mod._startup_config, AllDefaultsConfig)
@@ -343,7 +263,6 @@ class TestUnconfiguredRequiredSchemaModules:
         """Absent config skips all modules with a config_schema (explicit config required)."""
         butler_dir = _make_butler_toml(tmp_path, modules={})
         registry = _make_registry(StrictModule, AllDefaultsModule, NoSchemaModule)
-        patches = _patch_infra()
 
         with (
             patch.object(NoSchemaModule, "on_startup", new_callable=AsyncMock) as omitted_start,
@@ -351,21 +270,8 @@ class TestUnconfiguredRequiredSchemaModules:
             patch.object(
                 NoSchemaModule, "migration_revisions", return_value=None
             ) as omitted_migration,
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
         ):
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()
+            daemon = await _run_module_phases(butler_dir, registry)
 
         loaded_names = {mod.name for mod in daemon._modules}
         assert "strict_mod" not in loaded_names
@@ -379,24 +285,7 @@ class TestUnconfiguredRequiredSchemaModules:
         """An empty config section is enough to load a module with all-default fields."""
         butler_dir = _make_butler_toml(tmp_path, modules={"defaults_mod": {}})
         registry = _make_registry(AllDefaultsModule)
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-        ):
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()
+        daemon = await _run_module_phases(butler_dir, registry)
 
         loaded_names = {mod.name for mod in daemon._modules}
         assert "defaults_mod" in loaded_names
@@ -416,24 +305,7 @@ class TestMissingRequiredField:
         """Omitting a required field marks the module config-failed AND names it."""
         butler_dir = _make_butler_toml(tmp_path, modules={"strict_mod": {}})
         registry = _make_registry(StrictModule)
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-        ):
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()  # Non-fatal — should not raise
+        daemon = await _run_module_phases(butler_dir, registry)
 
         status = daemon._module_statuses["strict_mod"]
         assert status.status == "failed"
@@ -451,24 +323,7 @@ class TestExtraFieldRejected:
             modules={"defaults_mod": {"host": "x", "bogus": "y"}},
         )
         registry = _make_registry(AllDefaultsModule)
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-        ):
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()
+        daemon = await _run_module_phases(butler_dir, registry)
 
         status = daemon._module_statuses["defaults_mod"]
         assert status.status == "failed"
@@ -486,24 +341,7 @@ class TestTypeMismatch:
             modules={"strict_mod": {"api_key": "sk-123", "timeout": "not_a_number"}},
         )
         registry = _make_registry(StrictModule)
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-        ):
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()
+        daemon = await _run_module_phases(butler_dir, registry)
 
         assert daemon._module_statuses["strict_mod"].status == "failed"
         assert daemon._module_statuses["strict_mod"].phase == "config"
@@ -519,24 +357,7 @@ class TestNoSchemaFallback:
             modules={"no_schema_mod": {"arbitrary": "value", "count": 42}},
         )
         registry = _make_registry(NoSchemaModule)
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-        ):
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()
+        daemon = await _run_module_phases(butler_dir, registry)
 
         mod = daemon._modules[0]
         assert isinstance(mod._startup_config, dict)
@@ -549,24 +370,7 @@ class TestNoSchemaFallback:
             modules={"no_schema_mod": {"any_key": "any_value"}},
         )
         registry = _make_registry(NoSchemaModule)
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-        ):
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()  # Should not raise
+        daemon = await _run_module_phases(butler_dir, registry)
 
         mod = daemon._modules[0]
         assert isinstance(mod._tools_config, dict)
@@ -583,27 +387,10 @@ class TestValidationPreventsModuleStartup:
             modules={"strict_mod": {}},  # Missing api_key
         )
         registry = _make_registry(StrictModule)
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-        ):
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()
+        daemon = await _run_module_phases(butler_dir, registry)
 
         # Module should be config-failed, on_startup never called
         assert daemon._module_statuses["strict_mod"].status == "failed"
         assert daemon._module_statuses["strict_mod"].phase == "config"
         mod = daemon._modules[0]
-        assert mod._startup_config is None  # on_startup was never called
+        assert mod.started is False  # on_startup was never called

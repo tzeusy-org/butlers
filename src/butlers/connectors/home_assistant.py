@@ -23,8 +23,6 @@ WebSocket is unavailable.
 
 Environment variables:
 - SWITCHBOARD_MCP_URL (required): Switchboard MCP SSE endpoint
-- CONNECTOR_PROVIDER (default: home_assistant)
-- CONNECTOR_CHANNEL (default: home_assistant)
 - CONNECTOR_HEALTH_PORT (default: 40087)
 - HA_BASE_URL: HA instance base URL (overrides entity_info)
 - HA_ACCESS_TOKEN: HA long-lived access token (overrides entity_info)
@@ -59,7 +57,6 @@ from __future__ import annotations
 
 import asyncio
 import heapq
-import json
 import logging
 import os
 import random
@@ -70,10 +67,11 @@ from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 from urllib.parse import urlparse
 
-from prometheus_client import Counter, Gauge, Histogram, generate_latest
+from prometheus_client import Counter, Gauge, Histogram
 
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.health_socket import make_health_socket
+from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.home_assistant_envelope import parse_time_fired
 from butlers.connectors.home_assistant_scrub import (
@@ -91,7 +89,17 @@ from butlers.connectors.home_assistant_wellness import (
 )
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
+from butlers.home_assistant_client import (
+    HAAuthInvalidError,
+    HAHandshakeProtocolError,
+    authenticate,
+    decode_ws_text,
+    ws_url,
+)
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import CHANNEL_KIND_FEED
+
+_DESCRIPTOR = connector_descriptor("home_assistant")
 
 if TYPE_CHECKING:
     pass
@@ -102,9 +110,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_CONNECTOR_TYPE = "home_assistant"
-_CONNECTOR_CHANNEL = "home_assistant"
-_CONNECTOR_PROVIDER = "home_assistant"
+_CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 
 _DEFAULT_HEALTH_PORT = 40087
 _DEFAULT_POLL_INTERVAL_S = 60
@@ -190,7 +196,7 @@ class HAWebSocketClient:
 
     Implements:
     - 3.1 Connector process lifecycle (start/stop)
-    - 3.2 WebSocket auth handshake (auth_required → auth → auth_ok/auth_invalid)
+    - 3.2 WebSocket auth handshake (server greeting → auth → auth_ok/auth_invalid)
     - 3.3 Event subscriptions: state_changed, automation_triggered, call_service
     - 3.4 Ping/pong keepalive (configurable interval + timeout)
     - 3.5 Exponential backoff reconnection (1s → cap, with jitter)
@@ -270,17 +276,8 @@ class HAWebSocketClient:
     # ------------------------------------------------------------------
 
     def _ws_url(self) -> str:
-        """Derive the WebSocket URL from the HA base HTTP URL.
-
-        Converts ``http://`` → ``ws://`` and ``https://`` → ``wss://``.
-
-        Returns:
-            HA WebSocket API endpoint URL.
-        """
-        base = self._ha_base_url
-        if base.startswith("https://"):
-            return base.replace("https://", "wss://", 1) + "/api/websocket"
-        return base.replace("http://", "ws://", 1) + "/api/websocket"
+        """Return the shared HA WebSocket endpoint."""
+        return ws_url(self._ha_base_url)
 
     # ------------------------------------------------------------------
     # Task 3.2 — Authentication handshake
@@ -290,7 +287,7 @@ class HAWebSocketClient:
         """Open WebSocket connection and complete the HA auth handshake (task 3.2).
 
         HA WebSocket auth flow:
-        1. Server sends: ``{"type": "auth_required", "ha_version": "..."}``
+        1. Server sends: the server greeting
         2. Client sends: ``{"type": "auth", "access_token": "..."}``
         3. Server replies: ``{"type": "auth_ok"}`` or ``{"type": "auth_invalid"}``
 
@@ -317,29 +314,17 @@ class HAWebSocketClient:
         )
 
         try:
-            # Step 1: expect auth_required
-            msg = await self._ws_connection.receive_json(timeout=10.0)
-            if msg.get("type") != "auth_required":
-                raise RuntimeError(
-                    f"HAWebSocketClient: expected auth_required, got: {msg.get('type')!r}"
-                )
-
-            # Step 2: send auth
-            await self._ws_connection.send_json(
-                {"type": "auth", "access_token": self._ha_access_token}
-            )
-
-            # Step 3: expect auth_ok or auth_invalid
-            msg = await self._ws_connection.receive_json(timeout=10.0)
-            msg_type = msg.get("type")
-            if msg_type == "auth_invalid":
-                raise RuntimeError(
-                    "HAWebSocketClient: authentication failed (auth_invalid). "
-                    "Check the HA_ACCESS_TOKEN or CredentialStore."
-                )
-            if msg_type != "auth_ok":
-                raise RuntimeError(f"HAWebSocketClient: unexpected auth response: {msg_type!r}")
-        except Exception:
+            msg = await authenticate(self._ws_connection, self._ha_access_token)
+        except HAAuthInvalidError:
+            await self._close_connection()
+            raise RuntimeError(
+                "HAWebSocketClient: authentication failed (auth_invalid). "
+                "Check the HA_ACCESS_TOKEN or CredentialStore."
+            ) from None
+        except HAHandshakeProtocolError:
+            await self._close_connection()
+            raise RuntimeError("HAWebSocketClient: unexpected authentication response") from None
+        except (Exception, asyncio.CancelledError):
             await self._close_connection()
             raise
 
@@ -518,25 +503,14 @@ class HAWebSocketClient:
                 except TimeoutError:
                     continue
 
-                if raw.type == aiohttp.WSMsgType.TEXT:
+                if raw.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
                     try:
-                        msg: dict[str, Any] = json.loads(raw.data)
-                    except json.JSONDecodeError:
+                        messages = decode_ws_text(raw.data)
+                    except ValueError:
                         logger.warning("HAWebSocketClient: invalid JSON message withheld")
                         continue
-                    if not isinstance(msg, dict):
-                        continue
-                    await self._dispatch_message(msg)
-
-                elif raw.type == aiohttp.WSMsgType.BINARY:
-                    try:
-                        msg = json.loads(raw.data)
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        logger.warning("HAWebSocketClient: invalid binary message")
-                        continue
-                    if not isinstance(msg, dict):
-                        continue
-                    await self._dispatch_message(msg)
+                    for msg in messages:
+                        await self._dispatch_message(msg)
 
                 elif raw.type in (
                     aiohttp.WSMsgType.CLOSE,
@@ -614,7 +588,7 @@ class HAWebSocketClient:
     async def _ws_command(
         self,
         command: dict[str, Any],
-        timeout: float = 10.0,
+        timeout: float = 10.0,  # noqa: ASYNC109 - command_sender keyword; rename deferred (#4816)
     ) -> dict[str, Any]:
         """Send a WebSocket command and await the correlated result.
 
@@ -1178,8 +1152,8 @@ class HAConnectorConfig:
     """
 
     switchboard_mcp_url: str
-    provider: str = _CONNECTOR_PROVIDER
-    channel: str = _CONNECTOR_CHANNEL
+    provider: str = _DESCRIPTOR.provider
+    channel: str = _DESCRIPTOR.channel
     health_port: int = _DEFAULT_HEALTH_PORT
     poll_interval_s: int = _DEFAULT_POLL_INTERVAL_S
     checkpoint_overlap_s: int = _DEFAULT_CHECKPOINT_OVERLAP_S
@@ -1239,8 +1213,8 @@ class HAConnectorConfig:
 
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
-            provider=os.environ.get("CONNECTOR_PROVIDER", _CONNECTOR_PROVIDER),
-            channel=os.environ.get("CONNECTOR_CHANNEL", _CONNECTOR_CHANNEL),
+            provider=_DESCRIPTOR.provider,
+            channel=_DESCRIPTOR.channel,
             health_port=_int("CONNECTOR_HEALTH_PORT", _DEFAULT_HEALTH_PORT),
             poll_interval_s=_int("HA_POLL_INTERVAL_S", _DEFAULT_POLL_INTERVAL_S),
             checkpoint_overlap_s=_int("HA_CHECKPOINT_OVERLAP_S", _DEFAULT_CHECKPOINT_OVERLAP_S),
@@ -1437,6 +1411,7 @@ class HAConnector:
             mcp_client=self._mcp_client,
             metrics=self._base_metrics,
             get_health_state=self._get_health_state,
+            channel_kind=CHANNEL_KIND_FEED,
         )
 
         logger.info(
@@ -1628,8 +1603,8 @@ class HAConnector:
             }
 
         @app.get("/metrics")
-        async def metrics() -> bytes:
-            return generate_latest()
+        async def metrics():
+            return prometheus_metrics_response()
 
         port = self._config.health_port
         try:
@@ -1643,6 +1618,7 @@ class HAConnector:
             host="127.0.0.1",
             port=port,
             log_level="warning",
+            log_config=None,
         )
         self._health_server = uvicorn.Server(uvicorn_config)
 
@@ -2470,7 +2446,7 @@ def _make_event_dispatcher(
         # global policy.
         if domain != "person" and global_ingestion_policy is not None:
             policy_envelope = IngestionEnvelope(
-                source_channel=_CONNECTOR_CHANNEL,
+                source_channel=_DESCRIPTOR.channel,
                 raw_key=entity_id,
             )
             try:

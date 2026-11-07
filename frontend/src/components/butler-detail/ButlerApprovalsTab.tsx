@@ -22,7 +22,7 @@
 
 import { Link } from "react-router"
 
-import { MonoLabel, Panel } from "@/components/butler-detail/atoms"
+import { MonoLabel, Panel } from "@/components/ui/atoms"
 import { Time } from "@/components/ui/time"
 import { useApprovalActions } from "@/hooks/use-approvals"
 import type { ApprovalAction } from "@/api/types"

@@ -42,15 +42,15 @@ import asyncpg
 from opentelemetry import trace
 from opentelemetry.context import Context
 
-from butlers.api.conversations import (
+from butlers.config import ButlerConfig
+from butlers.core.audit import write_audit_entry
+from butlers.core.child_env import without_owner_auth
+from butlers.core.conversation_sessions import (
     conversation_clear_provider_session,
     conversation_get_provider_session,
     conversation_set_provider_session,
     resolve_resume_handle,
 )
-from butlers.config import ButlerConfig
-from butlers.core.audit import write_audit_entry
-from butlers.core.child_env import without_owner_auth
 from butlers.core.dashboard_turns import (
     acknowledge_cancel,
     claim_invoke,
@@ -69,11 +69,16 @@ from butlers.core.dispatch_outcomes import (
     DispatchUsageEvidence,
     bound_resolution_receipt,
     record_dispatch_attempt,
+    usage_is_measured,
 )
 from butlers.core.dispatch_outcomes import (
     project_resolution_receipt as _attempt_resolution_receipt,
 )
-from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
+from butlers.core.failover_classifier import (
+    FailoverContext,
+    classify_failover_eligibility,
+    usage_limit_signal,
+)
 from butlers.core.logging import resolve_log_root
 from butlers.core.mcp_urls import (
     canonical_runtime_mcp_url,
@@ -111,6 +116,7 @@ from butlers.core.route_inbox import RouteInboxLeaseLost
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter, validated_session_timeout_overhead_s
 from butlers.core.runtimes.codex import MCPToolDiscoveryError
+from butlers.core.runtimes.served_identity import TerminalResultError, snapshot, unknown
 from butlers.core.session_process_logs import write as session_process_log_write
 from butlers.core.sessions import session_complete, session_create
 from butlers.core.skills import read_system_prompt_with_sources
@@ -152,7 +158,8 @@ from butlers.core.spawner_provider import (
 )
 from butlers.core.spawner_tool_calls import (
     _dedup_tool_calls_by_id,  # noqa: F401 — re-export for test patches
-    _has_non_command_tool_calls,
+    _has_mcp_tool_calls,
+    _is_mcp_tool_call,
     _looks_like_mcp_endpoint_alias,  # noqa: F401 — re-export for test patches
     _merge_tool_call_records,
     _normalize_tool_name,  # noqa: F401 — re-export for test patches
@@ -543,6 +550,8 @@ async def _write_dispatch_attempt(
     composed_prompt: ComposedPrompt | None = None,
     invoked: bool = False,
     resolution_receipt: dict[str, Any] | None = None,
+    served_identity: dict[str, Any] | None = None,
+    attempt_key: uuid.UUID | None = None,
 ) -> int | None:
     """Write one attempt row to public.model_dispatch_attempts (best-effort).
 
@@ -567,9 +576,14 @@ async def _write_dispatch_attempt(
     lightweight best-effort persistence. Never raises, so provenance
     degradation cannot disrupt the caller-visible runtime result.
     """
+    if not invoked and served_identity is None and resolution_receipt is not None:
+        runtime_type = (resolution_receipt.get("winner") or {}).get("runtime_type", "unknown")
+        served_identity = unknown(runtime_type, state="not_invoked")
+        attempt_key = attempt_key or uuid.uuid4()
     usage_evidence = None
     if invoked:
-        measured = usage is not None and usage.get("input_tokens") is not None
+        composed_kwargs: dict[str, Any] = _composed_prompt_ledger_kwargs(composed_prompt)
+        measured = usage_is_measured(usage)
         usage_evidence = DispatchUsageEvidence(
             input_tokens=usage.get("input_tokens") if measured else None,
             output_tokens=(usage.get("output_tokens") or 0) if measured else None,
@@ -580,7 +594,7 @@ async def _write_dispatch_attempt(
             purpose=usage_purpose,
             resume_outcome=resume_outcome,
             usage_source="measured" if measured else "unmeasurable",
-            **_composed_prompt_ledger_kwargs(composed_prompt),
+            **composed_kwargs,
         )
     return await record_dispatch_attempt(
         pool,
@@ -599,6 +613,8 @@ async def _write_dispatch_attempt(
         produce_fleet_halt=produce_fleet_halt,
         usage_evidence=usage_evidence,
         resolution_receipt=resolution_receipt,
+        served_identity=served_identity,
+        attempt_key=attempt_key,
     )
 
 
@@ -619,8 +635,6 @@ class Spawner:
         Path to the butler's config directory (containing CLAUDE.md, etc.).
     pool:
         asyncpg connection pool for session logging.
-    module_credentials_env:
-        Dict mapping module name to list of env var names needed by that module.
     runtime:
         A RuntimeAdapter instance to use for invocation. When not provided,
         a default ClaudeCodeAdapter is created.
@@ -640,7 +654,6 @@ class Spawner:
         config: ButlerConfig,
         config_dir: Path,
         pool: asyncpg.Pool | None = None,
-        module_credentials_env: dict[str, list[str]] | None = None,
         runtime: RuntimeAdapter | None = None,
         audit_pool: asyncpg.Pool | None = None,
         credential_store: CredentialStore | None = None,
@@ -649,7 +662,6 @@ class Spawner:
         self._config = config
         self._config_dir = config_dir
         self._pool = pool
-        self._module_credentials_env = module_credentials_env
         self._audit_pool = audit_pool
         self._credential_store = credential_store
         self._runtime_config_accessor = runtime_config_accessor
@@ -776,30 +788,16 @@ class Spawner:
             if self._adapter_pool_cfg.get(runtime_type, "") == cfg_str:
                 return self._adapter_pool[runtime_type]
 
-        from butlers.core.runtimes.base import create_adapter
+        from butlers.core.runtimes.registry import build_runtime_adapter
 
-        if runtime_type == "codex":
-            # Codex does not consume generic provider/log-root constructor
-            # kwargs. Passing them through ``create_adapter`` can trigger its
-            # compatibility fallback, which would drop the explicit global
-            # authority along with those unsupported kwargs. Keep the Codex
-            # construction surface exact so an authorized daemon session
-            # retains its selected authority; a missing authority still fails
-            # closed inside ``CodexAdapter``.
-            adapter = create_adapter(
-                runtime_type,
-                butler_name=self._config.name,
-                credential_store=self._credential_store,
-            )
-        else:
-            log_root = resolve_log_root(self._config.logging.log_root)
-            adapter = create_adapter(
-                runtime_type,
-                provider_config=provider_config,
-                butler_name=self._config.name,
-                log_root=log_root,
-                credential_store=self._credential_store,
-            )
+        adapter = build_runtime_adapter(
+            runtime_type,
+            codex_authority=self._credential_store,
+            provider_config=provider_config,
+            butler_name=self._config.name,
+            log_root=resolve_log_root(self._config.logging.log_root),
+            credential_store=self._credential_store,
+        )
         self._adapter_pool[runtime_type] = adapter
         self._adapter_pool_cfg[runtime_type] = cfg_str
         logger.debug("Lazily instantiated adapter for runtime_type=%s", runtime_type)
@@ -1231,7 +1229,7 @@ class Spawner:
         self._accepting = False
         logger.info("Spawner stopped accepting new triggers")
 
-    async def drain(self, timeout: float = 30.0) -> None:
+    async def drain(self, timeout: float = 30.0) -> None:  # noqa: ASYNC109 - RFC 0001 contract tests pin it
         """Wait for in-flight runtime sessions to complete, up to *timeout* seconds.
 
         If sessions are still running after the timeout, they are cancelled.
@@ -1574,6 +1572,9 @@ class Spawner:
         runtime_session_id: str | None = None
         spawner_result: SpawnerResult | None = None
         runtime_invoked = False
+        # Set once the current attempt's invoked row is written, so the
+        # cancellation handler never double-records it.
+        _invoked_attempt_recorded = False
         dashboard_turn_session_registered = False
         # Direct cancellation of trigger() normally means daemon drain and
         # must propagate.  A route-inbox worker instead gives us this explicit
@@ -2376,7 +2377,11 @@ class Spawner:
 
             memory_ctx: str | None = None
             memory_enabled = _memory_module_enabled(self._config)
-            if memory_enabled:
+            # A consolidation session's dedup context is already partition-filtered
+            # in its prompt. Recall-based injection would show an owner-partition
+            # session facts of every authority, which it could restate as
+            # owner-evidenced new facts.
+            if memory_enabled and trigger_source != "schedule:consolidation":
                 memory_ctx = await fetch_memory_context(
                     self._pool,
                     self._config.name,
@@ -2505,8 +2510,9 @@ class Spawner:
             # Build credential env.
             # Caller-supplied env_override replaces the default env entirely (used by
             # the QA dispatcher to pass a sandboxed environment).
-            # Healing sessions get a minimal env: only PATH + GH_TOKEN for PR creation.
-            # No butler-specific credentials are passed to the isolated healing agent.
+            # Historical healing provenance gets a minimal env: PATH and tracing only.
+            # No GitHub or butler-specific credential reaches it; QA publication goes
+            # only through the restricted QA publisher (REQ-qa-investigation-dispatch-001).
             if env_override is not None:
                 env: dict[str, str] = dict(env_override)
             elif trigger_source == "healing":
@@ -2514,27 +2520,17 @@ class Spawner:
                 host_path = os.environ.get("PATH")
                 if host_path:
                     env["PATH"] = host_path
-                # Resolve GH_TOKEN for PR creation via credential store or env fallback
-                gh_token_key = "GH_TOKEN"
-                if self._credential_store is not None:
-                    gh_token_value = await self._credential_store.resolve(gh_token_key)
-                else:
-                    gh_token_value = os.environ.get(gh_token_key)
-                if gh_token_value:
-                    env[gh_token_key] = gh_token_value
                 # Include traceparent for distributed tracing continuity
                 env.update(get_traceparent_env())
             else:
-                env = await _build_env(
-                    self._config, self._module_credentials_env, self._credential_store
-                )
+                env = await _build_env(self._config, self._credential_store)
 
             # Owner authentication belongs to the dashboard, including when an
             # explicit caller override or a custom adapter is used.
             env = without_owner_auth(env)
 
             # Build MCP server config for the adapter.
-            # Healing sessions use a minimal env (PATH + GH_TOKEN only) and no MCP servers.
+            # Healing sessions use a minimal env (PATH and tracing only) and no MCP servers.
             # QA sessions use a sandboxed env supplied via env_override by the QA dispatcher
             # (env isolation is the caller's responsibility, not enforced here) and also
             # receive no MCP servers — both to prevent access to live production state and
@@ -2617,6 +2613,9 @@ class Spawner:
 
             while True:
                 _attempt_count += 1
+                _invoked_attempt_recorded = False
+                _current_attempt_key = uuid.uuid4()
+                _current_served_identity = None
                 _current_attempt_index = _next_attempt_index
                 _next_attempt_index += 1
                 # Per-attempt clock (distinct from the outer `t0`, which spans the
@@ -2758,6 +2757,10 @@ class Spawner:
                                 await invoke_task
                             except (asyncio.CancelledError, Exception):
                                 pass
+                        # The adapter's finalizer owns the cancellation/error
+                        # record. Copy it after that task has finished, before
+                        # any persistence await or worker reuse.
+                        _current_served_identity = snapshot(runtime)
                         # Only this attempt's own entry -- a same-tier failover
                         # retry may have already overwritten the key with a new
                         # invoke_task by the time this finally runs.
@@ -2800,7 +2803,7 @@ class Spawner:
                         executed_tool_calls,
                         butler_name=self._config.name,
                     )
-                    if not _has_non_command_tool_calls(merged_tool_calls):
+                    if not _has_mcp_tool_calls(merged_tool_calls):
                         # No confirmed MCP calls — eligible for failover classification.
                         _attempt_exc = exc
                         _attempt_tool_calls = list(preconsumed_runtime_tool_calls)
@@ -2814,13 +2817,7 @@ class Spawner:
                             "tool call(s)",
                             self._config.name,
                             session_id,
-                            len(
-                                [
-                                    c
-                                    for c in merged_tool_calls
-                                    if c.get("name") != "command_execution"
-                                ]
-                            ),
+                            sum(1 for c in merged_tool_calls if _is_mcp_tool_call(c)),
                         )
                         result_text, tool_calls, usage = (
                             exc.result_text,
@@ -2841,12 +2838,18 @@ class Spawner:
                     reported_usage = getattr(attempt_exc, "usage", None)
                     if isinstance(reported_usage, dict):
                         usage = reported_usage
+                    # Preserve adapter-observed terminal tool evidence before daemon merge.
+                    reported_tools = getattr(attempt_exc, "tool_calls", [])
                     # Collect tool calls captured before the failure.
                     if preconsumed_runtime_tool_calls is not None:
                         _attempt_tool_calls = list(preconsumed_runtime_tool_calls)
                         preconsumed_runtime_tool_calls = None
                     elif runtime_session_id:
                         _attempt_tool_calls = consume_runtime_session_tool_calls(runtime_session_id)
+
+                    _attempt_tool_calls = _merge_tool_call_records(
+                        reported_tools, _attempt_tool_calls, butler_name=self._config.name
+                    )
 
                 # An adapter returning normally is not sufficient evidence of a
                 # successful session.  Some CLIs can exit zero after reporting
@@ -2867,7 +2870,7 @@ class Spawner:
                         butler_name=self._config.name,
                     )
                     merged_runtime_capture = True
-                    if not _has_non_command_tool_calls(tool_calls):
+                    if not _has_mcp_tool_calls(tool_calls):
                         if (
                             usage
                             and self._pool is not None
@@ -2898,13 +2901,18 @@ class Spawner:
                     )
                 )
 
+                # A plan usage limit is account-scoped, not a stale handle: retrying
+                # the same exhausted account cold cannot succeed, so it never takes
+                # the resume cold-retry branch below and exhausts the account via
+                # ordinary failover instead (bu-s11n0s.36).
+                _is_usage_limit = _failover_decision.reason.startswith("usage_limit")
                 attempted_resume = _attempt_count == 1 and bool(
                     invoke_kwargs.get("resume_session_id")
                 )
                 if attempted_resume:
                     _resume_outcome = (
                         "resume_failed_retried_cold"
-                        if _failover_decision.eligible
+                        if _failover_decision.eligible and not _is_usage_limit
                         else "resume_failed_terminal"
                     )
 
@@ -2916,13 +2924,24 @@ class Spawner:
                         self._config.name,
                         _failover_decision.reason,
                     )
-                    # Record suppression provenance (best-effort).
+                    # Record suppression provenance (best-effort). A usage limit hit
+                    # after tool work is not retried, but the account is still out of
+                    # allowance: record it as such (the breaker ignores the outcome)
+                    # and exhaust the account so the next session skips it
+                    # (bu-s11n0s.34).
+                    _suppressed_usage_limit = usage_limit_signal(runtime.last_process_info)
                     if self._pool is not None and catalog_entry_id is not None:
-                        await _write_dispatch_attempt(
+                        if _suppressed_usage_limit is not None:
+                            _suppressed_outcome = ALLOWANCE_OUTCOME
+                        elif isinstance(_attempt_exc, TerminalResultError):
+                            _suppressed_outcome = "runtime_failure"
+                        else:
+                            _suppressed_outcome = "suppressed"
+                        _suppressed_attempt_row_id = await _write_dispatch_attempt(
                             self._pool,
                             catalog_entry_id=catalog_entry_id,
                             butler=self._config.name,
-                            outcome="suppressed",
+                            outcome=_suppressed_outcome,
                             attempt_index=_current_attempt_index,
                             session_id=session_id,
                             failure_reason=_failover_decision.reason,
@@ -2941,8 +2960,18 @@ class Spawner:
                             resume_outcome=_resume_outcome,
                             composed_prompt=_composed_prompt_digest,
                             invoked=True,
+                            served_identity=_current_served_identity,
+                            attempt_key=_current_attempt_key,
                             resolution_receipt=_current_resolution_receipt,
                         )
+                        _invoked_attempt_recorded = True
+                        if _suppressed_usage_limit is not None:
+                            await mark_allowance_exhausted(
+                                self._pool,
+                                catalog_entry_id,
+                                reset_at=_suppressed_usage_limit.reset_at,
+                                attempt_id=_suppressed_attempt_row_id,
+                            )
                     # Mark as already classified so the outer except handler does not
                     # double-emit the suppressed metric for this exception.
                     _failover_already_classified = True
@@ -2962,7 +2991,8 @@ class Spawner:
                 # Record it under a non-breaker outcome, then evict the handle and
                 # loop back without advancing to another candidate: this must never
                 # consume a failover slot or count against the model's circuit breaker.
-                if _attempt_count == 1 and invoke_kwargs.get("resume_session_id"):
+                # A usage limit skips this branch (see _is_usage_limit above).
+                if attempted_resume and not _is_usage_limit:
                     logger.info(
                         "Provider resume attempt failed for butler=%s conversation=%s "
                         "runtime_type=%s (%s); evicting handle and retrying cold",
@@ -3006,8 +3036,11 @@ class Spawner:
                             resume_outcome=_resume_outcome,
                             composed_prompt=_composed_prompt_digest,
                             invoked=True,
+                            served_identity=_current_served_identity,
+                            attempt_key=_current_attempt_key,
                             resolution_receipt=_current_resolution_receipt,
                         )
+                        _invoked_attempt_recorded = True
                     _current_resolution_receipt = _attempt_resolution_receipt(
                         _base_resolution_receipt,
                         catalog_entry_id=catalog_entry_id,
@@ -3028,7 +3061,6 @@ class Spawner:
                 # A plan usage-limit is account-scoped, not a model fault: it gets its
                 # own outcome (the breaker ignores it) and exhausts every entry on the
                 # provider account until the reset window (bu-q7vx1q.13).
-                _is_usage_limit = _failover_decision.reason.startswith("usage_limit")
                 if self._pool is not None and _failed_catalog_entry_id is not None:
                     _failed_attempt_row_id = await _write_dispatch_attempt(
                         self._pool,
@@ -3053,8 +3085,11 @@ class Spawner:
                         resume_outcome=_resume_outcome,
                         composed_prompt=_composed_prompt_digest,
                         invoked=True,
+                        served_identity=_current_served_identity,
+                        attempt_key=_current_attempt_key,
                         resolution_receipt=_current_resolution_receipt,
                     )
+                    _invoked_attempt_recorded = True
                     if _is_usage_limit:
                         await mark_allowance_exhausted(
                             self._pool,
@@ -3219,8 +3254,11 @@ class Spawner:
                     resume_outcome=_resume_outcome,
                     composed_prompt=_composed_prompt_digest,
                     invoked=True,
+                    served_identity=_current_served_identity,
+                    attempt_key=_current_attempt_key,
                     resolution_receipt=_current_resolution_receipt,
                 )
+                _invoked_attempt_recorded = True
                 await clear_allowance_exhaustion(self._pool, catalog_entry_id)
 
             # ------------------------------------------------------------------
@@ -3409,13 +3447,23 @@ class Spawner:
                 and spawner_result.output
                 and trigger_source != "schedule:consolidation"
             ):
-                await store_session_episode(
-                    self._pool,
-                    self._config.name,
-                    spawner_result.output,
-                    session_id=session_id,
-                    routing_context=routing_context,
-                )
+                # Delivery bookkeeping from this exact scheduled recap is not lived history.
+                day_close_delivery_status = False
+                if (
+                    self._config.name == "chronicler"
+                    and trigger_source == "schedule:chronicler_day_close"
+                ):
+                    from butlers.chronicler.prose_admission import is_delivery_status_scaffold
+
+                    day_close_delivery_status = is_delivery_status_scaffold(spawner_result.output)
+                if not day_close_delivery_status:
+                    await store_session_episode(
+                        self._pool,
+                        self._config.name,
+                        spawner_result.output,
+                        session_id=session_id,
+                        routing_context=routing_context,
+                    )
 
             return spawner_result
 
@@ -3458,6 +3506,35 @@ class Spawner:
             is_owner_cancel = bool(runtime_session_id) and (
                 runtime_session_id in self._owner_cancelled_sessions
             )
+            # A direct cancel of this task (drain/shutdown) wins over a
+            # concurrent owner Stop: it is what actually ends the attempt.
+            if outer_task_cancelled_directly:
+                cancel_outcome, cancel_reason = "suppressed", "drain_cancelled"
+            elif is_owner_cancel:
+                cancel_outcome, cancel_reason = "owner_cancelled", "owner_cancelled"
+            else:
+                cancel_outcome, cancel_reason = "suppressed", "runtime_cancelled"
+            if (
+                runtime_invoked
+                and self._pool is not None
+                and catalog_entry_id is not None
+                and not _invoked_attempt_recorded
+            ):
+                await _write_dispatch_attempt(
+                    self._pool,
+                    catalog_entry_id=catalog_entry_id,
+                    butler=self._config.name,
+                    outcome=cancel_outcome,
+                    attempt_index=_current_attempt_index,
+                    session_id=session_id,
+                    failure_reason=cancel_reason,
+                    logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
+                    invoked=True,
+                    usage=usage,
+                    served_identity=snapshot(runtime),
+                    attempt_key=_current_attempt_key,
+                )
             if route_lease_lost is not None and route_lease_lost.is_set():
                 if dashboard_turn_id is not None:
                     dashboard_route_lease_lost = True

@@ -10,11 +10,9 @@ Covers per bu-e38f:
 7. Digest formatting with multiple butlers
 8. dedup_key format validation errors
 
-These tests are unit-level (no Docker required) — they use in-process asyncpg
-mocks or an in-memory SQLite-style fixture via inline table creation on a real
-Postgres container fixture when available. For CI portability we use the
-``provisioned_postgres_pool`` session fixture for DB-backed scenarios, but
-mark Docker-requiring tests so they are skipped when Docker is unavailable.
+Unit cases use in-process mocks without Docker. DB-backed scenarios use a
+core-migrated PostgreSQL database with per-test Insight state cleanup, and are
+marked as requiring Docker.
 
 Issue: bu-e38f
 """
@@ -28,6 +26,8 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from butlers.testing.clock import FakeClock
 
 _docker_available = shutil.which("docker") is not None
 
@@ -57,15 +57,11 @@ _PINNED_NOW = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
 # default core_160 writes into ``public.approvals_policy`` for this single-owner
 # (Asia/Singapore) deployment.
 #
-# Seeding it is what gives ``_PINNED_NOW`` something to be quiet or loud
-# *relative to*. Without the row the table does not exist at all, so
-# ``get_approvals_policy_quiet_hours`` catches the UndefinedTableError, returns
-# ``None``, and ``is_policy_quiet_now`` reports every hour of every day as
-# awake: the quiet-hours branch of ``delivery_cycle`` was unreachable and a
-# cycle that omitted ``now=`` could not observe suppression however loud the
-# wall clock got. With the row present the window is real — 23:00-08:00 SGT is
-# 15:00-24:00 UTC — so a cycle handed the wall clock is suppressed for nine
-# hours of every day, and every call site has to name its own instant.
+# Seeding it gives ``_PINNED_NOW`` a real quiet window to evaluate. The migrated
+# schema also supplies user_context, so an empty context read succeeds rather
+# than being confused with an unavailable table. Missing/unreadable attention
+# state must hold routine delivery, not authorize it. The real 23:00-08:00 SGT
+# window is 15:00-24:00 UTC; each cycle still names its own instant.
 _DEFAULT_QUIET_START_HOUR = 23
 _DEFAULT_QUIET_END_HOUR = 8
 _DEFAULT_QUIET_TIMEZONE = "Asia/Singapore"
@@ -98,11 +94,12 @@ class TestInsightExpiryHelpers:
     async def test_expiry_helpers_ignore_far_wall_clock(self, monkeypatch, helper, expected):
         """Expiry fixtures must remain relative to the delivery-cycle instant."""
         real_datetime = datetime
+        far_clock = FakeClock(real_datetime(2040, 1, 1, tzinfo=UTC))
 
         class FarWallClockDatetime(real_datetime):
             @classmethod
             def now(cls, tz=None):
-                return real_datetime(2040, 1, 1, tzinfo=tz or UTC)
+                return far_clock.now().replace(tzinfo=tz or UTC)
 
         monkeypatch.setattr(sys.modules[__name__], "datetime", FarWallClockDatetime)
 
@@ -115,39 +112,57 @@ class TestInsightExpiryHelpers:
 
 
 @pytest.fixture
-async def insight_pool(provisioned_postgres_pool):
-    """Provision a fresh database with insight tables and the owner policy.
-
-    The Owner Attention Policy is part of the schema every one of these tests
-    runs against in production, so it is seeded here with its production
-    default. A test that is *about* suppression overrides it with
-    :func:`_set_owner_attention_policy`.
-    """
+async def insight_pool(db_pool):
+    """Test-owned Insight state on a fresh core-migrated clone."""
     from butlers.tools.switchboard.insight.broker import create_insight_tables
 
-    async with provisioned_postgres_pool() as pool:
-        await create_insight_tables(pool)
-        await _set_owner_attention_policy(
-            pool,
-            quiet_start_hour=_DEFAULT_QUIET_START_HOUR,
-            quiet_end_hour=_DEFAULT_QUIET_END_HOUR,
-            timezone=_DEFAULT_QUIET_TIMEZONE,
+    await create_insight_tables(db_pool)
+    # The core chain seeds the insight_settings singleton; tests start without it.
+    await db_pool.execute("TRUNCATE insight_settings")
+    await _set_owner_attention_policy(
+        db_pool,
+        quiet_start_hour=_DEFAULT_QUIET_START_HOUR,
+        quiet_end_hour=_DEFAULT_QUIET_END_HOUR,
+        timezone=_DEFAULT_QUIET_TIMEZONE,
+    )
+    return db_pool
+
+
+async def _insert_history_candidate(
+    pool,
+    *,
+    delivered_at: datetime,
+    category: str = "history",
+    origin_butler: str = "health",
+) -> str:
+    """Create a real terminal parent for an independent engagement-history row."""
+    now = datetime.now(UTC)
+    # Recent creation keeps this parent outside retention's candidate-delete
+    # target while its engagement timestamp exercises the intended history day.
+    # Delivered status prevents the parent from entering a delivery working set.
+    return str(
+        await pool.fetchval(
+            """
+            INSERT INTO insight_candidates
+                (origin_butler, priority, category, dedup_key, expires_at, message,
+                 status, delivered_at, created_at)
+            VALUES ($1, 1, $2, $3, $4, 'Historical engagement', 'delivered', $5, $6)
+            RETURNING id
+            """,
+            origin_butler,
+            category,
+            f"history:{uuid.uuid4()}",
+            now + timedelta(days=1),
+            delivered_at,
+            now,
         )
-        yield pool
+    )
 
 
 async def _set_owner_attention_policy(
     pool, *, quiet_start_hour: int | None, quiet_end_hour: int | None, timezone: str = "UTC"
 ) -> None:
     """Create the canonical test authority and set its complete/disabled window."""
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.approvals_policy (
-            id INTEGER PRIMARY KEY DEFAULT 1,
-            quiet_start_hour INTEGER,
-            quiet_end_hour INTEGER,
-            timezone TEXT NOT NULL DEFAULT 'UTC'
-        )
-    """)
     await pool.execute(
         """
         INSERT INTO public.approvals_policy (id, quiet_start_hour, quiet_end_hour, timezone)
@@ -548,8 +563,14 @@ class TestEndToEndInsightFlow:
                 """
                 INSERT INTO insight_engagement
                     (insight_id, delivered_at, engaged, category, origin_butler)
-                VALUES (gen_random_uuid(), $1, $2, 'Health', 'health')
+                VALUES ($1::uuid, $2, $3, 'Health', 'health')
                 """,
+                await _insert_history_candidate(
+                    insight_pool,
+                    delivered_at=_PINNED_NOW - timedelta(minutes=index),
+                    category="Health",
+                    origin_butler="health",
+                ),
                 _PINNED_NOW - timedelta(minutes=index),
                 index == 0,
             )
@@ -557,8 +578,11 @@ class TestEndToEndInsightFlow:
             """
             INSERT INTO insight_engagement
                 (insight_id, delivered_at, engaged, category, origin_butler)
-            VALUES (gen_random_uuid(), $1, TRUE, 'Finance', 'finance')
+            VALUES ($1::uuid, $2, TRUE, 'Finance', 'finance')
             """,
+            await _insert_history_candidate(
+                insight_pool, delivered_at=_PINNED_NOW, category="Finance", origin_butler="finance"
+            ),
             _PINNED_NOW,
         )
 
@@ -1023,7 +1047,7 @@ class TestConfiguredGlobalCapacity:
             INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, TRUE)
         """,
-            str(uuid.uuid4()),
+            await _insert_history_candidate(insight_pool, delivered_at=now - timedelta(days=1)),
             now - timedelta(days=1),
         )
         for i in range(9):
@@ -1032,7 +1056,7 @@ class TestConfiguredGlobalCapacity:
                 INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
                 VALUES ($1::uuid, $2, FALSE)
             """,
-                str(uuid.uuid4()),
+                await _insert_history_candidate(insight_pool, delivered_at=now - timedelta(days=i)),
                 now - timedelta(days=i),
             )
 
@@ -1621,6 +1645,190 @@ class TestClusteredDigest:
         ]
 
 
+class _FakeTensionConn:
+    def __init__(self, log):
+        self.log = log
+
+    def transaction(self):
+        return _FakeAsyncCM(None)
+
+    async def execute(self, sql, *args):
+        self.log.append(("execute", " ".join(sql.split())[:40], args))
+
+    async def executemany(self, sql, rows):
+        self.log.append(("executemany", " ".join(sql.split())[:40], list(rows)))
+
+
+class _FakeAsyncCM:
+    def __init__(self, value):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeTensionPool:
+    """Records writes; ``members`` is what ``fetch`` returns for the sink lookup."""
+
+    def __init__(self, members=()):
+        self.log: list = []
+        self.members = list(members)
+
+    def acquire(self):
+        return _FakeAsyncCM(_FakeTensionConn(self.log))
+
+    async def fetch(self, sql, *args):
+        return self.members
+
+    async def fetchval(self, sql, *args):
+        return (args[0], args[1]) in getattr(self, "recorded", set())
+
+
+def _gift(idx: int, option: str, *, key: str = "gift:ent-1:2026-11-20", **extra) -> dict:
+    return {
+        "id": uuid.UUID(int=idx),
+        "origin_butler": "relationship",
+        "priority": 60,
+        "category": "pending-gift",
+        "dedup_key": f"relationship:pending-gift:{idx}",
+        "cooldown_days": None,
+        "message": f"Pending gift: {option}",
+        "metadata": {"entity_id": "ent-1", "choice": {"key": key, "option": option}, **extra},
+    }
+
+
+class TestTensionCluster:
+    """bu-7dpw8: a cluster whose members declare conflicting metadata.choice
+    options becomes one owner question instead of several digest lines."""
+
+    @pytest.mark.parametrize(
+        ("choices", "expected"),
+        [
+            ([("k", "tea"), ("k", "book")], True),
+            ([("k", "tea"), ("k", "tea")], False),  # same option is agreement
+            ([("k", "tea"), ("other", "book")], False),  # different keys never conflict
+            ([("k", "tea"), (None, None)], False),  # one declaration is not a tension
+            ([("k", "tea"), ("k", "")], False),  # malformed option ignored
+        ],
+    )
+    def test_is_tension_needs_same_key_with_different_options(self, choices, expected):
+        from butlers.tools.switchboard.insight.broker import _is_tension
+
+        cluster = []
+        for i, (key, option) in enumerate(choices, start=1):
+            metadata = {"entity_id": "e"}
+            if key is not None:
+                metadata["choice"] = {"key": key, "option": option}
+            cluster.append({"id": uuid.UUID(int=i), "dedup_key": f"a:b:{i}", "metadata": metadata})
+        assert _is_tension(cluster) is expected
+
+    async def test_tension_cluster_asks_one_question_and_leaves_the_digest(self):
+        from butlers.tools.switchboard.insight.broker import (
+            _format_digest,
+            absorb_tensions,
+        )
+
+        asked = []
+
+        async def confirm_fn(question):
+            asked.append(question)
+            return {"status": "asked"}
+
+        other = {
+            "id": uuid.UUID(int=9),
+            "origin_butler": "finance",
+            "priority": 50,
+            "category": "bill",
+            "dedup_key": "finance:bill:9",
+            "cooldown_days": None,
+            "message": "Rent due",
+            "metadata": {"entity_id": "ent-2"},
+        }
+        # Same entity links it into the cluster, but it declares no choice.
+        milestone = {
+            **other,
+            "id": uuid.UUID(int=8),
+            "dedup_key": "relationship:ms:8",
+            "message": "Milestone",
+            "metadata": {"entity_id": "ent-1"},
+        }
+        pool = _FakeTensionPool()
+        remaining, absorbed = await absorb_tensions(
+            pool, [_gift(1, "tea"), _gift(2, "book"), other, milestone], confirm_fn, budget=3
+        )
+        assert len(asked) == 1
+        assert [o.label for o in asked[0].options] == ["book", "tea"]
+        assert asked[0].member_ids == (str(uuid.UUID(int=1)), str(uuid.UUID(int=2)))
+        assert absorbed == 1
+        assert remaining == [other, milestone]
+        digest = await _format_digest(remaining)
+        assert "tea" not in digest and "Rent due" in digest and "Milestone" in digest
+        # members settle as delivered with the cluster ref stamped for the answer path
+        assert any(entry[0] == "execute" and "UPDATE" in entry[1] for entry in pool.log)
+
+    async def test_open_question_dedups_and_transport_failure_falls_back_to_digest(self):
+        from butlers.tools.switchboard.insight.broker import _tension_ref, absorb_tensions
+
+        a, b = _gift(1, "tea"), _gift(2, "book")
+        assert _tension_ref([a, b]) == _tension_ref([b, a])
+
+        seen: set[str] = set()
+
+        async def confirm_fn(question):
+            first = question.ref not in seen
+            seen.add(question.ref)
+            return {"status": "asked" if first else "open"}
+
+        pool = _FakeTensionPool()
+        for _ in range(2):  # identical tension re-detected next cycle
+            remaining, absorbed = await absorb_tensions(pool, [a, b], confirm_fn, budget=3)
+            assert remaining == [] and absorbed == 1
+        assert len(seen) == 1
+
+        for failing in (
+            AsyncMock(side_effect=RuntimeError("down")),
+            AsyncMock(return_value={"status": "error"}),
+            None,
+        ):
+            pool = _FakeTensionPool()
+            remaining, absorbed = await absorb_tensions(pool, [a, b], failing, budget=3)
+            assert remaining == [a, b] and absorbed == 0
+            assert pool.log == []
+
+    async def test_answer_records_feedback_on_every_member_once(self):
+        from butlers.tools.switchboard.insight import broker
+
+        members = [
+            {"id": uuid.UUID(int=i), "metadata": _gift(i, o)["metadata"]}
+            for i, o in ((1, "tea"), (2, "book"))
+        ]
+        pool = _FakeTensionPool(members)
+        with patch.object(
+            broker, "record_insight_feedback", AsyncMock(return_value={"status": "recorded"})
+        ) as record:
+            registration = broker.tension_sink_registration(pool)
+            assert registration.producer == "insight_broker"
+            receipt = await registration.apply(uuid.uuid4(), "ref-1", "o0")
+        assert receipt["status"] == "applied"
+        assert {c.kwargs["insight_id"] for c in record.await_args_list} == {
+            str(uuid.UUID(int=1)),
+            str(uuid.UUID(int=2)),
+        }
+        assert all(c.kwargs["verdict"] == "useful" for c in record.await_args_list)
+        assert all(c.kwargs["evidence_ref"].endswith(":book") for c in record.await_args_list)
+        # a retry after a lost receipt must not insert a second feedback row
+        pool.recorded = {(str(m["id"]), "tension:ref-1:book") for m in members}
+        with patch.object(broker, "record_insight_feedback", AsyncMock()) as again:
+            await registration.apply(uuid.uuid4(), "ref-1", "o0")
+        again.assert_not_awaited()
+        # expiry never reaches the sink (ConfirmService reports no_answer), and asking
+        # alone recorded no feedback.
+        assert {v for v in registration.values} == {"o0", "o1", "o2", "o3"}
+
+
 # ===========================================================================
 # Category 10: Budget enforcement (requires Docker)
 # ===========================================================================
@@ -1670,6 +1878,36 @@ class TestBudgetEnforcement:
             "SELECT COUNT(*) FROM insight_candidates WHERE status = 'pending'"
         )
         assert pending == 2
+
+        from butlers.tools.switchboard.insight.broker import expire_candidates
+
+        budget_rows = await insight_pool.fetch(
+            "SELECT id, metadata, expires_at FROM insight_candidates WHERE status = 'pending'"
+        )
+        assert len(budget_rows) == 2
+        assert all(row["metadata"]["blocked_by"] == "budget" for row in budget_rows)
+        expiry_now = max(row["expires_at"] for row in budget_rows) + timedelta(seconds=1)
+        with patch(
+            "butlers.tools.switchboard.insight.broker.record_attention_event",
+            new=AsyncMock(return_value="expiry-id"),
+        ) as expiry_ledger:
+            assert await expire_candidates(insight_pool, now=expiry_now) == 2
+            assert expiry_ledger.await_count == 2
+            receipts = [call.kwargs for call in expiry_ledger.call_args_list]
+            assert {receipt["notification_ref"] for receipt in receipts} == {
+                str(row["id"]) for row in budget_rows
+            }
+            assert all(receipt["outcome"] == "expired" for receipt in receipts)
+            assert all(receipt["reason"] == "blocked_by:budget" for receipt in receipts)
+            assert await expire_candidates(insight_pool, now=expiry_now) == 0
+            assert expiry_ledger.await_count == 2
+        assert (
+            await insight_pool.fetchval(
+                "SELECT COUNT(*) FROM insight_candidates WHERE status = 'delivered'"
+            )
+            == 1
+        )
+        notify_mock.assert_awaited_once()
 
     @pytest.mark.pg_clock
     async def test_highest_priority_candidate_wins_under_budget(self, insight_pool):
@@ -1730,14 +1968,15 @@ class TestBudgetEnforcement:
 class TestCleanup:
     """Periodic cleanup removes stale rows from insight tables."""
 
-    async def test_old_non_pending_candidates_deleted(self, insight_pool):
-        """Delivered/expired/filtered candidates older than 30 days are deleted."""
+    async def test_cleanup_never_deletes_candidates(self, insight_pool):
+        """bu-3jyrqz: the daily cleanup leaves every candidate in place.
+
+        Terminal candidates are pruned only by the opt-in retention pruner [C]
+        (docs/operations/data-retention.md), never by the broker cycle — so a
+        31-day-old delivered candidate survives, as does a pending one.
+        """
         from butlers.tools.switchboard.insight.broker import cleanup_old_rows
 
-        old_time = datetime.now(UTC) - timedelta(days=35)
-        recent_time = datetime.now(UTC) - timedelta(days=5)
-
-        # Old delivered candidate
         await insight_pool.execute(
             """
             INSERT INTO insight_candidates
@@ -1745,24 +1984,9 @@ class TestCleanup:
                  status, created_at)
             VALUES ('health', 70, 'health', 'health:old:user:2020', $1, 'Old', 'delivered', $2)
         """,
-            _past(35),
-            old_time,
+            _past(31),
+            datetime.now(UTC) - timedelta(days=31),
         )
-
-        # Recent delivered candidate
-        await insight_pool.execute(
-            """
-            INSERT INTO insight_candidates
-                (origin_butler, priority, category, dedup_key, expires_at, message,
-                 status, created_at)
-            VALUES ('health', 70, 'health', 'health:recent:user:2026', $1, 'Recent',
-                    'delivered', $2)
-        """,
-            _future(),
-            recent_time,
-        )
-
-        # Pending candidate (should NOT be deleted)
         await insight_pool.execute(
             """
             INSERT INTO insight_candidates
@@ -1774,12 +1998,11 @@ class TestCleanup:
 
         await cleanup_old_rows(insight_pool)
 
-        remaining = await insight_pool.fetch("SELECT dedup_key, status FROM insight_candidates")
-        dedup_keys = {r["dedup_key"] for r in remaining}
-
-        assert "health:old:user:2020" not in dedup_keys
-        assert "health:recent:user:2026" in dedup_keys
-        assert "health:pending:user:2026" in dedup_keys
+        remaining = await insight_pool.fetch("SELECT dedup_key FROM insight_candidates")
+        assert {r["dedup_key"] for r in remaining} == {
+            "health:old:user:2020",
+            "health:pending:user:2026",
+        }
 
     async def test_old_cooldowns_deleted(self, insight_pool):
         """Cooldown rows older than 30 days past their expiry are deleted."""
@@ -1819,8 +2042,8 @@ class TestCleanup:
 
         old_delivered_at = datetime.now(UTC) - timedelta(days=35)
         recent_delivered_at = datetime.now(UTC) - timedelta(days=5)
-        old_id = str(uuid.uuid4())
-        recent_id = str(uuid.uuid4())
+        old_id = await _insert_history_candidate(insight_pool, delivered_at=old_delivered_at)
+        recent_id = await _insert_history_candidate(insight_pool, delivered_at=recent_delivered_at)
 
         await insight_pool.execute(
             """
@@ -1869,7 +2092,9 @@ class TestCleanup:
             INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, TRUE)
             """,
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=old_day_midnight + timedelta(hours=2)
+            ),
             old_day_midnight + timedelta(hours=2),
         )
         await insight_pool.execute(
@@ -1877,7 +2102,9 @@ class TestCleanup:
             INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, FALSE)
             """,
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=old_day_midnight + timedelta(hours=3)
+            ),
             old_day_midnight + timedelta(hours=3),
         )
         await insight_pool.execute(
@@ -1885,7 +2112,9 @@ class TestCleanup:
             INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, FALSE)
             """,
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=recent_day_midnight + timedelta(hours=2)
+            ),
             recent_day_midnight + timedelta(hours=2),
         )
 
@@ -2122,7 +2351,7 @@ class TestAutoOffTotalDisengagement:
             # and <= day -1), safely below the exclusive window_end (today_midnight).
             day_ts = today_midnight - timedelta(days=num_days - day_offset) + timedelta(hours=1)
             for _ in range(insights_per_day):
-                insight_id = str(uuid.uuid4())
+                insight_id = await _insert_history_candidate(pool, delivered_at=day_ts)
                 await pool.execute(
                     """
                     INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
@@ -2190,7 +2419,9 @@ class TestAutoOffTotalDisengagement:
         await insight_pool.execute(
             """INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, TRUE)""",
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=today_midnight - timedelta(hours=12)
+            ),
             today_midnight - timedelta(hours=12),
         )
         assert await check_total_disengagement_auto_off(insight_pool, now=now) is False
@@ -2252,7 +2483,9 @@ class TestAutoOffTotalDisengagement:
         await insight_pool.execute(
             """INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, FALSE)""",
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=today_midnight + timedelta(hours=1)
+            ),
             today_midnight + timedelta(hours=1),
         )
         triggered = await check_total_disengagement_auto_off(insight_pool, now=now)
@@ -2274,7 +2507,9 @@ class TestAutoOffTotalDisengagement:
         await insight_pool.execute(
             """INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, FALSE)""",
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=today_midnight + timedelta(hours=2)
+            ),
             today_midnight + timedelta(hours=2),
         )
         assert await check_total_disengagement_auto_off(insight_pool, now=now) is False
@@ -2363,7 +2598,7 @@ class TestProposeInsightCandidateUnit:
             "custom_budget": custom_budget,
             "updated_at": datetime.now(UTC),
         }
-        pool.execute.return_value = "INSERT 0 1"
+        pool.fetchval.return_value = uuid.uuid4()
         return pool
 
     @pytest.mark.parametrize(
@@ -2403,7 +2638,7 @@ class TestProposeInsightCandidateUnit:
         result = await propose_insight_candidate(pool, **base)
         assert result["status"] == "error"
         assert match in result["reason"]
-        pool.execute.assert_not_called()
+        pool.fetchval.assert_not_called()
 
     async def test_past_expires_at_returns_error(self):
         from butlers.tools.switchboard.insight.broker import propose_insight_candidate
@@ -2447,7 +2682,7 @@ class TestProposeInsightCandidateUnit:
         )
 
         assert result["status"] == "accepted"
-        pool.execute.assert_called_once()
+        pool.fetchval.assert_called_once()
 
     async def test_injected_now_still_rejects_stale_expires_at(self):
         """Injecting ``now`` narrows the reference frame; it does not disable the check."""
@@ -2469,7 +2704,7 @@ class TestProposeInsightCandidateUnit:
 
         assert result["status"] == "error"
         assert "expires_at must be in the future" in result["reason"]
-        pool.execute.assert_not_called()
+        pool.fetchval.assert_not_called()
 
     @pytest.mark.parametrize(
         "verbosity,custom_budget",
@@ -2491,7 +2726,7 @@ class TestProposeInsightCandidateUnit:
         )
         assert result["status"] == "filtered"
         assert result["reason"] == "verbosity is off"
-        pool.execute.assert_not_called()
+        pool.fetchval.assert_not_called()
 
     async def test_valid_submission_with_optional_fields(self):
         """Valid submission accepted; 3/4-segment dedup_keys pass; optional args forwarded."""
@@ -2512,8 +2747,8 @@ class TestProposeInsightCandidateUnit:
             now=_PINNED_NOW,
         )
         assert result["status"] == "accepted"
-        pool.execute.assert_called_once()
-        call_args = pool.execute.call_args.args
+        pool.fetchval.assert_called_once()
+        call_args = pool.fetchval.call_args.args
         assert call_args[5] == 3
         assert call_args[8] == "telegram"
 
@@ -2890,4 +3125,53 @@ class TestInsightDeliveryPathsSpec:
         )
         assert engagement["delivered_at"] is not None, (
             "spec: delivered_at must be set on the engagement row"
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _docker_available, reason="Docker not available")
+async def test_partial_insight_is_terminal_on_real_committed_candidate(insight_pool):
+    """A partial send consumes no cooldown/engagement and cannot re-enter the next cycle."""
+    from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+    await _set_owner_attention_policy(insight_pool, quiet_start_hour=None, quiet_end_hour=None)
+    await insight_pool.execute(
+        "INSERT INTO insight_settings(id,verbosity) VALUES(1,'normal') "
+        "ON CONFLICT(id) DO UPDATE SET verbosity='normal'"
+    )
+    candidate_id = await insight_pool.fetchval(
+        "INSERT INTO insight_candidates "
+        "(origin_butler, priority, category, dedup_key, expires_at, message, status, channel) "
+        "VALUES ('health',20,'controlled',$1,$2,$3,'pending','telegram') RETURNING id",
+        f"controlled:{uuid.uuid4()}",
+        _future(),
+        "x" * 5000,
+    )
+    notify = AsyncMock(
+        return_value={"status": "error", "partial_delivery": True, "retryable": False}
+    )
+    first = await delivery_cycle(insight_pool, notify_fn=notify, now=_PINNED_NOW)
+    second = await delivery_cycle(insight_pool, notify_fn=notify, now=_PINNED_NOW)
+    assert first["delivered"] == second["delivered"] == []
+    notify.assert_awaited_once()
+    async with insight_pool.acquire() as independent:
+        row = await independent.fetchrow(
+            "SELECT status, delivered_at, metadata FROM insight_candidates WHERE id=$1",
+            candidate_id,
+        )
+        assert row["status"] == "filtered" and row["delivered_at"] is None
+        assert row["metadata"]["partial_delivery"] is True
+        assert (
+            await independent.fetchval(
+                "SELECT count(*) FROM insight_engagement WHERE insight_id=$1", candidate_id
+            )
+            == 0
+        )
+        assert (
+            await independent.fetchval(
+                "SELECT count(*) FROM public.attention_ledger WHERE notification_ref=$1 "
+                "AND outcome='failed' AND metadata->>'partial_delivery'='true'",
+                str(candidate_id),
+            )
+            == 1
         )

@@ -9,6 +9,23 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def gemini_settings_staging_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Stage Gemini settings under the test's tmp_path; yields the real staging function.
+
+    The real staging root must be root-owned (gemini-cli skips system settings
+    otherwise), which an unprivileged test run cannot provide.
+    """
+    from butlers.core.runtimes import gemini
+
+    real = gemini._settings_staging_root
+    monkeypatch.setattr(gemini, "_settings_staging_root", lambda: tmp_path)
+    yield real
 
 
 def run_cli(

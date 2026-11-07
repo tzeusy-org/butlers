@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.connectors.home_assistant_statistics import (
+from butlers.home_assistant_client import (
     HAStatisticsClient,
     HAStatisticsError,
     parse_statistics_change_series,
@@ -40,7 +40,7 @@ async def test_one_shot_client_authenticates_and_uses_current_recorder_command()
     )
 
     with patch(
-        "butlers.connectors.home_assistant_statistics.aiohttp.ClientSession",
+        "butlers.home_assistant_client.aiohttp.ClientSession",
         return_value=session,
     ):
         result = await HAStatisticsClient(
@@ -91,7 +91,7 @@ async def test_one_shot_client_bounds_provider_errors():
 
     with (
         patch(
-            "butlers.connectors.home_assistant_statistics.aiohttp.ClientSession",
+            "butlers.home_assistant_client.aiohttp.ClientSession",
             return_value=session,
         ),
         pytest.raises(HAStatisticsError) as exc_info,

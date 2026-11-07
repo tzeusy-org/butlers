@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -12,9 +11,11 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
 
+from alembic import command
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
+    load_migration,
     migration_db_name,
 )
 
@@ -38,21 +39,13 @@ _CORE_MIGRATION_PATH = (
 )
 
 
-def _load_migration(path: Path = _MIGRATION_PATH, module_name: str = "chronicler_026"):
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _executed_sql(
     function_name: str,
     *,
     path: Path = _MIGRATION_PATH,
     module_name: str = "chronicler_026",
 ) -> str:
-    module = _load_migration(path, module_name)
+    module = load_migration(path, module_name)
     operation = MagicMock()
     with patch.object(module, "op", operation):
         getattr(module, function_name)()
@@ -60,7 +53,7 @@ def _executed_sql(
 
 
 def test_revision_chain_and_calendar_surface_allowlist() -> None:
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "chronicler_026")
 
     assert module.revision == "chronicler_026"
     assert module.down_revision == "chronicler_025"
@@ -105,7 +98,7 @@ def test_downgrade_revokes_only_the_explicit_calendar_grants() -> None:
 
 
 def test_core_follow_up_replays_only_the_calendar_read_surface() -> None:
-    module = _load_migration(_CORE_MIGRATION_PATH, "core_207")
+    module = load_migration(_CORE_MIGRATION_PATH, "core_207")
     assert module.revision == "core_207"
     assert module.down_revision == "core_206"
 
@@ -138,7 +131,7 @@ def test_fresh_bootstrap_converges_calendar_grants_after_late_core_tables(
     fresh database, then applies real Alembic migrations.  No calendar table is
     hand-created by this fixture: ``core_003`` creates the initial target
     surface and ``core_076`` creates the late participant-table companion.
-    Running Chronicler at its head before ``core_076`` simulates the
+    Running the selected Chronicler 026 before ``core_076`` simulates the
     independent-chain ordering that previously left the optional companion
     table without a grant.
     """
@@ -164,7 +157,15 @@ def test_fresh_bootstrap_converges_calendar_grants_after_late_core_tables(
     finally:
         engine.dispose()
 
-    asyncio.run(run_migrations(db_url, chain="chronicler", schema="chronicler"))
+    # Selected 026 proves the historical grant-before-late-core ordering.
+    # Current 030 additionally requires current core/private-memory preparation,
+    # which cannot precede this deliberately partial core_075 fixture.
+    from butlers.migrations import _build_alembic_config
+
+    command.upgrade(
+        _build_alembic_config(db_url, ["chronicler"], target_schema="chronicler"),
+        "chronicler@chronicler_026",
+    )
     asyncio.run(run_migrations(db_url, chain="core", schema="general"))
 
     calendar_tables = (
@@ -240,7 +241,7 @@ def test_chronicler_026_grants_effective_select_to_the_runtime_role(postgres_con
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
-            # schema-standin-exempt: privilege-only grant targets; column shape
+            # Hand DDL on purpose: privilege-only grant targets; column shape
             # is irrelevant to this effective-role ACL test.
             for table in (*calendar_tables, "calendar_sync_cursors"):
                 conn.exec_driver_sql(f'CREATE TABLE general."{table}" (id INTEGER)')
@@ -251,9 +252,14 @@ def test_chronicler_026_grants_effective_select_to_the_runtime_role(postgres_con
     finally:
         engine.dispose()
 
-    from butlers.migrations import run_migrations
+    from butlers.migrations import _build_alembic_config
 
-    asyncio.run(run_migrations(db_url, chain="chronicler", schema="chronicler"))
+    # The selected 026 privilege-only contract deliberately uses minimal grant
+    # targets. Do not replay unrelated current core/030 over those test tables.
+    command.upgrade(
+        _build_alembic_config(db_url, ["chronicler"], target_schema="chronicler"),
+        "chronicler@chronicler_026",
+    )
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:

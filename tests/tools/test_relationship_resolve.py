@@ -2,22 +2,20 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
+import importlib
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
+
+from butlers.testing.fake_pool import fake_pool
 
 RESOLVE_PATH = Path(__file__).parent.parent.parent / "roster/relationship/tools/resolve.py"
 
 
 def _load_resolve_module():
-    spec = importlib.util.spec_from_file_location("resolve", RESOLVE_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["resolve"] = mod
-    spec.loader.exec_module(mod)
+    mod = importlib.import_module("butlers.tools.relationship.resolve")
+    assert mod.__spec__ is not None and mod.__spec__.loader is not None
     return mod
 
 
@@ -43,53 +41,44 @@ def _make_contact_row(id: str, **kwargs) -> dict:
     }
 
 
-def _make_pool(exact_rows=None, partial_rows=None, extra_queries=None):
-    pool = MagicMock()
-    rows = []
-    if exact_rows is not None:
-        rows.append(exact_rows)
-        if not exact_rows:
-            rows.append(partial_rows or [])
-    else:
-        rows.append([])
-        rows.append(partial_rows or [])
-    rows.extend(extra_queries or [[], [], [], [], []])
-    pool.fetch = AsyncMock(side_effect=rows)
-    return pool
-
-
 async def test_resolve_confidence_decisions():
     """NONE when no candidates; HIGH for single match; MEDIUM for tied; HIGH when gap ≥30."""
     # No matches → NONE
-    pool = _make_pool(exact_rows=[], partial_rows=[])
+    # fetch order: exact match, partial match (only after no exact), then salience queries.
+    pool = fake_pool(fetch=AsyncMock(side_effect=[[], [], [], [], [], [], []]))
     result = await contact_resolve(pool, "Nonexistent Person")
     assert result["confidence"] == CONFIDENCE_NONE
     assert result["contact_id"] is None
     assert result["candidates"] == []
 
     # Single exact match → HIGH
-    pool = _make_pool(exact_rows=[_make_contact_row("uuid-1")])
+    pool = fake_pool(
+        fetch=AsyncMock(side_effect=[[_make_contact_row("uuid-1")], [], [], [], [], []])
+    )
     result = await contact_resolve(pool, "John Smith")
     assert result["confidence"] == CONFIDENCE_HIGH
     assert result["contact_id"] == "uuid-1"
 
     # Multiple equal-score matches → MEDIUM
-    pool = _make_pool(exact_rows=[_make_contact_row("uuid-1"), _make_contact_row("uuid-2")])
+    tied = [_make_contact_row("uuid-1"), _make_contact_row("uuid-2")]
+    pool = fake_pool(fetch=AsyncMock(side_effect=[tied, [], [], [], [], []]))
     result = await contact_resolve(pool, "John Smith")
     assert result["confidence"] == CONFIDENCE_MEDIUM
     assert result["contact_id"] is None
     assert len(result["candidates"]) == 2
 
     # Large gap → HIGH
-    pool = _make_pool(
-        exact_rows=[_make_contact_row("uuid-1"), _make_contact_row("uuid-2")],
-        extra_queries=[
-            [{"id": "uuid-1", "stay_in_touch_days": 7}],
-            [{"contact_id": "uuid-1", "forward_label": "spouse"}],
-            [],
-            [],
-            [],
-        ],
+    pool = fake_pool(
+        fetch=AsyncMock(
+            side_effect=[
+                [_make_contact_row("uuid-1"), _make_contact_row("uuid-2")],
+                [{"id": "uuid-1", "stay_in_touch_days": 7}],
+                [{"contact_id": "uuid-1", "forward_label": "spouse"}],
+                [],
+                [],
+                [],
+            ]
+        )
     )
     result = await contact_resolve(pool, "John Smith")
     assert result["confidence"] == CONFIDENCE_HIGH
@@ -98,7 +87,8 @@ async def test_resolve_confidence_decisions():
 
 async def test_resolve_result_fields():
     """Result includes inferred and salience fields; each candidate has salience."""
-    pool = _make_pool(exact_rows=[_make_contact_row("uuid-1"), _make_contact_row("uuid-2")])
+    tied = [_make_contact_row("uuid-1"), _make_contact_row("uuid-2")]
+    pool = fake_pool(fetch=AsyncMock(side_effect=[tied, [], [], [], [], []]))
     result = await contact_resolve(pool, "John Smith")
     assert "inferred" in result
     for candidate in result["candidates"]:

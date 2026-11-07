@@ -67,7 +67,13 @@ Configuration SHALL be declared under `[modules.calendar]` in `butler.toml` with
 
 ### Requirement: Calendar Event CRUD Tools
 
-The module registers 22 MCP tools total. The core CRUD tools are: `calendar_list_events`, `calendar_get_event`, `calendar_create_event`, `calendar_update_event`, `calendar_delete_event`, the occurrence-targeted `calendar_update_event_instance`, `calendar_delete_event_instance`, and the read/utility tools `calendar_find_free_slots` and `calendar_list_calendars`. The remaining tools are enumerated by the Butler Event Management Tools (4: `calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, `calendar_toggle_butler_event`), Attendee Management Tools (2: `calendar_add_attendees`, `calendar_remove_attendees`), Reminder Tools (3: `reminder_create`, `reminder_list`, `reminder_dismiss`), and Calendar Sync Tools (3: `calendar_sync_status`, `calendar_force_sync`, `calendar_set_primary`) requirements below, plus the `calendar_propose_event` producer (behavior specified by the `calendar-event-proposals` capability). Butler-authored events SHALL default to the dedicated "Butlers" calendar when no explicit `calendar_id` is given; the user's own events SHALL be edited in place on whichever calendar they live on, resolved by event id. A caller MAY pass an explicit `calendar_id` to target a specific calendar; the available `calendar_id` values SHALL be enumerated by the read-only `calendar_list_calendars` source-listing tool (see the Calendar Source Listing Tool requirement).
+The module SHALL register 20 MCP tools before conditional invitation-response and historical-fence tools are added under their own requirements. The core CRUD tools are: `calendar_list_events`, `calendar_get_event`, `calendar_create_event`, `calendar_update_event`, `calendar_delete_event`, the occurrence-targeted `calendar_update_event_instance`, `calendar_delete_event_instance`, and the read/utility tools `calendar_find_free_slots` and `calendar_list_calendars`. The remaining tools are enumerated by the Butler Event Management Tools (4: `calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, `calendar_toggle_butler_event`), Reminder Tools (3: `reminder_create`, `reminder_list`, `reminder_dismiss`), and Calendar Sync Tools (3: `calendar_sync_status`, `calendar_force_sync`, `calendar_set_primary`) requirements below, plus the `calendar_propose_event` producer (behavior specified by the `calendar-event-proposals` capability). Butler-authored events SHALL default to the dedicated "Butlers" calendar when no explicit `calendar_id` is given; the user's own events SHALL be edited in place on whichever calendar they live on, resolved by event id. A caller MAY pass an explicit `calendar_id` to target a specific calendar; the available `calendar_id` values SHALL be enumerated by the read-only `calendar_list_calendars` source-listing tool (see the Calendar Source Listing Tool requirement).
+
+The retired `attendees` group SHALL register no tools, including when explicitly requested. The standalone `calendar_add_attendees` and `calendar_remove_attendees` tools SHALL NOT be registered. Event attendee fields, attendee arguments on retained create/update tools and approval-bound self invitation responses retain their separate contracts.
+
+ID: REQ-module-calendar-031
+Source: accepted bu-qozovd.1 slice 1 design and unchanged AC5
+Scope: v1-mandatory
 
 #### Scenario: List events with time window
 
@@ -80,6 +86,15 @@ The module registers 22 MCP tools total. The core CRUD tools are: `calendar_list
 - **WHEN** `calendar_get_event` is called with an event_id
 - **THEN** the full event is returned from the provider
 - **AND** a 404 response returns `{"status": "not_found", "event": null}`
+
+#### Scenario: Caller arguments cannot open a calendar approval gate
+
+- **WHEN** a session passes an approval-asserting argument (such as `_approval_bypass`) to a calendar mutation tool
+- **THEN** argument validation SHALL reject it, or the ordinary approval gate SHALL still park the call, and no mutation SHALL occur
+- **AND** no calendar tool input schema SHALL declare a parameter that asserts approval
+- **AND** a gated mutation SHALL run without parking only while the approvals executor replays the exact stored call, proven by the execution context for that tool and argument digest
+- **AND** a parked call SHALL store every public parameter, defaults included, so the replay executes exactly what the owner approved
+- **AND** a parked call to a tool that takes `calendar_id` SHALL bind the concrete calendar resolved at park time, so a later default-calendar change cannot redirect the approved effect; an approved row without a bound `calendar_id` SHALL be refused before effect
 
 #### Scenario: Create butler-generated event
 
@@ -272,23 +287,6 @@ The module registers MCP tools for managing butler-owned workspace events (sched
 - **WHEN** `calendar_toggle_butler_event` is called with an event ID and enabled flag
 - **THEN** the butler event is paused or resumed without deletion
 - **AND** high-impact mutations require approval gate
-
-### Requirement: Attendee Management Tools
-
-The module SHALL register MCP tools for managing event attendees: `calendar_add_attendees` and `calendar_remove_attendees`.
-
-#### Scenario: Add attendees to event
-
-- **WHEN** `calendar_add_attendees` is called with an event ID and list of email addresses
-- **THEN** attendees are added to the event with deduplication
-- **AND** notification policy controls whether attendees are notified
-- **AND** provider failures return a fail-closed structured error
-
-#### Scenario: Remove attendees from event
-
-- **WHEN** `calendar_remove_attendees` is called with an event ID and list of email addresses
-- **THEN** matching attendees are removed (case-insensitive email match)
-- **AND** cancellation notifications follow the send_updates policy
 
 ### Requirement: Google OAuth and Rate Limiting
 
@@ -579,6 +577,12 @@ The dashboard SHALL provide a page at `/butlers/calendar` with a view toggle bet
   source's staleness (e.g. "Last synced Apr 7 — 96 days ago") with a
   "Sync now" action wired to the existing sync mutation
 - **AND** the clause is absent (quiet) when every enabled source is fresh
+- **AND** only provider sources count: each connected source carries
+  `sync_applicable` (true only for `source_kind = provider_event`), and an
+  internal source (schedules, reminders) is excluded from the worst-of because
+  it is projected locally and never gets a sync cursor — its null
+  `last_synced_at` is normal, not "Never synced" (same rule as the sync
+  deadman)
 
 #### Scenario: Freshness plaque never silently reads as fresh
 
@@ -729,6 +733,26 @@ When a mutation targets a recurring event, the module SHALL support operating on
 - **THEN** an impact preview reports the number of occurrences the mutation will touch: 1 for `this`, the remaining-from-boundary count for `following`, and the whole-series occurrence count for `series`
 - **AND** the count feeds the high-impact approval gate so large `series` / `following` mutations are gated while a single-occurrence `this` mutation is not
 
+#### Scenario: Large series edit requires exact approved replay
+
+- **WHEN** a series update or delete affects at least ten occurrences in the 90-day recurrence projection window
+- **THEN** it SHALL return `approval_required` and park the canonical executable call before any provider write
+- **AND** the parked call SHALL bind the resolved calendar and every public argument with its default
+- **AND** only the approvals executor replaying that exact approved call SHALL resume its pending workspace action and execute once
+- **AND** a changed default calendar SHALL NOT redirect the approved replay
+
+#### Scenario: Approval unavailable refuses high-impact mutations
+
+- **WHEN** no approval enqueuer is wired and a series or following mutation affects at least ten projected occurrences, or a workspace butler-event delete or toggle is requested
+- **THEN** the tool SHALL return `approval_unavailable` without any provider or native mutation
+- **AND** the workspace action SHALL record a terminal no-effect result so its request ID replays the refusal instead of remaining pending
+- **AND** after approvals become available a new request ID MAY request approval
+
+#### Scenario: Low-impact mutations do not require an enqueuer
+
+- **WHEN** no approval enqueuer is wired and a recurrence mutation affects only `this` or fewer than ten projected occurrences
+- **THEN** the recurrence impact gate SHALL permit the mutation while preserving permission, overlap and other applicable checks
+
 #### Scenario: Unknown recurrence scope rejected
 
 - **WHEN** `calendar_update_event` or `calendar_delete_event` is called with a `recurrence_scope` other than `this`, `following`, or `series`
@@ -760,6 +784,12 @@ end, timezone, recurrence, calendar, and linked-people fields. The dashboard
 undo endpoint SHALL pass the nullable `all_day` truth through the inverse
 `calendar_update_event` or `calendar_create_event` payload without an extra
 provider read.
+
+**Amendment (bu-q11586.7, owner decision bu-kf3n4i = A).** The dashboard undo
+endpoint (`POST /api/calendar/workspace/undo/{action_id}`) no longer exists. The
+module's pre-state capture and the calendar MCP tools are unchanged: the captured
+pre-image stays in `action_result` as audit evidence and for any future inverse
+caller, but no dashboard route consumes it.
 
 #### Scenario: All-day pre-state round-trips through undo
 

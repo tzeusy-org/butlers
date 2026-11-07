@@ -59,7 +59,7 @@ async def test_module_failure_isolation(
         # If any module failed during startup, it should be marked as failed
         # but butler should still function
         module_statuses = status["modules"]
-        for module_name, module_status in module_statuses.items():
+        for _module_name, module_status in module_statuses.items():
             if module_status.get("status") == "failed":
                 # Failed module's tools should not be registered
                 # This is implicit - if a module fails, its tools won't be in tool_names

@@ -248,6 +248,15 @@ _IDENTITY_CHANNEL_ALIASES: dict[str, str] = {
 }
 
 
+# Notify's delivery channel -> the identity channel its recipient names. The
+# core-notify owner rule and the capability broker's recipient check share it.
+ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES: dict[str, str] = {
+    "email": "email",
+    "telegram": "telegram",
+    "whatsapp": "whatsapp_jid",
+}
+
+
 def canonical_identity_channel_type(channel_type: str) -> str:
     """Return the shared identity channel type for a transport channel."""
     return _IDENTITY_CHANNEL_ALIASES.get(channel_type, channel_type)
@@ -318,6 +327,18 @@ def _owner_channel_authorization_candidates(
         return tuple(dict.fromkeys(values))
 
     return ()
+
+
+def owner_channel_authorization_candidates(
+    channel_type: str,
+    channel_value: str,
+) -> tuple[str, ...]:
+    """The typed candidates :func:`resolve_owner_channel_via_definer` sends.
+
+    ``phone-digits:`` entries are matched by the definer's custody suffix rule;
+    every other entry is an exact (case-normalized) fact match.
+    """
+    return _owner_channel_authorization_candidates(channel_type, channel_value)
 
 
 def _extract_whatsapp_jid_phone(jid: str) -> str | None:
@@ -915,6 +936,8 @@ async def resolve_owner_channel_via_definer(
     pool: asyncpg.Pool,
     channel_type: str,
     channel_value: str,
+    *,
+    raise_on_error: bool = False,
 ) -> tuple[ResolvedContact, bool] | None:
     """Resolve an OWNER channel through the ``public.resolve_owner_triple`` function.
 
@@ -934,7 +957,8 @@ async def resolve_owner_channel_via_definer(
     Returns ``(owner_contact, is_primary)`` when the candidate values resolve
     to exactly one live entity and that entity is the owner.  Returns ``None``
     for non-owner, unknown, or cross-entity ambiguous identifiers, unknown
-    channel types, and unavailable lookup infrastructure.
+    channel types, and unavailable lookup infrastructure. Trusted admission callers
+    set ``raise_on_error=True`` to distinguish unavailable infrastructure from a miss.
     """
     candidates = _owner_channel_authorization_candidates(channel_type, channel_value)
     if not candidates:
@@ -947,6 +971,8 @@ async def resolve_owner_channel_via_definer(
             list(candidates),
         )
     except Exception:  # noqa: BLE001
+        if raise_on_error:
+            raise
         logger.debug("identity.owner_channel_resolution_failed")
         return None
 

@@ -71,7 +71,8 @@ Scope: v1-mandatory
 - **THEN** an empty string is returned and no `instructions` entry is written
 
 ### Requirement: Environment Variable Handling
-The adapter SHALL pass the provided `env` dict to the subprocess, adding `OPENCODE_CONFIG` pointing to the temporary config file. Outside goal invocations the adapter SHALL NOT filter out any env vars, since OpenCode supports multiple providers. For a goal invocation the subprocess environment SHALL hold only `PATH`, the invocation's staged model credential and `OPENCODE_CONFIG`, because an invocation never receives domain, database or connector credentials.
+ID: REQ-runtime-opencode-002
+The adapter SHALL pass the provided `env` dict to the subprocess, adding `OPENCODE_CONFIG` pointing to the temporary config file. Outside goal invocations the adapter SHALL NOT filter out any env vars, since OpenCode supports multiple providers. For a goal invocation the subprocess environment SHALL hold only `PATH`, a pointer to the invocation's staged model credential, `OPENCODE_CONFIG`, and a fixed `HOME=/tmp/home` inside the invocation's fresh private tmpfs (with no inherited HOME or contents), because an invocation never receives domain, database or connector credentials.
 
 Source: RFC 0038 D3
 Scope: v1-mandatory
@@ -83,5 +84,5 @@ Scope: v1-mandatory
 
 #### Scenario: Goal invocation environment is minimal
 - **WHEN** the adapter prepares the subprocess environment for a lead or child invocation
-- **THEN** the environment holds only `PATH`, the staged model credential and `OPENCODE_CONFIG`
+- **THEN** the environment holds only `PATH`, the staged model-credential pointer, `OPENCODE_CONFIG`, and fixed `HOME=/tmp/home` inside fresh private tmpfs with no inherited HOME or contents
 - **AND** no database, connector or credential-store variable is present

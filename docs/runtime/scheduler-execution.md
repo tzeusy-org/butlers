@@ -8,7 +8,52 @@
 
 ![Scheduler Flow](./scheduler-flow.svg)
 
-The scheduler (`src/butlers/core/scheduler.py`) is a cron-driven task dispatch system. At daemon startup, it syncs schedule definitions from `butler.toml` into the `scheduled_tasks` database table. During operation, the daemon periodically calls `tick()`, which evaluates cron expressions and dispatches due tasks to the spawner. The scheduler supports two dispatch modes, deterministic staggering, complexity-aware model selection, and automatic task expiry.
+The scheduler (`src/butlers/core/scheduler/`) is a cron-driven task dispatch system. At daemon startup, it syncs schedule definitions from `butler.toml` into the `scheduled_tasks` database table. During operation, the daemon periodically calls `tick()`, which evaluates cron expressions and dispatches due tasks to the spawner. The scheduler supports two dispatch modes, deterministic staggering, complexity-aware model selection, and automatic task expiry.
+
+## Explicit owner break-through at creation
+
+A cookie-authenticated, CSRF-checked dashboard request may opt in with
+`interrupt_owner: true` and one canonical UUID `X-Butlers-Creation-Operation`.
+The existing owner-auth service issues a purpose-separated, hash-only creation
+ticket. It is not a D13 standing-permission factor and is never an MCP tool
+argument. The API sends its unpersisted nonce in per-call MCP metadata; it does
+not modify the cached client's headers. The daemon checks the raw RFC8785
+argument digest and receiver before entering the owning schedule transaction.
+
+That one physical-database transaction checks the current auth/session fence,
+consumes the ticket, creates the actual definition and seals its immutable
+stamp and closed result. Unknown-commit retry with the same operation returns
+the original task UUID. It never recreates a deleted task or blesses an edited
+definition. A changed operation payload, wrong receiver/session, expired ticket
+or revoked authority refuses. Ordinary model creation has no stamp.
+
+`tick()` carries the claimed task UUID and original due occurrence through
+private invocation context. A bare task UUID, trigger name or model-provided
+request context is insufficient. Both `notify` and the direct Insight delivery
+consumer use the same current persisted evaluator. Only the scheduler's mutable
+execution bookkeeping is excluded from the definition digest; edits to the
+owning definition invalidate its creation stamp. TOML sync and model edits do
+not retroactively opt in. The last valid `until_at` occurrence atomically records a
+separate final-claim witness while auto-disabling the task. The immutable
+creation stamp still includes `enabled`; the witness binds the actual original
+due occurrence and disabled definition, and survives completion bookkeeping.
+Explicit definition edits or disable revoke the witness, including an already
+disabled request. Revoked occurrence tombstones prevent a cached final invocation
+from regaining authority after re-enable. The fixed domain-role function derives
+the witness from the actual same-transaction row and current creation stamp;
+callers cannot supply a final flag or definition digest.
+
+## Migrated storage and historical triggers
+
+The scheduler requires the current migrated schema. It does not probe
+`information_schema` or hide missing task/deadline/event-chain/deferred storage
+behind legacy projections. Storage faults remain visible. Existing optimistic
+claims, NULL-safe CAS, continuity, policy decisions, deferred retry/coalescing
+and expiry keep their current semantics.
+
+`calendar_event_end` is no longer writable or detected. Create and explicit
+trigger updates refuse before database access; historical rows remain
+readable/listable/deletable and inert. No data rewrite, remap or replay occurs.
 
 ## TOML-to-DB Sync
 
@@ -39,6 +84,19 @@ The task's `prompt` string is sent to the spawner, which spawns an LLM session. 
 ### Job Mode
 
 The task's `job_name` maps to a registered Python function that runs directly without spawning an LLM. This is for deterministic maintenance work: memory consolidation, analytics computation, eligibility sweeps.
+
+Job mode also fits owner reminders whose text has a fixed shape. Relationship `upcoming-dates-check` and `relationship-maintenance` render a template from an existing read, and Chronicler `chronicler_gap_interview` asks yesterday's gap interview through the same service as its MCP tool. A job reaches the owner through `butlers.jobs.owner_notify.send_owner_telegram`: the `notify.v1` send through Switchboard `deliver` on the client `dispatch_scheduled_task` binds for the handler call, with one attention-ledger row per outcome. Unlike `notify()`, a quiet-hours or context-bus suppression drops the send rather than deferring it.
+
+### Job-mode deadlines and document deadlines
+
+A deadline (`task_type='deadline'`) may also be job-mode. When it crosses a threshold, the deadline pass calls `dispatch_fn(job_name=..., job_args={...stored job_args, "deadline": {target_date, days_remaining, fired_threshold, deadline_status, all_thresholds}}, trigger_source="deadline:<name>")` and starts no session. The threshold is recorded as fired only after a successful dispatch, as for prompt-mode deadlines; provider allowance and seasonal context apply only to prompts. A job that raises `DeadlineDispatchDeferred` (`butlers.core.temporal.deadlines`) leaves the threshold unfired with an info log and a `deferred` dispatch metric; any other exception is a failure with the same retry. Either way the next tick tries again, because a threshold has no later run.
+
+`paperwork_deadline_set` (core temporal group, `butlers.core.temporal.document_deadlines`) is the one writer of such deadlines today. It turns a date read from a document into one job-mode deadline per `(document_id, kind)`, named `paperwork:<kind>:<sha256(document_id)[:24]>`, whose job is the fixed `paperwork_deadline_notify` (`butlers.jobs.document_deadlines`, registered for every butler). The job sends the owner a templated reminder such as "Paperwork reminder (SP Group): payment due Wed 28 Oct 2026, in 3 days." through `send_owner_telegram`. A notice is never dropped: during quiet hours or a dnd/sleeping signal the job defers before sending (no attention-ledger row per attempt) and the notice goes out on the first tick after the window, and a failed send is recorded and raised for retry. Retries back off without extra state: each attempt's ledger row carries `dedup_key = paperwork_deadline_notify:<sha256(origin_butler, document_id, kind, target_date, days_before)[:32]>` (the ledger is cross-butler, so the origin butler keeps backoffs apart), and after `n` failed rows under it the job defers with `retry_backoff` (no row) until `5 min × 2^(n-1)`, capped at one hour, has passed since the newest (`butlers.core.attention_ledger.failed_attempts`, database clock, fails open). A long Switchboard outage therefore writes about one failed row per hour, and the threshold fires on the first attempt that delivers. The issuer comes from untrusted document text, so both the writer and the job reduce it to a short name: letters, spaces and `& ' -` only, words with no letter dropped, at most 40 characters cut at a word boundary. No digit, dot or `@` survives, so no markup, phone number, link or email address reaches the owner as something to act on (for example `call 9123 4567 to avoid penalty` is shown as `call to avoid penalty`). A created or re-dated deadline retires the same issuer's deadlines of the same kind from other documents dated on or up to 400 days before it (returned as `replaced`): they are disabled and marked `superseded_by` in `job_args`, never deleted, and an owner's disable among them carries over; an earlier or far later date keeps both. `deadline_list` and the dashboard schedules API (`GET /api/butlers/{name}/schedules`) return that marker as typed `superseded_by` (the replacing task's id) and `superseded_at` fields, null on every other row, so a superseded reminder is told apart from one the owner disabled; `deadline_list` returns no other `job_args`, and the schedules table shows such a row as Superseded, naming its replacement. Active deadlines are capped at 10 per issuer and 200 per butler (`issuer_cap_reached`, `total_cap_reached`), with writes serialized by a per-schema transaction-scoped advisory lock.
+
+- Same date and preset again: `unchanged` (fired thresholds and status kept). New date or preset: `superseded` in place, thresholds re-armed, status `pending`, `enabled` kept (document text never overrides an owner's disable), except that an `expired` deadline, disabled by the scheduler itself, is re-enabled. A name held by any other task: refused `name_conflict`, untouched.
+- Presets: `two_weeks` 14/3/1, `one_month` 30/7/1, `three_days` 3/1 days before. Thresholds already passed at set time collapse to the most urgent one, so a late deadline sends one notice, not one per tick.
+- `job_args.taint = "untrusted_document"` is the RFC 0038 D6 taint stamp. The tool is catalogued `record` (no prompt, so it creates no obligation) with idempotency `none`: the `(document_id, kind)` upsert is replay-safe and takes no broker `effect_id`. `deadline_create` stays `administer`.
+- The tool is a dark build (`TEMPORAL_DARK_TOOLS` in `src/butlers/core_tools/_temporal.py`): cataloged, then disabled on FastMCP, so classify-and-route sessions cannot list or call it before the goal-runtime cutover.
 
 ## The Tick Loop
 
@@ -138,7 +196,7 @@ psql -h localhost -U butlers -d butlers -c \
   The migration retains the function and ACL on downgrade because migration
   state cannot prove that all readers were retired. Remove it only after a
   separately reviewed replacement; policy rows and owner holds are unchanged.
-- QA's consumer is `read_qa_schedule_policy()` in `src/butlers/core/scheduler.py`. For
+- QA's consumer is `read_qa_schedule_policy()` in `src/butlers/core/scheduler/claim.py`. For
   `butler_name == "qa"`, `tick()` ignores `eligibility_pool`, the receiver-cutover flag and the
   legacy route resolver. It reads the projection through its primary `pool`, which the daemon wires
   to QA's own `SET ROLE butler_qa_rw` pool, once before the deadline/cron passes and again
@@ -152,7 +210,17 @@ psql -h localhost -U butlers -d butlers -c \
   exception text. A refused cron task is left unclaimed, so it runs exactly once after the hold
   lifts and does not trigger catch-up. Work that was already launched keeps running.
   `asyncio.CancelledError` propagates and does not authorize anything. Other butlers keep the
-  `src/butlers/core/scheduler.py::_butler_dispatch_gated()` path.
+  `src/butlers/core/scheduler/claim.py::_butler_dispatch_gated()` path.
+- `sw_053` generalises that projection as `public.butler_local_schedule_policy()` for every other
+  butler. It takes no arguments, derives the butler name from the effective
+  `SET ROLE butler_<name>_rw` (anything else is refused with `42501`) and returns `butler_name`,
+  `policy_state` and `policy_provenance` (`P0002` when no row exists). EXECUTE is granted only to
+  `butler_*_rw` roles. Under the receiver cutover `_butler_dispatch_gated()` calls it through the
+  butler's own role-verified pool (the daemon wires `eligibility_pool` to `daemon.db.pool` for every
+  butler under the cutover, and for the switchboard always). A missing row or any state other than
+  `active` holds dispatch; a refusal, an absent function or a row naming another butler fails open,
+  like other gate errors. Without the cutover only the switchboard gates, because the legacy
+  resolver reads switchboard tables that runtime roles cannot see. Downgrade keeps the function.
 
 - `job_args` JSONB can round-trip through asyncpg as a JSON string: serialize dicts explicitly on
   write and normalize back to dicts before diffing, validation merges, list responses or dispatch.

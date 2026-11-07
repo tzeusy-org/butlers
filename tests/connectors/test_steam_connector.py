@@ -49,7 +49,7 @@ from butlers.connectors.steam import (
     build_status_change_envelope,
     steam_events_submitted_total,
 )
-from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
 _STEAM_ID = 76561198012345678
 _ENDPOINT = f"gaming:steam:{_STEAM_ID}"
@@ -813,3 +813,86 @@ async def test_submit_envelope_treats_duplicate_response_as_success() -> None:
     await poller._submit_envelope(envelope)  # must not raise
 
     mcp_client.call_tool.assert_awaited_once()
+
+
+def test_steam_envelope_reads_its_owned_descriptor(
+    monkeypatch: pytest.MonkeyPatch, play_session_envelope: dict[str, Any]
+) -> None:
+    from dataclasses import replace
+
+    from butlers.connectors import steam
+
+    original = steam._DESCRIPTOR
+    changed = replace(original, channel="email", provider="gmail")
+    monkeypatch.setattr(steam, "_DESCRIPTOR", changed)
+    # Use the existing play-session producer with the original native inputs.
+    envelope = steam.build_play_session_envelope(
+        endpoint_identity="steam:user:synthetic",
+        steam_id=123,
+        app_id=123,
+        game_name="Synthetic",
+        playtime_2weeks=17,
+        playtime_delta=17,
+        poll_ts="2026-03-26T10:00:00+00:00",
+        raw={"appid": 123},
+    )
+    assert envelope["source"]["channel"] == "email"
+    assert envelope["source"]["provider"] == "gmail"
+    assert play_session_envelope["source"]["channel"] == "gaming"
+
+
+async def test_status_change_persists_in_addition_to_ingest_and_keeps_delta_rule() -> None:
+    from butlers.connectors.steam import _state_hash
+
+    poller = _make_poller(AsyncMock())
+    snapshot = {"persona_state": 1, "game_extra_info": None}
+    poller._state.cursors["online_status"] = SteamCursor(
+        endpoint_identity=_ENDPOINT,
+        data_type="online_status",
+        state_hash=_state_hash(snapshot),
+        state_snapshot=snapshot,
+    )
+    poller._steam_client.get_player_summaries = AsyncMock(
+        return_value=[{"personastate": 1, "gameextrainfo": "Portal", "gameid": "400"}]
+    )
+    pool = AsyncMock()
+    poller._db_pool = pool
+    with (
+        patch.object(poller, "_maybe_submit", AsyncMock()) as submit,
+        patch("butlers.connectors.steam._save_steam_cursor", AsyncMock()),
+    ):
+        await poller._poll_online_status()
+        assert pool.execute.await_count == 1
+        sql, *values = pool.execute.call_args.args
+        assert "steam_status_history" in sql
+        assert "ON CONFLICT (steam_id, observed_at) DO NOTHING" in sql
+        assert "400" in values and "Portal" in values
+        submit.assert_awaited_once()
+        poller._steam_client.get_player_summaries.return_value[0]["gameid"] = "401"
+        await poller._poll_online_status()
+        assert pool.execute.await_count == 1  # gameid alone is not a change
+
+
+async def test_status_storage_failure_keeps_ingest_and_advances_cursor() -> None:
+    poller = _make_poller(AsyncMock())
+    poller._steam_client.get_player_summaries = AsyncMock(
+        return_value=[{"personastate": 1, "gameextrainfo": "Portal"}]
+    )
+    poller._state.cursors["online_status"] = SteamCursor(
+        endpoint_identity=_ENDPOINT,
+        data_type="online_status",
+        state_hash="old",
+        state_snapshot={"persona_state": 0, "game_extra_info": None},
+    )
+    pool = AsyncMock()
+    pool.execute.side_effect = ConnectionError("status store unavailable")
+    poller._db_pool = pool
+    with (
+        patch.object(poller, "_maybe_submit", AsyncMock()) as submit,
+        patch("butlers.connectors.steam._save_steam_cursor", AsyncMock()) as save,
+    ):
+        with pytest.raises(RuntimeError, match="status store unavailable"):
+            await poller._poll_online_status()
+    submit.assert_awaited_once()
+    save.assert_awaited_once()
+    assert poller._state.cursors["online_status"].state_snapshot["game_extra_info"] == "Portal"

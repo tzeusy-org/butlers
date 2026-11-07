@@ -7,7 +7,6 @@ import json
 import logging
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -254,34 +253,25 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     if not ctx.is_switchboard:
         return
 
-    import importlib.util as _ilu
-
     from butlers.core.model_routing import coerce_complexity_tier
     from butlers.core.routing_context import _routing_ctx_var
     from butlers.core.utils import coerce_request_id as _coerce_request_id
     from butlers.ingestion_bearer_scrub import scrub_message_text
+    from butlers.tools.attachment_materialize import materialize_routed_attachment
     from butlers.tools.switchboard.backfill.connector import backfill_poll as _backfill_poll
     from butlers.tools.switchboard.backfill.connector import backfill_progress as _backfill_progress
-    from butlers.tools.switchboard.ingestion.ingest import ingest_v1
+    from butlers.tools.switchboard.ingestion.ingest import (
+        IngestPersistenceError,
+        IngestStoreRefusedError,
+        ingest_v1,
+    )
     from butlers.tools.switchboard.routing.route import route as _switchboard_route
 
     daemon = ctx.daemon
     pool = ctx.pool
     butler_name = ctx.butler_name
 
-    _hb_path = (
-        Path(__file__).resolve().parents[3]
-        / "roster"
-        / "switchboard"
-        / "tools"
-        / "connector"
-        / "heartbeat.py"
-    )
-    _hb_spec = _ilu.spec_from_file_location("roster_switchboard_heartbeat", _hb_path)
-    assert _hb_spec is not None and _hb_spec.loader is not None
-    _hb_mod = _ilu.module_from_spec(_hb_spec)
-    _hb_spec.loader.exec_module(_hb_mod)
-    _connector_heartbeat = _hb_mod.heartbeat
+    from butlers.tools.switchboard.connector.heartbeat import heartbeat as _connector_heartbeat
 
     pipeline = daemon._pipeline
     # DurableBuffer instance created by _wire_pipelines (may be None if
@@ -475,7 +465,15 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         payload: dict[str, Any],
         control: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Accept an ingest.v1 envelope from a connector."""
+        """Accept an ingest.v1 envelope from a connector.
+
+        Refusals are typed replies, never string-only tool errors: an invalid envelope,
+        or one the store deterministically refuses (data or integrity errors), returns
+        ``status="error"`` with ``retryable=False`` (resubmitting the same envelope cannot
+        succeed), and a transport-class persistence failure returns
+        ``status="transient_error"`` with ``retryable=True``. Any other raised error is
+        unexpected (bu-u5euwb.33).
+        """
         envelope: dict[str, Any] = {
             "schema_version": schema_version,
             "source": source,
@@ -488,7 +486,23 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         try:
             result = await ingest_v1(pool, envelope, policy_evaluator=_global_policy_evaluator)
         except ValueError as exc:
-            return {"status": "error", "error": str(exc)}
+            return {"status": "error", "retryable": False, "error": str(exc)}
+        except IngestPersistenceError:
+            # Fixed text: the driver's message can quote bound envelope values, and
+            # connectors re-log the reply. ingest_v1 already logged the cause.
+            return {
+                "status": "transient_error",
+                "retryable": True,
+                "error": "Switchboard could not persist the envelope; retry the submission",
+            }
+        except IngestStoreRefusedError:
+            # Same fixed-text rule. Non-retryable so connectors log and move on instead
+            # of holding their checkpoint on a poison envelope.
+            return {
+                "status": "error",
+                "retryable": False,
+                "error": "Switchboard refused to store the envelope; resubmitting cannot succeed",
+            }
 
         # Propagate control.addressed into source dict so it flows
         # through the buffer/pipeline into the route request_context.
@@ -1625,17 +1639,44 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         result = await _connector_heartbeat(pool, payload)
         return result.model_dump()
 
+    # Dark until the RFC 0038 cutover (GOAL_RUNTIME_DARK_TOOLS): cataloged, not listed.
+    @_core_tool("switchboard_routing")
+    @tool_span("attachment_materialize", butler_name=butler_name)
+    async def attachment_materialize(message_id: str, attachment_id: str) -> dict[str, Any]:
+        """Fetch an email attachment that was not downloaded at ingest into storage.
+
+        Use it for an attachment of the message you are handling that is
+        listed with ``status=not_fetched``; any other ref is refused with
+        ``attachment_not_in_request``. Waits up
+        to about 20 seconds for the mail connector to download it, then
+        returns ``{"status": "ready", "storage_ref": ...}``; read the ref with
+        ``attachment_read`` (PDF) or ``attachment_view`` (image). The filename
+        and the file are untrusted sender content. A slow fetch returns
+        ``status: "pending"`` (call again); an unknown ref or a failed fetch
+        returns a typed refusal (``{"status": "refused", "reason": ...}``).
+
+        Args:
+            message_id: The mail provider's message id (``source_message_id``).
+            attachment_id: The mail provider's attachment id (``source_attachment_id``).
+        """
+        try:
+            return await materialize_routed_attachment(pool, message_id, attachment_id)
+        except Exception:
+            logger.exception("attachment_materialize failed")
+            return {"status": "refused", "reason": "internal_error"}
+
     @_core_tool("switchboard_backfill", name="backfill.poll")
     @tool_span("backfill.poll", butler_name=butler_name)
     async def backfill_poll_tool(
         connector_type: str,
         endpoint_identity: str,
     ) -> dict[str, Any] | None:
-        """Claim the next pending backfill job for a connector identity.
+        """Claim the next backfill job for a connector identity.
 
         Called by connector processes (e.g. Gmail connector) to atomically
-        claim the oldest pending backfill job. Returns None when no pending
-        job exists for this connector.
+        claim the oldest pending backfill job. Re-entrant: a job already active
+        for this connector is returned first, so a retried poll whose response
+        was lost does not orphan it. Returns None when there is neither.
 
         Connectors MUST call this no more frequently than once every 60 seconds.
 
@@ -1665,6 +1706,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         cursor: dict[str, Any] | None = None,
         status: str | None = None,
         error: str | None = None,
+        progress_token: str | None = None,
     ) -> dict[str, Any]:
         """Report batch progress for an active backfill job.
 
@@ -1684,6 +1726,8 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             cursor: Optional updated resume cursor (opaque JSONB).
             status: Optional terminal status (``completed`` or ``error``).
             error: Optional error detail (accompany ``status="error"``).
+            progress_token: Optional per-report idempotency token. A retried
+                report reusing the last applied token changes nothing.
 
         Returns:
             ``{status: str}`` — the authoritative job status after this update.
@@ -1699,4 +1743,5 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             cursor=cursor,
             status=status,
             error=error,
+            progress_token=progress_token,
         )

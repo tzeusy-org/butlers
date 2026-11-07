@@ -57,8 +57,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
+from butlers.api.deps import OptionalDb
 from butlers.api.models.steam import (
     SteamAccountConfigOverrides,
     SteamAccountConfigResponse,
@@ -118,15 +119,6 @@ _CONNECTOR_HEALTH_TIMEOUT_S = 3.0
 # ---------------------------------------------------------------------------
 # Dependency injection stub
 # ---------------------------------------------------------------------------
-
-
-def _get_db_manager() -> Any:
-    """Stub replaced at startup by wire_db_dependencies().
-
-    When not wired (e.g. in tests that don't boot the full app), returns None
-    so endpoints degrade gracefully.
-    """
-    return None
 
 
 def _get_shared_pool(db_manager: Any) -> Any | None:
@@ -315,7 +307,8 @@ def _account_to_response(account: SteamAccount) -> SteamAccountResponse:
 @router.post("/accounts", response_model=SteamConnectResponse)
 async def connect_steam_account(
     body: SteamConnectRequest,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SteamConnectResponse:
     """Connect a new Steam account by validating the API key and registering it.
 
@@ -410,7 +403,8 @@ async def connect_steam_account(
 
 @router.get("/accounts", response_model=SteamAccountListResponse)
 async def list_connected_steam_accounts(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SteamAccountListResponse:
     """List all connected Steam accounts.
 
@@ -463,7 +457,8 @@ async def disconnect_steam_account(
             "and retains credentials for audit purposes."
         ),
     ),
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SteamDisconnectResponse:
     """Disconnect a Steam account.
 
@@ -529,7 +524,8 @@ async def disconnect_steam_account(
 @router.put("/accounts/{account_id}/primary", response_model=SteamSetPrimaryResponse)
 async def set_primary_steam_account(
     account_id: uuid.UUID,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SteamSetPrimaryResponse:
     """Set a Steam account as the primary account.
 
@@ -588,7 +584,8 @@ async def set_primary_steam_account(
 @router.get("/accounts/{account_id}/status", response_model=SteamAccountStatusResponse)
 async def get_steam_account_status(
     account_id: uuid.UUID,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SteamAccountStatusResponse:
     """Return credential and poll health status for a single Steam account.
 
@@ -861,7 +858,8 @@ def _settings_to_config_response(settings: dict | None) -> SteamConnectorConfigR
 
 @router.get("/connector/config", response_model=SteamConnectorConfigResponse)
 async def get_steam_connector_config(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SteamConnectorConfigResponse:
     """Return the current Steam connector configuration.
 
@@ -902,7 +900,8 @@ async def get_steam_connector_config(
 @router.patch("/connector/config", response_model=SteamConnectorConfigResponse)
 async def update_steam_connector_config(
     body: SteamConnectorConfigUpdateRequest,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SteamConnectorConfigResponse:
     """Update Steam connector configuration settings.
 
@@ -983,7 +982,8 @@ async def update_steam_connector_config(
 @router.get("/accounts/{account_id}/config", response_model=SteamAccountConfigResponse)
 async def get_steam_account_config(
     account_id: uuid.UUID,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SteamAccountConfigResponse:
     """Return per-account configuration overrides for a Steam account.
 
@@ -1054,7 +1054,8 @@ async def get_steam_account_config(
 async def update_steam_account_config(
     account_id: uuid.UUID,
     body: SteamAccountConfigOverrides,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SteamAccountConfigUpdateResponse:
     """Update per-account configuration overrides for a Steam account.
 
@@ -1186,7 +1187,8 @@ async def get_steam_playtime(
         le=100,
         description="Number of top games to return (by total playtime). Default: 10.",
     ),
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SteamPlaytimeAnalytics:
     """Fetch playtime analytics for a Steam account from the local database.
 
@@ -1313,7 +1315,8 @@ async def get_steam_game_playtime(
             f"Default: {_DEFAULT_PLAYTIME_DAYS}. Set to null for all-time."
         ),
     ),
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SteamGamePlaytimeHistory:
     """Fetch per-game playtime history from the local database.
 

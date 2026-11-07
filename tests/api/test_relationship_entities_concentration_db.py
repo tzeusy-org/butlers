@@ -39,8 +39,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -54,40 +53,25 @@ CONCENTRATION_PATH = "/api/relationship/entities/concentration"
 BASE_URL = "http://test"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision core + memory + relationship chains (flat public topology)."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory", "relationship"],
-    )
-
-
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
+async def rel_pool(db) -> asyncpg.Pool:
+    """Core + memory + relationship chains (flat public topology)."""
+    p = await db("core", "memory", "relationship")
     await p.execute("TRUNCATE TABLE relationship.entity_facts CASCADE")
     await p.execute("TRUNCATE TABLE public.entities CASCADE")
-    yield p
-    await p.close()
+    return p
 
 
 @pytest.fixture
-def concentration_app(pool: asyncpg.Pool) -> FastAPI:
+def concentration_app(rel_pool: asyncpg.Pool) -> FastAPI:
     """FastAPI app whose relationship router is wired to the real migrated pool."""
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = pool
+    mock_db.pool.return_value = rel_pool
 
     application = create_app()
-    for butler_name, router_module in application.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            application.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in application.state.butler_routers:
+        if butler_name == "relationship":
+            application.dependency_overrides[get_db] = lambda: mock_db
             break
     else:  # pragma: no cover - defensive
         raise AssertionError("relationship router not discovered / not DB-wired")
@@ -149,18 +133,18 @@ async def _get(app: FastAPI, **params) -> httpx.Response:
 # ---------------------------------------------------------------------------
 
 
-async def test_concentration_returns_200_with_derived_labels(concentration_app, pool):
+async def test_concentration_returns_200_with_derived_labels(concentration_app, rel_pool):
     """The predicate-tabs query must not reference a non-existent ``label`` column.
 
     Pre-fix the endpoint 500s with ``UndefinedColumnError: column "label" does
     not exist``. Post-fix every relational predicate tab carries a label
     derived from its slug (``initcap(replace(predicate, '-', ' '))``).
     """
-    await _make_owner(pool)
-    alice = await _make_entity(pool, "Alice")
-    bob = await _make_entity(pool, "Bob")
+    await _make_owner(rel_pool)
+    alice = await _make_entity(rel_pool, "Alice")
+    bob = await _make_entity(rel_pool, "Bob")
     # Aggregation groups by the fact SUBJECT, so Alice (subject) is the item.
-    await _add_relational_fact(pool, subject=alice, obj=bob, predicate="knows", weight=3)
+    await _add_relational_fact(rel_pool, subject=alice, obj=bob, predicate="knows", weight=3)
 
     resp = await _get(concentration_app, pred="knows")
 
@@ -193,7 +177,7 @@ async def test_concentration_returns_200_with_derived_labels(concentration_app, 
     ]
 
 
-async def test_targets_resolve_entity_and_literal_objects(concentration_app, pool):
+async def test_targets_resolve_entity_and_literal_objects(concentration_app, rel_pool):
     """Targets surface entity-kind (hyperlinked) and literal (plain) objects.
 
     The ``object::uuid`` cast in the targets subquery is guarded by
@@ -202,14 +186,14 @@ async def test_targets_resolve_entity_and_literal_objects(concentration_app, poo
     CASE guard prevents the cast from ever running on literal rows (otherwise the
     whole query would 500 with ``invalid input syntax for type uuid``).
     """
-    await _make_owner(pool)
-    alice = await _make_entity(pool, "Alice")
-    acme = await _make_entity(pool, "Acme Corp")
+    await _make_owner(rel_pool)
+    alice = await _make_entity(rel_pool, "Alice")
+    acme = await _make_entity(rel_pool, "Acme Corp")
 
     # Entity-kind object: Alice works-at Acme (object is Acme's UUID).
-    await _add_relational_fact(pool, subject=alice, obj=acme, predicate="works-at", weight=2)
+    await _add_relational_fact(rel_pool, subject=alice, obj=acme, predicate="works-at", weight=2)
     # Literal object: free-text "freelance" — NOT a UUID.
-    await pool.execute(
+    await rel_pool.execute(
         """
         INSERT INTO relationship.entity_facts
             (subject, predicate, object, object_kind, src, validity, weight, last_seen)

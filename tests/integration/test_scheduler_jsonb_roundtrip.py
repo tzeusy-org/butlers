@@ -79,9 +79,11 @@ import shutil
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
+import asyncpg
 import pytest
 
-from butlers.core.scheduler import _fire_chain, tick
+from butlers.core.scheduler.chain_pass import _fire_chain
+from butlers.core.scheduler.dispatch import tick
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -90,60 +92,11 @@ pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 
-_SCHEDULED_TASKS_DDL = """
-    CREATE TABLE IF NOT EXISTS scheduled_tasks (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        name TEXT UNIQUE NOT NULL,
-        cron TEXT NOT NULL DEFAULT '* * * * *',
-        prompt TEXT,
-        dispatch_mode TEXT NOT NULL DEFAULT 'prompt',
-        job_name TEXT,
-        job_args JSONB,
-        complexity TEXT DEFAULT 'medium',
-        timezone TEXT NOT NULL DEFAULT 'UTC',
-        start_at TIMESTAMPTZ,
-        end_at TIMESTAMPTZ,
-        until_at TIMESTAMPTZ,
-        display_title TEXT,
-        calendar_event_id TEXT,
-        source TEXT NOT NULL DEFAULT 'db',
-        enabled BOOLEAN NOT NULL DEFAULT true,
-        next_run_at TIMESTAMPTZ,
-        last_run_at TIMESTAMPTZ,
-        last_result JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        task_type TEXT NOT NULL DEFAULT 'cron',
-        target_date DATE,
-        lead_time_days INTEGER,
-        alert_thresholds JSONB,
-        deadline_status TEXT,
-        fired_thresholds JSONB,
-        depends_on JSONB
-    )
-"""
-
-_EVENT_CHAINS_DDL = """
-    CREATE TABLE IF NOT EXISTS event_chains (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        name TEXT NOT NULL,
-        trigger_type TEXT NOT NULL,
-        trigger_reference TEXT NOT NULL,
-        actions JSONB NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        butler_name TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    )
-"""
-
 
 @pytest.fixture
-async def scheduler_pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_SCHEDULED_TASKS_DDL)
-        await pool.execute(_EVENT_CHAINS_DDL)
-        yield pool
+async def scheduler_pool(db) -> asyncpg.Pool:
+    """The actual core migrations, scoped to the general butler schema."""
+    return await db("core", schemas={"core": "general"}, schema="general")
 
 
 def _future_date(days: int) -> date:

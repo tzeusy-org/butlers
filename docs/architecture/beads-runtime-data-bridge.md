@@ -1,32 +1,38 @@
-# Beads Runtime Data Bridge
+# Engineering tracker product bridge retirement
 
-Beads is authoritative in a Dolt server on the tracker host; runtime containers never get network
-or credential access to it. The shipped bridge is single-host: bd's own auto-export keeps
-`.beads/issues.export.jsonl` fresh, and `docker-compose.yml` bind-mounts only that one file,
-read-only, at `/app/.beads/issues.export.jsonl` into `butlers-up` and `dashboard-api` (and their
-hot-reload variants). Mounting `.beads/` wholesale is forbidden because it holds tracker
-credentials. Two consumers read it: the Switchboard decision digest
-(`src/butlers/jobs/decision_review.py`) and `GET /api/beads/{id}` through `BeadSnapshotReader`
-(`src/butlers/beads_snapshot.py`), both bounded parsers that expose safe dataclasses only. A
-missing, unreadable, oversized, or stale (older than `STALE_BEADS_EXPORT_AGE`) export is reported
-as unavailable, never as an empty queue.
+Owner decision bu-g2zuv2 = A (2026-10-21), implemented by bu-99t5s3.6,
+removes engineering tracker tooling from the personal-assistant product.
 
-The Kubernetes chart ships a second, optional bridge (`beadsExport.enabled`, on in `butlers-dev`
-by owner ruling 2026-10-08, off in prod): a CronJob that runs `bd export` against the Dolt server
-into a PVC, which `butlers-up` and `dashboard-api` mount read-only as a directory at
-`/app/.beads`. The PVC holds only the export file. The CronJob is the sole holder of the Dolt
-endpoint and credential, and a NetworkPolicy denies every other pod a route to the tracker, so it
-stays outside the runtime trust boundary; see
-[Kubernetes deployment](../operations/kubernetes-deployment.md#beads-export).
+The Helm exporter/applier, dashboard pages, API operations, backend snapshot
+reader, decision jobs and schedules, Telegram decision transport, deployment
+export materialization and Compose export mounts are retired in source.
+The former bridge and projection contracts are withdrawn in RFC 0025 and
+RFC 0007 Amendment 2; historical designs remain in Git history.
 
-The same CronJob is the Decision Desk's only tracker writer (`bu-ckkpz.3`,
-`REQ-beads-projection-007`, `REQ-owner-decision-desk-002`). The runtime records an owner's choice
-as a `switchboard.decision_intents` row (dashboard API or Telegram one-tap); before each export
-the CronJob closes the decision bead with `bd`, at most once per intent, and records the outcome
-on the row. The runtime still never reaches the tracker.
+Engineering choices remain in local `bd` or an owner session. The Dolt workflow,
+`make lint-decision-beads` and the engineering decision-bead convention remain.
+No optional engineering digest replaces the retired product feature.
 
-Both bridges are single-host and cannot serve a separate runtime host, and the host-file bridge
-can pin a replaced file inode. Their planned multi-host successor, a tracker-host PostgreSQL
-projection exporter, is owned by
-[RFC 0025](../../about/legends-and-lore/rfcs/0025-tracker-host-beads-projection-exporter.md) and
-the [`beads-projection-exporter`](../../openspec/changes/beads-projection-exporter/) change.
+Runtime tracker connectivity and credentials remain prohibited. The effective
+all-pod tracker deny in the Helm chart is retained, including its existing
+fail-closed CIDR and environment posture. Source changes do not attest a live
+network probe or authorize production operations.
+
+## Deployment and retained storage
+
+Source retirement is not proof that old processes have stopped. The existing
+intent and prompt tables and their migration ancestry remain intact. Deploy
+code removal and stop every old reader and writer before a separate reviewed
+drop migration. Owner approval explicitly accepts eventual irreversible intent
+history loss, but does not waive that ordering. This source slice contains no
+DDL, migration revision or live deployment. Rolling source back before the
+later drop is possible; data recovery after that drop is not promised.
+
+## Implementation Notes
+
+Approval callbacks retain their independent token prefix, HMAC, verified-owner,
+credential, recipient and API route checks. Stale decision buttons have no
+mutation authority and receive only the connector's generic acknowledgement.
+Audit events for unmatched API routes retain request/effect metadata while
+omitting raw request bodies, including malformed, scalar and truncated JSON.
+Shared approval, notification, privacy, QA and deployment behavior remains.

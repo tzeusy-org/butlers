@@ -27,7 +27,7 @@
  *     use their deterministic 30s/60s intervals from use-health.ts
  *
  * Design contracts:
- *   - Health hue (--category-5 / "health" slot) ONLY on ButlerMark
+ *   - Health identity hue is owned by ButlerMark and appears ONLY on that mark
  *   - No Card shells, no shadcn Card chrome
  *   - Display-500 headline (font-medium, not font-bold)
  *   - Absent readings render "—", never a fake number
@@ -446,7 +446,7 @@ export default function HealthOverviewPage({ expectedSignals }: { expectedSignal
           {/* Butler identity mark + date eyebrow + briefing status pill */}
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             {/*
-             * Health hue (--category-5) appears ONLY on ButlerMark.
+             * Health identity hue is owned by and appears ONLY on ButlerMark.
              * No other chrome element uses the health category hue.
              */}
             <ButlerMark name="health" tone="fill" size={16} />

@@ -35,6 +35,7 @@ from butlers.connectors.activitywatch import (
     persist_activity_event,
 )
 from butlers.ingestion_policy import PolicyDecision
+from butlers.testing.fake_pool import AsyncCtx
 
 _MACHINE_ID = "desktop"
 _ENDPOINT = f"activitywatch:{_MACHINE_ID}"
@@ -239,7 +240,7 @@ def test_activity_idempotency_key_deterministic() -> None:
 def test_activity_envelope_passes_parse_ingest_envelope() -> None:
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     env = build_activity_envelope(
         machine_id=_MACHINE_ID,
@@ -530,7 +531,10 @@ async def test_persist_activity_event_rejects_raw_url_as_browser_domain() -> Non
 
     assert inserted is True
     assert pool.fetchval.await_args.args[10] is None
-    assert pool.fetchval.await_args.args[12]["web_event"]["data"]["url"] == raw_url
+    # bu-506glj: the tokenised URL is bearer material, so raw_payload keeps a placeholder.
+    stored_url = pool.fetchval.await_args.args[12]["web_event"]["data"]["url"]
+    assert "secret" not in stored_url
+    assert "[magic-link withheld" in stored_url
 
 
 # ---------------------------------------------------------------------------
@@ -604,23 +608,12 @@ class _PurgeConnection:
         return outcome
 
 
-class _PurgeAcquire:
-    def __init__(self, connection: _PurgeConnection) -> None:
-        self._connection = connection
-
-    async def __aenter__(self) -> _PurgeConnection:
-        return self._connection
-
-    async def __aexit__(self, *_args: object) -> None:
-        return None
-
-
 class _PurgePool:
     def __init__(self, outcomes: list[str | Exception]) -> None:
         self.connection = _PurgeConnection(outcomes)
 
-    def acquire(self) -> _PurgeAcquire:
-        return _PurgeAcquire(self.connection)
+    def acquire(self) -> AsyncCtx:
+        return AsyncCtx(self.connection)
 
 
 def _make_retention(*outcomes: str | Exception, retention_days: int = 14) -> ActivityWatchRetention:
@@ -772,3 +765,80 @@ async def test_persist_activity_event_skips_write_when_detector_fails(caplog) ->
     pool.fetchval.assert_not_awaited()
     assert "bearer scrub failed" in caplog.text
     assert "482913" not in caplog.text and "verification code" not in caplog.text
+
+
+async def _persist_web_event(pool: AsyncMock, web_data: dict[str, str]) -> bool:
+    return await persist_activity_event(
+        pool,
+        machine_id=_MACHINE_ID,
+        endpoint_identity=_ENDPOINT,
+        bucket_id=_BUCKET_ID,
+        ts=_TS,
+        duration_seconds=42,
+        app="Google Chrome",
+        window_title="Mail",
+        app_class="browser",
+        browser_domain="mail.example.test",
+        is_afk=False,
+        raw_payload={"window_event": {"id": 7}, "web_event": {"data": web_data}},
+    )
+
+
+async def test_persist_activity_event_withholds_bearer_url_and_tab_title_in_raw_payload() -> None:
+    """Reset-link URLs and code-bearing tab titles never reach raw_payload."""
+    pool = AsyncMock()
+    pool.fetchval.return_value = "event-id"
+    reset_url = "https://mail.example.test/password/reset?token=fake-reset-needle-7731"
+
+    inserted = await _persist_web_event(
+        pool, {"url": reset_url, "title": "Your verification code is 482913 - Mail"}
+    )
+
+    assert inserted is True
+    args = pool.fetchval.await_args.args
+    stored = json.dumps(args[12])
+    assert "fake-reset-needle-7731" not in stored and "482913" not in stored
+    assert "[reset-link withheld" in stored and "[auth-code withheld" in stored
+    assert args[12]["window_event"] == {"id": 7}
+    assert args[10] == "mail.example.test"
+
+
+async def test_persist_activity_event_keeps_ordinary_raw_payload_unchanged() -> None:
+    pool = AsyncMock()
+    pool.fetchval.return_value = "event-id"
+    web_data = {"url": "https://docs.example.test/q3/roadmap", "title": "Q3 roadmap 482913 draft"}
+
+    await _persist_web_event(pool, web_data)
+
+    args = pool.fetchval.await_args.args
+    assert args[12]["web_event"]["data"] == web_data
+    assert args[10] == "mail.example.test"
+
+
+async def test_persist_activity_event_skips_write_when_raw_payload_scrub_fails(caplog) -> None:
+    pool = AsyncMock()
+    with patch(
+        "butlers.connectors.activitywatch.scrub_evidence_json",
+        side_effect=RuntimeError("fake-reset-needle-7731"),
+    ):
+        inserted = await _persist_web_event(
+            pool, {"url": "https://mail.example.test/reset?token=fake-reset-needle-7731"}
+        )
+
+    assert inserted is False
+    pool.fetchval.assert_not_awaited()
+    assert "bearer scrub failed" in caplog.text
+    assert "fake-reset-needle-7731" not in caplog.text
+
+
+def test_descriptor_identity_preserves_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from butlers.connectors import activitywatch as module
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    monkeypatch.setenv("ACTIVITYWATCH_MACHINE_ID", "synthetic-machine")
+    monkeypatch.setenv("CONNECTOR_HEALTH_PORT", "40123")
+    config = module.ActivityWatchConnectorConfig.from_env()
+    assert (config.channel, config.provider) == ("activitywatch", "activitywatch")
+    assert config.health_port == 40123

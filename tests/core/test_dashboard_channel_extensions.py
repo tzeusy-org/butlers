@@ -17,6 +17,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from butlers.testing.fake_pool import fake_pool
+
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
@@ -60,8 +62,8 @@ def _dashboard_ingest_payload() -> dict[str, Any]:
 class TestSourceChannelContainsDashboard:
     def test_dashboard_accepted_in_all_channel_contracts(self) -> None:
         """IngestEnvelopeV1, RouteRequestContextV1, and RouteSourceMetadataV1 all accept 'dashboard'."""
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
         from butlers.tools.switchboard.routing.contracts import (
-            IngestEnvelopeV1,
             RouteRequestContextV1,
             RouteSourceMetadataV1,
         )
@@ -114,7 +116,7 @@ class TestSourceChannelContainsDashboard:
 class TestAllowedProvidersByChannelDashboard:
     def test_dashboard_provider_validation(self) -> None:
         """dashboard+internal accepted; dashboard+telegram and dashboard+gmail rejected."""
-        from butlers.tools.switchboard.routing.contracts import (
+        from butlers.tools.switchboard.contracts import (
             _ALLOWED_PROVIDERS_BY_CHANNEL,
             IngestEnvelopeV1,
         )
@@ -147,18 +149,16 @@ class TestTriggerSourcesDashboard:
         for expected in ("tick", "external", "trigger", "route", "healing"):
             assert expected in TRIGGER_SOURCES, f"'{expected}' unexpectedly removed"
 
-        class _FakePool:
-            async def fetchval(self, sql: str, *args: Any) -> uuid.UUID:
-                return uuid.uuid4()
-
-        pool = _FakePool()
+        session_id = uuid.uuid4()
+        pool = fake_pool(fetchval=session_id, execute="SELECT 1")
         result = await session_create(
             pool,
             prompt="Dashboard-triggered session",
             trigger_source="dashboard",
             request_id=str(uuid.uuid4()),
         )
-        assert isinstance(result, uuid.UUID)
+        assert result == session_id
+        assert pool.fetchval.await_args.args[2] == "dashboard"
 
         with pytest.raises(ValueError, match="Invalid trigger_source"):
             await session_create(

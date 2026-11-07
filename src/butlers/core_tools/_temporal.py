@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
@@ -14,7 +14,18 @@ from butlers.core.temporal.deadlines_db import deadline_create as _deadline_crea
 from butlers.core.temporal.deadlines_db import deadline_delete as _deadline_delete
 from butlers.core.temporal.deadlines_db import deadline_list as _deadline_list
 from butlers.core.temporal.deadlines_db import deadline_update as _deadline_update
+from butlers.core.temporal.document_deadlines import (
+    DEFAULT_PRESET,
+    DocumentDeadlineRefused,
+    document_deadline_set,
+    plan_document_deadline,
+)
 from butlers.core_tools._base import ToolContext
+
+# Declared catalog capabilities kept off today's classify-and-route session
+# listing until the RFC 0038 goal-runtime cutover presents them (dark build);
+# see GOAL_RUNTIME_DARK_TOOLS in _media.py for the mechanism.
+TEMPORAL_DARK_TOOLS = frozenset({"paperwork_deadline_set"})
 
 
 def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
@@ -229,7 +240,10 @@ def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
         ) -> list[dict]:
             """List all deadline tasks, optionally filtered by status.
 
-            Returns deadlines sorted by target_date (soonest first).
+            Returns deadlines sorted by target_date (soonest first). A deadline that
+            another document's deadline replaced is disabled and carries
+            ``superseded_by`` (the replacing deadline's id) and ``superseded_at``;
+            both are null on every other deadline, including one the owner disabled.
             """
             deadlines = await _deadline_list(pool, status=status_filter)
             return deadlines
@@ -250,6 +264,67 @@ def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
                 return {"status": "error", "error": str(exc)}
 
         @_core_tool("temporal")
+        async def paperwork_deadline_set(
+            document_id: Annotated[
+                str,
+                Field(
+                    description=(
+                        "The document the date was read from: its storage_ref or source ref. "
+                        "One deadline exists per (document_id, kind)."
+                    )
+                ),
+            ],
+            kind: Annotated[
+                Literal["due", "renewal", "cancel_by", "expiry", "return_by"],
+                Field(description="What the date is: a payment due date, renewal, etc."),
+            ],
+            target_date: Annotated[
+                str, Field(description="The date in YYYY-MM-DD format. Must be after today.")
+            ],
+            preset: Annotated[
+                Literal["two_weeks", "one_month", "three_days"],
+                Field(description="Reminder lead: 14/3/1, 30/7/1 or 3/1 days before."),
+            ] = DEFAULT_PRESET,
+            issuer: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Who issued the document, e.g. 'SP Group'. Shown as a short name: "
+                        "letters, spaces and & ' - only, at most 40 characters."
+                    )
+                ),
+            ] = None,
+        ) -> dict:
+            """Remind the owner of a date read from a document; starts no session.
+
+            Creates or updates one reminder-only deadline for this document and
+            kind. When a reminder threshold is reached, the owner receives a
+            fixed-template notice naming the issuer and date. Setting the same
+            date again changes nothing; a new date replaces the old one, and a
+            later date from the same issuer and kind retires (disables, keeps)
+            other documents' earlier deadlines. A past or unreadable date, or more than 10 active
+            deadlines for one issuer, returns ``{"status": "refused", "reason": ...}``.
+            """
+            try:
+                plan = plan_document_deadline(
+                    document_id=document_id,
+                    kind=kind,
+                    target_date=target_date,
+                    preset=preset,
+                    issuer=issuer,
+                )
+                result = await document_deadline_set(pool, plan)
+            except DocumentDeadlineRefused as exc:
+                return {"status": "refused", "reason": exc.reason, "detail": exc.detail}
+            return {
+                **result,
+                "kind": kind,
+                "target_date": plan.target_date.isoformat(),
+                "preset": plan.preset,
+                "alert_thresholds": plan.alert_thresholds,
+            }
+
+        @_core_tool("temporal")
         async def event_chain_create(
             name: str,
             trigger_type: str,
@@ -259,13 +334,12 @@ def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
             """Create a new event chain.
 
             An event chain defines an automated sequence of actions that fires
-            when a trigger event occurs (calendar event end, deadline expiry, or
+            when a supported trigger event occurs (deadline expiry or
             deadline threshold alert).
 
             Args:
                 name: Unique name for this chain (scoped to this butler).
                 trigger_type: When to fire. One of:
-                    - 'calendar_event_end': fires when a calendar event ends.
                     - 'deadline_passed': fires when a deadline task expires/completes.
                     - 'deadline_threshold': fires when a deadline alert threshold fires.
                 actions: Ordered list of action dicts. Each action must have:
@@ -274,7 +348,7 @@ def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
                     - For prompt actions: 'prompt' (non-empty string)
                     - For job actions: 'job_name' (non-empty string);
                         optionally 'job_args' (dict)
-                trigger_reference: Optional event_id or task_id this chain fires for.
+                trigger_reference: Optional deadline task reference this chain fires for.
                     When omitted, the chain fires for all events of the given type.
 
             Returns:
@@ -315,7 +389,8 @@ def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
             Args:
                 chain_id: UUID of the event chain to update.
                 name: New name (optional).
-                trigger_type: New trigger_type (optional).
+                trigger_type: New writable trigger_type (deadline_passed or
+                    deadline_threshold). calendar_event_end is historical and refused.
                 trigger_reference: New trigger_reference (optional; pass empty string
                     to clear the reference so the chain fires for all events).
                 actions: New actions array (optional). Updating actions resets

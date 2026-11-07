@@ -4,9 +4,10 @@ Provides two main entry points:
 
 * ``run_consolidation`` — fetches unconsolidated episodes via a lease-based
   ``FOR UPDATE SKIP LOCKED`` claim ordered by ``(tenant_id, butler, created_at,
-  id)``, groups by source butler, orchestrates the full consolidation pipeline
-  (prompt building, CC spawning, parsing, and execution), and marks episodes as
-  consolidated or failed.
+  id)``, groups by ``(tenant_id, source butler)``, splits each group into
+  owner-class, system and non-owner authority partitions, orchestrates the full
+  consolidation pipeline per partition (prompt building, CC spawning, parsing,
+  and execution), and marks episodes as consolidated or failed.
 * ``run_episode_cleanup`` — deletes expired episodes and enforces a capacity
   limit on the episodes table.
 
@@ -53,8 +54,15 @@ import socket
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from butlers.core.chronicler_visibility import local_fact_visibility_condition
+from butlers.core.queue_claim import ClaimFailure, ClaimQueue, claim_batch, fail_claimed
 from butlers.modules.memory.consolidation_executor import execute_consolidation
 from butlers.modules.memory.consolidation_parser import parse_consolidation_output
+from butlers.modules.memory.content_authority import (
+    PARTITIONS,
+    partition_of,
+    partition_sql,
+)
 from butlers.modules.memory.prompt_template import build_consolidation_prompt
 
 if TYPE_CHECKING:
@@ -72,6 +80,44 @@ MAX_CONSOLIDATION_ATTEMPTS: int = 5
 LEASE_DURATION_SECONDS: int = 300  # 5 minutes
 BASE_RETRY_SECONDS: int = 60  # 1 minute base for exponential backoff
 DEFAULT_BATCH_SIZE: int = 100
+
+_EPISODE_CLAIMS = ClaimQueue(
+    table="episodes",
+    key="id",
+    eligible="q.consolidation_status='pending' OR ("
+    "{arg0}::boolean AND q.consolidation_status='failed' "
+    "AND q.next_consolidation_retry_at IS NOT NULL "
+    "AND q.next_consolidation_retry_at<=now())",
+    order_by="q.tenant_id, q.butler, q.created_at, q.id",
+    claim_set=(),
+    returning=(
+        "id",
+        "butler",
+        "content",
+        "importance",
+        "metadata",
+        "created_at",
+        "tenant_id",
+        "consolidation_attempts",
+        "content_authority",
+        "authority_entity_id",
+        "consolidation_status",
+    ),
+    reclaim_expired=True,
+    lease_until="leased_until",
+    lease_owner="leased_by",
+    failure=ClaimFailure(
+        attempts="consolidation_attempts",
+        status="consolidation_status",
+        last_error="last_consolidation_error",
+        dead_reason="dead_letter_reason",
+        next_retry="next_consolidation_retry_at",
+        max_attempts=MAX_CONSOLIDATION_ATTEMPTS,
+        backoff_seconds=BASE_RETRY_SECONDS,
+    ),
+    failure_set=(("consolidated", "false"),),
+)
+
 
 # Episode-cleanup safety knobs.
 #
@@ -146,6 +192,7 @@ async def run_consolidation(
     batch_size: int = DEFAULT_BATCH_SIZE,
     enable_shared_catalog: bool = False,
     source_schema: str | None = None,
+    memory_schema: str | None = None,
     retry_failed: bool = True,
 ) -> dict[str, Any]:
     """Orchestrate the full consolidation pipeline for unconsolidated episodes.
@@ -157,14 +204,18 @@ async def run_consolidation(
     ordered by ``(tenant_id, butler, created_at, id)`` for deterministic
     processing.
 
-    For each ``(tenant_id, butler)`` group with eligible episodes:
-    1. Fetch existing facts and rules for dedup context
+    Each ``(tenant_id, butler)`` group is split by persisted episode authority
+    into an owner-class partition (``owner``/``owner_device``), a ``system``
+    partition and a non-owner partition (``third_party``, ``mixed`` and NULL).
+    For each nonempty partition:
+    1. Fetch existing facts and rules of the same partition for dedup context
     2. Build consolidation prompt via ``build_consolidation_prompt``
     3. Spawn a runtime instance with the consolidate skill
     4. Parse runtime output with ``parse_consolidation_output``
     5. Execute consolidation actions via ``execute_consolidation``
 
-    Partial failures in one group do not block other groups from processing.
+    Partial failures in one group or partition do not block other groups or
+    partitions from processing.
 
     Args:
         pool: asyncpg connection pool for the memory database.
@@ -179,6 +230,8 @@ async def run_consolidation(
         source_schema: The butler schema name written to catalog rows when
             ``enable_shared_catalog=True``. When omitted, ``execute_consolidation``
             resolves it from the pool's own ``current_schema()``.
+        memory_schema: Configured local memory schema, used to keep generated
+            Chronicler facts out of the consolidation prompt while repair is pending.
         retry_failed: Whether this memory relation is eligible for automatic
             failed-episode recovery. Failed rows are claimed only when a live
             ``cc_spawner`` can execute the recovery; a no-spawner dry run never
@@ -190,7 +243,8 @@ async def run_consolidation(
         - ``episodes_processed``: total episodes claimed.
         - ``butlers_processed``: number of distinct (tenant_id, butler) groups.
         - ``groups``: mapping of "tenant_id/butler_name" to episode count.
-        - ``groups_consolidated``: number of groups successfully processed.
+        - ``groups_consolidated``: number of authority partitions successfully
+          processed (at most three per group).
         - ``facts_created``: total new facts stored.
         - ``facts_updated``: total facts updated.
         - ``rules_created``: total new rules stored.
@@ -213,46 +267,14 @@ async def run_consolidation(
     # -------------------------------------------------------------------------
     async with pool.acquire() as conn:
         async with conn.transaction():
-            rows = await conn.fetch(
-                """
-                SELECT id, butler, content, importance, metadata, created_at,
-                       tenant_id, consolidation_attempts,
-                       content_authority, authority_entity_id
-                FROM episodes
-                WHERE (
-                    consolidation_status = 'pending'
-                    OR (
-                        $1::boolean
-                        AND consolidation_status = 'failed'
-                        AND consolidation_attempts < $2
-                        AND next_consolidation_retry_at IS NOT NULL
-                        AND next_consolidation_retry_at <= now()
-                    )
-                )
-                  AND (leased_until IS NULL OR leased_until <= now())
-                ORDER BY tenant_id, butler, created_at, id
-                FOR UPDATE SKIP LOCKED
-                LIMIT $3
-                """,
-                claim_retry_failed,
-                MAX_CONSOLIDATION_ATTEMPTS,
-                batch_size,
+            rows = await claim_batch(
+                conn,
+                _EPISODE_CLAIMS,
+                limit=batch_size,
+                owner=worker,
+                lease_seconds=LEASE_DURATION_SECONDS,
+                args=(claim_retry_failed,),
             )
-
-            if rows:
-                episode_ids_to_lease = [row["id"] for row in rows]
-                # Set lease: prevent other workers from claiming the same episodes
-                await conn.execute(
-                    """
-                    UPDATE episodes
-                    SET leased_until = now() + ($1 * interval '1 second'),
-                        leased_by    = $2
-                    WHERE id = ANY($3)
-                    """,
-                    LEASE_DURATION_SECONDS,
-                    worker,
-                    episode_ids_to_lease,
-                )
 
     # Group episodes by (tenant_id, butler_name) to prevent cross-tenant mixing
     groups: dict[tuple[str, str], list[dict]] = {}
@@ -276,171 +298,35 @@ async def run_consolidation(
     groups_consolidated = 0
     all_errors: list[str] = []
 
-    # Process each (tenant_id, butler_name) group (only if spawner is provided)
+    # Process each (tenant_id, butler_name) group (only if spawner is provided).
+    # Each group is split by persisted episode authority: owner-class, system and
+    # third-party-class evidence get separate runtime sessions, so none can
+    # restate another's content under its own evidence (bu-dhloi1.1, .26).
     if cc_spawner is not None:
-        for (tenant_id, butler_name), episodes in groups.items():
-            try:
-                # 1. Fetch existing facts and rules for dedup context.
-                # Includes 'fading' facts (bu-5ud8p.1): they are still live,
-                # and consolidation should recognize an episode that reconfirms
-                # a fading fact as an update to it, not create a duplicate.
-                facts_rows = await pool.fetch(
-                    "SELECT id, subject, predicate, content, permanence, entity_id, valid_at "
-                    "FROM facts "
-                    "WHERE validity IN ('active', 'fading') AND source_butler = $1 "
-                    "  AND tenant_id = $2 "
-                    "ORDER BY created_at DESC "
-                    "LIMIT 100",
-                    butler_name,
-                    tenant_id,
-                )
-                existing_facts = [dict(row) for row in facts_rows]
-
-                rules_rows = await pool.fetch(
-                    "SELECT id, content, maturity "
-                    "FROM rules "
-                    "WHERE maturity NOT IN ('anti_pattern') "
-                    "  AND (metadata->>'forgotten')::boolean IS NOT TRUE "
-                    "  AND source_butler = $1 "
-                    "  AND tenant_id = $2 "
-                    "ORDER BY created_at DESC "
-                    "LIMIT 50",
-                    butler_name,
-                    tenant_id,
-                )
-                existing_rules = [dict(row) for row in rules_rows]
-
-                # 2. Build consolidation prompt
-                prompt = build_consolidation_prompt(
-                    episodes=episodes,
-                    existing_facts=existing_facts,
-                    existing_rules=existing_rules,
-                    butler_name=butler_name,
-                )
-
-                # 3. Spawn runtime instance with consolidate skill
-                logger.info(
-                    "Spawning consolidation session for %s/%s (%d episodes)",
-                    tenant_id,
-                    butler_name,
-                    len(episodes),
-                )
-                result = await cc_spawner.trigger(
-                    prompt=prompt,
-                    trigger_source="schedule:consolidation",
-                )
-
-                output_missing = result.output is None or not result.output.strip()
-                if not result.success or output_missing:
-                    if output_missing and result.success:
-                        failure_category = "runtime_no_output"
-                    else:
-                        failure_category = "runtime_unsuccessful"
-                    failure_message = _safe_failure_message(failure_category)
-                    error_msg = f"runtime session failed for {butler_name}: {failure_message}"
-                    logger.error("%s", error_msg)
-                    all_errors.append(error_msg)
-                    # The worker may transition only its own active lease.
-                    group_episode_ids = [uuid.UUID(str(ep["id"])) for ep in episodes]
-                    await _mark_group_failed(
-                        pool,
-                        group_episode_ids,
-                        failure_category,
-                        tenant_id=tenant_id,
-                        claim_token=worker,
-                    )
-                    continue
-
-                # 4. Parse runtime output
-                parsed = parse_consolidation_output(result.output)
-                if parsed.parse_errors:
-                    logger.warning("Parse errors for %s: %s", butler_name, parsed.parse_errors)
-                    all_errors.extend(parsed.parse_errors)
-
-                # 5. Execute consolidation actions — thread tenant_id and a
-                #    per-group request_id through so derived knowledge is stored
-                #    under the correct tenant.
-                group_episode_ids = [uuid.UUID(str(ep["id"])) for ep in episodes]
-                group_request_id = str(uuid.uuid4())
-                exec_result = await execute_consolidation(
-                    pool=pool,
-                    embedding_engine=embedding_engine,
-                    parsed=parsed,
-                    source_episode_ids=group_episode_ids,
-                    butler_name=butler_name,
+        for (tenant_id, butler_name), group_episodes in groups.items():
+            for partition, episodes in _partition_by_authority(group_episodes):
+                exec_result = await _consolidate_partition(
+                    pool,
+                    embedding_engine,
+                    cc_spawner,
                     tenant_id=tenant_id,
-                    request_id=group_request_id,
+                    butler_name=butler_name,
+                    partition=partition,
+                    episodes=episodes,
+                    worker=worker,
                     enable_shared_catalog=enable_shared_catalog,
                     source_schema=source_schema,
-                    claim_token=worker,
-                    lease_duration_seconds=LEASE_DURATION_SECONDS,
+                    memory_schema=memory_schema,
+                    errors=all_errors,
                 )
-
-                # A lease can expire while the runtime is executing. Do not
-                # count a stale worker as successful or write a run audit row;
-                # its owner-fenced terminal write has already failed closed.
-                if exec_result["episodes_consolidated"] != len(group_episode_ids):
-                    if exec_result["errors"]:
-                        all_errors.extend(exec_result["errors"])
-                    else:
-                        all_errors.append(
-                            "Consolidation lease was lost before episodes could be finalized"
-                        )
+                if exec_result is None:
                     continue
-
-                # Aggregate stats
                 total_facts_created += exec_result["facts_created"]
                 total_facts_updated += exec_result["facts_updated"]
                 total_rules_created += exec_result["rules_created"]
                 total_confirmations += exec_result["confirmations_made"]
                 total_episodes_consolidated += exec_result["episodes_consolidated"]
                 groups_consolidated += 1
-
-                if exec_result["errors"]:
-                    all_errors.extend(exec_result["errors"])
-
-                # Persist one audit row per successful butler-group run so the
-                # read-side stats endpoint can derive last_consolidation_at /
-                # last_consolidation_facts_produced. Best-effort: a logging
-                # failure must never mask a successful consolidation.
-                await _record_consolidation_run(
-                    pool,
-                    butler=butler_name,
-                    episodes_processed=exec_result["episodes_consolidated"],
-                    facts_produced=exec_result["facts_created"],
-                    facts_updated=exec_result["facts_updated"],
-                    rules_created=exec_result["rules_created"],
-                    confirmations_made=exec_result["confirmations_made"],
-                    errors=len(exec_result["errors"]),
-                )
-
-                logger.info(
-                    "Consolidated %s/%s: %d facts, %d rules, %d episodes",
-                    tenant_id,
-                    butler_name,
-                    exec_result["facts_created"] + exec_result["facts_updated"],
-                    exec_result["rules_created"],
-                    exec_result["episodes_consolidated"],
-                )
-
-            except Exception as exc:
-                error_msg = f"Failed to consolidate {butler_name}"
-                logger.error("%s: %s", error_msg, exc, exc_info=True)
-                all_errors.append(error_msg)
-                # Clear leases so episodes can be retried / dead-lettered
-                try:
-                    group_episode_ids = [uuid.UUID(str(ep["id"])) for ep in episodes]
-                    await _mark_group_failed(
-                        pool,
-                        group_episode_ids,
-                        "execution_error",
-                        tenant_id=tenant_id,
-                        claim_token=worker,
-                    )
-                except Exception as clear_exc:
-                    logger.error(
-                        "Failed to update failure state for %s: %s", butler_name, clear_exc
-                    )
 
     return {
         "episodes_processed": len(rows),
@@ -454,6 +340,207 @@ async def run_consolidation(
         "episodes_consolidated": total_episodes_consolidated,
         "errors": all_errors,
     }
+
+
+def _partition_by_authority(episodes: list[dict]) -> list[tuple[str, list[dict]]]:
+    """Split one claimed group into its nonempty authority partitions.
+
+    The partition comes from each episode's persisted ``content_authority``
+    stamp: owner-class, ``system``, and everything else (``third_party``,
+    ``mixed``, NULL), in that order.  Claim order is preserved within each
+    partition.
+    """
+    partitions: dict[str, list[dict]] = {partition: [] for partition in PARTITIONS}
+    for episode in episodes:
+        partitions[partition_of(episode.get("content_authority"))].append(episode)
+    return [(partition, members) for partition, members in partitions.items() if members]
+
+
+async def _consolidate_partition(
+    pool: Pool,
+    embedding_engine: Any,
+    cc_spawner: Spawner,
+    *,
+    tenant_id: str,
+    butler_name: str,
+    partition: str,
+    episodes: list[dict],
+    worker: str,
+    enable_shared_catalog: bool,
+    source_schema: str | None,
+    memory_schema: str | None,
+    errors: list[str],
+) -> dict[str, Any] | None:
+    """Run one authority partition through prompt, runtime, parse and execution.
+
+    Returns the executor result when every episode in the partition was
+    finalized, else ``None`` after appending a sanitized error.  A failure here
+    marks only this partition's episodes failed: the sibling partitions of the
+    same tenant/butler are independent.
+    """
+    group_episode_ids = [uuid.UUID(str(ep["id"])) for ep in episodes]
+    authority_filter = partition_sql(partition)
+    try:
+        # 1. Fetch existing facts and rules for dedup context, filtered to this
+        # partition's authority before the LIMIT so the owner and system sessions
+        # never see (and so cannot restate) third-party content.
+        # Includes 'fading' facts (bu-5ud8p.1): they are still live,
+        # and consolidation should recognize an episode that reconfirms
+        # a fading fact as an update to it, not create a duplicate.
+        facts_visibility = await local_fact_visibility_condition(
+            pool, memory_schema=memory_schema, alias="facts"
+        )
+        facts_visibility_filter = f" AND {facts_visibility}" if facts_visibility is not None else ""
+        facts_rows = await pool.fetch(
+            "SELECT facts.id, facts.subject, facts.predicate, facts.content, "
+            "facts.permanence, facts.entity_id, facts.valid_at "
+            "FROM facts AS facts "
+            "WHERE facts.validity IN ('active', 'fading') AND facts.source_butler = $1 "
+            "  AND facts.tenant_id = $2 "
+            f"  AND {authority_filter}"
+            f"{facts_visibility_filter} "
+            "ORDER BY facts.created_at DESC "
+            "LIMIT 100",
+            butler_name,
+            tenant_id,
+        )
+        existing_facts = [dict(row) for row in facts_rows]
+
+        rules_rows = await pool.fetch(
+            "SELECT id, content, maturity "
+            "FROM rules "
+            "WHERE maturity NOT IN ('anti_pattern') "
+            "  AND (metadata->>'forgotten')::boolean IS NOT TRUE "
+            "  AND source_butler = $1 "
+            "  AND tenant_id = $2 "
+            f"  AND {authority_filter} "
+            "ORDER BY created_at DESC "
+            "LIMIT 50",
+            butler_name,
+            tenant_id,
+        )
+        existing_rules = [dict(row) for row in rules_rows]
+
+        # 2. Build consolidation prompt
+        prompt = build_consolidation_prompt(
+            episodes=episodes,
+            existing_facts=existing_facts,
+            existing_rules=existing_rules,
+            butler_name=butler_name,
+        )
+
+        # 3. Spawn runtime instance with consolidate skill
+        logger.info(
+            "Spawning consolidation session for %s/%s %s partition (%d episodes)",
+            tenant_id,
+            butler_name,
+            partition,
+            len(episodes),
+        )
+        result = await cc_spawner.trigger(
+            prompt=prompt,
+            trigger_source="schedule:consolidation",
+        )
+
+        output_missing = result.output is None or not result.output.strip()
+        if not result.success or output_missing:
+            if output_missing and result.success:
+                failure_category = "runtime_no_output"
+            else:
+                failure_category = "runtime_unsuccessful"
+            failure_message = _safe_failure_message(failure_category)
+            error_msg = f"runtime session failed for {butler_name}: {failure_message}"
+            logger.error("%s", error_msg)
+            errors.append(error_msg)
+            # The worker may transition only its own active lease.
+            await _mark_group_failed(
+                pool,
+                group_episode_ids,
+                failure_category,
+                tenant_id=tenant_id,
+                claim_token=worker,
+            )
+            return None
+
+        # 4. Parse runtime output
+        parsed = parse_consolidation_output(result.output)
+        if parsed.parse_errors:
+            logger.warning("Parse errors for %s: %s", butler_name, parsed.parse_errors)
+            errors.extend(parsed.parse_errors)
+
+        # 5. Execute consolidation actions — thread tenant_id, the partition and
+        #    a per-partition request_id through so derived knowledge is stored
+        #    under the correct tenant and revalidated against its partition.
+        exec_result = await execute_consolidation(
+            pool=pool,
+            embedding_engine=embedding_engine,
+            parsed=parsed,
+            source_episode_ids=group_episode_ids,
+            butler_name=butler_name,
+            tenant_id=tenant_id,
+            request_id=str(uuid.uuid4()),
+            enable_shared_catalog=enable_shared_catalog,
+            source_schema=source_schema,
+            claim_token=worker,
+            lease_duration_seconds=LEASE_DURATION_SECONDS,
+            authority_partition=partition,
+        )
+
+        # A lease can expire while the runtime is executing. Do not count a
+        # stale worker as successful or write a run audit row; its owner-fenced
+        # terminal write has already failed closed.
+        if exec_result["episodes_consolidated"] != len(group_episode_ids):
+            if exec_result["errors"]:
+                errors.extend(exec_result["errors"])
+            else:
+                errors.append("Consolidation lease was lost before episodes could be finalized")
+            return None
+
+        if exec_result["errors"]:
+            errors.extend(exec_result["errors"])
+
+        # Persist one audit row per successful partition run so the read-side
+        # stats endpoint can derive last_consolidation_at /
+        # last_consolidation_facts_produced. Best-effort: a logging failure
+        # must never mask a successful consolidation.
+        await _record_consolidation_run(
+            pool,
+            butler=butler_name,
+            episodes_processed=exec_result["episodes_consolidated"],
+            facts_produced=exec_result["facts_created"],
+            facts_updated=exec_result["facts_updated"],
+            rules_created=exec_result["rules_created"],
+            confirmations_made=exec_result["confirmations_made"],
+            errors=len(exec_result["errors"]),
+        )
+
+        logger.info(
+            "Consolidated %s/%s %s partition: %d facts, %d rules, %d episodes",
+            tenant_id,
+            butler_name,
+            partition,
+            exec_result["facts_created"] + exec_result["facts_updated"],
+            exec_result["rules_created"],
+            exec_result["episodes_consolidated"],
+        )
+        return exec_result
+
+    except Exception as exc:
+        error_msg = f"Failed to consolidate {butler_name}"
+        logger.error("%s: %s", error_msg, exc, exc_info=True)
+        errors.append(error_msg)
+        # Clear leases so episodes can be retried / dead-lettered
+        try:
+            await _mark_group_failed(
+                pool,
+                group_episode_ids,
+                "execution_error",
+                tenant_id=tenant_id,
+                claim_token=worker,
+            )
+        except Exception as clear_exc:
+            logger.error("Failed to update failure state for %s: %s", butler_name, clear_exc)
+        return None
 
 
 async def _mark_group_failed(
@@ -480,67 +567,32 @@ async def _mark_group_failed(
 
     safe_error_message = _safe_failure_message(failure_category)
 
-    # The update and event insert share one CTE statement, so an absent event
-    # table or failed event insert rolls back the lifecycle transition rather
-    # than silently losing the terminal audit. The lease-owner/expiry predicate
-    # makes a stale invocation a no-op after a replacement worker claims it.
-    await pool.execute(
-        """
-        WITH transitioned AS (
-            UPDATE episodes
-            SET consolidation_attempts    = consolidation_attempts + 1,
-                last_consolidation_error  = $1,
-                consolidated              = false,
-                leased_until              = NULL,
-                leased_by                 = NULL,
-                consolidation_status      = CASE
-                    WHEN consolidation_attempts + 1 >= $2 THEN 'dead_letter'
-                    ELSE 'failed'
-                END,
-                dead_letter_reason        = CASE
-                    WHEN consolidation_attempts + 1 >= $2 THEN $1
-                    ELSE NULL
-                END,
-                next_consolidation_retry_at = CASE
-                    WHEN consolidation_attempts + 1 >= $2 THEN NULL
-                    ELSE now() + (power(2, consolidation_attempts + 1) * $3
-                                  * interval '1 second')
-                END
-            WHERE id = ANY($4::uuid[])
-              AND leased_by = $5
-              AND leased_until > now()
-              AND consolidation_status IN ('pending', 'failed')
-              AND consolidation_attempts < $2
-            RETURNING id, butler, tenant_id, consolidation_attempts, consolidation_status
+    # The helper and immutable lifecycle events enlist in one transaction.
+    # A failed event insert rolls back the lifecycle transition and lease release.
+    async with pool.acquire() as conn, conn.transaction():
+        transitioned = await fail_claimed(
+            conn,
+            _EPISODE_CLAIMS,
+            episode_ids,
+            owner=claim_token,
+            reason=safe_error_message,
         )
-        INSERT INTO memory_events (event_type, actor, tenant_id, actor_butler,
-                                   memory_type, memory_id, payload)
-        SELECT
-            CASE consolidation_status
-                WHEN 'dead_letter' THEN 'episode_consolidation_dead_letter'
-                ELSE 'episode_consolidation_failed'
-            END,
-            'consolidation_worker',
-            COALESCE($6, tenant_id),
-            butler,
-            'episode',
-            id,
-            jsonb_build_object(
-                'attempts', consolidation_attempts,
-                'outcome', CASE consolidation_status
-                    WHEN 'dead_letter' THEN 'dead_letter'
-                    ELSE 'retry_scheduled'
-                END
+        for row in transitioned:
+            terminal = row["consolidation_status"] == "dead_letter"
+            await conn.execute(
+                """
+                INSERT INTO memory_events (event_type, actor, tenant_id, actor_butler,
+                                           memory_type, memory_id, payload)
+                VALUES ($1, 'consolidation_worker', $2, $3, 'episode', $4,
+                        jsonb_build_object('attempts', $5::integer, 'outcome', $6::text))
+                """,
+                "episode_consolidation_dead_letter" if terminal else "episode_consolidation_failed",
+                tenant_id if tenant_id is not None else row["tenant_id"],
+                row["butler"],
+                row["id"],
+                row["consolidation_attempts"],
+                "dead_letter" if terminal else "retry_scheduled",
             )
-        FROM transitioned
-        """,
-        safe_error_message,
-        MAX_CONSOLIDATION_ATTEMPTS,
-        BASE_RETRY_SECONDS,
-        episode_ids,
-        claim_token,
-        tenant_id,
-    )
 
 
 async def _record_consolidation_run(

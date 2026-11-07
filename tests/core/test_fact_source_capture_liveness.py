@@ -42,9 +42,12 @@ class SourcePool:
             "lifecycle_state": "processing",
         }
 
+    def acquire(self, *, timeout=None):
+        return self._acquire_slot(timeout)
+
     @asynccontextmanager
-    async def acquire(self, *, timeout=None):
-        async with asyncio.timeout(timeout):
+    async def _acquire_slot(self, seconds):
+        async with asyncio.timeout(seconds):
             await self.slot.acquire()
         try:
             yield self
@@ -123,7 +126,7 @@ async def test_concurrent_capture_reuses_committed_winner_instead_of_stale_resol
         await asyncio.gather(task, return_exceptions=True)
 
 
-@pytest.mark.parametrize("changed", ["sender", "payload", "text", "lifecycle"])
+@pytest.mark.parametrize("changed", ["sender", "payload", "text", "lifecycle", "missing"])
 async def test_changed_durable_source_cannot_admit_the_earlier_resolution(changed):
     pool = SourcePool()
     issuer = FactSourceContextRegistry(pool)
@@ -148,12 +151,21 @@ async def test_changed_durable_source_cannot_admit_the_earlier_resolution(change
                     pool.row["raw_payload"] = {"message": "Different source"}
                 elif changed == "text":
                     pool.row["normalized_text"] = "Different text"
-                else:
+                elif changed == "lifecycle":
                     pool.row["lifecycle_state"] = "dead_letter"
+                else:
+                    pool.row = None
             release.set()
-            with pytest.raises(ValueError, match="accepted source.*changed"):
-                await task
-        assert "_fact_source_report" not in pool.row["request_context"]
+            if changed == "missing":
+                with pytest.raises(ValueError, match="accepted source is unavailable"):
+                    await task
+            else:
+                with pytest.raises(ValueError, match="accepted source.*changed"):
+                    await task
+        if changed == "missing":
+            assert pool.row is None
+        else:
+            assert "_fact_source_report" not in pool.row["request_context"]
         assert inbox not in issuer._reports
         assert inbox not in issuer._source_digests
     finally:

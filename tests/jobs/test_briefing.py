@@ -30,6 +30,7 @@ from butlers.jobs.briefing import (
     validate_contribution,
 )
 from butlers.jobs.home import HASourceUnmeasurableError
+from butlers.testing.fake_pool import AsyncCtx, fake_pool
 
 # Existing relationship-briefing tests (birthday highlight coverage etc.) do
 # not exercise the bu-27dxl.5.4 delegation seed and use pool mocks that don't
@@ -83,19 +84,6 @@ async def test_lifestyle_briefing_summary_uses_full_counts_not_limited_highlight
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_pool(
-    *,
-    fetch_rows: list[dict[str, Any]] | None = None,
-    fetchrow_value: dict[str, Any] | None = None,
-) -> MagicMock:
-    pool = MagicMock()
-    pool.fetch = AsyncMock(return_value=fetch_rows or [])
-    pool.fetchrow = AsyncMock(return_value=fetchrow_value)
-    pool.fetchval = AsyncMock(return_value=1)
-    pool.execute = AsyncMock()
-    return pool
 
 
 def _make_contribution(
@@ -230,7 +218,7 @@ async def test_collect_briefing_contributions_counts():
     rows = [
         _make_view_row(b, _make_contribution(butler=b, date=date_str)) for b in SPECIALIST_BUTLERS
     ]
-    pool = _make_pool(fetch_rows=rows)
+    pool = fake_pool(fetch=rows)
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
         patch("butlers.jobs.briefing.state_set", new_callable=AsyncMock, return_value=1),
@@ -243,7 +231,7 @@ async def test_collect_briefing_contributions_counts():
     present = ["health", "finance", "relationship"]
     missing = sorted(set(SPECIALIST_BUTLERS) - set(present))
     rows2 = [_make_view_row(b, _make_contribution(butler=b, date=date_str)) for b in present]
-    pool2 = _make_pool(fetch_rows=rows2)
+    pool2 = fake_pool(fetch=rows2)
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
         patch("butlers.jobs.briefing.state_set", new_callable=AsyncMock, return_value=1),
@@ -265,7 +253,7 @@ async def test_collect_briefing_contributions_malformed_skipped():
         },
         _make_view_row("education", _make_contribution(butler="education", date=date_str)),
     ]
-    pool = _make_pool(fetch_rows=rows)
+    pool = fake_pool(fetch=rows)
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
         patch("butlers.jobs.briefing.state_set", new_callable=AsyncMock, return_value=1),
@@ -276,7 +264,7 @@ async def test_collect_briefing_contributions_malformed_skipped():
 
 async def test_collect_briefing_contributions_db_error_propagates():
     """DB errors propagate out of collect_briefing_contributions."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None)
     pool.fetch = AsyncMock(side_effect=Exception("database error"))
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
@@ -296,6 +284,9 @@ async def test_run_finance_briefing_contribution_avoids_ambiguous_bound_datetime
             self.fetch_calls.append((sql, args))
             return []
 
+        async def fetchval(self, sql: str, *args: Any) -> bool:
+            return False
+
     pool = _RecordingPool()
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
@@ -303,10 +294,12 @@ async def test_run_finance_briefing_contribution_avoids_ambiguous_bound_datetime
     ):
         result = await run_finance_briefing_contribution(pool, None)
 
-    anomaly_sql, anomaly_args = pool.fetch_calls[1]
+    anomaly_sql, anomaly_args = next(
+        call for call in pool.fetch_calls if "FROM transactions" in call[0]
+    )
     assert "EXTRACT(DAY FROM $2 - $1)" not in anomaly_sql
     assert "$2 - $1" not in anomaly_sql
-    assert len(anomaly_args) == 3
+    assert len(anomaly_args) == 2
     assert result["spending_anomalies"] == 0
 
 
@@ -419,7 +412,7 @@ async def test_run_health_briefing_weight_from_facts(
 ):
     """Weight is read from the butler-scoped facts table (search_path isolation, bu-i5l99),
     with content-prefix stripping and a metadata->>'value' fallback."""
-    pool = _make_pool(fetch_rows=[], fetchrow_value=weight_fact)
+    pool = fake_pool(fetch=[], fetchrow=weight_fact, fetchval=1)
     mock_write = AsyncMock()
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
@@ -452,7 +445,7 @@ async def test_run_health_briefing_missed_doses_read_from_facts_not_relational()
     (predicate='medication'/'took_dose', scope='health'), so the briefing must read
     facts — not the orphaned health.medications / health.medication_doses tables.
     """
-    pool = _make_pool(fetch_rows=[], fetchrow_value=None)
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=1)
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
         patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock),
@@ -484,7 +477,7 @@ async def test_run_health_briefing_missed_doses_positive_case_from_facts():
     missed_med_row = {
         "name": "Metformin",
         "frequency": "daily",
-        "schedule": None,
+        "schedule": ["00:00"],  # due since midnight, so missed whatever the clock says
     }
     # fetch() order: missed_rows -> taken_rows. No weight fact (fetchrow None).
     pool = MagicMock()
@@ -522,7 +515,7 @@ async def test_run_relationship_briefing_birthday_sql_contains_both_paths():
     arm reads entities directly.  Both use e.listed as the canonical archive flag.
     """
     # fetch() order: birthday_rows, reminder_rows, gap_rows
-    pool = _make_pool(fetch_rows=[])
+    pool = fake_pool(fetch=[])
     mock_write = AsyncMock()
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
@@ -594,7 +587,7 @@ async def test_run_relationship_briefing_birthday_highlight(name, year):
 
 async def test_run_relationship_briefing_no_birthdays():
     """No birthdays in the next 7 days produces has_updates=False (assuming no other updates)."""
-    pool = _make_pool(fetch_rows=[])
+    pool = fake_pool(fetch=[])
     mock_write = AsyncMock()
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
@@ -615,29 +608,6 @@ async def test_run_relationship_briefing_no_birthdays():
 # ---------------------------------------------------------------------------
 
 
-class _NullAsyncCtx:
-    """No-op async context manager standing in for ``conn.transaction()``."""
-
-    async def __aenter__(self) -> None:
-        return None
-
-    async def __aexit__(self, *exc_info: object) -> bool:
-        return False
-
-
-class _FakeAcquireCtx:
-    """Async context manager standing in for ``pool.acquire()``."""
-
-    def __init__(self, conn: MagicMock) -> None:
-        self._conn = conn
-
-    async def __aenter__(self) -> MagicMock:
-        return self._conn
-
-    async def __aexit__(self, *exc_info: object) -> bool:
-        return False
-
-
 def _delegation_pool(*, fetchrow_value=None, fetchval_value=None) -> MagicMock:
     """A pool double for _relationship_finance_birthday_gift_ask in isolation.
 
@@ -651,11 +621,11 @@ def _delegation_pool(*, fetchrow_value=None, fetchval_value=None) -> MagicMock:
     conn = MagicMock()
     conn.execute = AsyncMock()
     conn.fetchval = AsyncMock(return_value=fetchval_value)
-    conn.transaction = MagicMock(return_value=_NullAsyncCtx())
+    conn.transaction = MagicMock(return_value=AsyncCtx(None))
 
     pool = MagicMock()
     pool.fetchrow = AsyncMock(return_value=fetchrow_value)
-    pool.acquire = MagicMock(return_value=_FakeAcquireCtx(conn))
+    pool.acquire = MagicMock(return_value=AsyncCtx(conn))
     pool.conn = conn
     return pool
 

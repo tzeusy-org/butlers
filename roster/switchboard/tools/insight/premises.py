@@ -91,7 +91,9 @@ async def _owner_condition_active(pool: asyncpg.Pool, premise: Mapping[str, Any]
     return rows[0]["state"] in ("open", "aging")
 
 
-async def check_premise(pool: asyncpg.Pool, premise: Mapping[str, Any] | None) -> bool | None:
+async def check_premise(
+    pool: asyncpg.Pool, premise: Mapping[str, Any] | None, *, finance_warning_reader=None
+) -> bool | None:
     """Return whether ``premise`` still holds; ``True`` for a null premise.
 
     Never raises: any probe failure is ``None`` (unknown), so a lookup hiccup
@@ -104,6 +106,14 @@ async def check_premise(pool: asyncpg.Pool, premise: Mapping[str, Any] | None) -
         if kind == PREMISE_KIND_OWNER_CONDITION:
             return await _owner_condition_active(pool, premise)
         if kind == PREMISE_KIND_PROBE:
+            if (premise.get("butler"), premise.get("probe")) == (
+                "finance",
+                "subscription_warning_still_relevant",
+            ):
+                if finance_warning_reader is None:
+                    return None
+                result = await finance_warning_reader(dict(premise.get("args") or {}))
+                return result if type(result) is bool else None
             probe = PREMISE_PROBES.get((premise.get("butler"), premise.get("probe")))
             if probe is None:
                 return None

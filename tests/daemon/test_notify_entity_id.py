@@ -10,13 +10,17 @@ Migration notes (bu-km8xr):
   Resolution queries relationship.entity_facts keyed directly on entity_id — no
   public.contacts indirection. Tests seed entity_facts rows and assert queries
   target that path.
+
+Every test runs a real booted daemon (bu-rvgzmf.2). Tests that deliver, park,
+refuse with a ledger row or seed rows get a fresh boot; the rest share one.
 """
 
 from __future__ import annotations
 
 import json
 import uuid
-from contextlib import asynccontextmanager, contextmanager
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,184 +29,95 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.daemon import ButlerDaemon
 from butlers.identity import ResolvedContact
-from butlers.testing.approval_parking_fake import record_pending_action
+from butlers.testing.daemon import write_butler_config
+from butlers.testing.db import open_pool
 
-pytestmark = pytest.mark.unit
-
-_ENTITY_ID = uuid.UUID("00000000-0000-0000-0000-000000000099")
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
-@pytest.fixture
-def butler_dir(tmp_path: Path) -> Path:
-    """Create a minimal butler directory for testing."""
-    butler_path = tmp_path / "test-butler"
-    butler_path.mkdir()
-    (butler_path / "butler.toml").write_text(
-        """
-[butler]
-name = "test-butler"
-port = 9100
-description = "Test butler"
+@pytest.fixture(autouse=True)
+def _outside_the_owners_quiet_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Evaluate every notify here outside the owner's quiet window.
 
-[butler.db]
-name = "butlers"
-schema = "test_butler"
+    The migrated owner policy has a quiet window, and entity or explicit targets
+    obey it (see test_notify_attention_ledger.py). These tests are about resolution,
+    parking and dossiers, so a host clock inside that window must not defer them.
+    """
+    import butlers.core.approvals_policy as approvals_policy
 
-[[butler.schedule]]
-name = "daily-check"
-cron = "0 9 * * *"
-prompt = "Do the daily check"
-"""
+    monkeypatch.setattr(approvals_policy, "policy_quiet_hours_deliver_at", lambda *_a, **_k: None)
+
+
+async def _fresh(booted_daemon, tmp_path: Path):
+    """A butler of its own, for a test that writes rows."""
+    return await booted_daemon(write_butler_config(tmp_path, "general"))
+
+
+async def _relationship_butler(booted_daemon, tmp_path: Path):
+    """The Relationship butler: the only runtime role that reads relationship.entity_facts.
+
+    Other butlers' roles have no USAGE on the relationship schema, so their resolver
+    returns None for every entity (see the xfail below, bu-rvgzmf.13).
+    """
+    return await booted_daemon(
+        write_butler_config(tmp_path, "relationship", schema="relationship"), "core", "relationship"
     )
-    (butler_path / "MANIFESTO.md").write_text("# Test Butler")
-    (butler_path / "CLAUDE.md").write_text("Test butler instructions.")
-    return butler_path
 
 
-def _make_runtime_config_row(butler_name: str = "test-butler") -> dict:
-    """Return a dict-like row for the runtime_config table, as returned by asyncpg.fetchrow."""
-    return {
-        "butler_name": butler_name,
-        "core_groups": None,
-        "catalog_read_sensitivity": "normal",
-        "max_concurrent": 3,
-        "max_queued": 10,
-        "seeded_at": None,
-        "updated_at": None,
-    }
+async def _notify_fn(booted) -> Callable[..., Any]:
+    """The daemon's registered notify tool, called in process.
+
+    In process because these tests pass arguments MCP never carries as written
+    (``priority`` is excluded from the schema; entity ids are UUID objects).
+    """
+    tool = await booted.daemon.mcp.get_tool("notify")
+    return tool.fn
 
 
-def _make_fetchrow_side_effect(butler_name: str = "test-butler"):
-    """Return runtime-config rows and no result for unrelated lookups."""
-
-    async def _fetchrow(query: str, *args, **kwargs):
-        if "runtime_config" in query:
-            return _make_runtime_config_row(butler_name)
-        return None
-
-    return _fetchrow
+def _use_client(monkeypatch: pytest.MonkeyPatch, daemon: Any, client: Any) -> Any:
+    monkeypatch.setattr(daemon, "switchboard_client", client)
+    return client
 
 
-def _patch_infra(mock_pool: Any = None) -> dict[str, Any]:
-    """Patch infrastructure dependencies for daemon tests."""
-    if mock_pool is None:
-        mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock(return_value=None)
-        mock_conn.fetchrow = AsyncMock(return_value=None)
-        mock_conn.fetchval = AsyncMock(return_value=None)
-        mock_conn.fetch = AsyncMock(return_value=[])
-
-        mock_pool = AsyncMock()
-        # Support `async with pool.acquire() as conn:` for _ensure_owner_entity
-        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_pool.fetchval = AsyncMock(return_value=None)
-        mock_pool.execute = AsyncMock(return_value=None)
-        mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
-        mock_pool.fetch = AsyncMock(return_value=[])
-
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
-
-    mock_credential_store = AsyncMock()
-    mock_credential_store.resolve = AsyncMock(return_value=None)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "configure_logging": patch("butlers.core.logging.configure_logging"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "create_audit_pool": patch.object(
-            ButlerDaemon, "_create_audit_pool", new_callable=AsyncMock, return_value=None
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "build_credential_store": patch.object(
-            ButlerDaemon,
-            "_build_credential_store",
-            new_callable=AsyncMock,
-            return_value=mock_credential_store,
-        ),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-    }
+async def _ledger_rows(booted) -> list[Any]:
+    return await booted.daemon.db.pool.fetch(
+        "SELECT outcome, reason, metadata::text AS metadata FROM public.attention_ledger"
+        " ORDER BY occurred_at, id"
+    )
 
 
-async def _start_daemon_with_notify(
-    butler_dir: Path, patches: dict[str, Any]
-) -> tuple[ButlerDaemon, Any]:
-    """Start daemon and extract the notify function reference."""
-    notify_fn = None
-    mock_mcp = MagicMock()
-
-    def tool_decorator(*_decorator_args, **_decorator_kwargs):
-        def decorator(fn):
-            nonlocal notify_fn
-            if fn.__name__ == "notify":
-                notify_fn = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["configure_logging"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-        patches["build_credential_store"],
-        patches["get_adapter"],
-        patches["shutil_which"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-        return daemon, notify_fn
+async def _seed_entity(
+    booted, facts: list[tuple[str, str]], *, posture: str | None = None
+) -> uuid.UUID:
+    """Insert a person and their literal facts through the clone's owner."""
+    admin = await open_pool(booted.admin_url)
+    try:
+        entity_id = await admin.fetchval(
+            "INSERT INTO public.entities (canonical_name, entity_type) VALUES ($1, 'person')"
+            " RETURNING id",
+            f"Test Contact {uuid.uuid4().hex[:8]}",
+        )
+        if posture is not None:
+            await admin.execute(
+                "UPDATE public.entities SET posture = $2 WHERE id = $1", entity_id, posture
+            )
+        for predicate, value in facts:
+            await admin.execute(
+                "INSERT INTO relationship.entity_facts"
+                " (subject, predicate, object, object_kind, src)"
+                " VALUES ($1, $2, $3, 'literal', 'test')",
+                entity_id,
+                predicate,
+                value,
+            )
+    finally:
+        await admin.close()
+    return entity_id
 
 
 @contextmanager
-def _known_contact_patch(email: str = "user@example.com") -> Any:
+def _known_contact_patch(email: str = "user@example.com") -> Iterator[None]:
     """Context manager that patches identity resolution to return a known owner contact.
 
     Patches identity resolution to return a unique owner contact so the email
@@ -248,120 +163,21 @@ def _make_mock_client(*, is_error: bool = False) -> Any:
     return mock_client
 
 
-def _make_entity_facts_conn(
-    entity_id: uuid.UUID | None = _ENTITY_ID,
-    facts_value: str | None = None,
-    fetchrow_error: Exception | None = None,
-) -> AsyncMock:
-    """Build a mock connection that simulates entity-direct entity_facts resolution.
-
-    The resolver queries ``relationship.entity_facts`` keyed on the entity_id —
-    there is no longer a ``public.contacts`` indirection step.
-
-    fetchrow("SELECT ef.object FROM relationship.entity_facts ...") → {"object": facts_value}
-    """
-    mock_conn = AsyncMock()
-    mock_conn.execute = AsyncMock(return_value=None)
-    mock_conn.fetchval = AsyncMock(return_value=None)
-    mock_conn.fetch = AsyncMock(return_value=[])
-
-    if fetchrow_error is not None:
-        mock_conn.fetchrow = AsyncMock(side_effect=fetchrow_error)
-        return mock_conn
-
-    async def _ef_fetchrow(query: str, *args, **kwargs):
-        if "entity_facts" in query:
-            if facts_value is None:
-                return None
-            return {"object": facts_value}
-        return None
-
-    mock_conn.fetchrow = AsyncMock(side_effect=_ef_fetchrow)
-    return mock_conn
-
-
-def _make_pool_with_entity_facts_conn(
-    entity_id: uuid.UUID | None = _ENTITY_ID,
-    facts_value: str | None = None,
-    fetchrow_error: Exception | None = None,
-) -> tuple[AsyncMock, AsyncMock]:
-    """Build a (pool, conn) pair that supports the entity-direct entity_facts resolver."""
-    mock_conn = _make_entity_facts_conn(
-        entity_id=entity_id,
-        facts_value=facts_value,
-        fetchrow_error=fetchrow_error,
-    )
-
-    mock_pool = AsyncMock()
-    mock_pool.fetchval = AsyncMock(return_value=None)
-    mock_pool.execute = AsyncMock(return_value=None)
-    # pool-level fetchrow must return runtime_config rows so seed_if_empty works
-    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
-    mock_pool.fetch = AsyncMock(return_value=[])
-
-    @asynccontextmanager
-    async def mock_acquire():
-        yield mock_conn
-
-    mock_pool.acquire = mock_acquire
-    return mock_pool, mock_conn
-
-
-# Legacy helper retained for backward compat with patches that don't need two-step.
-def _make_pool_with_conn(
-    fetchrow_return: Any = None, fetchrow_error: Exception | None = None
-) -> tuple[AsyncMock, AsyncMock]:
-    """Build a mock (pool, conn) pair for resolver tests (single-step legacy)."""
-    mock_conn = AsyncMock()
-    if fetchrow_error:
-        mock_conn.fetchrow = AsyncMock(side_effect=fetchrow_error)
-    else:
-        mock_conn.fetchrow = AsyncMock(return_value=fetchrow_return)
-
-    mock_pool = AsyncMock()
-    mock_pool.fetchval = AsyncMock(return_value=None)
-    mock_pool.execute = AsyncMock(return_value=None)
-    # pool-level fetchrow must return runtime_config rows so seed_if_empty works
-    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
-    mock_pool.fetch = AsyncMock(return_value=[])
-
-    @asynccontextmanager
-    async def mock_acquire():
-        yield mock_conn
-
-    mock_pool.acquire = mock_acquire
-    return mock_pool, mock_conn
-
-
-def _patch_db_in_patches(patches: dict, mock_pool: Any) -> None:
-    """Override db_from_env in patches dict with a mock_db using mock_pool."""
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-    patches["db_from_env"] = patch("butlers.lifecycle.Database.from_env", return_value=mock_db)
-
-
-@pytest.mark.asyncio
 class TestNotifyEntityIdResolution:
     """Tasks 7.1+7.2 — entity_id resolves to channel identifier via entity_facts."""
 
-    async def test_entity_id_resolves_and_delivers(self, butler_dir: Path) -> None:
+    async def test_entity_id_resolves_and_delivers(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """entity_id=UUID calls resolver; resolved identifier used in delivery payload;
         DB query uses entity_facts path; returns None when not found/error."""
-        patches = _patch_infra()
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
+        booted = await _relationship_butler(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
 
         # entity_id → resolver called with correct args, result used in delivery
         entity_id = uuid.UUID("00000000-0000-0000-0000-000000000010")
-        daemon.switchboard_client = _make_mock_client()
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
         mock_resolver = AsyncMock(return_value="contact@example.com")
         with (
             patch.object(daemon, "_resolve_entity_channel_identifier", new=mock_resolver),
@@ -373,76 +189,47 @@ class TestNotifyEntityIdResolution:
         mock_resolver.assert_awaited_once_with(
             entity_id=entity_id, channel="email", msg_context=None
         )
-        delivery = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"][
-            "delivery"
-        ]
+        delivery = client.call_tool.await_args.args[1]["notify_request"]["delivery"]
         assert delivery["recipient"] == "contact@example.com"
 
-        # DB resolver queries entity_facts (not contact_info) keyed on entity_id;
-        # entity-direct (single query, no public.contacts indirection).
-        mock_pool2, mock_conn2 = _make_pool_with_entity_facts_conn(
-            entity_id=_ENTITY_ID,
-            facts_value="user@example.com",
-        )
-        patches2 = _patch_infra()
-        _patch_db_in_patches(patches2, mock_pool2)
-        daemon2, _ = await _start_daemon_with_notify(butler_dir, patches2)
-        eid = uuid.UUID("00000000-0000-0000-0000-000000000020")
-        result2 = await daemon2._resolve_entity_channel_identifier(entity_id=eid, channel="email")
+        # The resolver reads relationship.entity_facts keyed on the entity, with no
+        # public.contacts or contact_info step: only an entity and its fact exist.
+        eid = await _seed_entity(booted, [("has-email", "user@example.com")])
+        result2 = await daemon._resolve_entity_channel_identifier(entity_id=eid, channel="email")
         assert result2 == "user@example.com"
-        # Single fetchrow: entity_facts lookup — no public.contacts step.
-        assert mock_conn2.fetchrow.await_count == 1
-        queries = [c.args[0] for c in mock_conn2.fetchrow.await_args_list]
-        assert not any("public.contacts" in q for q in queries)
-        assert any("relationship.entity_facts" in q for q in queries)
-        # entity_facts query must NOT reference contact_info
-        ef_query = next(q for q in queries if "relationship.entity_facts" in q)
-        assert "contact_info" not in ef_query
 
         # Returns None when the entity has no matching fact
-        mock_pool3, _ = _make_pool_with_entity_facts_conn(entity_id=None, facts_value=None)
-        patches3 = _patch_infra()
-        _patch_db_in_patches(patches3, mock_pool3)
-        daemon3, _ = await _start_daemon_with_notify(butler_dir, patches3)
         assert (
-            await daemon3._resolve_entity_channel_identifier(
-                entity_id=uuid.UUID("00000000-0000-0000-0000-000000000022"), channel="email"
+            await daemon._resolve_entity_channel_identifier(
+                entity_id=await _seed_entity(booted, []), channel="email"
             )
             is None
         )
 
-    async def test_telegram_resolution_uses_handle_prefix_filter(self, butler_dir: Path) -> None:
+    async def test_telegram_resolution_uses_handle_prefix_filter(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
         """Telegram channel resolution queries has-handle with 'telegram:' prefix filter.
 
         entity_facts stores telegram_user_id as has-handle with object 'telegram:NUMERIC_ID'.
         The resolver must filter by this prefix to disambiguate from linkedin/twitter handles,
         then strip the prefix and return the numeric delivery ID.
         """
-        # Seed entity_facts with a telegram has-handle triple in 'telegram:<id>' format.
-        mock_pool, mock_conn = _make_pool_with_entity_facts_conn(
-            entity_id=_ENTITY_ID,
-            facts_value="telegram:210454304",
+        booted = await _relationship_butler(booted_daemon, tmp_path)
+        # A linkedin handle sorts first; only the telegram:-prefixed one may resolve.
+        entity_id = await _seed_entity(
+            booted, [("has-handle", "linkedin:someone"), ("has-handle", "telegram:210454304")]
         )
-        patches = _patch_infra()
-        _patch_db_in_patches(patches, mock_pool)
-        daemon, _ = await _start_daemon_with_notify(butler_dir, patches)
 
-        result = await daemon._resolve_entity_channel_identifier(
-            entity_id=uuid.UUID("00000000-0000-0000-0000-000000000030"),
-            channel="telegram",
+        result = await booted.daemon._resolve_entity_channel_identifier(
+            entity_id=entity_id, channel="telegram"
         )
         # Prefix stripped: "telegram:210454304" → "210454304"
         assert result == "210454304"
 
-        # Assert the entity_facts query used the 'telegram:%' LIKE filter
-        queries = [c.args[0] for c in mock_conn.fetchrow.await_args_list]
-        ef_query = next(q for q in queries if "relationship.entity_facts" in q)
-        # Must use LIKE prefix filter for telegram disambiguation
-        assert "LIKE" in ef_query or "like" in ef_query.lower()
-        # Must NOT reference contact_info anywhere
-        assert "contact_info" not in ef_query
-
-    async def test_telegram_no_has_handle_with_prefix_returns_none(self, butler_dir: Path) -> None:
+    async def test_telegram_no_has_handle_with_prefix_returns_none(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
         """Returns None if entity has no telegram: prefixed has-handle row.
 
         rel_019 normalised legacy telegram rows to the 'telegram:' prefix in
@@ -450,87 +237,61 @@ class TestNotifyEntityIdResolution:
         match (bu-3nu0x).  A contact with only linkedin/twitter handles (non-prefixed)
         must not be delivered to the wrong platform.
         """
-        # entity has has-handle but NOT with telegram: prefix
-        mock_pool, _ = _make_pool_with_entity_facts_conn(
-            entity_id=_ENTITY_ID,
-            facts_value=None,  # query returns no row (no telegram:-prefixed handle)
+        booted = await _relationship_butler(booted_daemon, tmp_path)
+        entity_id = await _seed_entity(
+            booted, [("has-handle", "someone-on-linkedin"), ("has-handle", "210454304")]
         )
-        patches = _patch_infra()
-        _patch_db_in_patches(patches, mock_pool)
-        daemon, _ = await _start_daemon_with_notify(butler_dir, patches)
 
-        result = await daemon._resolve_entity_channel_identifier(
-            entity_id=uuid.UUID("00000000-0000-0000-0000-000000000031"),
-            channel="telegram",
+        result = await booted.daemon._resolve_entity_channel_identifier(
+            entity_id=entity_id, channel="telegram"
         )
         assert result is None
 
-    async def test_email_resolution_uses_has_email_predicate(self, butler_dir: Path) -> None:
+    async def test_email_resolution_uses_has_email_predicate(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
         """Email channel resolution queries has-email predicate; no prefix filter needed."""
-        mock_pool, mock_conn = _make_pool_with_entity_facts_conn(
-            entity_id=_ENTITY_ID,
-            facts_value="someone@example.com",
+        booted = await _relationship_butler(booted_daemon, tmp_path)
+        entity_id = await _seed_entity(
+            booted, [("has-handle", "telegram:1"), ("has-email", "someone@example.com")]
         )
-        patches = _patch_infra()
-        _patch_db_in_patches(patches, mock_pool)
-        daemon, _ = await _start_daemon_with_notify(butler_dir, patches)
 
-        result = await daemon._resolve_entity_channel_identifier(
-            entity_id=uuid.UUID("00000000-0000-0000-0000-000000000032"),
-            channel="email",
+        result = await booted.daemon._resolve_entity_channel_identifier(
+            entity_id=entity_id, channel="email"
         )
         assert result == "someone@example.com"
 
-        # Email uses has-email predicate (passed as arg, checked in args list)
-        ef_args = [c.args for c in mock_conn.fetchrow.await_args_list]
-        ef_call_args = next(a for a in ef_args if any("entity_facts" in str(x) for x in a))
-        assert "has-email" in ef_call_args
-
-    async def test_unknown_channel_returns_none(self, butler_dir: Path) -> None:
+    async def test_unknown_channel_returns_none(self, shared_booted_daemon) -> None:
         """Returns None immediately for channels with no known predicate mapping."""
-        mock_pool, mock_conn = _make_pool_with_entity_facts_conn(
-            entity_id=_ENTITY_ID,
-            facts_value="irrelevant",
-        )
-        patches = _patch_infra()
-        _patch_db_in_patches(patches, mock_pool)
-        daemon, _ = await _start_daemon_with_notify(butler_dir, patches)
+        booted = await shared_booted_daemon()
 
-        result = await daemon._resolve_entity_channel_identifier(
+        result = await booted.daemon._resolve_entity_channel_identifier(
             entity_id=uuid.UUID("00000000-0000-0000-0000-000000000033"),
             channel="fax",  # unmapped channel
         )
         assert result is None
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "bu-rvgzmf.13: non-Relationship butler roles have no USAGE on the "
+            "relationship schema, so the resolver swallows the privilege error and "
+            "notify(entity_id=...) always takes the missing-identifier path"
+        ),
+    )
+    async def test_a_non_relationship_butler_resolves_an_entity_handle(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
+        booted = await booted_daemon(
+            write_butler_config(tmp_path, "general"),
+            chain_schemas={"relationship": "relationship"},
+        )
+        entity_id = await _seed_entity(booted, [("has-email", "someone@example.com")])
 
-def _make_missing_id_patches(butler_dir: Path) -> tuple[dict, Any, Any]:
-    """Return patches + daemon startup for missing-identifier tests."""
-    mock_conn_inner = AsyncMock()
-    mock_conn_inner.execute = AsyncMock(return_value=None)
-    mock_conn_inner.fetchrow = AsyncMock(return_value=None)
-    mock_conn_inner.fetchval = AsyncMock(return_value=None)
-    mock_conn_inner.fetch = AsyncMock(return_value=[])
-
-    mock_pool = AsyncMock()
-    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn_inner)
-    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-    mock_pool.execute = AsyncMock(return_value=None)
-    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
-    mock_pool.fetchval = AsyncMock(return_value=None)
-    mock_pool.fetch = AsyncMock(return_value=[])
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-    patches = _patch_infra()
-    patches["db_from_env"] = patch("butlers.lifecycle.Database.from_env", return_value=mock_db)
-    return patches, mock_pool, mock_db
+        result = await booted.daemon._resolve_entity_channel_identifier(
+            entity_id=entity_id, channel="email"
+        )
+        assert result == "someone@example.com"
 
 
 class TestNotifyRecipientPosture:
@@ -548,28 +309,27 @@ class TestNotifyRecipientPosture:
     )
     async def test_posture_gate_precedes_resolution_parking_and_delivery(
         self,
-        butler_dir: Path,
+        booted_daemon,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
         posture: str | None,
         fetch_error: Exception | None,
         refused: bool,
     ) -> None:
-        patches, mock_pool, _ = _make_missing_id_patches(butler_dir)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = _make_mock_client()
-        entity_id = uuid.UUID("00000000-0000-0000-0000-000000000041")
-        ledger_inserts: list[tuple[Any, ...]] = []
-
-        async def _fetchval(sql: str, *args: Any) -> Any:
-            if "SELECT posture" in sql:
-                if fetch_error is not None:
-                    raise fetch_error
-                return posture
-            if "INSERT INTO public.attention_ledger" in sql:
-                ledger_inserts.append(args)
-            return None
-
-        mock_pool.fetchval = AsyncMock(side_effect=_fetchval)
+        booted = await _fresh(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
+        parked = _ParkRecorder()
+        monkeypatch.setattr("butlers.core.approvals_hooks.park_pending_action", parked)
+        if fetch_error is not None:
+            monkeypatch.setattr(
+                "butlers.core_tools._notifications.fetch_entity_posture",
+                AsyncMock(side_effect=fetch_error),
+            )
+            entity_id = uuid.UUID("00000000-0000-0000-0000-000000000041")
+        else:
+            entity_id = await _seed_entity(booted, [], posture=posture)
         resolver = AsyncMock(return_value="person@example.com")
 
         with patch.object(daemon, "_resolve_entity_channel_identifier", new=resolver):
@@ -583,21 +343,35 @@ class TestNotifyRecipientPosture:
         assert result["code"] == "recipient_posture"
         assert "memorial" not in result["error"] and "no_contact" not in result["error"]
         resolver.assert_not_awaited()
-        daemon.switchboard_client.call_tool.assert_not_awaited()
-        assert not any(
-            "pending_actions" in call.args[0] for call in mock_pool.execute.await_args_list
+        client.call_tool.assert_not_awaited()
+        assert parked.calls == []
+        ledger = await _ledger_rows(booted)
+        assert len(ledger) == 1
+        assert ledger[0]["outcome"] == "failed"
+        assert ledger[0]["reason"] in {"recipient_posture", "recipient_posture_unreadable"}
+
+
+class _ParkRecorder:
+    """Records what notify() would park; the subject is the hand-off, not the park."""
+
+    def __init__(self, error: BaseException | None = None) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._error = error
+
+    async def __call__(self, _pool: Any, **kwargs: Any) -> Any:
+        if self._error is not None:
+            raise self._error
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            action_id=kwargs["action_id"], intent_id=None, duplicate=False, legacy_duplicate=True
         )
-        assert len(ledger_inserts) == 1
-        assert ledger_inserts[0][7] == "failed"
-        assert ledger_inserts[0][8] in {"recipient_posture", "recipient_posture_unreadable"}
 
 
-@pytest.mark.asyncio
 class TestNotifyMissingIdentifierAndOwner:
     """Tasks 7.3+7.4 — missing identifier parks; no entity_id uses owner resolution."""
 
     async def test_missing_identifier_fails_closed_without_approval_parking(
-        self, butler_dir: Path, monkeypatch: pytest.MonkeyPatch
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A Finance-like no-approvals daemon must not fabricate a parked action.
 
@@ -609,10 +383,10 @@ class TestNotifyMissingIdentifierAndOwner:
         """
         import butlers.core.approvals_hooks as approval_hooks
 
-        patches, mock_pool, _ = _make_missing_id_patches(butler_dir)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = _make_mock_client()
+        booted = await _fresh(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
 
         # Keep the daemon in the same optional-approvals state as Finance rather
         # than inheriting another butler's scoped runtime.
@@ -644,25 +418,21 @@ class TestNotifyMissingIdentifierAndOwner:
         assert result["retryable"] is False
         assert "approval parking is unavailable" in result["error"].lower()
         assert "pending_action_id" not in result
-        assert not any(
-            "INSERT INTO pending_actions" in call.args[0]
-            for call in mock_pool.execute.await_args_list
-        )
-        daemon.switchboard_client.call_tool.assert_not_awaited()
+        # No approvals module: the butler has no pending_actions table to write.
+        assert await daemon.db.pool.fetchval("SELECT to_regclass('pending_actions')") is None
+        client.call_tool.assert_not_awaited()
 
-        failed_ledger_rows = [
-            call.args
-            for call in mock_pool.fetchval.await_args_list
-            if "INSERT INTO public.attention_ledger" in call.args[0]
-        ]
+        failed_ledger_rows = await _ledger_rows(booted)
         assert len(failed_ledger_rows) == 1
-        assert failed_ledger_rows[0][8] == "failed"
-        assert failed_ledger_rows[0][9] == "approval_parking_unavailable"
-        metadata = json.loads(failed_ledger_rows[0][11])
+        assert failed_ledger_rows[0]["outcome"] == "failed"
+        assert failed_ledger_rows[0]["reason"] == "approval_parking_unavailable"
+        metadata = json.loads(failed_ledger_rows[0]["metadata"])
         assert metadata == {"entity_id": str(entity_id), "retryable": False}
-        assert "Hello contact" not in failed_ledger_rows[0][11]
+        assert "Hello contact" not in failed_ledger_rows[0]["metadata"]
 
-    async def test_missing_identifier_parks_and_owner_fallback(self, butler_dir: Path) -> None:
+    async def test_missing_identifier_parks_and_owner_fallback(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Missing identifier -> pending_missing_identifier, parked through the shared
         park_pending_action choke point (bu-mda0r) so the owner push is attempted
         exactly the way every other park path attempts it; no entity_id/recipient ->
@@ -674,12 +444,12 @@ class TestNotifyMissingIdentifierAndOwner:
         test only proves notify()'s missing-identifier path hands off to that
         one shared helper instead of building its own ad hoc owner alert.
         """
-        patches, mock_pool, _ = _make_missing_id_patches(butler_dir)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
+        booted = await _fresh(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
         entity_id = uuid.UUID("00000000-0000-0000-0000-000000000030")
         push_runtime = object()  # opaque sentinel; identity-checked below
-        daemon._approval_push_runtime = push_runtime
+        monkeypatch.setattr(daemon, "_approval_push_runtime", push_runtime)
 
         with (
             patch.object(
@@ -718,12 +488,12 @@ class TestNotifyMissingIdentifierAndOwner:
         assert park_kwargs["tool_args"]["entity_id"] == str(entity_id)
 
     async def test_missing_identifier_reports_atomic_parking_failure(
-        self, butler_dir: Path
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A failed admission never fabricates a pending_missing_identifier row."""
-        patches, _, _ = _make_missing_id_patches(butler_dir)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
+        booted = await _fresh(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
         entity_id = uuid.UUID("00000000-0000-0000-0000-000000000032")
         with (
             patch.object(
@@ -751,92 +521,86 @@ class TestNotifyMissingIdentifierAndOwner:
         assert "pending_action_id" not in result
 
         # No entity_id → default owner resolver called
-        patches3 = _patch_infra()
-        daemon3, notify_fn3 = await _start_daemon_with_notify(butler_dir, patches3)
-        daemon3.switchboard_client = _make_mock_client()
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
         mock_default = AsyncMock(return_value="owner@example.com")
         mock_contact = AsyncMock(return_value="ignored")
         with (
-            patch.object(daemon3, "_resolve_default_notify_recipient", new=mock_default),
-            patch.object(daemon3, "_resolve_entity_channel_identifier", new=mock_contact),
+            patch.object(daemon, "_resolve_default_notify_recipient", new=mock_default),
+            patch.object(daemon, "_resolve_entity_channel_identifier", new=mock_contact),
             _known_contact_patch(),
         ):
-            r3 = await notify_fn3(channel="email", message="Hello owner")
+            r3 = await notify_fn(channel="email", message="Hello owner")
         assert r3["status"] == "ok"
         mock_default.assert_awaited_once()
         mock_contact.assert_not_awaited()
 
         # entity_id wins over explicit recipient
-        daemon3.switchboard_client = _make_mock_client()
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
         with (
             patch.object(
-                daemon3,
+                daemon,
                 "_resolve_entity_channel_identifier",
                 new=AsyncMock(return_value="contact-resolved@example.com"),
             ),
             _known_contact_patch("contact-resolved@example.com"),
         ):
-            r4 = await notify_fn3(
+            r4 = await notify_fn(
                 channel="email",
                 message="Hello",
                 entity_id=uuid.UUID("00000000-0000-0000-0000-000000000040"),
                 recipient="explicit@example.com",
             )
         assert r4["status"] == "ok"
-        delivery = daemon3.switchboard_client.call_tool.await_args.args[1]["notify_request"][
-            "delivery"
-        ]
+        delivery = client.call_tool.await_args.args[1]["notify_request"]["delivery"]
         assert delivery["recipient"] == "contact-resolved@example.com"
 
 
 @pytest.fixture
-def registered_approval_hooks(monkeypatch: pytest.MonkeyPatch):
-    """Register real guards plus a narrow park recorder for mocked daemon pools."""
+def approval_hooks(monkeypatch: pytest.MonkeyPatch):
+    """Register the real recipient guards on a booted pool, parking into a recorder.
+
+    ``recorder = approval_hooks(booted)``; the hooks are removed at teardown.
+    """
     import butlers.core.approvals_hooks as _hooks
     from butlers.modules.approvals.email_guard import (
         check_email_recipient,
         check_recipient,
     )
 
-    monkeypatch.setattr(
-        "butlers.modules.approvals.email_guard.park_pending_action",
-        record_pending_action,
-    )
-
-    original_start = _start_daemon_with_notify
     registrations = []
 
-    async def _start_with_approval_hooks(*args, **kwargs):
-        daemon, notify_fn = await original_start(*args, **kwargs)
-        pool = daemon.db.pool
+    def register(booted, recorder: _ParkRecorder | None = None) -> _ParkRecorder:
+        recorder = recorder or _ParkRecorder()
+        monkeypatch.setattr("butlers.modules.approvals.email_guard.park_pending_action", recorder)
+        pool = booted.daemon.db.pool
         runtime = _hooks.register_approval_hooks(
             pool,
             email_guard=check_email_recipient,
             recipient_guard=check_recipient,
-            park_pending_action=record_pending_action,
+            park_pending_action=recorder,
         )
         registrations.append((pool, runtime))
-        return daemon, notify_fn
+        return recorder
 
-    monkeypatch.setitem(globals(), "_start_daemon_with_notify", _start_with_approval_hooks)
-    yield
+    yield register
     for pool, runtime in reversed(registrations):
         _hooks.unregister_approval_hooks(pool, runtime)
 
 
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("registered_approval_hooks")
 class TestNotifyEmailRecipientValidation:
     """Email recipients must be known contacts; entity_id path also validated."""
 
-    async def test_email_validation(self, butler_dir: Path) -> None:
+    async def test_email_validation(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, approval_hooks
+    ) -> None:
         """Unknown email → pending_approval; known sent; telegram skips; entity_id path validates."""
-        patches = _patch_infra()
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
+        booted = await _fresh(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        approval_hooks(booted)
+        notify_fn = await _notify_fn(booted)
 
         # Unknown email → parked as pending_approval
-        daemon.switchboard_client = _make_mock_client()
+        _use_client(monkeypatch, daemon, _make_mock_client())
         with patch("butlers.identity.resolve_contact_by_channel", new=AsyncMock(return_value=None)):
             result = await notify_fn(
                 channel="email",
@@ -848,7 +612,7 @@ class TestNotifyEmailRecipientValidation:
         assert result["status"] == "pending_approval"
 
         # Known email → delivered
-        daemon.switchboard_client = _make_mock_client()
+        _use_client(monkeypatch, daemon, _make_mock_client())
         with _known_contact_patch():
             result2 = await notify_fn(
                 channel="email", message="Hello known", recipient="known@example.com"
@@ -856,7 +620,7 @@ class TestNotifyEmailRecipientValidation:
         assert result2["status"] == "ok"
 
         # entity_id path still validates email
-        daemon.switchboard_client = _make_mock_client()
+        _use_client(monkeypatch, daemon, _make_mock_client())
         with (
             patch.object(
                 daemon,
@@ -875,22 +639,17 @@ class TestNotifyEmailRecipientValidation:
         assert result3["status"] == "pending_approval"
 
     async def test_email_admission_failure_is_not_reported_as_pending(
-        self, butler_dir: Path
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, approval_hooks
     ) -> None:
         """The email guard's parking failure remains an explicit notify error."""
-        patches = _patch_infra()
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = _make_mock_client()
-        with (
-            patch(
-                "butlers.identity.resolve_contact_by_channel",
-                new=AsyncMock(return_value=None),
-            ),
-            patch(
-                "butlers.modules.approvals.email_guard.park_pending_action",
-                new=AsyncMock(side_effect=RuntimeError("intent insert failed")),
-            ),
+        booted = await _fresh(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        approval_hooks(booted, _ParkRecorder(error=RuntimeError("intent insert failed")))
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
+        with patch(
+            "butlers.identity.resolve_contact_by_channel",
+            new=AsyncMock(return_value=None),
         ):
             result = await notify_fn(
                 channel="email",
@@ -903,22 +662,20 @@ class TestNotifyEmailRecipientValidation:
         assert result["retryable"] is False
         assert "no pending action was created" in result["error"].lower()
         assert "pending_action_id" not in result
-        daemon.switchboard_client.call_tool.assert_not_awaited()
+        client.call_tool.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("registered_approval_hooks")
 class TestNotifyDecisionDossierBoundary:
     """notify() must apply the dossier contract before non-owner park/rule paths."""
 
-    async def test_owner_target_remains_exempt_from_required_why(self, butler_dir: Path) -> None:
+    async def test_owner_target_remains_exempt_from_required_why(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, approval_hooks
+    ) -> None:
         """A resolved owner recipient still delivers without a decision dossier."""
-        mock_pool, _ = _make_pool_with_entity_facts_conn()
-        patches = _patch_infra()
-        _patch_db_in_patches(patches, mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = _make_mock_client()
+        booted = await _fresh(booted_daemon, tmp_path)
+        parked = approval_hooks(booted)
+        notify_fn = await _notify_fn(booted)
+        _use_client(monkeypatch, booted.daemon, _make_mock_client())
 
         with _known_contact_patch():
             result = await notify_fn(
@@ -928,24 +685,18 @@ class TestNotifyDecisionDossierBoundary:
             )
 
         assert result["status"] == "ok"
-        pending_inserts = [
-            call
-            for call in mock_pool.execute.await_args_list
-            if "INSERT INTO pending_actions" in call.args[0]
-        ]
-        assert pending_inserts == []
+        assert parked.calls == []
 
     async def test_owner_missing_identifier_remains_exempt_from_required_why(
-        self, butler_dir: Path
+        self, shared_booted_daemon, monkeypatch: pytest.MonkeyPatch, approval_hooks
     ) -> None:
         """An owner entity still parks for its missing channel without requiring why."""
         entity_id = uuid.UUID("00000000-0000-0000-0000-aaaaaaaaaaaa")
-        mock_pool, _ = _make_pool_with_entity_facts_conn()
-        patches = _patch_infra()
-        _patch_db_in_patches(patches, mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = _make_mock_client()
+        booted = await shared_booted_daemon()
+        daemon = booted.daemon
+        parked = approval_hooks(booted)
+        notify_fn = await _notify_fn(booted)
+        _use_client(monkeypatch, daemon, _make_mock_client())
 
         with (
             patch.object(
@@ -970,12 +721,13 @@ class TestNotifyDecisionDossierBoundary:
             )
 
         assert result["status"] == "pending_missing_identifier"
-        pending_insert = next(
-            call
-            for call in mock_pool.execute.await_args_list
-            if "INSERT INTO pending_actions" in call.args[0]
+        (park,) = parked.calls
+        assert (park["why"], park["evidence"], park["blast_radius"], park["reversibility"]) == (
+            None,
+            [],
+            None,
+            None,
         )
-        assert pending_insert.args[-4:] == (None, [], None, None)
 
     @pytest.mark.parametrize(
         ("dossier_kwargs", "expected_code"),
@@ -986,17 +738,17 @@ class TestNotifyDecisionDossierBoundary:
     )
     async def test_non_owner_invalid_why_retries_without_rule_or_persistence(
         self,
-        butler_dir: Path,
+        shared_booted_daemon,
+        monkeypatch: pytest.MonkeyPatch,
+        approval_hooks,
         dossier_kwargs: dict[str, Any],
         expected_code: str,
     ) -> None:
         """Missing or malformed why stops notify() before any approval side effect."""
-        mock_pool, _ = _make_pool_with_entity_facts_conn()
-        patches = _patch_infra()
-        _patch_db_in_patches(patches, mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = _make_mock_client()
+        booted = await shared_booted_daemon()
+        parked = approval_hooks(booted)
+        notify_fn = await _notify_fn(booted)
+        _use_client(monkeypatch, booted.daemon, _make_mock_client())
         match_rules = AsyncMock(side_effect=AssertionError("rules must not be queried"))
 
         with (
@@ -1026,22 +778,15 @@ class TestNotifyDecisionDossierBoundary:
             "retryable": True,
         }
         match_rules.assert_not_awaited()
-        pending_inserts = [
-            call
-            for call in mock_pool.execute.await_args_list
-            if "INSERT INTO pending_actions" in call.args[0]
-        ]
-        assert pending_inserts == []
+        assert parked.calls == []
 
     async def test_quiet_hours_reject_non_owner_missing_why_before_deferral(
-        self, butler_dir: Path
+        self, shared_booted_daemon, approval_hooks
     ) -> None:
         """Quiet-hours storage cannot bypass the non-owner dossier boundary."""
-        mock_pool, _ = _make_pool_with_entity_facts_conn()
-        patches = _patch_infra()
-        _patch_db_in_patches(patches, mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
+        booted = await shared_booted_daemon()
+        parked = approval_hooks(booted)
+        notify_fn = await _notify_fn(booted)
         deferred_insert = AsyncMock(return_value=uuid.uuid4())
         match_rules = AsyncMock(side_effect=AssertionError("rules must not be queried"))
 
@@ -1084,22 +829,15 @@ class TestNotifyDecisionDossierBoundary:
         assert result["retryable"] is True
         deferred_insert.assert_not_awaited()
         match_rules.assert_not_awaited()
-        pending_inserts = [
-            call
-            for call in mock_pool.execute.await_args_list
-            if "INSERT INTO pending_actions" in call.args[0]
-        ]
-        assert pending_inserts == []
+        assert parked.calls == []
 
     async def test_quiet_hours_preserves_valid_dossier_in_deferred_envelope(
-        self, butler_dir: Path
+        self, shared_booted_daemon, approval_hooks
     ) -> None:
         """A valid non-owner dossier survives a delayed route.execute delivery."""
-        mock_pool, _ = _make_pool_with_entity_facts_conn()
-        patches = _patch_infra()
-        _patch_db_in_patches(patches, mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
+        booted = await shared_booted_daemon()
+        approval_hooks(booted)
+        notify_fn = await _notify_fn(booted)
         deferred_insert = AsyncMock(return_value=uuid.uuid4())
         evidence = [
             {
@@ -1167,15 +905,14 @@ class TestNotifyDecisionDossierBoundary:
         }
 
     async def test_non_owner_missing_identifier_requires_dossier_before_park(
-        self, butler_dir: Path
+        self, shared_booted_daemon, monkeypatch: pytest.MonkeyPatch, approval_hooks
     ) -> None:
         """A missing channel identifier cannot bypass the non-owner dossier gate."""
-        mock_pool, _ = _make_pool_with_entity_facts_conn()
-        patches = _patch_infra()
-        _patch_db_in_patches(patches, mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = _make_mock_client()
+        booted = await shared_booted_daemon()
+        daemon = booted.daemon
+        parked = approval_hooks(booted)
+        notify_fn = await _notify_fn(booted)
+        _use_client(monkeypatch, daemon, _make_mock_client())
 
         with patch.object(
             daemon,
@@ -1190,21 +927,16 @@ class TestNotifyDecisionDossierBoundary:
 
         assert result["status"] == "error"
         assert result["error"]["code"] == "missing_required_dossier_field"
-        pending_inserts = [
-            call
-            for call in mock_pool.execute.await_args_list
-            if "INSERT INTO pending_actions" in call.args[0]
-        ]
-        assert pending_inserts == []
+        assert parked.calls == []
 
-    async def test_non_owner_valid_dossier_is_persisted_on_park(self, butler_dir: Path) -> None:
+    async def test_non_owner_valid_dossier_is_persisted_on_park(
+        self, shared_booted_daemon, monkeypatch: pytest.MonkeyPatch, approval_hooks
+    ) -> None:
         """A typed dossier survives notify()'s recipient guard into the parked action."""
-        mock_pool, _ = _make_pool_with_entity_facts_conn()
-        patches = _patch_infra()
-        _patch_db_in_patches(patches, mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = _make_mock_client()
+        booted = await shared_booted_daemon()
+        parked = approval_hooks(booted)
+        notify_fn = await _notify_fn(booted)
+        _use_client(monkeypatch, booted.daemon, _make_mock_client())
         evidence = [
             {
                 "type": "text",
@@ -1231,13 +963,8 @@ class TestNotifyDecisionDossierBoundary:
             )
 
         assert result["status"] == "pending_approval"
-        pending_insert = next(
-            call
-            for call in mock_pool.execute.await_args_list
-            if "INSERT INTO pending_actions" in call.args[0]
-        )
-        assert "why, evidence, blast_radius, reversibility" in pending_insert.args[0]
-        assert pending_insert.args[-4:] == (
+        (park,) = parked.calls
+        assert (park["why"], park["evidence"], park["blast_radius"], park["reversibility"]) == (
             "The recipient asked for this update.",
             evidence,
             "contact",
@@ -1245,7 +972,6 @@ class TestNotifyDecisionDossierBoundary:
         )
 
 
-@pytest.mark.asyncio
 class TestNotifyChannelResolution:
     """Group 2 (bu-upbit) — optional channel + preferred-channel resolution wiring.
 
@@ -1255,12 +981,14 @@ class TestNotifyChannelResolution:
       - omitted + no entity_id → telegram default (back-compat)
     """
 
-    async def test_forced_channel_wins_resolver_not_consulted(self, butler_dir: Path) -> None:
+    async def test_forced_channel_wins_resolver_not_consulted(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """An explicit channel arg bypasses preferred-channel resolution entirely."""
-        patches = _patch_infra()
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = _make_mock_client()
+        booted = await _fresh(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
 
         entity_id = uuid.UUID("00000000-0000-0000-0000-0000000000a1")
         mock_resolve = AsyncMock(return_value="email")  # would pick email if asked
@@ -1276,19 +1004,17 @@ class TestNotifyChannelResolution:
         assert result["status"] == "ok"
         # Forced channel → resolver never called.
         mock_resolve.assert_not_awaited()
-        delivery = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"][
-            "delivery"
-        ]
+        delivery = client.call_tool.await_args.args[1]["notify_request"]["delivery"]
         assert delivery["channel"] == "telegram"
 
     async def test_omitted_channel_with_entity_id_resolves_preference(
-        self, butler_dir: Path
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """channel=None + entity_id → resolve_outbound_channel picks the channel."""
-        patches = _patch_infra()
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = _make_mock_client()
+        booted = await _fresh(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
 
         entity_id = uuid.UUID("00000000-0000-0000-0000-0000000000a2")
         mock_resolve = AsyncMock(return_value="telegram")
@@ -1304,21 +1030,21 @@ class TestNotifyChannelResolution:
         _, kwargs = mock_resolve.await_args
         assert mock_resolve.await_args.args[1] == entity_id
         assert kwargs["deliverable_channels"] == {"telegram", "email"}
-        delivery = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"][
-            "delivery"
-        ]
+        delivery = client.call_tool.await_args.args[1]["notify_request"]["delivery"]
         assert delivery["channel"] == "telegram"
         # The contact-channel identifier resolver was driven by the chosen channel.
         mock_identifier.assert_awaited_once_with(
             entity_id=entity_id, channel="telegram", msg_context=None
         )
 
-    async def test_omitted_channel_no_entity_id_defaults_telegram(self, butler_dir: Path) -> None:
+    async def test_omitted_channel_no_entity_id_defaults_telegram(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """channel=None + no entity_id → telegram default; resolver not consulted."""
-        patches = _patch_infra()
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = _make_mock_client()
+        booted = await _fresh(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
 
         mock_resolve = AsyncMock(return_value="email")
         with (
@@ -1333,17 +1059,17 @@ class TestNotifyChannelResolution:
         assert result["status"] == "ok"
         # No entity_id → preference resolution is not attempted.
         mock_resolve.assert_not_awaited()
-        delivery = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"][
-            "delivery"
-        ]
+        delivery = client.call_tool.await_args.args[1]["notify_request"]["delivery"]
         assert delivery["channel"] == "telegram"
 
-    async def test_resolver_none_falls_back_to_telegram_default(self, butler_dir: Path) -> None:
+    async def test_resolver_none_falls_back_to_telegram_default(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """channel=None + entity_id but resolver returns None → telegram default."""
-        patches = _patch_infra()
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = _make_mock_client()
+        booted = await _fresh(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
 
         entity_id = uuid.UUID("00000000-0000-0000-0000-0000000000a3")
         with (
@@ -1359,7 +1085,5 @@ class TestNotifyChannelResolution:
         ):
             result = await notify_fn(message="Hi", entity_id=entity_id)
         assert result["status"] == "ok"
-        delivery = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"][
-            "delivery"
-        ]
+        delivery = client.call_tool.await_args.args[1]["notify_request"]["delivery"]
         assert delivery["channel"] == "telegram"

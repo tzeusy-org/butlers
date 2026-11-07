@@ -62,13 +62,6 @@ from butlers.modules.approvals.autonomy_tracker import record_approval
 from butlers.modules.approvals.execution_context import get_approval_execution_context
 from butlers.modules.approvals.models import ActionStatus, PendingAction
 from butlers.modules.approvals.module import ApprovalsModule
-from butlers.testing.schema_standins import (
-    APPROVAL_EVENTS,
-    APPROVAL_RULES,
-    AUTONOMY_APPROVAL_HISTORY,
-    AUTONOMY_SUGGESTIONS,
-    PENDING_ACTIONS,
-)
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -78,21 +71,22 @@ pytestmark = [
 ]
 
 
-@pytest.fixture
-async def approvals_full_pool(provisioned_postgres_pool):
-    """Provision a fresh database with the full approvals + autonomy schema.
+@pytest.fixture(autouse=True)
+def admitted_standing_rule_boundary(monkeypatch):
+    """Retain this owner's non-auth invariants after explicit D13 admission.
 
-    The approvals tables come from :mod:`butlers.testing.schema_standins`, so
-    the parity guard keeps every fixture table honest against the approvals
-    chain.
+    No factor/nonce/role evidence is claimed here; the dedicated migrated
+    dashboard-stepup owner executes that authority with real signed assertions.
     """
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(PENDING_ACTIONS.ddl())
-        await pool.execute(APPROVAL_RULES.ddl())
-        await pool.execute(APPROVAL_EVENTS.ddl())
-        await pool.execute(AUTONOMY_APPROVAL_HISTORY.ddl())
-        await pool.execute(AUTONOMY_SUGGESTIONS.ddl())
-        yield pool
+    from tests.approval_stepup_helpers import admit_rule_boundary_for_non_auth_owner
+
+    admit_rule_boundary_for_non_auth_owner(monkeypatch)
+
+
+@pytest.fixture
+async def approvals_full_pool(db):
+    """A fresh database migrated by the real approvals chain."""
+    return await db("approvals")
 
 
 async def _insert_pending_action(
@@ -298,6 +292,68 @@ class TestApprovalRulesArgConstraintsRoundtrip:
 
 class TestExecutionResultRoundtrip:
     """Every execution_result writer must store a native dict, not a string."""
+
+    async def test_calendar_same_action_concurrent_dispatch_uses_database_row_lock(
+        self, approvals_full_pool, monkeypatch
+    ) -> None:
+        from butlers.modules.calendar_approval import calendar_approval_args
+
+        tool_name = "calendar_toggle_butler_event"
+        args = calendar_approval_args(tool_name, event_id="event", enabled=False)
+        action_id = await _insert_pending_action(
+            approvals_full_pool, tool_name=tool_name, tool_args=args
+        )
+        started, release = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        # Distinct local locks model separate owning executor processes. Only
+        # the real PostgreSQL row lock may serialize these dispatches.
+        async def independent_process_lock(_action_id):
+            return asyncio.Lock()
+
+        monkeypatch.setattr(executor_mod, "_get_execution_lock", independent_process_lock)
+
+        async def handler(**kwargs):
+            assert get_approval_execution_context(tool_name=tool_name, tool_args=kwargs) is not None
+            calls.append(kwargs)
+            started.set()
+            await release.wait()
+            return {"status": "updated"}
+
+        def dispatch():
+            return asyncio.create_task(
+                executor_mod.execute_approved_action(
+                    approvals_full_pool, action_id, tool_name, args, handler
+                )
+            )
+
+        tasks = []
+        try:
+            tasks.append(dispatch())
+            await asyncio.wait_for(started.wait(), timeout=5)
+            tasks.append(dispatch())
+            # Wait until the second dispatch is blocked on the row lock.
+            for _ in range(500):
+                if await approvals_full_pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                    "WHERE datname=current_database() AND wait_event_type='Lock' "
+                    "AND query LIKE '%FROM pending_actions WHERE id = $1 FOR UPDATE%')"
+                ):
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                pytest.fail("second dispatch never waited on the pending_actions row lock")
+            assert not tasks[1].done() and len(calls) == 1
+            release.set()
+            outcomes = await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+            assert outcomes[0].success and outcomes[0].to_dict() == outcomes[1].to_dict()
+            assert len(calls) == 1
+        finally:
+            release.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def test_executor_execute_approved_action_roundtrips_as_dict(
         self, approvals_full_pool

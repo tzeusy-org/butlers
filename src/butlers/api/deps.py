@@ -10,12 +10,14 @@ Provides:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
+from fastapi import Depends
 from fastmcp import Client as MCPClient
 from fastmcp.exceptions import ToolError
 
@@ -36,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 # Default roster location relative to the repository root.
 _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[3] / "roster"
+_MCP_CLIENT_CLOSE_TIMEOUT_S = 5.0
 
 # These optional relation families drive the dashboard's graceful fan-out
 # surfaces.  Capture their presence once startup has finished wiring each
@@ -67,17 +70,20 @@ class ButlerConnectionInfo:
     # The configured coverage a qualifying QA patrol must prove; set only for
     # a roster butler with an enabled ``[modules.qa]`` table.
     qa_patrol_contract: QaPatrolContract | None = None
+    # Registration liveness TTL from ``[butler.runtime_seed]``; deployment
+    # readiness derives its sustained window from the roster's longest one.
+    liveness_ttl_seconds: int | None = None
 
     @property
     def sse_url(self) -> str:
         """SSE endpoint URL for this butler's MCP server.
 
-        In Docker, the dashboard runs in a separate container from butlers-up.
-        Set BUTLERS_HOST to the butlers-up service name (e.g. "butlers-up") so
-        the dashboard can reach butler MCP servers across the Docker network.
+        BUTLERS_HOST names the domain container. SWITCHBOARD_MCP_URL selects
+        the separate control service when that topology is enabled.
         """
-        host = os.environ.get("BUTLERS_HOST", "localhost")
-        return f"http://{host}:{self.port}/sse"
+        from butlers.core.mcp_urls import resolve_cross_container_mcp_url
+
+        return resolve_cross_container_mcp_url(f"http://localhost:{self.port}/sse")
 
 
 class ButlerNotFoundError(KeyError):
@@ -225,19 +231,31 @@ class MCPClientManager:
         except Exception as exc:
             raise ButlerUnreachableError(butler_name, cause=exc) from exc
 
-    async def _close_client(self, butler_name: str) -> None:
+    async def _close_client(
+        self, butler_name: str, *, expected_client: MCPClient | None = None
+    ) -> None:
         """Close a single client connection."""
+        # Compare and remove without an intervening await: a failed request
+        # must never evict a healthy replacement installed by another request.
+        if expected_client is not None and self._clients.get(butler_name) is not expected_client:
+            return
         client = self._clients.pop(butler_name, None)
         if client is not None:
             try:
-                await client.__aexit__(None, None, None)
+                await asyncio.wait_for(
+                    client.__aexit__(None, None, None), timeout=_MCP_CLIENT_CLOSE_TIMEOUT_S
+                )
                 logger.debug("Closed client for butler: %s", butler_name)
-            except Exception:
-                logger.warning("Error closing client for butler: %s", butler_name, exc_info=True)
+            except Exception as exc:
+                logger.warning(
+                    "Error closing client for butler %s (%s)", butler_name, type(exc).__name__
+                )
 
-    async def invalidate_client(self, butler_name: str) -> None:
-        """Evict a cached client, e.g. after a stale-connection error."""
-        await self._close_client(butler_name)
+    async def invalidate_client(
+        self, butler_name: str, *, expected_client: MCPClient | None = None
+    ) -> None:
+        """Evict a cached client, optionally only the one a failed request observed."""
+        await self._close_client(butler_name, expected_client=expected_client)
 
     async def close(self) -> None:
         """Close all managed client connections."""
@@ -349,6 +367,7 @@ def discover_butlers_with_diagnostics(
                     modules=frozenset(config.modules.keys()),
                     type=config.type.value,
                     qa_patrol_contract=qa_patrol_contract,
+                    liveness_ttl_seconds=config.runtime_seed.liveness_ttl_seconds,
                 )
             )
         except ConfigError as exc:
@@ -614,146 +633,30 @@ def get_db_manager() -> DatabaseManager:
     return _db_manager
 
 
-def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> None:
-    """Override all router-level ``_get_db_manager`` stubs with the singleton.
+# The public dependency and legacy singleton accessor share one callable identity.
+get_db = get_db_manager
+Db = Annotated[DatabaseManager, Depends(get_db)]
 
-    Parameters
-    ----------
-    app:
-        The FastAPI application instance.
-    dynamic_modules:
-        Optional list of dynamically-loaded router modules (from roster/{butler}/api/).
-        Each module is scanned for a _get_db_manager stub function.
+
+def get_db_optional() -> DatabaseManager | None:
+    """Allow existing best-effort reads before manager initialization.
+
+    Only the manager's existing uninitialized RuntimeError is suppressed; pool,
+    query and authorization errors retain their original handling.
     """
-    from butlers.api.routers import (
-        activity_feed,
-        approvals,
-        attention_ledger,
-        audit,
-        blob_storage,
-        butler_logs,
-        butler_management,
-        butlers,
-        calendar_workspace,
-        channel_defaults,
-        cli_auth,
-        contacts,
-        conversations,
-        dashboard_briefing,
-        data_ops,
-        decisions,
-        delegation,
-        domain_events,
-        entities,
-        general_settings,
-        google_health,
-        healing,
-        home_assistant,
-        home_person_mappings,
-        identity,
-        ingestion_connectors,
-        ingestion_events,
-        issues,
-        memory,
-        model_settings,
-        notifications,
-        oauth,
-        owntracks,
-        permissions,
-        preferences,
-        priority_contacts,
-        provider_settings,
-        qa,
-        schedules,
-        search,
-        secrets,
-        secrets_v2,
-        sessions,
-        spotify,
-        state,
-        steam,
-        system,
-        telegram_auth,
-        timeline,
-        timeline_saved_views,
-        webhooks,
-        whatsapp,
-    )
+    try:
+        return get_db()
+    except RuntimeError:
+        return None
 
-    # Wire static routers (existing core routers)
-    for module in [
-        activity_feed,
-        approvals,
-        attention_ledger,
-        audit,
-        blob_storage,
-        butler_logs,
-        butler_management,
-        butlers,
-        calendar_workspace,
-        channel_defaults,
-        cli_auth,
-        contacts,
-        conversations,
-        dashboard_briefing,
-        data_ops,
-        decisions,
-        delegation,
-        domain_events,
-        entities,
-        general_settings,
-        google_health,
-        healing,
-        home_assistant,
-        home_person_mappings,
-        identity,
-        ingestion_connectors,
-        ingestion_events,
-        issues,
-        memory,
-        model_settings,
-        notifications,
-        oauth,
-        owntracks,
-        permissions,
-        preferences,
-        priority_contacts,
-        provider_settings,
-        qa,
-        schedules,
-        search,
-        secrets,
-        secrets_v2,
-        sessions,
-        spotify,
-        state,
-        steam,
-        system,
-        telegram_auth,
-        timeline,
-        timeline_saved_views,
-        webhooks,
-        whatsapp,
-    ]:
-        app.dependency_overrides[module._get_db_manager] = get_db_manager
 
-    # Wire the rollup router's separate dependency stub
-    app.dependency_overrides[ingestion_events._get_rollup_db_manager] = get_db_manager
+OptionalDb = Annotated[DatabaseManager | None, Depends(get_db_optional)]
 
-    # Wire the QA credentials-status callable from the CredentialStore so the
-    # dashboard reports REAL credential presence (gh_token / git-author) instead
-    # of null/"unknown". Without this the QA settings card degrades to unknown
-    # in production because no other path supplies credentials_status_fn.
+
+def wire_qa_credentials(app: FastAPI) -> None:
+    """Bind the separate QA credential-presence reader after pool startup."""
+    from butlers.api.routers import qa
+
     app.dependency_overrides[qa._get_credentials_status_fn] = qa.make_credentials_status_fn(
         get_db_manager
     )
-
-    # Wire dynamically-loaded butler routers
-    if dynamic_modules:
-        for module in dynamic_modules:
-            if hasattr(module, "_get_db_manager"):
-                app.dependency_overrides[module._get_db_manager] = get_db_manager
-                logger.debug(
-                    "Wired DB dependency for dynamic module: %s",
-                    module.__name__,
-                )

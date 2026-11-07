@@ -27,6 +27,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.goal_lineage import carrying_forward
 from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
 
 logger = logging.getLogger(__name__)
@@ -200,19 +201,21 @@ async def gift_add_for_entity(
 
 
 async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str) -> dict[str, Any]:
-    """Update gift status, validating pipeline order."""
+    """Update gift status, validating pipeline order. A non-current id is refused."""
     if status not in _GIFT_STATUS_ORDER:
         raise ValueError(f"Invalid status '{status}'. Must be one of {_GIFT_STATUS_ORDER}")
 
-    from butlers.modules.memory.storage import store_fact
+    from butlers.modules.memory.storage import stale_fact_error, store_fact
 
     row = await pool.fetchrow(
-        "SELECT id, subject, content, metadata, entity_id FROM facts"
-        " WHERE id = $1 AND scope = 'relationship'",
+        "SELECT id, subject, content, metadata, entity_id, content_authority,"
+        " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
+        " WHERE id = $1 AND scope = 'relationship'"
+        " AND validity IN ('active', 'fading')",
         gift_id,
     )
     if row is None:
-        raise ValueError(f"Gift {gift_id} not found")
+        raise await stale_fact_error(pool, "Gift", gift_id, predicate="gift", scope="relationship")
 
     meta = row["metadata"] or {}
     if isinstance(meta, str):
@@ -254,26 +257,29 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
     # We do NOT rely on store_fact's entity-keyed supersession because that would
     # collapse all gifts for the same entity+predicate into one row.
     await pool.execute(
-        "UPDATE facts SET validity = 'superseded', invalid_at = $2 WHERE id = $1",
+        "UPDATE facts SET validity = 'superseded', invalid_at = $2, dropped_at "
+        "= CASE WHEN validity IN ('superseded', 'expired') THEN dropped_at "
+        "ELSE $2 END WHERE id = $1",
         gift_id,
         now,
     )
 
     # Insert the new status snapshot as a temporal fact.
-    new_fact_id = (
-        await store_fact(
-            pool,
-            subject=row["subject"],
-            predicate="gift",
-            content=description,
-            embedding_engine=embedding_engine,
-            permanence="stable",
-            scope="relationship",
-            entity_id=entity_id,
-            valid_at=now,
-            metadata=new_metadata,
-        )
-    )["id"]
+    with carrying_forward(row):
+        new_fact_id = (
+            await store_fact(
+                pool,
+                subject=row["subject"],
+                predicate="gift",
+                content=description,
+                embedding_engine=embedding_engine,
+                permanence="stable",
+                scope="relationship",
+                entity_id=entity_id,
+                valid_at=now,
+                metadata=new_metadata,
+            )
+        )["id"]
 
     return {
         "id": new_fact_id,

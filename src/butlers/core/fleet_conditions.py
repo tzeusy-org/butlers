@@ -58,11 +58,13 @@ from butlers.core.infra_conditions import (
     reconcile_snapshot,
     resolve_condition,
 )
+from butlers.core.job_health import mark_tick_incomplete
 from butlers.core.qa.patrol_provenance import (
     LAST_QUALIFYING_PATROL_SQL,
     LATEST_SCHEDULED_HANDOFF_SQL,
     QUALIFYING_PATROL_STATUSES,
     QaPatrolContract,
+    qa_patrol_contract,
 )
 
 logger = logging.getLogger(__name__)
@@ -247,6 +249,7 @@ async def _handoff_evidence(pool: Any) -> list[Observation] | None:
     try:
         row = await pool.fetchrow(LATEST_SCHEDULED_HANDOFF_SQL)
     except Exception as exc:  # noqa: BLE001 - unreadable evidence is unknown, never agreement
+        mark_tick_incomplete()
         logger.warning(
             "QA patrol assurance: QA handoff mode unreadable (category=%s)", type(exc).__name__
         )
@@ -394,6 +397,7 @@ async def _reconcile_patrol_age(
             "FROM switchboard.butler_registry_control_plane WHERE name = 'qa'"
         )
     except Exception:
+        mark_tick_incomplete()
         logger.warning("QA patrol assurance: QA policy unreadable (category=policy_unavailable)")
         policy, policy_known = None, False
     stopped = _policy_stops_qa(policy)
@@ -448,6 +452,7 @@ async def append_due_condition_attention(pool: Any, producer: Any) -> list[Any]:
         try:
             episodes.append(await producer.fetchval(_APPEND_ATTENTION_SQL, row["id"]))
         except Exception as exc:  # noqa: BLE001 - reduced to a typed log
+            mark_tick_incomplete()
             logger.warning(
                 "Fleet condition controller: attention append failed (category=%s)",
                 type(exc).__name__,
@@ -467,15 +472,18 @@ async def run_controller_pass(
     try:
         await reconcile_fleet_condition(pool, cycle, expected_names, is_retired)
     except Exception:
+        mark_tick_incomplete()
         logger.exception("Fleet condition controller: fleet reconciliation failed")
     if qa_contract is not None:
         try:
             await reconcile_qa_patrol_assurance(pool, policy_reader, qa_contract)
         except Exception:
+            mark_tick_incomplete()
             logger.exception("Fleet condition controller: QA patrol assurance failed")
     try:
         await append_due_condition_attention(pool, policy_reader)
     except Exception:
+        mark_tick_incomplete()
         logger.exception("Fleet condition controller: attention append failed")
 
 
@@ -493,10 +501,7 @@ def controller_after_cycle(
     legacy episode resolves by retirement.
     """
     expected_names = frozenset(config.name for config in configs)
-    qa_contract = next(
-        (getattr(config, "qa_patrol_contract", None) for config in configs if config.name == "qa"),
-        None,
-    )
+    qa_contract = qa_patrol_contract(configs)
 
     async def after_cycle(policy_reader: Any, cycle: ShadowCycle) -> None:
         await run_controller_pass(

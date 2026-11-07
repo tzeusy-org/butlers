@@ -42,6 +42,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 import asyncpg
 import pytest
 
+from butlers.config import ScheduleSpec
 from butlers.db import register_jsonb_codec
 from butlers.modules.memory import MemoryModule
 from butlers.scheduled_jobs import (
@@ -383,6 +384,7 @@ class TestCatalogBackfillJobArgsValidation:
             "rules_backfilled": 0,
             "facts_reconciled": 0,
             "rules_reconciled": 0,
+            "authority_synced": 0,
             "skipped": "source_schema_not_resolved",
         }
 
@@ -445,7 +447,9 @@ class TestRegisterDefaultMaintenanceSchedules:
         async def _fake_ensure(pool, **kwargs):
             calls.append(kwargs)
 
-        monkeypatch.setattr("butlers.core.scheduler.ensure_module_default_schedule", _fake_ensure)
+        monkeypatch.setattr(
+            "butlers.core.scheduler.crud.ensure_module_default_schedule", _fake_ensure
+        )
 
         module = MemoryModule()
         fake_db = AsyncMock()
@@ -472,7 +476,9 @@ class TestRegisterDefaultMaintenanceSchedules:
         async def _fake_ensure(pool, **kwargs):
             calls.append(kwargs)
 
-        monkeypatch.setattr("butlers.core.scheduler.ensure_module_default_schedule", _fake_ensure)
+        monkeypatch.setattr(
+            "butlers.core.scheduler.crud.ensure_module_default_schedule", _fake_ensure
+        )
 
         module = MemoryModule()
         legacy_db = SimpleNamespace(
@@ -499,7 +505,9 @@ class TestRegisterDefaultMaintenanceSchedules:
             if kwargs["name"] == "memory_decay_sweep":
                 raise RuntimeError("scheduled_tasks not migrated yet")
 
-        monkeypatch.setattr("butlers.core.scheduler.ensure_module_default_schedule", _flaky_ensure)
+        monkeypatch.setattr(
+            "butlers.core.scheduler.crud.ensure_module_default_schedule", _flaky_ensure
+        )
 
         module = MemoryModule()
         fake_db = AsyncMock()
@@ -548,15 +556,37 @@ async def _pool_for(db_url: str) -> asyncpg.Pool:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(scope="module")
+def core_scheduler_db_url(postgres_container) -> str:
+    """Scheduler state uses its real current general-schema migration chain."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
+        schemas={"core": "general"},
+    )
+
+
+async def _scheduler_pool_for(db_url: str) -> asyncpg.Pool:
+    return await asyncpg.create_pool(
+        dsn=db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "general,public"},
+    )
+
+
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.integration
 async def test_ensure_module_default_schedule_idempotent_and_toml_overrides_cadence(
-    core_memory_db_url: str,
+    core_scheduler_db_url: str,
 ) -> None:
-    from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
+    from butlers.core.scheduler.crud import ensure_module_default_schedule
+    from butlers.core.scheduler.sync import sync_schedules
 
-    pool = await _pool_for(core_memory_db_url)
+    pool = await _scheduler_pool_for(core_scheduler_db_url)
     try:
         await pool.execute("DELETE FROM scheduled_tasks WHERE name = 'memory_decay_sweep'")
         # First boot: creates the row.
@@ -606,12 +636,12 @@ async def test_ensure_module_default_schedule_idempotent_and_toml_overrides_cade
         await sync_schedules(
             pool,
             [
-                {
-                    "name": "memory_decay_sweep",
-                    "cron": "30 2 * * *",
-                    "dispatch_mode": "job",
-                    "job_name": "memory_decay_sweep",
-                }
+                ScheduleSpec(
+                    name="memory_decay_sweep",
+                    cron="30 2 * * *",
+                    dispatch_mode="job",
+                    job_name="memory_decay_sweep",
+                )
             ],
         )
         row = await pool.fetchrow(
@@ -650,7 +680,7 @@ async def test_ensure_module_default_schedule_idempotent_and_toml_overrides_cade
 async def test_ensure_module_default_schedule_rejects_invalid_cron(
     core_memory_db_url: str,
 ) -> None:
-    from butlers.core.scheduler import ensure_module_default_schedule
+    from butlers.core.scheduler.crud import ensure_module_default_schedule
 
     pool = await _pool_for(core_memory_db_url)
     try:

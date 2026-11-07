@@ -11,11 +11,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
-import asyncpg
 import httpx
 import pytest
 from fastapi import FastAPI
 
+from butlers.api.deps import get_db
 from butlers.api.owner_auth.config import OwnerAuthConfig
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.routers import approvals as approvals_router
@@ -26,12 +26,12 @@ from butlers.core.approval_callbacks import (
     APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER,
     mint_approval_callback_token,
 )
-from butlers.db import register_jsonb_codec
 from butlers.modules.approvals import gate as approvals_gate_module
 from butlers.modules.approvals.gate import _make_gate_wrapper
 from butlers.modules.approvals.module import ApprovalsModule
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.db_manager import db_manager
 from tests.api.auth_helpers import _DomainOwnerState
+from tests.audit_helpers import clear_audit_log_for_test
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -45,24 +45,6 @@ _REQUESTED_AT = datetime(2026, 7, 17, 8, 0, tzinfo=UTC)
 _SECRET = "test-only-approval-callback-secret"
 _DASHBOARD_API_KEY = "test-only-dashboard-api-key"
 _CALLBACK_CONNECTOR_TOKEN = "test-only-callback-connector-token"
-
-
-class _DbManager:
-    def __init__(self, pool: Any) -> None:
-        self._pool = pool
-        self.butler_names = ["relationship"]
-
-    def pool(self, butler_name: str) -> Any:
-        assert butler_name == "relationship"
-        return self._pool
-
-    def butlers_with_module(self, module_name: str) -> list[str] | None:
-        """Describe known fixture capabilities without turning unknown into absent."""
-        if module_name == "approvals":
-            return self.butler_names
-        if module_name == "memory":
-            return []
-        return None
 
 
 async def test_fixture_skips_decision_memory_writer_when_memory_is_known_absent(
@@ -79,10 +61,9 @@ async def test_fixture_skips_decision_memory_writer_when_memory_is_known_absent(
         _unexpected_settings_lookup,
     )
 
-    db_mgr = _DbManager(object())
+    db_mgr = db_manager({"relationship": object()}, modules={"relationship": ["approvals"]})
     assert db_mgr.butlers_with_module("approvals") == ["relationship"]
     assert db_mgr.butlers_with_module("memory") == []
-    assert db_mgr.butlers_with_module("calendar") is None
     writer = approvals_router._decision_memory_writer_for(db_mgr, "relationship", object())
 
     assert writer is None
@@ -94,6 +75,9 @@ class _ExecutingButlerClient:
     def __init__(self, module: ApprovalsModule) -> None:
         self._module = module
         self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def ping(self) -> bool:
+        return True
 
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         self.calls.append((tool_name, arguments))
@@ -157,34 +141,22 @@ def _protected_approvals_app(pool: Any, *, mcp_mgr: Any | None = None) -> FastAP
     app.state.owner_auth_service = _DomainOwnerState(_DASHBOARD_API_KEY)
     app.add_middleware(OwnerAuthMiddleware, config=OwnerAuthConfig.from_env(_DASHBOARD_API_KEY))
     app.include_router(approvals_router.router)
-    app.dependency_overrides[approvals_router._get_db_manager] = lambda: _DbManager(pool)
+    app.dependency_overrides[get_db] = lambda: db_manager(
+        {"relationship": pool}, modules={"relationship": ["approvals"]}
+    )
     app.dependency_overrides[approvals_router.get_mcp_manager] = lambda: (
         mcp_mgr if mcp_mgr is not None else MagicMock()
     )
     return app
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Use the production core + approvals migrations, not hand-rolled DDL."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "approvals"],
-    )
-
-
 @pytest.fixture
-async def approval_pool(migrated_db_url: str):
-    """Return an isolated JSONB-aware pool over the migrated approval schema."""
-    pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
+async def approval_pool(db):
+    """Return an isolated JSONB-aware pool over the production core + approvals migrations."""
+    pool = await db("core", "approvals")
+    await clear_audit_log_for_test(pool)
     await pool.execute(
-        "TRUNCATE TABLE public.audit_log, autonomy_suggestions, autonomy_approval_history, "
+        "TRUNCATE TABLE autonomy_suggestions, autonomy_approval_history, "
         "approval_events, pending_actions, approval_rules CASCADE"
     )
     await pool.execute(
@@ -199,10 +171,7 @@ async def approval_pool(migrated_db_url: str):
         {"chat_id": "42"},
         _REQUESTED_AT,
     )
-    try:
-        yield pool
-    finally:
-        await pool.close()
+    return pool
 
 
 async def test_gate_park_owner_approve_executes_edits_and_preserves_provenance(
@@ -365,19 +334,38 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
     result and terminal execution event are durable.
     """
     action_id = uuid4()
+    tool_args = {
+        "intent": "insight",
+        "channel": "telegram",
+        "recipient": "42",
+        "message": "Race-proof delivery",
+    }
     await approval_pool.execute(
         """
         INSERT INTO pending_actions (id, tool_name, tool_args, status)
         VALUES ($1, 'notify', $2, 'approved')
         """,
         action_id,
-        {"channel": "telegram", "recipient": "42", "message": "Race-proof delivery"},
+        tool_args,
     )
     delivery_started = asyncio.Event()
     release_delivery = asyncio.Event()
     abandon_started = asyncio.Event()
+    replay_started = asyncio.Event()
 
     from butlers.modules.approvals import operations as approvals_operations
+    from butlers.modules.approvals.executor import execute_approved_action
+
+    execution_attempts = 0
+
+    async def _observe_execution(**kwargs: Any) -> Any:
+        nonlocal execution_attempts
+        execution_attempts += 1
+        if execution_attempts == 2:
+            replay_started.set()
+        return await execute_approved_action(**kwargs)
+
+    monkeypatch.setattr(approvals_router, "execute_approved_action", _observe_execution)
 
     real_abandon = approvals_operations.abandon_approved_action
 
@@ -393,8 +381,20 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
         def __init__(self) -> None:
             self.calls = []
 
+        async def ping(self) -> bool:
+            return True
+
         async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+            from inspect import signature
+
+            from butlers.tools.switchboard.contracts import parse_notify_request
+            from butlers.tools.switchboard.notification.deliver import deliver
+
             assert tool_name == "deliver"
+            signature(deliver).bind(pool=approval_pool, **arguments)
+            parsed = parse_notify_request(arguments["notify_request"])
+            assert parsed.origin_butler == arguments["source_butler"] == "relationship"
+            assert parsed.delivery.model_dump(exclude_none=True) == tool_args
             self.calls.append((tool_name, arguments))
             delivery_started.set()
             await release_delivery.wait()
@@ -427,6 +427,10 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
             retry_client.post(f"/api/approvals/{action_id}/retry", headers=headers)
         )
         await asyncio.wait_for(delivery_started.wait(), timeout=2)
+        replay_task = asyncio.create_task(
+            retry_client.post(f"/api/approvals/{action_id}/retry", headers=headers)
+        )
+        await asyncio.wait_for(replay_started.wait(), timeout=2)
         abandon_task = asyncio.create_task(
             abandon_client.post(
                 f"/api/approvals/{action_id}/abandon",
@@ -440,14 +444,19 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
         # here, marking the row abandoned while delivery is still in flight.
         await asyncio.sleep(0.05)
         abandon_blocked = not abandon_task.done()
+        replay_blocked = not replay_task.done()
 
         release_delivery.set()
         retry_response = await asyncio.wait_for(retry_task, timeout=2)
+        replay_response = await asyncio.wait_for(replay_task, timeout=2)
         abandon_response = await asyncio.wait_for(abandon_task, timeout=2)
 
     assert abandon_blocked, "Abandon must wait once notification delivery has begun"
+    assert replay_blocked, "A concurrent retry must wait for the first execution's result"
     assert retry_response.status_code == 200, retry_response.text
     assert retry_response.json()["data"]["status"] == "executed"
+    assert replay_response.status_code == 200, replay_response.text
+    assert replay_response.json()["data"]["status"] == "executed"
     assert abandon_response.status_code == 409, abandon_response.text
     assert len(delivery_client.calls) == 1
 
@@ -460,7 +469,7 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
     events = await approval_pool.fetch(
         "SELECT event_type FROM approval_events WHERE action_id = $1", action_id
     )
-    assert {row["event_type"] for row in events} == {"action_execution_succeeded"}
+    assert [row["event_type"] for row in events] == ["action_execution_succeeded"]
 
 
 async def test_owner_reject_tap_transitions_and_audits_via_standard_approval_route(
@@ -799,3 +808,276 @@ async def test_callback_without_a_valid_connector_credential_never_transitions_o
         "answerCallbackQuery"
     ]
     assert http_client.telegram_calls[0][1]["text"] == ""
+
+
+async def _park_presented_email(approval_pool, monkeypatch: pytest.MonkeyPatch) -> tuple[UUID, str]:
+    """Park an email send through the real gate and present its card (RFC 0023)."""
+    from butlers.modules.approvals.delivery_recovery import (
+        ApprovalDeliveryRenderer,
+        ApprovalDeliveryRepository,
+    )
+
+    async def original_tool(**_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("The original tool must not run before the owner approves it")
+
+    monkeypatch.setattr(
+        approvals_gate_module, "resolve_action_target_contact", AsyncMock(return_value=None)
+    )
+    park = _make_gate_wrapper(
+        tool_name="email_send_message",
+        original_fn=original_tool,
+        pool=approval_pool,
+        expiry_hours=72,
+        risk_tier=ApprovalRiskTier.MEDIUM,
+        rule_precedence=(),
+        butler_name="relationship",
+    )
+    parked = await park(
+        to="dana@x.com",
+        subject="Re: Thursday",
+        body="Thursday at 3pm works.",
+        _why="She asked for the slot.",
+        _evidence=[],
+        _blast_radius="contact",
+        _reversibility="irreversible",
+    )
+    assert parked["status"] == "pending_approval"
+    action_id = UUID(parked["action_id"])
+
+    # Admission schedules the presentation from the owner's quiet-hours policy, so
+    # whether it is claimable depends on the wall clock; make it due now.
+    scheduled = await approval_pool.execute(
+        """
+        UPDATE approval_delivery_presentations AS p
+           SET not_before = clock_timestamp(), next_attempt_at = clock_timestamp()
+          FROM approval_delivery_intents AS i
+         WHERE i.id = p.intent_id AND i.action_id = $1 AND p.state = 'ready'
+        """,
+        action_id,
+    )
+    assert scheduled == "UPDATE 1", "admission must leave one ready direct presentation"
+
+    repository = ApprovalDeliveryRepository(approval_pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+    subject = await repository.load_render_subject(claim)
+    envelope = ApprovalDeliveryRenderer(
+        dashboard_base_url="https://dash.example.test"
+    ).render_single(subject, owner_recipient="9001", callback_secret=_SECRET)
+    assert await repository.mark_handoff_started(claim)
+    return action_id, envelope["delivery"]["message"]
+
+
+async def _tap_approve(
+    approval_pool, monkeypatch: pytest.MonkeyPatch, action_id: UUID
+) -> tuple[_CallbackHttpClient, list[tuple[str, dict[str, Any]]]]:
+    requested_at = await approval_pool.fetchval(
+        "SELECT requested_at FROM pending_actions WHERE id = $1", action_id
+    )
+    module = ApprovalsModule()
+    await module.on_startup(config=None, db=approval_pool)
+    executed_calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def execute_original_tool(tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
+        executed_calls.append((tool_name, tool_args))
+        return {"status": "sent"}
+
+    module.set_tool_executor(execute_original_tool)
+    app = _protected_approvals_app(
+        approval_pool, mcp_mgr=_ExecutingMcpManager(_ExecutingButlerClient(module))
+    )
+    connector = TelegramBotConnector(
+        TelegramBotConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse",
+            endpoint_identity="telegram:bot:1",
+            telegram_token="test-token",
+            internal_api_url="http://dashboard-api:41200",
+            approval_callback_secret=_SECRET,
+            approval_callback_connector_token=_CALLBACK_CONNECTOR_TOKEN,
+        ),
+        db_pool=MagicMock(),
+        cursor_pool=MagicMock(),
+    )
+    http_client = _CallbackHttpClient(app)
+    connector._http_client = http_client
+    monkeypatch.setattr(
+        telegram_bot_module,
+        "resolve_owner_channel_via_definer",
+        AsyncMock(return_value=(SimpleNamespace(roles=["owner"]), True)),
+    )
+    token = mint_approval_callback_token(
+        action_id=action_id, verb="a", requested_at=requested_at, secret=_SECRET
+    )
+    try:
+        await connector._maybe_handle_approval_callback(
+            {
+                "callback_query": {
+                    "id": "cbq-approve",
+                    "data": token,
+                    "from": {"id": 9001},
+                    "message": {"chat": {"id": 9001}, "message_id": 44},
+                }
+            }
+        )
+    finally:
+        await http_client.close()
+    return http_client, executed_calls
+
+
+async def test_card_shows_stored_call_and_unchanged_tap_executes_once(
+    approval_pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The presented card carries the stored recipients/body and its digest."""
+    from butlers.modules.approvals.previews import args_digest
+
+    action_id, message = await _park_presented_email(approval_pool, monkeypatch)
+    stored = await approval_pool.fetchrow(
+        "SELECT tool_args FROM pending_actions WHERE id = $1", action_id
+    )
+    assert "dana@x.com" in message and "Thursday at 3pm works." in message
+    digest = await approval_pool.fetchval(
+        "SELECT p.args_digest FROM approval_delivery_presentations p "
+        "JOIN approval_delivery_intents i ON i.id = p.intent_id WHERE i.action_id = $1",
+        action_id,
+    )
+    assert digest == args_digest(stored["tool_args"])
+
+    _, executed_calls = await _tap_approve(approval_pool, monkeypatch, action_id)
+
+    assert [name for name, _ in executed_calls] == ["email_send_message"]
+    status = await approval_pool.fetchval(
+        "SELECT status FROM pending_actions WHERE id = $1", action_id
+    )
+    assert status == "executed"
+
+
+async def test_tap_after_the_call_changed_executes_nothing(
+    approval_pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stored call that no longer matches the presented digest is never executed."""
+    action_id, _ = await _park_presented_email(approval_pool, monkeypatch)
+    await approval_pool.execute(
+        "UPDATE pending_actions SET tool_args = $2 WHERE id = $1",
+        action_id,
+        {"to": "mallory@evil.test", "subject": "Re: Thursday", "body": "Wire the money."},
+    )
+
+    http_client, executed_calls = await _tap_approve(approval_pool, monkeypatch, action_id)
+
+    assert executed_calls == []
+    status = await approval_pool.fetchval(
+        "SELECT status FROM pending_actions WHERE id = $1", action_id
+    )
+    assert status == "pending"
+    edits = [body for url, body in http_client.telegram_calls if url.endswith("editMessageText")]
+    assert len(edits) == 1
+    assert "changed since shown" in edits[0]["text"].lower()
+
+
+async def test_authenticated_approval_preserves_long_exact_args_digest_and_final_receipt(
+    approval_pool, monkeypatch
+):
+    """Actual callback approval executes the unchanged stored call before chunking."""
+    from butlers.modules.approvals.previews import args_digest
+    from butlers.modules.telegram import TelegramModule
+
+    telegram = TelegramModule()
+    telegram._db = SimpleNamespace(pool=approval_pool)
+    telegram._butler_name = "relationship"
+    payloads = []
+
+    async def post(url, *, json):
+        payloads.append(dict(json))
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={"ok": True, "result": {"message_id": len(payloads)}},
+        )
+
+    monkeypatch.setattr(telegram, "_get_client", lambda: SimpleNamespace(post=post))
+    monkeypatch.setattr(telegram, "_base_url", lambda: "https://telegram.test")
+    monkeypatch.setattr(
+        approvals_gate_module, "resolve_action_target_contact", AsyncMock(return_value=None)
+    )
+    source = "approved long text " * 600
+    args = {"chat_id": "42", "text": source}
+    gate = _make_gate_wrapper(
+        tool_name="telegram_send_message",
+        original_fn=telegram._send_message,
+        pool=approval_pool,
+        expiry_hours=72,
+        risk_tier=ApprovalRiskTier.MEDIUM,
+        rule_precedence=(),
+        butler_name="relationship",
+    )
+    parked = await gate(
+        **args,
+        _why="Explicit controlled outbound request.",
+        _evidence=[],
+        _blast_radius="contact",
+        _reversibility="compensable",
+    )
+    assert parked["status"] == "pending_approval" and payloads == []
+    action_id = UUID(parked["action_id"])
+    before = await approval_pool.fetchrow(
+        "SELECT tool_args, requested_at FROM pending_actions WHERE id=$1", action_id
+    )
+    pinned = args_digest(before["tool_args"])
+    module = ApprovalsModule()
+    await module.on_startup(config=None, db=approval_pool)
+
+    async def execute(tool_name, tool_args):
+        assert tool_name == "telegram_send_message" and tool_args == args
+        assert args_digest(tool_args) == pinned
+        return await telegram._send_message(**tool_args)
+
+    module.set_tool_executor(execute)
+    app = _protected_approvals_app(
+        approval_pool, mcp_mgr=_ExecutingMcpManager(_ExecutingButlerClient(module))
+    )
+    client = _CallbackHttpClient(app)
+    connector = TelegramBotConnector(
+        TelegramBotConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse",
+            endpoint_identity="telegram:bot:1",
+            telegram_token="test-token",
+            internal_api_url="http://dashboard-api:41200",
+            approval_callback_secret=_SECRET,
+            approval_callback_connector_token=_CALLBACK_CONNECTOR_TOKEN,
+        ),
+        db_pool=MagicMock(),
+        cursor_pool=MagicMock(),
+    )
+    connector._http_client = client
+    monkeypatch.setattr(
+        telegram_bot_module,
+        "resolve_owner_channel_via_definer",
+        AsyncMock(return_value=(SimpleNamespace(roles=["owner"]), True)),
+    )
+    token = mint_approval_callback_token(
+        action_id=action_id, verb="a", requested_at=before["requested_at"], secret=_SECRET
+    )
+    try:
+        assert await connector._maybe_handle_approval_callback(
+            {
+                "callback_query": {
+                    "id": "controlled-long-approve",
+                    "data": token,
+                    "from": {"id": 9001},
+                    "message": {"chat": {"id": 9001}, "message_id": 44},
+                }
+            }
+        )
+    finally:
+        await client.close()
+    async with approval_pool.acquire() as independent:
+        after = await independent.fetchrow(
+            "SELECT status, tool_args, execution_result FROM pending_actions WHERE id=$1", action_id
+        )
+    assert after["status"] == "executed"
+    assert after["tool_args"] == args and args_digest(after["tool_args"]) == pinned
+    assert "".join(p["text"] for p in payloads) == source
+    assert len(payloads) > 1
+    result = after["execution_result"]["result"]["result"]
+    assert result["message_id"] == len(payloads)
+    assert result["message_ids"] == list(range(1, len(payloads) + 1))

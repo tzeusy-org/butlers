@@ -98,3 +98,21 @@ Scope: v1-mandatory
 - **THEN** the server treats stored evidence only as the last admitted instance within its freshness limit
 - **AND** it does not claim immediate knowledge of an unobserved restart or failed refresh
 - **AND** completely unobserved publication failure alone does not demote still-fresh prior admitted evidence, which expires independently after300-second heartbeat or900-second classification limits
+
+### Requirement: WhatsApp and Drive publish the known-contact classification through the Gmail admission path
+
+The WhatsApp user-client connector and the Google Drive connector manager SHALL publish the same fixed classification object (`capabilities.known_contact_check`) through the existing heartbeat producer, and the Switchboard SHALL admit and fence it with the Gmail admission rules unchanged, for every connector type that marks drops (`gmail`, `whatsapp_user_client`, `google_drive`). Drive publishes one process-wide snapshot on its manager row (`google_drive:manager:process`); its per-account rows are heartbeated by direct SQL and SHALL NOT be required to carry classification evidence. The current-availability read SHALL require complete last-admitted evidence from every non-archived runtime instance of a marking connector (Drive: its manager row), and historical uncertainty SHALL count rows of all three connector types, treating `not_applicable` rows as certain.
+
+ID: REQ-connector-base-spec-014
+Source: bu-q7vx1q.42
+Scope: v1-mandatory
+
+#### Scenario: A marking runtime without evidence is never all clear
+
+- **WHEN** a WhatsApp runtime instance or the Drive manager row is registered without admitted classification evidence
+- **THEN** current classification availability is false
+
+#### Scenario: Drive per-account rows do not decide availability
+
+- **WHEN** only per-account Drive rows exist, heartbeated by direct SQL
+- **THEN** they do not make availability false

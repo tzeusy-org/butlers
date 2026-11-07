@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -32,6 +33,15 @@ from butlers.core.buffer import (
 from butlers.switchboard_wiring import build_buffer_pipeline_inputs
 
 pytestmark = pytest.mark.unit
+
+
+def _write_switchboard_config(sw_dir: Path) -> Path:
+    sw_dir.mkdir(exist_ok=True)
+    (sw_dir / "butler.toml").write_text(
+        '[butler]\nname = "switchboard"\nport = 41100\n\n'
+        '[butler.db]\nname = "butlers"\nschema = "switchboard"\n'
+    )
+    return sw_dir
 
 
 # ---------------------------------------------------------------------------
@@ -503,94 +513,27 @@ async def test_shutdown() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_buffer_daemon_integration(tmp_path: Any) -> None:
-    """Switchboard gets DurableBuffer; non-switchboard has None; shutdown clears buffer."""
-    from pathlib import Path
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_buffer_daemon_integration(booted_daemon, tmp_path: Any) -> None:
+    """A Switchboard's startup wires a DurableBuffer on its pool; shutdown clears it.
 
+    The subject is the boot and shutdown themselves, so this boots for real
+    (bu-rvgzmf.2).
+    """
     from butlers.core import fact_authority
     from butlers.core.buffer import DurableBuffer
-    from butlers.daemon import ButlerDaemon
 
-    mock_pool = AsyncMock()
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-    mock_spawner.trigger = AsyncMock()
-
-    class _MockAdapterInstance:
-        binary_name = "claude"
-
-    class _MockAdapterCls:
-        binary_name = "claude"
-
-        def __new__(cls, **kwargs: Any) -> _MockAdapterInstance:
-            return _MockAdapterInstance()
-
-    common_patches = {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=_MockAdapterCls),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "start_mcp_server": patch(
-            "butlers.daemon.ButlerDaemon._start_mcp_server", new_callable=AsyncMock
-        ),
-        "connect_switchboard": patch(
-            "butlers.daemon.ButlerDaemon._connect_switchboard", new_callable=AsyncMock
-        ),
-    }
-
-    # Switchboard gets DurableBuffer
-    sw_dir = Path(tmp_path / "sw")
-    sw_dir.mkdir(exist_ok=True)
-    (sw_dir / "butler.toml").write_text(
-        '[butler]\nname = "switchboard"\nport = 41100\n\n'
-        '[butler.db]\nname = "butlers"\nschema = "switchboard"\n'
-    )
-    # This mocked lifecycle installs the real process-local source issuer.
-    # Preserve the object already owned by another test, including on failure;
-    # replacing it with None would also discard a preexisting live registry.
+    sw_dir = await asyncio.to_thread(_write_switchboard_config, Path(tmp_path / "sw"))
+    # Startup installs the real process-local source issuer. Preserve the object
+    # already owned by another test, including on failure.
     prior_registry = fact_authority.source_registry()
     with patch.object(fact_authority, "_source_registry", prior_registry):
-        with (
-            common_patches["db_from_env"],
-            common_patches["run_migrations"],
-            common_patches["validate_credentials"],
-            common_patches["validate_module_credentials"],
-            common_patches["init_telemetry"],
-            common_patches["sync_schedules"],
-            common_patches["FastMCP"],
-            common_patches["Spawner"],
-            common_patches["get_adapter"],
-            common_patches["shutil_which"],
-            common_patches["start_mcp_server"],
-            common_patches["connect_switchboard"],
-        ):
-            daemon = ButlerDaemon(sw_dir)
-            await daemon.start()
-        assert daemon._buffer is not None and isinstance(daemon._buffer, DurableBuffer)
+        booted = await booted_daemon(sw_dir, "core", "switchboard")
+        daemon = booted.daemon
+        assert isinstance(daemon._buffer, DurableBuffer)
         assert fact_authority.source_registry() is daemon._fact_source_registry
-        assert daemon._fact_source_registry.pool is mock_pool
-        await daemon.shutdown()
+        assert daemon._fact_source_registry.pool is daemon.db.pool
+        await booted.shutdown()
         assert daemon._buffer is None
     assert fact_authority.source_registry() is prior_registry

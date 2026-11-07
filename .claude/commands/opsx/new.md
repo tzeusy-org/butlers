@@ -20,22 +20,34 @@ Start a new change using the experimental artifact-driven approach.
 
    **IMPORTANT**: Do NOT proceed without understanding what the user wants to build.
 
-2. **Determine the workflow schema**
+2. **Choose an explicit schema for a new change**
 
-   Use the default schema (omit `--schema`) unless the user explicitly requests a different workflow.
+   Read `about/heart-and-soul/development.md` and classify the actual scope and whether this is part
+   of a new multi-PR program or continues an existing legacy program.
 
-   **Use a different schema only if the user mentions:**
-   - A specific schema name → use `--schema <name>`
-   - "show workflows" or "what workflows" → run `openspec schemas --json` and let them choose
+   - A new eligible single-butler change with no cross-butler contract, shared schema, or security
+     boundary uses `single-butler` (proposal → tasks; design may be added).
+   - A new standalone change that requires a design uses
+     `living-specs` (proposal → design → tasks).
+   - New multi-PR programs may use `spec-driven` with local deltas. New standalone work uses
+     a no-delta schema; selecting local deltas is not an additional standalone option.
+   - Preserve every existing legacy program with its resolved schema, metadata, content and
+     deltas unchanged until verified completion. Do not retag it or add `skip_specs`.
 
-   **Otherwise**: Omit `--schema` to use the default.
+   The project default stays `spec-driven` for existing changes and other legacy CLI use. New
+   `/opsx:new` changes choose a schema explicitly rather than relying on that default.
 
 3. **Create the change directory**
    ```bash
-   openspec new change "<name>"
+   openspec new change "<name>" --schema <selected-schema>
    ```
-   Add `--schema <name>` only if the user requested a specific workflow.
-   This creates a scaffolded change at `openspec/changes/<name>/` with the selected schema.
+   For a new `single-butler` or `living-specs` change, preserve the CLI-generated `schema` and
+   `created` fields in `.openspec.yaml` and add `skip_specs: true`. Do not create an empty `specs/`
+   directory. These schemas use canonical specs as the maintained requirements; update an affected
+   canonical requirement in the same source change whenever required behavior changes. Keep all
+   existing artifact files and designs. A retained `spec-driven` change keeps its delta specs and
+   metadata unchanged. Verify the new no-delta change has its generated schema/created fields and
+   `skip_specs: true` before continuing; if they are missing or malformed, correct this new change first.
 
 4. **Show the artifact status**
    ```bash
@@ -66,4 +78,4 @@ After completing the steps, summarize:
 - Do NOT advance beyond showing the first artifact template
 - If the name is invalid (not kebab-case), ask for a valid name
 - If a change with that name already exists, suggest using `/opsx:continue` instead
-- Pass --schema if using a non-default workflow
+- Pass the selected `--schema` explicitly for every new change

@@ -10,13 +10,16 @@ Covers:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import asyncpg
 import pytest
 
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._memory_access import register_memory_access_tool
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -26,21 +29,18 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def _make_pool(facts_dropped=0, episodes_dropped=0, rules_dropped=0, raises=False):
-    """Return an AsyncMock pool that returns seeded drop counts."""
-    pool = AsyncMock()
-
-    if raises:
-        pool.fetchval = AsyncMock(side_effect=RuntimeError("db error"))
-    else:
-        # fetchval is called three times: facts, episodes, rules.
-        pool.fetchval = AsyncMock(side_effect=[facts_dropped, episodes_dropped, rules_dropped])
-    return pool
+def _drop_count_pool(facts_dropped=0, episodes_dropped=0, rules_dropped=0, raises=False):
+    drops = (
+        RuntimeError("db error")
+        if raises
+        else [datetime(2026, 11, 5, tzinfo=UTC), facts_dropped, episodes_dropped, rules_dropped]
+    )
+    return fake_pool(fetchval=AsyncMock(side_effect=drops))
 
 
-def _make_memory_module(embedding_model=None):
+def _make_memory_module(embedding_model=None, memory_schema=None):
     """Return a minimal module-like object with name='memory'."""
-    cfg = SimpleNamespace(embedding_model=embedding_model)
+    cfg = SimpleNamespace(embedding_model=embedding_model, memory_schema=memory_schema)
     return SimpleNamespace(name="memory", _config=cfg)
 
 
@@ -120,7 +120,7 @@ async def test_memory_access_with_module_returns_all_stores_and_drops_7d(
 ):
     """Memory module present: all three stores listed; drops_7d sums all tables."""
     daemon = SimpleNamespace(_modules=[_make_memory_module()])
-    pool = _make_pool(facts_dropped=facts, episodes_dropped=episodes, rules_dropped=rules)
+    pool = _drop_count_pool(facts_dropped=facts, episodes_dropped=episodes, rules_dropped=rules)
     tool = _register_and_grab(daemon, pool=pool)
 
     result = await tool()
@@ -131,6 +131,119 @@ async def test_memory_access_with_module_returns_all_stores_and_drops_7d(
     assert result["drops_7d"] == expected_drops
 
 
+async def test_chronicler_memory_access_filters_fact_drop_count_before_aggregation():
+    """The summary count uses the configured private-schema visibility contract."""
+    queries: list[str] = []
+
+    async def _fetchval(query: str, *args: object) -> int | bool:
+        if "to_regclass('chronicler_mem.facts_readable')" in query:
+            return True
+        queries.append(query)
+        return 1
+
+    module = _make_memory_module(memory_schema="chronicler_mem")
+    memory_pool = fake_pool(fetchval=AsyncMock(side_effect=_fetchval))
+    module._get_pool = lambda: memory_pool
+    daemon = SimpleNamespace(_modules=[module])
+    domain_queries: list[str] = []
+
+    async def _domain_fetchval(query: str, *args: object) -> int:
+        domain_queries.append(query)
+        return 99
+
+    domain_pool = fake_pool(fetchval=AsyncMock(side_effect=_domain_fetchval))
+    tool = _register_and_grab(daemon, pool=domain_pool)
+
+    result = await tool()
+
+    assert domain_queries == []
+    fact_query = next(query for query in queries if "COUNT(*) FROM facts AS facts" in query)
+    assert "chronicler_mem.facts_readable" in fact_query
+    assert sum("FROM episodes" in query or "FROM rules" in query for query in queries) == 2
+    assert result["drops_7d"] == 3
+
+
+@pytest.mark.parametrize("pool_state", ["missing", "raises"])
+async def test_chronicler_memory_access_does_not_fall_back_when_private_pool_unavailable(
+    pool_state,
+):
+    """A configured private store never falls back to the domain pool."""
+    module = _make_memory_module(memory_schema="chronicler_mem")
+    if pool_state == "missing":
+        module._get_pool = lambda: None
+    else:
+
+        def _raise_unavailable():
+            raise RuntimeError("private memory pool is unavailable")
+
+        module._get_pool = _raise_unavailable
+
+    daemon = SimpleNamespace(_modules=[module])
+    domain_queries: list[str] = []
+
+    async def _domain_fetchval(query: str, *args: object) -> int:
+        domain_queries.append(query)
+        return 99
+
+    domain_pool = fake_pool(fetchval=AsyncMock(side_effect=_domain_fetchval))
+    tool = _register_and_grab(daemon, pool=domain_pool)
+
+    result = await tool()
+
+    assert domain_queries == []
+    assert result["drops_7d"] == 0
+
+
+async def test_chronicler_memory_access_propagates_visibility_helper_failure():
+    """An unknown private-fact classification must not become a zero count."""
+    module = _make_memory_module(memory_schema="chronicler_mem")
+    memory_pool = fake_pool(
+        fetchval=AsyncMock(side_effect=RuntimeError("visibility state unavailable"))
+    )
+    module._get_pool = lambda: memory_pool
+    daemon = SimpleNamespace(_modules=[module])
+    domain_queries: list[str] = []
+
+    async def _domain_fetchval(query: str, *args: object) -> int:
+        domain_queries.append(query)
+        return 99
+
+    domain_pool = fake_pool(fetchval=AsyncMock(side_effect=_domain_fetchval))
+    tool = _register_and_grab(daemon, pool=domain_pool)
+
+    with pytest.raises(RuntimeError, match="visibility state unavailable"):
+        await tool()
+
+    assert domain_queries == []
+
+
+async def test_chronicler_memory_access_propagates_guarded_count_query_failure():
+    """A guarded fact-count error is not a successful zero summary."""
+    queries: list[str] = []
+
+    async def _fetchval(query: str, *args: object) -> int | bool:
+        if "to_regclass('chronicler_mem.facts_readable')" in query:
+            return True
+        queries.append(query)
+        if "COUNT(*) FROM facts AS facts" in query:
+            raise asyncpg.InsufficientPrivilegeError("guarded fact count denied")
+        return 0
+
+    module = _make_memory_module(memory_schema="chronicler_mem")
+    memory_pool = fake_pool(fetchval=AsyncMock(side_effect=_fetchval))
+    module._get_pool = lambda: memory_pool
+    daemon = SimpleNamespace(_modules=[module])
+    domain_pool = _drop_count_pool(facts_dropped=99)
+    tool = _register_and_grab(daemon, pool=domain_pool)
+
+    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+        await tool()
+
+    fact_query = next(query for query in queries if "COUNT(*) FROM facts AS facts" in query)
+    assert "chronicler_mem.facts_readable" in fact_query
+    assert domain_pool.fetchval.await_count == 0
+
+
 async def test_memory_access_drops_7d_degrades_on_db_error():
     """When the drops_7d DB query fails, drops_7d falls back to 0 without raising.
 
@@ -138,7 +251,7 @@ async def test_memory_access_drops_7d_degrades_on_db_error():
     the drop count degrades.
     """
     daemon = SimpleNamespace(_modules=[_make_memory_module()])
-    pool = _make_pool(raises=True)
+    pool = _drop_count_pool(raises=True)
     tool = _register_and_grab(daemon, pool=pool)
 
     result = await tool()
@@ -158,7 +271,7 @@ async def test_memory_access_embedding_model_from_config():
     """embedding_model is read from module._config.embedding_model when set."""
     mod = _make_memory_module(embedding_model="text-embedding-3-small")
     daemon = SimpleNamespace(_modules=[mod])
-    pool = _make_pool()
+    pool = _drop_count_pool()
     tool = _register_and_grab(daemon, pool=pool)
 
     result = await tool()
@@ -170,7 +283,7 @@ async def test_memory_access_embedding_model_defaults_to_minilm():
     """When config.embedding_model is None, falls back to all-MiniLM-L6-v2."""
     mod = _make_memory_module(embedding_model=None)
     daemon = SimpleNamespace(_modules=[mod])
-    pool = _make_pool()
+    pool = _drop_count_pool()
     tool = _register_and_grab(daemon, pool=pool)
 
     result = await tool()
@@ -187,10 +300,32 @@ async def test_memory_access_ignores_non_memory_modules():
     """Only a module with name='memory' triggers memory access; others are ignored."""
     other_mod = SimpleNamespace(name="telegram", _config=None)
     daemon = SimpleNamespace(_modules=[other_mod])
-    pool = _make_pool()
+    pool = _drop_count_pool()
     tool = _register_and_grab(daemon, pool=pool)
 
     result = await tool()
 
     assert result["read"] == []
     assert result["write"] == []
+
+
+async def test_drops_7d_uses_one_database_clock_and_dedicated_transition_times():
+    from butlers.core_tools._memory_access import _query_drops_7d
+
+    as_of = datetime(2026, 11, 5, tzinfo=UTC)
+    pool = fake_pool(fetchval=AsyncMock(side_effect=[as_of, 2, 3, 4]))
+    assert await _query_drops_7d(pool) == 9
+    calls = pool.fetchval.await_args_list
+    assert calls[0].args == ("SELECT now()",)
+    assert len(calls) == 4
+    for call in calls[1:]:
+        assert call.args[1:] == (as_of,)
+        assert "$1::timestamptz - interval '7 days'" in call.args[0]
+        assert "<= $1::timestamptz" in call.args[0]
+        assert "updated_at" not in call.args[0]
+    assert "facts.dropped_at" in calls[1].args[0]
+    assert "('superseded', 'expired')" in calls[1].args[0]
+    assert "retracted" not in calls[1].args[0]
+    assert "expires_at" in calls[2].args[0]
+    assert "forgotten_at" in calls[3].args[0]
+    assert "retired_at" not in calls[3].args[0]

@@ -71,7 +71,7 @@ def test_completed_provenance_changes_are_archived_with_canonical_test_mappings(
 
 
 def test_req_module_memory_006_preserves_pr_3669_action_isolation_contract() -> None:
-    """Canonical REQ-006 keeps valid work eligible after one action fails."""
+    """Canonical REQ-module-memory-006 keeps valid work eligible after one action fails."""
     module_memory = _read(_SPECS / "module-memory" / "spec.md")
     scenario = re.search(
         r"#### Scenario: Individual action failures do not block others\n(?P<body>.*?)(?=\n####|\Z)",

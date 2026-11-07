@@ -1,4 +1,61 @@
-{{- if .Values.hostIngress.restrict }}
+{{- /*
+Allowed ingress to a pod is the union of every policy that selects it, so a deny
+cannot subtract an allow: no allow below may reach further than the flows it names.
+tests/scripts/test_chart_ingress_union.py evaluates that union on the rendered chart.
+*/ -}}
+{{- if eq (toString .Values.hostIngress.restrict) "false" }}
+{{- fail "hostIngress.restrict=false is retired: default-deny ingress selects every pod (REQ-deployment-hardening-013)" }}
+{{- end }}
+{{- $metrics := .Values.connectorMetrics }}
+{{- if hasKey $metrics "allowFrom" }}
+{{- fail "connectorMetrics.allowFrom is retired: set connectorMetrics.sourceNamespace" }}
+{{- end }}
+{{- if not (regexMatch "^[0-9.]+/32$" (toString .Values.hostIngress.nodeSourceCidr)) }}
+{{- fail "hostIngress.nodeSourceCidr must be the node's single /32 address" }}
+{{- end }}
+{{- $source := toString $metrics.sourceNamespace }}
+{{- if $metrics.enabled }}
+{{- /* Validate the exact string that renders, so quoting or spacing cannot slip a name past the checks. */ -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $source) }}
+{{- fail "connectorMetrics.sourceNamespace is required when connectorMetrics.enabled: name the scraper's namespace as one valid namespace name" }}
+{{- end }}
+{{- if or (has $source (list "mcp" "mcp-gateway")) (hasPrefix "butlers-public-" $source) }}
+{{- fail (printf "connectorMetrics.sourceNamespace %s may not scrape: the public MCP path has no route into this namespace" $source) }}
+{{- end }}
+{{- end }}
+# Every pod in the release namespace, including CronJobs and any future workload,
+# starts with no ingress. Node-originated kubelet probes are not subject to it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-default-deny-ingress
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# Butler-to-butler and dashboard-to-daemon MCP stay inside the namespace. Daemons
+# serve MCP with no caller authentication, so reachability is the boundary. The
+# pods with a narrower policy below stay out of this selector: the union would
+# otherwise widen them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-namespace-ingress
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: NotIn
+        values: [dashboard-api, frontend, connector-owntracks, butlers-control{{ if .Values.sessionHost.enabled }}, session-host{{ end }}]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+---
 # NodePorts listen on every node address (LAN, tailnet), unlike the old
 # compose ports bound to 127.0.0.1. Admit only the node itself (host
 # `tailscale serve`, seen as hostIngress.nodeSourceCidr) and pods in this
@@ -21,4 +78,72 @@ spec:
     - from:
         - ipBlock: {cidr: {{ .Values.hostIngress.nodeSourceCidr }}}
         - podSelector: {}
+    {{- if $metrics.enabled }}
+    # The cluster scraper lives outside this namespace; it may reach only the
+    # metrics-proxy port, which serves nothing but GET /metrics.
+    - ports:
+        - {protocol: TCP, port: {{ $metrics.port }}}
+      from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $source | quote }}
+    {{- end }}
+{{- if $metrics.enabled }}
+---
+# The same scrape for connectors the host policy does not select.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-metrics-ingress
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      butlers.io/connector-metrics: "true"
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: NotIn
+        values: [dashboard-api, frontend, connector-owntracks, butlers-control]
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - {protocol: TCP, port: {{ $metrics.port }}}
+      from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $source | quote }}
+{{- end }}
+
+{{- if .Values.butlersControl.enabled }}
+---
+# Service traffic stays namespace-local. Session reachability is a distinct
+# identity boundary: only the operator health pod and future session host.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-control-ingress
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" . "component" "butlers-control") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - {protocol: TCP, port: 41100}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: session-host
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: control-session-health
+      ports:
+        - {protocol: TCP, port: 41199}
 {{- end }}

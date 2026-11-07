@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import sys
 import uuid
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
 
+from butlers.testing.fake_pool import AsyncCtx
 from butlers.tools.relationship.meeting_debrief import meeting_debrief_answer
 
 pytestmark = pytest.mark.unit
@@ -30,9 +30,8 @@ class _Conn:
             "state": "pending",
         }
 
-    @asynccontextmanager
-    async def transaction(self):
-        yield
+    def transaction(self):
+        return AsyncCtx(None)
 
     async def fetchrow(self, *_args):
         return self.row
@@ -45,9 +44,8 @@ class _Pool:
     def __init__(self) -> None:
         self.conn = _Conn()
 
-    @asynccontextmanager
-    async def acquire(self):
-        yield self.conn
+    def acquire(self):
+        return AsyncCtx(self.conn)
 
 
 @pytest.fixture

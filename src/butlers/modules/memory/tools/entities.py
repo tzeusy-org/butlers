@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from typing import TYPE_CHECKING, Any, Literal
@@ -10,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from asyncpg import Pool
 
+from butlers.core.chronicler_visibility import local_fact_visibility_condition
 from butlers.entity_fact_repoint import repoint_facts_on_conn as _repoint_facts_on_conn
 from butlers.modules.memory.tools._helpers import _serialize_row
 
@@ -18,15 +18,17 @@ logger = logging.getLogger(__name__)
 VALID_ENTITY_TYPES = frozenset({"person", "organization", "place", "other"})
 
 
-def _parse_metadata(raw: Any) -> dict[str, Any]:
-    """Safely parse a metadata value from asyncpg (may be dict, str, or None)."""
-    if not raw:
-        return {}
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str):
-        return json.loads(raw)
-    return dict(raw)
+# Lifecycle keys no caller may write: a merge and a delete have their own paths. Owner
+# law walks ``merged_into``, so a caller writing it could release a term by rewriting a
+# person's identity.
+TOMBSTONE_METADATA_KEYS = frozenset({"deleted_at", "merged_into"})
+# ``unidentified`` may be set only at create, where the butler skills mark a guessed
+# identity for owner review, and is cleared only by a promote.
+SYSTEM_METADATA_KEYS = TOMBSTONE_METADATA_KEYS | {"unidentified"}
+
+
+def _without(metadata: dict[str, Any] | None, keys: frozenset[str]) -> dict[str, Any]:
+    return {k: v for k, v in (metadata or {}).items() if k not in keys}
 
 
 # Minimum composite score to include a candidate in resolution results.
@@ -64,7 +66,7 @@ async def entity_create(
         canonical_name: The canonical name of the entity.
         entity_type: One of 'person', 'organization', 'place', 'other'.
         aliases: Optional list of alternative names for the entity.
-        metadata: Optional JSONB metadata dict.
+        metadata: Optional JSONB metadata dict, without ``TOMBSTONE_METADATA_KEYS``.
         roles: Optional list of identity roles (e.g. ['owner']).  Internal use
                only — not exposed to runtime MCP tool callers.
 
@@ -82,7 +84,7 @@ async def entity_create(
 
     aliases_list = aliases or []
     roles_list = roles or []
-    metadata_dict = dict(metadata) if metadata else {}
+    metadata_dict = _without(metadata, TOMBSTONE_METADATA_KEYS)
 
     insert_sql = """
         INSERT INTO public.entities
@@ -192,7 +194,8 @@ async def entity_update(
 
     - ``canonical_name``: replaces the current value when provided.
     - ``aliases``: replace-all semantics — pass the full desired list.
-    - ``metadata``: merge semantics — keys are merged into existing metadata.
+    - ``metadata``: merge semantics — keys are merged into existing metadata,
+      except ``SYSTEM_METADATA_KEYS``, which are dropped.
 
     Args:
         pool: asyncpg connection pool.
@@ -205,13 +208,6 @@ async def entity_update(
         Updated serialized entity dict or None if not found.
     """
     eid = uuid.UUID(entity_id)
-
-    current = await pool.fetchrow(
-        "SELECT id, metadata FROM public.entities WHERE id = $1",
-        eid,
-    )
-    if current is None:
-        return None
 
     set_clauses: list[str] = ["updated_at = now()"]
     params: list[Any] = []
@@ -227,11 +223,11 @@ async def entity_update(
         set_clauses.append(f"aliases = ${param_idx}")
         param_idx += 1
 
-    if metadata is not None:
-        existing_metadata: dict[str, Any] = _parse_metadata(current["metadata"])
-        merged = {**existing_metadata, **metadata}
-        params.append(merged)
-        set_clauses.append(f"metadata = ${param_idx}")
+    caller_metadata = _without(metadata, SYSTEM_METADATA_KEYS)
+    if caller_metadata:
+        # Merged in the UPDATE, so a merge committing first keeps what it wrote.
+        params.append(caller_metadata)
+        set_clauses.append(f"metadata = COALESCE(metadata, '{{}}'::jsonb) || ${param_idx}::jsonb")
         param_idx += 1
 
     params.append(eid)
@@ -262,6 +258,7 @@ async def entity_resolve(
     entity_type: str | None = None,
     context_hints: dict[str, Any] | None = None,
     enable_fuzzy: bool = False,
+    memory_schema: str | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve an ambiguous string to a ranked list of entity candidates.
 
@@ -317,6 +314,10 @@ async def entity_resolve(
     name_stripped = lookup.strip()
     name_lower = name_stripped.lower()
     hints = context_hints or {}
+    fact_visibility = await local_fact_visibility_condition(
+        pool, memory_schema=memory_schema, alias="f"
+    )
+    fact_visibility_filter = f" AND {fact_visibility}" if fact_visibility is not None else ""
 
     # Build type filter clause
     type_params: list[Any] = [name_lower]
@@ -402,6 +403,7 @@ async def entity_resolve(
             WHERE (f.entity_id = d.id OR f.object_entity_id = d.id)
               AND f.validity IN ('active', 'fading')
               AND f.invalid_at IS NULL
+              {fact_visibility_filter}
         ) fc ON true
     """
 
@@ -452,11 +454,12 @@ async def entity_resolve(
     ]
     if fuzzy_ids:
         fc_rows = await pool.fetch(
-            """
+            f"""
             SELECT e_id, COUNT(f.id) AS cnt
             FROM UNNEST($1::uuid[]) AS e_id
             LEFT JOIN facts f ON (f.entity_id = e_id OR f.object_entity_id = e_id)
                 AND f.validity IN ('active', 'fading') AND f.invalid_at IS NULL
+                {fact_visibility_filter}
             GROUP BY e_id
             """,
             [uuid.UUID(eid) for eid in fuzzy_ids],
@@ -495,7 +498,9 @@ async def entity_resolve(
     # -------------------------------------------------------------------------
     if hints:
         entity_ids = list(candidates.keys())
-        await _apply_graph_neighborhood_scores(pool, entity_ids, candidates, hints)
+        await _apply_graph_neighborhood_scores(
+            pool, entity_ids, candidates, hints, memory_schema=memory_schema
+        )
 
     # -------------------------------------------------------------------------
     # Step 5: apply domain_scores from context_hints
@@ -584,6 +589,8 @@ async def _apply_graph_neighborhood_scores(
     entity_ids: list[str],
     candidates: dict[str, dict[str, Any]],
     hints: dict[str, Any],
+    *,
+    memory_schema: str | None = None,
 ) -> None:
     """Compute graph neighborhood similarity and boost candidate scores.
 
@@ -614,12 +621,17 @@ async def _apply_graph_neighborhood_scores(
 
     # Fetch facts for all candidate entities in a single query
     uuid_ids = [uuid.UUID(eid) for eid in entity_ids]
+    fact_visibility = await local_fact_visibility_condition(
+        pool, memory_schema=memory_schema, alias="f"
+    )
+    fact_visibility_filter = f" AND {fact_visibility}" if fact_visibility is not None else ""
     fact_rows = await pool.fetch(
-        """
-        SELECT entity_id, predicate, content
-        FROM facts
-        WHERE entity_id = ANY($1)
-          AND validity IN ('active', 'fading')
+        f"""
+        SELECT f.entity_id, f.predicate, f.content
+        FROM facts AS f
+        WHERE f.entity_id = ANY($1)
+          AND f.validity IN ('active', 'fading')
+          {fact_visibility_filter}
         LIMIT 500
         """,
         uuid_ids,
@@ -660,6 +672,7 @@ async def entity_neighbors(
     max_depth: int = 2,
     predicate_filter: list[str] | None = None,
     direction: Literal["outgoing", "incoming", "both"] = "both",
+    memory_schema: str | None = None,
 ) -> list[dict[str, Any]]:
     """Traverse the entity graph via edge-facts and return neighboring entities.
 
@@ -695,6 +708,12 @@ async def entity_neighbors(
     if not exists:
         raise ValueError(f"entity_id {entity_id!r} does not exist")
 
+    fact_visibility = await local_fact_visibility_condition(
+        pool, memory_schema=memory_schema, alias="f"
+    )
+    fact_visibility_clause = (
+        f"\n          AND {fact_visibility}" if fact_visibility is not None else ""
+    )
     params: list[Any] = [eid, max_depth]
     pred_clause = ""
     if predicate_filter:
@@ -710,7 +729,7 @@ async def entity_neighbors(
                1 AS depth, ARRAY[$1::uuid, f.object_entity_id] AS path
         FROM facts f
         WHERE f.entity_id = $1 AND f.object_entity_id IS NOT NULL
-          AND f.validity IN ('active', 'fading'){pred_clause}"""
+          AND f.validity IN ('active', 'fading'){pred_clause}{fact_visibility_clause}"""
         rec_sql = f"""
         SELECT f.object_entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
                'outgoing'::text AS dir,
@@ -720,7 +739,7 @@ async def entity_neighbors(
         WHERE f.object_entity_id IS NOT NULL
           AND f.validity IN ('active', 'fading')
           AND f.object_entity_id != ALL(n.path)
-          AND n.depth < $2{pred_clause}"""
+          AND n.depth < $2{pred_clause}{fact_visibility_clause}"""
     elif direction == "incoming":
         base_sql = f"""
         SELECT f.entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
@@ -728,7 +747,7 @@ async def entity_neighbors(
                1 AS depth, ARRAY[$1::uuid, f.entity_id] AS path
         FROM facts f
         WHERE f.object_entity_id = $1
-          AND f.validity IN ('active', 'fading'){pred_clause}"""
+          AND f.validity IN ('active', 'fading'){pred_clause}{fact_visibility_clause}"""
         rec_sql = f"""
         SELECT f.entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
                'incoming'::text AS dir,
@@ -737,7 +756,7 @@ async def entity_neighbors(
         JOIN facts f ON f.object_entity_id = n.neighbor_id
         WHERE f.validity IN ('active', 'fading')
           AND f.entity_id != ALL(n.path)
-          AND n.depth < $2{pred_clause}"""
+          AND n.depth < $2{pred_clause}{fact_visibility_clause}"""
     else:  # both
         # PostgreSQL permits only one reference to the recursive CTE in the
         # recursive term. Group the two seed directions, then expand both
@@ -748,14 +767,14 @@ async def entity_neighbors(
                1 AS depth, ARRAY[$1::uuid, f.object_entity_id] AS path
         FROM facts f
         WHERE f.entity_id = $1 AND f.object_entity_id IS NOT NULL
-          AND f.validity IN ('active', 'fading'){pred_clause}
+          AND f.validity IN ('active', 'fading'){pred_clause}{fact_visibility_clause}
         UNION ALL
         SELECT f.entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
                'incoming'::text AS dir,
                1 AS depth, ARRAY[$1::uuid, f.entity_id] AS path
         FROM facts f
         WHERE f.object_entity_id = $1
-          AND f.validity IN ('active', 'fading'){pred_clause}
+          AND f.validity IN ('active', 'fading'){pred_clause}{fact_visibility_clause}
         )"""
         rec_sql = f"""
         SELECT CASE
@@ -781,7 +800,7 @@ async def entity_neighbors(
                   WHEN f.entity_id = n.neighbor_id THEN f.object_entity_id
                   ELSE f.entity_id
               END != ALL(n.path)
-          AND n.depth < $2{pred_clause}"""
+          AND n.depth < $2{pred_clause}{fact_visibility_clause}"""
 
     sql = f"""
     WITH RECURSIVE neighbors AS (

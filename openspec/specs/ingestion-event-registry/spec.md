@@ -81,7 +81,7 @@ Every accepted email ingest SHALL record one deterministic sender-authentication
 
 ### Requirement: Ingestion Event List (Paginated)
 
-The function SHALL return a unified stream of all ingestion events (ingested, filtered, errored) ordered by `received_at DESC, id DESC` using keyset (cursor) pagination, with optional filtering. The function returns a dict with `items`, `next_cursor` (opaque, or null on the last page), and `has_more`. There is no `offset` or `total`. A `sort="cost"` mode orders by `cost_usd DESC NULLS LAST` and pages via an opaque offset-encoding cursor.
+The function SHALL return a unified stream of all ingestion events (ingested, filtered, errored) ordered by `received_at DESC, id DESC` using keyset (cursor) pagination, with optional filtering. The function returns a dict with `items` and `next_cursor` (opaque, or null on the last page); a non-null `next_cursor` means more rows remain. There is no `offset`, `total` or `has_more`. A cursor that cannot be decoded, or has the wrong shape for the requested sort, raises the shared invalid-cursor error (HTTP 400 at the API). A `sort="cost"` mode orders by `cost_usd DESC NULLS LAST` and pages via an opaque offset-encoding cursor.
 
 #### Scenario: Paginated list
 - **WHEN** `ingestion_events_list(pool, limit=20, cursor=None)` is called

@@ -9,7 +9,6 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
 from butlers.modules.approvals.autonomy_suggestions import confirm_suggestion
 from butlers.modules.approvals.autonomy_tracker import (
     check_promotion_threshold,
@@ -18,7 +17,6 @@ from butlers.modules.approvals.autonomy_tracker import (
     record_approval,
 )
 from butlers.modules.base import ToolMeta
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -28,25 +26,21 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["approvals"])
+@pytest.fixture(autouse=True)
+def admitted_standing_rule_boundary(monkeypatch):
+    """Retain this owner's non-auth invariants after explicit D13 admission.
+
+    No factor/nonce/role evidence is claimed here; the dedicated migrated
+    dashboard-stepup owner executes that authority with real signed assertions.
+    """
+    from tests.approval_stepup_helpers import admit_rule_boundary_for_non_auth_owner
+
+    admit_rule_boundary_for_non_auth_owner(monkeypatch)
 
 
 @pytest.fixture
-async def approvals_pool(migrated_db_url: str) -> asyncpg.Pool:
-    pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await pool.execute(
-        "TRUNCATE autonomy_suggestions, autonomy_approval_history, approval_events, "
-        "pending_actions, approval_rules CASCADE"
-    )
-    yield pool
-    await pool.close()
+async def approvals_pool(db) -> asyncpg.Pool:
+    return await db("approvals")
 
 
 class _Action:
@@ -123,3 +117,29 @@ async def test_v2_counts_only_v2_rows_and_pins_the_fingerprinted_args(
     )
     assert rule is not None
     assert rule["arg_constraints"] == {"chat_id": {"type": "exact", "value": "mom_123"}}
+
+
+@pytest.mark.parametrize(("exposed", "recorded"), [(True, 0), (False, 1)])
+async def test_approving_an_exposed_goal_effect_never_counts_toward_promotion(
+    approvals_pool: asyncpg.Pool, exposed: bool, recorded: int
+) -> None:
+    """RFC 0038 D13: only the exposed lineage is excluded; the control still counts."""
+    from butlers.modules.approvals.operations import approve_action
+
+    action_id = uuid.uuid4()
+    await approvals_pool.execute(
+        "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at, goal_id, "
+        "goal_invocation_id, goal_depth, goal_exposed, goal_origin) "
+        "VALUES ($1, 'notify', $2, 'pending', now(), $3, $4, 0, $5, 'owner')",
+        action_id,
+        {"entity_id": "mom", "message": "hi"},
+        uuid.uuid4(),
+        uuid.uuid4(),
+        exposed,
+    )
+    result = await approve_action(approvals_pool, str(action_id), actor_id="owner")
+    assert result.get("status") == "approved"
+    count = await approvals_pool.fetchval(
+        "SELECT count(*) FROM autonomy_approval_history WHERE action_id = $1", action_id
+    )
+    assert count == recorded

@@ -19,7 +19,15 @@ connectors against it. To watch this loop on the live stack instead, use its das
 
 ## Step 2: Launch a Single Butler
 
-You can start a single butler by pointing it at a configuration directory:
+You can start a single butler by pointing it at a configuration directory. Before a fresh
+Chronicler start, prepare its explicitly configured private memory schema once:
+
+```bash
+butlers db prepare-chronicler-memory --dir roster
+```
+
+This applies the core and memory migration chains to `chronicler_mem`. Afterward, ordinary daemon
+startup keeps its existing core → domain → modules order. Other butlers do not need this command.
 
 ```bash
 butlers run --config roster/general
@@ -120,6 +128,7 @@ butlers run --config PATH       Start a single butler from a config directory
 butlers list [--dir PATH]       List discovered butler configurations and status
 butlers init NAME --port PORT   Scaffold a new butler config directory
 butlers dashboard [--port PORT] Start the Dashboard API server
+butlers db prepare-chronicler-memory [--dir PATH]  Prepare Chronicler's private memory schema
 butlers db migrate [--only ...]  Run Alembic migrations for butler schemas
 butlers db provision [--only ...] Provision PostgreSQL databases
 ```

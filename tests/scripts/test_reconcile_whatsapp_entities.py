@@ -11,18 +11,10 @@ import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock
-from urllib.parse import urlsplit, urlunsplit
-from uuid import uuid4
 
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import (
-    CONTACT_ENTITY_MAP,
-    ENTITY_PREDICATE_REGISTRY,
-    ENTITY_REBIND_LOG,
-    PENDING_ACTIONS,
-)
 from butlers.tools.relationship.whatsapp_reconciliation import (
     ContentBlindReconciliationReport,
     PartialApplyError,
@@ -33,27 +25,6 @@ from butlers.tools.relationship.whatsapp_reconciliation import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT_PATH = _REPO_ROOT / "scripts" / "reconcile_whatsapp_entities.py"
-
-
-def _apply_evidence_schema():
-    """Load ``roster/relationship/tests/evidence_schema.py`` by path.
-
-    ``roster/`` is not importable from ``tests/`` on its own, and the rel_034 /
-    rel_035 DDL must not be copied here (same loader as
-    ``tests/integration/test_email_identity_enrichment_db.py``).
-    """
-    schema_path = (
-        Path(__file__).resolve().parents[2]
-        / "roster"
-        / "relationship"
-        / "tests"
-        / "evidence_schema.py"
-    )
-    spec = importlib.util.spec_from_file_location("_relationship_evidence_schema", schema_path)
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.apply_evidence_schema
 
 
 def _load_script():
@@ -298,6 +269,8 @@ def test_script_has_pep_723_metadata_and_no_automatic_runtime_imports() -> None:
     assert "migrations" not in source
 
 
+# uv fetches from PyPI: TLS certificate checks fail under the faketime legs' shifted clock.
+@pytest.mark.faketime_fragile
 def test_pep_723_command_can_import_the_repository_package(tmp_path: Path) -> None:
     """The documented uv invocation must not isolate the script from Butlers."""
     result = subprocess.run(
@@ -315,93 +288,43 @@ def test_pep_723_command_can_import_the_repository_package(tmp_path: Path) -> No
 
 
 @pytest.mark.integration
+@pytest.mark.faketime_fragile
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_pep_723_apply_path_runs_with_only_declared_dependencies(
-    postgres_container,
-) -> None:
+async def test_pep_723_apply_path_runs_with_only_declared_dependencies(fresh_db) -> None:
     """The isolated operator environment must reach and complete the real merge path."""
-    admin_url = postgres_container.get_connection_url().replace(
-        "postgresql+psycopg2://", "postgresql://", 1
+    # Relationship's real layout, keyed like the reconciliation suite's template.
+    database_url = await asyncio.to_thread(
+        fresh_db,
+        "core",
+        "memory",
+        "relationship",
+        "approvals",
+        "chronicler",
+        schemas={
+            "memory": "relationship",
+            "relationship": "relationship",
+            "approvals": "relationship",
+            "chronicler": "chronicler",
+        },
+        revisions={"chronicler": "chronicler_029"},
     )
-    parsed = urlsplit(admin_url)
-    database_name = f"reconciliation_apply_{uuid4().hex[:12]}"
-    database_url = urlunsplit(parsed._replace(path=f"/{database_name}"))
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
 
-    admin = await asyncpg.connect(admin_url)
-    try:
-        await admin.execute(f'CREATE DATABASE "{database_name}"')
-    finally:
-        await admin.close()
+    await asyncio.to_thread(prepare_chronicler_current_head_sync, database_url)
 
     conn = await asyncpg.connect(database_url)
     try:
+        # Hand DDL on purpose: the whatsmeow Go library creates and owns this
+        # table in production; no Butlers migration chain does.
         await conn.execute(
-            """
-            CREATE SCHEMA relationship;
-            CREATE TABLE public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT NOT NULL,
-                entity_type TEXT NOT NULL DEFAULT 'person',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            );
-            CREATE TABLE public.whatsmeow_lid_map (
-                lid TEXT PRIMARY KEY,
-                pn TEXT NOT NULL
-            );
-            CREATE TABLE relationship.entity_facts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject UUID NOT NULL REFERENCES public.entities(id),
-                predicate TEXT NOT NULL,
-                object TEXT NOT NULL,
-                object_kind TEXT NOT NULL,
-                src TEXT NOT NULL,
-                conf FLOAT NOT NULL DEFAULT 1.0,
-                last_seen TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                verified BOOL NOT NULL DEFAULT false,
-                "primary" BOOL,
-                validity TEXT NOT NULL DEFAULT 'active',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            );
-            CREATE TABLE relationship.facts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_id UUID,
-                object_entity_id UUID,
-                predicate TEXT NOT NULL,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                valid_at TIMESTAMPTZ,
-                supersedes_id UUID,
-                scope TEXT NOT NULL DEFAULT 'relationship',
-                validity TEXT NOT NULL DEFAULT 'active'
-            );
-            CREATE TABLE relationship.merge_reviews (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_a UUID NOT NULL REFERENCES public.entities(id),
-                entity_b UUID NOT NULL REFERENCES public.entities(id),
-                shared_facts JSONB NOT NULL DEFAULT '[]'::jsonb,
-                divergent_facts JSONB NOT NULL DEFAULT '[]'::jsonb,
-                outcome TEXT NOT NULL,
-                reviewed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            );
-            """
+            "CREATE TABLE public.whatsmeow_lid_map (lid TEXT PRIMARY KEY, pn TEXT NOT NULL)"
         )
-        await conn.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        await conn.execute(ENTITY_REBIND_LOG.ddl(schema="public"))
-        await conn.execute(CONTACT_ENTITY_MAP.ddl(schema="relationship"))
-        await conn.execute(PENDING_ACTIONS.ddl(schema="relationship"))
-        # rel_034 stores + rel_035 effective-time columns the merge path reads.
-        await _apply_evidence_schema()(conn)
         source_id = await conn.fetchval(
             """
-            INSERT INTO public.entities (canonical_name, metadata)
+            INSERT INTO public.entities (canonical_name, entity_type, metadata)
             VALUES (
                 '6591234567@s.whatsapp.net',
+                'person',
                 '{"unidentified":true,"source_channel":"whatsapp_user_client",'
                 '"source_value":"structured-provider-value"}'::jsonb
             )
@@ -409,7 +332,8 @@ async def test_pep_723_apply_path_runs_with_only_declared_dependencies(
             """
         )
         target_id = await conn.fetchval(
-            "INSERT INTO public.entities (canonical_name) VALUES ('Confirmed target') RETURNING id"
+            "INSERT INTO public.entities (canonical_name, entity_type) "
+            "VALUES ('Confirmed target', 'person') RETURNING id"
         )
         await conn.execute(
             """

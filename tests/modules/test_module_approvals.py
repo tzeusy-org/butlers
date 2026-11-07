@@ -60,6 +60,8 @@ class MockDB:
     """In-memory mock asyncpg pool for approvals tests."""
 
     def __init__(self) -> None:
+        # Stands in for both the butler Database and its pool (``db.pool``).
+        self.pool = self
         self.pending_actions: dict[uuid.UUID, dict[str, Any]] = {}
         self.approval_rules: dict[uuid.UUID, dict[str, Any]] = {}
         self.approval_events: list[dict[str, Any]] = []
@@ -83,6 +85,7 @@ class MockDB:
             if kwargs.get("execution_result") is not None
             else None,
             "approval_rule_id": kwargs.get("approval_rule_id"),
+            "goal_id": kwargs.get("goal_id"),
         }
         self.pending_actions[action_id] = row
         return action_id
@@ -159,7 +162,7 @@ class MockDB:
                 if row is None:
                     return None
                 # Apply status update if present (status is the first str arg)
-                for i, a in enumerate(args):
+                for _i, a in enumerate(args):
                     if isinstance(a, str) and a in (
                         "pending",
                         "approved",
@@ -171,7 +174,7 @@ class MockDB:
                         row["status"] = a
                         break
                 # Apply decision provenance and time if present.
-                for i, a in enumerate(args):
+                for _i, a in enumerate(args):
                     if isinstance(a, str) and (
                         "user:" in a or "human:" in a or a == "system:expiry"
                     ):
@@ -279,10 +282,6 @@ class MockDB:
             return "UPDATE 1"
 
         return "OK"
-
-    @property
-    def pool(self):
-        return self
 
 
 @pytest.fixture
@@ -794,6 +793,52 @@ class TestDispatchApprovedActionById:
         assert "error" in result
 
 
+class TestGoalLineageFence:
+    """A goal-parked effect runs only through the capability broker (bu-m1u7zy.6)."""
+
+    @staticmethod
+    async def _never(tool_name, tool_args):  # pragma: no cover - must not run
+        raise AssertionError("the legacy executor must not run a goal effect")
+
+    async def test_approve_records_the_owner_decision_but_never_executes(
+        self, module: ApprovalsModule, mock_db: MockDB, human_actor: dict[str, Any]
+    ):
+        await module.on_startup(config=None, db=mock_db)
+        module.set_tool_executor(self._never)
+        action_id = mock_db._insert_action(status="pending", goal_id=uuid.uuid4())
+
+        result = await module._approve_action(str(action_id), actor=human_actor)
+
+        assert result["execution_code"] == "goal_effect_requires_broker"
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
+        assert mock_db.pending_actions[action_id]["execution_result"] is None
+
+    async def test_dispatch_by_id_refuses_a_goal_action(
+        self, module: ApprovalsModule, mock_db: MockDB
+    ):
+        await module.on_startup(config=None, db=mock_db)
+        module.set_tool_executor(self._never)
+        action_id = mock_db._insert_action(status="approved", goal_id=uuid.uuid4())
+
+        result = await module._dispatch_approved_action_by_id(str(action_id))
+
+        assert result["error_code"] == "goal_effect_requires_broker"
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
+
+    async def test_executor_refuses_a_goal_action(self, mock_db: MockDB):
+        from butlers.modules.approvals.executor import execute_approved_action
+
+        action_id = mock_db._insert_action(status="approved", goal_id=uuid.uuid4())
+
+        async def never(**kwargs):  # pragma: no cover - must not run
+            raise AssertionError("the legacy executor must not run a goal effect")
+
+        result = await execute_approved_action(mock_db, action_id, "test_tool", {}, tool_fn=never)
+
+        assert (result.success, result.code) == (False, "goal_effect_requires_broker")
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
+
+
 # ---------------------------------------------------------------------------
 # Rule matching
 # ---------------------------------------------------------------------------
@@ -843,6 +888,173 @@ class TestRuleMatching:
         rule = self._make_rule_dict("email_send", {"to": {"type": "any"}}, max_uses=3, use_count=3)
         match = match_rules_from_list("email_send", {"to": "alice@example.com"}, [rule])
         assert match is None
+
+
+class TestStandingReplyTemplateGrammar:
+    """Typed whole-body template grammar for inactive drafts (bu-jv1moa.10).
+
+    REQ-module-approvals-007
+    """
+
+    _TEMPLATE = "Running late, there by {at:time} on {day:date}, about {wait:duration}."
+
+    @pytest.mark.parametrize(
+        ("source", "value", "expected"),
+        [
+            (
+                _TEMPLATE,
+                "Running late, there by 18:30 on 2026-11-03, about 15 minutes.",
+                {"at": "18:30", "day": "2026-11-03", "wait": "15 minutes"},
+            ),
+            ("Paid {total:amount} for {n:count} tickets", "Paid 42.50 for 3 tickets", {}),
+            # Extra and missing fixed text, and wrong slot value types, never match.
+            (_TEMPLATE, "Running late, there by 18:30 on 2026-11-03, about 15 minutes. PS", None),
+            (_TEMPLATE, "there by 18:30 on 2026-11-03, about 15 minutes.", None),
+            (_TEMPLATE, "Running late, there by soon on 2026-11-03, about 15 minutes.", None),
+            (_TEMPLATE, "Running late, there by 18:30 on 2026-13-45, about 15 minutes.", None),
+            ("Paid {total:amount} for {n:count} tickets", "Paid ten for 3 tickets", None),
+            # Non-ASCII digits are not digits here (Arabic-Indic, fullwidth).
+            ("Pay {total:amount} now", "Pay \u0661\u0662\u0663 now", None),
+            ("In {wait:duration} ok", "In \uff15 days ok", None),
+            ("Seats: {n:count}", "Seats: \u0663", None),
+        ],
+    )
+    def test_whole_body_typed_slot_matching(self, source, value, expected):
+        from butlers.modules.approvals.reply_templates import match_template, parse_template
+
+        slots = match_template(parse_template(source), value)
+        if expected is None:
+            assert slots is None
+        else:
+            assert slots is not None
+            assert expected.items() <= slots.items()
+
+    @pytest.mark.parametrize(
+        ("tool_name", "templates", "code"),
+        [
+            ("telegram_send_message", {"text": "See {link:url}"}, "slot_type_forbidden"),
+            ("telegram_send_message", {"text": "Ref {ref:identifier}"}, "slot_type_forbidden"),
+            ("telegram_send_message", {"text": "Note: {body:text}"}, "slot_type_forbidden"),
+            ("telegram_send_message", {"text": "To {who:recipient}"}, "slot_type_forbidden"),
+            ("telegram_send_message", {"text": "{d:date}{t:time} ok"}, "adjacent_slots"),
+            ("telegram_send_message", {"text": "{n:count}"}, "template_without_fixed_text"),
+            ("email_send_message", {"body": "Thanks"}, "content_arguments_mismatch"),
+            ("whatsapp_send_message", {"text": "On my way"}, "personal_account_send_forbidden"),
+            ("telegram_user_send_message", {"text": "Hi"}, "personal_account_send_forbidden"),
+            ("telegram_reply_to_message", {"text": "Hi"}, "unsupported_send_tool"),
+        ],
+    )
+    def test_invalid_drafts_are_refused(self, tool_name, templates, code):
+        from butlers.modules.approvals.reply_templates import (
+            TemplateDraftInvalid,
+            canonicalize_draft,
+        )
+
+        with pytest.raises(TemplateDraftInvalid) as refused:
+            canonicalize_draft(
+                tool_name=tool_name, templates=templates, recipient_entity_ids=[uuid.uuid4()]
+            )
+        assert refused.value.code == code
+
+    async def test_create_replay_is_bound_to_the_original_request_not_current_content(self):
+        """An edited or revoked draft still replays its create; another request conflicts."""
+        from unittest.mock import AsyncMock
+
+        from butlers.modules.approvals.reply_templates import (
+            TemplateDraftConflict,
+            create_template_draft,
+        )
+
+        friend = uuid.uuid4()
+        request = dict(
+            tool_name="telegram_send_message",
+            templates={"text": "Be there at {at:time}"},
+            recipient_entity_ids=[friend],
+            description="eta",
+            idempotency_key="k1",
+        )
+        stored: dict[str, Any] = {}
+
+        async def insert_then_replay(sql, *args):
+            if sql.startswith("INSERT"):
+                if stored:
+                    return None  # ON CONFLICT (idempotency_key) DO NOTHING
+                stored.update(
+                    id=args[0],
+                    tool_name=args[1],
+                    content_templates=args[2],
+                    recipient_entity_ids=args[3],
+                    description=args[4],
+                    create_request_digest=args[6],
+                    status="draft",
+                    revision=1,
+                )
+                return dict(stored)
+            return dict(stored)
+
+        conn = MagicMock()
+        conn.fetch = AsyncMock(return_value=[{"id": friend}])
+        conn.fetchrow = AsyncMock(side_effect=insert_then_replay)
+
+        created = await create_template_draft(conn, **request)
+        # The owner edits, then revokes; a retried create still names that same draft.
+        stored.update(content_templates={"text": [{"text": "Edited"}]}, revision=2)
+        after_edit = await create_template_draft(conn, **request)
+        assert (after_edit["id"], after_edit["revision"]) == (created["id"], 2)
+        stored.update(status="revoked", revision=3)
+        after_revoke = await create_template_draft(conn, **request)
+        assert (after_revoke["id"], after_revoke["status"]) == (created["id"], "revoked")
+
+        with pytest.raises(TemplateDraftConflict) as reused:
+            await create_template_draft(conn, **{**request, "description": "different"})
+        assert reused.value.code == "idempotency_key_reused"
+
+    def test_preview_is_ineligible_for_incomplete_recipients_or_content(self):
+        from butlers.modules.approvals.reply_templates import (
+            canonicalize_draft,
+            preview_template_draft,
+        )
+
+        friend = uuid.uuid4()
+        canonical, recipients = canonicalize_draft(
+            tool_name="telegram_send_message",
+            templates={"text": "Be there at {at:time}"},
+            recipient_entity_ids=[friend],
+        )
+        draft = {
+            "id": uuid.uuid4(),
+            "revision": 1,
+            "status": "draft",
+            "tool_name": "telegram_send_message",
+            "content_templates": canonical,
+            "recipient_entity_ids": recipients,
+        }
+
+        def preview(args, entity):
+            return preview_template_draft(
+                draft,
+                tool_name="telegram_send_message",
+                tool_args=args,
+                resolved_recipient_entity_id=entity,
+            )
+
+        good = preview({"chat_id": "1", "text": "Be there at 18:30"}, friend)
+        assert (good["matched"], good["eligible"], good["authority"]) == (True, True, "none")
+        cases = [
+            ({"chat_id": "1", "text": "Be there at 18:30"}, None, "recipient_unresolved"),
+            ({"chat_id": "1", "text": "Be there at 18:30"}, uuid.uuid4(), "recipient_not_pinned"),
+            ({"chat_id": "1"}, friend, "content_incomplete"),
+            (
+                {"chat_id": "1", "text": "Be there at 18:30", "reply_markup": {}},
+                friend,
+                "unknown_parameters",
+            ),
+        ]
+        for args, entity, reason in cases:
+            result = preview(args, entity)
+            assert result["eligible"] is False
+            assert reason in result["reasons"]
+            assert result["authority"] == "none"
 
 
 # ---------------------------------------------------------------------------

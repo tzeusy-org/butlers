@@ -8,14 +8,10 @@ directly from the relationship butler's PostgreSQL database via asyncpg.
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
-import importlib.util
 import json
 import logging
-import sys
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
@@ -27,10 +23,14 @@ from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerUnreachableError,
+    Db,
     MCPClientManager,
     get_mcp_manager,
 )
+from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.core import entity_graph_edges
+from butlers.core.audit_transaction import audit_transaction
+from butlers.core.goal_lineage import taint_insert
 from butlers.credential_store import assert_entity_info_secured
 from butlers.entity_facts_channels import (
     TELEGRAM_HANDLE_PREFIX as _EF_TELEGRAM_HANDLE_PREFIX,
@@ -44,112 +44,106 @@ from butlers.entity_facts_channels import (
 from butlers.entity_facts_channels import (
     entity_facts_channels_by_entity as _entity_facts_channels_by_entity_shared,
 )
+from butlers.roster_imports import roster_module
 from butlers.spotify_credentials import SPOTIFY_MANAGED_ENTITY_INFO_TYPES
 
 _GUIDED_ENTITY_INFO_ONLY_TYPES = frozenset({"telegram_api_hash"})
 _CONNECTOR_MANAGED_ENTITY_INFO_TYPES = SPOTIFY_MANAGED_ENTITY_INFO_TYPES
 
 # Load local models module
-_api_dir = Path(__file__).parent
-_models_path = _api_dir / "models.py"
-if _models_path.exists():
-    spec = importlib.util.spec_from_file_location("relationship_api_models_internal", _models_path)
-    if spec is not None and spec.loader is not None:
-        _models_module = importlib.util.module_from_spec(spec)
-        sys.modules["relationship_api_models_internal"] = _models_module
-        spec.loader.exec_module(_models_module)
+_models_module = roster_module("relationship", "api/models", api_source=__file__)
 
-        # Import models from the loaded module
-        Group = _models_module.Group
-        GroupListResponse = _models_module.GroupListResponse
-        Label = _models_module.Label
-        UpcomingDate = _models_module.UpcomingDate
-        ContactInfoEntry = _models_module.ContactInfoEntry
-        OwnerSetupStatus = _models_module.OwnerSetupStatus
-        OwnerEntityInfoResponse = _models_module.OwnerEntityInfoResponse
-        EntityInfoEntry = _models_module.EntityInfoEntry
-        EntityDetail = _models_module.EntityDetail
-        CreateEntityInfoRequest = _models_module.CreateEntityInfoRequest
-        CreateEntityInfoResponse = _models_module.CreateEntityInfoResponse
-        UpdateEntityInfoRequest = _models_module.UpdateEntityInfoRequest
-        DunbarEntry = _models_module.DunbarEntry
-        DunbarRankingResponse = _models_module.DunbarRankingResponse
-        OverdueContact = _models_module.OverdueContact
-        OverdueContactsResponse = _models_module.OverdueContactsResponse
-        PendingDebrief = _models_module.PendingDebrief
-        PendingDebriefsResponse = _models_module.PendingDebriefsResponse
-        EntityNote = _models_module.EntityNote
-        EntityInteraction = _models_module.EntityInteraction
-        EntityGift = _models_module.EntityGift
-        EntityLoan = _models_module.EntityLoan
-        EntityTimelineItem = _models_module.EntityTimelineItem
-        EntityCadenceResponse = _models_module.EntityCadenceResponse
-        CreateEntityNoteRequest = _models_module.CreateEntityNoteRequest
-        CreateEntityInteractionRequest = _models_module.CreateEntityInteractionRequest
-        CreateEntityGiftRequest = _models_module.CreateEntityGiftRequest
-        LinkedContactSummary = _models_module.LinkedContactSummary
-        EntityImportantDate = _models_module.EntityImportantDate
-        DunbarTierOverrideRequest = _models_module.DunbarTierOverrideRequest
-        DunbarTierOverrideResponse = _models_module.DunbarTierOverrideResponse
-        MessageThreadSummary = _models_module.MessageThreadSummary
-        EntitySummary = _models_module.EntitySummary
-        EntityListResponse = _models_module.EntityListResponse
-        NeighbourEntry = _models_module.NeighbourEntry
-        NeighboursResponse = _models_module.NeighboursResponse
-        HaloEdge = _models_module.HaloEdge
-        HaloSatellite = _models_module.HaloSatellite
-        HaloResponse = _models_module.HaloResponse
-        SearchResultEntry = _models_module.SearchResultEntry
-        SearchResponse = _models_module.SearchResponse
-        QueueEntry = _models_module.QueueEntry
-        QueueResponse = _models_module.QueueResponse
-        PredicateTab = _models_module.PredicateTab
-        ConcentrationTarget = _models_module.ConcentrationTarget
-        ConcentrationEntry = _models_module.ConcentrationEntry
-        ConcentrationRollup = _models_module.ConcentrationRollup
-        ConcentrationResponse = _models_module.ConcentrationResponse
-        PromoteEntityRequest = _models_module.PromoteEntityRequest
-        ContactFact = _models_module.ContactFact
-        ContactsResponse = _models_module.ContactsResponse
-        AddContactRequest = _models_module.AddContactRequest
-        AddContactResponse = _models_module.AddContactResponse
-        DeleteContactResponse = _models_module.DeleteContactResponse
-        MarkContactVerifiedResponse = _models_module.MarkContactVerifiedResponse
-        SetPreferredChannelRequest = _models_module.SetPreferredChannelRequest
-        SetPreferredChannelResponse = _models_module.SetPreferredChannelResponse
-        ClearPreferredChannelResponse = _models_module.ClearPreferredChannelResponse
-        UpdateContactRequest = _models_module.UpdateContactRequest
-        UpdateContactResponse = _models_module.UpdateContactResponse
-        MergeEntitiesRequest = _models_module.MergeEntitiesRequest
-        MergeEntitiesResponse = _models_module.MergeEntitiesResponse
-        DismissQueueRequest = _models_module.DismissQueueRequest
-        DismissQueueItemResult = _models_module.DismissQueueItemResult
-        DismissQueueResponse = _models_module.DismissQueueResponse
-        ActivityEntry = _models_module.ActivityEntry
-        ActivityResponse = _models_module.ActivityResponse
-        EntityFactEntry = _models_module.EntityFactEntry
-        EntityFactsResponse = _models_module.EntityFactsResponse
-        ActivityBin = _models_module.ActivityBin
-        ActivityBinsResponse = _models_module.ActivityBinsResponse
-        ViewMarkResponse = _models_module.ViewMarkResponse
-        DeltaFactEntry = _models_module.DeltaFactEntry
-        DeltaFactsResponse = _models_module.DeltaFactsResponse
-        CoreDateEntry = _models_module.CoreDateEntry
-        CoreDatesResponse = _models_module.CoreDatesResponse
-        CompareRequest = _models_module.CompareRequest
-        CompareFact = _models_module.CompareFact
-        CompareEntitySummary = _models_module.CompareEntitySummary
-        CompareEntityBlock = _models_module.CompareEntityBlock
-        CompareResponse = _models_module.CompareResponse
-        DismissPairRequest = _models_module.DismissPairRequest
-        DismissPairResponse = _models_module.DismissPairResponse
-        CreateLabelRequest = _models_module.CreateLabelRequest
-        CreateLabelResponse = _models_module.CreateLabelResponse
-        AssignGroupLabelResponse = _models_module.AssignGroupLabelResponse
-        RemoveGroupLabelResponse = _models_module.RemoveGroupLabelResponse
-        GroupLabelsResponse = _models_module.GroupLabelsResponse
-        GroupMember = _models_module.GroupMember
-        GroupMembersResponse = _models_module.GroupMembersResponse
+Group = _models_module.Group
+GroupListResponse = _models_module.GroupListResponse
+Label = _models_module.Label
+UpcomingDate = _models_module.UpcomingDate
+ContactInfoEntry = _models_module.ContactInfoEntry
+OwnerSetupStatus = _models_module.OwnerSetupStatus
+OwnerEntityInfoResponse = _models_module.OwnerEntityInfoResponse
+EntityInfoEntry = _models_module.EntityInfoEntry
+EntityDetail = _models_module.EntityDetail
+CreateEntityInfoRequest = _models_module.CreateEntityInfoRequest
+CreateEntityInfoResponse = _models_module.CreateEntityInfoResponse
+UpdateEntityInfoRequest = _models_module.UpdateEntityInfoRequest
+DunbarEntry = _models_module.DunbarEntry
+DunbarRankingResponse = _models_module.DunbarRankingResponse
+OverdueContact = _models_module.OverdueContact
+OverdueContactsResponse = _models_module.OverdueContactsResponse
+PendingDebrief = _models_module.PendingDebrief
+PendingDebriefsResponse = _models_module.PendingDebriefsResponse
+EntityNote = _models_module.EntityNote
+EntityInteraction = _models_module.EntityInteraction
+EntityGift = _models_module.EntityGift
+EntityLoan = _models_module.EntityLoan
+EntityTimelineItem = _models_module.EntityTimelineItem
+EntityCadenceResponse = _models_module.EntityCadenceResponse
+CreateEntityNoteRequest = _models_module.CreateEntityNoteRequest
+CreateEntityInteractionRequest = _models_module.CreateEntityInteractionRequest
+CreateEntityGiftRequest = _models_module.CreateEntityGiftRequest
+LinkedContactSummary = _models_module.LinkedContactSummary
+EntityImportantDate = _models_module.EntityImportantDate
+DunbarTierOverrideRequest = _models_module.DunbarTierOverrideRequest
+DunbarTierOverrideResponse = _models_module.DunbarTierOverrideResponse
+MessageThreadSummary = _models_module.MessageThreadSummary
+EntitySummary = _models_module.EntitySummary
+EntityListResponse = _models_module.EntityListResponse
+NeighbourEntry = _models_module.NeighbourEntry
+NeighboursResponse = _models_module.NeighboursResponse
+HaloEdge = _models_module.HaloEdge
+HaloSatellite = _models_module.HaloSatellite
+HaloResponse = _models_module.HaloResponse
+SearchResultEntry = _models_module.SearchResultEntry
+SearchResponse = _models_module.SearchResponse
+QueueEntry = _models_module.QueueEntry
+QueueResponse = _models_module.QueueResponse
+PredicateTab = _models_module.PredicateTab
+ConcentrationTarget = _models_module.ConcentrationTarget
+ConcentrationEntry = _models_module.ConcentrationEntry
+ConcentrationRollup = _models_module.ConcentrationRollup
+ConcentrationResponse = _models_module.ConcentrationResponse
+PromoteEntityRequest = _models_module.PromoteEntityRequest
+ContactFact = _models_module.ContactFact
+ContactsResponse = _models_module.ContactsResponse
+AddContactRequest = _models_module.AddContactRequest
+AddContactResponse = _models_module.AddContactResponse
+DeleteContactResponse = _models_module.DeleteContactResponse
+MarkContactVerifiedResponse = _models_module.MarkContactVerifiedResponse
+SetPreferredChannelRequest = _models_module.SetPreferredChannelRequest
+SetPreferredChannelResponse = _models_module.SetPreferredChannelResponse
+ClearPreferredChannelResponse = _models_module.ClearPreferredChannelResponse
+UpdateContactRequest = _models_module.UpdateContactRequest
+UpdateContactResponse = _models_module.UpdateContactResponse
+MergeEntitiesRequest = _models_module.MergeEntitiesRequest
+MergeEntitiesResponse = _models_module.MergeEntitiesResponse
+DismissQueueRequest = _models_module.DismissQueueRequest
+DismissQueueItemResult = _models_module.DismissQueueItemResult
+DismissQueueResponse = _models_module.DismissQueueResponse
+ActivityEntry = _models_module.ActivityEntry
+ActivityResponse = _models_module.ActivityResponse
+EntityFactEntry = _models_module.EntityFactEntry
+ActivityBin = _models_module.ActivityBin
+ActivityBinsResponse = _models_module.ActivityBinsResponse
+EntityCommitmentItem = _models_module.EntityCommitmentItem
+EntityCommitmentsResponse = _models_module.EntityCommitmentsResponse
+ViewMarkResponse = _models_module.ViewMarkResponse
+DeltaFactEntry = _models_module.DeltaFactEntry
+DeltaFactsResponse = _models_module.DeltaFactsResponse
+CoreDateEntry = _models_module.CoreDateEntry
+CoreDatesResponse = _models_module.CoreDatesResponse
+CompareRequest = _models_module.CompareRequest
+CompareFact = _models_module.CompareFact
+CompareEntitySummary = _models_module.CompareEntitySummary
+CompareEntityBlock = _models_module.CompareEntityBlock
+CompareResponse = _models_module.CompareResponse
+DismissPairRequest = _models_module.DismissPairRequest
+DismissPairResponse = _models_module.DismissPairResponse
+CreateLabelRequest = _models_module.CreateLabelRequest
+CreateLabelResponse = _models_module.CreateLabelResponse
+AssignGroupLabelResponse = _models_module.AssignGroupLabelResponse
+RemoveGroupLabelResponse = _models_module.RemoveGroupLabelResponse
+GroupLabelsResponse = _models_module.GroupLabelsResponse
+GroupMember = _models_module.GroupMember
+GroupMembersResponse = _models_module.GroupMembersResponse
 
 logger = logging.getLogger(__name__)
 
@@ -168,11 +162,6 @@ async def merge_entity_pair(pool, *, source_entity_id: UUID, target_entity_id: U
     )
 
 
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
-
 def _pool(db: DatabaseManager):
     """Retrieve the relationship butler's connection pool.
 
@@ -180,11 +169,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Relationship butler database is not available",
-        )
+        ) from exc
 
 
 async def _table_columns(pool, table_name: str) -> set[str]:
@@ -446,7 +435,8 @@ def _first_ef_value(
 
 @router.get("/owner/setup-status", response_model=OwnerSetupStatus)
 async def get_owner_setup_status(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> OwnerSetupStatus:
     """Return the owner entity id, or ``None`` before an owner exists.
 
@@ -474,7 +464,8 @@ async def get_owner_setup_status(
 
 @router.get("/owner/entity-info", response_model=OwnerEntityInfoResponse)
 async def get_owner_entity_info(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> OwnerEntityInfoResponse:
     """Return all entity_info entries for the owner entity.
 
@@ -540,7 +531,8 @@ async def get_owner_entity_info(
 async def list_groups(
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> GroupListResponse:
     """List all groups with member counts and assigned labels, paginated."""
     pool = _pool(db)
@@ -613,7 +605,8 @@ async def list_groups(
 @router.get("/groups/{group_id}", response_model=Group)
 async def get_group(
     group_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Group:
     """Get a group with its member count."""
     pool = _pool(db)
@@ -675,7 +668,8 @@ async def get_group(
 @router.get("/groups/{group_id}/members", response_model=GroupMembersResponse)
 async def get_group_members(
     group_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> GroupMembersResponse:
     """Return the member entities of a group, for the Circles lens roster.
 
@@ -728,7 +722,8 @@ async def get_group_members(
 
 @router.get("/labels", response_model=list[Label])
 async def list_labels(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[Label]:
     """List all labels."""
     pool = _pool(db)
@@ -744,7 +739,8 @@ async def list_labels(
 @router.post("/labels", response_model=CreateLabelResponse, status_code=201)
 async def create_label(
     body: CreateLabelRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> CreateLabelResponse:
     """Create a new label (name must be unique)."""
     pool = _pool(db)
@@ -776,7 +772,8 @@ async def create_label(
 @router.get("/groups/{group_id}/labels", response_model=GroupLabelsResponse)
 async def get_group_labels(
     group_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> GroupLabelsResponse:
     """List all labels assigned to a group."""
     pool = _pool(db)
@@ -816,7 +813,8 @@ async def get_group_labels(
 async def assign_group_label(
     group_id: UUID,
     label_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> AssignGroupLabelResponse:
     """Assign a label to a group (idempotent — safe to call if already assigned)."""
     pool = _pool(db)
@@ -855,7 +853,8 @@ async def assign_group_label(
 async def remove_group_label(
     group_id: UUID,
     label_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> RemoveGroupLabelResponse:
     """Remove a label from a group."""
     pool = _pool(db)
@@ -876,7 +875,8 @@ async def remove_group_label(
 @router.get("/upcoming-dates", response_model=list[UpcomingDate])
 async def list_upcoming_dates(
     days: int = Query(30, ge=1, le=365, description="Look-ahead window in days"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[UpcomingDate]:
     """List upcoming important dates within the next N days (default 30).
 
@@ -961,7 +961,8 @@ _SCORE_PREDICATE = 30
 async def search_entities(
     q: str = Query(..., description="Search string (required)"),
     limit: int = Query(_ENTITY_SEARCH_DEFAULT_LIMIT, ge=1, le=_ENTITY_SEARCH_MAX_LIMIT),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> SearchResponse:
     """Search entities using deterministic rule-based ranking.
 
@@ -1229,7 +1230,8 @@ async def list_entities(
     ),
     limit: int = Query(_ENTITY_LIST_DEFAULT_LIMIT, ge=1, le=_ENTITY_LIST_MAX_LIMIT),
     offset: int = Query(0, ge=0),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntityListResponse:
     """List entities from ``public.entities`` with optional filter chips and pagination.
 
@@ -1523,7 +1525,8 @@ async def list_entities(
 @router.post("/entities", response_model=EntitySummary, status_code=201)
 async def promote_entity(
     body: PromoteEntityRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntitySummary:
     """Promote an unidentified entity placeholder to a canonical entity, or create a new one.
 
@@ -1550,6 +1553,7 @@ async def promote_entity(
     """
     from butlers.tools.relationship.relationship_assert_fact import (
         _lock_fact_entities_batch,
+        _lock_fact_slots_batch,
         relationship_assert_fact,
         validate_fact_fields_or_raise,
     )
@@ -1581,7 +1585,7 @@ async def promote_entity(
             raise HTTPException(
                 status_code=422,
                 detail={"code": "invalid_predicate", "message": str(exc)},
-            )
+            ) from exc
 
     # Every existing entity row this request writes against: the promoted
     # subject and every entity object. A freshly created subject is uncommitted,
@@ -1618,23 +1622,19 @@ async def promote_entity(
                 if row is None:
                     raise HTTPException(status_code=404, detail="Entity not found")
 
-                # Merge metadata: remove the 'unidentified' key and 'duplicate_candidate' key.
-                existing_meta: dict = dict(row["metadata"]) if row["metadata"] else {}
-                existing_meta.pop("unidentified", None)
-                existing_meta.pop("duplicate_candidate", None)
-
-                if body.roles is not None:
-                    new_roles = body.roles
-                else:
-                    new_roles = list(row["roles"]) if row["roles"] else []
-
                 updated = await conn.fetchrow(
                     """
                     UPDATE public.entities
                     SET canonical_name = $2,
                         entity_type    = $3,
-                        roles          = $4,
-                        metadata       = $5,
+                        -- No roles in the request leaves them as the row holds them at the
+                        -- UPDATE: the batch lock is FOR KEY SHARE, so a roles UPDATE can
+                        -- commit between the read above and this write.
+                        roles          = COALESCE($4::text[], roles),
+                        -- Removed in place: the batch lock above is FOR KEY SHARE, so a
+                        -- plain metadata UPDATE can commit after the read.
+                        metadata       = COALESCE(metadata, '{}'::jsonb)
+                                         - ARRAY['unidentified', 'duplicate_candidate'],
                         updated_at     = now()
                     WHERE id = $1
                     RETURNING id, canonical_name, entity_type, aliases, roles, metadata,
@@ -1643,8 +1643,7 @@ async def promote_entity(
                     body.entity_id,
                     body.canonical_name,
                     body.entity_type,
-                    new_roles,
-                    existing_meta,
+                    body.roles,
                 )
                 entity_id = updated["id"]
                 result_row = updated
@@ -1667,6 +1666,13 @@ async def promote_entity(
                 )
                 entity_id = result_row["id"]
 
+            # Each writer call below takes only its own slot, so take the whole request's
+            # slots once, or a merge or another promote sharing two of them could cross
+            # this body's order.
+            await _lock_fact_slots_batch(
+                conn, entity_id, ((fact.predicate, fact.object) for fact in body.initial_facts)
+            )
+
             # Assert any initial_facts via the central writer (inside the same transaction).
             for fact in body.initial_facts:
                 try:
@@ -1685,7 +1691,7 @@ async def promote_entity(
                     raise HTTPException(
                         status_code=422,
                         detail={"code": "invalid_predicate", "message": str(exc)},
-                    )
+                    ) from exc
 
             # Fetch aggregated facts stats inside the same transaction for read-after-write
             # consistency (avoids an extra pool round-trip and ensures the just-written facts
@@ -1927,7 +1933,8 @@ async def _classify_entity_state(pool, entity_id: UUID) -> tuple[str, dict | Non
 async def get_entities_queue(
     limit: int = Query(_QUEUE_DEFAULT_LIMIT, ge=1, le=_QUEUE_MAX_LIMIT),
     offset: int = Query(0, ge=0),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> QueueResponse:
     """Return the curation queue — entities needing operator attention.
 
@@ -2195,7 +2202,8 @@ async def get_entities_queue(
 async def dismiss_queue_entity(
     body: DismissQueueRequest,
     fastapi_response: Response,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> DismissQueueResponse:
     """Dismiss a single entity from the curation queue.
 
@@ -2258,7 +2266,7 @@ async def dismiss_queue_entity(
         raise HTTPException(
             status_code=422,
             detail={"code": "invalid_predicate", "message": str(exc)},
-        )
+        ) from exc
 
     item = DismissQueueItemResult(
         entity_id=body.entity_id,
@@ -2293,7 +2301,8 @@ async def get_entities_concentration(
             "(or ``'knows'`` when no relational data exists)."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConcentrationResponse:
     """Return a balance-sheet of weight aggregation for a relational predicate.
 
@@ -2557,7 +2566,8 @@ async def get_entities_concentration(
 @router.get("/entities/{entity_id}", response_model=EntityDetail)
 async def get_entity(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntityDetail:
     """Get full entity detail including entity_info entries and state classification.
 
@@ -2647,7 +2657,8 @@ async def get_entity(
 async def create_entity_info(
     entity_id: UUID,
     request: CreateEntityInfoRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> CreateEntityInfoResponse:
     """Add an entity_info entry to an entity."""
     if request.type in _GUIDED_ENTITY_INFO_ONLY_TYPES:
@@ -2695,13 +2706,13 @@ async def create_entity_info(
             request.is_primary,
             request.secured,
         )
-    except asyncpg.UniqueViolationError:
+    except asyncpg.UniqueViolationError as exc:
         raise HTTPException(
             status_code=409,
             detail=(
                 f"An entity_info entry with type '{request.type}' already exists for this entity."
             ),
-        )
+        ) from exc
 
     return CreateEntityInfoResponse(
         id=row["id"],
@@ -2727,7 +2738,8 @@ async def patch_entity_info(
     entity_id: UUID,
     info_id: UUID,
     request: UpdateEntityInfoRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntityInfoEntry:
     """Update an entity_info entry (type, value, label, is_primary)."""
     if request.type in _GUIDED_ENTITY_INFO_ONLY_TYPES:
@@ -2792,11 +2804,11 @@ async def patch_entity_info(
                 f"UPDATE public.entity_info SET {set_clause} WHERE id = ${idx}",
                 *args,
             )
-        except asyncpg.UniqueViolationError:
+        except asyncpg.UniqueViolationError as exc:
             raise HTTPException(
                 status_code=409,
                 detail="An entity_info entry with this type already exists for this entity.",
-            )
+            ) from exc
 
     updated = await pool.fetchrow(
         """SELECT id, type, value, label, is_primary, secured
@@ -2824,7 +2836,8 @@ async def patch_entity_info(
 async def delete_entity_info(
     entity_id: UUID,
     info_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Delete a single entity_info entry."""
     pool = _pool(db)
@@ -2853,7 +2866,8 @@ async def reveal_entity_secret(
     entity_id: UUID,
     info_id: UUID,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict[str, Any]:
     """Reveal the actual value of a secured entity_info entry.
 
@@ -2994,7 +3008,8 @@ async def list_entity_notes(
     entity_id: UUID,
     limit: int = Query(_ENTITY_TAB_DEFAULT_LIMIT, ge=1, le=_ENTITY_TAB_MAX_LIMIT),
     offset: int = Query(0, ge=0),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[EntityNote]:
     """List contact_note facts for an entity, ordered by valid_at DESC.
 
@@ -3090,7 +3105,8 @@ def _invalid_input_response(code: str, exc: ValueError) -> HTTPException:
 async def create_entity_note(
     entity_id: UUID,
     body: CreateEntityNoteRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntityNote:
     """Record a note for an entity.
 
@@ -3146,7 +3162,8 @@ async def list_entity_interactions(
     entity_id: UUID,
     limit: int = Query(_ENTITY_TAB_DEFAULT_LIMIT, ge=1, le=_ENTITY_TAB_MAX_LIMIT),
     offset: int = Query(0, ge=0),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[EntityInteraction]:
     """List interaction facts for an entity (all interaction_* subtypes), ordered by valid_at DESC.
 
@@ -3209,7 +3226,8 @@ async def list_entity_interactions(
 async def create_entity_interaction(
     entity_id: UUID,
     body: CreateEntityInteractionRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntityInteraction:
     """Log an interaction with an entity.
 
@@ -3275,7 +3293,8 @@ async def list_entity_gifts(
     entity_id: UUID,
     limit: int = Query(_ENTITY_TAB_DEFAULT_LIMIT, ge=1, le=_ENTITY_TAB_MAX_LIMIT),
     offset: int = Query(0, ge=0),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[EntityGift]:
     """List gift facts for an entity, ordered by created_at DESC.
 
@@ -3333,7 +3352,8 @@ async def list_entity_gifts(
 async def create_entity_gift(
     entity_id: UUID,
     body: CreateEntityGiftRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntityGift:
     """Capture a gift idea for an entity.
 
@@ -3389,7 +3409,8 @@ async def list_entity_loans(
     entity_id: UUID,
     limit: int = Query(_ENTITY_TAB_DEFAULT_LIMIT, ge=1, le=_ENTITY_TAB_MAX_LIMIT),
     offset: int = Query(0, ge=0),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[EntityLoan]:
     """List loan facts for an entity, ordered by created_at DESC.
 
@@ -3472,7 +3493,8 @@ async def list_entity_timeline(
     entity_id: UUID,
     limit: int = Query(_ENTITY_TAB_DEFAULT_LIMIT, ge=1, le=_ENTITY_TAB_MAX_LIMIT),
     offset: int = Query(0, ge=0),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[EntityTimelineItem]:
     """Unified timeline for an entity across all six predicate families.
 
@@ -3536,7 +3558,8 @@ async def get_entity_cadence(
     entity_id: UUID,
     window_days: int = Query(_CADENCE_DEFAULT_WINDOW_DAYS, ge=1, le=365),
     limit: int = Query(_CADENCE_DEFAULT_LIMIT, ge=1, le=_CADENCE_MAX_LIMIT),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntityCadenceResponse:
     """Return evidence for the interaction count in one rolling window.
 
@@ -3589,7 +3612,8 @@ async def get_entity_cadence(
 @router.get("/entities/{entity_id}/linked-contacts", response_model=list[LinkedContactSummary])
 async def list_entity_linked_contacts(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[LinkedContactSummary]:
     """List all contacts whose entity_id matches the given entity UUID.
 
@@ -3777,7 +3801,8 @@ async def list_entity_linked_contacts(
 async def list_entity_message_threads(
     entity_id: UUID,
     limit: int = Query(20, ge=1, le=100),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[MessageThreadSummary]:
     """Aggregate message activity for an entity, grouped by channel + thread.
 
@@ -3915,7 +3940,8 @@ async def list_entity_message_threads(
 )
 async def list_entity_important_dates(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[EntityImportantDate]:
     """Return all important_dates for the entity's linked contacts.
 
@@ -3994,7 +4020,8 @@ async def list_entity_important_dates(
 async def patch_entity_dunbar_tier(
     entity_id: UUID,
     body: DunbarTierOverrideRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> DunbarTierOverrideResponse:
     """Pin or clear an entity's Dunbar tier.
 
@@ -4059,6 +4086,12 @@ async def patch_entity_dunbar_tier(
     entity_id_str = str(entity_id)
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Lock order: the entity before its facts. The insert below takes it for
+            # its foreign key, which after the retraction is a cycle with a forget.
+            if body.tier is not None:
+                await conn.execute(
+                    "SELECT id FROM public.entities WHERE id = $1 FOR KEY SHARE", entity_id
+                )
             # Retract any existing active override for this entity.
             await conn.execute(
                 """
@@ -4072,8 +4105,9 @@ async def patch_entity_dunbar_tier(
                 entity_id_str,
             )
             if body.tier is not None:
+                taint = taint_insert(4)  # empty: a dashboard write is never exposed
                 await conn.execute(
-                    """
+                    f"""
                     INSERT INTO facts (
                         subject,
                         predicate,
@@ -4081,15 +4115,16 @@ async def patch_entity_dunbar_tier(
                         scope,
                         entity_id,
                         validity,
-                        permanence
+                        permanence{taint.columns}
                     ) VALUES (
                         $1, 'dunbar_tier_override', $2, 'relationship',
-                        $3::uuid, 'active', 'permanent'
+                        $3::uuid, 'active', 'permanent'{taint.placeholders}
                     )
                     """,
                     f"entity:{entity_id_str}",
                     str(body.tier),
                     entity_id_str,
+                    *taint.values,
                 )
 
     if body.tier is None:
@@ -4128,7 +4163,8 @@ async def get_plex_halo(
         le=60,
         description="Max satellites returned per entity type arc (top-N by last_seen).",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> HaloResponse:
     """Return the owner Plex's dimension halo: non-person entities by type.
 
@@ -4278,7 +4314,8 @@ async def list_entity_neighbours(
         description="When rank is set, max neighbours returned per predicate group "
         "(top-N by weight). Groups above this carry a remainder count.",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> NeighboursResponse:
     """Return relational triples grouped by predicate for both directions.
 
@@ -4594,7 +4631,8 @@ def _row_to_contact_fact(r: Any) -> Any:
 )
 async def list_entity_contacts(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ContactsResponse:
     """List active contact-fact triples for an entity.
 
@@ -4682,7 +4720,8 @@ async def add_entity_contact(
     entity_id: UUID,
     body: AddContactRequest,
     fastapi_response: Response,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> AddContactResponse:
     """Add (or update) a contact-fact triple for an entity.
 
@@ -4806,7 +4845,8 @@ async def delete_entity_contact(
     entity_id: UUID,
     predicate: str,
     value_hash: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> DeleteContactResponse:
     """Retract (soft-delete) an active contact-fact triple.
 
@@ -4872,7 +4912,8 @@ async def verify_entity_contact(
     entity_id: UUID,
     predicate: str,
     value_hash: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> MarkContactVerifiedResponse:
     """Mark an active contact-fact triple as owner-verified.
 
@@ -4945,7 +4986,8 @@ async def update_entity_contact(
     value_hash: str,
     body: UpdateContactRequest,
     fastapi_response: Response,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> UpdateContactResponse:
     """Edit-in-place a contact-fact triple: retract old value, assert new value.
 
@@ -5186,7 +5228,8 @@ async def update_entity_contact(
 async def set_entity_preferred_channel(
     entity_id: UUID,
     body: SetPreferredChannelRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> SetPreferredChannelResponse:
     """Set the entity's preferred outbound channel via the ``prefers-channel`` fact.
 
@@ -5233,7 +5276,8 @@ async def set_entity_preferred_channel(
 )
 async def clear_entity_preferred_channel(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ClearPreferredChannelResponse:
     """Clear the entity's preferred channel by retracting any active ``prefers-channel`` fact.
 
@@ -5261,30 +5305,6 @@ async def clear_entity_preferred_channel(
 # ---------------------------------------------------------------------------
 # GET /entities/{entity_id}/facts — per-fact provenance grid (bu-mg4dk)
 # ---------------------------------------------------------------------------
-
-
-def _encode_facts_cursor(created_at: datetime, fact_id: UUID | str) -> str:
-    """Encode a ``(created_at, id)`` keyset position into an opaque cursor.
-
-    Base64url-encoded JSON so it is safe as a query parameter.  Mirrors the
-    repo cursor convention (``src/butlers/core/ingestion_events.py``) for the
-    facts drill's ``created_at DESC, id DESC`` keyset.
-    """
-    payload = {"ca": created_at.isoformat(), "id": str(fact_id)}
-    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
-
-
-def _decode_facts_cursor(cursor: str) -> tuple[datetime, str]:
-    """Decode an opaque facts cursor back to ``(created_at, id)``.
-
-    Raises ``ValueError`` if the cursor is malformed (caller maps to HTTP 422).
-    """
-    try:
-        raw = base64.urlsafe_b64decode(cursor.encode())
-        payload = json.loads(raw)
-        return datetime.fromisoformat(payload["ca"]), str(payload["id"])
-    except (KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Invalid cursor: {exc}") from exc
 
 
 async def _fetch_narrative_drill_facts(
@@ -5345,7 +5365,7 @@ async def _fetch_narrative_drill_facts(
 
 @router.get(
     "/entities/{entity_id}/facts",
-    response_model=EntityFactsResponse,
+    response_model=Page[EntityFactEntry],
 )
 async def list_entity_facts(
     entity_id: UUID,
@@ -5364,8 +5384,9 @@ async def list_entity_facts(
         None,
         description="Opaque keyset cursor from a prior response's next_cursor.",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> EntityFactsResponse:
+    *,
+    db: Db,
+) -> Page[EntityFactEntry]:
     """Drill endpoint: fact-level read for an entity with full provenance.
 
     The canonical fact-level read for the Workbench grid and Editorial
@@ -5387,15 +5408,14 @@ async def list_entity_facts(
     ``store`` of origin.
 
     Pagination is keyset (cursor) per the repo convention — ordered
-    ``created_at DESC, id DESC`` with the envelope ``{items, next_cursor,
-    has_more}`` (no ``total``).  ``store=all`` paginates the identity store;
+    ``created_at DESC, id DESC`` with the ``Page`` envelope ``{items, next_cursor,
+    limit}`` (no ``total``).  ``store=all`` paginates the identity store;
     narrative rows are appended to the page (they are the Workbench grid's
     secondary layer and are not independently cursored in v1).
 
     Owner-only authz gate (Clause 12b): HTTP 403 ``{"code": "owner_required"}``
     if no owner entity is registered.  Returns 404 if the entity does not exist.
-    Returns ``{"items": [], "next_cursor": null, "has_more": false}`` when no
-    facts match.
+    Returns ``{"items": [], "next_cursor": null, "limit": N}`` when no facts match.
     """
     from butlers.tools.relationship.fact_identity_decisions import (
         attribution_response,
@@ -5412,12 +5432,11 @@ async def list_entity_facts(
     # Entity existence check.
     await _assert_entity_exists(pool, entity_id)
 
-    keyset: tuple[datetime, str] | None = None
-    if cursor is not None:
-        try:
-            keyset = _decode_facts_cursor(cursor)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    keyset = (
+        decode_cursor(cursor, (datetime, UUID), scope="relationship-facts")
+        if cursor is not None
+        else None
+    )
 
     # --- Identity store (relationship.entity_facts) -----------------------
     # Keyset over (created_at, id): page one row past the limit to detect more.
@@ -5466,7 +5485,7 @@ async def list_entity_facts(
     next_cursor: str | None = None
     if has_more and page_rows:
         last = page_rows[-1]
-        next_cursor = _encode_facts_cursor(last["created_at"], last["id"])
+        next_cursor = encode_cursor((last["created_at"], last["id"]), scope="relationship-facts")
 
     items = [
         EntityFactEntry(
@@ -5526,7 +5545,7 @@ async def list_entity_facts(
             for r in narrative_rows
         )
 
-    return EntityFactsResponse(items=items, next_cursor=next_cursor, has_more=has_more)
+    return Page[EntityFactEntry](items=items, next_cursor=next_cursor, limit=limit)
 
 
 # ---------------------------------------------------------------------------
@@ -5602,7 +5621,8 @@ async def _assert_owner_role(pool) -> JSONResponse | None:
 @router.post("/entities/{entity_id}/archive", status_code=204)
 async def archive_entity(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Response:
     """Soft-archive an entity by setting ``metadata->>'archived' = 'true'``.
 
@@ -5646,7 +5666,8 @@ async def archive_entity(
 @router.delete("/entities/{entity_id}", status_code=204)
 async def forget_entity(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Response:
     """Forget (hard-delete with tombstone) an entity.
 
@@ -5681,17 +5702,18 @@ async def forget_entity(
     if (err := await _assert_owner_role(pool)) is not None:
         return err
 
-    row = await pool.fetchrow(
-        """
-        SELECT id FROM public.entities WHERE id = $1
-        """,
-        entity_id,
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Entity not found")
-
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Lock order: the entity before its facts. A merge or rebind in flight
+            # finishes first, so what it moved is retracted below; a later one waits
+            # for the tombstone and refuses it.
+            row = await conn.fetchrow(
+                "SELECT id FROM public.entities WHERE id = $1 FOR UPDATE",
+                entity_id,
+            )
+            if row is None:
+                raise HTTPException(status_code=404, detail="Entity not found")
+
             # Retract every active occurrence where this entity is subject or
             # object -- deliberately all of them, each keeping its effective
             # packet -- and drop their graph projections in the same transaction.
@@ -5760,7 +5782,8 @@ async def forget_entity(
 @router.get("/contacts/overdue", response_model=OverdueContactsResponse)
 async def get_overdue_contacts(
     days: int | None = Query(None, ge=1),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> OverdueContactsResponse:
     """Return only measurable overdue contacts and honest aggregate availability.
 
@@ -5807,7 +5830,8 @@ async def get_overdue_contacts(
 
 @router.get("/meeting-debriefs/pending", response_model=PendingDebriefsResponse)
 async def get_pending_meeting_debriefs(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PendingDebriefsResponse:
     """Return what ``meeting_debrief_pending`` returns: same items, order and posture filter.
 
@@ -5836,7 +5860,8 @@ async def get_pending_meeting_debriefs(
 
 @router.get("/dunbar/ranking", response_model=DunbarRankingResponse)
 async def get_dunbar_ranking(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> DunbarRankingResponse:
     """Return the current Dunbar tier ranking for all listed, entity-linked contacts.
 
@@ -6001,7 +6026,8 @@ async def get_dunbar_ranking(
 async def merge_entities(
     entity_id: UUID,
     body: MergeEntitiesRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> MergeEntitiesResponse:
     """Merge two entities into one, rewiring all relationship.entity_facts triples atomically.
 
@@ -6023,17 +6049,17 @@ async def merge_entities(
     Steps 3–7 execute inside a **single transaction** (atomicity guarantee): a
     partial merge can never leave rows stranded on the tombstoned source.
 
-    **Conflict handling:** rewiring a subject row may collide with an existing active triple
-    at (target, predicate, object) due to the ``uq_ef_spo_active`` partial unique index.
-    Such conflicting source rows are retracted (``validity='superseded'``) instead of
-    being moved, to preserve the target's existing fact.
+    **Conflict handling:** rewiring a row may collide with an existing active triple at
+    (target, predicate, object) due to the ``uq_ef_spo_active`` partial unique index. The
+    source row survives only if it alone is verified; otherwise the target row does. The
+    other row is superseded and its evidence is carried to the survivor.
 
     **Authorization**: owner-only gate (Amendment 12a) — returns HTTP 403 with
     ``{"code": "owner_required"}`` when no owner entity is registered.
 
     **Error codes:**
     - ``403`` — owner entity not registered (Amendment 12a).
-    - ``404`` — either entity does not exist or is already tombstoned.
+    - ``404`` — either entity does not exist, is already tombstoned, or was forgotten or deleted.
     - ``422`` — ``entityA == entityB`` (same entity) or validation failure.
     """
     from butlers.tools.relationship.entity_merge import (
@@ -6073,19 +6099,19 @@ async def merge_entities(
             target_entity_id=target_id,
             _audit_entity_order=(body.entityA, body.entityB),
         )
-    except SameEntityError:
+    except SameEntityError as exc:
         raise HTTPException(
             status_code=422,
             detail={"code": "same_entity", "message": "entityA and entityB must be different."},
-        )
-    except SourceEntityNotFoundError:
-        raise HTTPException(status_code=404, detail="Entity not found")
-    except SourceEntityTombstonedError:
-        raise HTTPException(status_code=404, detail="Entity not found")
-    except TargetEntityNotFoundError:
-        raise HTTPException(status_code=404, detail="Entity not found")
-    except TargetEntityTombstonedError:
-        raise HTTPException(status_code=404, detail="Entity not found")
+        ) from exc
+    except SourceEntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Entity not found") from exc
+    except SourceEntityTombstonedError as exc:
+        raise HTTPException(status_code=404, detail="Entity not found") from exc
+    except TargetEntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Entity not found") from exc
+    except TargetEntityTombstonedError as exc:
+        raise HTTPException(status_code=404, detail="Entity not found") from exc
     except TemporalOccurrenceCollisionError as exc:
         raise HTTPException(
             status_code=409,
@@ -6096,7 +6122,7 @@ async def merge_entities(
                     "identity; nothing was changed."
                 ),
             },
-        )
+        ) from exc
 
     return MergeEntitiesResponse(
         kept_entity_id=result.kept_entity_id,
@@ -6402,7 +6428,8 @@ async def _write_merge_review(
 @router.post("/entities/compare", response_model=CompareResponse)
 async def compare_entities(
     body: CompareRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> CompareResponse:
     """Structural diff of two entities — the merge-review compare view.
 
@@ -6453,7 +6480,8 @@ async def compare_entities(
 @router.post("/entities/dismiss-pair", response_model=DismissPairResponse)
 async def dismiss_pair(
     body: DismissPairRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> DismissPairResponse:
     """Dismiss a compared pair — writes a ``merge_reviews`` row (outcome=dismissed).
 
@@ -6513,6 +6541,9 @@ async def dismiss_pair(
 #: Chronicler MCP timeout in seconds.  The call is fire-and-forget on failure;
 #: the aggregator degrades gracefully if the chronicler is unreachable.
 _CHRONICLER_ACTIVITY_TIMEOUT_S = 10.0
+
+#: Episodes requested from Chronicler per entity; a full page means the read was capped.
+_CHRONICLER_ACTIVITY_CAP = 500
 
 # Content-blind API discriminator. Never expose the upstream exception or MCP
 # payload through the entity activity response.
@@ -6640,7 +6671,7 @@ async def _fetch_identity_activity(
 async def _fetch_chronicler_activity(
     mcp_manager: MCPClientManager | None,
     entity_id: UUID,
-) -> tuple[list[ActivityEntry], Literal["chronicler_activity_unavailable"] | None]:
+) -> tuple[list[ActivityEntry], Literal["chronicler_activity_unavailable"] | None, bool]:
     """Fetch episodes from the chronicler butler via MCP.
 
     Calls ``chronicler_list_episodes(participant_entity_id=<entity_id>, limit=500)``
@@ -6652,15 +6683,19 @@ async def _fetch_chronicler_activity(
     where the requested entity is an organizer or attendee — but not the calendar
     owner — surface in the entity's activity feed.
 
-    Returns ``(entries, None)`` on a successful read. When Chronicler is
+    Returns ``(entries, None, truncated)`` on a successful read, where ``truncated`` is
+    true when the page hit the episode cap. When Chronicler is
     unreachable, the MCP call fails, or the response envelope is unreadable,
     returns ``([], chronicler_activity_unavailable)`` so callers cannot confuse
-    missing source evidence with genuine zero activity.
+    missing source evidence with genuine zero activity. A non-object row, a
+    missing or invalid episode UUID, or a missing or unparseable selected
+    timestamp is malformed: it is excluded, every readable row is kept, and the
+    contribution is reported as degraded.
 
     INVARIANT: No direct SQL on chronicler.* tables.
     """
     if mcp_manager is None:
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
     try:
         client = await asyncio.wait_for(
             mcp_manager.get_client("chronicler"),
@@ -6669,7 +6704,7 @@ async def _fetch_chronicler_activity(
         result = await asyncio.wait_for(
             client.call_tool(
                 "chronicler_list_episodes",
-                {"participant_entity_id": str(entity_id), "limit": 500},
+                {"participant_entity_id": str(entity_id), "limit": _CHRONICLER_ACTIVITY_CAP},
             ),
             timeout=_CHRONICLER_ACTIVITY_TIMEOUT_S,
         )
@@ -6679,7 +6714,7 @@ async def _fetch_chronicler_activity(
             entity_id,
             exc,
         )
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
 
     raw_text = _extract_mcp_result_text(result)
     payload = _parse_mcp_result_payload(raw_text)
@@ -6690,7 +6725,7 @@ async def _fetch_chronicler_activity(
             "Chronicler activity: unexpected payload for entity %s; degrading gracefully",
             entity_id,
         )
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
 
     episodes_raw = payload.get("data")
     if not isinstance(episodes_raw, list):
@@ -6698,9 +6733,11 @@ async def _fetch_chronicler_activity(
             "Chronicler activity: missing episode list for entity %s; degrading gracefully",
             entity_id,
         )
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
 
     episodes: list[Any] = episodes_raw
+    # A full page means older episodes may exist; Chronicler has no cursor here.
+    truncated = len(episodes) >= _CHRONICLER_ACTIVITY_CAP
     entries: list[ActivityEntry] = []
     malformed_count = 0
     for ep in episodes:
@@ -6717,14 +6754,17 @@ async def _fetch_chronicler_activity(
             malformed_count += 1
             continue
 
-        # Use canonical_start_at as the primary timestamp; fall back to start_at.
+        # The selected timestamp is a nonempty canonical_start_at, else start_at.
+        # A row without a parseable selected timestamp is malformed, not undated.
         ts_raw = ep.get("canonical_start_at") or ep.get("start_at")
-        ts: datetime | None = None
-        if ts_raw:
-            try:
-                ts = datetime.fromisoformat(str(ts_raw))
-            except (ValueError, TypeError):
-                pass
+        if not ts_raw:
+            malformed_count += 1
+            continue
+        try:
+            ts = datetime.fromisoformat(str(ts_raw))
+        except (ValueError, TypeError):
+            malformed_count += 1
+            continue
 
         summary = ep.get("canonical_title") or ep.get("title")
 
@@ -6739,14 +6779,16 @@ async def _fetch_chronicler_activity(
                 summary=str(summary) if summary is not None else None,
             )
         )
-    if malformed_count > 0 and len(entries) == 0:
+    if malformed_count > 0:
+        # Partial failure: keep every readable row, but never claim completeness.
         logger.info(
-            "Chronicler activity: all %d episode rows were malformed for entity %s; degrading",
+            "Chronicler activity: %d of %d episode rows were malformed for entity %s; degrading",
             malformed_count,
+            len(episodes),
             entity_id,
         )
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
-    return entries, None
+        return entries, _CHRONICLER_ACTIVITY_UNAVAILABLE, False
+    return entries, None, truncated
 
 
 def _sort_key_activity(entry: ActivityEntry) -> datetime:
@@ -6820,7 +6862,14 @@ async def get_entity_activity(
         description="When true (and bins=daily), return only {bins:[...]} and omit "
         "the merged stream.",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    source: Literal["all", "relationship", "chronicler"] = Query(
+        "all",
+        description="Which contributions to execute: 'all' (default), 'relationship' "
+        "(both local stores, no Chronicler call) or 'chronicler' (episodes only, no "
+        "Relationship fact query). Applied before totals, bins, ordering and pagination.",
+    ),
+    *,
+    db: Db,
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
 ) -> ActivityResponse | ActivityBinsResponse:
     """Return a merged activity stream for the given entity.
@@ -6848,6 +6897,13 @@ async def get_entity_activity(
     sourced via the same ``chronicler_list_episodes`` MCP path before binning —
     the binning step never crosses the chronicler boundary.
 
+    **Source selection**: ``source`` is an execution boundary, not a response
+    filter. ``relationship`` never acquires a Chronicler client, so it cannot
+    inherit Chronicler degradation; ``chronicler`` never runs a Relationship
+    fact query. Totals, bins, ordering and pagination all use only the selected
+    contributions. An invalid value fails query validation (422) before either
+    fetch.
+
     **Authorization**: owner-only gate (Amendment 12b) — returns HTTP 403
     with ``{"code": "owner_required"}`` when no owner entity is registered.
 
@@ -6873,13 +6929,22 @@ async def get_entity_activity(
     # Entity existence gate.
     await _assert_entity_exists(pool, entity_id)
 
-    # Fetch each local store independently; never join or deduplicate them.
+    # Only selected contributions execute. Each local store is read
+    # independently; nothing is joined or deduplicated across stores.
+    async def _no_entries() -> list[ActivityEntry]:
+        return []
+
+    async def _no_chronicler() -> tuple[list[ActivityEntry], None, bool]:
+        return [], None, False
+
+    with_relationship = source in ("all", "relationship")
+    with_chronicler = source in ("all", "chronicler")
     narrative_entries, identity_entries, chronicler_result = await asyncio.gather(
-        _fetch_narrative_activity(pool, entity_id),
-        _fetch_identity_activity(pool, entity_id),
-        _fetch_chronicler_activity(mcp_manager, entity_id),
+        _fetch_narrative_activity(pool, entity_id) if with_relationship else _no_entries(),
+        _fetch_identity_activity(pool, entity_id) if with_relationship else _no_entries(),
+        _fetch_chronicler_activity(mcp_manager, entity_id) if with_chronicler else _no_chronicler(),
     )
-    chr_entries, degraded_reason = chronicler_result
+    chr_entries, degraded_reason, chronicler_truncated = chronicler_result
     degraded = degraded_reason is not None
 
     # Merge and sort descending by timestamp.
@@ -6895,6 +6960,7 @@ async def get_entity_activity(
                 bins=daily,
                 degraded=degraded,
                 degraded_reason=degraded_reason,
+                chronicler_truncated=chronicler_truncated,
             )
         total = len(all_entries)
         page = all_entries[offset : offset + limit]
@@ -6908,6 +6974,7 @@ async def get_entity_activity(
             offset=offset,
             degraded=degraded,
             degraded_reason=degraded_reason,
+            chronicler_truncated=chronicler_truncated,
         )
         return stream.model_dump(mode="json") | {"bins": [b.model_dump(mode="json") for b in daily]}
 
@@ -6921,7 +6988,73 @@ async def get_entity_activity(
         offset=offset,
         degraded=degraded,
         degraded_reason=degraded_reason,
+        chronicler_truncated=chronicler_truncated,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/{entity_id}/commitments — read-only entity commitment view
+# ---------------------------------------------------------------------------
+
+# Content-blind discriminator for any commitment-source failure. Never expose
+# the upstream exception or row content through this response.
+_COMMITMENT_SOURCE_UNAVAILABLE: Literal["commitment_source_unavailable"] = (
+    "commitment_source_unavailable"
+)
+
+
+@router.get("/entities/{entity_id}/commitments", response_model=EntityCommitmentsResponse)
+async def get_entity_commitments(
+    entity_id: UUID,
+    limit: int = Query(50, ge=1, le=200, description="Maximum commitments per page."),
+    offset: int = Query(0, ge=0, description="Pagination offset."),
+    *,
+    db: Db,
+) -> EntityCommitmentsResponse | JSONResponse:
+    """Return the owner's active commitments with one entity, in both directions.
+
+    Reads ``public.owner_conditions`` through the core commitment seam
+    (:func:`butlers.core.commitments.list_entity_commitment_page`): open or
+    aging commitment-class rows whose counterparty is this entity and whose
+    direction is ``owner_to_other`` or ``other_to_owner``, across every
+    originating source, ordered ``first_detected_at DESC, fingerprint ASC``.
+
+    Items carry only ``kind``, ``direction``, ``summary``, ``deadline``,
+    ``escalation_level`` and ``fingerprint``. The read has no side effects.
+
+    Owner-only (403 ``owner_required``); 404 for an unknown entity. A known
+    entity with no matches is an honest empty 200. Any commitment-source
+    failure returns 200 with ``items=[]``, ``total=0``, ``degraded=true`` and
+    the fixed ``commitment_source_unavailable`` reason, so a failure never
+    reads as "no commitments".
+    """
+    from butlers.core.commitments import list_entity_commitment_page
+
+    pool = _pool(db)
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    await _assert_entity_exists(pool, entity_id)
+
+    try:
+        rows, total = await list_entity_commitment_page(
+            pool, entity_id=str(entity_id), limit=limit, offset=offset
+        )
+        items = [EntityCommitmentItem.model_validate(row) for row in rows]
+    except Exception as exc:  # noqa: BLE001 — any source failure degrades honestly
+        logger.warning(
+            "Entity commitments read failed for entity %s (degraded): %s",
+            entity_id,
+            type(exc).__name__,
+        )
+        return EntityCommitmentsResponse(
+            items=[],
+            total=0,
+            limit=limit,
+            offset=offset,
+            degraded=True,
+            degraded_reason=_COMMITMENT_SOURCE_UNAVAILABLE,
+        )
+    return EntityCommitmentsResponse(items=items, total=total, limit=limit, offset=offset)
 
 
 # ---------------------------------------------------------------------------
@@ -6932,7 +7065,8 @@ async def get_entity_activity(
 @router.post("/entities/{entity_id}/view-mark", response_model=ViewMarkResponse)
 async def mark_entity_view(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ViewMarkResponse | JSONResponse:
     """Upsert the owner's "last viewed" mark for an entity.
 
@@ -7000,7 +7134,8 @@ async def _fetch_narrative_delta_facts(pool, entity_id: UUID, marked_at: datetim
 @router.get("/entities/{entity_id}/delta-facts", response_model=DeltaFactsResponse)
 async def get_entity_delta_facts(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> DeltaFactsResponse | JSONResponse:
     """Return facts changed since the entity's view mark (delta-since-last-visit).
 
@@ -7183,7 +7318,8 @@ def _next_occurrence(month: int, day: int, today: date) -> date | None:
 @router.get("/entities/{entity_id}/core-dates", response_model=CoreDatesResponse)
 async def get_entity_core_dates(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> CoreDatesResponse | JSONResponse:
     """Return the entity's date-kind facts with their next occurrence.
 
@@ -7272,7 +7408,7 @@ async def get_entity_core_dates(
 
 
 @router.get("/entities/{entity_id}/identity-candidates")
-async def list_identity_candidates(entity_id: UUID, db: DatabaseManager = Depends(_get_db_manager)):
+async def list_identity_candidates(entity_id: UUID, *, db: Db):
     """Protected review surface, never used for reachability or delivery."""
     from butlers.core.fact_authority import current_fact_write_context
     from butlers.tools.relationship.fact_identity_decisions import (
@@ -7302,7 +7438,8 @@ async def owner_identity_fact_decision(
     entity_id: UUID,
     fact_id: UUID,
     decision: Literal["adopt", "reject"],
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ):
     """Admit the exact owner action and commit all domain effects or none."""
     from butlers.tools.relationship.fact_identity_decisions import (
@@ -7311,7 +7448,7 @@ async def owner_identity_fact_decision(
     )
 
     pool = _pool(db)
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn, audit_transaction(conn):
         try:
             result = await decide_identity_fact(
                 conn, entity_id=entity_id, fact_id=fact_id, decision=decision
@@ -7342,7 +7479,8 @@ async def owner_identity_fact_decision(
 async def read_identity_fact_decision(
     entity_id: UUID,
     fact_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ):
     """Read an exact committed receipt under fresh request admission; never resend."""
     from butlers.core.fact_authority import current_fact_write_context

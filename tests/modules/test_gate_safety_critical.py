@@ -21,6 +21,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP
 
 from butlers.modules.approvals.executor import ExecutionResult
 from butlers.modules.approvals.gate import (
@@ -30,6 +31,8 @@ from butlers.modules.approvals.gate import (
 )
 from butlers.modules.base import ToolMeta
 from butlers.testing.approval_parking_fake import record_pending_action
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.mcp import tool_fn
 
 pytestmark = pytest.mark.unit
 
@@ -64,12 +67,9 @@ def _rule(arg_constraints: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _make_pool(rules: list[dict[str, Any]]) -> AsyncMock:
-    pool = AsyncMock()
-    pool.fetch = AsyncMock(return_value=rules)
-    pool.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})  # use claimed
-    pool.execute = AsyncMock(return_value=None)
-    return pool
+def _rules_pool(rules: list[dict[str, Any]]) -> FakePool:
+    # fetchrow returns a claimed standing-rule use.
+    return fake_pool(fetch=rules, fetchrow={"id": uuid.uuid4()}, execute=None)
 
 
 def _original_fn() -> AsyncMock:
@@ -94,7 +94,7 @@ async def _call_gate(
         "_evidence": [],
         **tool_args,
     }
-    pool = _make_pool(rules)
+    pool = _rules_pool(rules)
 
     wrapper = _make_gate_wrapper(
         tool_name=TOOL,
@@ -230,7 +230,7 @@ class TestGateArgumentSerialization:
         """Datetime and UUID arguments must park instead of crashing the gate."""
         scheduled_for = datetime(2026, 7, 16, 9, 30, tzinfo=UTC)
         request_id = uuid.uuid4()
-        pool = _make_pool([])
+        pool = _rules_pool([])
         wrapper = _make_gate_wrapper(
             tool_name=TOOL,
             original_fn=_original_fn(),
@@ -268,41 +268,11 @@ class TestGateArgumentSerialization:
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_mcp() -> Any:
-    mock_mcp = MagicMock()
-    _tools: dict[str, Any] = {}
-
-    class FakeTool:
-        def __init__(self, name: str, fn: Any):
-            self.name = name
-            self.fn = fn
-            self.parameters = {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {},
-            }
-
-    async def get_tool(name: str) -> Any:
-        return _tools.get(name)
-
-    mock_mcp.get_tool = get_tool
-
-    def tool_decorator(*_a: Any, **_kw: Any):
-        def dec(fn: Any):
-            _tools[fn.__name__] = FakeTool(fn.__name__, fn)
-            return fn
-
-        return dec
-
-    mock_mcp.tool = tool_decorator
-    return mock_mcp
-
-
 class TestApplyApprovalGatesThreadsMetadata:
     async def _run(self, *, tool_metadata: dict[str, ToolMeta] | None) -> dict[str, Any]:
         from butlers.config import ApprovalConfig, ApprovalRiskTier, GatedToolConfig
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP("remaining4-gate-tools")
 
         @mcp.tool()
         async def email_send_message(to: str, subject: str, body: str) -> dict:
@@ -312,7 +282,7 @@ class TestApplyApprovalGatesThreadsMetadata:
             enabled=True,
             gated_tools={TOOL: GatedToolConfig(risk_tier=ApprovalRiskTier.MEDIUM)},
         )
-        pool = _make_pool([_rule({"to": {"type": "any"}})])
+        pool = _rules_pool([_rule({"to": {"type": "any"}})])
 
         with (
             patch(
@@ -328,8 +298,8 @@ class TestApplyApprovalGatesThreadsMetadata:
             ),
         ):
             await apply_approval_gates(mcp, config, pool, "messenger", tool_metadata=tool_metadata)
-            tool = await mcp.get_tool(TOOL)
-            return await tool.fn(
+            registered_fn = await tool_fn(mcp, TOOL)
+            return await registered_fn(
                 to=RECIPIENT,
                 subject="Hi",
                 body="x",
@@ -349,7 +319,7 @@ class TestApplyApprovalGatesThreadsMetadata:
         """The MCP schema must let roster prompts supply the required dossier."""
         from butlers.config import ApprovalConfig, ApprovalRiskTier, GatedToolConfig
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP("remaining4-gate-tools")
 
         @mcp.tool()
         async def email_send_message(to: str, subject: str, body: str) -> dict:
@@ -359,7 +329,7 @@ class TestApplyApprovalGatesThreadsMetadata:
             enabled=True,
             gated_tools={TOOL: GatedToolConfig(risk_tier=ApprovalRiskTier.MEDIUM)},
         )
-        await apply_approval_gates(mcp, config, _make_pool([]), "messenger")
+        await apply_approval_gates(mcp, config, _rules_pool([]), "messenger")
 
         tool = await mcp.get_tool(TOOL)
         properties = tool.parameters["properties"]

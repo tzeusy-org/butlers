@@ -2,6 +2,8 @@
 
 REQ-relationship-facts-006: source liveness and unlocked resolution do not
 permit stale or overwritten attribution. Requires the normal supported PG lane.
+The flag-absent legacy registry route is explicit; receiver-route admission
+selection has separate owning controls and is not inferred from these tests.
 """
 
 from __future__ import annotations
@@ -18,6 +20,13 @@ from tests.integration import test_relationship_fact_content_authority as author
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 authority_env = authority_cases.env
+
+
+@pytest.fixture(autouse=True)
+def legacy_registry_route(monkeypatch):
+    # The retained registered-MCP fixture publishes legacy registry state.
+    # Bind that actual route instead of inheriting a deployment cutover flag.
+    monkeypatch.delenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", raising=False)
 
 
 @pytest.fixture(scope="module")

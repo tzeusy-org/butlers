@@ -215,7 +215,7 @@ function ResearchRow({
 // ResearchTracker
 // ---------------------------------------------------------------------------
 
-export default function ResearchTracker() {
+export default function ResearchTracker({ draftPersistence = false }: { draftPersistence?: boolean }) {
   const [search, setSearch] = useState("");
   const [tagFilter, setTagFilter] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -393,6 +393,7 @@ export default function ResearchTracker() {
             </DialogDescription>
           </DialogHeader>
           <ResearchForm
+            draftPersistence={draftPersistence}
             research={editing ? formTarget : undefined}
             onDone={() => setFormTarget(null)}
             onCancel={() => setFormTarget(null)}

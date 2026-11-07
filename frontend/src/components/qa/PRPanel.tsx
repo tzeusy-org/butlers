@@ -16,7 +16,8 @@ interface PRPanelProps {
   /**
    * "escalated" means the case was handed to the user without a published fix.
    * "failed" means the workflow ended unsuccessfully, but proposalState may
-   * still identify a retained unpublished local proposal. Every other pr-less
+   * still identify a retained local proposal: proven unpublished, or
+   * ambiguous when the publication outcome awaits reconciliation. Every other pr-less
    * stage (detect/diagnose/pr/landed) has not produced a PR yet. Rendering a
    * calmer in-progress message for a dead or escalated case fabricates progress
    * that was never made (bu-qvnce.2 / bu-hmdqz.9).
@@ -26,7 +27,7 @@ interface PRPanelProps {
   className?: string;
 }
 
-const PR_STATE_TONES: Record<QaPrSummary["state"], keyof typeof TONE_COLORS> = {
+const PR_STATE_TONES: Record<NonNullable<QaPrSummary["state"]>, keyof typeof TONE_COLORS> = {
   closed: "neutral",
   drafted: "neutral",
   open: "amber",
@@ -34,23 +35,31 @@ const PR_STATE_TONES: Record<QaPrSummary["state"], keyof typeof TONE_COLORS> = {
 };
 
 function prStateStyle(state: QaPrSummary["state"]) {
-  const tone = PR_STATE_TONES[state];
+  const tone = state === null ? "neutral" : PR_STATE_TONES[state];
   return {
     borderColor: TONE_COLORS[tone],
     color: tone === "amber" ? "var(--amber-text)" : TONE_COLORS[tone],
   };
 }
 
+/** A retained proposal without a PR: proven unpublished, or publication outcome unresolved. */
+type LocalProposalState = "unpublished" | "ambiguous";
+
+const LOCAL_DIFF_LABELS: Record<LocalProposalState, string> = {
+  unpublished: "Unpublished diff",
+  ambiguous: "Proposed diff",
+};
+
 function ProposalDetails({
   whyThisFix,
   diffSnapshot,
-  unpublished = false,
-}: Pick<PRPanelProps, "whyThisFix" | "diffSnapshot"> & { unpublished?: boolean }) {
+  local,
+}: Pick<PRPanelProps, "whyThisFix" | "diffSnapshot"> & { local?: LocalProposalState }) {
   return (
     <>
       {whyThisFix ? (
         <div className="space-y-1">
-          {unpublished ? (
+          {local ? (
             <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
               Why this proposal
             </p>
@@ -67,9 +76,9 @@ function ProposalDetails({
 
       {diffSnapshot && diffSnapshot.length > 0 ? (
         <div className="space-y-2">
-          {unpublished ? (
+          {local ? (
             <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-              Unpublished diff
+              {LOCAL_DIFF_LABELS[local]}
             </p>
           ) : (
             <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
@@ -92,21 +101,27 @@ export function PRPanel({
   className,
 }: PRPanelProps) {
   if (!pr) {
-    if (proposalState === "unpublished") {
+    if (proposalState === "unpublished" || proposalState === "ambiguous") {
+      const ambiguous = proposalState === "ambiguous";
       return (
-        <section className={cn("space-y-4", className)} aria-label="Unpublished proposal">
+        <section
+          className={cn("space-y-4", className)}
+          aria-label={ambiguous ? "Proposal with unresolved publication" : "Unpublished proposal"}
+        >
           <div className="space-y-1 border-b border-border/60 pb-3">
             <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
               Local proposal
             </p>
             <p className="font-serif text-sm italic text-muted-foreground">
-              Publication failed; no PR was created.
+              {ambiguous
+                ? "Publication outcome unresolved; a PR may exist pending reconciliation."
+                : "Publication failed; no PR was created."}
             </p>
           </div>
           <ProposalDetails
             whyThisFix={whyThisFix}
             diffSnapshot={diffSnapshot}
-            unpublished
+            local={proposalState}
           />
         </section>
       );
@@ -142,10 +157,10 @@ export function PRPanel({
             )}
             style={prStateStyle(pr.state)}
           >
-            {pr.state}
+            {pr.state ?? "PR state unknown"}
           </span>
           <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground tnum">
-            pr #{pr.number} · {pr.state}
+            pr #{pr.number} · {pr.state ?? "state unknown"}
           </p>
           <a
             href={pr.url}
@@ -171,12 +186,14 @@ export function PRPanel({
 
       <p className="font-mono text-[10px] leading-none text-muted-foreground tnum">
         opened <Time value={pr.opened_at} mode="absolute" precision="time" /> ·{" "}
-        {pr.merged_at ? (
+        {pr.state === null ? (
+          "merge status unavailable"
+        ) : pr.merged_at ? (
           <>
             merged <Time value={pr.merged_at} mode="absolute" precision="time" />
           </>
         ) : (
-          "not merged"
+          pr.state === "merged" ? "merge time unavailable" : "not merged"
         )}
       </p>
     </section>

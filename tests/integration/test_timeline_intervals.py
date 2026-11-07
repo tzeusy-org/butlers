@@ -12,9 +12,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.routers.notifications import _claim_failed_notification
-from butlers.api.routers.timeline import _get_db_manager
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -28,19 +27,16 @@ SINCE = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 UNTIL = SINCE + timedelta(hours=1)
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-        schemas={"core": "switchboard", "switchboard": "switchboard"},
+@pytest.fixture
+def timeline_url(fresh_db) -> str:
+    return fresh_db(
+        "core", "switchboard", schemas={"core": "switchboard", "switchboard": "switchboard"}
     )
 
 
 @pytest.fixture
-async def timeline_db(migrated_db_url: str):
-    parsed = urlparse(migrated_db_url)
+async def timeline_db(timeline_url: str):
+    parsed = urlparse(timeline_url)
     manager = DatabaseManager(
         host=parsed.hostname or "localhost",
         port=parsed.port or 5432,
@@ -63,7 +59,7 @@ async def timeline_db(migrated_db_url: str):
 
 async def _request(manager: DatabaseManager, path: str, params):
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: manager
+    app.dependency_overrides[get_db] = lambda: manager
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

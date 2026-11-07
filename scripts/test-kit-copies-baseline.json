@@ -1,0 +1,20 @@
+{
+  "tests/api/test_fleet_events_bridge.py": [
+    "_FakeConnection"
+  ],
+  "tests/api/test_google_callback_token_payload.py": [
+    "_FakeConnection"
+  ],
+  "tests/api/test_schedules.py": [
+    "_make_row"
+  ],
+  "tests/chronicler/test_occupation_adapter.py": [
+    "_FakeConn"
+  ],
+  "tests/connectors/test_owntracks_device_identity.py": [
+    "_FakeConn"
+  ],
+  "tests/core/test_fleet_events.py": [
+    "_FakeConnection"
+  ]
+}

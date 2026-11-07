@@ -18,6 +18,7 @@ import math
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
 
 from butlers.chronicler.adapters.owntracks_place_cluster import (
@@ -25,6 +26,7 @@ from butlers.chronicler.adapters.owntracks_place_cluster import (
     DEFAULT_MAX_GAP_MINUTES,
     DEFAULT_MIN_DWELL_MINUTES,
     DEFAULT_RADIUS_METERS,
+    EPISODE_TYPE_AWAY,
     EPISODE_TYPE_PLACE,
     PLACE_UNKNOWN_LABEL,
     SOURCE_NAME,
@@ -32,10 +34,12 @@ from butlers.chronicler.adapters.owntracks_place_cluster import (
     OwnTracksPlaceClusterAdapter,
     PlaceReference,
     cluster_points,
+    detect_away_spans,
     haversine_meters,
     parse_place_references,
 )
 from butlers.chronicler.models import Episode
+from butlers.testing.fake_pool import AsyncCtx
 
 _NOW = datetime(2026, 3, 26, 10, 0, 0, tzinfo=UTC)
 _ENDPOINT = "owntracks:alice"
@@ -398,32 +402,23 @@ def test_label_for_returns_place_unknown_with_no_reference_points_configured() -
 # ---------------------------------------------------------------------------
 
 
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
-
-
 def _pool_returning(*rows: dict) -> AsyncMock:
-    conn = AsyncMock()
+    conn = AsyncMock(spec=asyncpg.Connection)
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetchval = AsyncMock(return_value=True)  # table-exists check
     conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
 def _pool_table_missing() -> AsyncMock:
-    conn = AsyncMock()
+    conn = AsyncMock(spec=asyncpg.Connection)
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetchval = AsyncMock(return_value=False)
     conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -432,10 +427,11 @@ def _make_mock_row(r: dict) -> MagicMock:
 
 
 def _chronicler_pool(point_event_ids: list | None = None) -> AsyncMock:
-    conn = AsyncMock()
+    conn = AsyncMock(spec=asyncpg.Connection)
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetch = AsyncMock(return_value=[{"id": i} for i in (point_event_ids or [])])
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -770,12 +766,12 @@ async def test_dwell_one_second_over_min_dwell_emits_episode() -> None:
     assert len(captured) == 1
 
 
-# --- clock-skew clamp: abs(delta) > threshold clamps ts to recorded_at ------
+# --- clock-skew clamp: future-dated ts > threshold clamps ts to recorded_at --
 
 
 def test_clock_skew_exactly_at_threshold_is_not_clamped() -> None:
     """A device/server delta of EXACTLY the threshold is NOT clamped
-    (``abs(delta) > threshold`` is strict); the original ts is preserved and
+    (``delta > threshold`` is strict); the original ts is preserved and
     no warning is raised."""
     adapter = OwnTracksPlaceClusterAdapter()  # default threshold = 4h
     ts = _NOW + timedelta(hours=CLOCK_SKEW_THRESHOLD_HOURS)
@@ -805,17 +801,291 @@ def test_clock_skew_just_over_threshold_clamps_ts_to_recorded_at() -> None:
     assert "clamping ts to recorded_at" in warnings[0]
 
 
-def test_clock_skew_negative_direction_over_threshold_clamps() -> None:
-    """The clamp is on ``abs(delta)``: a device clock that runs BEHIND server
-    time by more than the threshold is clamped too."""
+def test_late_delivered_point_keeps_device_ts() -> None:
+    """A fix uploaded long after it was taken (OwnTracks' offline queue, e.g.
+    after a flight) keeps its device ts: re-stamping it to upload time would
+    place the owner where they were hours ago (bu-8r9q06)."""
     adapter = OwnTracksPlaceClusterAdapter()
-    ts = _NOW - timedelta(hours=CLOCK_SKEW_THRESHOLD_HOURS, seconds=1)
+    ts = _NOW - timedelta(hours=CLOCK_SKEW_THRESHOLD_HOURS, minutes=18)
     row = _row(ts)
     row["recorded_at"] = _NOW
 
     normalized, warnings = adapter._normalize_row(row)
 
     assert normalized is not None
-    assert normalized["ts"] == _NOW  # clamped to recorded_at
-    assert len(warnings) == 1
-    assert "clamping ts to recorded_at" in warnings[0]
+    assert normalized["ts"] == ts
+    assert warnings == []
+
+
+# ---------------------------------------------------------------------------
+# Trail quality (bu-2tsgqb.6): shared outliers, region labels, away spans
+# ---------------------------------------------------------------------------
+
+_BEIJING = (39.90, 116.40)
+_HOME_REF = PlaceReference(label="home", lat=_HOME_LAT, lon=_HOME_LON, radius_m=200)
+
+
+async def _project_place(
+    rows: list[dict], adapter: OwnTracksPlaceClusterAdapter
+) -> tuple[list[Episode], dict]:
+    upserted: list[Episode] = []
+
+    async def _capture(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks_place_cluster.get_carryover", return_value={}),
+        patch("butlers.chronicler.adapters.owntracks_place_cluster.save_carryover") as mock_save,
+        patch(
+            "butlers.chronicler.adapters.owntracks_place_cluster.upsert_episode",
+            side_effect=_capture,
+        ),
+        patch("butlers.chronicler.adapters.owntracks_place_cluster.upsert_owner_episode_entity"),
+        patch(
+            "butlers.chronicler.adapters.owntracks_place_cluster.resolve_owner_entity_id",
+            return_value=None,
+        ),
+    ):
+        await adapter.project(
+            _pool_returning(*rows), chronicler_pool=_chronicler_pool(), since=None
+        )
+    return upserted, mock_save.await_args.args[2]
+
+
+@pytest.mark.asyncio
+async def test_impossible_jump_never_breaks_or_seeds_a_place_cluster() -> None:
+    rows = [_row(_NOW + timedelta(minutes=m), row_id=f"h{m}") for m in range(0, 30, 5)]
+    # Two consecutive Guangzhou flips: the local glitch tolerance alone would
+    # close the cluster here; the shared policy rejects both first.
+    rows.insert(3, _row(_NOW + timedelta(minutes=11), lat=23.10, lon=113.34, row_id="spike1"))
+    rows.insert(4, _row(_NOW + timedelta(minutes=12), lat=23.10, lon=113.34, row_id="spike2"))
+    upserted, saved = await _project_place(rows, OwnTracksPlaceClusterAdapter())
+
+    places = [ep for ep in upserted if ep.episode_type == EPISODE_TYPE_PLACE]
+    assert [(ep.start_at, ep.payload["point_count"]) for ep in places] == [(_NOW, 6)]
+    assert "_trail_anchors" in saved
+
+    cold = [_row(_NOW, lat=52.12, lon=22.06, row_id="seed")]
+    cold += [_row(_NOW + timedelta(minutes=m), row_id=f"accepted-{m}") for m in (5, 15, 25)]
+    consensus, _ = await _project_place(cold, OwnTracksPlaceClusterAdapter())
+    assert [(ep.start_at, ep.payload["point_count"]) for ep in consensus] == [
+        (_NOW + timedelta(minutes=5), 3)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unmatched_cluster_takes_owner_region_label_else_stays_unknown() -> None:
+    region_rows = [
+        {**_row(_NOW + timedelta(minutes=m)), "raw_payload": {"inregions": ["Gubei Inn"]}}
+        for m in range(0, 25, 5)
+    ]
+    upserted, _ = await _project_place(region_rows, OwnTracksPlaceClusterAdapter())
+    assert (upserted[0].payload["label"], upserted[0].payload["label_source"]) == (
+        "Gubei Inn",
+        "owntracks_region",
+    )
+
+    bare_rows = [_row(_NOW + timedelta(minutes=m)) for m in range(0, 25, 5)]
+    upserted, _ = await _project_place(bare_rows, OwnTracksPlaceClusterAdapter())
+    assert (upserted[0].payload["label"], upserted[0].payload["label_source"]) == (
+        PLACE_UNKNOWN_LABEL,
+        "unknown",
+    )
+
+
+@pytest.mark.asyncio
+async def test_trip_far_from_home_emits_one_evidence_layer_away_episode() -> None:
+    rows = [_row(_NOW, row_id="home")]
+    rows += [
+        _row(_NOW + timedelta(hours=8 + h), lat=_BEIJING[0], lon=_BEIJING[1], row_id=f"b{h}")
+        for h in range(0, 30, 2)
+    ]
+    upserted, saved = await _project_place(
+        rows, OwnTracksPlaceClusterAdapter(reference_points=(_HOME_REF,))
+    )
+
+    away = [ep for ep in upserted if ep.episode_type == EPISODE_TYPE_AWAY]
+    assert len(away) == 1
+    assert (away[0].start_at, away[0].end_at) == (
+        _NOW + timedelta(hours=8),
+        _NOW + timedelta(hours=36),
+    )
+    assert away[0].layer.value == "evidence"
+    assert away[0].title.startswith("Away from home (up to ~4,")
+    assert _ENDPOINT in saved["_away"]  # still away: carried to the next batch
+
+
+def test_away_span_boundaries() -> None:
+    def far(hours: float) -> dict:
+        return _row(_NOW + timedelta(hours=hours), lat=_BEIJING[0], lon=_BEIJING[1])
+
+    common = {"homes": (_HOME_REF,), "away_radius_m": 50_000, "max_gap": timedelta(hours=36)}
+    # Back home closes the span; a long silence splits it; no home -> nothing.
+    spans, carry = detect_away_spans([far(0), far(5), _row(_NOW + timedelta(hours=9))], **common)
+    assert [(s.start_at, s.end_at) for s in spans] == [(_NOW, _NOW + timedelta(hours=5))]
+    assert carry == {}
+    spans, _ = detect_away_spans([far(0), far(40)], **common)
+    assert len(spans) == 2
+    assert detect_away_spans([far(0), far(5)], **{**common, "homes": ()}) == ([], {})
+
+
+# ---------------------------------------------------------------------------
+# Sparse-report bridging (bu-r3fmja, REQ-butler-chronicler-014)
+# ---------------------------------------------------------------------------
+
+_BRIDGE = timedelta(hours=16)
+_GAP = timedelta(minutes=DEFAULT_MAX_GAP_MINUTES)
+
+
+def _bridged(rows: list[dict], carry: dict | None = None) -> tuple[list[ClusterSpan], dict]:
+    return cluster_points(
+        rows,
+        radius_m=DEFAULT_RADIUS_METERS,
+        max_gap=_GAP,
+        prior_carryover=carry,
+        bridge_max=_BRIDGE,
+    )
+
+
+def test_silent_gap_between_same_place_fixes_is_one_bridged_stay() -> None:
+    """Nov 2 shape: home at 02:54, silent, home again ten hours later."""
+    spans, _ = _bridged([_row(_NOW), _row(_NOW + timedelta(hours=10))])
+    assert len(spans) == 1
+    assert spans[0].dwell == timedelta(hours=10)
+    assert spans[0].bridged is True
+    assert spans[0].departure_bridged is False
+
+
+def test_silent_stay_ends_at_the_departure_fix() -> None:
+    rows = [
+        _row(_NOW),
+        _row(_NOW + timedelta(hours=9, minutes=50), lat=_AWAY_LAT, lon=_AWAY_LON),
+        _row(_NOW + timedelta(hours=9, minutes=52), lat=_AWAY_LAT + 0.01, lon=_AWAY_LON),
+    ]
+    spans, _ = _bridged(rows)
+    assert spans[0].start_at == _NOW
+    assert spans[0].end_at == _NOW + timedelta(hours=9, minutes=50)
+    assert (spans[0].bridged, spans[0].departure_bridged) == (True, True)
+    assert spans[0].point_count == 1
+
+
+def test_silence_longer_than_the_bridge_cap_is_never_a_stay() -> None:
+    spans, _ = _bridged([_row(_NOW), _row(_NOW + timedelta(hours=17))])
+    assert [s.dwell for s in spans] == [timedelta(0), timedelta(0)]
+    away = [_row(_NOW), _row(_NOW + timedelta(hours=17), lat=_AWAY_LAT, lon=_AWAY_LON)]
+    spans, _ = _bridged(away)
+    assert spans[0].end_at == _NOW
+    assert spans[0].bridged is False
+
+
+def test_dense_departure_keeps_the_last_in_place_fix_as_the_end() -> None:
+    rows = [
+        _row(_NOW),
+        _row(_NOW + timedelta(minutes=30)),
+        _row(_NOW + timedelta(minutes=40), lat=_AWAY_LAT, lon=_AWAY_LON),
+        _row(_NOW + timedelta(minutes=45), lat=_AWAY_LAT, lon=_AWAY_LON),
+    ]
+    spans, _ = _bridged(rows)
+    assert spans[0].end_at == _NOW + timedelta(minutes=30)
+    assert spans[0].bridged is False
+
+
+def test_carried_stay_is_widened_to_a_later_batch_departure() -> None:
+    """The common live case: the stay's last fix and the departure arrive in
+    different projection runs. The carried stay is re-emitted (same start, so
+    the same source_ref) ending at the departure fix."""
+    _, carry = _bridged([_row(_NOW)])
+    later = [
+        _row(_NOW + timedelta(hours=9, minutes=50), lat=_AWAY_LAT, lon=_AWAY_LON),
+        _row(_NOW + timedelta(hours=9, minutes=52), lat=_AWAY_LAT + 0.0005, lon=_AWAY_LON),
+    ]
+    spans, new_carry = _bridged(later, carry)
+    assert spans[0].start_at == _NOW
+    assert spans[0].end_at == _NOW + timedelta(hours=9, minutes=50)
+    assert spans[0].departure_bridged is True
+    assert spans[0].source_ref() == _bridged([_row(_NOW)])[0][0].source_ref()
+    assert new_carry[_ENDPOINT]["start_at"] == later[0]["ts"].isoformat()
+
+
+def test_carried_stay_bridges_into_a_later_batch_at_the_same_place() -> None:
+    _, carry = _bridged([_row(_NOW)])
+    spans, new_carry = _bridged([_row(_NOW + timedelta(hours=8))], carry)
+    assert len(spans) == 1
+    assert (spans[0].start_at, spans[0].end_at) == (_NOW, _NOW + timedelta(hours=8))
+    assert spans[0].bridged is True
+    assert new_carry[_ENDPOINT]["bridged"] is True
+
+
+def test_carried_stay_skips_a_single_glitch_at_the_batch_start() -> None:
+    _, carry = _bridged([_row(_NOW)])
+    rows = [
+        _row(_NOW + timedelta(hours=3), lat=_AWAY_LAT, lon=_AWAY_LON, row_id="glitch"),
+        _row(_NOW + timedelta(hours=3, minutes=1)),
+    ]
+    spans, _ = _bridged(rows, carry)
+    assert len(spans) == 1
+    assert (spans[0].start_at, spans[0].point_count) == (_NOW, 2)
+
+
+def test_carryover_is_consumed_once_per_endpoint() -> None:
+    """A later cluster in the same batch must never re-resume the carried one."""
+    _, carry = _bridged([_row(_NOW)])
+    rows = [
+        _row(_NOW + timedelta(minutes=5), lat=_AWAY_LAT, lon=_AWAY_LON),
+        _row(_NOW + timedelta(minutes=6), lat=_AWAY_LAT + 0.01, lon=_AWAY_LON),
+        _row(_NOW + timedelta(minutes=10)),
+    ]
+    spans, _ = _bridged(rows, carry)
+    assert [s.start_at for s in spans].count(_NOW) == 0
+
+
+def test_a_lone_fix_ending_the_batch_after_silence_is_held_not_a_departure() -> None:
+    stray_at = _NOW + timedelta(hours=6)
+    spans, carry = _bridged([_row(_NOW), _row(stray_at, lat=_AWAY_LAT, lon=_AWAY_LON)])
+
+    assert len(spans) == 1
+    assert (spans[0].end_at, spans[0].departure_bridged) == (_NOW, False)
+    assert carry[_ENDPOINT]["start_at"] == _NOW.isoformat()
+    assert carry[_ENDPOINT]["pending_departure"]["ts"] == stray_at.isoformat()
+
+
+def test_a_held_stray_fix_is_dropped_when_the_owner_is_back_next_batch() -> None:
+    _, carry = _bridged([_row(_NOW), _row(_NOW + timedelta(hours=6), lat=_AWAY_LAT)])
+
+    spans, new_carry = _bridged([_row(_NOW + timedelta(hours=9))], carry)
+
+    assert len(spans) == 1
+    assert (spans[0].start_at, spans[0].end_at) == (_NOW, _NOW + timedelta(hours=9))
+    assert (spans[0].point_count, spans[0].departure_bridged) == (2, False)
+    assert "pending_departure" not in new_carry[_ENDPOINT]
+
+
+def test_a_held_fix_becomes_the_departure_when_the_owner_does_not_return() -> None:
+    held_at = _NOW + timedelta(hours=6)
+    _, carry = _bridged([_row(_NOW), _row(held_at, lat=_AWAY_LAT, lon=_AWAY_LON)])
+
+    later = [_row(held_at + timedelta(minutes=40), lat=_AWAY_LAT + 0.0005, lon=_AWAY_LON)]
+    spans, new_carry = _bridged(later, carry)
+
+    assert (spans[0].start_at, spans[0].end_at) == (_NOW, held_at)
+    assert spans[0].departure_bridged is True
+    # The held fix starts the next cluster, which the later fix continues.
+    assert (spans[1].start_at, spans[1].end_at) == (held_at, later[0]["ts"])
+    assert new_carry[_ENDPOINT]["start_at"] == held_at.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_place_stay_is_evidence_and_records_bridging() -> None:
+    rows = [
+        _row(_NOW, row_id="a"),
+        _row(_NOW + timedelta(hours=6), lat=_AWAY_LAT, lon=_AWAY_LON, row_id="b"),
+        _row(_NOW + timedelta(hours=6, minutes=2), lat=_AWAY_LAT + 0.01, lon=_AWAY_LON, row_id="c"),
+    ]
+    upserted, _ = await _project_place(rows, OwnTracksPlaceClusterAdapter())
+    places = [ep for ep in upserted if ep.episode_type == EPISODE_TYPE_PLACE]
+    assert len(places) == 1
+    assert places[0].layer.value == "evidence"
+    assert places[0].precision.value == "minute"
+    assert places[0].payload["bridged"] is True
+    assert places[0].end_at == _NOW + timedelta(hours=6)

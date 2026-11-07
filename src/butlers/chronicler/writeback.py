@@ -6,22 +6,19 @@ step distills *derived* insights from the chronicler's OWN already-materialized
 data (``daily_rollups``, ``daily_rollup_flags``, ``episode_entities``) and:
 
 1. writes synthesized insight facts into the chronicler's OWN memory schema
-   (``store_fact``, ``source_butler="chronicler"``) with provenance, confidence
-   (carried in metadata — the facts table's own ``confidence`` column is fixed
-   at 1.0 by ``store_fact``), and decay (via ``permanence``);
+   (``store_fact``, ``source_butler="chronicler"``) with provenance, an
+   evidence-derived confidence (see :func:`evidence_confidence`, written to the
+   facts ``confidence`` column and mirrored in metadata), and decay (via
+   ``permanence``);
 2. writes self-reminder facts marking low-confidence day blocks for
-   re-reconciliation once more evidence lands;
-3. PROPOSES recurring-companion enrichment through an injected
-   ``propose_enrichment_fn`` (no production transport is wired today) — never a
-   direct cross-schema write.
+   re-reconciliation once more evidence lands.
 
 Invariants (the §8.6 acceptance contract):
 
 - Every fact write targets the chronicler's OWN schema only. This module is
   handed a ``store_fact_fn`` already bound to the chronicler pool; it never
   receives, and cannot construct, a foreign-schema pool.
-- Enrichment leaves the chronicler ONLY as an MCP proposal via the injected
-  ``propose_enrichment_fn`` — it never touches ``relationship.entity_facts``.
+- It never touches ``relationship.entity_facts`` or any other butler's schema.
 - The write-back adds NO owner-facing message. This module has no ``notify``
   collaborator; the once-daily day-close summary (sent by the prompt) remains
   the single sanctioned owner-facing message.
@@ -36,22 +33,27 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from butlers.chronicler.aggregations import LANES, lane_for_activity
+from butlers.chronicler.aggregations import LANES, sources_for_lane
 from butlers.chronicler.balance import (
     DEFAULT_BASELINE_LOOKBACK_DAYS,
     LaneBalance,
     compute_daily_balance,
     is_lane_anomalous,
 )
+from butlers.chronicler.history_repair import (
+    FactWriteToken,
+    RepairAdmissionError,
+    capture_fact_write_token,
+    make_fact_write_guard,
+)
 
 logger = logging.getLogger(__name__)
 
 SOURCE_BUTLER = "chronicler"
-RELATIONSHIP_BUTLER = "relationship"
 
 # Sleep debt: cumulative deficit (baseline − actual) over the trailing window,
 # counting only days that fell short. Fire an insight once the running debt
@@ -60,15 +62,17 @@ RELATIONSHIP_BUTLER = "relationship"
 SLEEP_DEBT_THRESHOLD_SECONDS = 3 * 3600
 SLEEP_DEBT_MIN_SHORTFALL_DAYS = 2
 
-# Recurring companion: co-present on at least this many distinct local days
-# across the trailing window before it is worth proposing to relationship.
-COMPANION_MIN_DISTINCT_DAYS = 3
+# Insight confidence (see evidence_confidence). A derived insight is never
+# certain: a full baseline window earns the ceiling, a thin one sits near the
+# floor. A self-reminder exists *because* a block is uncertain, so it carries
+# the floor.
+INSIGHT_CONFIDENCE_FLOOR = 0.4
+INSIGHT_CONFIDENCE_CEILING = 0.9
 
 # Predicate strings for chronicler-owned insight facts.
 PREDICATE_LANE_SKEW = "lane-skew"
 PREDICATE_SLEEP_DEBT = "sleep-debt"
 PREDICATE_SELF_REMINDER = "revisit-low-confidence-block"
-PREDICATE_RECURRING_COMPANION = "recurring-companion"
 
 # daily_rollup_flag types that mean "this day may be revised once more evidence
 # lands" — the exact signal a self-reminder is for. Other flag types
@@ -85,9 +89,9 @@ _REVISIT_FLAG_TYPES = frozenset({"feeder_dark", "sleep_missing"})
 class InsightFact:
     """A derived fact the chronicler writes into its OWN memory schema.
 
-    ``confidence`` is carried into fact metadata (the facts table column is
-    fixed at 1.0 by ``store_fact``); ``permanence`` sets the decay tier so a
-    low-confidence, fast-fading insight can be distinguished from a durable one.
+    ``confidence`` is stored on the fact row (and mirrored in metadata);
+    ``permanence`` sets the decay tier so a low-confidence, fast-fading insight
+    can be distinguished from a durable one.
     """
 
     subject: str
@@ -99,39 +103,6 @@ class InsightFact:
     tags: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
-
-@dataclass(frozen=True)
-class CompanionCopresence:
-    """Chronicler-owned co-presence observation for one companion entity.
-
-    Derived from ``episode_entities`` on the chronicler's own social-lane
-    episodes over a trailing window — no cross-schema read.
-    """
-
-    entity_id: str
-    distinct_days: int
-    episode_count: int
-    last_seen_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class EnrichmentProposal:
-    """A recurring-companion enrichment PROPOSED to relationship over MCP.
-
-    Carries the companion's resolved ``entity_id`` (owned by chronicler via
-    ``episode_entities``) and the observation that justifies the proposal. The
-    chronicler never writes ``relationship.entity_facts``; the proposer merely
-    hands this to the relationship butler, which decides on its own terms.
-    """
-
-    entity_id: str
-    predicate: str
-    distinct_days: int
-    episode_count: int
-    window_start: date
-    window_end: date
-    dedup_key: str
-    message: str
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -141,12 +112,12 @@ class WriteBackResult:
 
     insights_written: int = 0
     self_reminders_written: int = 0
-    proposals_sent: int = 0
     errors: int = 0
+    status: str = "complete"
+    failure_reason: str | None = None
 
 
 StoreFactFn = Callable[..., Awaitable[Any]]
-ProposeEnrichmentFn = Callable[[EnrichmentProposal], Awaitable[Any]]
 
 
 # ---------------------------------------------------------------------------
@@ -162,11 +133,33 @@ def _fmt_hours(seconds: float) -> str:
     return f"{seconds / 3600:.1f}h"
 
 
-def synthesize_lane_skew_insights(day: date, balances: Iterable[LaneBalance]) -> list[InsightFact]:
+def evidence_confidence(sample_days: int, window_days: int) -> float:
+    """Confidence of a derived insight from how much of its window had data.
+
+    Linear in baseline coverage (``sample_days / window_days``, clamped to
+    ``[0, 1]``) between :data:`INSIGHT_CONFIDENCE_FLOOR` and
+    :data:`INSIGHT_CONFIDENCE_CEILING`, rounded to two decimals. Days whose
+    sources did not report never count as samples, so a sparse history yields
+    a visibly weaker insight instead of a confident one.
+    """
+    if window_days <= 0:
+        return INSIGHT_CONFIDENCE_FLOOR
+    coverage = min(1.0, max(0, sample_days) / window_days)
+    span = INSIGHT_CONFIDENCE_CEILING - INSIGHT_CONFIDENCE_FLOOR
+    return round(INSIGHT_CONFIDENCE_FLOOR + span * coverage, 2)
+
+
+def synthesize_lane_skew_insights(
+    day: date,
+    balances: Iterable[LaneBalance],
+    *,
+    window_days: int = DEFAULT_BASELINE_LOOKBACK_DAYS,
+) -> list[InsightFact]:
     """One insight per lane whose day-vs-usual delta clears the anomaly bar.
 
     Reuses :func:`butlers.chronicler.balance.is_lane_anomalous` so the skew
-    signal never diverges from the balance/trends API surface.
+    signal never diverges from the balance/trends API surface. Confidence
+    follows :func:`evidence_confidence` over the lane's baseline sample days.
     """
     out: list[InsightFact] = []
     for b in sorted(balances, key=lambda x: x.lane):
@@ -188,7 +181,7 @@ def synthesize_lane_skew_insights(day: date, balances: Iterable[LaneBalance]) ->
                 # A single day's skew is a fast-fading observation.
                 permanence="volatile",
                 importance=5.0,
-                confidence=0.7,
+                confidence=evidence_confidence(b.baseline_sample_days, window_days),
                 tags=("chronicler-insight", PREDICATE_LANE_SKEW, b.lane),
                 metadata={
                     "local_date": day.isoformat(),
@@ -197,6 +190,7 @@ def synthesize_lane_skew_insights(day: date, balances: Iterable[LaneBalance]) ->
                     "seconds": b.seconds,
                     "baseline_seconds": b.baseline_seconds,
                     "delta_seconds": b.delta_seconds,
+                    "baseline_sample_days": b.baseline_sample_days,
                 },
             )
         )
@@ -212,11 +206,19 @@ def synthesize_sleep_debt_insight(
     """A cumulative sleep-debt insight, or ``None`` when the pattern is noise.
 
     ``sleep_daily_seconds`` is the trailing window of the sleep lane's per-day
-    seconds (baseline days + the closed day). Debt accrues only on days that
-    fell short of ``sleep_baseline_seconds``; both a total-debt floor and a
-    minimum number of short days must be cleared before an insight is emitted.
+    seconds (baseline days + the closed day, last). Debt accrues only on days
+    that fell short of ``sleep_baseline_seconds``; both a total-debt floor and
+    a minimum number of short days must be cleared before an insight is
+    emitted. Debt is only "building" when the closed day itself fell short: a
+    closed day at or above the usual adds nothing, and claiming growing debt
+    beside a "slept more than usual" skew would contradict it.
+
+    Callers pass only complete windows, so confidence is the full-coverage
+    :func:`evidence_confidence`.
     """
     if sleep_baseline_seconds is None or sleep_baseline_seconds <= 0:
+        return None
+    if not sleep_daily_seconds or sleep_daily_seconds[-1] >= sleep_baseline_seconds:
         return None
     debt = 0.0
     shortfall_days = 0
@@ -237,7 +239,7 @@ def synthesize_sleep_debt_insight(
         content=content,
         permanence="volatile",
         importance=6.0,
-        confidence=0.7,
+        confidence=evidence_confidence(len(sleep_daily_seconds), len(sleep_daily_seconds)),
         tags=("chronicler-insight", PREDICATE_SLEEP_DEBT),
         metadata={
             "as_of": day.isoformat(),
@@ -274,57 +276,13 @@ def synthesize_self_reminders(day: date, flags: Iterable[Any]) -> list[InsightFa
                 # A reminder should fade if it is never reconciled.
                 permanence="ephemeral",
                 importance=4.0,
-                confidence=0.4,
+                confidence=INSIGHT_CONFIDENCE_FLOOR,
                 tags=("chronicler-self-reminder", str(flag_type)),
                 metadata={
                     "local_date": day.isoformat(),
                     "flag_type": flag_type,
                     "severity": getattr(f, "severity", None),
                     "detail": getattr(f, "detail", None) or {},
-                },
-            )
-        )
-    return out
-
-
-def synthesize_enrichment_proposals(
-    companions: Iterable[CompanionCopresence],
-    *,
-    window_start: date,
-    window_end: date,
-    min_distinct_days: int = COMPANION_MIN_DISTINCT_DAYS,
-) -> list[EnrichmentProposal]:
-    """Recurring-companion enrichment proposals, one per qualifying companion.
-
-    A companion qualifies once it is co-present on ``min_distinct_days`` or more
-    distinct local days across ``[window_start, window_end]``.
-    """
-    window_days = (window_end - window_start).days + 1
-    out: list[EnrichmentProposal] = []
-    for c in sorted(companions, key=lambda x: str(x.entity_id)):
-        if not c.entity_id or c.distinct_days < min_distinct_days:
-            continue
-        dedup_key = (
-            f"{PREDICATE_RECURRING_COMPANION}:{c.entity_id}:"
-            f"{window_start.isoformat()}_{window_end.isoformat()}"
-        )
-        message = (
-            f"Recurring companion: co-present on {c.distinct_days} of the last "
-            f"{window_days} days ({c.episode_count} social episodes)."
-        )
-        out.append(
-            EnrichmentProposal(
-                entity_id=str(c.entity_id),
-                predicate=PREDICATE_RECURRING_COMPANION,
-                distinct_days=c.distinct_days,
-                episode_count=c.episode_count,
-                window_start=window_start,
-                window_end=window_end,
-                dedup_key=dedup_key,
-                message=message,
-                metadata={
-                    "last_seen_at": c.last_seen_at.isoformat() if c.last_seen_at else None,
-                    "source": SOURCE_BUTLER,
                 },
             )
         )
@@ -340,26 +298,27 @@ async def execute_writeback(
     *,
     insights: Sequence[InsightFact],
     self_reminders: Sequence[InsightFact],
-    proposals: Sequence[EnrichmentProposal],
     store_fact_fn: StoreFactFn,
-    propose_enrichment_fn: ProposeEnrichmentFn | None,
+    transaction_guard: Callable[[Any], Awaitable[None]] | None = None,
 ) -> WriteBackResult:
     """Dispatch synthesized write-backs to their injected collaborators.
 
-    Best-effort per item: a single failure is logged and counted, never raised,
-    so one bad fact cannot strand the rest of the day-close write-back. This
-    function never notifies the owner — it has no channel to.
+    Ordinary storage failures are best-effort per item. A repair admission
+    failure stops the batch because every remaining fact was synthesized from
+    the same now-stale generation. This function never notifies the owner — it
+    has no channel to.
     """
     result = WriteBackResult()
 
     async def _store(fact: InsightFact) -> bool:
         try:
-            await store_fact_fn(
+            write_args: dict[str, Any] = dict(
                 subject=fact.subject,
                 predicate=fact.predicate,
                 content=fact.content,
                 permanence=fact.permanence,
                 importance=fact.importance,
+                confidence=fact.confidence,
                 tags=list(fact.tags),
                 metadata={
                     **fact.metadata,
@@ -367,7 +326,16 @@ async def execute_writeback(
                     "source": SOURCE_BUTLER,
                 },
             )
+            if transaction_guard is not None:
+                write_args["transaction_guard"] = transaction_guard
+            await store_fact_fn(**write_args)
             return True
+        except RepairAdmissionError as exc:
+            logger.info("chronicler writeback paused by repair fence: %s", exc)
+            result.errors += 1
+            result.status = "waiting_repair"
+            result.failure_reason = str(exc)
+            return False
         except Exception:
             logger.exception(
                 "chronicler writeback: failed to store fact %s/%s",
@@ -378,24 +346,16 @@ async def execute_writeback(
             return False
 
     for fact in insights:
+        if result.status != "complete":
+            break
         if await _store(fact):
             result.insights_written += 1
-    for fact in self_reminders:
-        if await _store(fact):
-            result.self_reminders_written += 1
-
-    if propose_enrichment_fn is not None:
-        for proposal in proposals:
-            try:
-                await propose_enrichment_fn(proposal)
-            except Exception:
-                logger.exception(
-                    "chronicler writeback: failed to propose enrichment for entity %s",
-                    proposal.entity_id,
-                )
-                result.errors += 1
-                continue
-            result.proposals_sent += 1
+    if result.status == "complete":
+        for fact in self_reminders:
+            if result.status != "complete":
+                break
+            if await _store(fact):
+                result.self_reminders_written += 1
 
     return result
 
@@ -418,98 +378,6 @@ def _coerce_zone(tz: str | ZoneInfo | None) -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
-def _local_window_utc(
-    start_date: date, end_date: date, tz: str | ZoneInfo
-) -> tuple[datetime, datetime]:
-    """UTC bounds of ``[start_date 00:00, (end_date + 1 day) 00:00)`` local."""
-    zone = _coerce_zone(tz)
-    start_local = datetime(start_date.year, start_date.month, start_date.day, tzinfo=zone)
-    end_exclusive = end_date + timedelta(days=1)
-    end_local = datetime(end_exclusive.year, end_exclusive.month, end_exclusive.day, tzinfo=zone)
-    return start_local.astimezone(UTC), end_local.astimezone(UTC)
-
-
-async def fetch_companion_copresence(
-    pool: Any,
-    *,
-    start_date: date,
-    end_date: date,
-    timezone: str,
-) -> list[CompanionCopresence]:
-    """Aggregate distinct-day co-presence per companion from OWN episodes.
-
-    Reads only chronicler-owned tables (``v_episodes_corrected`` +
-    ``episode_entities``, role != 'owner'), mirroring the ``/who-you-were-with``
-    handler's social-lane filter (``lane_for_activity(...) == "social"``) so the
-    two surfaces agree on what counts as company. Days are bucketed in the
-    owner's local timezone.
-    """
-    window_start_utc, window_end_utc = _local_window_utc(start_date, end_date, timezone)
-    zone = _coerce_zone(timezone)
-    try:
-        rows = await pool.fetch(
-            """
-            SELECT
-                e.source_name,
-                e.episode_type,
-                e.start_at,
-                e.end_at,
-                e.payload,
-                ee.entity_id
-            FROM v_episodes_corrected e
-            JOIN episode_entities ee
-                ON ee.episode_id = e.id AND ee.role != 'owner'
-            WHERE e.layer = 'activity'
-              AND e.tombstone_at IS NULL
-              AND e.privacy IN ('normal', 'sensitive')
-              AND e.start_at < $2
-              AND (e.end_at IS NULL OR e.end_at > $1)
-              AND ee.entity_id IS NOT NULL
-            """,
-            window_start_utc,
-            window_end_utc,
-        )
-    except Exception:
-        logger.exception(
-            "chronicler writeback: companion co-presence query failed for %s..%s",
-            start_date,
-            end_date,
-        )
-        return []
-
-    days_by_entity: dict[str, set[date]] = {}
-    count_by_entity: dict[str, int] = {}
-    last_seen_by_entity: dict[str, datetime] = {}
-    for row in rows:
-        payload = row["payload"] if isinstance(row["payload"], dict) else {}
-        lane = lane_for_activity(
-            "activity",
-            row["source_name"],
-            row["episode_type"],
-            trigger_source=payload.get("trigger_source"),
-        )
-        if lane != "social":
-            continue
-        entity_id = str(row["entity_id"])
-        ep_start: datetime = row["start_at"]
-        local_day = ep_start.astimezone(zone).date()
-        days_by_entity.setdefault(entity_id, set()).add(local_day)
-        count_by_entity[entity_id] = count_by_entity.get(entity_id, 0) + 1
-        prev = last_seen_by_entity.get(entity_id)
-        if prev is None or ep_start > prev:
-            last_seen_by_entity[entity_id] = ep_start
-
-    return [
-        CompanionCopresence(
-            entity_id=entity_id,
-            distinct_days=len(days),
-            episode_count=count_by_entity[entity_id],
-            last_seen_at=last_seen_by_entity.get(entity_id),
-        )
-        for entity_id, days in days_by_entity.items()
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Top-level day-close write-back
 # ---------------------------------------------------------------------------
@@ -521,15 +389,13 @@ async def run_day_close_writeback(
     day_date: date,
     timezone: str,
     store_fact_fn: StoreFactFn,
-    propose_enrichment_fn: ProposeEnrichmentFn | None = None,
     baseline_lookback_days: int = DEFAULT_BASELINE_LOOKBACK_DAYS,
 ) -> WriteBackResult:
     """Synthesize and persist the day-close write-back for ``day_date``.
 
     Reads the chronicler's OWN ``daily_rollups`` / ``daily_rollup_flags`` for
     the closed day plus a trailing baseline window, synthesizes insights +
-    self-reminders + (when a proposer is wired) recurring-companion proposals,
-    and dispatches them via the injected collaborators. Returns outcome counts;
+    self-reminders, and dispatches them via the injected collaborator. Returns outcome counts;
     never raises for data/collaborator failures (best-effort, like the tier2
     cache writer it runs beside).
     """
@@ -539,52 +405,105 @@ async def run_day_close_writeback(
     baseline_end = day_date - timedelta(days=1)
 
     try:
+        token: FactWriteToken = await capture_fact_write_token(
+            pool,
+            day_date=day_date,
+            timezone=timezone,
+            baseline_lookback_days=baseline_lookback_days,
+        )
+    except RepairAdmissionError as exc:
+        logger.info("chronicler writeback waiting for repair of %s: %s", day_date, exc)
+        return WriteBackResult(status="waiting_repair", failure_reason=str(exc))
+
+    try:
         day_rollups = await storage.list_daily_rollups(pool, local_date=day_date)
         baseline_rollups = await storage.list_daily_rollups_range(
             pool, start_date=baseline_start, end_date=baseline_end
         )
         flags = await storage.list_daily_rollup_flags(pool, local_date=day_date)
+        baseline_flags = await storage.list_daily_rollup_flags_range(
+            pool, start_date=baseline_start, end_date=baseline_end
+        )
     except Exception:
         logger.exception(
             "chronicler writeback: rollup fetch failed for %s; skipping write-back", day_date
         )
-        return WriteBackResult()
+        return WriteBackResult(status="failed", failure_reason="rollup fetch failed")
 
-    day_seconds_by_lane = {r.lane: r.seconds for r in day_rollups}
+    # Rollups deliberately zero-fill every lane for the balance API. That is
+    # not evidence of a measured zero for durable behavioral claims. Preserve
+    # numeric zero when it has a real sample, rather than testing truthiness.
+    dark_by_date: dict[date, set[str]] = {day_date: set()}
+    for flag_date, flag in [
+        *((day_date, flag) for flag in flags),
+        *((flag.local_date, flag) for flag in baseline_flags),
+    ]:
+        if flag.flag_type == "feeder_dark":
+            dark_by_date.setdefault(flag_date, set()).update(flag.detail.get("dark_sources", []))
+
+    def supported(row: Any) -> bool:
+        return (
+            row.timezone == timezone
+            and row.episode_count > 0
+            and not (sources_for_lane(row.lane) & dark_by_date.get(row.local_date, set()))
+        )
+
+    day_seconds_by_lane = {
+        r.lane: r.seconds for r in day_rollups if r.local_date == day_date and supported(r)
+    }
     baseline_by_lane: dict[str, list[int]] = {lane: [] for lane in LANES}
+    baseline_samples: dict[str, dict[date, int]] = {lane: {} for lane in LANES}
     for r in baseline_rollups:
-        if r.lane in baseline_by_lane:
+        if (
+            r.lane in baseline_by_lane
+            and baseline_start <= r.local_date <= baseline_end
+            and supported(r)
+        ):
             baseline_by_lane[r.lane].append(r.seconds)
+            baseline_samples[r.lane][r.local_date] = r.seconds
 
-    balances = compute_daily_balance(day_seconds_by_lane, baseline_by_lane)
+    balances = [
+        b
+        for b in compute_daily_balance(
+            day_seconds_by_lane,
+            baseline_samples,
+            local_date=day_date,
+            lookback_days=baseline_lookback_days,
+        )
+        if b.lane in day_seconds_by_lane
+    ]
 
-    insights = synthesize_lane_skew_insights(day_date, balances)
-    sleep_window = [*baseline_by_lane.get("sleep", []), day_seconds_by_lane.get("sleep", 0)]
+    insights = synthesize_lane_skew_insights(day_date, balances, window_days=baseline_lookback_days)
+    # The pure synthesis text describes consecutive calendar days. Missing
+    # dates cannot be compressed into a confident shorter debt window.
+    sleep_by_day = {
+        row.local_date: row.seconds
+        for row in baseline_rollups
+        if row.lane == "sleep"
+        and baseline_start <= row.local_date <= baseline_end
+        and supported(row)
+    }
+    expected_days = {baseline_start + timedelta(days=i) for i in range(baseline_lookback_days)}
+    sleep_window = (
+        [*(sleep_by_day[day] for day in sorted(expected_days)), day_seconds_by_lane["sleep"]]
+        if "sleep" in day_seconds_by_lane and set(sleep_by_day) == expected_days
+        else []
+    )
     sleep_debt = synthesize_sleep_debt_insight(
         day_date,
         sleep_daily_seconds=sleep_window,
         sleep_baseline_seconds=_mean(baseline_by_lane.get("sleep", [])),
     )
-    if sleep_debt is not None:
+    if sleep_debt is not None and "sleep" in day_seconds_by_lane:
         insights.append(sleep_debt)
 
     self_reminders = synthesize_self_reminders(day_date, flags)
 
-    proposals: list[EnrichmentProposal] = []
-    if propose_enrichment_fn is not None:
-        companions = await fetch_companion_copresence(
-            pool, start_date=baseline_start, end_date=day_date, timezone=timezone
-        )
-        proposals = synthesize_enrichment_proposals(
-            companions, window_start=baseline_start, window_end=day_date
-        )
-
     return await execute_writeback(
         insights=insights,
         self_reminders=self_reminders,
-        proposals=proposals,
         store_fact_fn=store_fact_fn,
-        propose_enrichment_fn=propose_enrichment_fn,
+        transaction_guard=make_fact_write_guard(token),
     )
 
 
@@ -593,13 +512,23 @@ async def run_day_close_writeback(
 # ---------------------------------------------------------------------------
 
 
-def build_chronicler_fact_writer(pool: Any, embedding_engine: Any) -> StoreFactFn:
-    """Bind ``memory.storage.store_fact`` to the chronicler's OWN schema.
+def build_chronicler_fact_writer(
+    pool: Any,
+    embedding_engine: Any,
+    *,
+    memory_schema: str = "chronicler_mem",
+) -> StoreFactFn:
+    """Bind ``memory.storage.store_fact`` to the chronicler's configured schema.
 
-    The returned callable only ever writes through ``pool`` (chronicler schema)
-    with ``source_butler="chronicler"`` — it structurally cannot write another
-    butler's schema.
+    The returned callable only ever writes through ``pool`` with the explicit
+    owning ``memory_schema`` provenance and ``source_butler="chronicler"``.
+    Shared-catalog publication remains disabled on this path.
     """
+    if memory_schema != "chronicler_mem":
+        raise ValueError(
+            "Chronicler fact writer must use chronicler_mem to match chronicler_030 disposition"
+        )
+
     from butlers.modules.memory import storage as memory_storage
 
     async def _write(
@@ -609,8 +538,10 @@ def build_chronicler_fact_writer(pool: Any, embedding_engine: Any) -> StoreFactF
         content: str,
         permanence: str,
         importance: float,
+        confidence: float,
         tags: list[str],
         metadata: dict[str, Any],
+        transaction_guard: Callable[[Any], Awaitable[None]] | None = None,
     ) -> Any:
         return await memory_storage.store_fact(
             pool,
@@ -619,33 +550,33 @@ def build_chronicler_fact_writer(pool: Any, embedding_engine: Any) -> StoreFactF
             content,
             embedding_engine,
             importance=importance,
+            confidence=confidence,
             permanence=permanence,
             tags=tags,
             metadata=metadata,
             source_butler=SOURCE_BUTLER,
-            source_schema=SOURCE_BUTLER,
+            source_schema=memory_schema,
+            enable_shared_catalog=False,
+            transaction_guard=transaction_guard,
         )
 
     return _write
 
 
 __all__ = [
-    "COMPANION_MIN_DISTINCT_DAYS",
+    "INSIGHT_CONFIDENCE_CEILING",
+    "INSIGHT_CONFIDENCE_FLOOR",
     "PREDICATE_LANE_SKEW",
-    "PREDICATE_RECURRING_COMPANION",
     "PREDICATE_SELF_REMINDER",
     "PREDICATE_SLEEP_DEBT",
     "SLEEP_DEBT_THRESHOLD_SECONDS",
     "SOURCE_BUTLER",
-    "CompanionCopresence",
-    "EnrichmentProposal",
     "InsightFact",
     "WriteBackResult",
     "build_chronicler_fact_writer",
+    "evidence_confidence",
     "execute_writeback",
-    "fetch_companion_copresence",
     "run_day_close_writeback",
-    "synthesize_enrichment_proposals",
     "synthesize_lane_skew_insights",
     "synthesize_self_reminders",
     "synthesize_sleep_debt_insight",

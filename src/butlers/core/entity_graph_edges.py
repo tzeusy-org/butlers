@@ -25,6 +25,8 @@ from datetime import datetime
 
 import asyncpg
 
+from butlers.core.chronicler_visibility import graph_projection_visible
+
 #: Sensitivity vocabulary, reused verbatim from the memory-catalog convention
 #: (``butlers.modules.memory.search.CATALOG_SENSITIVITY_LEVELS``).
 SENSITIVITY_LEVELS: tuple[str, ...] = ("normal", "pii", "confidential")
@@ -288,12 +290,14 @@ _WALK_CTE = """
     WITH RECURSIVE adj AS (
         SELECT id AS edge_id, subject_entity_id AS from_id, object_entity_id AS to_id,
                predicate, 'out'::text AS edge_direction
-        FROM public.entity_graph_edges
-        WHERE withheld_reason IS NULL
+        FROM public.entity_graph_edges AS edge
+        WHERE edge.withheld_reason IS NULL
+          AND {graph_visible}
         UNION ALL
         SELECT id, object_entity_id, subject_entity_id, predicate, 'in'::text
-        FROM public.entity_graph_edges
-        WHERE withheld_reason IS NULL
+        FROM public.entity_graph_edges AS edge
+        WHERE edge.withheld_reason IS NULL
+          AND {graph_visible}
     ),
     walk AS (
         SELECT
@@ -355,8 +359,9 @@ async def walk_entity_graph(
     """
     resolved_direction = _resolve_walk_params(max_hops, direction)
     bounded_limit = max(1, min(limit, MAX_WALK_RESULTS))
+    graph_visible = graph_projection_visible("edge")
     sql = (
-        _WALK_CTE
+        _WALK_CTE.format(graph_visible=graph_visible)
         + """
         SELECT * FROM (
             SELECT DISTINCT ON (w.entity_id)
@@ -394,8 +399,9 @@ async def find_entity_graph_path(
     if from_entity_id == to_entity_id:
         return []
     resolved_direction = _resolve_walk_params(max_hops, direction)
+    graph_visible = graph_projection_visible("edge")
     sql = (
-        _WALK_CTE
+        _WALK_CTE.format(graph_visible=graph_visible)
         + """
         SELECT w.edge_path
         FROM walk w
@@ -411,10 +417,13 @@ async def find_entity_graph_path(
         return None
     edges = await pool.fetch(
         "SELECT id, subject_entity_id, predicate, object_entity_id "
-        "FROM public.entity_graph_edges WHERE id = ANY($1::uuid[])",
+        "FROM public.entity_graph_edges AS edge WHERE edge.id = ANY($1::uuid[]) "
+        f"AND {graph_projection_visible('edge')}",
         edge_path,
     )
     by_id = {row["id"]: row for row in edges}
+    if len(by_id) != len(edge_path):
+        return None
     return [by_id[edge_id] for edge_id in edge_path]
 
 
@@ -431,8 +440,8 @@ async def coverage_for_entities(
 ) -> dict[uuid.UUID, tuple[int, int]]:
     """Batch-count live/withheld edges touching each of ``entity_ids``.
 
-    An entity counts an edge whether it appears as ``subject_entity_id`` or
-    ``object_entity_id`` -- withheld stubs only ever populate the subject
+    An entity counts each edge once, including a self-edge, whether it appears
+    as ``subject_entity_id`` or ``object_entity_id``. Withheld stubs only populate the subject
     side, so they are counted once, on the entity that owns the withheld
     fact. Returns ``{entity_id: (relationships_known, relationships_withheld)}``;
     an entity with no edges at all is simply absent from the mapping, not
@@ -441,19 +450,22 @@ async def coverage_for_entities(
     if not entity_ids:
         return {}
     unique_ids = list({eid for eid in entity_ids})
+    graph_visible = graph_projection_visible("edge")
     rows = await pool.fetch(
-        """
+        f"""
         SELECT entity_id,
-               COUNT(*) FILTER (WHERE withheld_reason IS NULL)     AS known,
-               COUNT(*) FILTER (WHERE withheld_reason IS NOT NULL) AS withheld
+               COUNT(DISTINCT edge_id) FILTER (WHERE withheld_reason IS NULL)     AS known,
+               COUNT(DISTINCT edge_id) FILTER (WHERE withheld_reason IS NOT NULL) AS withheld
         FROM (
-            SELECT subject_entity_id AS entity_id, withheld_reason
-            FROM public.entity_graph_edges
-            WHERE subject_entity_id = ANY($1::uuid[])
+            SELECT edge.id AS edge_id, edge.subject_entity_id AS entity_id, edge.withheld_reason
+            FROM public.entity_graph_edges AS edge
+            WHERE edge.subject_entity_id = ANY($1::uuid[])
+              AND {graph_visible}
             UNION ALL
-            SELECT object_entity_id AS entity_id, withheld_reason
-            FROM public.entity_graph_edges
-            WHERE object_entity_id = ANY($1::uuid[])
+            SELECT edge.id AS edge_id, edge.object_entity_id AS entity_id, edge.withheld_reason
+            FROM public.entity_graph_edges AS edge
+            WHERE edge.object_entity_id = ANY($1::uuid[])
+              AND {graph_visible}
         ) sides
         GROUP BY entity_id
         """,
@@ -504,6 +516,7 @@ class EntityDossierRead:
 _LIVE_EDGE_FILTER = """
     withheld_reason IS NULL
     AND (subject_entity_id = $1 OR object_entity_id = $1)
+    AND {graph_visible}
 """
 
 
@@ -516,39 +529,47 @@ async def dossier_for_entity(
     entity counts a live edge on either end, but a withheld stub only on the subject side (the
     only side a stub populates), matching :func:`coverage_for_entities`.  A self-referencing
     live edge is one edge here.  Failures propagate: the caller must report the graph as
-    unavailable rather than substitute an empty dossier.
+    unavailable rather than substitute an empty dossier. All three reads share one read-only
+    repeatable-read snapshot so concurrent projection changes cannot split receipts and totals.
     """
     bounded = max(1, min(int(limit), DOSSIER_RECEIPT_LIMIT_MAX))
-    group_rows = await pool.fetch(
-        f"""
-        SELECT source_schema, source_table, COUNT(*) AS live
-        FROM public.entity_graph_edges
-        WHERE {_LIVE_EDGE_FILTER}
-        GROUP BY source_schema, source_table
-        ORDER BY source_schema, source_table
-        """,
-        entity_id,
-    )
-    edge_rows = await pool.fetch(
-        f"""
-        SELECT id, source_schema, source_table, source_id, subject_entity_id,
-               predicate, object_entity_id, sensitivity, updated_at
-        FROM public.entity_graph_edges
-        WHERE {_LIVE_EDGE_FILTER}
-        ORDER BY updated_at DESC, id
-        LIMIT $2
-        """,
-        entity_id,
-        bounded,
-    )
-    withheld = await pool.fetchval(
-        """
-        SELECT COUNT(*)
-        FROM public.entity_graph_edges
-        WHERE subject_entity_id = $1 AND withheld_reason IS NOT NULL
-        """,
-        entity_id,
-    )
+    graph_visible = graph_projection_visible("entity_graph_edges")
+    withheld_graph_visible = graph_projection_visible("edge")
+    live_edge_filter = _LIVE_EDGE_FILTER.format(graph_visible=graph_visible)
+    async with pool.acquire() as conn:
+        async with conn.transaction(isolation="repeatable_read", readonly=True):
+            group_rows = await conn.fetch(
+                f"""
+                SELECT source_schema, source_table, COUNT(*) AS live
+                FROM public.entity_graph_edges
+                WHERE {live_edge_filter}
+                GROUP BY source_schema, source_table
+                ORDER BY source_schema, source_table
+                """,
+                entity_id,
+            )
+            edge_rows = await conn.fetch(
+                f"""
+                SELECT id, source_schema, source_table, source_id, subject_entity_id,
+                       predicate, object_entity_id, sensitivity, updated_at
+                FROM public.entity_graph_edges
+                WHERE {live_edge_filter}
+                ORDER BY updated_at DESC, id
+                LIMIT $2
+                """,
+                entity_id,
+                bounded,
+            )
+            withheld = await conn.fetchval(
+                f"""
+                SELECT COUNT(*)
+                FROM public.entity_graph_edges AS edge
+                WHERE edge.subject_entity_id = $1
+                  AND edge.withheld_reason IS NOT NULL
+                  AND {withheld_graph_visible}
+                """,
+                entity_id,
+            )
     receipts = [
         DossierReceipt(
             edge_id=row["id"],

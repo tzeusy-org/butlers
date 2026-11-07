@@ -79,6 +79,34 @@ def test_resolve_cross_container_mcp_url_rewrites_localhost_when_butlers_host_se
         == "http://butlers-up:41104/mcp?x=1"
     )
 
+    # The control process moved, while domain endpoints retain their host.
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://butlers-control:41100/sse")
+    assert (
+        resolve_cross_container_mcp_url("http://localhost:41100/mcp?x=1")
+        == "http://butlers-control:41100/mcp?x=1"
+    )
+    assert (
+        resolve_cross_container_mcp_url("http://localhost:41104/mcp")
+        == "http://butlers-up:41104/mcp"
+    )
+    from butlers.api.deps import ButlerConnectionInfo
+
+    assert ButlerConnectionInfo("switchboard", 41100).sse_url == "http://butlers-control:41100/sse"
+    assert ButlerConnectionInfo("messenger", 41104).sse_url == "http://butlers-up:41104/sse"
+    assert resolve_cross_container_mcp_url("http://remote:41100/mcp") == "http://remote:41100/mcp"
+    assert (
+        resolve_cross_container_mcp_url("http://us%40er:p%3Ass@localhost:41100/mcp?x=1")
+        == "http://us%40er:p%3Ass@butlers-control:41100/mcp?x=1"
+    )
+    monkeypatch.delenv("BUTLERS_HOST")
+    assert (
+        resolve_cross_container_mcp_url("http://localhost:41100/mcp")
+        == "http://butlers-control:41100/mcp"
+    )
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "not-an-http-endpoint")
+    with pytest.raises(ValueError, match="absolute HTTP MCP URL"):
+        resolve_cross_container_mcp_url("http://localhost:41100/mcp")
+
 
 def test_resolve_cross_container_mcp_url_noop_when_butlers_host_unset(monkeypatch):
     """Inside butlers-up itself (or any test env) BUTLERS_HOST is unset, so

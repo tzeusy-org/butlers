@@ -19,9 +19,10 @@ import pytest
 from asyncpg.exceptions import UndefinedTableError
 
 from butlers.api.db import DatabaseManager
-from butlers.api.read_models.activity_v1 import ActivitySessionRow
-from butlers.api.read_models.timeline_v1 import TimelineSessionRow
-from butlers.api.routers.activity_feed import _get_db_manager, _normalize_tz, _session_to_event
+from butlers.api.deps import get_db
+from butlers.api.read_models.activity import ActivitySessionRow
+from butlers.api.read_models.timeline import TimelineSessionRow
+from butlers.api.routers.activity_feed import _normalize_tz, _session_to_event
 from butlers.api.routers.timeline import _session_dto_to_event
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -159,7 +160,7 @@ def _make_app(
         mock_db.pool.return_value = mock_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 

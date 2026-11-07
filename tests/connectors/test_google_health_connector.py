@@ -57,7 +57,8 @@ from butlers.connectors.google_health_client import (
     exponential_backoff_delay,
 )
 from butlers.google_account_registry import GoogleAccount, HealthScopedAccount
-from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+from butlers.testing.clock import FakeClock
+from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
 _OWNER_EMAIL = "owner@example.com"
 _ENDPOINT = _endpoint_identity_for_user(_OWNER_EMAIL)
@@ -99,8 +100,8 @@ def test_google_health_scope_and_resource_registry_contract() -> None:
         "breathing_rate": "/users/me/dataTypes/daily-respiratory-rate/dataPoints:reconcile",
         "vo2_max": "/users/me/dataTypes/daily-vo2-max/dataPoints:reconcile",
         "workout": "/users/me/dataTypes/exercise/dataPoints:reconcile",
-        "weight": "/users/me/dataTypes/weight/dataPoints",
-        "body_fat": "/users/me/dataTypes/body-fat/dataPoints",
+        "weight": "/users/me/dataTypes/weight/dataPoints:reconcile",
+        "body_fat": "/users/me/dataTypes/body-fat/dataPoints:reconcile",
     }
 
 
@@ -325,7 +326,11 @@ async def test_mint_access_token_classifies_only_exact_oauth_error_codes(
     connector._client_id = "client-id"
     connector._client_secret = "client-secret"
     connector._http_client = MagicMock()
-    connector._http_client.post = AsyncMock(return_value=httpx.Response(400, json=payload))
+    connector._http_client.post = AsyncMock(
+        return_value=httpx.Response(
+            400, json=payload, request=httpx.Request("POST", "https://oauth2.googleapis.com/token")
+        )
+    )
     monkeypatch.setattr(
         "butlers.google_credentials._resolve_entity_refresh_token",
         AsyncMock(return_value="refresh-token"),
@@ -336,6 +341,19 @@ async def test_mint_access_token_classifies_only_exact_oauth_error_codes(
 
     if expected_error is GoogleHealthCredentialError:
         assert type(exc_info.value) is GoogleHealthCredentialError
+
+    connector._shared_pool.execute = AsyncMock()
+    if expected_error is GoogleHealthTokenRevokedError:
+        await connector._mark_account_revoked(ctx.account_id)
+        args = connector._shared_pool.execute.await_args.args
+        assert "WHERE ga.id = $1" in args[0]
+        assert "ei.value = $2" in args[0]
+        assert args[1] == ctx.account_id and args[1] != ctx.entity_id
+        assert args[2] == "refresh-token"
+    else:
+        # The helper refuses a transition without qualified grant provenance.
+        await connector._mark_account_revoked(ctx.account_id)
+        connector._shared_pool.execute.assert_not_awaited()
 
 
 def test_health_state_reports_degraded_when_account_missing() -> None:
@@ -613,12 +631,17 @@ async def test_poll_resource_emits_envelope_for_new_record(
     """Per-Resource Polling emits stable, schema-valid sleep and daily envelopes."""
     from datetime import UTC, datetime
 
+    poll_clock = FakeClock(datetime(2026, 4, 24, 10, 0, tzinfo=UTC))
+
     class _PollClock(datetime):
-        values = iter(datetime(2026, 4, 24, 10, minute, tzinfo=UTC) for minute in range(30))
+        values = iter(range(30))
 
         @classmethod
         def now(cls, _tz: object = None) -> datetime:
-            return next(cls.values)
+            next(cls.values)
+            instant = poll_clock.now()
+            poll_clock.advance(60)
+            return instant
 
     connector, ctx = _make_connector_with_account()
     sleep_state = connector._resources[(ctx.account_id, "sleep")]
@@ -1147,6 +1170,43 @@ async def test_per_account_token_mint_isolation(monkeypatch: pytest.MonkeyPatch)
     # Only B's token is cached; A has nothing.
     assert ctx_a.cached_access_token is None
     assert ctx_b.cached_access_token == f"token-for-{_UUID_B}"
+
+
+@pytest.mark.asyncio
+async def test_resolve_owner_pre_initialises_alert_counters_per_resource() -> None:
+    """Alertable counters exist at zero before their first event, per account and resource.
+
+    ``increase()`` needs a prior sample, so a lazily created child would hide the
+    first-ever page-cap or quarantine event. An email change re-keys the identity
+    and must prime the new label set too.
+    """
+    from prometheus_client import REGISTRY
+
+    connector = _make_connector()
+    connector._shared_pool = MagicMock()
+    connector._spinup_account_heartbeat = MagicMock()  # type: ignore[method-assign]
+    account = HealthScopedAccount(
+        id=_UUID_A, email="prime@example.com", entity_id=_ENTITY_A, refresh_token_present=True
+    )
+    renamed = HealthScopedAccount(
+        id=_UUID_A, email="primed@example.com", entity_id=_ENTITY_A, refresh_token_present=True
+    )
+
+    for registry_rows in ([account], [renamed]):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                "butlers.connectors.google_health.list_health_scoped_accounts",
+                AsyncMock(return_value=registry_rows),
+            )
+            await connector._resolve_owner_and_scopes()
+        identity = _endpoint_identity_for_user(registry_rows[0].email)
+        for bundle in RESOURCE_BUNDLES:
+            labels = {"endpoint_identity": identity, "resource": bundle.resource}
+            for sample in (
+                "connector_google_health_window_page_cap_exceeded_total",
+                "connector_google_health_quarantined_envelopes_total",
+            ):
+                assert REGISTRY.get_sample_value(sample, labels) == 0.0, (sample, labels)
 
 
 def test_prometheus_labels_distinct_per_account() -> None:
@@ -1717,8 +1777,9 @@ async def test_two_account_integration_distinct_heartbeats_and_mints(
 
     submitted_envelopes: list[dict[str, Any]] = []
 
-    async def _capture_envelope(env: dict[str, Any], **kwargs: Any) -> None:
+    async def _capture_envelope(env: dict[str, Any], **kwargs: Any) -> bool:
         submitted_envelopes.append(env)
+        return True
 
     monkeypatch.setattr(connector, "_submit_envelope", _capture_envelope)
 
@@ -2020,6 +2081,16 @@ async def test_main_loop_token_revoked_error_marks_account_revoked(
     revoke_mock.assert_awaited_with(_UUID_A)
 
 
+def _failure_streak_gauge(ctx: Any, resource: str) -> float | None:
+    """The alertable per-resource failure-streak gauge (bu-u5euwb.30)."""
+    from prometheus_client import REGISTRY
+
+    return REGISTRY.get_sample_value(
+        "connector_google_health_resource_consecutive_failures",
+        {"endpoint_identity": ctx.endpoint_identity, "resource": resource},
+    )
+
+
 @pytest.mark.asyncio
 async def test_main_loop_tracks_per_resource_consecutive_failures(
     monkeypatch: pytest.MonkeyPatch,
@@ -2062,6 +2133,7 @@ async def test_main_loop_tracks_per_resource_consecutive_failures(
 
     activity_state = connector._resources[(ctx.account_id, "activity")]
     assert activity_state.consecutive_failures == 1
+    assert _failure_streak_gauge(ctx, "activity") == 1
     assert activity_state.last_error is not None
     assert activity_state.last_error_at is not None
 
@@ -2106,6 +2178,7 @@ async def test_main_loop_resource_failure_streak_resets_on_next_success(
     await connector._main_loop()
 
     assert state.consecutive_failures == 0
+    assert _failure_streak_gauge(ctx, "activity") == 0
     assert state.last_error is None
     assert state.last_error_at is None
 
@@ -2339,7 +2412,8 @@ async def test_policy_block_persists_no_raw_payload() -> None:
         ),
     )
 
-    await connector._submit_envelope(_privacy_envelope(), resource="steps")
+    # A recorded policy drop is handled, so it does not hold the poll checkpoint.
+    assert await connector._submit_envelope(_privacy_envelope(), resource="steps")
 
     rows = connector._filtered_event_buffer._rows
     assert len(rows) == 1
@@ -2360,13 +2434,43 @@ async def test_submission_error_retains_raw_payload() -> None:
     connector._mcp_client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
 
     envelope = _privacy_envelope()
-    await connector._submit_envelope(envelope, resource="steps")
+    assert not await connector._submit_envelope(envelope, resource="steps")
 
     rows = connector._filtered_event_buffer._rows
     assert len(rows) == 1
     row = rows[0]
     assert row[8] == "error"
     assert row[9]["payload"]["raw"] == {"steps": 1234}
+
+
+@pytest.mark.parametrize(
+    ("reply", "outcome", "error_rows"),
+    [
+        ({"status": "accepted"}, "HANDLED", 0),
+        ({"status": "duplicate"}, "HANDLED", 0),
+        ({"status": "error", "error": "refused"}, "REJECTED", 1),
+        (RuntimeError("Server session was closed unexpectedly"), "FAILED", 1),
+        (ConnectionError("switchboard down"), "FAILED", 1),
+    ],
+)
+async def test_submission_classifies_the_ingest_reply(reply, outcome, error_rows) -> None:
+    """Only an ingest error-status reply is a rejection; every exception stays transient."""
+    from butlers.connectors import google_health as gh
+    from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+
+    connector = _make_connector()
+    connector._ingestion_policy = None
+    connector._filtered_event_buffer = FilteredEventBuffer("google_health", "ep")
+    if isinstance(reply, Exception):
+        connector._mcp_client.call_tool = AsyncMock(side_effect=reply)  # type: ignore[method-assign]
+    else:
+        connector._mcp_client.call_tool = AsyncMock(return_value=reply)  # type: ignore[method-assign]
+
+    result = await connector._submit_envelope(_privacy_envelope(), resource="steps")
+
+    assert result is getattr(gh.SubmissionOutcome, outcome)
+    assert bool(result) is (outcome == "HANDLED")
+    assert len(connector._filtered_event_buffer) == error_rows
 
 
 # ---------------------------------------------------------------------------
@@ -2476,3 +2580,15 @@ def test_poll_workout_scope_is_already_requested() -> None:
         GOOGLE_HEALTH_SCOPES
     )
     assert len(GOOGLE_HEALTH_SCOPES) == 3
+
+
+def test_descriptor_identity_preserves_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from butlers.connectors import google_health as module
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "17")
+    config = module.GoogleHealthConnectorConfig.from_env()
+    assert (config.channel, config.provider) == ("wellness", "google_health")
+    assert config.max_inflight == 17

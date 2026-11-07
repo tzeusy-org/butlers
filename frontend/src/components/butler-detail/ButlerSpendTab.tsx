@@ -32,7 +32,7 @@ import { DayBars } from "@/components/butlers/DayBars";
 import { RangeToggle } from "@/components/ui/range-toggle";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import type { RangeValue } from "@/components/ui/range-toggle";
-import { ButlerPanelGrid, Panel, KpiCell, ErrorLine, LoadingLine, EmptyLine } from "@/components/butler-detail/atoms";
+import { ButlerPanelGrid, Panel, KpiCell, ErrorLine, LoadingLine, EmptyLine } from "@/components/ui/atoms";
 
 // ---------------------------------------------------------------------------
 // Format helpers

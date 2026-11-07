@@ -1,0 +1,46 @@
+name: living-specs
+version: 1
+description: Living-contract workflow - proposal → design → tasks; no change-local deltas
+artifacts:
+  - id: proposal
+    generates: proposal.md
+    description: Motivation, scope and affected canonical contracts
+    template: proposal.md
+    instruction: |
+      Read about/heart-and-soul/development.md and the affected canonical specs. Use this workflow
+      for new standalone work when a design is required; do not create change-local deltas.
+      Record why the canonical contracts are sufficient and which files will be updated, if any.
+      New multi-PR programs may use spec-driven local deltas. Preserve every existing legacy
+      program under its resolved schema with metadata, content and deltas unchanged.
+
+      This schema has no specs artifact. Preserve the generated schema and created fields in
+      .openspec.yaml and add skip_specs: true. Do not create a placeholder specs/ directory. Verify
+      this metadata before continuing; if the marker or generated schema/created fields are missing,
+      stop and correct this new change. Update the governing canonical requirement in the same change
+      whenever required behavior changes.
+    requires: []
+  - id: design
+    generates: design.md
+    description: Decisions, boundaries, alternatives and migration
+    template: design.md
+    instruction: |
+      State the design requirement and boundary, the affected canonical requirements, decisions,
+      alternatives, compatibility and migration. Do not turn this artifact into a local delta spec.
+    requires: [proposal]
+  - id: tasks
+    generates: tasks.md
+    description: Countable implementation and verification checklist
+    template: tasks.md
+    instruction: |
+      Read proposal, design and affected canonical specs. Include implementation, direct canonical
+      updates when required, targeted verification, review and delivery. The no-delta marker is not
+      approval and does not waive source, test, security or owner gates.
+    requires: [design]
+apply:
+  requires: [proposal, design, tasks]
+  tracks: tasks.md
+  instruction: |
+    Read all artifacts and the affected canonical specs. This workflow uses skip_specs: true because
+    it has no change-local specs. If the marker or generated schema/created metadata is missing, stop
+    before applying work. Update canonical requirements in the same change when behavior changes;
+    preserve all approval, implementation review and verification gates.

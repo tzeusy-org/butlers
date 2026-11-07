@@ -38,11 +38,10 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers import memory as memory_module
+from butlers.api.deps import get_db
 from butlers.api.routers.audit import AuditTableNotAvailableError
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+from tests.audit_helpers import clear_audit_log_for_test
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -54,32 +53,16 @@ pytestmark = [
 BASE_URL = "http://test"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the core chain (public.memory_retention_policies/audit_log)."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
+@pytest.fixture
+async def audit_pool(db_pool: asyncpg.Pool) -> asyncpg.Pool:
+    """Core chain (public.memory_retention_policies/audit_log), seeds cleared."""
+    await db_pool.execute("TRUNCATE TABLE public.memory_retention_policies CASCADE")
+    await clear_audit_log_for_test(db_pool)
+    return db_pool
 
 
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE public.memory_retention_policies CASCADE")
-    await p.execute("TRUNCATE TABLE public.audit_log CASCADE")
-    yield p
-    await p.close()
-
-
-@pytest.fixture
-def rollback_app(pool: asyncpg.Pool) -> FastAPI:
+def rollback_app(audit_pool: asyncpg.Pool) -> FastAPI:
     """FastAPI app whose memory router is wired to the real pool.
 
     Uses the real ``create_app()`` (not a bare router mount) so the
@@ -88,10 +71,10 @@ def rollback_app(pool: asyncpg.Pool) -> FastAPI:
     """
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["chronicler"]
-    mock_db.pool.return_value = pool
+    mock_db.pool.return_value = audit_pool
 
     application = create_app()
-    application.dependency_overrides[memory_module._get_db_manager] = lambda: mock_db
+    application.dependency_overrides[get_db] = lambda: mock_db
     return application
 
 
@@ -100,7 +83,7 @@ async def _client(app: FastAPI) -> httpx.AsyncClient:
 
 
 async def test_retention_policy_update_rolls_back_on_audit_unavailable(
-    pool: asyncpg.Pool, rollback_app: FastAPI
+    audit_pool: asyncpg.Pool, rollback_app: FastAPI
 ) -> None:
     """When audit.append() raises AuditTableNotAvailableError, the request
     returns 503 {"error": "audit_unavailable"} and the retention-policy row
@@ -119,19 +102,19 @@ async def test_retention_policy_update_rolls_back_on_audit_unavailable(
     assert resp.status_code == 503
     assert resp.json() == {"error": "audit_unavailable"}
 
-    row = await pool.fetchrow(
+    row = await audit_pool.fetchrow(
         "SELECT * FROM public.memory_retention_policies WHERE kind = $1", "event"
     )
     assert row is None, "retention-policy row must roll back when the audit write fails"
 
-    audit_count = await pool.fetchval(
+    audit_count = await audit_pool.fetchval(
         "SELECT count(*) FROM public.audit_log WHERE action = 'memory.retention_policy'"
     )
     assert audit_count == 0, "audit row must not survive the rolled-back transaction"
 
 
 async def test_retention_policy_update_commits_state_and_audit_together(
-    pool: asyncpg.Pool, rollback_app: FastAPI
+    audit_pool: asyncpg.Pool, rollback_app: FastAPI
 ) -> None:
     """On success, the retention-policy row and the audit row both commit."""
     async with await _client(rollback_app) as client:
@@ -142,14 +125,14 @@ async def test_retention_policy_update_commits_state_and_audit_together(
 
     assert resp.status_code == 200
 
-    row = await pool.fetchrow(
+    row = await audit_pool.fetchrow(
         "SELECT ttl_days, max_rows FROM public.memory_retention_policies WHERE kind = $1", "fact"
     )
     assert row is not None, "retention-policy row must be persisted on success"
     assert row["ttl_days"] == 60
     assert row["max_rows"] == 2000
 
-    audit_row = await pool.fetchrow(
+    audit_row = await audit_pool.fetchrow(
         "SELECT target, note FROM public.audit_log WHERE action = 'memory.retention_policy'"
     )
     assert audit_row is not None, "audit row must be persisted alongside the state change"

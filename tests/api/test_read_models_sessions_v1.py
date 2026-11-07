@@ -22,7 +22,7 @@ from uuid import uuid4
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.read_models.sessions_v1 import (
+from butlers.api.read_models.sessions import (
     DETAIL_COLUMNS,
     READ_MODEL_VERSION,
     SUMMARY_COLUMNS,
@@ -40,6 +40,7 @@ from butlers.api.read_models.sessions_v1 import (
     row_to_summary,
 )
 from butlers.core.spawner import SESSION_CANCELLED_ERROR
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -101,13 +102,6 @@ def _detail_record(**overrides) -> dict:
     return base
 
 
-def _make_record(d: dict):
-    """Wrap a dict in a MagicMock that supports subscript access."""
-    m = MagicMock()
-    m.__getitem__ = lambda self, k: d[k]
-    return m
-
-
 # ---------------------------------------------------------------------------
 # Version marker
 # ---------------------------------------------------------------------------
@@ -124,7 +118,7 @@ def test_version_marker_is_sessions_v1():
 
 
 def test_row_to_summary_maps_all_fields():
-    row = _make_record(_summary_record())
+    row = Record(_summary_record())
     dto = row_to_summary(row, butler="atlas")
 
     assert dto.id == _SESSION_ID
@@ -153,12 +147,12 @@ def test_summary_projection_derives_only_the_canonical_cancellation_indicator():
     assert f"error = '{SESSION_CANCELLED_ERROR}'" in SUMMARY_COLUMNS
     assert "id, prompt" in SUMMARY_COLUMNS
 
-    dto = row_to_summary(_make_record(_summary_record(cancelled_by_owner=True)), butler="atlas")
+    dto = row_to_summary(Record(_summary_record(cancelled_by_owner=True)), butler="atlas")
     assert dto.cancelled_by_owner is True
 
 
 def test_row_to_summary_none_butler_allowed():
-    row = _make_record(_summary_record())
+    row = Record(_summary_record())
     dto = row_to_summary(row)
     assert dto.butler is None
 
@@ -170,7 +164,7 @@ def test_row_to_summary_none_butler_allowed():
 
 def test_row_to_detail_coerces_tool_calls_json_string():
     """tool_calls stored as a JSON string must be parsed to a list."""
-    row = _make_record(_detail_record(tool_calls=json.dumps([{"name": "search"}])))
+    row = Record(_detail_record(tool_calls=json.dumps([{"name": "search"}])))
     dto = row_to_detail(row, butler="atlas")
     assert isinstance(dto.tool_calls, list)
     assert dto.tool_calls[0]["name"] == "search"
@@ -178,14 +172,14 @@ def test_row_to_detail_coerces_tool_calls_json_string():
 
 def test_row_to_detail_accepts_tool_calls_as_list():
     """tool_calls already a list (e.g. asyncpg JSONB decode) must pass through."""
-    row = _make_record(_detail_record(tool_calls=[{"name": "write_file"}]))
+    row = Record(_detail_record(tool_calls=[{"name": "write_file"}]))
     dto = row_to_detail(row, butler="atlas")
     assert dto.tool_calls[0]["name"] == "write_file"
 
 
 def test_row_to_detail_coerces_cost_json_string():
     """cost stored as a JSON string must be parsed to a dict."""
-    row = _make_record(_detail_record(cost=json.dumps({"total": 0.02})))
+    row = Record(_detail_record(cost=json.dumps({"total": 0.02})))
     dto = row_to_detail(row, butler="atlas")
     assert isinstance(dto.cost, dict)
     assert dto.cost["total"] == 0.02
@@ -193,13 +187,13 @@ def test_row_to_detail_coerces_cost_json_string():
 
 def test_row_to_detail_none_tool_calls_becomes_empty_list():
     """None tool_calls should become an empty list (falsy guard)."""
-    row = _make_record(_detail_record(tool_calls=None))
+    row = Record(_detail_record(tool_calls=None))
     dto = row_to_detail(row, butler="atlas")
     assert dto.tool_calls == []
 
 
 def test_row_to_detail_maps_all_scalar_fields():
-    row = _make_record(_detail_record())
+    row = Record(_detail_record())
     dto = row_to_detail(row, butler="atlas")
 
     assert dto.id == _SESSION_ID
@@ -251,7 +245,7 @@ def test_decode_session_cursor_rejects_missing_fields():
 
 def _summary_at(started_at: datetime):
     """A summary record with a unique id and the given started_at."""
-    return _make_record(_summary_record(id=uuid4(), started_at=started_at))
+    return Record(_summary_record(id=uuid4(), started_at=started_at))
 
 
 async def test_keyset_fan_out_merges_and_sorts_across_butlers():
@@ -392,7 +386,7 @@ def _agg_row(**vals):
         "output_tokens": 0,
     }
     base.update(vals)
-    return _make_record(base)
+    return Record(base)
 
 
 async def test_aggregate_fan_out_sums_scalars_across_butlers():
@@ -486,7 +480,7 @@ async def test_aggregate_fan_out_uses_filter_sql_and_butler_names():
 
 
 def _trigger_row(*, trigger_source: str, count: int):
-    return _make_record({"trigger_source": trigger_source, "count": count})
+    return Record({"trigger_source": trigger_source, "count": count})
 
 
 async def test_trigger_breakdown_merges_and_sums_across_butlers():
@@ -574,7 +568,7 @@ async def test_trigger_breakdown_uses_group_by_sql_and_butler_names():
 
 async def test_query_session_detail_fan_out_returns_first_match():
     """Returns the first butler that has a row for the given session_id."""
-    detail_row = _make_record(_detail_record())
+    detail_row = Record(_detail_record())
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas", "general"]
     mock_db.fan_out_with_status = AsyncMock(
@@ -621,7 +615,7 @@ async def test_query_session_detail_fan_out_not_found_over_degraded_pool():
 
 async def test_query_session_detail_fan_out_found_still_carries_degraded():
     """A hit still reports any sibling pool that errored during the fan-out."""
-    detail_row = _make_record(_detail_record())
+    detail_row = Record(_detail_record())
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas", "general"]
     mock_db.fan_out_with_status = AsyncMock(
@@ -643,7 +637,7 @@ async def test_keyset_fan_out_threads_degraded_sources():
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas", "general"]
     mock_db.fan_out_with_status = AsyncMock(
-        return_value=({"atlas": [_make_record(_summary_record())], "general": []}, ["general"])
+        return_value=({"atlas": [Record(_summary_record())], "general": []}, ["general"])
     )
 
     result = await query_session_summaries_keyset_fan_out(mock_db, "", (), limit=10)
@@ -658,7 +652,7 @@ async def test_keyset_fan_out_no_degraded_when_all_ok():
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
     mock_db.fan_out_with_status = AsyncMock(
-        return_value=({"atlas": [_make_record(_summary_record())]}, [])
+        return_value=({"atlas": [Record(_summary_record())]}, [])
     )
 
     result = await query_session_summaries_keyset_fan_out(mock_db, "", (), limit=10)

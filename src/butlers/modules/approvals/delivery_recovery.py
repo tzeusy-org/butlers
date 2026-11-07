@@ -3,45 +3,51 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Literal
 
-from butlers.core.approval_delivery_worker import DeliveryClaim, HandoffResult
+from butlers.core import owner_delivery as od
+from butlers.core.approval_delivery_worker import (
+    SAFE_REASON_CODES,
+    DeliveryClaim,
+    HandoffResult,
+)
 from butlers.metrics_registry import get_or_create_gauge
 from butlers.modules.approvals.notifications import (
     build_approval_digest_envelope,
     build_approval_request_envelope,
 )
+from butlers.modules.approvals.owner_delivery_bridge import (
+    owner_presentation_for,
+    prepare_telegram_presentation,
+)
+from butlers.modules.approvals.previews import args_digest
 
 _LEASE_SECONDS = 30
 _BACKOFF_BASE_SECONDS = 15
 _BACKOFF_CAP_SECONDS = 15 * 60
 _STUCK_SLO_SECONDS = 15 * 60
-_SAFE_REASONS = frozenset(
-    {
-        "quiet_hours",
-        "owner_recipient_unavailable",
-        "callback_secret_unavailable",
-        "transport_unavailable",
-        "provider_preflight_failed",
-        "provider_outcome_unknown",
-        "action_approved",
-        "action_rejected",
-        "action_expired",
-        "action_abandoned",
-        "defer_rescheduled",
-        "cohort_empty",
-    }
-)
 
 approval_delivery_backlog = get_or_create_gauge(
     "approval_delivery_backlog",
     "Current content-blind approval delivery backlog by owning schema and kind.",
     labelnames=["schema", "kind"],
 )
+
+
+def _claim_key(claim: DeliveryClaim) -> tuple[Any, int, int]:
+    return (claim.presentation_id, claim.presentation_generation, claim.claim_fence)
+
+
+def _as_tool_args(raw: Any) -> dict[str, Any]:
+    """Decode stored ``tool_args`` whether or not the pool has a jsonb codec."""
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    return dict(raw) if isinstance(raw, Mapping) else {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +104,9 @@ class ApprovalDeliveryRepository:
             raise ValueError("lease_seconds must be positive")
         self._pool = pool
         self._lease_seconds = lease_seconds
+        # Digest of the stored call each fenced claim last rendered; consumed by
+        # mark_handoff_started so the persisted digest is the one the card showed.
+        self._rendered_digests: dict[tuple[Any, int, int], str] = {}
 
     async def authorize_transport(
         self, claim: DeliveryClaim, *, owning_schema: str
@@ -175,35 +184,66 @@ class ApprovalDeliveryRepository:
         return float(remaining) if remaining is not None else None
 
     async def cancel_ineligible_presentations(self) -> int:
-        """Cancel only presentation recovery; never transition a domain action."""
+        """Cancel only presentation recovery; never transition a domain action.
+
+        Each statement updates several rows outside the action or cohort lock that serializes
+        every other multi-row writer of them, so it skips locked rows rather than wait: holding
+        one row while waiting on another could deadlock an owner's decision. The next tick
+        takes anything skipped.
+        """
         direct = await self._pool.execute(
             """
+            WITH doomed AS (
+                SELECT p.id,
+                       CASE
+                           WHEN pa.expires_at IS NOT NULL
+                                AND pa.expires_at <= clock_timestamp() THEN 'action_expired'
+                           WHEN pa.status IN ('approved', 'executed') THEN 'action_approved'
+                           WHEN pa.status = 'rejected' THEN 'action_rejected'
+                           WHEN pa.status = 'cancelled' THEN 'action_cancelled'
+                           WHEN pa.status = 'expired' THEN 'action_expired'
+                           ELSE 'action_abandoned'
+                       END AS reason_code
+                  FROM approval_delivery_presentations AS p
+                  JOIN approval_delivery_intents AS i ON i.id = p.intent_id
+                  JOIN pending_actions AS pa ON pa.id = i.action_id
+                 WHERE p.state IN ('ready', 'claimed', 'handoff_started', 'retry_wait')
+                   AND (
+                       pa.status <> 'pending'
+                       OR (pa.expires_at IS NOT NULL AND pa.expires_at <= clock_timestamp())
+                   )
+                 FOR UPDATE OF p SKIP LOCKED
+            )
             UPDATE approval_delivery_presentations AS p
                SET state = 'cancelled',
-                   last_reason_code = CASE
-                       WHEN pa.expires_at IS NOT NULL
-                            AND pa.expires_at <= clock_timestamp() THEN 'action_expired'
-                       WHEN pa.status IN ('approved', 'executed') THEN 'action_approved'
-                       WHEN pa.status = 'rejected' THEN 'action_rejected'
-                       WHEN pa.status = 'expired' THEN 'action_expired'
-                       ELSE 'action_abandoned'
-                   END,
+                   last_reason_code = doomed.reason_code,
                    next_attempt_at = NULL,
                    claim_token = NULL,
                    claim_expires_at = NULL,
                    updated_at = clock_timestamp()
-              FROM approval_delivery_intents AS i
-              JOIN pending_actions AS pa ON pa.id = i.action_id
-             WHERE p.intent_id = i.id
-               AND p.state IN ('ready', 'claimed', 'handoff_started', 'retry_wait')
-               AND (
-                   pa.status <> 'pending'
-                   OR (pa.expires_at IS NOT NULL AND pa.expires_at <= clock_timestamp())
-               )
+              FROM doomed
+             WHERE p.id = doomed.id
             """
         )
         cohort = await self._pool.execute(
             """
+            WITH doomed AS (
+                SELECT p.id
+                  FROM approval_delivery_presentations AS p
+                 WHERE p.cohort_id IS NOT NULL
+                   AND p.state IN ('ready', 'claimed', 'handoff_started', 'retry_wait')
+                   AND NOT EXISTS (
+                       SELECT 1
+                         FROM approval_delivery_cohort_members AS m
+                         JOIN approval_delivery_intents AS i ON i.id = m.intent_id
+                         JOIN pending_actions AS pa ON pa.id = i.action_id
+                        WHERE m.cohort_id = p.cohort_id
+                          AND m.eligible
+                          AND pa.status = 'pending'
+                          AND (pa.expires_at IS NULL OR pa.expires_at > clock_timestamp())
+                   )
+                 FOR UPDATE OF p SKIP LOCKED
+            )
             UPDATE approval_delivery_presentations AS p
                SET state = 'cancelled',
                    last_reason_code = 'cohort_empty',
@@ -211,18 +251,8 @@ class ApprovalDeliveryRepository:
                    claim_token = NULL,
                    claim_expires_at = NULL,
                    updated_at = clock_timestamp()
-             WHERE p.cohort_id IS NOT NULL
-               AND p.state IN ('ready', 'claimed', 'handoff_started', 'retry_wait')
-               AND NOT EXISTS (
-                   SELECT 1
-                     FROM approval_delivery_cohort_members AS m
-                     JOIN approval_delivery_intents AS i ON i.id = m.intent_id
-                     JOIN pending_actions AS pa ON pa.id = i.action_id
-                    WHERE m.cohort_id = p.cohort_id
-                      AND m.eligible
-                      AND pa.status = 'pending'
-                      AND (pa.expires_at IS NULL OR pa.expires_at > clock_timestamp())
-               )
+              FROM doomed
+             WHERE p.id = doomed.id
             """
         )
         return _updated_rows(direct) + _updated_rows(cohort)
@@ -313,7 +343,7 @@ class ApprovalDeliveryRepository:
             """
             SELECT p.presentation_mode, i.origin_butler,
                    pa.id, pa.tool_name, pa.requested_at, pa.expires_at,
-                   pa.why, pa.blast_radius, pa.reversibility
+                   pa.why, pa.blast_radius, pa.reversibility, pa.tool_args, pa.origin
               FROM approval_delivery_presentations AS p
               JOIN approval_delivery_intents AS i ON i.id = p.intent_id
               JOIN pending_actions AS pa ON pa.id = i.action_id
@@ -329,8 +359,16 @@ class ApprovalDeliveryRepository:
             claim.claim_fence,
         )
         if row is not None:
+            tool_args = _as_tool_args(row["tool_args"])
+            if claim.presentation_mode == "single":
+                # One entry per presentation: a re-claim supersedes any abandoned render.
+                for stale in [k for k in self._rendered_digests if k[0] == claim.presentation_id]:
+                    del self._rendered_digests[stale]
+                self._rendered_digests[_claim_key(claim)] = args_digest(tool_args)
             return DirectRenderSubject(
                 action={
+                    "tool_args": tool_args,
+                    "origin": row["origin"],
                     "id": row["id"],
                     "tool_name": row["tool_name"],
                     "requested_at": row["requested_at"],
@@ -370,9 +408,53 @@ class ApprovalDeliveryRepository:
             origin_butler=row["owning_schema"],
         )
 
+    async def prepare_owner_delivery(
+        self, claim: DeliveryClaim, owner_recipient: str
+    ) -> dict[str, str] | None:
+        """Open this card's owner-delivery subject and presentation; ``None`` while off.
+
+        Runs under the action-first lock of the fenced claim. The returned single-use
+        tokens exist only in memory until the envelope is handed to Messenger.
+        """
+        if claim.presentation_mode != "single":
+            return None
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                if not await od.rollout_enabled(connection):
+                    return None
+                action = await connection.fetchrow(
+                    """
+                    SELECT pa.*, i.id AS intent_id
+                      FROM approval_delivery_presentations AS p
+                      JOIN approval_delivery_intents AS i ON i.id = p.intent_id
+                      JOIN pending_actions AS pa ON pa.id = i.action_id
+                     WHERE p.id = $1 AND p.presentation_generation = $2
+                       AND p.claim_token = $3 AND p.claim_fence = $4
+                       AND p.state = 'claimed' AND pa.status = 'pending'
+                     FOR UPDATE OF pa
+                    """,
+                    claim.presentation_id,
+                    claim.presentation_generation,
+                    claim.claim_token,
+                    claim.claim_fence,
+                )
+                if action is None:
+                    raise od.OwnerDeliveryRefused("claim_unavailable")
+                presentation = await prepare_telegram_presentation(
+                    connection,
+                    action=action,
+                    intent_id=action["intent_id"],
+                    rfc_presentation_id=claim.presentation_id,
+                    rfc_generation=claim.presentation_generation,
+                    owner_recipient=owner_recipient,
+                )
+                return dict(presentation.tokens)
+
     async def record_prestart_retry(self, claim: DeliveryClaim, reason_code: str) -> bool:
         """Record a proven pre-provider failure and schedule from database time."""
         self._validate_reason(reason_code)
+        # A retried claim re-renders under a new fence; its old digest is stale.
+        self._rendered_digests.pop(_claim_key(claim), None)
         async with self._pool.acquire() as connection:
             async with connection.transaction():
                 current = await connection.fetchrow(
@@ -427,14 +509,36 @@ class ApprovalDeliveryRepository:
         """Commit the final cancellation-safe marker under action-first locks."""
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                await self._lock_action_then_owner_subject(connection, claim)
                 eligible = await self._lock_and_check_subject(connection, claim)
                 if not eligible:
                     return False
+                rendered_digest = self._rendered_digests.pop(_claim_key(claim), None)
+                current_args = await connection.fetchval(
+                    """
+                    SELECT pa.tool_args
+                      FROM approval_delivery_presentations AS p
+                      JOIN approval_delivery_intents AS i ON i.id = p.intent_id
+                      JOIN pending_actions AS pa ON pa.id = i.action_id
+                     WHERE p.id = $1
+                    """,
+                    claim.presentation_id,
+                )
+                # The action row is locked: the stored call can no longer change
+                # between this check and the digest write below.
+                current_digest = args_digest(_as_tool_args(current_args))
+                if rendered_digest is not None and current_digest != rendered_digest:
+                    return False
+                if claim.presentation_mode == "single":
+                    # Never persist a NULL digest for a card: without a cached render
+                    # (a fenced re-claim in a new process) bind the locked current call.
+                    rendered_digest = rendered_digest or current_digest
                 row = await connection.fetchrow(
                     """
                     UPDATE approval_delivery_presentations
                        SET state = 'handoff_started', attempt_count = attempt_count + 1,
                            claim_expires_at = clock_timestamp() + make_interval(secs => $5),
+                           args_digest = COALESCE($6, args_digest),
                            updated_at = clock_timestamp()
                      WHERE id = $1 AND presentation_generation = $2
                        AND claim_token = $3 AND claim_fence = $4 AND state = 'claimed'
@@ -445,6 +549,7 @@ class ApprovalDeliveryRepository:
                     claim.claim_token,
                     claim.claim_fence,
                     float(self._lease_seconds),
+                    rendered_digest,
                 )
                 if row is None:
                     return False
@@ -461,6 +566,13 @@ class ApprovalDeliveryRepository:
                     claim.claim_fence,
                     row["updated_at"],
                 )
+                # The bridged owner-delivery presentation leaves pending in the same
+                # transaction: from here a crash is an honest ``unknown``.
+                owner_presentation = await owner_presentation_for(
+                    connection, claim.presentation_id, claim.presentation_generation
+                )
+                if owner_presentation is not None:
+                    await od.begin_send(connection, owner_presentation)
                 return True
 
     async def heartbeat(self, claim: DeliveryClaim) -> bool:
@@ -487,6 +599,14 @@ class ApprovalDeliveryRepository:
         self._validate_result(result)
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                # A decision holds the owner subject, then this presentation: take the
+                # subject first too. Never the action row: the executor holds it across
+                # the tool call, which would stall this sequential worker.
+                owner_presentation = await owner_presentation_for(
+                    connection, claim.presentation_id, claim.presentation_generation
+                )
+                if owner_presentation is not None:
+                    await od.lock_subject_of(connection, owner_presentation)
                 current = await connection.fetchrow(
                     """
                     SELECT attempt_count
@@ -538,20 +658,29 @@ class ApprovalDeliveryRepository:
                         provider_reference=result.provider_reference,
                         completed_at=now,
                     )
+                    # A card that landed after its action resolved is still receipted;
+                    # its stale buttons then show up for retraction.
+                    await self._settle_owner_presentation(connection, claim, result)
                     return True
                 attempt_number = int(current["attempt_count"])
                 now = await connection.fetchval("SELECT clock_timestamp()")
+                reason_code = result.reason_code
+                next_attempt_at = None
                 if result.classification == "confirmed":
                     state = "delivered"
-                    next_attempt_at = None
-                elif result.classification == "safe_retry":
+                elif result.classification != "safe_retry":
+                    state = "ambiguous"
+                elif await self._has_later_generation(connection, claim):
+                    # A defer landed while this handoff was out. Its successor owns the retry:
+                    # this row may not rejoin the sendable set, or it would send early and take
+                    # the successor's owner presentation.
+                    state = "superseded"
+                    reason_code = "defer_rescheduled"
+                else:
                     state = "retry_wait"
                     next_attempt_at = now + timedelta(
                         seconds=_backoff_seconds(claim.presentation_key, attempt_number)
                     )
-                else:
-                    state = "ambiguous"
-                    next_attempt_at = None
                 updated = await connection.fetchrow(
                     """
                     UPDATE approval_delivery_presentations
@@ -567,7 +696,7 @@ class ApprovalDeliveryRepository:
                     claim.claim_token,
                     claim.claim_fence,
                     state,
-                    result.reason_code,
+                    reason_code,
                     next_attempt_at,
                     now,
                 )
@@ -582,7 +711,50 @@ class ApprovalDeliveryRepository:
                     provider_reference=result.provider_reference,
                     completed_at=now,
                 )
+                await self._settle_owner_presentation(connection, claim, result)
                 return True
+
+    @staticmethod
+    async def _has_later_generation(connection: Any, claim: DeliveryClaim) -> bool:
+        """Whether this locked row's intent has moved on; a separate read sees a fresh snapshot."""
+        return bool(
+            await connection.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                      FROM approval_delivery_presentations AS this
+                      JOIN approval_delivery_presentations AS later
+                        ON later.intent_id = this.intent_id
+                       AND later.presentation_generation > this.presentation_generation
+                     WHERE this.id = $1 AND this.presentation_generation = $2
+                )
+                """,
+                claim.presentation_id,
+                claim.presentation_generation,
+            )
+        )
+
+    @staticmethod
+    async def _settle_owner_presentation(
+        connection: Any, claim: DeliveryClaim, result: HandoffResult
+    ) -> None:
+        """Mirror one handoff result onto the bridged presentation; ambiguity stays unknown."""
+        owner_presentation = await owner_presentation_for(
+            connection, claim.presentation_id, claim.presentation_generation
+        )
+        if owner_presentation is None:
+            return
+        outcome: od.SendOutcome = "unknown"
+        if result.classification == "confirmed":
+            outcome = "sent"
+        elif result.classification == "safe_retry":
+            outcome = "failed"
+        await od.record_send(
+            connection,
+            owner_presentation,
+            outcome=outcome,
+            provider_ref=result.provider_reference if outcome == "sent" else None,
+        )
 
     async def backlog_snapshot(self) -> DeliveryBacklogSnapshot:
         """Return safe derived due, lease, ambiguity, and stuck truth."""
@@ -646,6 +818,34 @@ class ApprovalDeliveryRepository:
         ):
             approval_delivery_backlog.labels(schema=schema_name, kind=kind).set(value)
         return snapshot
+
+    @staticmethod
+    async def _lock_action_then_owner_subject(connection: Any, claim: DeliveryClaim) -> None:
+        """Take a single card's action row, then its owner-delivery subject (LOCK_ORDER).
+
+        The handoff marker already locks the action on main, so it keeps the decision
+        order. The handoff result must not: see ``complete_handoff``.
+        A cohort card has no direct action and no owner-delivery presentation.
+        """
+        action_id = await connection.fetchval(
+            """
+            SELECT pa.id
+              FROM approval_delivery_presentations AS p
+              JOIN approval_delivery_intents AS i ON i.id = p.intent_id
+              JOIN pending_actions AS pa ON pa.id = i.action_id
+             WHERE p.id = $1 AND p.presentation_generation = $2
+             FOR UPDATE OF pa
+            """,
+            claim.presentation_id,
+            claim.presentation_generation,
+        )
+        if action_id is None:
+            return
+        owner_presentation = await owner_presentation_for(
+            connection, claim.presentation_id, claim.presentation_generation
+        )
+        if owner_presentation is not None:
+            await od.lock_subject_of(connection, owner_presentation)
 
     async def _lock_and_check_subject(self, connection: Any, claim: DeliveryClaim) -> bool:
         direct = await connection.fetchrow(
@@ -765,7 +965,7 @@ class ApprovalDeliveryRepository:
 
     @staticmethod
     def _validate_reason(reason_code: str | None) -> None:
-        if reason_code is not None and reason_code not in _SAFE_REASONS:
+        if reason_code is not None and reason_code not in SAFE_REASON_CODES:
             raise ValueError("unknown approval delivery reason code")
 
     @classmethod
@@ -798,6 +998,7 @@ class ApprovalDeliveryRenderer:
         *,
         owner_recipient: str,
         callback_secret: str,
+        owner_tokens: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         return build_approval_request_envelope(
             action=subject.action,
@@ -805,6 +1006,7 @@ class ApprovalDeliveryRenderer:
             owner_recipient=owner_recipient,
             callback_secret=callback_secret,
             dashboard_base_url=self._dashboard_base_url,
+            owner_tokens=owner_tokens,
         )
 
     def render_digest(

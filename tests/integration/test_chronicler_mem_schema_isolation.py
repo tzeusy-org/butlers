@@ -33,11 +33,12 @@ import httpx
 import pytest
 from sqlalchemy import create_engine, text
 
-from butlers.api.routers.memory import _get_db_manager
+from butlers.api.deps import get_db
 from butlers.background import dispatch_scheduled_task
 from butlers.db import Database, register_jsonb_codec
 from butlers.modules.memory import MemoryModule, MemoryModuleConfig
 from butlers.modules.memory.storage import store_fact
+from butlers.testing.db_manager import db_manager
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 from tests.modules.memory._test_helpers import make_embedding_engine_mock
@@ -59,37 +60,20 @@ _MEMORY_TABLES = {
 _MEMORY_ONLY_TABLES = {"episode_tombstones", "facts", "rules", "memory_links", "memory_events"}
 
 
-class _SchemaAwareSinglePoolDB:
-    """Dashboard reader double whose domain and memory schemas intentionally differ."""
-
-    butler_names = ["chronicler"]
-
-    def __init__(self, pool: object) -> None:
-        self._pool = pool
-
-    def pool(self, name: str) -> object:
-        if name != "chronicler":
-            raise KeyError(f"No pool for butler: {name}")
-        return self._pool
-
-    def memory_schema_for_butler(self, name: str) -> str:
-        assert name == "chronicler"
-        return "chronicler_mem"
-
-
 @pytest.fixture(scope="module")
 def isolated_db_url(postgres_container) -> str:
-    """core + chronicler(domain) into ``chronicler``; memory into ``chronicler_mem``."""
-    return create_migrated_test_db(
+    """Keep core+domain in ``chronicler`` and explicitly prep private memory first."""
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    url = create_migrated_test_db(
         postgres_container,
         migration_db_name(),
-        chains=["core", "chronicler", "memory"],
-        schemas={
-            "core": "chronicler",
-            "chronicler": "chronicler",
-            "memory": "chronicler_mem",
-        },
+        chains=["core", "chronicler"],
+        schemas={"core": "chronicler", "chronicler": "chronicler"},
+        revisions={"chronicler": "chronicler_029"},
     )
+    prepare_chronicler_current_head_sync(url, domain_schema="chronicler")
+    return url
 
 
 def _tables_in_schema(db_url: str, schema: str) -> set[str]:
@@ -227,7 +211,9 @@ async def test_memory_link_api_reads_chronicler_mem_not_domain_schema(isolated_d
             episode_id,
         )
         app = create_app()
-        app.dependency_overrides[_get_db_manager] = lambda: _SchemaAwareSinglePoolDB(pool)
+        app.dependency_overrides[get_db] = lambda: db_manager(
+            {"chronicler": pool}, memory_schemas={"chronicler": "chronicler_mem"}
+        )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -347,7 +333,7 @@ async def test_scheduled_maintenance_uses_chronicler_memory_runtime(
         password=parsed.password or "postgres",
         min_pool_size=1,
         max_pool_size=3,
-        strict_role_enforcement=False,
+        role="butler_chronicler_rw",
     )
     await domain_db.connect()
     module = MemoryModule()
@@ -477,7 +463,7 @@ async def test_scheduled_consolidation_uses_chronicler_memory_runtime(
         password=parsed.password or "postgres",
         min_pool_size=1,
         max_pool_size=3,
-        strict_role_enforcement=False,
+        role="butler_chronicler_rw",
     )
     await domain_db.connect()
     module = MemoryModule()
@@ -551,7 +537,7 @@ async def test_session_hooks_keep_chronicler_private_pool_when_other_daemons_sta
         password=parsed.password or "postgres",
         min_pool_size=1,
         max_pool_size=3,
-        strict_role_enforcement=False,
+        role="butler_chronicler_rw",
     )
     await domain_db.connect()
 

@@ -32,10 +32,11 @@ url = "http://localhost:41100/mcp"
 # `chronicler_mem` (a schema the chronicler owns), never a foreign write, so the
 # "writes only to its own schemas" invariant still holds.
 #
-# Enabling the module here runs the module's OWN migration chain (`memory`
-# branch) into `chronicler_mem` at daemon startup (lifecycle step 8); the target
-# schema is auto-created by the Alembic env. No core Alembic revision is
-# involved.
+# Before ordinary migrations or a manually started Chronicler daemon, run
+# `butlers db prepare-chronicler-memory --dir roster`. That explicit prerequisite
+# applies the core and memory chains to `chronicler_mem`; ordinary startup then
+# keeps its core → domain → modules order. Daemon startup does not create or
+# repair this private schema implicitly.
 #
 # Maintenance schedules (memory_decay_sweep, memory_consolidation,
 # memory_episode_cleanup, memory_purge_superseded, memory_consolidation_backfill)
@@ -92,6 +93,12 @@ name = "chronicler_project_steam"
 cron = "*/30 * * * *"
 dispatch_mode = "job"
 job_name = "chronicler_project_steam"
+
+[[butler.schedule]]
+name = "chronicler_project_steam_status"
+cron = "*/5 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_project_steam_status"
 
 [[butler.schedule]]
 name = "chronicler_project_meals"
@@ -159,6 +166,14 @@ cron = "20 * * * *"
 dispatch_mode = "job"
 job_name = "chronicler_project_occupation_inferred"
 
+# Situational blocks (bu-r3fmja): offset from the */30 place-cluster and
+# activity projections so each run sees their fresh rows.
+[[butler.schedule]]
+name = "chronicler_project_situation_inferred"
+cron = "10,40 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_project_situation_inferred"
+
 [[butler.schedule]]
 name = "chronicler_project_spotify"
 cron = "*/30 * * * *"
@@ -192,23 +207,51 @@ run — your job is to narrate over that result, not to re-derive it.
    deterministic reconciliation pass (duplicate merge, contradicted-intent
    drop). Trust the bundle's `layer`/`confidence` fields and its
    `dropped_intents` list as final; do not second-guess which blocks count.
-3. If the bundle contains no episodes and no events, exit silently.
+3. If the bundle contains no episodes, no events, and no sensitive_envelopes, exit silently.
 4. Produce a brief day-close summary (3-10 bullet points) that:
    - Uses local display timestamps from the bundle when mentioning times.
+   - Treats sensitive_envelopes as masked observations with only start_at,
+     end_at, category and duration. Never infer or request their title, source,
+     identity, location, payload or citations. An envelope is not proof of
+     attendance or a complete day; do not infer missing activity from its absence.
    - Does not print raw source_ref values, connector IDs, database keys, or
      other machine identifiers. The system records provenance from the tool
      call; the human-facing message should cite only readable names such as
      "Spotify", "Steam", or a conversation channel when useful.
-   - Notes any roll-up entries (sources with rollup=true) by count.
+   - Builds the story from `owner_day.observations`: supported place, movement,
+     sleep and owner actions, keeping their uncertainty and readable times.
+     `owner_day.unknowns` describes limits; missing evidence is not inactivity.
+     Raw episodes, events, roll-up counts and diagnostics are source inventories,
+     not the day's story. Do not make them the headline or list counts by default.
+     If no supported observations or lawful envelopes remain, briefly say the
+     day's activity is unknown; do not fill a bullet quota with source counts.
+   - Never treats automated core.sessions processing as an owner conversation
+     or activity, even when its title says "Conversation". Inbound email alone
+     is not social interaction. Incoming messages do not establish a two-way
+     exchange; an owner outbound message establishes only the supported action.
+   - Describes Spotify overlapping recorded sleep as background or uncertain
+     playback, never confirmed listening. Other playback alone also does not
+     establish attentive listening. Do not replace unknown places, destinations,
+     travel modes, recipients or attendance with invented details.
    - Labels ambiguous or low-confidence blocks (`confidence="low"`) as
      tentative (e.g. "possibly", "a short, uncorroborated block") rather than
      stating them as fact — they are still counted, just flagged for the
      owner to correct if wrong.
    - If the bundle's `dropped_intents` list is non-empty, mention each briefly
-     and honestly: it was scheduled but activity evidence contradicted it
-     (e.g. "Gym was on the calendar for 9-10am, but you were home") — never
-     assert either attendance or non-attendance beyond what the contradiction
-     itself shows.
+     and honestly: it was scheduled but evidence contradicted it (e.g. "Gym
+     was on the calendar for 9-10am, but you were home"; for
+     `evidence="location"`, "the SIN -> Aomori plan didn't happen: your
+     location was the same place before and after it") — never assert either
+     attendance or non-attendance beyond what the contradiction itself shows.
+   - Travel blocks may carry `reconciliation.location`. `verdict="consistent"`
+     means your location moved about `displacement_km` across the window: say
+     the trail is consistent with the trip (e.g. "Calendar had SQ 800 to
+     Beijing; your location moved ~4,500 km across that window") but never
+     that you took the flight. `verdict="unknown"` adds nothing; do not call it
+     confirmed or contradicted.
+   - `reconciliation.plan_producer="butler"` (or `plan_producer` on a dropped
+     intent) marks a plan a butler wrote, not your own calendar entry. Phrase
+     it as "a butler-made plan had X", never as your schedule or as attended.
    - Does not mention bundle internals such as episodes_truncated,
      events_truncated, "token-bounded", or "capped inventory". If the user
      explicitly asks about completeness, explain plainly that a very busy day
@@ -228,32 +271,33 @@ run — your job is to narrate over that result, not to re-derive it.
    send it even on an ordinary day. Do NOT add any other proactive message,
    coaching nudge, or correction prompt from this task; those are separate,
    explicitly-opted-in surfaces, not part of day-close.
+6. Do NOT write memory from this task: no memory_store_fact, memory_store_rule,
+   or other memory write tool. Day-close memory is written by the deterministic
+   write-back after you finish. In particular, never record the notify outcome
+   (sent, deferred until a time, queued, failed, not configured) or any other
+   delivery or scheduling status as a fact; it describes the system, not the
+   owner's day.
 """
 
 # Day-close GAP INTERVIEW (bu-whhll.12) — one of the "separate, explicitly-
 # opted-in surfaces" the day-close prompt above defers to. Deliberately its OWN
 # scheduled surface (NOT bolted into day-close), owner-toggleable, max one
 # message/day. Runs at 09:00 owner-local — after the 01:05 day-close reconciles
-# yesterday, at a civil hour; notify() additionally applies quiet-hours /
-# delivery preferences. The tool enforces the per-day dedupe.
+# yesterday, at a civil hour. A deterministic job (bu-idc5mx.4): it computes
+# yesterday in the owner's general timezone and calls the same ask service as the
+# chronicler_gap_interview tool, which enforces the per-day dedupe and the
+# quiet-hours / delivery-preferences gate. No session, no model.
 [[butler.schedule]]
 name = "chronicler_gap_interview"
 cron = "0 9 * * *"
-dispatch_mode = "prompt"
-complexity = "cheap"
-prompt = """
-Run the Chronicler day-close GAP INTERVIEW for yesterday. This is a separate,
-explicitly-opted-in surface — NOT part of day-close.
-1. Use the owner's configured timezone from your system prompt. Compute
-   yesterday's local date in that timezone, not in UTC.
-2. Call chronicler_gap_interview(date_label="<local-yesterday>", timezone="<owner-IANA-timezone>").
-   This one tool does everything — it evaluates the day, enforces the
-   max-one-per-day dedupe, applies quiet-hours/delivery preferences, and (only
-   when the day qualifies) delivers the one-tap inline-button prompt to the
-   owner itself. The owner's tap is applied automatically.
-3. Do NOT send any message yourself (no notify(), no summary, no commentary).
-   Just report the tool's returned status. That is the entire task.
-"""
+dispatch_mode = "job"
+job_name = "chronicler_gap_interview"
 
-# RFC 0015: report errors to QA; this module never dispatches locally.
-[modules.self_healing]
+# RFC 0015: core always registers the error relay; no module opt-in is required.
+
+# Finite old-date repair driver; waits for durable :10/:40 situation replay.
+[[butler.schedule]]
+name = "chronicler_rebuild_daily_rollups"
+cron = "*/5 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_rebuild_daily_rollups"

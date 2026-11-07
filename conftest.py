@@ -8,19 +8,21 @@ Canonical shared fixture definitions live in
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
 import uuid
 import warnings
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Generator, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from importlib.machinery import ModuleSpec
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -220,6 +222,20 @@ def _restore_approval_hook_runtimes():
     finally:
         _hooks._approval_hooks_by_pool.clear()
         _hooks._approval_hooks_by_pool.update(saved_runtimes)
+
+
+@pytest.fixture(autouse=True)
+def _restore_fact_source_registry(monkeypatch):
+    """Keep a registry that a test's daemon start registers within that test.
+
+    ``ButlerDaemon.start`` registers the process-wide fact source registry, and
+    a leaked one reroutes later pipelines' identity resolution through the
+    owning-role MCP resolver. Capture the actual prior object; teardown restores
+    it without clearing its live reports or replacing it with None.
+    """
+    from butlers.core import fact_authority
+
+    monkeypatch.setattr(fact_authority, "_source_registry", fact_authority.source_registry())
 
 
 if TYPE_CHECKING:
@@ -449,15 +465,11 @@ def _install_serialized_testcontainers_run() -> None:
 
     def _serialized_run(self: object, *args: object, **kwargs: object) -> object:
         with _serialize_testcontainer_startup():
-            if os.environ.get("GITHUB_ACTIONS") == "true":
-                from scripts.ci_test_images import IMAGES, prepare
+            from scripts.ci_test_images import prepare_alias_on_hosted_runner
 
-                image = args[0] if args else kwargs.get("image")
-                required = [name for name, pin in IMAGES.items() if image == pin["alias"]]
-                if required:
-                    # Only an actual known container consumer acquires content.
-                    # Ryuk reaches this same boundary under its existing policy.
-                    prepare(required)
+            # Only an actual known container consumer acquires content.
+            # Ryuk reaches this same boundary under its existing policy.
+            prepare_alias_on_hosted_runner(args[0] if args else kwargs.get("image"))
             return original_run(self, *args, **kwargs)
 
     _serialized_run.__butlers_serialized_start__ = True
@@ -503,6 +515,64 @@ _install_serialized_testcontainers_run()
 _install_resilient_testcontainers_stop()
 
 
+# --- Docker-skip guard for lanes that guarantee Docker (bu-u5euwb.37) ---------
+#
+# Real-PG tests skip with exactly ``DOCKER_UNAVAILABLE_SKIP_REASON`` when the
+# docker CLI is absent, which keeps a Docker-less laptop usable. In a CI lane
+# that guarantees Docker, the same skip would let a broken runner pass green
+# while running none of those tests. ``scripts/ci_lanes.py`` sets
+# ``BUTLERS_REQUIRE_DOCKER=1`` for such lanes, and this hook turns that skip
+# into a failure there. Unset, nothing changes.
+
+DOCKER_UNAVAILABLE_SKIP_REASON = "Docker not available"
+REQUIRE_DOCKER_ENV = "BUTLERS_REQUIRE_DOCKER"
+
+
+def _docker_required() -> bool:
+    return os.environ.get(REQUIRE_DOCKER_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _is_docker_unavailable_skip(report: pytest.TestReport | pytest.CollectReport) -> bool:
+    """True for a plain skip (not an xfail) whose reason is the Docker one."""
+    if not report.skipped or hasattr(report, "wasxfail"):
+        return False
+    longrepr = report.longrepr
+    if not (isinstance(longrepr, tuple) and len(longrepr) == 3):
+        return False
+    reason = str(longrepr[2]).removeprefix("Skipped: ")
+    return reason == DOCKER_UNAVAILABLE_SKIP_REASON
+
+
+def _fail_required_docker_skip(report: pytest.TestReport | pytest.CollectReport) -> None:
+    if _docker_required() and _is_docker_unavailable_skip(report):
+        report.outcome = "failed"
+        report.longrepr = (
+            f"{REQUIRE_DOCKER_ENV}=1, but this skipped with "
+            f"{DOCKER_UNAVAILABLE_SKIP_REASON!r}: this lane guarantees Docker, "
+            "so a real-PG skip here means the runner lost it."
+        )
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(
+    item: pytest.Item, call: pytest.CallInfo[None]
+) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+    report: pytest.TestReport = yield
+    _fail_required_docker_skip(report)
+    return report
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_make_collect_report(
+    collector: pytest.Collector,
+) -> Generator[None, pytest.CollectReport, pytest.CollectReport]:
+    # A module-level ``pytest.skip(..., allow_module_level=True)`` skips at
+    # collection, so it reaches a CollectReport and never a TestReport.
+    report: pytest.CollectReport = yield
+    _fail_required_docker_skip(report)
+    return report
+
+
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     """Cap ``-n auto`` to the repo's intended worker count.
 
@@ -516,6 +586,65 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     if raw:
         return max(1, int(raw))
     return _DEFAULT_XDIST_AUTO_WORKERS
+
+
+# Docker's default /dev/shm is 64 MB. One session container accumulates hundreds
+# of test databases, and Postgres's dynamic shared memory (the cumulative stats
+# area grows with every relation) outgrew it late in the single-job faketime legs:
+# "could not resize shared memory segment ... No space left on device", then a
+# crash into recovery mode that errored every later DB test (bu-29wkwj.6).
+_POSTGRES_SHM_SIZE = "1g"
+_CONTAINER_FAKETIME_LIBRARY = "/opt/butlers-faketime/libfaketime.so.1"
+
+
+def _configure_postgres_container(container: Any, environ: Mapping[str, str]) -> Any:
+    """Apply the shared Postgres container's options.
+
+    When the pytest process runs under libfaketime (the nightly faketime legs),
+    the container gets the same library and offset, so SQL ``now()`` and Python
+    ``datetime.now()`` stay in agreement. Without it every DB test comparing the
+    two clocks failed by the leg offset unless it carried the ``pg_clock``
+    marker, and new tests kept arriving without one (bu-29wkwj.6).
+
+    The shifted container starts as ``postgres``, not root: libfaketime in the
+    root entrypoint creates its ``/faketime_sem_1`` semaphore as root, and after
+    the entrypoint drops to ``postgres`` it exits on "sem_open failed ...
+    Permission denied" (run 39770283852).
+    """
+    offset = environ.get("FAKETIME")
+    library = next(
+        (
+            path
+            for path in re.split(r"[:\s]+", environ.get("LD_PRELOAD", ""))
+            if os.path.basename(path).startswith("libfaketime")
+        ),
+        None,
+    )
+    if not offset or library is None:
+        return container.with_kwargs(shm_size=_POSTGRES_SHM_SIZE)
+    return (
+        container.with_kwargs(shm_size=_POSTGRES_SHM_SIZE, user="postgres")
+        .with_volume_mapping(library, _CONTAINER_FAKETIME_LIBRARY, mode="ro")
+        .with_env("LD_PRELOAD", _CONTAINER_FAKETIME_LIBRARY)
+        .with_env("FAKETIME", offset)
+    )
+
+
+def _delete_session_data_volume(environ: Mapping[str, str]) -> bool:
+    """Whether session teardown should delete the container's anonymous PGDATA volume.
+
+    CI has observed 25-60+ s volume-removal calls and concurrent restore-client
+    timeouts. Avoiding anonymous-volume deletion on disposable hosted VMs is
+    a contention mitigation; these observations do not establish the timeout's
+    cause or guarantee the ordering of test bodies and worker teardown.
+
+    Hosted VMs are discarded after the job. Everywhere else (developer
+    machines and self-hosted runners), teardown still requests volume deletion
+    so retained hosts do not accumulate session data. Container-removal errors
+    retain the existing retry/warning behavior; this decision is not proof that
+    cleanup succeeded.
+    """
+    return environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
 
 
 def _unique_test_db_name() -> str:
@@ -533,8 +662,19 @@ def postgres_container() -> Iterator[PostgresContainer]:
     """
     from testcontainers.postgres import PostgresContainer
 
-    with PostgresContainer("pgvector/pgvector:pg17") as pg:
-        yield pg
+    container = _configure_postgres_container(
+        PostgresContainer("pgvector/pgvector:pg17"), os.environ
+    )
+    # Equivalent to ``with container`` (stop also runs after a failed start),
+    # except that the volume decision is explicit rather than always-delete.
+    try:
+        started = container.start()
+        from butlers.testing.storage import observe
+
+        with observe(started):
+            yield started
+    finally:
+        container.stop(delete_volume=_delete_session_data_volume(os.environ))
 
 
 @pytest.fixture
@@ -553,7 +693,14 @@ def provisioned_postgres_pool(
     explicit prefix, or "public" to reproduce a caller whose search_path
     lacks the schema entirely).
     """
-    from butlers.db import Database
+    import asyncpg
+
+    from butlers.db import (
+        Database,
+        register_jsonb_codec,
+        schema_search_path,
+        should_retry_with_ssl_disable,
+    )
 
     @asynccontextmanager
     async def _provision(
@@ -562,9 +709,11 @@ def provisioned_postgres_pool(
         max_pool_size: int = 3,
         schema: str | None = None,
     ) -> AsyncIterator[Pool]:
+        # Validate before provisioning: this scopes administrative test queries,
+        # and does not establish or bypass a runtime role.
+        search_path = schema_search_path(schema)
         db = Database(
             db_name=_unique_test_db_name(),
-            schema=schema,
             host=postgres_container.get_container_host_ip(),
             port=int(postgres_container.get_exposed_port(5432)),
             user=postgres_container.username,
@@ -572,11 +721,182 @@ def provisioned_postgres_pool(
             min_pool_size=min_pool_size,
             max_pool_size=max_pool_size,
         )
+        from butlers.testing.storage import database_event
+
+        database_event("intent", postgres_container, db.db_name, "F")
         await db.provision()
-        pool = await db.connect()
+        database_event("created", postgres_container, db.db_name, "F")
+        database_event("ready", postgres_container, db.db_name, "F")
+        pool_kwargs = {
+            "host": db.host,
+            "port": db.port,
+            "user": db.user,
+            "password": db.password,
+            "database": db.db_name,
+            "min_size": min_pool_size,
+            "max_size": max_pool_size,
+            "init": register_jsonb_codec,
+        }
+        if search_path is not None:
+            pool_kwargs["server_settings"] = {"search_path": search_path}
+        if db.ssl is not None:
+            pool_kwargs["ssl"] = db.ssl
+
+        async def _open_pool():
+            # Keep the native pool while initialization is awaited so a failed
+            # or cancelled initialization cannot orphan its owned connections.
+            candidate = asyncpg.create_pool(**pool_kwargs)
+            try:
+                return await candidate
+            except BaseException:
+                candidate.terminate()
+                raise
+
+        try:
+            pool = await _open_pool()
+        except Exception as exc:
+            if not should_retry_with_ssl_disable(exc, db.ssl):
+                raise
+            pool_kwargs["ssl"] = "disable"
+            pool = await _open_pool()
         try:
             yield pool
         finally:
-            await db.close()
+            try:
+                await pool.close()
+            except BaseException:
+                pool.terminate()
+                raise
 
     return _provision
+
+
+@pytest.fixture
+async def db(postgres_container: PostgresContainer) -> AsyncIterator[Callable[..., Any]]:
+    """Async factory for pools on fresh migrated clones (``butlers.testing.db``).
+
+    ``pool = await db("core", "relationship", schemas={"relationship": "relationship"},
+    schema="relationship")``. ``await db.open(url, schema=...)`` opens a pool on a URL
+    from ``fresh_db`` when a test also needs that URL (raw connections, admin sessions).
+    Every pool it opened closes at teardown.
+    """
+    from butlers.testing.db import migrated_pool, open_pool
+
+    pools: list[Pool] = []
+
+    async def _make(*chains: str, **kwargs: Any) -> Pool:
+        pool = await migrated_pool(postgres_container, *chains, **kwargs)
+        pools.append(pool)
+        return pool
+
+    async def _open(db_url: str, **kwargs: Any) -> Pool:
+        pool = await open_pool(db_url, **kwargs)
+        pools.append(pool)
+        return pool
+
+    _make.open = _open  # type: ignore[attr-defined]
+
+    try:
+        yield _make
+    finally:
+        for pool in reversed(pools):
+            try:
+                await asyncio.wait_for(pool.close(), timeout=10)
+            except BaseException:
+                pool.terminate()
+                raise
+
+
+@pytest.fixture
+async def db_pool(db: Callable[..., Any]) -> Pool:
+    """A pool on a fresh core-migrated clone."""
+    return await db("core")
+
+
+@pytest.fixture
+def fresh_db(postgres_container: PostgresContainer) -> Callable[..., str]:
+    """Sync factory returning a fresh migrated database URL, for migration-subject tests.
+
+    ``url = fresh_db("core", revisions={"core": "core_170"})``.
+    """
+    from butlers.testing.db import migrated_url
+
+    def _make(*chains: str, **kwargs: Any) -> str:
+        return migrated_url(postgres_container, *chains, **kwargs)
+
+    return _make
+
+
+@pytest.fixture
+async def booted_daemon(
+    postgres_container: PostgresContainer,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> AsyncIterator[Callable[..., Any]]:
+    """Async factory for real daemon boots with no LLM (``butlers.testing.daemon``).
+
+    ``booted = await booted_daemon(config_dir)`` starts the butler in ``config_dir`` on a
+    fresh ``core`` clone (pass more chains after it) under a fake runtime adapter;
+    ``await booted.call_tool("status")`` calls it over HTTP. Teardown shuts down every
+    daemon still running.
+    """
+    from butlers.testing.daemon import DaemonBooter
+
+    booter = DaemonBooter(postgres_container, monkeypatch, tmp_path_factory.mktemp("daemon"))
+    try:
+        yield booter.boot
+    finally:
+        await booter.close()
+
+
+@pytest.fixture
+async def tool_host(postgres_container: PostgresContainer) -> AsyncIterator[Callable[..., Any]]:
+    """Async factory: a butler's core tools on a fresh clone, with no daemon lifecycle.
+
+    ``host = await tool_host(config_dir)`` registers the tools and connects the
+    butler's pool; ``await host.call("remind", ...)`` runs a handler in process. Use it
+    when the subject is a tool's SQL, not the boot. See ``butlers.testing.tool_host``.
+    """
+    from butlers.testing.tool_host import ToolHosts
+
+    hosts = ToolHosts(postgres_container)
+    try:
+        yield hosts
+    finally:
+        await hosts.close()
+
+
+@pytest.fixture(scope="module")
+async def _shared_daemons(
+    postgres_container: PostgresContainer,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> AsyncIterator[Any]:
+    """The module's shared boots; tests use ``shared_booted_daemon``."""
+    from butlers.testing.daemon import DaemonBooter, SharedDaemons
+
+    patcher = pytest.MonkeyPatch()
+    root = tmp_path_factory.mktemp("shared-daemon")
+    booter = DaemonBooter(postgres_container, patcher, root)
+    try:
+        yield SharedDaemons(booter, root)
+    finally:
+        try:
+            await booter.close()
+        finally:
+            patcher.undo()
+
+
+@pytest.fixture
+async def shared_booted_daemon(_shared_daemons: Any) -> AsyncIterator[Any]:
+    """One boot per module and configuration, for tests that only read daemon state.
+
+    ``booted = await shared_booted_daemon(registered=True)`` (name, chains, ``schema=``,
+    ``extra_toml=`` and ``credentials=`` as for ``booted_daemon``) returns the module's
+    boot for that configuration. The fake runtime is reset before each test; a test
+    that changes durable daemon state (route inbox or session rows, config) fails at
+    teardown and its boot is replaced. See ``butlers.testing.daemon.SharedDaemons``.
+    """
+    try:
+        yield _shared_daemons
+    finally:
+        await _shared_daemons.verify()

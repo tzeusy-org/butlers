@@ -6,7 +6,7 @@ Adapter registration and subclass checks are in test_adapter_contract.py.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -23,6 +23,7 @@ class FullAdapter(RuntimeAdapter):
     def binary_name(self) -> str:
         return "full-test-binary"
 
+    @override
     async def invoke(self, prompt, system_prompt, mcp_servers, env, cwd=None, timeout=None):
         return ("ok", [], None)
 

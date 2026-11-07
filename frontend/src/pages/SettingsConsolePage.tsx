@@ -15,7 +15,7 @@
  * Design language: Dispatch. No card chrome, no word-badges — state is a
  * {dot, numeral, colour} only when state demands. Display weight 500 (never
  * 700). Numerals are tabular. Mirrors the SettingsModelsPage treatment and
- * the shared atoms in components/butler-detail/atoms.tsx.
+ * the shared atoms in components/ui/atoms.tsx.
  *
  * Design refs: §7.2, settings-redesign.jsx :: SettingsConsole
  * CSS: .attention-row[data-tone="red"|"amber"] from frontend/src/index.css
@@ -541,6 +541,22 @@ function PermissionsPanel({
   );
 }
 
+// Projections panel — static summary
+function ProjectionsPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
+  return (
+    <PanelShell
+      title="Projections"
+      description="Glance surfaces, their last fetch, rotate and revoke."
+      href="/settings/projections"
+      onNavigate={onNavigate}
+    >
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        See which wall displays, e-ink panels, and sensors read a glance, and cut one off.
+      </p>
+    </PanelShell>
+  );
+}
+
 // Secrets panel — static summary
 function SecretsPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
   return (
@@ -683,6 +699,9 @@ export default function SettingsConsolePage() {
 
         {/* Secrets — static panel (Google OAuth app credentials now live here) */}
         <SecretsPanel onNavigate={handleNavigate} />
+
+        {/* Projections — static panel (navigates to sub-route) */}
+        <ProjectionsPanel onNavigate={handleNavigate} />
       </div>
 
       {/* ------------------------------------------------------------------ */}

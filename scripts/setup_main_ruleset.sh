@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
 # Create or update the `main-merge-queue` repository ruleset (bu-r5mnn).
 #
-# RUN THIS ONLY AFTER THE bu-r5mnn BRANCH IS MERGED TO MAIN. The ruleset
-# requires the `check`, `guards`, and `frontend` statuses on merge_group runs,
-# and those statuses only exist once .github/workflows/ci.yml on main carries
-# the `on.merge_group` trigger and the `guards` job. Creating the ruleset first
-# would queue every PR behind statuses that can never report.
+# The ruleset requires the single `alls-green` status (bu-29wkwj.3), reported by
+# GitHub Actions (integration 15368). A required context that no run reports
+# stalls every queue entry, so rename that job only together with this script.
 #
 # What it configures on refs/heads/main:
-#   - merge_queue: SQUASH merges, ALLGREEN grouping, up to 5 concurrent
+#   - merge_queue: SQUASH merges, ALLGREEN grouping, up to 9 concurrent
 #     merge_group builds. Independently, merge 1 to 5 ready entries together
-#     with a 5 minute minimum-group wait and 60 minute check response timeout.
-#   - required_status_checks: check, guards, frontend (non-strict, so a PR does
+#     with a 5 minute minimum-group wait and 120 minute check response timeout.
+#   - required_status_checks: alls-green (non-strict, so a PR does
 #     not have to be rebased onto main first; the queue validates the merged
 #     tree instead).
 #   - deletion + non_fast_forward protection.
@@ -59,11 +57,11 @@ payload=$(cat <<JSON
       "parameters": {
         "merge_method": "SQUASH",
         "grouping_strategy": "ALLGREEN",
-        "max_entries_to_build": 5,
+        "max_entries_to_build": 9,
         "max_entries_to_merge": 5,
         "min_entries_to_merge": 1,
         "min_entries_to_merge_wait_minutes": 5,
-        "check_response_timeout_minutes": 60
+        "check_response_timeout_minutes": 120
       }
     },
     {
@@ -72,9 +70,7 @@ payload=$(cat <<JSON
         "strict_required_status_checks_policy": false,
         "do_not_enforce_on_create": false,
         "required_status_checks": [
-          { "context": "check" },
-          { "context": "guards" },
-          { "context": "frontend" }
+          { "context": "alls-green", "integration_id": 15368 }
         ]
       }
     }

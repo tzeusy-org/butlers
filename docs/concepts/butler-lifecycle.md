@@ -12,7 +12,7 @@ A butler daemon goes through distinct phases during its lifetime: a multi-step s
 
 ## Startup Sequence
 
-The `ButlerDaemon.start()` method executes a carefully ordered startup sequence. Each step depends on the success of previous steps, though module-specific failures are non-fatal --- a failing module is recorded as failed and skipped in later phases while the butler continues with its remaining healthy modules.
+The `ButlerDaemon.start()` method executes `butlers.lifecycle.STARTUP_PHASES` in order, sharing a fresh `StartupState` between named phases. The list implements the 17 stages below, with stage 8 split into six dependency steps. Each step depends on the success of previous steps, though module-specific failures are non-fatal --- a failing module is recorded as failed and skipped in later phases while the butler continues with its remaining healthy modules.
 
 ### Step 1: Load Configuration and Logging
 
@@ -87,7 +87,10 @@ The liveness reporter starts periodic health pings and the daemon begins accepti
 After startup completes, the butler enters its idle running state. It is:
 
 - Listening for MCP connections on its configured port
-- Running the scheduler loop (checking for due tasks every tick interval)
+- Running the scheduler loop (checking for due tasks every tick interval; a failed tick is logged
+  and the next one runs, and only a cancel of the loop itself ends it; the approval delivery,
+  owner attention, buffer and confirm workers and the catalog renewal treat a stray cancel as a
+  failure too)
 - Maintaining heartbeats with the Switchboard (non-switchboard butlers)
 - Ready to accept `trigger` or `route.execute` calls
 
@@ -119,8 +122,8 @@ Graceful shutdown proceeds in reverse order:
 2. Stop accepting new triggers
 3. Drain in-flight runtime sessions (up to a configurable timeout)
 4. Cancel the Switchboard heartbeat task
-5. Close the Switchboard MCP client connection
-6. Cancel the scheduler loop (waiting for any in-progress `tick()` to finish)
+5. Cancel the scheduler loop. An in-progress `tick()` may finish within the shutdown budget, then it is cancelled. Jobs run inside the tick, so they keep their Switchboard client until this step ends
+6. Close the Switchboard MCP client connection
 7. Cancel the liveness reporter loop
 8. Shut down modules in **reverse** topological order (each module's `on_shutdown()`)
 9. Close the database connection pool

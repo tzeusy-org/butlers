@@ -107,7 +107,7 @@ The dashboard SHALL have a drill-down page at `/qa/investigations/:attemptId` th
 - **WHEN** a user navigates to `/qa/investigations/:attemptId`
 - **THEN** the page renders the Case Dossier layout (header + two-column diagnosis/PR + patrol journal) as defined by the Case Dossier Layout requirement
 - **AND** the page includes a top eyebrow "QA Investigation · #<short_id>" and a back-link to `/qa`
-- **AND** the existing `Retry` and `Dismiss` actions remain available as pill buttons in the dossier header
+- **AND** Dismiss and remove-dismissal remain available in their eligible states; no Retry action, client helper or mutation hook is exposed
 
 #### Scenario: Investigation not found
 - **WHEN** the attempt ID does not exist or has no `qa_patrol_id`
@@ -246,13 +246,14 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
 #### Scenario: Active dismissal display
 - **WHEN** the Case Dossier renders a case whose fingerprint has an active dismissal record (`qa_dismissals` row with `dismissed_until > now()`)
 - **THEN** the header renders a mono caption "dismissed until <dismissed_until>" beneath the sev/id/butler row
-- **AND** a "remove dismissal" pill action is rendered alongside the existing `Retry` / `Dismiss` pills
+- **AND** a "remove dismissal" pill action is rendered alongside the eligible Dismiss action, without a Retry control
 - **AND** clicking "remove dismissal" calls `DELETE /api/qa/dismissals/{fingerprint}` and triggers a re-fetch of the case so the caption and pill disappear
 
-#### Scenario: Terminal states offer Retry, never Dismiss
-- **WHEN** the Case Dossier renders a case whose `state_track_stage` is `landed`, `escalated`, or `failed`
-- **THEN** a "Retry" pill is rendered (calling `POST /api/healing/attempts/{id}/retry`, which the backend already accepts for any terminal `healing_attempts.status` including `failed`/`timeout`/`anonymization_failed`) and the "Dismiss" pill is withheld — a terminal case, whether landed, escalated, or crashed, is not a candidate for false-positive dismissal
-- **AND** every other stage (`detect`, `diagnose`, `pr`) offers Dismiss (when a fingerprint is linked and no dismissal is active) and withholds Retry, since the investigation is still active
+#### Scenario: Terminal history has neither Retry nor Dismiss
+- **WHEN** the case's derived `stage` is terminal (`landed`, `escalated`, or `failed`)
+- **THEN** neither Retry nor Dismiss is rendered; terminal history is not a false-positive dismissal candidate
+- **AND** every other stage (`detect`, `diagnose`, `pr`) offers Dismiss when a fingerprint is linked and no dismissal is active
+- **AND** every stage withholds Retry, while existing dismissal removal and history remain available
 
 #### Scenario: Failure banner quotes the crash
 - **WHEN** the Case Dossier renders a case whose `state_track_stage` is `failed`
@@ -275,6 +276,7 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
 - **WHEN** the Case Dossier renders the right column
 - **THEN** it renders a PR panel (when `pr` is non-null) containing:
   - State chip (drafted/open/merged/closed) with appropriate state color from the Dispatch palette
+  - A neutral `PR state unknown` chip when a known PR has nullable lifecycle; its Open PR link remains available, without a no-PR, closed, merged or success claim
   - Mono `pr #<number> · <state>`
   - Sans-500 14 px PR title
   - Mono caption with branch name, CI status, `+<additions> −<deletions>`
@@ -309,6 +311,9 @@ The dashboard API SHALL expose case-shaped resources under `/api/qa/cases` for t
 - **WHEN** `GET /api/qa/cases/:id` is called with an attempt UUID
 - **THEN** it returns the full dossier payload: the case summary, `state_track_stage`, derived `proposal_state` (`none`, `unpublished`, or `published`), `proposal_diff_snapshot` (validated independently so a diff-only fallback remains visible), `investigation_notes` (or null when no notes have been emitted yet), a `pr` summary block (or null), the most recent 50 journal events, the attempt's `healing_session_id` (or null), its `session_ids[]` (empty when none), and `error_detail` (the raw `healing_attempts.error_detail` text, or null — populated regardless of state, but only rendered by the UI's failure banner in the `failed` state)
 - **AND** when the attempt id does not exist, it returns the standard 404 envelope from RFC 0007
+- **AND** known PR identity is independent of nullable PR lifecycle: terminal attempt outcomes never imply a closed PR, and unavailable lifecycle metadata retains the PR summary/link and published classification
+- **AND** read-only dossier metadata may supersede a positive local PR state with explicit GitHub open/draft/closed/merged evidence; only a positively merged observation supplies the merge timestamp, never the attempt's closure time
+- **AND** missing, malformed or unavailable provider observations do not synthesize lifecycle; an unavailable checks observation does not discard valid PR lifecycle metadata, and case-list reads perform no provider lookup
 
 #### Scenario: GET /api/qa/cases/:id/journal
 - **WHEN** `GET /api/qa/cases/:id/journal` is called with optional `cursor` and `limit` (default 50, max 500)

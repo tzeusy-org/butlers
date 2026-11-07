@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.qa import _get_db_manager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -122,7 +122,7 @@ def _build_app(
     mock_db.credential_shared_pool.return_value = mock_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app, mock_pool
 
 
@@ -485,7 +485,129 @@ async def test_case_detail_failed_state_quotes_error_detail() -> None:
     assert body["error_detail"] == "RuntimeError: Codex CLI exited with code 1: connection reset"
 
 
-async def test_case_detail_marks_retained_local_diff_as_unpublished_proposal() -> None:
+async def test_terminal_adopted_pr_keeps_identity_without_lifecycle(monkeypatch) -> None:
+    from butlers.api.routers import qa
+    from butlers.core.qa.github_pr import GithubPrClient
+
+    monkeypatch.setattr(qa, "_resolve_github_token", AsyncMock(return_value=None))
+    monkeypatch.setattr(qa, "get_pr_client", lambda: GithubPrClient())
+    for status in ("failed", "timeout", "unfixable", "anonymization_failed"):
+        row = _make_case_row(
+            status=status,
+            pr_number=1653,
+            pr_url="https://github.com/Tzeusy/butlers/pull/1653",
+            branch_name="qa/adopted",
+            closed_at=_NOW,
+            finding_structured_evidence={"investigation_notes": _notes_payload()},
+        )
+        app, pool = _build_app(rows=[row], total=1, fetchrow_result=row)
+        rail = (await _call(app, "/api/qa/cases")).json()["data"][0]
+        assert rail["pr_state"] is None, status
+        assert rail["pr_url"] == row["pr_url"]
+        # List reads never fetch remote lifecycle metadata.
+        assert qa._resolve_github_token.await_count == 0
+        pool.fetch.return_value = []
+        response = await _call(app, f"/api/qa/cases/{row['id']}")
+        assert response.status_code == 200
+        dossier = response.json()["data"]
+        assert dossier["case"] == rail
+        assert dossier["state_track_stage"] == rail["state"]
+        assert dossier["proposal_state"] == "published"
+        assert dossier["pr"]["number"] == 1653
+        assert dossier["pr"]["url"] == row["pr_url"]
+        assert dossier["pr"]["state"] is None
+        assert dossier["pr"]["merged_at"] is None
+        assert row["status"] == status and row["closed_at"] == _NOW
+        pool.execute.assert_not_awaited()
+        qa._resolve_github_token.reset_mock()
+
+    for status, expected in (("drafted", "drafted"), ("pr_open", "open"), ("pr_merged", "merged")):
+        row = _make_case_row(
+            status=status,
+            pr_number=1653,
+            pr_url="https://github.com/Tzeusy/butlers/pull/1653",
+            branch_name="qa/local-positive",
+            closed_at=_NOW,
+        )
+        app, _pool = _build_app(fetchrow_result=row)
+        dossier = (await _call(app, f"/api/qa/cases/{row['id']}")).json()["data"]
+        assert dossier["case"]["pr_state"] == dossier["pr"]["state"] == expected
+        assert dossier["pr"]["merged_at"] is None
+    schema = app.openapi()["components"]["schemas"]["QaPrSummary"]["properties"]["state"]
+    assert {"type": "null"} in schema["anyOf"]
+
+
+async def test_adopted_pr_dossier_uses_authoritative_lifecycle(monkeypatch) -> None:
+    from butlers.api.routers import qa
+    from butlers.core.qa.github_pr import GithubPrClient
+
+    observations = [
+        ({"state": "open", "draft": False, "merged": False}, "open", None),
+        ({"state": "open", "draft": True, "merged": False}, "drafted", None),
+        ({"state": "closed", "draft": False, "merged": False}, "closed", None),
+        (
+            {"state": "closed", "merged": True, "merged_at": "2026-05-16T08:00:00Z"},
+            "merged",
+            "2026-05-16T08:00:00Z",
+        ),
+        ({"state": "closed", "merged": True, "merged_at": "not a date"}, None, None),
+        ({"state": "closed"}, None, None),
+    ]
+    monkeypatch.setattr(qa, "_resolve_github_token", AsyncMock(return_value="test-token"))
+    for observation, expected, merged_at in observations:
+        calls = []
+
+        def handler(request, calls=calls, observation=observation):
+            calls.append(request.method)
+            return httpx.Response(200, json=observation)
+
+        client = GithubPrClient(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr(qa, "get_pr_client", lambda client=client: client)
+        row = _make_case_row(
+            status="failed",
+            branch_name="qa/adopted",
+            pr_url="https://github.com/Tzeusy/butlers/pull/1653",
+            pr_number=1653,
+            closed_at=_NOW,
+        )
+        app, pool = _build_app(fetchrow_result=row)
+        response = await _call(app, f"/api/qa/cases/{row['id']}")
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["case"]["pr_state"] is None
+        assert data["case"]["state"] == data["state_track_stage"] == "failed"
+        assert data["pr"]["state"] == expected, observation
+        assert data["pr"]["merged_at"] == merged_at
+        assert data["proposal_state"] == "published"
+        assert calls == ["GET"]
+        pool.execute.assert_not_awaited()
+
+    # A positive local mapping is a fallback, not authority over a newer observation.
+    row["status"] = "pr_merged"
+    client = GithubPrClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, json={"state": "open", "draft": False, "merged": False}
+            )
+        )
+    )
+    monkeypatch.setattr(qa, "get_pr_client", lambda: client)
+    app, _pool = _build_app(fetchrow_result=row)
+    data = (await _call(app, f"/api/qa/cases/{row['id']}")).json()["data"]
+    assert data["case"]["pr_state"] == "merged"
+    assert data["pr"]["state"] == "open" and data["pr"]["merged_at"] is None
+
+
+@pytest.mark.parametrize(
+    ("export_retained", "refusal_recorded"),
+    [(True, None), (False, True)],
+    ids=["retained-export", "refusal-receipt"],
+)
+async def test_case_detail_marks_retained_local_diff_as_unpublished_proposal(
+    export_retained: bool, refusal_recorded: bool | None
+) -> None:
+    """Either trusted publisher trace proves it handled the attempt: a retained export,
+    or a receipt for a refusal before retention (bu-mc01y5.28)."""
     attempt_id = _uuid7_with_timestamp(1_771_234_567_899)
     row = _make_case_row(
         id=attempt_id,
@@ -494,6 +616,9 @@ async def test_case_detail_marks_retained_local_diff_as_unpublished_proposal() -
         pr_url=None,
         pr_number=None,
         finding_structured_evidence={"investigation_notes": _notes_payload()},
+        pr_absence_proven=True,
+        export_retained=export_retained,
+        refusal_recorded=refusal_recorded,
     )
     app, _pool = _build_app(fetchrow_result=row, rows=[])
 
@@ -508,6 +633,50 @@ async def test_case_detail_marks_retained_local_diff_as_unpublished_proposal() -
     assert body["investigation_notes"]["diff_snapshot"]
 
 
+@pytest.mark.parametrize(
+    ("pr_absence_proven", "export_retained", "refusal_recorded"),
+    [
+        (False, True, None),
+        (None, True, None),
+        (True, False, None),
+        (True, None, None),
+        (True, False, False),
+        (False, False, True),
+    ],
+)
+async def test_case_detail_never_claims_unpublished_without_proof_of_no_pr(
+    pr_absence_proven: bool | None,
+    export_retained: bool | None,
+    refusal_recorded: bool | None,
+) -> None:
+    """A retained diff plus missing PR metadata is not proof that no PR exists.
+
+    A lost ``pr_create`` response leaves no local PR metadata while a PR may
+    exist, so without ledger proof of absence the state stays ambiguous.  An
+    empty ledger is proof only for an attempt the publisher handled (a retained
+    export or a refusal receipt): a pre-ledger attempt has no rows either.
+    """
+    attempt_id = _uuid7_with_timestamp(1_771_234_567_901)
+    row = _make_case_row(
+        id=attempt_id,
+        status="failed",
+        error_detail="publication_ambiguous",
+        finding_structured_evidence={"investigation_notes": _notes_payload()},
+        pr_absence_proven=pr_absence_proven,
+        export_retained=export_retained,
+        refusal_recorded=refusal_recorded,
+    )
+    app, _pool = _build_app(fetchrow_result=row, rows=[])
+
+    response = await _call(app, f"/api/qa/cases/{attempt_id}")
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["proposal_state"] == "ambiguous"
+    assert body["proposal_diff_snapshot"] == _notes_payload()["diff_snapshot"]
+    assert body["pr"] is None
+
+
 async def test_case_detail_retains_diff_when_narrative_notes_are_invalid() -> None:
     attempt_id = _uuid7_with_timestamp(1_771_234_567_900)
     diff_snapshot = [{"kind": "+", "text": "fixed = True"}]
@@ -516,6 +685,8 @@ async def test_case_detail_retains_diff_when_narrative_notes_are_invalid() -> No
         status="failed",
         error_detail="git_auth_failed: repository write authorization failed",
         finding_structured_evidence={"investigation_notes": {"diff_snapshot": diff_snapshot}},
+        pr_absence_proven=True,
+        export_retained=True,
     )
     app, _pool = _build_app(fetchrow_result=row, rows=[])
 

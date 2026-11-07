@@ -117,12 +117,24 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         optional_schema=True,
     ),
     SourceAdapterState(
+        source_name="steam.status_history",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="connectors.steam_status_history",
+        boundary_semantics=(
+            "play_session evidence from in-game changes; minute precision; "
+            "open sessions provisional, capped at 12 hours, refreshed every run"
+        ),
+        optional_schema=True,
+    ),
+    SourceAdapterState(
         source_name="owntracks.points",
         chronicler_compatibility=Compatibility.SUPPORTED,
         read_surface="connectors.owntracks_points",
         boundary_semantics=(
-            "one location point event per GPS fix; "
-            "contiguous fixes within 30 min → movement_episode rollup"
+            "one location point event per GPS fix (impossible jumps kept but "
+            "flagged trail_outlier); contiguous accepted fixes within 30 min → "
+            "movement_episode rollup of at least two fixes, never overlapping "
+            "another for the same endpoint"
         ),
         optional_schema=True,
     ),
@@ -136,8 +148,12 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         read_surface="connectors.owntracks_points",
         boundary_semantics=(
             "contiguous stationary point runs (radius+dwell clustering) → "
-            "place_episode; (start_at, end_at) span the dwell; labeled "
-            "against owner-declared reference points or 'place_unknown'"
+            "evidence-layer place_episode; (start_at, end_at) span the dwell, "
+            "bridging silent reporting gaps up to 16 h at the same place and "
+            "ending a bridged stay at the departure fix; labeled "
+            "against owner-declared reference points, then owner OwnTracks "
+            "regions, else 'place_unknown'; fixes beyond 50 km of the owner's "
+            "home reference → evidence-layer away_episode"
         ),
         optional_schema=True,
     ),
@@ -280,6 +296,39 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
             "(window_start_local, window_end_local) in its own timezone; "
             "requires >=1 weak corroborator and no contradictor; "
             "layer=activity, confidence=low, precision=hour"
+        ),
+        optional_schema=False,
+    ),
+    # Situational blocks (bu-r3fmja, REQ-butler-chronicler-016): where the
+    # owner was, laned by anchor place, minus higher-precedence activity.
+    SourceAdapterState(
+        source_name="chronicler.situation_inferred",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface=(
+            "chronicler.episodes + chronicler.point_events (own-schema); anchors from "
+            "public.owner_places, relationship.entity_facts + address_geocodes"
+        ),
+        boundary_semantics=(
+            "one block per place stay (or provisional hold at the last fix) per "
+            "owner-local day, minus every higher-ranked lane's activity "
+            "(sleep > exercise > travel > work > play > eat > social > rest) and "
+            "owner answers; work anchor → work_presence_block, airport → "
+            "airport_block, home → home_block, elsewhere within 50 km of home → "
+            "outing_block; pieces under 15 min dropped; layer=activity, "
+            "precision=minute; re-derived per day, stale blocks tombstoned"
+        ),
+        optional_schema=False,
+    ),
+    # Owner gap-interview answers (bu-r3fmja, REQ-butler-chronicler-017).
+    # Written by the gap-interview resolver, not by a scheduled projection.
+    SourceAdapterState(
+        source_name="chronicler.owner_answer",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="gap-interview answers (chronicler KV state)",
+        boundary_semantics=(
+            "one owner_<lane>_block over the interviewed block when the owner "
+            "answers with a lane; layer=activity, confidence=high, "
+            "precision=minute; dismiss records nothing"
         ),
         optional_schema=False,
     ),

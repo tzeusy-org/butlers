@@ -10,6 +10,9 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastmcp import FastMCP
+
+from butlers.testing.mcp import registered_tools
 
 pytestmark = pytest.mark.unit
 
@@ -159,18 +162,7 @@ async def test_remove_source_deletes_only_registry_key_and_leaves_dangling_refs(
 async def test_education_module_registers_source_material_tools() -> None:
     from roster.education.modules import EducationModule, EducationModuleConfig
 
-    class _FakeMCP:
-        def __init__(self) -> None:
-            self.tools: dict[str, Any] = {}
-
-        def tool(self):
-            def decorator(fn):
-                self.tools[fn.__name__] = fn
-                return fn
-
-            return decorator
-
-    mcp = _FakeMCP()
+    mcp = FastMCP("source-material-registration")
     module = EducationModule()
     await module.register_tools(
         mcp,
@@ -183,7 +175,7 @@ async def test_education_module_registers_source_material_tools() -> None:
         "source_material_register",
         "source_material_list",
         "source_material_remove",
-    } <= mcp.tools.keys()
+    } <= (await registered_tools(mcp)).keys()
 
 
 async def test_source_material_register_schema_requires_title_and_type() -> None:

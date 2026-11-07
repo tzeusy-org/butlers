@@ -27,8 +27,9 @@ import asyncpg
 import httpx
 import pytest
 
-from butlers.api.routers.memory import _get_db_manager
+from butlers.api.deps import get_db
 from butlers.modules.memory.tools.entities import entity_neighbors, entity_resolve
+from butlers.testing.db_manager import db_manager
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = [
@@ -38,32 +39,10 @@ pytestmark = [
 ]
 
 
-_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS public.entities (
-    id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    canonical_name TEXT        NOT NULL,
-    entity_type    TEXT        NOT NULL DEFAULT 'person',
-    aliases        TEXT[]      NOT NULL DEFAULT '{}',
-    roles          TEXT[]      NOT NULL DEFAULT '{}',
-    metadata       JSONB       NOT NULL DEFAULT '{}'::jsonb,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS facts (
-    content_authority TEXT, authority_entity_id UUID,
-    id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    entity_id        UUID,
-    object_entity_id UUID,
-    predicate        TEXT        NOT NULL DEFAULT 'knows',
-    content          TEXT,
-    confidence       FLOAT       NOT NULL DEFAULT 1.0,
-    scope            TEXT        NOT NULL DEFAULT 'global',
-    valid_at         TIMESTAMPTZ,
-    validity         TEXT        NOT NULL DEFAULT 'active',
-    invalid_at       TIMESTAMPTZ,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-"""
+@asynccontextmanager
+async def _memory_pool(db):
+    """public.entities from the core chain and facts from the memory chain."""
+    yield await db("core", "memory", min_size=2, max_size=8)
 
 
 async def _add_entity(
@@ -90,8 +69,8 @@ async def _add_edge(
 ) -> None:
     await pool.execute(
         """
-        INSERT INTO facts (entity_id, object_entity_id, predicate, content, validity)
-        VALUES ($1, $2, $3, 'edge', 'active')
+        INSERT INTO facts (entity_id, object_entity_id, subject, predicate, content, validity)
+        VALUES ($1, $2, 'edge', $3, 'edge', 'active')
         """,
         subject,
         obj,
@@ -99,29 +78,10 @@ async def _add_edge(
     )
 
 
-class _SinglePoolDB:
-    """DatabaseManager stand-in exposing one real pool under one butler name.
-
-    The butler is deliberately *not* named ``relationship`` so the dashboard
-    list endpoint's Dunbar enrichment short-circuits (KeyError → empty map)
-    without needing relationship tables provisioned.
-    """
-
-    def __init__(self, butler: str, pool: object) -> None:
-        self._butler = butler
-        self._pool = pool
-        self.butler_names = [butler]
-
-    def pool(self, name: str) -> object:
-        if name != self._butler:
-            raise KeyError(f"No pool for butler: {name}")
-        return self._pool
-
-
 @asynccontextmanager
 async def _app_client(db: object):
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -130,19 +90,19 @@ async def _app_client(db: object):
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_entity_resolve_excludes_credential_anchor_companions(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """entity_resolve must not return google_account or steam_account companions."""
-    async with provisioned_postgres_pool(min_pool_size=2, max_pool_size=8) as pool:
-        await pool.execute(_SCHEMA_SQL)
-
+    async with _memory_pool(db) as pool:
+        # uq_entities_canonical_type_live allows one live entity per (name, type),
+        # so the same-named companions differ only by entity_type.
         name = "Acme Corp"
         normal_id = await _add_entity(pool, canonical_name=name, roles=[], entity_type="other")
         google_id = await _add_entity(
-            pool, canonical_name=name, roles=["google_account"], entity_type="other"
+            pool, canonical_name=name, roles=["google_account"], entity_type="organization"
         )
         steam_id = await _add_entity(
-            pool, canonical_name=name, roles=["steam_account"], entity_type="other"
+            pool, canonical_name=name, roles=["steam_account"], entity_type="person"
         )
 
         results = await entity_resolve(pool, name)
@@ -155,12 +115,10 @@ async def test_entity_resolve_excludes_credential_anchor_companions(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_entity_neighbors_default_both_traverses_and_excludes_companions(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """Default bidirectional traversal works and excludes credential companions."""
-    async with provisioned_postgres_pool(min_pool_size=2, max_pool_size=8) as pool:
-        await pool.execute(_SCHEMA_SQL)
-
+    async with _memory_pool(db) as pool:
         hub_id = await _add_entity(pool, canonical_name="Hub", roles=[])
         normal_neighbor = await _add_entity(pool, canonical_name="Friend", roles=[])
         second_hop = await _add_entity(pool, canonical_name="Friend of Friend", roles=[])
@@ -191,12 +149,10 @@ async def test_entity_neighbors_default_both_traverses_and_excludes_companions(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_dashboard_entity_list_excludes_credential_anchor_companions(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """GET /api/memory/entities must not list google_account or steam_account companions."""
-    async with provisioned_postgres_pool(min_pool_size=2, max_pool_size=8) as pool:
-        await pool.execute(_SCHEMA_SQL)
-
+    async with _memory_pool(db) as pool:
         normal_id = await _add_entity(pool, canonical_name="Visible Person", roles=[])
         google_id = await _add_entity(
             pool, canonical_name="Google Anchor", roles=["google_account"], entity_type="other"
@@ -205,8 +161,9 @@ async def test_dashboard_entity_list_excludes_credential_anchor_companions(
             pool, canonical_name="Steam Anchor", roles=["steam_account"], entity_type="other"
         )
 
-        db = _SinglePoolDB("memory", pool)
-        async with _app_client(db) as client:
+        # Not "relationship": the list endpoint's Dunbar enrichment then short-circuits.
+        manager = db_manager({"memory": pool})
+        async with _app_client(manager) as client:
             resp = await client.get("/api/memory/entities", params={"limit": 200})
 
         assert resp.status_code == 200, resp.text

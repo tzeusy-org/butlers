@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.memory import _get_db_manager
+from butlers.api.deps import get_db
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app
@@ -68,7 +68,7 @@ async def test_persisted_author_and_endorser_survive_dashboard_reads(postgres_co
         db._butler_schemas["general"] = "memory"
         db._butler_modules["general"] = frozenset({"memory"})
         app = create_authenticated_domain_app()
-        app.dependency_overrides[_get_db_manager] = lambda: db
+        app.dependency_overrides[get_db] = lambda: db
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:

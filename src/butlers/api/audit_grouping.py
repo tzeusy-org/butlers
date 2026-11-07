@@ -47,7 +47,7 @@ never persisted. Recovering it here would have meant substring-parsing the very
 text this rule withholds.
 
 Migration ``core_202`` makes it a column. ``public.audit_log.failure_category``
-holds a :data:`~butlers.api.models.audit.PROBE_FAILURE_VOCABULARY` member,
+holds a :data:`~butlers.core.audit.PROBE_FAILURE_VOCABULARY` member,
 written at INSERT time and CHECK-constrained at rest, so the title below can
 name the cause while reading nothing a provider wrote:
 

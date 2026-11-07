@@ -27,7 +27,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from butlers.modules.base import Module, ToolMeta
+from butlers.modules.base import Module, ToolMeta, guarded_tool
 from butlers.steam.client import SteamAPIClient, SteamAPIError, SteamRateLimitError
 from butlers.steam_account_registry import MissingSteamCredentialsError, resolve_steam_account
 
@@ -171,20 +171,11 @@ class SteamModule(Module):
         self._default_account: str | None = None
         self._max_batch_size: int = _FRIEND_ENRICH_BATCH
 
-    @property
-    def name(self) -> str:
-        return "steam"
+    name = "steam"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return SteamModuleConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -328,28 +319,32 @@ class SteamModule(Module):
         """Register all 9 Steam MCP tools on the FastMCP server."""
         module = self  # capture for closures
 
+        guarded = guarded_tool(
+            credential=lambda: module._credentials_ok and module._client is not None,
+            missing=_no_credentials_error,
+            errors=_handle_steam_error,
+        )
+        # Public Steam endpoints work without the owner's API key; they only get error mapping.
+        public_api = guarded_tool(errors=_handle_steam_error)
+
         # ----------------------------------------------------------------
         # Tool 1: steam_get_player_summary
         # ----------------------------------------------------------------
 
+        @guarded
         async def steam_get_player_summary(steam_id: str | None = None) -> dict[str, Any]:
             """Get Steam player profile info (name, avatar, status, visibility).
 
             Args:
                 steam_id: SteamID64 string. Defaults to the primary connected account.
             """
-            if not module._credentials_ok or module._client is None:
-                return _no_credentials_error()
             sid = module._resolve_steam_id(steam_id)
             if not sid:
                 return _no_credentials_error()
-            try:
-                players = await module._client.get_player_summaries([sid])
-                if not players:
-                    return _privacy_error(f"No player data returned for SteamID {sid}.")
-                return {"player": players[0]}
-            except Exception as exc:  # noqa: BLE001
-                return _handle_steam_error(exc)
+            players = await module._client.get_player_summaries([sid])
+            if not players:
+                return _privacy_error(f"No player data returned for SteamID {sid}.")
+            return {"player": players[0]}
 
         mcp.tool()(steam_get_player_summary)
 
@@ -357,6 +352,7 @@ class SteamModule(Module):
         # Tool 2: steam_get_owned_games
         # ----------------------------------------------------------------
 
+        @guarded
         async def steam_get_owned_games(
             steam_id: str | None = None,
             include_appinfo: bool = True,
@@ -369,26 +365,21 @@ class SteamModule(Module):
                 include_appinfo: Include game name and icon URL (default true).
                 include_free_games: Include free-to-play games in results (default true).
             """
-            if not module._credentials_ok or module._client is None:
-                return _no_credentials_error()
             sid = module._resolve_steam_id(steam_id)
             if not sid:
                 return _no_credentials_error()
-            try:
-                result = await module._client.request(
-                    "IPlayerService",
-                    "GetOwnedGames",
-                    params={
-                        "steamid": sid,
-                        "include_appinfo": int(include_appinfo),
-                        "include_played_free_games": int(include_free_games),
-                    },
-                )
-                if not result:
-                    return _privacy_error(f"Game library is private for SteamID {sid}.")
-                return result
-            except Exception as exc:  # noqa: BLE001
-                return _handle_steam_error(exc)
+            result = await module._client.request(
+                "IPlayerService",
+                "GetOwnedGames",
+                params={
+                    "steamid": sid,
+                    "include_appinfo": int(include_appinfo),
+                    "include_played_free_games": int(include_free_games),
+                },
+            )
+            if not result:
+                return _privacy_error(f"Game library is private for SteamID {sid}.")
+            return result
 
         mcp.tool()(steam_get_owned_games)
 
@@ -396,6 +387,7 @@ class SteamModule(Module):
         # Tool 3: steam_get_recently_played
         # ----------------------------------------------------------------
 
+        @guarded
         async def steam_get_recently_played(
             steam_id: str | None = None,
             count: int = 10,
@@ -406,22 +398,17 @@ class SteamModule(Module):
                 steam_id: SteamID64 string. Defaults to the primary connected account.
                 count: Maximum number of games to return (default 10, max 50).
             """
-            if not module._credentials_ok or module._client is None:
-                return _no_credentials_error()
             sid = module._resolve_steam_id(steam_id)
             if not sid:
                 return _no_credentials_error()
-            try:
-                result = await module._client.request(
-                    "IPlayerService",
-                    "GetRecentlyPlayedGames",
-                    params={"steamid": sid, "count": min(count, 50)},
-                )
-                if result is None:
-                    return _privacy_error(f"Recently played data is private for SteamID {sid}.")
-                return result
-            except Exception as exc:  # noqa: BLE001
-                return _handle_steam_error(exc)
+            result = await module._client.request(
+                "IPlayerService",
+                "GetRecentlyPlayedGames",
+                params={"steamid": sid, "count": min(count, 50)},
+            )
+            if result is None:
+                return _privacy_error(f"Recently played data is private for SteamID {sid}.")
+            return result
 
         mcp.tool()(steam_get_recently_played)
 
@@ -429,6 +416,7 @@ class SteamModule(Module):
         # Tool 4: steam_get_achievements
         # ----------------------------------------------------------------
 
+        @guarded
         async def steam_get_achievements(
             app_id: int,
             steam_id: str | None = None,
@@ -439,8 +427,6 @@ class SteamModule(Module):
                 app_id: Steam AppID of the game (e.g. 730 for CS2).
                 steam_id: SteamID64 string. Defaults to the primary connected account.
             """
-            if not module._credentials_ok or module._client is None:
-                return _no_credentials_error()
             sid = module._resolve_steam_id(steam_id)
             if not sid:
                 return _no_credentials_error()
@@ -463,8 +449,6 @@ class SteamModule(Module):
                         f"Achievements for game {app_id} are private for SteamID {sid}."
                     )
                 return _handle_steam_error(exc)
-            except Exception as exc:  # noqa: BLE001
-                return _handle_steam_error(exc)
 
         mcp.tool()(steam_get_achievements)
 
@@ -472,6 +456,7 @@ class SteamModule(Module):
         # Tool 5: steam_get_friend_list
         # ----------------------------------------------------------------
 
+        @guarded
         async def steam_get_friend_list(
             steam_id: str | None = None,
             enrich: bool = False,
@@ -483,8 +468,6 @@ class SteamModule(Module):
                 enrich: Batch-fetch player summaries for each friend (default false).
                         Batches at 100 SteamIDs per API call.
             """
-            if not module._credentials_ok or module._client is None:
-                return _no_credentials_error()
             sid = module._resolve_steam_id(steam_id)
             if not sid:
                 return _no_credentials_error()
@@ -515,8 +498,6 @@ class SteamModule(Module):
                 if exc.status_code == 401:
                     return _privacy_error(f"Friend list is private for SteamID {sid}.")
                 return _handle_steam_error(exc)
-            except Exception as exc:  # noqa: BLE001
-                return _handle_steam_error(exc)
 
         mcp.tool()(steam_get_friend_list)
 
@@ -524,6 +505,7 @@ class SteamModule(Module):
         # Tool 6: steam_get_game_news
         # ----------------------------------------------------------------
 
+        @public_api
         async def steam_get_game_news(
             app_id: int,
             count: int = 5,
@@ -539,19 +521,16 @@ class SteamModule(Module):
             client = module._client or module._public_client
             if client is None:
                 return _no_credentials_error()
-            try:
-                result = await client.request(
-                    "ISteamNews",
-                    "GetNewsForApp",
-                    params={
-                        "appid": app_id,
-                        "count": min(count, 20),
-                        "maxlength": max_length,
-                    },
-                )
-                return result
-            except Exception as exc:  # noqa: BLE001
-                return _handle_steam_error(exc)
+            result = await client.request(
+                "ISteamNews",
+                "GetNewsForApp",
+                params={
+                    "appid": app_id,
+                    "count": min(count, 20),
+                    "maxlength": max_length,
+                },
+            )
+            return result
 
         mcp.tool()(steam_get_game_news)
 
@@ -559,26 +538,22 @@ class SteamModule(Module):
         # Tool 7: steam_get_player_level
         # ----------------------------------------------------------------
 
+        @guarded
         async def steam_get_player_level(steam_id: str | None = None) -> dict[str, Any]:
             """Get the Steam Experience Level for an account.
 
             Args:
                 steam_id: SteamID64 string. Defaults to the primary connected account.
             """
-            if not module._credentials_ok or module._client is None:
-                return _no_credentials_error()
             sid = module._resolve_steam_id(steam_id)
             if not sid:
                 return _no_credentials_error()
-            try:
-                result = await module._client.request(
-                    "IPlayerService",
-                    "GetSteamLevel",
-                    params={"steamid": sid},
-                )
-                return result
-            except Exception as exc:  # noqa: BLE001
-                return _handle_steam_error(exc)
+            result = await module._client.request(
+                "IPlayerService",
+                "GetSteamLevel",
+                params={"steamid": sid},
+            )
+            return result
 
         mcp.tool()(steam_get_player_level)
 
@@ -586,6 +561,7 @@ class SteamModule(Module):
         # Tool 8: steam_get_current_players
         # ----------------------------------------------------------------
 
+        @public_api
         async def steam_get_current_players(app_id: int) -> dict[str, Any]:
             """Get the current number of players in a Steam game (public endpoint).
 
@@ -595,15 +571,12 @@ class SteamModule(Module):
             client = module._client or module._public_client
             if client is None:
                 return _no_credentials_error()
-            try:
-                result = await client.request(
-                    "ISteamUserStats",
-                    "GetNumberOfCurrentPlayers",
-                    params={"appid": app_id},
-                )
-                return result
-            except Exception as exc:  # noqa: BLE001
-                return _handle_steam_error(exc)
+            result = await client.request(
+                "ISteamUserStats",
+                "GetNumberOfCurrentPlayers",
+                params={"appid": app_id},
+            )
+            return result
 
         mcp.tool()(steam_get_current_players)
 
@@ -611,6 +584,7 @@ class SteamModule(Module):
         # Tool 9: steam_resolve_vanity_url
         # ----------------------------------------------------------------
 
+        @guarded
         async def steam_resolve_vanity_url(vanity_url: str) -> dict[str, Any]:
             """Resolve a Steam vanity URL to a SteamID64.
 
@@ -618,23 +592,18 @@ class SteamModule(Module):
                 vanity_url: The custom Steam URL name (e.g. 'gaben' from
                             steamcommunity.com/id/gaben).
             """
-            if not module._credentials_ok or module._client is None:
-                return _no_credentials_error()
-            try:
-                result = await module._client.request(
-                    "ISteamUser",
-                    "ResolveVanityURL",
-                    params={"vanityurl": vanity_url},
-                )
-                success = result.get("success")
-                if success == 1:
-                    return {"steamid": result.get("steamid"), "vanity_url": vanity_url}
-                return {
-                    "error": "steam_vanity_not_found",
-                    "message": f"Vanity URL '{vanity_url}' could not be resolved.",
-                    "hint": "Check the URL spelling. The profile may have been removed.",
-                }
-            except Exception as exc:  # noqa: BLE001
-                return _handle_steam_error(exc)
+            result = await module._client.request(
+                "ISteamUser",
+                "ResolveVanityURL",
+                params={"vanityurl": vanity_url},
+            )
+            success = result.get("success")
+            if success == 1:
+                return {"steamid": result.get("steamid"), "vanity_url": vanity_url}
+            return {
+                "error": "steam_vanity_not_found",
+                "message": f"Vanity URL '{vanity_url}' could not be resolved.",
+                "hint": "Check the URL spelling. The profile may have been removed.",
+            }
 
         mcp.tool()(steam_resolve_vanity_url)

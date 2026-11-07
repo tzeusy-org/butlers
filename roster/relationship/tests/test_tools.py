@@ -10,8 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_GRAPH_EDGES
-
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.asyncio(loop_scope="session"),
@@ -43,437 +41,9 @@ def _mock_contact_signal(monkeypatch: pytest.MonkeyPatch, *, is_overdue: bool) -
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with relationship tables and return a pool."""
-    async with provisioned_postgres_pool() as p:
-        # Create relationship tables (mirrors Alembic relationship migration)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contacts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                first_name TEXT,
-                last_name TEXT,
-                nickname TEXT,
-                company TEXT,
-                job_title TEXT,
-                gender TEXT,
-                pronouns TEXT,
-                avatar_url TEXT,
-                entity_id UUID,
-                stay_in_touch_days INT,
-                listed BOOLEAN NOT NULL DEFAULT true,
-                metadata JSONB NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (first_name, last_name)
-        """)
-        # contact_entity_map (rel_029) — contact_id → entity_id bridge.
-        # contact_create() writes here best-effort; resolve_contact_entity_id() reads here.
-        # Without this table, contact_create silently no-ops and entity_id stays None,
-        # breaking entity-id-dependent scoring in contact_resolve and fact anchoring.
-        await p.execute(CONTACT_ENTITY_MAP.ddl())
-        # relationship_types taxonomy (used by relationship_add and resolve.py salience)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship_types (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                "group" TEXT NOT NULL DEFAULT 'other',
-                forward_label TEXT NOT NULL,
-                reverse_label TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        # Seed common relationship types used by salience scoring
-        await p.execute("""
-            INSERT INTO relationship_types ("group", forward_label, reverse_label) VALUES
-                ('family', 'spouse', 'spouse'),
-                ('family', 'partner', 'partner'),
-                ('family', 'parent', 'child'),
-                ('family', 'child', 'parent'),
-                ('family', 'sibling', 'sibling'),
-                ('social', 'close friend', 'close friend'),
-                ('social', 'friend', 'friend'),
-                ('work', 'colleague', 'colleague'),
-                ('work', 'manager', 'report'),
-                ('work', 'mentor', 'mentee'),
-                ('other', 'custom', 'custom')
-            ON CONFLICT DO NOTHING
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationships (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_a UUID NOT NULL,
-                contact_b UUID NOT NULL,
-                contact_id UUID GENERATED ALWAYS AS (contact_a) STORED,
-                related_contact_id UUID GENERATED ALWAYS AS (contact_b) STORED,
-                relationship_type_id UUID REFERENCES relationship_types(id) ON DELETE SET NULL,
-                type TEXT NOT NULL DEFAULT '',
-                notes TEXT,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS important_dates (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID,
-                local_entity_id UUID,
-                label TEXT NOT NULL,
-                month INT NOT NULL,
-                day INT NOT NULL,
-                year INT,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS notes (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL,
-                title TEXT,
-                body TEXT NOT NULL,
-                emotion TEXT,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS interactions (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL,
-                type TEXT NOT NULL,
-                summary TEXT,
-                occurred_at TIMESTAMPTZ DEFAULT now(),
-                created_at TIMESTAMPTZ DEFAULT now(),
-                direction VARCHAR(10),
-                duration_minutes INTEGER,
-                metadata JSONB
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_interactions_contact_occurred
-                ON interactions (contact_id, occurred_at)
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS gifts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL,
-                description TEXT NOT NULL,
-                occasion TEXT,
-                status TEXT NOT NULL DEFAULT 'idea'
-                    CHECK (status IN ('idea', 'purchased', 'wrapped', 'given', 'thanked')),
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS loans (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                lender_contact_id UUID NOT NULL,
-                borrower_contact_id UUID NOT NULL,
-                name TEXT NOT NULL,
-                amount_cents INT NOT NULL,
-                currency TEXT NOT NULL DEFAULT 'USD',
-                loaned_at TIMESTAMPTZ,
-                settled BOOLEAN DEFAULT false,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                settled_at TIMESTAMPTZ
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS groups (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name TEXT NOT NULL UNIQUE,
-                type TEXT,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS group_members (
-                group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-                contact_id UUID NOT NULL,
-                role TEXT,
-                PRIMARY KEY (group_id, contact_id)
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS labels (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name TEXT NOT NULL UNIQUE,
-                color TEXT,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contact_labels (
-                label_id UUID NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
-                contact_id UUID,
-                local_entity_id UUID,
-                PRIMARY KEY (label_id, contact_id)
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS quick_facts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL,
-                key TEXT NOT NULL,
-                value TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now(),
-                UNIQUE (contact_id, key)
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS addresses (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL,
-                label VARCHAR NOT NULL DEFAULT 'Home',
-                line_1 TEXT NOT NULL,
-                line_2 TEXT,
-                city VARCHAR,
-                province VARCHAR,
-                postal_code VARCHAR,
-                country VARCHAR(2),
-                is_current BOOLEAN NOT NULL DEFAULT false,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_addresses_contact_id
-                ON addresses (contact_id)
-        """)
-        # Life event tables (migration 002)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS life_event_categories (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name TEXT NOT NULL UNIQUE,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS life_event_types (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                category_id UUID NOT NULL REFERENCES life_event_categories(id) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                UNIQUE (category_id, name)
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_life_event_types_category
-                ON life_event_types (category_id)
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS life_events (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL,
-                life_event_type_id UUID NOT NULL REFERENCES life_event_types(id),
-                summary TEXT NOT NULL,
-                description TEXT,
-                happened_at DATE,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS tasks (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL,
-                title VARCHAR NOT NULL,
-                description TEXT,
-                completed BOOLEAN DEFAULT false,
-                completed_at TIMESTAMPTZ,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_life_events_contact_happened
-                ON life_events (contact_id, happened_at)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_life_events_type
-                ON life_events (life_event_type_id)
-        """)
-        # Seed categories
-        await p.execute("""
-            INSERT INTO life_event_categories (name) VALUES
-                ('Career'), ('Personal'), ('Social')
-        """)
-        # Seed Career types
-        await p.execute("""
-            INSERT INTO life_event_types (category_id, name)
-            SELECT id, type_name FROM life_event_categories
-            CROSS JOIN (VALUES
-                ('new job'), ('promotion'), ('quit'), ('retired'), ('graduated')
-            ) AS t(type_name)
-            WHERE name = 'Career'
-        """)
-        # Seed Personal types
-        await p.execute("""
-            INSERT INTO life_event_types (category_id, name)
-            SELECT id, type_name FROM life_event_categories
-            CROSS JOIN (VALUES
-                ('married'), ('divorced'), ('had a child'), ('moved'), ('passed away')
-            ) AS t(type_name)
-            WHERE name = 'Personal'
-        """)
-        # Seed Social types
-        await p.execute("""
-            INSERT INTO life_event_types (category_id, name)
-            SELECT id, type_name FROM life_event_categories
-            CROSS JOIN (VALUES
-                ('met for first time'), ('reconnected')
-            ) AS t(type_name)
-            WHERE name = 'Social'
-        """)
-
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_tasks_contact_id ON tasks (contact_id)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks (completed)
-        """)
-
-        # public.entities (needed by store_fact for entity_id validation)
-        # listed (BOOLEAN NOT NULL DEFAULT true, core_103) is required so that
-        # contact_archive() can set entities.listed=false (bu-5nlh6) and
-        # entity-anchored searches (channel_search) can filter on e.listed=true.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name VARCHAR NOT NULL DEFAULT '',
-                name TEXT NOT NULL DEFAULT '',
-                entity_type VARCHAR NOT NULL DEFAULT 'other',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                listed BOOLEAN NOT NULL DEFAULT true,
-                posture TEXT NOT NULL DEFAULT 'active',
-                stay_in_touch_days INT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.contacts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_id UUID REFERENCES public.entities(id),
-                roles JSONB NOT NULL DEFAULT '[]'
-            )
-        """)
-
-        # Predicate registry — columns must match what store_fact() queries
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS predicate_registry (
-                name TEXT PRIMARY KEY,
-                expected_subject_type TEXT,
-                expected_object_type TEXT,
-                is_edge BOOLEAN NOT NULL DEFAULT false,
-                is_temporal BOOLEAN NOT NULL DEFAULT false,
-                description TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                status TEXT NOT NULL DEFAULT 'active',
-                superseded_by TEXT,
-                deprecated_at TIMESTAMPTZ,
-                inverse_of TEXT,
-                is_symmetric BOOLEAN NOT NULL DEFAULT false,
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                usage_count INTEGER NOT NULL DEFAULT 0,
-                last_used_at TIMESTAMPTZ
-            )
-        """)
-        await p.execute("""
-            INSERT INTO predicate_registry (name, is_temporal) VALUES
-                ('interaction', true),
-                ('life_event', true),
-                ('contact_note', true),
-                ('activity', true),
-                ('gift', false),
-                ('loan', false),
-                ('contact_task', false)
-            ON CONFLICT (name) DO NOTHING
-        """)
-
-        # Facts table (TEXT embedding avoids pgvector dependency in tests)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                content_authority TEXT, authority_entity_id UUID,
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                content TEXT NOT NULL,
-                embedding TEXT,
-                search_vector TSVECTOR,
-                importance FLOAT NOT NULL DEFAULT 5.0,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                decay_rate FLOAT NOT NULL DEFAULT 0.008,
-                permanence TEXT NOT NULL DEFAULT 'standard',
-                source_butler TEXT,
-                source_episode_id UUID,
-                supersedes_id UUID REFERENCES facts(id) ON DELETE SET NULL,
-                validity TEXT NOT NULL DEFAULT 'active',
-                scope TEXT NOT NULL DEFAULT 'global',
-                reference_count INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_confirmed_at TIMESTAMPTZ,
-                tags JSONB DEFAULT '[]'::jsonb,
-                metadata JSONB DEFAULT '{}'::jsonb,
-                entity_id UUID REFERENCES public.entities(id),
-                object_entity_id UUID REFERENCES public.entities(id),
-                valid_at TIMESTAMPTZ DEFAULT NULL,
-                tenant_id TEXT NOT NULL DEFAULT 'owner',
-                request_id TEXT,
-                idempotency_key TEXT,
-                observed_at TIMESTAMPTZ DEFAULT now(),
-                invalid_at TIMESTAMPTZ,
-                retention_class TEXT NOT NULL DEFAULT 'operational',
-                sensitivity TEXT NOT NULL DEFAULT 'normal',
-                embedding_model_version TEXT DEFAULT 'unknown'
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate
-                ON facts (subject, predicate)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_facts_predicate_valid_at
-                ON facts (predicate, valid_at)
-        """)
-
-        # memory_links table (used by store_fact for supersession links)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS memory_links (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_type TEXT NOT NULL,
-                source_id UUID NOT NULL,
-                target_type TEXT NOT NULL,
-                target_id UUID NOT NULL,
-                relation TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (source_type, source_id, target_type, target_id)
-            )
-        """)
-
-        # public.memory_catalog + public.entity_graph_edges (bu-9ltqm) — the
-        # cascade targets forget_memory()'s retraction (via task_delete etc.)
-        # disowns/deletes.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.memory_catalog (
-                id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_schema TEXT NOT NULL,
-                source_table  TEXT NOT NULL,
-                source_id     UUID NOT NULL,
-                tenant_id     TEXT NOT NULL DEFAULT 'owner',
-                entity_id     UUID,
-                summary       TEXT NOT NULL DEFAULT '',
-                memory_type   TEXT NOT NULL DEFAULT 'fact',
-                confidence    DOUBLE PRECISION,
-                invalid_at    TIMESTAMPTZ,
-                updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (source_schema, source_table, source_id)
-            )
-        """)
-        await p.execute(ENTITY_GRAPH_EDGES.ddl())
-
-        yield p
+async def rel_pool(db):
+    """Real core/memory/relationship/contacts chains, flat in ``public``."""
+    return await db("core", "memory", "relationship", "contacts")
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -512,12 +82,12 @@ def patch_embedding_engine():
 # ------------------------------------------------------------------
 
 
-async def test_contact_create(pool):
+async def test_contact_create(rel_pool):
     """contact_create inserts a new contact and returns its dict."""
     from butlers.tools.relationship import contact_create
 
     result = await contact_create(
-        pool,
+        rel_pool,
         first_name="Alice",
         metadata={"email": "alice@example.com"},
     )
@@ -526,33 +96,33 @@ async def test_contact_create(pool):
     assert result["metadata"] == {"email": "alice@example.com"}
 
 
-async def test_contact_create_default_details(pool):
+async def test_contact_create_default_details(rel_pool):
     """contact_create uses empty dict for metadata when not provided."""
     from butlers.tools.relationship import contact_create
 
-    result = await contact_create(pool, "Bob")
+    result = await contact_create(rel_pool, "Bob")
     assert result["metadata"] == {}
 
 
-async def test_contact_update(pool):
+async def test_contact_update(rel_pool):
     """contact_update changes fields on an existing contact."""
     from butlers.tools.relationship import contact_create, contact_update
 
-    c = await contact_create(pool, "Carol")
-    updated = await contact_update(pool, c["id"], first_name="Caroline", metadata={"age": 30})
+    c = await contact_create(rel_pool, "Carol")
+    updated = await contact_update(rel_pool, c["id"], first_name="Caroline", metadata={"age": 30})
     assert updated["first_name"] == "Caroline"
     assert updated["metadata"] == {"age": 30}
 
 
-async def test_contact_update_not_found(pool):
+async def test_contact_update_not_found(rel_pool):
     """contact_update raises ValueError for non-existent contact."""
     from butlers.tools.relationship import contact_update
 
     with pytest.raises(ValueError, match="not found"):
-        await contact_update(pool, uuid.uuid4(), first_name="Nobody")
+        await contact_update(rel_pool, uuid.uuid4(), first_name="Nobody")
 
 
-async def test_contact_update_entity_id_updates_map(pool):
+async def test_contact_update_entity_id_updates_map(rel_pool):
     """contact_update upserts contact_entity_map when entity_id is reassigned.
 
     Regression guard for bu-0tg4s: contact_create populates contact_entity_map at
@@ -561,32 +131,32 @@ async def test_contact_update_entity_id_updates_map(pool):
     from butlers.tools.relationship import contact_create, contact_update
 
     # Create a contact; contact_create auto-creates an entity and writes contact_entity_map.
-    c = await contact_create(pool, "Entity Map Sync Test")
+    c = await contact_create(rel_pool, "Entity Map Sync Test")
     contact_id = c["id"]
     original_entity_id = c["entity_id"]
     assert original_entity_id is not None, "contact_create must set entity_id"
 
     # Verify initial map entry reflects the creation-time entity.
-    initial_map = await pool.fetchrow(
+    initial_map = await rel_pool.fetchrow(
         "SELECT entity_id FROM contact_entity_map WHERE contact_id = $1", contact_id
     )
     assert initial_map is not None, "contact_entity_map row must exist after contact_create"
     assert initial_map["entity_id"] == original_entity_id
 
     # Create a second entity to reassign to.
-    new_entity_row = await pool.fetchrow(
-        "INSERT INTO public.entities (name) VALUES ($1) RETURNING id",
+    new_entity_row = await rel_pool.fetchrow(
+        "INSERT INTO public.entities (canonical_name) VALUES ($1) RETURNING id",
         "Reassigned Entity",
     )
     new_entity_id = new_entity_row["id"]
     assert new_entity_id != original_entity_id
 
     # Reassign the contact's entity_id.
-    updated = await contact_update(pool, contact_id, entity_id=new_entity_id)
+    updated = await contact_update(rel_pool, contact_id, entity_id=new_entity_id)
     assert updated["entity_id"] == new_entity_id, "contact row entity_id must reflect update"
 
     # contact_entity_map must be updated to match the new entity_id.
-    map_row = await pool.fetchrow(
+    map_row = await rel_pool.fetchrow(
         "SELECT entity_id FROM contact_entity_map WHERE contact_id = $1", contact_id
     )
     assert map_row is not None, "contact_entity_map row must still exist after contact_update"
@@ -595,10 +165,10 @@ async def test_contact_update_entity_id_updates_map(pool):
     )
 
     # Clear the entity_id — map row must be deleted.
-    updated_none = await contact_update(pool, contact_id, entity_id=None)
+    updated_none = await contact_update(rel_pool, contact_id, entity_id=None)
     assert updated_none["entity_id"] is None, "contact row entity_id must be None after clearing"
 
-    map_row_none = await pool.fetchrow(
+    map_row_none = await rel_pool.fetchrow(
         "SELECT entity_id FROM contact_entity_map WHERE contact_id = $1", contact_id
     )
     assert map_row_none is None, (
@@ -606,49 +176,49 @@ async def test_contact_update_entity_id_updates_map(pool):
     )
 
 
-async def test_contact_get(pool):
+async def test_contact_get(rel_pool):
     """contact_get returns the contact by ID."""
     from butlers.tools.relationship import contact_create, contact_get
 
-    c = await contact_create(pool, "Dave")
-    fetched = await contact_get(pool, c["id"])
+    c = await contact_create(rel_pool, "Dave")
+    fetched = await contact_get(rel_pool, c["id"])
     assert fetched["first_name"] == "Dave"
     assert fetched["id"] == c["id"]
 
 
-async def test_contact_get_not_found(pool):
+async def test_contact_get_not_found(rel_pool):
     """contact_get raises ValueError for non-existent contact by default."""
     from butlers.tools.relationship import contact_get
 
     with pytest.raises(ValueError, match="not found"):
-        await contact_get(pool, uuid.uuid4())
+        await contact_get(rel_pool, uuid.uuid4())
 
 
-async def test_contact_search(pool):
+async def test_contact_search(rel_pool):
     """contact_search finds contacts by name ILIKE."""
     from butlers.tools.relationship import contact_create, contact_search
 
-    await contact_create(pool, "Eve Johnson")
-    await contact_create(pool, "Frank Miller")
+    await contact_create(rel_pool, "Eve Johnson")
+    await contact_create(rel_pool, "Frank Miller")
 
-    results = await contact_search(pool, "john")
+    results = await contact_search(rel_pool, "john")
     names = [r["first_name"] for r in results]
     assert "Eve" in names
     assert "Frank" not in names
 
 
-async def test_contact_search_by_company(pool):
+async def test_contact_search_by_company(rel_pool):
     """contact_search finds contacts by company match."""
     from butlers.tools.relationship import contact_create, contact_search
 
-    await contact_create(pool, first_name="Grace", company="Acme Corp")
+    await contact_create(rel_pool, first_name="Grace", company="Acme Corp")
 
-    results = await contact_search(pool, "Acme")
+    results = await contact_search(rel_pool, "Acme")
     names = [r["first_name"] for r in results]
     assert "Grace" in names
 
 
-async def test_contact_archive(pool):
+async def test_contact_archive(rel_pool):
     """contact_archive sets listed=false and excludes from search.
 
     Also verifies that entities.listed is set to false (bu-5nlh6) so that
@@ -656,49 +226,49 @@ async def test_contact_archive(pool):
     """
     from butlers.tools.relationship import contact_archive, contact_create, contact_search
 
-    c = await contact_create(pool, "Hank Archived")
-    archived = await contact_archive(pool, c["id"])
+    c = await contact_create(rel_pool, "Hank Archived")
+    archived = await contact_archive(rel_pool, c["id"])
     assert archived["listed"] is False
 
     # contact_archive must also delist the linked entity (bu-5nlh6) so that
     # entity-anchored searches (channel_search filters on e.listed = true)
     # exclude archived contacts.
-    entity_row = await pool.fetchrow(
+    entity_row = await rel_pool.fetchrow(
         "SELECT listed FROM public.entities WHERE id = $1", c["entity_id"]
     )
     assert entity_row is not None, "Entity row missing after contact_archive"
     assert entity_row["listed"] is False, "entities.listed must be false after contact_archive"
 
     # Should not appear in search
-    results = await contact_search(pool, "Hank Archived")
+    results = await contact_search(rel_pool, "Hank Archived")
     assert len(results) == 0
 
 
-async def test_contact_archive_not_found(pool):
+async def test_contact_archive_not_found(rel_pool):
     """contact_archive raises ValueError for non-existent contact."""
     from butlers.tools.relationship import contact_archive
 
     with pytest.raises(ValueError, match="not found"):
-        await contact_archive(pool, uuid.uuid4())
+        await contact_archive(rel_pool, uuid.uuid4())
 
 
-async def test_contact_get_archived_returns_stale_dunbar(pool):
+async def test_contact_get_archived_returns_stale_dunbar(rel_pool):
     """contact_get returns archived contact with dunbar_stale=True flag."""
     from butlers.tools.relationship import contact_get
 
     # Directly create contact and entity rows to avoid entity_create issues.
     # Archived state lives on the entity now (listed=false), read by dunbar via
     # contact_entity_map → public.entities.
-    entity_row = await pool.fetchrow(
-        "INSERT INTO public.entities (name, listed) VALUES ($1, false) RETURNING id",
+    entity_row = await rel_pool.fetchrow(
+        "INSERT INTO public.entities (canonical_name, listed) VALUES ($1, false) RETURNING id",
         "Archived Contact",
     )
     entity_id = entity_row["id"]
 
-    contact_row = await pool.fetchrow(
+    contact_row = await rel_pool.fetchrow(
         """
-        INSERT INTO contacts (first_name, entity_id, listed)
-        VALUES ($1, $2, $3)
+        INSERT INTO contacts (name, first_name, entity_id, listed)
+        VALUES ($1::text, $1::text, $2, $3)
         RETURNING id, listed
         """,
         "Archived",
@@ -708,14 +278,14 @@ async def test_contact_get_archived_returns_stale_dunbar(pool):
     contact_id = contact_row["id"]
     assert contact_row["listed"] is False
 
-    await pool.execute(
+    await rel_pool.execute(
         "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
         contact_id,
         entity_id,
     )
 
     # Get the archived contact directly
-    fetched = await contact_get(pool, contact_id)
+    fetched = await contact_get(rel_pool, contact_id)
     assert fetched["id"] == contact_id
     assert fetched["listed"] is False
     # Archived contacts should have dunbar_stale=True
@@ -726,21 +296,21 @@ async def test_contact_get_archived_returns_stale_dunbar(pool):
     assert fetched.get("dunbar_tier_override") is False
 
 
-async def test_contact_get_active_returns_not_stale_dunbar(pool):
+async def test_contact_get_active_returns_not_stale_dunbar(rel_pool):
     """contact_get returns active contact with dunbar_stale=False flag."""
     from butlers.tools.relationship import contact_get
 
     # Directly create contact and entity rows
-    entity_row = await pool.fetchrow(
-        "INSERT INTO public.entities (name) VALUES ($1) RETURNING id",
+    entity_row = await rel_pool.fetchrow(
+        "INSERT INTO public.entities (canonical_name) VALUES ($1) RETURNING id",
         "Active Contact",
     )
     entity_id = entity_row["id"]
 
-    contact_row = await pool.fetchrow(
+    contact_row = await rel_pool.fetchrow(
         """
-        INSERT INTO contacts (first_name, entity_id, listed)
-        VALUES ($1, $2, $3)
+        INSERT INTO contacts (name, first_name, entity_id, listed)
+        VALUES ($1::text, $1::text, $2, $3)
         RETURNING id, listed
         """,
         "Active",
@@ -752,14 +322,14 @@ async def test_contact_get_active_returns_not_stale_dunbar(pool):
 
     # Bridge contact → entity so the dunbar staleness lookup (which now reads
     # listed off public.entities via contact_entity_map) resolves this contact.
-    await pool.execute(
+    await rel_pool.execute(
         "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
         contact_id,
         entity_id,
     )
 
     # Get the active contact
-    fetched = await contact_get(pool, contact_id)
+    fetched = await contact_get(rel_pool, contact_id)
     assert fetched["id"] == contact_id
     assert fetched["listed"] is True
     # Active contacts should have dunbar_stale=False
@@ -778,7 +348,7 @@ def _entity_profile(metadata):
     return profile if isinstance(profile, dict) else {}
 
 
-async def test_contact_create_mirrors_profile_to_entity(pool):
+async def test_contact_create_mirrors_profile_to_entity(rel_pool):
     """Cutover (bu-irphu): contact_create writes profile fields onto the linked entity.
 
     public.entities is the sole CRM store: metadata['profile'].* is authoritative
@@ -787,7 +357,7 @@ async def test_contact_create_mirrors_profile_to_entity(pool):
     from butlers.tools.relationship import contact_create
 
     c = await contact_create(
-        pool,
+        rel_pool,
         first_name="Mira",
         last_name="Patel",
         company="Globex",
@@ -801,13 +371,13 @@ async def test_contact_create_mirrors_profile_to_entity(pool):
     assert entity_id is not None, "contact_create must link an entity"
 
     # contact_entity_map bridges the synthetic contact_id -> entity_id.
-    map_row = await pool.fetchrow(
+    map_row = await rel_pool.fetchrow(
         "SELECT entity_id FROM contact_entity_map WHERE contact_id = $1", c["id"]
     )
     assert map_row is not None and map_row["entity_id"] == entity_id
 
     # Entity profile mirror matches the input.
-    erow = await pool.fetchrow("SELECT metadata FROM public.entities WHERE id = $1", entity_id)
+    erow = await rel_pool.fetchrow("SELECT metadata FROM public.entities WHERE id = $1", entity_id)
     profile = _entity_profile(erow["metadata"])
     assert profile["first_name"] == "Mira"
     assert profile["last_name"] == "Patel"
@@ -821,7 +391,7 @@ async def test_contact_create_mirrors_profile_to_entity(pool):
     assert c["metadata"] == {"note": "vip"}
 
 
-async def test_contact_update_mirrors_profile_and_stay_in_touch_to_entity(pool):
+async def test_contact_update_mirrors_profile_and_stay_in_touch_to_entity(rel_pool):
     """Cutover (bu-irphu): contact_update writes profile + stay_in_touch_days to the entity.
 
     A profile-field change and a stay_in_touch_days change are both projected
@@ -830,12 +400,12 @@ async def test_contact_update_mirrors_profile_and_stay_in_touch_to_entity(pool):
     """
     from butlers.tools.relationship import contact_create, contact_update
 
-    c = await contact_create(pool, first_name="Owen", company="Acme")
+    c = await contact_create(rel_pool, first_name="Owen", company="Acme")
     entity_id = c["entity_id"]
 
-    await contact_update(pool, c["id"], company="Initech", stay_in_touch_days=21)
+    await contact_update(rel_pool, c["id"], company="Initech", stay_in_touch_days=21)
 
-    erow = await pool.fetchrow(
+    erow = await rel_pool.fetchrow(
         "SELECT metadata, stay_in_touch_days FROM public.entities WHERE id = $1",
         entity_id,
     )
@@ -850,18 +420,18 @@ async def test_contact_update_mirrors_profile_and_stay_in_touch_to_entity(pool):
 # ------------------------------------------------------------------
 
 
-async def test_relationship_add_creates_two_rows(pool):
+async def test_relationship_add_creates_two_rows(rel_pool):
     """relationship_add creates two rows for bidirectional link."""
     from butlers.tools.relationship import contact_create, relationship_add
 
-    a = await contact_create(pool, "Rel-A")
-    b = await contact_create(pool, "Rel-B")
+    a = await contact_create(rel_pool, "Rel-A")
+    b = await contact_create(rel_pool, "Rel-B")
 
-    result = await relationship_add(pool, a["id"], b["id"], "friend", notes="college")
+    result = await relationship_add(rel_pool, a["id"], b["id"], "friend", notes="college")
     assert result["type"] == "friend"
 
     # Check two rows exist
-    count = await pool.fetchval(
+    count = await rel_pool.fetchval(
         """
         SELECT count(*) FROM relationships
         WHERE (contact_a = $1 AND contact_b = $2)
@@ -873,16 +443,16 @@ async def test_relationship_add_creates_two_rows(pool):
     assert count == 2
 
 
-async def test_relationship_list_both_directions(pool):
+async def test_relationship_list_both_directions(rel_pool):
     """relationship_list returns relationships from both sides."""
     from butlers.tools.relationship import contact_create, relationship_add, relationship_list
 
-    a = await contact_create(pool, "Dir-A")
-    b = await contact_create(pool, "Dir-B")
-    await relationship_add(pool, a["id"], b["id"], "sibling")
+    a = await contact_create(rel_pool, "Dir-A")
+    b = await contact_create(rel_pool, "Dir-B")
+    await relationship_add(rel_pool, a["id"], b["id"], "sibling")
 
-    list_a = await relationship_list(pool, a["id"])
-    list_b = await relationship_list(pool, b["id"])
+    list_a = await relationship_list(rel_pool, a["id"])
+    list_b = await relationship_list(rel_pool, b["id"])
 
     assert len(list_a) >= 1
     assert len(list_b) >= 1
@@ -890,7 +460,7 @@ async def test_relationship_list_both_directions(pool):
     assert any(r["contact_b"] == a["id"] for r in list_b)
 
 
-async def test_relationship_remove(pool):
+async def test_relationship_remove(rel_pool):
     """relationship_remove deletes both directions."""
     from butlers.tools.relationship import (
         contact_create,
@@ -899,14 +469,14 @@ async def test_relationship_remove(pool):
         relationship_remove,
     )
 
-    a = await contact_create(pool, "Rem-A")
-    b = await contact_create(pool, "Rem-B")
-    await relationship_add(pool, a["id"], b["id"], "colleague")
+    a = await contact_create(rel_pool, "Rem-A")
+    b = await contact_create(rel_pool, "Rem-B")
+    await relationship_add(rel_pool, a["id"], b["id"], "colleague")
 
-    await relationship_remove(pool, a["id"], b["id"])
+    await relationship_remove(rel_pool, a["id"], b["id"])
 
-    list_a = await relationship_list(pool, a["id"])
-    list_b = await relationship_list(pool, b["id"])
+    list_a = await relationship_list(rel_pool, a["id"])
+    list_b = await relationship_list(rel_pool, b["id"])
     assert not any(r["contact_b"] == b["id"] for r in list_a)
     assert not any(r["contact_b"] == a["id"] for r in list_b)
 
@@ -916,60 +486,60 @@ async def test_relationship_remove(pool):
 # ------------------------------------------------------------------
 
 
-async def test_date_add(pool):
+async def test_date_add(rel_pool):
     """date_add creates an important date."""
     from butlers.tools.relationship import contact_create, date_add
 
-    c = await contact_create(pool, "Date-Person")
-    d = await date_add(pool, c["id"], "birthday", 3, 15, 1990)
+    c = await contact_create(rel_pool, "Date-Person")
+    d = await date_add(rel_pool, c["id"], "birthday", 3, 15, 1990)
     assert d["label"] == "birthday"
     assert d["month"] == 3
     assert d["day"] == 15
     assert d["year"] == 1990
 
 
-async def test_date_add_partial(pool):
+async def test_date_add_partial(rel_pool):
     """date_add works without a year (partial date)."""
     from butlers.tools.relationship import contact_create, date_add
 
-    c = await contact_create(pool, "Partial-Date")
-    d = await date_add(pool, c["id"], "anniversary", 7, 4)
+    c = await contact_create(rel_pool, "Partial-Date")
+    d = await date_add(rel_pool, c["id"], "anniversary", 7, 4)
     assert d["year"] is None
     assert d["month"] == 7
     assert d["day"] == 4
 
 
-async def test_date_list(pool):
+async def test_date_list(rel_pool):
     """date_list returns dates ordered by month/day."""
     from butlers.tools.relationship import contact_create, date_add, date_list
 
-    c = await contact_create(pool, "Multi-Date")
-    await date_add(pool, c["id"], "birthday", 12, 25)
-    await date_add(pool, c["id"], "anniversary", 1, 1)
+    c = await contact_create(rel_pool, "Multi-Date")
+    await date_add(rel_pool, c["id"], "birthday", 12, 25)
+    await date_add(rel_pool, c["id"], "anniversary", 1, 1)
 
-    dates = await date_list(pool, c["id"])
+    dates = await date_list(rel_pool, c["id"])
     assert len(dates) == 2
     assert dates[0]["month"] <= dates[1]["month"]
 
 
-async def test_upcoming_dates(pool):
+async def test_upcoming_dates(rel_pool):
     """upcoming_dates returns dates within the specified window."""
     from butlers.tools.relationship import contact_create, date_add, upcoming_dates
 
-    c = await contact_create(pool, "Upcoming-Person")
+    c = await contact_create(rel_pool, "Upcoming-Person")
     now = datetime.now(UTC)
 
     # Add a date that's tomorrow (should be upcoming)
     from datetime import timedelta
 
     tomorrow = now + timedelta(days=1)
-    await date_add(pool, c["id"], "test-date", tomorrow.month, tomorrow.day)
+    await date_add(rel_pool, c["id"], "test-date", tomorrow.month, tomorrow.day)
 
-    results = await upcoming_dates(pool, days_ahead=7)
+    results = await upcoming_dates(rel_pool, days_ahead=7)
     assert any(r["contact_id"] == c["id"] for r in results)
 
 
-async def test_upcoming_dates_entity_anchored(pool):
+async def test_upcoming_dates_entity_anchored(rel_pool):
     """upcoming_dates surfaces rows anchored to local_entity_id with no contact_id.
 
     This tests the contacts_004 migration entity-anchor path where important_dates
@@ -983,18 +553,17 @@ async def test_upcoming_dates_entity_anchored(pool):
     tomorrow = now + timedelta(days=1)
 
     # Insert a public.entities row directly (no contact needed)
-    entity_id = await pool.fetchval(
+    entity_id = await rel_pool.fetchval(
         """
-        INSERT INTO public.entities (canonical_name, name)
-        VALUES ($1, $2)
+        INSERT INTO public.entities (canonical_name)
+        VALUES ($1)
         RETURNING id
         """,
-        "Entity-Anchored-Person",
         "Entity-Anchored-Person",
     )
 
     # Insert an entity-anchored important_dates row (contact_id IS NULL)
-    await pool.execute(
+    await rel_pool.execute(
         """
         INSERT INTO important_dates (contact_id, local_entity_id, label, month, day)
         VALUES (NULL, $1, 'anniversary', $2, $3)
@@ -1004,7 +573,7 @@ async def test_upcoming_dates_entity_anchored(pool):
         tomorrow.day,
     )
 
-    results = await upcoming_dates(pool, days_ahead=7)
+    results = await upcoming_dates(rel_pool, days_ahead=7)
     entity_rows = [r for r in results if r.get("local_entity_id") == entity_id]
     assert entity_rows, "entity-anchored important_date should appear in upcoming_dates"
     assert entity_rows[0]["contact_name"] == "Entity-Anchored-Person"
@@ -1016,46 +585,46 @@ async def test_upcoming_dates_entity_anchored(pool):
 # ------------------------------------------------------------------
 
 
-async def test_note_create(pool):
+async def test_note_create(rel_pool):
     """note_create stores a note with optional emotion."""
     from butlers.tools.relationship import contact_create, note_create
 
-    c = await contact_create(pool, "Note-Person")
-    n = await note_create(pool, c["id"], "Met at conference", emotion="happy")
+    c = await contact_create(rel_pool, "Note-Person")
+    n = await note_create(rel_pool, c["id"], "Met at conference", emotion="happy")
     assert n["body"] == "Met at conference"
     assert n["emotion"] == "happy"
 
 
-async def test_note_create_no_emotion(pool):
+async def test_note_create_no_emotion(rel_pool):
     """note_create works without emotion."""
     from butlers.tools.relationship import contact_create, note_create
 
-    c = await contact_create(pool, "Note-NoEmo")
-    n = await note_create(pool, c["id"], "Just a regular note")
+    c = await contact_create(rel_pool, "Note-NoEmo")
+    n = await note_create(rel_pool, c["id"], "Just a regular note")
     assert n["emotion"] is None
 
 
-async def test_note_list(pool):
+async def test_note_list(rel_pool):
     """note_list returns notes for a contact."""
     from butlers.tools.relationship import contact_create, note_create, note_list
 
-    c = await contact_create(pool, "Note-List")
-    await note_create(pool, c["id"], "First note")
-    await note_create(pool, c["id"], "Second note")
+    c = await contact_create(rel_pool, "Note-List")
+    await note_create(rel_pool, c["id"], "First note")
+    await note_create(rel_pool, c["id"], "Second note")
 
-    notes = await note_list(pool, c["id"])
+    notes = await note_list(rel_pool, c["id"])
     assert len(notes) == 2
 
 
-async def test_note_search(pool):
+async def test_note_search(rel_pool):
     """note_search finds notes by body/title ILIKE."""
     from butlers.tools.relationship import contact_create, note_create, note_search
 
-    c = await contact_create(pool, "Note-Search")
-    await note_create(pool, c["id"], "Loves playing tennis on weekends")
-    await note_create(pool, c["id"], "Allergic to peanuts")
+    c = await contact_create(rel_pool, "Note-Search")
+    await note_create(rel_pool, c["id"], "Loves playing tennis on weekends")
+    await note_create(rel_pool, c["id"], "Allergic to peanuts")
 
-    results = await note_search(pool, "tennis")
+    results = await note_search(rel_pool, "tennis")
     assert len(results) >= 1
     assert any("tennis" in r["body"] for r in results)
 
@@ -1065,75 +634,75 @@ async def test_note_search(pool):
 # ------------------------------------------------------------------
 
 
-async def test_interaction_log(pool):
+async def test_interaction_log(rel_pool):
     """interaction_log creates an interaction record."""
     from butlers.tools.relationship import contact_create, interaction_log
 
-    c = await contact_create(pool, "Inter-Person")
-    i = await interaction_log(pool, c["id"], "call", summary="Caught up on the phone")
+    c = await contact_create(rel_pool, "Inter-Person")
+    i = await interaction_log(rel_pool, c["id"], "call", summary="Caught up on the phone")
     assert i["type"] == "call"
     assert i["summary"] == "Caught up on the phone"
 
 
-async def test_interaction_log_custom_time(pool):
+async def test_interaction_log_custom_time(rel_pool):
     """interaction_log accepts a custom occurred_at."""
     from butlers.tools.relationship import contact_create, interaction_log
 
-    c = await contact_create(pool, "Inter-Custom")
+    c = await contact_create(rel_pool, "Inter-Custom")
     ts = datetime(2024, 6, 15, 10, 0, 0, tzinfo=UTC)
-    i = await interaction_log(pool, c["id"], "meeting", occurred_at=ts)
+    i = await interaction_log(rel_pool, c["id"], "meeting", occurred_at=ts)
     assert i["occurred_at"] == ts
 
 
-async def test_interaction_list_with_limit(pool):
+async def test_interaction_list_with_limit(rel_pool):
     """interaction_list respects the limit parameter."""
     from butlers.tools.relationship import contact_create, interaction_list, interaction_log
 
-    c = await contact_create(pool, "Inter-Limit")
+    c = await contact_create(rel_pool, "Inter-Limit")
     types = ["call", "email", "text", "video", "chat"]
     for idx in range(5):
-        await interaction_log(pool, c["id"], types[idx], summary=f"Chat {idx}")
+        await interaction_log(rel_pool, c["id"], types[idx], summary=f"Chat {idx}")
 
-    results = await interaction_list(pool, c["id"], limit=3)
+    results = await interaction_list(rel_pool, c["id"], limit=3)
     assert len(results) == 3
 
 
-async def test_interaction_log_with_direction(pool):
+async def test_interaction_log_with_direction(rel_pool):
     """interaction_log stores direction field."""
     from butlers.tools.relationship import contact_create, interaction_log
 
-    c = await contact_create(pool, "Inter-Direction")
-    i = await interaction_log(pool, c["id"], "call", direction="incoming")
+    c = await contact_create(rel_pool, "Inter-Direction")
+    i = await interaction_log(rel_pool, c["id"], "call", direction="incoming")
     assert i["direction"] == "incoming"
 
 
-async def test_interaction_log_with_duration(pool):
+async def test_interaction_log_with_duration(rel_pool):
     """interaction_log stores duration_minutes field."""
     from butlers.tools.relationship import contact_create, interaction_log
 
-    c = await contact_create(pool, "Inter-Duration")
-    i = await interaction_log(pool, c["id"], "meeting", duration_minutes=45)
+    c = await contact_create(rel_pool, "Inter-Duration")
+    i = await interaction_log(rel_pool, c["id"], "meeting", duration_minutes=45)
     assert i["duration_minutes"] == 45
 
 
-async def test_interaction_log_with_metadata(pool):
+async def test_interaction_log_with_metadata(rel_pool):
     """interaction_log stores metadata JSONB field."""
     from butlers.tools.relationship import contact_create, interaction_log
 
-    c = await contact_create(pool, "Inter-Metadata")
+    c = await contact_create(rel_pool, "Inter-Metadata")
     meta = {"location": "coffee shop", "topic": "project planning"}
-    i = await interaction_log(pool, c["id"], "meeting", metadata=meta)
+    i = await interaction_log(rel_pool, c["id"], "meeting", metadata=meta)
     assert i["metadata"] == meta
 
 
-async def test_interaction_log_all_new_fields(pool):
+async def test_interaction_log_all_new_fields(rel_pool):
     """interaction_log accepts all new fields together."""
     from butlers.tools.relationship import contact_create, interaction_log
 
-    c = await contact_create(pool, "Inter-AllNew")
+    c = await contact_create(rel_pool, "Inter-AllNew")
     meta = {"via": "zoom", "recording": True}
     i = await interaction_log(
-        pool,
+        rel_pool,
         c["id"],
         "video_call",
         summary="Quarterly review",
@@ -1148,16 +717,16 @@ async def test_interaction_log_all_new_fields(pool):
     assert i["metadata"] == meta
 
 
-async def test_interaction_log_invalid_direction(pool):
+async def test_interaction_log_invalid_direction(rel_pool):
     """interaction_log rejects invalid direction values."""
     from butlers.tools.relationship import contact_create, interaction_log
 
-    c = await contact_create(pool, "Inter-BadDir")
+    c = await contact_create(rel_pool, "Inter-BadDir")
     with pytest.raises(ValueError, match="Invalid direction"):
-        await interaction_log(pool, c["id"], "call", direction="sideways")
+        await interaction_log(rel_pool, c["id"], "call", direction="sideways")
 
 
-async def test_interaction_log_reserved_type_note_rejected(pool):
+async def test_interaction_log_reserved_type_note_rejected(rel_pool):
     """interaction_log rejects type='note' because 'interaction_note' is a reserved
     episodic predicate that must stay at volatile/ephemeral permanence.
     interaction_log always writes stable, so allowing type='note' would cause the
@@ -1167,22 +736,22 @@ async def test_interaction_log_reserved_type_note_rejected(pool):
     """
     from butlers.tools.relationship import contact_create, interaction_log
 
-    c = await contact_create(pool, "Inter-NoteType")
+    c = await contact_create(rel_pool, "Inter-NoteType")
     with pytest.raises(ValueError, match="reserved"):
-        await interaction_log(pool, c["id"], "note")
+        await interaction_log(rel_pool, c["id"], "note")
 
     # 'notebook' contains 'note' as a prefix but resolves to a distinct predicate
     # (interaction_notebook); it must not be caught by the reserved-type guard.
-    result = await interaction_log(pool, c["id"], "notebook")
+    result = await interaction_log(rel_pool, c["id"], "notebook")
     assert result["type"] == "notebook"
 
 
-async def test_interaction_log_backward_compat(pool):
+async def test_interaction_log_backward_compat(rel_pool):
     """interaction_log works without new fields (backward compat)."""
     from butlers.tools.relationship import contact_create, interaction_log
 
-    c = await contact_create(pool, "Inter-Compat")
-    i = await interaction_log(pool, c["id"], "email", summary="Quick question")
+    c = await contact_create(rel_pool, "Inter-Compat")
+    i = await interaction_log(rel_pool, c["id"], "email", summary="Quick question")
     assert i["type"] == "email"
     assert i["summary"] == "Quick question"
     assert i["direction"] is None
@@ -1190,79 +759,79 @@ async def test_interaction_log_backward_compat(pool):
     assert i["metadata"] is None
 
 
-async def test_interaction_log_same_day_without_occurred_at_is_not_deduplicated(pool):
+async def test_interaction_log_same_day_without_occurred_at_is_not_deduplicated(rel_pool):
     """Ad-hoc logs without occurred_at should not trigger date-based deduplication."""
     from butlers.tools.relationship import contact_create, interaction_log
 
-    c = await contact_create(pool, "Inter-Adhoc")
-    first = await interaction_log(pool, c["id"], "call")
-    second = await interaction_log(pool, c["id"], "call")
+    c = await contact_create(rel_pool, "Inter-Adhoc")
+    first = await interaction_log(rel_pool, c["id"], "call")
+    second = await interaction_log(rel_pool, c["id"], "call")
 
     assert "skipped" not in first
     assert "skipped" not in second
     assert second["id"] != first["id"]
 
 
-async def test_interaction_list_filter_by_direction(pool):
+async def test_interaction_list_filter_by_direction(rel_pool):
     """interaction_list filters by direction."""
     from butlers.tools.relationship import contact_create, interaction_list, interaction_log
 
-    c = await contact_create(pool, "Inter-FilterDir")
-    await interaction_log(pool, c["id"], "call", direction="incoming")
-    await interaction_log(pool, c["id"], "call", direction="outgoing")
-    await interaction_log(pool, c["id"], "email", direction="incoming")
+    c = await contact_create(rel_pool, "Inter-FilterDir")
+    await interaction_log(rel_pool, c["id"], "call", direction="incoming")
+    await interaction_log(rel_pool, c["id"], "call", direction="outgoing")
+    await interaction_log(rel_pool, c["id"], "email", direction="incoming")
 
-    incoming = await interaction_list(pool, c["id"], direction="incoming")
+    incoming = await interaction_list(rel_pool, c["id"], direction="incoming")
     assert len(incoming) == 2
     assert all(r["direction"] == "incoming" for r in incoming)
 
-    outgoing = await interaction_list(pool, c["id"], direction="outgoing")
+    outgoing = await interaction_list(rel_pool, c["id"], direction="outgoing")
     assert len(outgoing) == 1
     assert outgoing[0]["direction"] == "outgoing"
 
 
-async def test_interaction_list_filter_by_type(pool):
+async def test_interaction_list_filter_by_type(rel_pool):
     """interaction_list filters by type."""
     from butlers.tools.relationship import contact_create, interaction_list, interaction_log
 
-    c = await contact_create(pool, "Inter-FilterType")
-    await interaction_log(pool, c["id"], "call")
-    await interaction_log(pool, c["id"], "email")
-    await interaction_log(pool, c["id"], "call")
+    c = await contact_create(rel_pool, "Inter-FilterType")
+    await interaction_log(rel_pool, c["id"], "call")
+    await interaction_log(rel_pool, c["id"], "email")
+    await interaction_log(rel_pool, c["id"], "call")
 
-    calls = await interaction_list(pool, c["id"], type="call")
+    calls = await interaction_list(rel_pool, c["id"], type="call")
     assert len(calls) == 2
     assert all(r["type"] == "call" for r in calls)
 
-    emails = await interaction_list(pool, c["id"], type="email")
+    emails = await interaction_list(rel_pool, c["id"], type="email")
     assert len(emails) == 1
 
 
-async def test_interaction_list_filter_by_direction_and_type(pool):
+async def test_interaction_list_filter_by_direction_and_type(rel_pool):
     """interaction_list supports combined direction + type filters."""
     from butlers.tools.relationship import contact_create, interaction_list, interaction_log
 
-    c = await contact_create(pool, "Inter-CombinedFilter")
-    await interaction_log(pool, c["id"], "call", direction="incoming")
-    await interaction_log(pool, c["id"], "call", direction="outgoing")
-    await interaction_log(pool, c["id"], "email", direction="incoming")
-    await interaction_log(pool, c["id"], "email", direction="outgoing")
+    c = await contact_create(rel_pool, "Inter-CombinedFilter")
+    await interaction_log(rel_pool, c["id"], "call", direction="incoming")
+    await interaction_log(rel_pool, c["id"], "call", direction="outgoing")
+    await interaction_log(rel_pool, c["id"], "email", direction="incoming")
+    await interaction_log(rel_pool, c["id"], "email", direction="outgoing")
 
-    results = await interaction_list(pool, c["id"], direction="incoming", type="call")
+    results = await interaction_list(rel_pool, c["id"], direction="incoming", type="call")
     assert len(results) == 1
     assert results[0]["type"] == "call"
     assert results[0]["direction"] == "incoming"
 
 
-async def test_interaction_list_no_filters_returns_all(pool):
+async def test_interaction_list_no_filters_returns_all(rel_pool):
     """interaction_list without filters returns all interactions."""
     from butlers.tools.relationship import contact_create, interaction_list, interaction_log
 
-    c = await contact_create(pool, "Inter-NoFilter")
-    await interaction_log(pool, c["id"], "call", direction="incoming")
-    await interaction_log(pool, c["id"], "email")  # no direction
+    c = await contact_create(rel_pool, "Inter-NoFilter")
+    await interaction_log(rel_pool, c["id"], "call", direction="incoming")
+    await interaction_log(rel_pool, c["id"], "email")  # no direction
 
-    all_results = await interaction_list(pool, c["id"])
+    all_results = await interaction_list(rel_pool, c["id"])
     assert len(all_results) == 2
 
 
@@ -1271,105 +840,105 @@ async def test_interaction_list_no_filters_returns_all(pool):
 # ------------------------------------------------------------------
 
 
-async def test_gift_add(pool):
+async def test_gift_add(rel_pool):
     """gift_add creates a gift idea."""
     from butlers.tools.relationship import contact_create, gift_add
 
-    c = await contact_create(pool, "Gift-Person")
-    g = await gift_add(pool, c["id"], "Fancy pen", occasion="birthday")
+    c = await contact_create(rel_pool, "Gift-Person")
+    g = await gift_add(rel_pool, c["id"], "Fancy pen", occasion="birthday")
     assert g["description"] == "Fancy pen"
     assert g["occasion"] == "birthday"
     assert g["status"] == "idea"
 
 
-async def test_gift_update_status_pipeline(pool):
+async def test_gift_update_status_pipeline(rel_pool):
     """gift_update_status follows the pipeline order."""
     from butlers.tools.relationship import contact_create, gift_add, gift_update_status
 
-    c = await contact_create(pool, "Gift-Pipeline")
-    g = await gift_add(pool, c["id"], "Book")
+    c = await contact_create(rel_pool, "Gift-Pipeline")
+    g = await gift_add(rel_pool, c["id"], "Book")
 
-    g = await gift_update_status(pool, g["id"], "purchased")
+    g = await gift_update_status(rel_pool, g["id"], "purchased")
     assert g["status"] == "purchased"
 
-    g = await gift_update_status(pool, g["id"], "wrapped")
+    g = await gift_update_status(rel_pool, g["id"], "wrapped")
     assert g["status"] == "wrapped"
 
-    g = await gift_update_status(pool, g["id"], "given")
+    g = await gift_update_status(rel_pool, g["id"], "given")
     assert g["status"] == "given"
 
-    g = await gift_update_status(pool, g["id"], "thanked")
+    g = await gift_update_status(rel_pool, g["id"], "thanked")
     assert g["status"] == "thanked"
 
 
-async def test_gift_update_status_rejects_backward(pool):
+async def test_gift_update_status_rejects_backward(rel_pool):
     """gift_update_status rejects backward transitions."""
     from butlers.tools.relationship import contact_create, gift_add, gift_update_status
 
-    c = await contact_create(pool, "Gift-Backward")
-    g = await gift_add(pool, c["id"], "Watch")
-    await gift_update_status(pool, g["id"], "purchased")
+    c = await contact_create(rel_pool, "Gift-Backward")
+    g = await gift_add(rel_pool, c["id"], "Watch")
+    g = await gift_update_status(rel_pool, g["id"], "purchased")
 
     with pytest.raises(ValueError, match="Cannot move"):
-        await gift_update_status(pool, g["id"], "idea")
+        await gift_update_status(rel_pool, g["id"], "idea")
 
 
-async def test_gift_update_status_rejects_same(pool):
+async def test_gift_update_status_rejects_same(rel_pool):
     """gift_update_status rejects same status transition."""
     from butlers.tools.relationship import contact_create, gift_add, gift_update_status
 
-    c = await contact_create(pool, "Gift-Same")
-    g = await gift_add(pool, c["id"], "Scarf")
+    c = await contact_create(rel_pool, "Gift-Same")
+    g = await gift_add(rel_pool, c["id"], "Scarf")
 
     with pytest.raises(ValueError, match="Cannot move"):
-        await gift_update_status(pool, g["id"], "idea")
+        await gift_update_status(rel_pool, g["id"], "idea")
 
 
-async def test_gift_update_status_invalid(pool):
+async def test_gift_update_status_invalid(rel_pool):
     """gift_update_status rejects invalid status values."""
     from butlers.tools.relationship import contact_create, gift_add, gift_update_status
 
-    c = await contact_create(pool, "Gift-Invalid")
-    g = await gift_add(pool, c["id"], "Mug")
+    c = await contact_create(rel_pool, "Gift-Invalid")
+    g = await gift_add(rel_pool, c["id"], "Mug")
 
     with pytest.raises(ValueError, match="Invalid status"):
-        await gift_update_status(pool, g["id"], "destroyed")
+        await gift_update_status(rel_pool, g["id"], "destroyed")
 
 
-async def test_gift_update_status_not_found(pool):
+async def test_gift_update_status_not_found(rel_pool):
     """gift_update_status raises ValueError for non-existent gift."""
     from butlers.tools.relationship import gift_update_status
 
     with pytest.raises(ValueError, match="not found"):
-        await gift_update_status(pool, uuid.uuid4(), "purchased")
+        await gift_update_status(rel_pool, uuid.uuid4(), "purchased")
 
 
-async def test_gift_list(pool):
+async def test_gift_list(rel_pool):
     """gift_list returns gifts for a contact."""
     from butlers.tools.relationship import contact_create, gift_add, gift_list
 
-    c = await contact_create(pool, "Gift-List")
-    await gift_add(pool, c["id"], "Gift A")
-    await gift_add(pool, c["id"], "Gift B")
+    c = await contact_create(rel_pool, "Gift-List")
+    await gift_add(rel_pool, c["id"], "Gift A")
+    await gift_add(rel_pool, c["id"], "Gift B")
 
-    gifts = await gift_list(pool, c["id"])
+    gifts = await gift_list(rel_pool, c["id"])
     assert len(gifts) == 2
 
 
-async def test_gift_list_filtered_by_status(pool):
+async def test_gift_list_filtered_by_status(rel_pool):
     """gift_list filters by status when provided."""
     from butlers.tools.relationship import contact_create, gift_add, gift_list, gift_update_status
 
-    c = await contact_create(pool, "Gift-Filter")
-    g1 = await gift_add(pool, c["id"], "Filter Gift A")
-    await gift_add(pool, c["id"], "Filter Gift B")
-    await gift_update_status(pool, g1["id"], "purchased")
+    c = await contact_create(rel_pool, "Gift-Filter")
+    g1 = await gift_add(rel_pool, c["id"], "Filter Gift A")
+    await gift_add(rel_pool, c["id"], "Filter Gift B")
+    await gift_update_status(rel_pool, g1["id"], "purchased")
 
-    ideas = await gift_list(pool, c["id"], status="idea")
+    ideas = await gift_list(rel_pool, c["id"], status="idea")
     assert len(ideas) == 1
     assert ideas[0]["description"] == "Filter Gift B"
 
-    purchased = await gift_list(pool, c["id"], status="purchased")
+    purchased = await gift_list(rel_pool, c["id"], status="purchased")
     assert len(purchased) == 1
     assert purchased[0]["description"] == "Filter Gift A"
 
@@ -1379,14 +948,14 @@ async def test_gift_list_filtered_by_status(pool):
 # ------------------------------------------------------------------
 
 
-async def test_loan_create(pool):
+async def test_loan_create(rel_pool):
     """loan_create stores a loan record."""
     from butlers.tools.relationship import contact_create, loan_create
 
-    lender = await contact_create(pool, "Loan-Lender")
-    borrower = await contact_create(pool, "Loan-Borrower")
+    lender = await contact_create(rel_pool, "Loan-Lender")
+    borrower = await contact_create(rel_pool, "Loan-Borrower")
     loan = await loan_create(
-        pool,
+        rel_pool,
         lender_contact_id=lender["id"],
         borrower_contact_id=borrower["id"],
         description="Lunch money",
@@ -1400,34 +969,34 @@ async def test_loan_create(pool):
     assert loan["settled"] is False
 
 
-async def test_loan_settle(pool):
+async def test_loan_settle(rel_pool):
     """loan_settle marks a loan as settled."""
     from butlers.tools.relationship import contact_create, loan_create, loan_settle
 
-    lender = await contact_create(pool, "Loan-Settle-Lender")
-    borrower = await contact_create(pool, "Loan-Settle-Borrower")
+    lender = await contact_create(rel_pool, "Loan-Settle-Lender")
+    borrower = await contact_create(rel_pool, "Loan-Settle-Borrower")
     loan = await loan_create(
-        pool,
+        rel_pool,
         lender_contact_id=lender["id"],
         borrower_contact_id=borrower["id"],
         description="Settle Test",
         amount_cents=10000,
         currency="USD",
     )
-    settled = await loan_settle(pool, loan["id"])
+    settled = await loan_settle(rel_pool, loan["id"])
     assert settled["settled"] is True
     assert settled["settled_at"] is not None
 
 
-async def test_loan_settle_not_found(pool):
+async def test_loan_settle_not_found(rel_pool):
     """loan_settle raises ValueError for non-existent loan."""
     from butlers.tools.relationship import loan_settle
 
     with pytest.raises(ValueError, match="not found"):
-        await loan_settle(pool, uuid.uuid4())
+        await loan_settle(rel_pool, uuid.uuid4())
 
 
-async def test_loan_list(pool):
+async def test_loan_list(rel_pool):
     """loan_list returns all active loans for a contact.
 
     Multiple loans from the same lender are stored as temporal facts and
@@ -1435,10 +1004,10 @@ async def test_loan_list(pool):
     """
     from butlers.tools.relationship import contact_create, loan_create, loan_list
 
-    lender = await contact_create(pool, "Loan-List-Lender")
-    borrower = await contact_create(pool, "Loan-List-Borrower")
+    lender = await contact_create(rel_pool, "Loan-List-Lender")
+    borrower = await contact_create(rel_pool, "Loan-List-Borrower")
     await loan_create(
-        pool,
+        rel_pool,
         lender_contact_id=lender["id"],
         borrower_contact_id=borrower["id"],
         description="First",
@@ -1446,7 +1015,7 @@ async def test_loan_list(pool):
         currency="USD",
     )
     await loan_create(
-        pool,
+        rel_pool,
         lender_contact_id=lender["id"],
         borrower_contact_id=borrower["id"],
         description="Second",
@@ -1454,7 +1023,7 @@ async def test_loan_list(pool):
         currency="USD",
     )
 
-    loans = await loan_list(pool, lender["id"])
+    loans = await loan_list(rel_pool, lender["id"])
     assert len(loans) == 2
 
 
@@ -1463,37 +1032,37 @@ async def test_loan_list(pool):
 # ------------------------------------------------------------------
 
 
-async def test_group_create(pool):
+async def test_group_create(rel_pool):
     """group_create creates a named group."""
     from butlers.tools.relationship import group_create
 
-    g = await group_create(pool, "Family")
+    g = await group_create(rel_pool, "Family")
     assert g["name"] == "Family"
     assert isinstance(g["id"], uuid.UUID)
 
 
-async def test_group_add_member(pool):
+async def test_group_add_member(rel_pool):
     """group_add_member adds a contact to a group."""
     from butlers.tools.relationship import contact_create, group_add_member, group_create
 
-    g = await group_create(pool, "Work Team")
-    c = await contact_create(pool, "Group-Member")
-    result = await group_add_member(pool, g["id"], c["id"])
+    g = await group_create(rel_pool, "Work Team")
+    c = await contact_create(rel_pool, "Group-Member")
+    result = await group_add_member(rel_pool, g["id"], c["id"])
     assert result["group_id"] == g["id"]
     assert result["contact_id"] == c["id"]
 
 
-async def test_group_list(pool):
+async def test_group_list(rel_pool):
     """group_list returns all groups."""
     from butlers.tools.relationship import group_create, group_list
 
-    await group_create(pool, "Sports")
-    groups = await group_list(pool)
+    await group_create(rel_pool, "Sports")
+    groups = await group_list(rel_pool)
     names = [g["name"] for g in groups]
     assert "Sports" in names
 
 
-async def test_group_members(pool):
+async def test_group_members(rel_pool):
     """group_members returns group members resolved via contact_entity_map → entities."""
     from butlers.tools.relationship import (
         contact_create,
@@ -1502,13 +1071,13 @@ async def test_group_members(pool):
         group_members,
     )
 
-    g = await group_create(pool, "Book Club")
-    c1 = await contact_create(pool, "Member-A")
-    c2 = await contact_create(pool, "Member-B")
-    await group_add_member(pool, g["id"], c1["id"])
-    await group_add_member(pool, g["id"], c2["id"])
+    g = await group_create(rel_pool, "Book Club")
+    c1 = await contact_create(rel_pool, "Member-A")
+    c2 = await contact_create(rel_pool, "Member-B")
+    await group_add_member(rel_pool, g["id"], c1["id"])
+    await group_add_member(rel_pool, g["id"], c2["id"])
 
-    members = await group_members(pool, g["id"])
+    members = await group_members(rel_pool, g["id"])
     # group_members returns entity-centric records (contact_entity_map → public.entities);
     # canonical_name is surfaced via the computed "name" field (bead 7.4d).
     member_names = [m["name"] for m in members]
@@ -1521,35 +1090,35 @@ async def test_group_members(pool):
 # ------------------------------------------------------------------
 
 
-async def test_label_create(pool):
+async def test_label_create(rel_pool):
     """label_create creates a label with optional color."""
     from butlers.tools.relationship import label_create
 
-    lbl = await label_create(pool, "vip", color="#ff0000")
+    lbl = await label_create(rel_pool, "vip", color="#ff0000")
     assert lbl["name"] == "vip"
     assert lbl["color"] == "#ff0000"
 
 
-async def test_label_create_no_color(pool):
+async def test_label_create_no_color(rel_pool):
     """label_create works without a color."""
     from butlers.tools.relationship import label_create
 
-    lbl = await label_create(pool, "casual")
+    lbl = await label_create(rel_pool, "casual")
     assert lbl["color"] is None
 
 
-async def test_label_assign(pool):
+async def test_label_assign(rel_pool):
     """label_assign assigns a label to a contact."""
     from butlers.tools.relationship import contact_create, label_assign, label_create
 
-    lbl = await label_create(pool, "important")
-    c = await contact_create(pool, "Label-Person")
-    result = await label_assign(pool, lbl["id"], c["id"])
+    lbl = await label_create(rel_pool, "important")
+    c = await contact_create(rel_pool, "Label-Person")
+    result = await label_assign(rel_pool, lbl["id"], c["id"])
     assert result["label_id"] == lbl["id"]
     assert result["contact_id"] == c["id"]
 
 
-async def test_contact_search_by_label(pool):
+async def test_contact_search_by_label(rel_pool):
     """contact_search_by_label finds contacts with a specific label."""
     from butlers.tools.relationship import (
         contact_create,
@@ -1558,14 +1127,14 @@ async def test_contact_search_by_label(pool):
         label_create,
     )
 
-    lbl = await label_create(pool, "priority")
-    c1 = await contact_create(pool, "Priority-A")
-    c2 = await contact_create(pool, "Priority-B")
-    await contact_create(pool, "Normal-C")
-    await label_assign(pool, lbl["id"], c1["id"])
-    await label_assign(pool, lbl["id"], c2["id"])
+    lbl = await label_create(rel_pool, "priority")
+    c1 = await contact_create(rel_pool, "Priority-A")
+    c2 = await contact_create(rel_pool, "Priority-B")
+    await contact_create(rel_pool, "Normal-C")
+    await label_assign(rel_pool, lbl["id"], c1["id"])
+    await label_assign(rel_pool, lbl["id"], c2["id"])
 
-    results = await contact_search_by_label(pool, "priority")
+    results = await contact_search_by_label(rel_pool, "priority")
     # contact_search_by_label branch 1 returns entity-centric records via
     # contact_entity_map → public.entities (bead 7.4d); canonical_name is in "name".
     names = [r["name"] for r in results]
@@ -1579,39 +1148,39 @@ async def test_contact_search_by_label(pool):
 # ------------------------------------------------------------------
 
 
-async def test_fact_set(pool):
+async def test_fact_set(rel_pool):
     """fact_set stores a key-value fact."""
     from butlers.tools.relationship import contact_create, fact_set
 
-    c = await contact_create(pool, "Fact-Person")
-    f = await fact_set(pool, c["id"], "favorite_color", "blue")
+    c = await contact_create(rel_pool, "Fact-Person")
+    f = await fact_set(rel_pool, c["id"], "favorite_color", "blue")
     assert f["key"] == "favorite_color"
     assert f["value"] == "blue"
 
 
-async def test_fact_set_upsert(pool):
+async def test_fact_set_upsert(rel_pool):
     """fact_set updates an existing fact (UPSERT)."""
     from butlers.tools.relationship import contact_create, fact_list, fact_set
 
-    c = await contact_create(pool, "Fact-Upsert")
-    await fact_set(pool, c["id"], "pet", "dog")
-    await fact_set(pool, c["id"], "pet", "cat")
+    c = await contact_create(rel_pool, "Fact-Upsert")
+    await fact_set(rel_pool, c["id"], "pet", "dog")
+    await fact_set(rel_pool, c["id"], "pet", "cat")
 
-    facts = await fact_list(pool, c["id"])
+    facts = await fact_list(rel_pool, c["id"])
     pet_facts = [f for f in facts if f["key"] == "pet"]
     assert len(pet_facts) == 1
     assert pet_facts[0]["value"] == "cat"
 
 
-async def test_fact_list(pool):
+async def test_fact_list(rel_pool):
     """fact_list returns all facts for a contact ordered by key."""
     from butlers.tools.relationship import contact_create, fact_list, fact_set
 
-    c = await contact_create(pool, "Fact-List")
-    await fact_set(pool, c["id"], "zodiac", "leo")
-    await fact_set(pool, c["id"], "allergy", "gluten")
+    c = await contact_create(rel_pool, "Fact-List")
+    await fact_set(rel_pool, c["id"], "zodiac", "leo")
+    await fact_set(rel_pool, c["id"], "allergy", "gluten")
 
-    facts = await fact_list(pool, c["id"])
+    facts = await fact_list(rel_pool, c["id"])
     keys = [f["key"] for f in facts]
     assert "allergy" in keys
     assert "zodiac" in keys
@@ -1624,13 +1193,13 @@ async def test_fact_list(pool):
 # ------------------------------------------------------------------
 
 
-async def test_address_add(pool):
+async def test_address_add(rel_pool):
     """address_add creates an address for a contact."""
     from butlers.tools.relationship import address_add, contact_create
 
-    c = await contact_create(pool, "Address-Person")
+    c = await contact_create(rel_pool, "Address-Person")
     addr = await address_add(
-        pool,
+        rel_pool,
         c["id"],
         line_1="123 Main St",
         label="Home",
@@ -1650,12 +1219,12 @@ async def test_address_add(pool):
     assert addr["id"] is not None
 
 
-async def test_address_add_minimal(pool):
+async def test_address_add_minimal(rel_pool):
     """address_add works with only required fields."""
     from butlers.tools.relationship import address_add, contact_create
 
-    c = await contact_create(pool, "Address-Minimal")
-    addr = await address_add(pool, c["id"], line_1="PO Box 42")
+    c = await contact_create(rel_pool, "Address-Minimal")
+    addr = await address_add(rel_pool, c["id"], line_1="PO Box 42")
     assert addr["line_1"] == "PO Box 42"
     assert addr["label"] == "Home"  # default
     assert addr["city"] is None
@@ -1663,93 +1232,93 @@ async def test_address_add_minimal(pool):
     assert addr["is_current"] is False
 
 
-async def test_address_add_with_line_2(pool):
+async def test_address_add_with_line_2(rel_pool):
     """address_add stores line_2 (apartment/suite)."""
     from butlers.tools.relationship import address_add, contact_create
 
-    c = await contact_create(pool, "Address-Line2")
-    addr = await address_add(pool, c["id"], line_1="456 Oak Ave", line_2="Apt 7B")
+    c = await contact_create(rel_pool, "Address-Line2")
+    addr = await address_add(rel_pool, c["id"], line_1="456 Oak Ave", line_2="Apt 7B")
     assert addr["line_2"] == "Apt 7B"
 
 
-async def test_address_add_is_current(pool):
+async def test_address_add_is_current(rel_pool):
     """address_add with is_current=True sets the flag."""
     from butlers.tools.relationship import address_add, contact_create
 
-    c = await contact_create(pool, "Address-Current")
-    addr = await address_add(pool, c["id"], line_1="1 Current Rd", is_current=True)
+    c = await contact_create(rel_pool, "Address-Current")
+    addr = await address_add(rel_pool, c["id"], line_1="1 Current Rd", is_current=True)
     assert addr["is_current"] is True
 
 
-async def test_address_add_current_clears_others(pool):
+async def test_address_add_current_clears_others(rel_pool):
     """Adding a new current address clears is_current on existing addresses."""
     from butlers.tools.relationship import address_add, address_list, contact_create
 
-    c = await contact_create(pool, "Address-ClearCurrent")
-    await address_add(pool, c["id"], line_1="Old Current", is_current=True)
-    addr2 = await address_add(pool, c["id"], line_1="New Current", is_current=True)
+    c = await contact_create(rel_pool, "Address-ClearCurrent")
+    await address_add(rel_pool, c["id"], line_1="Old Current", is_current=True)
+    addr2 = await address_add(rel_pool, c["id"], line_1="New Current", is_current=True)
 
-    addrs = await address_list(pool, c["id"])
+    addrs = await address_list(rel_pool, c["id"])
     current_addrs = [a for a in addrs if a["is_current"]]
     assert len(current_addrs) == 1
     assert current_addrs[0]["id"] == addr2["id"]
 
 
-async def test_address_add_invalid_country(pool):
+async def test_address_add_invalid_country(rel_pool):
     """address_add rejects country codes that are not 2 characters."""
     from butlers.tools.relationship import address_add, contact_create
 
-    c = await contact_create(pool, "Address-BadCountry")
+    c = await contact_create(rel_pool, "Address-BadCountry")
     with pytest.raises(ValueError, match="2-letter ISO 3166-1"):
-        await address_add(pool, c["id"], line_1="1 Bad St", country="USA")
+        await address_add(rel_pool, c["id"], line_1="1 Bad St", country="USA")
 
 
-async def test_address_list(pool):
+async def test_address_list(rel_pool):
     """address_list returns all addresses for a contact."""
     from butlers.tools.relationship import address_add, address_list, contact_create
 
-    c = await contact_create(pool, "Address-ListPerson")
-    await address_add(pool, c["id"], line_1="Home Address", label="Home")
-    await address_add(pool, c["id"], line_1="Work Address", label="Work")
+    c = await contact_create(rel_pool, "Address-ListPerson")
+    await address_add(rel_pool, c["id"], line_1="Home Address", label="Home")
+    await address_add(rel_pool, c["id"], line_1="Work Address", label="Work")
 
-    addrs = await address_list(pool, c["id"])
+    addrs = await address_list(rel_pool, c["id"])
     assert len(addrs) == 2
     lines = [a["line_1"] for a in addrs]
     assert "Home Address" in lines
     assert "Work Address" in lines
 
 
-async def test_address_list_current_first(pool):
+async def test_address_list_current_first(rel_pool):
     """address_list returns the current address first."""
     from butlers.tools.relationship import address_add, address_list, contact_create
 
-    c = await contact_create(pool, "Address-OrderPerson")
-    await address_add(pool, c["id"], line_1="Not Current", label="Other")
-    await address_add(pool, c["id"], line_1="Is Current", label="Home", is_current=True)
+    c = await contact_create(rel_pool, "Address-OrderPerson")
+    await address_add(rel_pool, c["id"], line_1="Not Current", label="Other")
+    await address_add(rel_pool, c["id"], line_1="Is Current", label="Home", is_current=True)
 
-    addrs = await address_list(pool, c["id"])
+    addrs = await address_list(rel_pool, c["id"])
     assert addrs[0]["line_1"] == "Is Current"
     assert addrs[0]["is_current"] is True
 
 
-async def test_address_list_empty(pool):
+async def test_address_list_empty(rel_pool):
     """address_list returns empty list for contact with no addresses."""
     from butlers.tools.relationship import address_list, contact_create
 
-    c = await contact_create(pool, "Address-NoneYet")
-    addrs = await address_list(pool, c["id"])
+    c = await contact_create(rel_pool, "Address-NoneYet")
+    addrs = await address_list(rel_pool, c["id"])
     assert addrs == []
 
 
-async def test_address_update(pool):
+async def test_address_update(rel_pool):
     """address_update modifies address fields."""
     from butlers.tools.relationship import address_add, address_update, contact_create
 
-    c = await contact_create(pool, "Address-UpdatePerson")
-    addr = await address_add(pool, c["id"], line_1="Old Street", city="OldCity")
+    c = await contact_create(rel_pool, "Address-UpdatePerson")
+    addr = await address_add(rel_pool, c["id"], line_1="Old Street", city="OldCity")
 
     updated = await address_update(
-        pool, addr["id"], line_1="New Street", city="NewCity", province="CA"
+        rel_pool, addr["id"], line_1="New Street", city="NewCity", province="CA"
     )
     assert updated["line_1"] == "New Street"
     assert updated["city"] == "NewCity"
@@ -1757,7 +1326,7 @@ async def test_address_update(pool):
     assert updated["id"] == addr["id"]
 
 
-async def test_address_update_set_current(pool):
+async def test_address_update_set_current(rel_pool):
     """address_update with is_current=True clears other current addresses."""
     from butlers.tools.relationship import (
         address_add,
@@ -1766,39 +1335,39 @@ async def test_address_update_set_current(pool):
         contact_create,
     )
 
-    c = await contact_create(pool, "Address-UpdateCurrent")
-    await address_add(pool, c["id"], line_1="First", is_current=True)
-    addr2 = await address_add(pool, c["id"], line_1="Second")
+    c = await contact_create(rel_pool, "Address-UpdateCurrent")
+    await address_add(rel_pool, c["id"], line_1="First", is_current=True)
+    addr2 = await address_add(rel_pool, c["id"], line_1="Second")
 
-    await address_update(pool, addr2["id"], is_current=True)
+    await address_update(rel_pool, addr2["id"], is_current=True)
 
-    addrs = await address_list(pool, c["id"])
+    addrs = await address_list(rel_pool, c["id"])
     current_addrs = [a for a in addrs if a["is_current"]]
     assert len(current_addrs) == 1
     assert current_addrs[0]["id"] == addr2["id"]
 
 
-async def test_address_update_not_found(pool):
+async def test_address_update_not_found(rel_pool):
     """address_update raises ValueError for nonexistent address."""
     from butlers.tools.relationship import address_update
 
     fake_id = uuid.uuid4()
     with pytest.raises(ValueError, match="not found"):
-        await address_update(pool, fake_id, line_1="Nope")
+        await address_update(rel_pool, fake_id, line_1="Nope")
 
 
-async def test_address_update_invalid_country(pool):
+async def test_address_update_invalid_country(rel_pool):
     """address_update rejects invalid country code."""
     from butlers.tools.relationship import address_add, address_update, contact_create
 
-    c = await contact_create(pool, "Address-UpdateBadCountry")
-    addr = await address_add(pool, c["id"], line_1="1 Good St", country="US")
+    c = await contact_create(rel_pool, "Address-UpdateBadCountry")
+    addr = await address_add(rel_pool, c["id"], line_1="1 Good St", country="US")
 
     with pytest.raises(ValueError, match="2-letter ISO 3166-1"):
-        await address_update(pool, addr["id"], country="United States")
+        await address_update(rel_pool, addr["id"], country="United States")
 
 
-async def test_address_remove(pool):
+async def test_address_remove(rel_pool):
     """address_remove deletes the address."""
     from butlers.tools.relationship import (
         address_add,
@@ -1807,34 +1376,34 @@ async def test_address_remove(pool):
         contact_create,
     )
 
-    c = await contact_create(pool, "Address-RemovePerson")
-    addr = await address_add(pool, c["id"], line_1="Temporary St")
+    c = await contact_create(rel_pool, "Address-RemovePerson")
+    addr = await address_add(rel_pool, c["id"], line_1="Temporary St")
 
-    await address_remove(pool, addr["id"])
+    await address_remove(rel_pool, addr["id"])
 
-    addrs = await address_list(pool, c["id"])
+    addrs = await address_list(rel_pool, c["id"])
     assert len(addrs) == 0
 
 
-async def test_address_remove_not_found(pool):
+async def test_address_remove_not_found(rel_pool):
     """address_remove raises ValueError for nonexistent address."""
     from butlers.tools.relationship import address_remove
 
     fake_id = uuid.uuid4()
     with pytest.raises(ValueError, match="not found"):
-        await address_remove(pool, fake_id)
+        await address_remove(rel_pool, fake_id)
 
 
-async def test_address_multiple_per_contact(pool):
+async def test_address_multiple_per_contact(rel_pool):
     """A contact can have multiple addresses with different labels."""
     from butlers.tools.relationship import address_add, address_list, contact_create
 
-    c = await contact_create(pool, "Address-Multi")
-    await address_add(pool, c["id"], line_1="Home St", label="Home")
-    await address_add(pool, c["id"], line_1="Work Blvd", label="Work")
-    await address_add(pool, c["id"], line_1="Other Ln", label="Other")
+    c = await contact_create(rel_pool, "Address-Multi")
+    await address_add(rel_pool, c["id"], line_1="Home St", label="Home")
+    await address_add(rel_pool, c["id"], line_1="Work Blvd", label="Work")
+    await address_add(rel_pool, c["id"], line_1="Other Ln", label="Other")
 
-    addrs = await address_list(pool, c["id"])
+    addrs = await address_list(rel_pool, c["id"])
     assert len(addrs) == 3
     labels = {a["label"] for a in addrs}
     assert labels == {"Home", "Work", "Other"}
@@ -1852,11 +1421,11 @@ async def test_address_multiple_per_contact(pool):
 # ------------------------------------------------------------------
 
 
-async def test_life_event_types_list(pool):
+async def test_life_event_types_list(rel_pool):
     """Test listing all life event types."""
     from butlers.tools.relationship import life_event_types_list
 
-    types = await life_event_types_list(pool)
+    types = await life_event_types_list(rel_pool)
     assert len(types) > 0
 
     # Check that we have the seeded categories
@@ -1872,13 +1441,13 @@ async def test_life_event_types_list(pool):
     assert "met for first time" in type_names
 
 
-async def test_life_event_log_basic(pool):
+async def test_life_event_log_basic(rel_pool):
     """Test logging a life event."""
     from butlers.tools.relationship import contact_create, life_event_log
 
-    contact = await contact_create(pool, "Alice")
+    contact = await contact_create(rel_pool, "Alice")
     event = await life_event_log(
-        pool,
+        rel_pool,
         contact["id"],
         "promotion",
         "Got promoted to Senior Engineer",
@@ -1894,28 +1463,28 @@ async def test_life_event_log_basic(pool):
     assert str(event["happened_at"]) == "2026-01-15"
 
 
-async def test_life_event_log_invalid_type(pool):
+async def test_life_event_log_invalid_type(rel_pool):
     """Test logging with an invalid life event type."""
     from butlers.tools.relationship import contact_create, life_event_log
 
-    contact = await contact_create(pool, "Bob")
+    contact = await contact_create(rel_pool, "Bob")
 
     with pytest.raises(ValueError, match="Unknown life event type"):
         await life_event_log(
-            pool,
+            rel_pool,
             contact["id"],
             "invalid_type",
             "Something happened",
         )
 
 
-async def test_life_event_log_without_date(pool):
+async def test_life_event_log_without_date(rel_pool):
     """Test logging a life event without specifying a date."""
     from butlers.tools.relationship import contact_create, life_event_log
 
-    contact = await contact_create(pool, "Charlie")
+    contact = await contact_create(rel_pool, "Charlie")
     event = await life_event_log(
-        pool,
+        rel_pool,
         contact["id"],
         "new job",
         "Started at TechCorp",
@@ -1926,14 +1495,14 @@ async def test_life_event_log_without_date(pool):
     assert event["happened_at"] is None
 
 
-async def test_life_event_log_uses_occurred_at_when_happened_at_omitted(pool):
+async def test_life_event_log_uses_occurred_at_when_happened_at_omitted(rel_pool):
     """occurred_at should backfill happened_at for taxonomy-backed life events."""
     from butlers.tools.relationship import contact_create, life_event_log
 
-    contact = await contact_create(pool, "Dana")
+    contact = await contact_create(rel_pool, "Dana")
     occurred_at = datetime(2026, 2, 1, 15, 30, 0, tzinfo=UTC)
     event = await life_event_log(
-        pool,
+        rel_pool,
         contact["id"],
         "promotion",
         "Promoted to lead",
@@ -1943,18 +1512,18 @@ async def test_life_event_log_uses_occurred_at_when_happened_at_omitted(pool):
     assert str(event["happened_at"]) == "2026-02-01"
 
 
-async def test_life_event_list_all(pool):
+async def test_life_event_list_all(rel_pool):
     """Test listing all life events."""
     from butlers.tools.relationship import contact_create, life_event_list, life_event_log
 
-    alice = await contact_create(pool, "Alice")
-    bob = await contact_create(pool, "Bob")
+    alice = await contact_create(rel_pool, "Alice")
+    bob = await contact_create(rel_pool, "Bob")
 
-    await life_event_log(pool, alice["id"], "promotion", "Promoted to manager")
-    await life_event_log(pool, bob["id"], "married", "Got married")
-    await life_event_log(pool, alice["id"], "moved", "Moved to London")
+    await life_event_log(rel_pool, alice["id"], "promotion", "Promoted to manager")
+    await life_event_log(rel_pool, bob["id"], "married", "Got married")
+    await life_event_log(rel_pool, alice["id"], "moved", "Moved to London")
 
-    events = await life_event_list(pool)
+    events = await life_event_list(rel_pool)
     assert len(events) >= 3
 
     # Check that contact names are included
@@ -1963,68 +1532,70 @@ async def test_life_event_list_all(pool):
     assert "Bob" in contact_names
 
 
-async def test_life_event_list_by_contact(pool):
+async def test_life_event_list_by_contact(rel_pool):
     """Test filtering life events by contact."""
     from butlers.tools.relationship import contact_create, life_event_list, life_event_log
 
-    alice = await contact_create(pool, "Alice")
-    bob = await contact_create(pool, "Bob")
+    alice = await contact_create(rel_pool, "Alice")
+    bob = await contact_create(rel_pool, "Bob")
 
-    await life_event_log(pool, alice["id"], "promotion", "Promoted to manager")
-    await life_event_log(pool, bob["id"], "married", "Got married")
-    await life_event_log(pool, alice["id"], "moved", "Moved to London")
+    await life_event_log(rel_pool, alice["id"], "promotion", "Promoted to manager")
+    await life_event_log(rel_pool, bob["id"], "married", "Got married")
+    await life_event_log(rel_pool, alice["id"], "moved", "Moved to London")
 
-    alice_events = await life_event_list(pool, contact_id=alice["id"])
+    alice_events = await life_event_list(rel_pool, contact_id=alice["id"])
     assert len(alice_events) == 2
     assert all(e["contact_id"] == alice["id"] for e in alice_events)
 
 
-async def test_life_event_list_by_type(pool):
+async def test_life_event_list_by_type(rel_pool):
     """Test filtering life events by type."""
     from butlers.tools.relationship import contact_create, life_event_list, life_event_log
 
-    alice = await contact_create(pool, "Alice")
-    bob = await contact_create(pool, "Bob")
+    alice = await contact_create(rel_pool, "Alice")
+    bob = await contact_create(rel_pool, "Bob")
 
-    await life_event_log(pool, alice["id"], "promotion", "Promoted to manager")
-    await life_event_log(pool, bob["id"], "promotion", "Promoted to director")
-    await life_event_log(pool, alice["id"], "moved", "Moved to London")
+    await life_event_log(rel_pool, alice["id"], "promotion", "Promoted to manager")
+    await life_event_log(rel_pool, bob["id"], "promotion", "Promoted to director")
+    await life_event_log(rel_pool, alice["id"], "moved", "Moved to London")
 
-    promotion_events = await life_event_list(pool, type_name="promotion")
+    promotion_events = await life_event_list(rel_pool, type_name="promotion")
     assert len(promotion_events) == 2
     assert all(e["type_name"] == "promotion" for e in promotion_events)
 
 
-async def test_life_event_list_by_contact_and_type(pool):
+async def test_life_event_list_by_contact_and_type(rel_pool):
     """Test filtering life events by both contact and type."""
     from butlers.tools.relationship import contact_create, life_event_list, life_event_log
 
-    alice = await contact_create(pool, "Alice")
-    bob = await contact_create(pool, "Bob")
+    alice = await contact_create(rel_pool, "Alice")
+    bob = await contact_create(rel_pool, "Bob")
 
-    await life_event_log(pool, alice["id"], "promotion", "Promoted to manager")
-    await life_event_log(pool, bob["id"], "promotion", "Promoted to director")
-    await life_event_log(pool, alice["id"], "moved", "Moved to London")
+    await life_event_log(rel_pool, alice["id"], "promotion", "Promoted to manager")
+    await life_event_log(rel_pool, bob["id"], "promotion", "Promoted to director")
+    await life_event_log(rel_pool, alice["id"], "moved", "Moved to London")
 
-    alice_promotions = await life_event_list(pool, contact_id=alice["id"], type_name="promotion")
+    alice_promotions = await life_event_list(
+        rel_pool, contact_id=alice["id"], type_name="promotion"
+    )
     assert len(alice_promotions) == 1
     assert alice_promotions[0]["contact_id"] == alice["id"]
     assert alice_promotions[0]["type_name"] == "promotion"
 
 
-async def test_life_event_list_ordering(pool):
+async def test_life_event_list_ordering(rel_pool):
     """Test that life events are ordered by happened_at (most recent first)."""
     from butlers.tools.relationship import contact_create, life_event_list, life_event_log
 
-    alice = await contact_create(pool, "Alice")
+    alice = await contact_create(rel_pool, "Alice")
 
     await life_event_log(
-        pool, alice["id"], "new job", "Started at Company A", happened_at="2024-01-01"
+        rel_pool, alice["id"], "new job", "Started at Company A", happened_at="2024-01-01"
     )
-    await life_event_log(pool, alice["id"], "promotion", "Promoted", happened_at="2025-06-15")
-    await life_event_log(pool, alice["id"], "quit", "Left Company A", happened_at="2026-01-01")
+    await life_event_log(rel_pool, alice["id"], "promotion", "Promoted", happened_at="2025-06-15")
+    await life_event_log(rel_pool, alice["id"], "quit", "Left Company A", happened_at="2026-01-01")
 
-    events = await life_event_list(pool, contact_id=alice["id"])
+    events = await life_event_list(rel_pool, contact_id=alice["id"])
     assert len(events) == 3
     # Most recent first
     assert str(events[0]["happened_at"]) == "2026-01-01"
@@ -2032,11 +1603,11 @@ async def test_life_event_list_ordering(pool):
     assert str(events[2]["happened_at"]) == "2024-01-01"
 
 
-async def test_life_event_all_seeded_types(pool):
+async def test_life_event_all_seeded_types(rel_pool):
     """Test that all expected types are seeded."""
     from butlers.tools.relationship import life_event_types_list
 
-    types = await life_event_types_list(pool)
+    types = await life_event_types_list(rel_pool)
     type_dict = {(t["category"], t["name"]) for t in types}
 
     # Career types
@@ -2063,12 +1634,12 @@ async def test_life_event_all_seeded_types(pool):
 # ------------------------------------------------------------------
 
 
-async def test_contact_resolve_exact_match(pool):
+async def test_contact_resolve_exact_match(rel_pool):
     """contact_resolve returns HIGH confidence for an exact case-insensitive match."""
     from butlers.tools.relationship import contact_create, contact_resolve
 
-    c = await contact_create(pool, "Sarah Connor")
-    result = await contact_resolve(pool, "sarah connor")
+    c = await contact_create(rel_pool, "Sarah Connor")
+    result = await contact_resolve(rel_pool, "sarah connor")
 
     assert result["contact_id"] == c["id"]
     assert result["confidence"] == "high"
@@ -2077,56 +1648,56 @@ async def test_contact_resolve_exact_match(pool):
     assert result["candidates"][0]["score"] == 100
 
 
-async def test_contact_resolve_exact_match_case_preserved(pool):
+async def test_contact_resolve_exact_match_case_preserved(rel_pool):
     """contact_resolve exact match works regardless of case."""
     from butlers.tools.relationship import contact_create, contact_resolve
 
-    c = await contact_create(pool, "JOHN DOE")
-    result = await contact_resolve(pool, "John Doe")
+    c = await contact_create(rel_pool, "JOHN DOE")
+    result = await contact_resolve(rel_pool, "John Doe")
 
     assert result["contact_id"] == c["id"]
     assert result["confidence"] == "high"
 
 
-async def test_contact_resolve_no_match(pool):
+async def test_contact_resolve_no_match(rel_pool):
     """contact_resolve returns null contact_id and empty candidates when no match."""
     from butlers.tools.relationship import contact_resolve
 
-    result = await contact_resolve(pool, "Nonexistent Person XYZ123")
+    result = await contact_resolve(rel_pool, "Nonexistent Person XYZ123")
 
     assert result["contact_id"] is None
     assert result["confidence"] == "none"
     assert result["candidates"] == []
 
 
-async def test_contact_resolve_empty_name(pool):
+async def test_contact_resolve_empty_name(rel_pool):
     """contact_resolve returns none for empty name."""
     from butlers.tools.relationship import contact_resolve
 
-    result = await contact_resolve(pool, "")
+    result = await contact_resolve(rel_pool, "")
 
     assert result["contact_id"] is None
     assert result["confidence"] == "none"
     assert result["candidates"] == []
 
 
-async def test_contact_resolve_whitespace_name(pool):
+async def test_contact_resolve_whitespace_name(rel_pool):
     """contact_resolve returns none for whitespace-only name."""
     from butlers.tools.relationship import contact_resolve
 
-    result = await contact_resolve(pool, "   ")
+    result = await contact_resolve(rel_pool, "   ")
 
     assert result["contact_id"] is None
     assert result["confidence"] == "none"
     assert result["candidates"] == []
 
 
-async def test_contact_resolve_partial_first_name(pool):
+async def test_contact_resolve_partial_first_name(rel_pool):
     """contact_resolve returns medium/high confidence for first-name-only match."""
     from butlers.tools.relationship import contact_create, contact_resolve
 
-    c = await contact_create(pool, "Resolve-Maria Garcia")
-    result = await contact_resolve(pool, "Resolve-Maria")
+    c = await contact_create(rel_pool, "Resolve-Maria Garcia")
+    result = await contact_resolve(rel_pool, "Resolve-Maria")
 
     assert result["confidence"] in {"medium", "high"}
     assert len(result["candidates"]) >= 1
@@ -2134,25 +1705,25 @@ async def test_contact_resolve_partial_first_name(pool):
     assert c["id"] in ids
 
 
-async def test_contact_resolve_partial_last_name(pool):
+async def test_contact_resolve_partial_last_name(rel_pool):
     """contact_resolve returns medium/high confidence for last-name-only match."""
     from butlers.tools.relationship import contact_create, contact_resolve
 
-    c = await contact_create(pool, "Resolve-Alex Petrosyan")
-    result = await contact_resolve(pool, "Petrosyan")
+    c = await contact_create(rel_pool, "Resolve-Alex Petrosyan")
+    result = await contact_resolve(rel_pool, "Petrosyan")
 
     assert result["confidence"] in {"medium", "high"}
     ids = [cand["contact_id"] for cand in result["candidates"]]
     assert c["id"] in ids
 
 
-async def test_contact_resolve_ambiguous_multiple_matches(pool):
+async def test_contact_resolve_ambiguous_multiple_matches(rel_pool):
     """contact_resolve returns MEDIUM confidence with multiple candidates for ambiguous names."""
     from butlers.tools.relationship import contact_create, contact_resolve
 
-    c1 = await contact_create(pool, "Resolve-Amb Sarah Smith")
-    c2 = await contact_create(pool, "Resolve-Amb Sarah Johnson")
-    result = await contact_resolve(pool, "Resolve-Amb Sarah")
+    c1 = await contact_create(rel_pool, "Resolve-Amb Sarah Smith")
+    c2 = await contact_create(rel_pool, "Resolve-Amb Sarah Johnson")
+    result = await contact_resolve(rel_pool, "Resolve-Amb Sarah")
 
     assert result["confidence"] == "medium"
     assert len(result["candidates"]) >= 2
@@ -2161,15 +1732,15 @@ async def test_contact_resolve_ambiguous_multiple_matches(pool):
     assert c2["id"] in ids
 
 
-async def test_contact_resolve_context_disambiguates(pool):
+async def test_contact_resolve_context_disambiguates(rel_pool):
     """context parameter helps disambiguate between multiple exact-name matches."""
     from butlers.tools.relationship import contact_create, contact_resolve, note_create
 
-    c1 = await contact_create(pool, first_name="Resolve-Ctx Mike", company="Acme")
-    await contact_create(pool, first_name="Resolve-Ctx Mike", company="Globex")
-    await note_create(pool, c1["id"], "Works at the Acme office downtown")
+    c1 = await contact_create(rel_pool, first_name="Resolve-Ctx Mike", company="Acme")
+    await contact_create(rel_pool, first_name="Resolve-Ctx Mike", company="Globex")
+    await note_create(rel_pool, c1["id"], "Works at the Acme office downtown")
 
-    result = await contact_resolve(pool, "Resolve-Ctx Mike", context="from Acme")
+    result = await contact_resolve(rel_pool, "Resolve-Ctx Mike", context="from Acme")
 
     # Context helps but may not produce a 15-point gap for HIGH confidence
     # when entity_resolve provides its own scoring
@@ -2179,18 +1750,18 @@ async def test_contact_resolve_context_disambiguates(pool):
     assert result["candidates"][0]["contact_id"] == c1["id"]
 
 
-async def test_contact_resolve_context_boosts_partial(pool):
+async def test_contact_resolve_context_boosts_partial(rel_pool):
     """context parameter boosts partial match scores using details."""
     from butlers.tools.relationship import contact_create, contact_resolve
 
     c1 = await contact_create(
-        pool,
+        rel_pool,
         first_name="Resolve-CtxP David Lee",
         metadata={"hobby": "tennis"},
     )
-    await contact_create(pool, first_name="Resolve-CtxP David Kim", metadata={"hobby": "chess"})
+    await contact_create(rel_pool, first_name="Resolve-CtxP David Kim", metadata={"hobby": "chess"})
 
-    result = await contact_resolve(pool, "Resolve-CtxP David", context="tennis match")
+    result = await contact_resolve(rel_pool, "Resolve-CtxP David", context="tennis match")
 
     assert result["confidence"] == "medium"
     assert len(result["candidates"]) >= 2
@@ -2200,45 +1771,45 @@ async def test_contact_resolve_context_boosts_partial(pool):
     assert c1["id"] in candidate_ids
 
 
-async def test_contact_resolve_excludes_archived(pool):
+async def test_contact_resolve_excludes_archived(rel_pool):
     """contact_resolve does not return archived contacts."""
     from butlers.tools.relationship import contact_archive, contact_create, contact_resolve
 
-    c = await contact_create(pool, "Resolve-Archived Person XYZ")
-    await contact_archive(pool, c["id"])
+    c = await contact_create(rel_pool, "Resolve-Archived Person XYZ")
+    await contact_archive(rel_pool, c["id"])
 
-    result = await contact_resolve(pool, "Resolve-Archived Person XYZ")
+    result = await contact_resolve(rel_pool, "Resolve-Archived Person XYZ")
     assert result["contact_id"] is None
     assert result["confidence"] == "none"
     assert result["candidates"] == []
 
 
-async def test_contact_resolve_single_partial_returns_contact_id(pool):
+async def test_contact_resolve_single_partial_returns_contact_id(rel_pool):
     """When only one partial match exists, contact_id is returned with MEDIUM confidence."""
     from butlers.tools.relationship import contact_create, contact_resolve
 
-    c = await contact_create(pool, "Resolve-Unique Ximenez")
-    result = await contact_resolve(pool, "Ximenez")
+    c = await contact_create(rel_pool, "Resolve-Unique Ximenez")
+    result = await contact_resolve(rel_pool, "Ximenez")
 
     assert result["contact_id"] == c["id"]
     assert result["confidence"] == "medium"
     assert len(result["candidates"]) == 1
 
 
-async def test_contact_resolve_candidates_sorted_by_score(pool):
+async def test_contact_resolve_candidates_sorted_by_score(rel_pool):
     """Candidates are returned sorted by score descending."""
     from butlers.tools.relationship import contact_create, contact_resolve
 
-    await contact_create(pool, "Resolve-Sort Taylor Swift")
-    await contact_create(pool, "Resolve-Sort Taylor Jones")
+    await contact_create(rel_pool, "Resolve-Sort Taylor Swift")
+    await contact_create(rel_pool, "Resolve-Sort Taylor Jones")
 
-    result = await contact_resolve(pool, "Resolve-Sort Taylor")
+    result = await contact_resolve(rel_pool, "Resolve-Sort Taylor")
 
     scores = [c["score"] for c in result["candidates"]]
     assert scores == sorted(scores, reverse=True)
 
 
-async def test_contact_resolve_context_with_interactions(pool):
+async def test_contact_resolve_context_with_interactions(rel_pool):
     """Context matching works against interaction summaries."""
     from butlers.tools.relationship import (
         contact_create,
@@ -2246,11 +1817,11 @@ async def test_contact_resolve_context_with_interactions(pool):
         interaction_log,
     )
 
-    c1 = await contact_create(pool, "Resolve-IntCtx Emma Brown")
-    c2 = await contact_create(pool, "Resolve-IntCtx Emma Davis")
-    await interaction_log(pool, c1["id"], "meeting", "Discussed yoga class schedule")
+    c1 = await contact_create(rel_pool, "Resolve-IntCtx Emma Brown")
+    c2 = await contact_create(rel_pool, "Resolve-IntCtx Emma Davis")
+    await interaction_log(rel_pool, c1["id"], "meeting", "Discussed yoga class schedule")
 
-    result = await contact_resolve(pool, "Resolve-IntCtx Emma", context="yoga class")
+    result = await contact_resolve(rel_pool, "Resolve-IntCtx Emma", context="yoga class")
 
     # c1 has a recent interaction mentioning yoga; the salience score from the interaction
     # plus the context boost may push confidence to HIGH when the gap exceeds the threshold.
@@ -2267,12 +1838,12 @@ async def test_contact_resolve_context_with_interactions(pool):
 # ------------------------------------------------------------------
 
 
-async def test_task_create(pool):
+async def test_task_create(rel_pool):
     """task_create inserts a task and returns its dict."""
     from butlers.tools.relationship import contact_create, task_create
 
-    c = await contact_create(pool, "Task Contact")
-    result = await task_create(pool, c["id"], "Buy groceries", "Milk, eggs, bread")
+    c = await contact_create(rel_pool, "Task Contact")
+    result = await task_create(rel_pool, c["id"], "Buy groceries", "Milk, eggs, bread")
     assert result["title"] == "Buy groceries"
     assert result["description"] == "Milk, eggs, bread"
     assert result["completed"] is False
@@ -2281,47 +1852,47 @@ async def test_task_create(pool):
     assert result["contact_id"] == c["id"]
 
 
-async def test_task_create_no_description(pool):
+async def test_task_create_no_description(rel_pool):
     """task_create works without optional description."""
     from butlers.tools.relationship import contact_create, task_create
 
-    c = await contact_create(pool, "Task Contact Minimal")
-    result = await task_create(pool, c["id"], "Call dentist")
+    c = await contact_create(rel_pool, "Task Contact Minimal")
+    result = await task_create(rel_pool, c["id"], "Call dentist")
     assert result["title"] == "Call dentist"
     assert result["description"] is None
     assert result["completed"] is False
 
 
-async def test_task_list_by_contact(pool):
+async def test_task_list_by_contact(rel_pool):
     """task_list filters tasks by contact_id."""
     from butlers.tools.relationship import contact_create, task_create, task_list
 
-    c1 = await contact_create(pool, "Task List Contact A")
-    c2 = await contact_create(pool, "Task List Contact B")
-    await task_create(pool, c1["id"], "Task for A")
-    await task_create(pool, c2["id"], "Task for B")
+    c1 = await contact_create(rel_pool, "Task List Contact A")
+    c2 = await contact_create(rel_pool, "Task List Contact B")
+    await task_create(rel_pool, c1["id"], "Task for A")
+    await task_create(rel_pool, c2["id"], "Task for B")
 
-    tasks_a = await task_list(pool, contact_id=c1["id"])
+    tasks_a = await task_list(rel_pool, contact_id=c1["id"])
     assert any(t["title"] == "Task for A" for t in tasks_a)
     assert not any(t["title"] == "Task for B" for t in tasks_a)
 
-    tasks_b = await task_list(pool, contact_id=c2["id"])
+    tasks_b = await task_list(rel_pool, contact_id=c2["id"])
     assert any(t["title"] == "Task for B" for t in tasks_b)
     assert not any(t["title"] == "Task for A" for t in tasks_b)
 
 
-async def test_task_list_all(pool):
+async def test_task_list_all(rel_pool):
     """task_list without contact_id returns tasks for all contacts."""
     from butlers.tools.relationship import contact_create, task_create, task_list
 
-    c = await contact_create(pool, "Task List All Contact")
-    await task_create(pool, c["id"], "Global task unique")
+    c = await contact_create(rel_pool, "Task List All Contact")
+    await task_create(rel_pool, c["id"], "Global task unique")
 
-    all_tasks = await task_list(pool)
+    all_tasks = await task_list(rel_pool)
     assert any(t["title"] == "Global task unique" for t in all_tasks)
 
 
-async def test_task_list_excludes_completed_by_default(pool):
+async def test_task_list_excludes_completed_by_default(rel_pool):
     """task_list excludes completed tasks by default."""
     from butlers.tools.relationship import (
         contact_create,
@@ -2330,18 +1901,18 @@ async def test_task_list_excludes_completed_by_default(pool):
         task_list,
     )
 
-    c = await contact_create(pool, "Task Filter Contact")
-    await task_create(pool, c["id"], "Incomplete task xyz")
-    t2 = await task_create(pool, c["id"], "Completed task xyz")
-    await task_complete(pool, t2["id"])
+    c = await contact_create(rel_pool, "Task Filter Contact")
+    await task_create(rel_pool, c["id"], "Incomplete task xyz")
+    t2 = await task_create(rel_pool, c["id"], "Completed task xyz")
+    await task_complete(rel_pool, t2["id"])
 
-    tasks = await task_list(pool, contact_id=c["id"])
+    tasks = await task_list(rel_pool, contact_id=c["id"])
     titles = [t["title"] for t in tasks]
     assert "Incomplete task xyz" in titles
     assert "Completed task xyz" not in titles
 
 
-async def test_task_list_include_completed(pool):
+async def test_task_list_include_completed(rel_pool):
     """task_list with include_completed=True returns all tasks."""
     from butlers.tools.relationship import (
         contact_create,
@@ -2350,67 +1921,67 @@ async def test_task_list_include_completed(pool):
         task_list,
     )
 
-    c = await contact_create(pool, "Task Include Completed Contact")
-    await task_create(pool, c["id"], "Still open zzz")
-    t2 = await task_create(pool, c["id"], "Already done zzz")
-    await task_complete(pool, t2["id"])
+    c = await contact_create(rel_pool, "Task Include Completed Contact")
+    await task_create(rel_pool, c["id"], "Still open zzz")
+    t2 = await task_create(rel_pool, c["id"], "Already done zzz")
+    await task_complete(rel_pool, t2["id"])
 
-    tasks = await task_list(pool, contact_id=c["id"], include_completed=True)
+    tasks = await task_list(rel_pool, contact_id=c["id"], include_completed=True)
     titles = [t["title"] for t in tasks]
     assert "Still open zzz" in titles
     assert "Already done zzz" in titles
 
 
-async def test_task_list_includes_contact_name(pool):
+async def test_task_list_includes_contact_name(rel_pool):
     """task_list results include contact_name from JOIN."""
     from butlers.tools.relationship import contact_create, task_create, task_list
 
-    c = await contact_create(pool, "Named Contact For Tasks")
-    await task_create(pool, c["id"], "Task with contact name")
+    c = await contact_create(rel_pool, "Named Contact For Tasks")
+    await task_create(rel_pool, c["id"], "Task with contact name")
 
-    tasks = await task_list(pool, contact_id=c["id"])
+    tasks = await task_list(rel_pool, contact_id=c["id"])
     assert any(t["contact_name"] == "Named Contact For Tasks" for t in tasks)
 
 
-async def test_task_complete(pool):
+async def test_task_complete(rel_pool):
     """task_complete marks a task as completed with timestamp."""
     from butlers.tools.relationship import contact_create, task_complete, task_create
 
-    c = await contact_create(pool, "Task Complete Contact")
-    t = await task_create(pool, c["id"], "Finish report")
-    completed = await task_complete(pool, t["id"])
+    c = await contact_create(rel_pool, "Task Complete Contact")
+    t = await task_create(rel_pool, c["id"], "Finish report")
+    completed = await task_complete(rel_pool, t["id"])
     assert completed["completed"] is True
     assert completed["completed_at"] is not None
     assert isinstance(completed["completed_at"], datetime)
 
 
-async def test_task_complete_not_found(pool):
+async def test_task_complete_not_found(rel_pool):
     """task_complete raises ValueError for non-existent task."""
     from butlers.tools.relationship import task_complete
 
     with pytest.raises(ValueError, match="not found"):
-        await task_complete(pool, uuid.uuid4())
+        await task_complete(rel_pool, uuid.uuid4())
 
 
-async def test_task_delete(pool):
+async def test_task_delete(rel_pool):
     """task_delete removes a task from the database."""
     from butlers.tools.relationship import contact_create, task_create, task_delete, task_list
 
-    c = await contact_create(pool, "Task Delete Contact")
-    t = await task_create(pool, c["id"], "Deletable task")
+    c = await contact_create(rel_pool, "Task Delete Contact")
+    t = await task_create(rel_pool, c["id"], "Deletable task")
 
-    await task_delete(pool, t["id"])
+    await task_delete(rel_pool, t["id"])
 
-    tasks = await task_list(pool, contact_id=c["id"], include_completed=True)
+    tasks = await task_list(rel_pool, contact_id=c["id"], include_completed=True)
     assert not any(task["title"] == "Deletable task" for task in tasks)
 
 
-async def test_task_delete_not_found(pool):
+async def test_task_delete_not_found(rel_pool):
     """task_delete raises ValueError for non-existent task."""
     from butlers.tools.relationship import task_delete
 
     with pytest.raises(ValueError, match="not found"):
-        await task_delete(pool, uuid.uuid4())
+        await task_delete(rel_pool, uuid.uuid4())
 
 
 # Stay-in-touch cadence
@@ -2418,23 +1989,23 @@ async def test_task_delete_not_found(pool):
 
 
 @pytest.fixture
-async def pool_with_cadence(pool):
-    """Extend the base pool fixture with the stay_in_touch_days column."""
-    await pool.execute("""
+async def pool_with_cadence(rel_pool):
+    """Extend the base rel_pool fixture with the stay_in_touch_days column."""
+    await rel_pool.execute("""
         ALTER TABLE contacts ADD COLUMN IF NOT EXISTS stay_in_touch_days INTEGER
     """)
-    yield pool
+    yield rel_pool
 
 
 async def test_stay_in_touch_set(pool_with_cadence):
     """Setting cadence stores the frequency_days on the contact."""
     from butlers.tools.relationship import contact_create, stay_in_touch_set
 
-    pool = pool_with_cadence
-    contact = await contact_create(pool, "Alice")
+    rel_pool = pool_with_cadence
+    contact = await contact_create(rel_pool, "Alice")
     cid = contact["id"]
 
-    updated = await stay_in_touch_set(pool, cid, 14)
+    updated = await stay_in_touch_set(rel_pool, cid, 14)
     assert updated["stay_in_touch_days"] == 14
 
 
@@ -2442,12 +2013,12 @@ async def test_stay_in_touch_clear(pool_with_cadence):
     """Clearing cadence (None) sets stay_in_touch_days to NULL."""
     from butlers.tools.relationship import contact_create, stay_in_touch_set
 
-    pool = pool_with_cadence
-    contact = await contact_create(pool, "Bob")
+    rel_pool = pool_with_cadence
+    contact = await contact_create(rel_pool, "Bob")
     cid = contact["id"]
 
-    await stay_in_touch_set(pool, cid, 7)
-    cleared = await stay_in_touch_set(pool, cid, None)
+    await stay_in_touch_set(rel_pool, cid, 7)
+    cleared = await stay_in_touch_set(rel_pool, cid, None)
     assert cleared["stay_in_touch_days"] is None
 
 
@@ -2455,10 +2026,10 @@ async def test_stay_in_touch_set_not_found(pool_with_cadence):
     """Setting cadence on a non-existent contact raises ValueError."""
     from butlers.tools.relationship import stay_in_touch_set
 
-    pool = pool_with_cadence
+    rel_pool = pool_with_cadence
     fake_id = uuid.uuid4()
     with pytest.raises(ValueError, match="not found"):
-        await stay_in_touch_set(pool, fake_id, 30)
+        await stay_in_touch_set(rel_pool, fake_id, 30)
 
 
 @pytest.mark.pg_clock
@@ -2473,16 +2044,16 @@ async def test_contacts_overdue_with_stale_interaction(pool_with_cadence, monkey
 
     _mock_contact_signal(monkeypatch, is_overdue=True)
 
-    pool = pool_with_cadence
-    contact = await contact_create(pool, "Charlie")
+    rel_pool = pool_with_cadence
+    contact = await contact_create(rel_pool, "Charlie")
     cid = contact["id"]
 
-    await stay_in_touch_set(pool, cid, 7)
+    await stay_in_touch_set(rel_pool, cid, 7)
     # Log an interaction 10 days ago
     old_time = datetime.now(UTC).replace(microsecond=0) - __import__("datetime").timedelta(days=10)
-    await interaction_log(pool, cid, "call", "Catch-up call", occurred_at=old_time)
+    await interaction_log(rel_pool, cid, "call", "Catch-up call", occurred_at=old_time)
 
-    overdue = await contacts_overdue(pool)
+    overdue = await contacts_overdue(rel_pool)
     overdue_ids = [c["id"] for c in overdue]
     assert cid in overdue_ids
     # Verify staleness data is present
@@ -2497,13 +2068,13 @@ async def test_contacts_overdue_no_interaction(pool_with_cadence, monkeypatch):
 
     _mock_contact_signal(monkeypatch, is_overdue=False)
 
-    pool = pool_with_cadence
-    contact = await contact_create(pool, "Diana")
+    rel_pool = pool_with_cadence
+    contact = await contact_create(rel_pool, "Diana")
     cid = contact["id"]
 
-    await stay_in_touch_set(pool, cid, 30)
+    await stay_in_touch_set(rel_pool, cid, 30)
 
-    overdue = await contacts_overdue(pool)
+    overdue = await contacts_overdue(rel_pool)
     overdue_ids = [c["id"] for c in overdue]
     assert cid not in overdue_ids
 
@@ -2519,15 +2090,15 @@ async def test_contacts_overdue_recent_interaction(pool_with_cadence, monkeypatc
 
     _mock_contact_signal(monkeypatch, is_overdue=False)
 
-    pool = pool_with_cadence
-    contact = await contact_create(pool, "Eve")
+    rel_pool = pool_with_cadence
+    contact = await contact_create(rel_pool, "Eve")
     cid = contact["id"]
 
-    await stay_in_touch_set(pool, cid, 30)
+    await stay_in_touch_set(rel_pool, cid, 30)
     # Log a recent interaction (now)
-    await interaction_log(pool, cid, "coffee", "Coffee catch-up")
+    await interaction_log(rel_pool, cid, "coffee", "Coffee catch-up")
 
-    overdue = await contacts_overdue(pool)
+    overdue = await contacts_overdue(rel_pool)
     overdue_ids = [c["id"] for c in overdue]
     assert cid not in overdue_ids
 
@@ -2536,11 +2107,11 @@ async def test_contacts_overdue_no_cadence_excluded(pool_with_cadence):
     """Contact without cadence (NULL) never appears in overdue list."""
     from butlers.tools.relationship import contact_create, contacts_overdue
 
-    pool = pool_with_cadence
-    contact = await contact_create(pool, "Frank")
+    rel_pool = pool_with_cadence
+    contact = await contact_create(rel_pool, "Frank")
     # No cadence set — stay_in_touch_days is NULL by default
 
-    overdue = await contacts_overdue(pool)
+    overdue = await contacts_overdue(rel_pool)
     overdue_ids = [c["id"] for c in overdue]
     assert contact["id"] not in overdue_ids
 
@@ -2551,18 +2122,18 @@ async def test_contacts_overdue_cleared_cadence_excluded(pool_with_cadence, monk
 
     _mock_contact_signal(monkeypatch, is_overdue=False)
 
-    pool = pool_with_cadence
-    contact = await contact_create(pool, "Grace")
+    rel_pool = pool_with_cadence
+    contact = await contact_create(rel_pool, "Grace")
     cid = contact["id"]
 
     # Set cadence — without an attested observation it remains unmeasurable.
-    await stay_in_touch_set(pool, cid, 1)
-    overdue = await contacts_overdue(pool)
+    await stay_in_touch_set(rel_pool, cid, 1)
+    overdue = await contacts_overdue(rel_pool)
     assert cid not in [c["id"] for c in overdue]
 
     # Clear cadence — should no longer be overdue
-    await stay_in_touch_set(pool, cid, None)
-    overdue = await contacts_overdue(pool)
+    await stay_in_touch_set(rel_pool, cid, None)
+    overdue = await contacts_overdue(rel_pool)
     assert cid not in [c["id"] for c in overdue]
 
 
@@ -2575,19 +2146,19 @@ async def test_contacts_overdue_archived_excluded(pool_with_cadence):
         stay_in_touch_set,
     )
 
-    pool = pool_with_cadence
-    contact = await contact_create(pool, "Hank")
+    rel_pool = pool_with_cadence
+    contact = await contact_create(rel_pool, "Hank")
     cid = contact["id"]
 
-    await stay_in_touch_set(pool, cid, 1)
-    await contact_archive(pool, cid)
+    await stay_in_touch_set(rel_pool, cid, 1)
+    await contact_archive(rel_pool, cid)
 
-    overdue = await contacts_overdue(pool)
+    overdue = await contacts_overdue(rel_pool)
     overdue_ids = [c["id"] for c in overdue]
     assert cid not in overdue_ids
 
 
-async def test_contact_resolve_salience_scoring(pool):
+async def test_contact_resolve_salience_scoring(rel_pool):
     """contact_resolve uses salience scoring to disambiguate multiple first-name matches."""
     import datetime
 
@@ -2603,16 +2174,16 @@ async def test_contact_resolve_salience_scoring(pool):
     )
 
     # Create two contacts with the same first name
-    chloe_wong = await contact_create(pool, "Chloe Wong")
-    chloe_tan = await contact_create(pool, "Chloe Tan")
+    chloe_wong = await contact_create(rel_pool, "Chloe Wong")
+    chloe_tan = await contact_create(rel_pool, "Chloe Tan")
 
     # Give Chloe Wong high salience through relationship type (partner = +50)
     # First get the partner relationship type
-    partner_type_row = await pool.fetchrow(
+    partner_type_row = await rel_pool.fetchrow(
         "SELECT id FROM relationship_types WHERE forward_label = 'partner' LIMIT 1"
     )
     if partner_type_row:
-        await pool.execute(
+        await rel_pool.execute(
             """
             INSERT INTO relationships (contact_a, contact_b, type, relationship_type_id)
             VALUES ($1, $2, 'partner', $3)
@@ -2630,7 +2201,7 @@ async def test_contact_resolve_salience_scoring(pool):
             tzinfo=datetime.UTC,
         )
         await interaction_log(
-            pool,
+            rel_pool,
             chloe_wong["id"],
             "message",
             summary=f"message {i}",
@@ -2639,7 +2210,7 @@ async def test_contact_resolve_salience_scoring(pool):
 
     # Give Chloe Wong recency bonus (<7 days = +15)
     await interaction_log(
-        pool,
+        rel_pool,
         chloe_wong["id"],
         "call",
         summary="recent call",
@@ -2649,17 +2220,17 @@ async def test_contact_resolve_salience_scoring(pool):
     )
 
     # Give Chloe Wong fact density (+5 from 5 facts/notes, cap is +10)
-    await fact_set(pool, chloe_wong["id"], "favorite_color", "blue")
-    await fact_set(pool, chloe_wong["id"], "favorite_food", "sushi")
-    await note_create(pool, chloe_wong["id"], "Loves hiking")
-    await note_create(pool, chloe_wong["id"], "Works at Google")
-    await note_create(pool, chloe_wong["id"], "Birthday is March 15")
+    await fact_set(rel_pool, chloe_wong["id"], "favorite_color", "blue")
+    await fact_set(rel_pool, chloe_wong["id"], "favorite_food", "sushi")
+    await note_create(rel_pool, chloe_wong["id"], "Loves hiking")
+    await note_create(rel_pool, chloe_wong["id"], "Works at Google")
+    await note_create(rel_pool, chloe_wong["id"], "Birthday is March 15")
 
     # Give Chloe Wong stay-in-touch cadence (weekly = +10).
     # contact_resolve salience reads stay_in_touch_days from public.entities
     # (rel_031) via contact_entity_map, so mirror the cadence onto the entity.
-    await stay_in_touch_set(pool, chloe_wong["id"], 7)
-    await pool.execute(
+    await stay_in_touch_set(rel_pool, chloe_wong["id"], 7)
+    await rel_pool.execute(
         """
         UPDATE public.entities SET stay_in_touch_days = 7
         WHERE id = (SELECT entity_id FROM contact_entity_map WHERE contact_id = $1)
@@ -2668,17 +2239,17 @@ async def test_contact_resolve_salience_scoring(pool):
     )
 
     # Give Chloe Wong group membership (couple = +15)
-    couple_group = await group_create(pool, "The Wongs")
+    couple_group = await group_create(rel_pool, "The Wongs")
     # Set group type
-    await pool.execute("UPDATE groups SET type = 'couple' WHERE id = $1", couple_group["id"])
-    await group_add_member(pool, couple_group["id"], chloe_wong["id"])
+    await rel_pool.execute("UPDATE groups SET type = 'couple' WHERE id = $1", couple_group["id"])
+    await group_add_member(rel_pool, couple_group["id"], chloe_wong["id"])
 
     # Give Chloe Tan minimal salience (no relationship, no interactions, no facts)
     # Just one fact for +1
-    await fact_set(pool, chloe_tan["id"], "workplace", "Meta")
+    await fact_set(rel_pool, chloe_tan["id"], "workplace", "Meta")
 
     # Resolve "Chloe" - should get both candidates
-    result = await contact_resolve(pool, "Chloe")
+    result = await contact_resolve(rel_pool, "Chloe")
 
     # Should find both candidates
     assert len(result["candidates"]) == 2
@@ -2706,15 +2277,15 @@ async def test_contact_resolve_salience_scoring(pool):
     assert wong_candidate["score"] - tan_candidate["score"] >= 100
 
 
-async def test_contact_resolve_salience_zero_history(pool):
+async def test_contact_resolve_salience_zero_history(rel_pool):
     """contact_resolve gives zero salience to contacts with no history."""
     from butlers.tools.relationship import contact_create, contact_resolve
 
     # Create two contacts with same first name, no history
-    await contact_create(pool, "Alex Smith")
-    await contact_create(pool, "Alex Jones")
+    await contact_create(rel_pool, "Alex Smith")
+    await contact_create(rel_pool, "Alex Jones")
 
-    result = await contact_resolve(pool, "Alex")
+    result = await contact_resolve(rel_pool, "Alex")
 
     # Should find both candidates
     assert len(result["candidates"]) == 2
@@ -2725,14 +2296,58 @@ async def test_contact_resolve_salience_zero_history(pool):
         assert candidate["salience"] <= 2
 
 
-async def test_contact_resolve_salience_only_when_multiple_candidates(pool):
+def _relationship_tools():
+    """``butlers.tools.relationship`` is a runtime alias of the roster package.
+
+    Loaded by name so the regression tests below add no new unresolved-import
+    diagnostics to the pyright baseline.
+    """
+    import importlib
+
+    return importlib.import_module("butlers.tools.relationship")
+
+
+async def test_contact_resolve_salience_tolerates_missing_relationships_table(rel_pool):
+    """A deployment without the relationships table still disambiguates (no boost)."""
+    tools = _relationship_tools()
+
+    await tools.contact_create(rel_pool, "Alex Smith")
+    await tools.contact_create(rel_pool, "Alex Jones")
+    await rel_pool.execute("DROP TABLE relationships")
+
+    result = await tools.contact_resolve(rel_pool, "Alex")
+
+    assert len(result["candidates"]) == 2
+    assert all("salience" in candidate for candidate in result["candidates"])
+
+
+async def test_contact_resolve_salience_surfaces_relationships_column_errors(rel_pool):
+    """bu-evkmw6: a relationships column mismatch must fail loudly, not zero the boost.
+
+    The salience query once read columns the real table never had; a blanket
+    ``except asyncpg.PostgresError`` swallowed the error, so the partner boost
+    silently never applied. Only a missing table is tolerated now.
+    """
+    import asyncpg
+
+    tools = _relationship_tools()
+
+    await tools.contact_create(rel_pool, "Alex Smith")
+    await tools.contact_create(rel_pool, "Alex Jones")
+    await rel_pool.execute("ALTER TABLE relationships RENAME COLUMN contact_b TO contact_b_old")
+
+    with pytest.raises(asyncpg.UndefinedColumnError):
+        await tools.contact_resolve(rel_pool, "Alex")
+
+
+async def test_contact_resolve_salience_only_when_multiple_candidates(rel_pool):
     """contact_resolve only computes salience when there are multiple candidates."""
     from butlers.tools.relationship import contact_create, contact_resolve
 
     # Create single contact
-    sarah = await contact_create(pool, "Sarah Connor")
+    sarah = await contact_create(rel_pool, "Sarah Connor")
 
-    result = await contact_resolve(pool, "Sarah")
+    result = await contact_resolve(rel_pool, "Sarah")
 
     # Single match should not have salience field (it's not needed)
     assert result["contact_id"] == sarah["id"]
@@ -2745,37 +2360,37 @@ async def test_contact_resolve_salience_only_when_multiple_candidates(pool):
 # ------------------------------------------------------------------
 
 
-async def test_contact_get_includes_dunbar_fields(pool):
+async def test_contact_get_includes_dunbar_fields(rel_pool):
     """contact_get always returns dunbar_tier, dunbar_score, and dunbar_tier_override fields."""
     from butlers.tools.relationship import contact_create, contact_get
 
-    contact = await contact_create(pool, "Dunbar Test Person")
-    fetched = await contact_get(pool, contact["id"])
+    contact = await contact_create(rel_pool, "Dunbar Test Person")
+    fetched = await contact_get(rel_pool, contact["id"])
 
     assert "dunbar_tier" in fetched, "contact_get must include dunbar_tier"
     assert "dunbar_score" in fetched, "contact_get must include dunbar_score"
     assert "dunbar_tier_override" in fetched, "contact_get must include dunbar_tier_override"
 
 
-async def test_contact_get_no_interactions_defaults_to_tier_1500(pool):
+async def test_contact_get_no_interactions_defaults_to_tier_1500(rel_pool):
     """contact_get returns tier 1500, score 0.0 for contacts with no interactions."""
     from butlers.tools.relationship import contact_create, contact_get
 
-    contact = await contact_create(pool, "No Interactions Person")
-    fetched = await contact_get(pool, contact["id"])
+    contact = await contact_create(rel_pool, "No Interactions Person")
+    fetched = await contact_get(rel_pool, contact["id"])
 
     assert fetched["dunbar_tier"] == 1500
     assert fetched["dunbar_score"] == 0.0
     assert fetched["dunbar_tier_override"] is False
 
 
-async def test_contact_get_with_interactions_shows_nonzero_score(pool):
+async def test_contact_get_with_interactions_shows_nonzero_score(rel_pool):
     """contact_get returns dunbar_score > 0 for a contact with recent interactions."""
     from datetime import UTC, datetime, timedelta
 
     from butlers.tools.relationship import contact_create, contact_get
 
-    contact = await contact_create(pool, "Active Person")
+    contact = await contact_create(rel_pool, "Active Person")
     cid = contact["id"]
     entity_id = contact["entity_id"]
 
@@ -2783,7 +2398,7 @@ async def test_contact_get_with_interactions_shows_nonzero_score(pool):
     # required to pass the reciprocal-engagement gate — incoming-only or
     # directionless facts score 0).
     occurred = datetime.now(UTC) - timedelta(days=3)
-    await pool.execute(
+    await rel_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, entity_id,
                            metadata)
@@ -2795,18 +2410,18 @@ async def test_contact_get_with_interactions_shows_nonzero_score(pool):
         entity_id,
     )
 
-    fetched = await contact_get(pool, cid)
+    fetched = await contact_get(rel_pool, cid)
 
     assert fetched["dunbar_score"] > 0.0, "Contact with recent interactions should have score > 0"
     assert fetched["dunbar_tier"] != 1500, "Contact with interactions should not be tier 1500"
 
 
-async def test_contact_search_includes_dunbar_fields(pool):
+async def test_contact_search_includes_dunbar_fields(rel_pool):
     """contact_search returns dunbar_tier and dunbar_score for each result."""
     from butlers.tools.relationship import contact_create, contact_search
 
-    await contact_create(pool, first_name="Dunbar", last_name="Search Person")
-    results = await contact_search(pool, "Dunbar")
+    await contact_create(rel_pool, first_name="Dunbar", last_name="Search Person")
+    results = await contact_search(rel_pool, "Dunbar")
 
     assert len(results) >= 1
     for result in results:
@@ -2817,12 +2432,12 @@ async def test_contact_search_includes_dunbar_fields(pool):
         )
 
 
-async def test_contact_search_no_interactions_defaults_to_tier_1500(pool):
+async def test_contact_search_no_interactions_defaults_to_tier_1500(rel_pool):
     """contact_search returns tier 1500 / score 0.0 for contacts with no interactions."""
     from butlers.tools.relationship import contact_create, contact_search
 
-    await contact_create(pool, first_name="ZeroScore", last_name="SearchResult")
-    results = await contact_search(pool, "ZeroScore")
+    await contact_create(rel_pool, first_name="ZeroScore", last_name="SearchResult")
+    results = await contact_search(rel_pool, "ZeroScore")
 
     assert len(results) >= 1
     for result in results:
@@ -2908,7 +2523,7 @@ async def test_contacts_overdue_tier_1500_excluded_without_stay_in_touch(pool_wi
 # ------------------------------------------------------------------
 
 
-async def test_interaction_log_group_fanout(pool):
+async def test_interaction_log_group_fanout(rel_pool):
     """interaction_log_group fans out to all 5 members and returns correct counts."""
     from butlers.tools.relationship import (
         contact_create,
@@ -2919,14 +2534,14 @@ async def test_interaction_log_group_fanout(pool):
     )
 
     # Create a group with 5 members
-    grp = await group_create(pool, "Test Group Fanout")
+    grp = await group_create(rel_pool, "Test Group Fanout")
     members = []
     for i in range(5):
-        c = await contact_create(pool, f"GroupFanout-Member-{i}")
-        await group_add_member(pool, grp["id"], c["id"])
+        c = await contact_create(rel_pool, f"GroupFanout-Member-{i}")
+        await group_add_member(rel_pool, grp["id"], c["id"])
         members.append(c)
 
-    result = await interaction_log_group(pool, grp["id"], summary="Team meeting")
+    result = await interaction_log_group(rel_pool, grp["id"], summary="Team meeting")
 
     assert result["logged"] == 5
     assert result["skipped"] == 0
@@ -2934,22 +2549,22 @@ async def test_interaction_log_group_fanout(pool):
 
     # Verify each member got an interaction fact
     for c in members:
-        interactions = await interaction_list(pool, c["id"])
+        interactions = await interaction_list(rel_pool, c["id"])
         assert len(interactions) == 1
         assert interactions[0]["summary"] == "Team meeting"
 
 
-async def test_interaction_log_group_empty(pool):
+async def test_interaction_log_group_empty(rel_pool):
     """interaction_log_group on an empty group returns zeros."""
     from butlers.tools.relationship import group_create, interaction_log_group
 
-    grp = await group_create(pool, "Empty Group")
-    result = await interaction_log_group(pool, grp["id"])
+    grp = await group_create(rel_pool, "Empty Group")
+    result = await interaction_log_group(rel_pool, grp["id"])
 
     assert result == {"logged": 0, "skipped": 0, "group_size": 0, "status": "ok"}
 
 
-async def test_interaction_log_group_too_large(pool):
+async def test_interaction_log_group_too_large(rel_pool):
     """interaction_log_group returns group_too_large error for groups with >20 members."""
     from butlers.tools.relationship import (
         contact_create,
@@ -2958,12 +2573,12 @@ async def test_interaction_log_group_too_large(pool):
         interaction_log_group,
     )
 
-    grp = await group_create(pool, "Large Group")
+    grp = await group_create(rel_pool, "Large Group")
     for i in range(21):
-        c = await contact_create(pool, f"LargeGroup-Member-{i}")
-        await group_add_member(pool, grp["id"], c["id"])
+        c = await contact_create(rel_pool, f"LargeGroup-Member-{i}")
+        await group_add_member(rel_pool, grp["id"], c["id"])
 
-    result = await interaction_log_group(pool, grp["id"])
+    result = await interaction_log_group(rel_pool, grp["id"])
 
     assert result["skipped"] == 0
     assert result["logged"] == 0
@@ -2971,7 +2586,7 @@ async def test_interaction_log_group_too_large(pool):
     assert result["status"] == "group_too_large"
 
 
-async def test_interaction_log_group_group_size_in_metadata(pool):
+async def test_interaction_log_group_group_size_in_metadata(rel_pool):
     """interaction_log_group injects group_size and group_id into fact metadata."""
     from butlers.tools.relationship import (
         contact_create,
@@ -2980,18 +2595,18 @@ async def test_interaction_log_group_group_size_in_metadata(pool):
         interaction_log_group,
     )
 
-    grp = await group_create(pool, "Metadata Group")
+    grp = await group_create(rel_pool, "Metadata Group")
     members = []
     for i in range(3):
-        c = await contact_create(pool, f"MetaGroup-Member-{i}")
-        await group_add_member(pool, grp["id"], c["id"])
+        c = await contact_create(rel_pool, f"MetaGroup-Member-{i}")
+        await group_add_member(rel_pool, grp["id"], c["id"])
         members.append(c)
 
-    await interaction_log_group(pool, grp["id"])
+    await interaction_log_group(rel_pool, grp["id"])
 
     # Check metadata on the fact stored for the first member
     entity_id = members[0]["entity_id"]
-    row = await pool.fetchrow(
+    row = await rel_pool.fetchrow(
         """
         SELECT metadata FROM facts
         WHERE subject = $1
@@ -3015,7 +2630,7 @@ async def test_interaction_log_group_group_size_in_metadata(pool):
     assert extra.get("group_id") == str(grp["id"])
 
 
-async def test_interaction_log_group_default_direction(pool):
+async def test_interaction_log_group_default_direction(rel_pool):
     """interaction_log_group defaults direction to 'mutual'."""
     from butlers.tools.relationship import (
         contact_create,
@@ -3025,18 +2640,18 @@ async def test_interaction_log_group_default_direction(pool):
         interaction_log_group,
     )
 
-    grp = await group_create(pool, "Default Direction Group")
-    c = await contact_create(pool, "DefaultDir-Member")
-    await group_add_member(pool, grp["id"], c["id"])
+    grp = await group_create(rel_pool, "Default Direction Group")
+    c = await contact_create(rel_pool, "DefaultDir-Member")
+    await group_add_member(rel_pool, grp["id"], c["id"])
 
-    await interaction_log_group(pool, grp["id"])
+    await interaction_log_group(rel_pool, grp["id"])
 
-    interactions = await interaction_list(pool, c["id"])
+    interactions = await interaction_list(rel_pool, c["id"])
     assert len(interactions) == 1
     assert interactions[0]["direction"] == "mutual"
 
 
-async def test_interaction_log_group_custom_direction(pool):
+async def test_interaction_log_group_custom_direction(rel_pool):
     """interaction_log_group respects an explicit direction argument."""
     from butlers.tools.relationship import (
         contact_create,
@@ -3046,18 +2661,18 @@ async def test_interaction_log_group_custom_direction(pool):
         interaction_log_group,
     )
 
-    grp = await group_create(pool, "Custom Direction Group")
-    c = await contact_create(pool, "CustomDir-Member")
-    await group_add_member(pool, grp["id"], c["id"])
+    grp = await group_create(rel_pool, "Custom Direction Group")
+    c = await contact_create(rel_pool, "CustomDir-Member")
+    await group_add_member(rel_pool, grp["id"], c["id"])
 
-    await interaction_log_group(pool, grp["id"], direction="outgoing")
+    await interaction_log_group(rel_pool, grp["id"], direction="outgoing")
 
-    interactions = await interaction_list(pool, c["id"])
+    interactions = await interaction_list(rel_pool, c["id"])
     assert len(interactions) == 1
     assert interactions[0]["direction"] == "outgoing"
 
 
-async def test_interaction_log_group_invalid_direction(pool):
+async def test_interaction_log_group_invalid_direction(rel_pool):
     """interaction_log_group raises ValueError for an invalid direction."""
     from butlers.tools.relationship import (
         contact_create,
@@ -3066,9 +2681,9 @@ async def test_interaction_log_group_invalid_direction(pool):
         interaction_log_group,
     )
 
-    grp = await group_create(pool, "Bad Direction Group")
-    c = await contact_create(pool, "BadDir-Member")
-    await group_add_member(pool, grp["id"], c["id"])
+    grp = await group_create(rel_pool, "Bad Direction Group")
+    c = await contact_create(rel_pool, "BadDir-Member")
+    await group_add_member(rel_pool, grp["id"], c["id"])
 
     with pytest.raises(ValueError, match="Invalid direction"):
-        await interaction_log_group(pool, grp["id"], direction="sideways")
+        await interaction_log_group(rel_pool, grp["id"], direction="sideways")

@@ -11,8 +11,8 @@ successor.  The canonical `core-credentials` specification names durable
 cross-process rotation provenance as this follow-up.
 
 That boundary is correct for a living process, but it cannot prove the lineage
-of a local rotation after a restart or coordinate two daemons that share the
-same Codex runtime volume.  The current local-file cache uses file metadata and
+of a local rotation after a restart or coordinate concurrent operations that
+previously shared the same Codex runtime volume.  The current local-file cache uses file metadata and
 an in-memory content digest to recognize a process-local baseline.  Neither a
 cache, a local file, a process ID, a timestamp, nor a content-derived value is
 durable authority.  A fresh process must not turn any of them into one.
@@ -21,11 +21,11 @@ The affected topology is intentionally narrow:
 
 | Concern | Existing owner | Required boundary after this change |
 | --- | --- | --- |
-| Canonical credential value | `public.butler_secrets`, selected system-global pool | The existing Tier 1 row remains the only raw-value store. |
+| Canonical credential value | Control-plane `CredentialStore`, selected system-global pool | The existing Tier 1 row remains the only authoritative raw-value store. |
 | Authority lineage and current identity | Core credential infrastructure in `public` | Opaque DB-issued generation, never credential-derived. |
-| Runtime and prewarm subprocesses | `CodexAdapter` / Spawner / direct dispatcher | One durable operation bound to one exact generation before child launch. |
-| Dashboard owner replacement, revoke, and device auth | Dashboard API and CLI-auth persistence | Same serialized authority mutation boundary as runtime successors. |
-| Local runtime files and sandbox stages | Runtime/deployment volume | Projections or disposable child state only; never an authority source. |
+| Runtime and prewarm subprocesses | Control-plane goal runner and session-host adapter | One durable operation bound to one exact generation before authenticated dispatch and child launch. |
+| Dashboard owner replacement, revoke, and device auth | Control-plane service listener and CLI-auth transport to session host | Same serialized authority mutation boundary as runtime successors; no dashboard-to-session-host inbound port. |
+| Local runtime files and sandbox stages | Session-host credential volume | Projections or disposable child state only; never an authority source or domain-daemon mount. |
 | API and dashboard evidence | Secrets and CLI-auth routes | Preserve the existing owner-only rotate raw-value-once response and display fingerprint; add no provenance identifier or new credential exposure. |
 
 The design must preserve the doctrine that daemon control is deterministic and
@@ -81,6 +81,42 @@ credential store, or a public capability.
   makes the reserved Codex path narrower than a Python convention.
 
 ## Decisions
+
+### D0 — Apply adopted RFC 0038 D3 without changing generation authority
+
+The control-plane goal runner alone resolves goal-launch model credentials
+through the selected system-global credential store and stages them over the
+existing authenticated control channel. Runtime OAuth volumes, Codex auth
+synchronization, login/status children, and private stages belong on the
+session host, separate from `butlers-up` and `butlers-control`. Dashboard CLI
+login and compatibility projection reach that volume through the control
+plane's service listener; the session host exposes no inbound dashboard port.
+Domain daemons receive neither provider credentials nor the runtime OAuth
+volume. The session host receives no database, domain, or connector credentials
+and never reads the credential store or database. D18 model functions retain
+only their existing narrow deterministic-caller provider credentials; this
+packet adds no exception for domain goal execution.
+
+The trusted control-plane caller owns prepare/mark/complete/abandon and its
+redacted internal lease. The session-host launcher prepares the exact private
+stage over the authenticated control channel before the control plane performs
+the conditional launch mark. Only that successful mark permits that prepared
+child to start. Validated results return through the same trusted operation
+path after complete descendant-domain death; an operation identifier is not
+an authorization presented by a child or a new bearer transport capability.
+Loss of the listener, channel, authority, containment proof, or deadline fails
+closed; a domain-local credential, session-host file, or resumed orphan cannot
+replace any of them. No new public endpoint or browser provenance is added.
+
+Goal adapters drop permission-bypass flags and prove runtime/model-specific
+deny-all built-in and provider-hosted tools plus strict broker-only MCP.
+Session-host egress remains limited to the control-plane session listener and
+configured providers (the existing Compose proxy or Kubernetes policy), not
+the service listener or database. The service listener is the dashboard/control
+entry, never a new route for a model child. The separate engineering executor's
+permission-bypass policy does not apply to goal invocations. All existing outer
+kernel isolation, opaque generation, revocation and child-death fences below
+remain mandatory; kernel isolation does not excuse an inner-tool bypass.
 
 ### D1 — Use random opaque generation IDs, not values or monotonic process facts
 
@@ -159,8 +195,8 @@ invokes it. The installer creates the protected relations and fixed-search-path
 `SECURITY DEFINER` mutation surface; the finalizer assigns them to a NOLOGIN,
 non-member `codex_auth_provenance_owner`, revokes `EXECUTE` from `PUBLIC`, and
 grants only the role paths required by the dashboard shared-authority service
-and designated Codex runtime callers. It also revokes installer/finalizer
-access, owner membership, protected-schema `CREATE`, and direct relation DML
+and the designated control-plane Codex authority caller. It also revokes
+installer/finalizer access, owner membership, protected-schema `CREATE`, and direct relation DML
 from the migration login.
 
 Because `scripts/init-db.sql` historically grants broad DML on existing
@@ -179,9 +215,9 @@ A row trigger rejects or marks as unprovable direct mutations of the reserved
 row that do not pass through that surface. It must use an
 unforgeable-in-the-application transaction context established by the definer,
 not a caller-controlled SQL setting. Runtime roles receive no direct write
-grant to the state, generation, or operation tables. A runtime role permitted
-to prepare normal operations is explicitly denied the separate device-auth
-bootstrap function. The test suite must prove these effective-role boundaries
+grant to the state, generation, or operation tables. A designated control-plane
+role permitted to prepare normal operations is explicitly denied the separate
+device-auth bootstrap function. The test suite must prove these effective-role boundaries
 and upgraded-database bootstrap ordering with a real PostgreSQL connection; a
 mock or migration-owner connection is not evidence.
 
@@ -291,8 +327,10 @@ derives `bootstrap_absent` from the locked never-initialized state and accepts
 no caller-supplied proof. A role granted normal runtime/prewarm preparation
 cannot execute the bootstrap definer even if it calls SQL directly.
 `read_current_codex_auth_projection_binding` is a read-only validated snapshot
-for startup compatibility projection; it creates no operation and authorizes
-no child or completion.
+for control-plane startup compatibility projection onto the session-host
+volume; it creates no operation and authorizes no child or completion. These
+repository methods and their raw transient documents stay in the control
+plane, not in domain daemons or the session-host database client.
 
 `authority_document` and a validated successor are transient parameters to the
 existing raw credential-store boundary.  They are `repr=False`, never logged,
@@ -385,11 +423,12 @@ opaque pointer decide authority.
 
 ### D5 — Make the local auth file a projection and each child stage private
 
-The runtime volume's `~/.codex/auth.json` is a convenience projection, not an
-authority.  A fence-aware process must never flush an observed local rotation
-before launch, use the `_AUTH_SYNC_CACHE` content digest as lineage, or infer
-a successor from a local document on startup.  It obtains the current raw
-document only through `prepare_codex_auth_operation`.
+The session-host credential volume's `~/.codex/auth.json` is a convenience
+projection, not an authority or a domain-daemon credential mount. A fence-aware
+process must never flush an observed local rotation before launch, use the `_AUTH_SYNC_CACHE` content digest as lineage, or infer
+a successor from a local document on startup. The control-plane caller obtains
+the launch document only through `prepare_codex_auth_operation` and stages it
+to the session host over the authenticated control channel.
 
 Every runtime invocation, prewarm, device-auth flow, and dashboard health probe
 gets an operation-specific staged `HOME` containing a private copy of that
@@ -398,17 +437,22 @@ leases a unique outer UID/GID and runs in its own Bubblewrap user, mount, PID,
 IPC, and UTS namespaces with only its own stage bound as HOME. The parent stage
 root is not mounted. Mode `0600`, distinct paths, process groups, and
 `no_new_privs` are defense in depth and do not substitute for the namespace and
-identity boundary. The Codex CLI's
-`--dangerously-bypass-approvals-and-sandbox` disables only its inner policy
-sandbox; it cannot escape the parent-created kernel boundary. Runtime children
-do not write the shared canonical file and do not share a mutable stage. After
+identity boundary. Goal invocation and prewarm adapters do not pass
+`--dangerously-bypass-approvals-and-sandbox`: they require deny-all runtime
+built-in and provider-hosted tools and a strict broker-only MCP configuration.
+The engineering executor's separate flag policy grants no goal permission.
+Runtime children do not link to or write the shared canonical file and do not
+share a mutable stage. After
 the sandbox/process tree has been
 fully terminated, only the stage belonging to that operation is eligible for
 strict parsing and conditional completion.  A stale or malicious local shared
 file cannot be misattributed to an operation.
 
-Dashboard device auth uses an explicit two-phase launch seam spanning
-`cli_auth/persistence.py`, `CLIAuthSession`, the
+Dashboard device auth is transported through the control plane's service
+listener to the session-host credential volume, never launched in a domain
+daemon or via an inbound session-host dashboard port. Its explicit two-phase
+launch seam spans the control-plane persistence/session caller and session-host
+sandbox implementations of `cli_auth/persistence.py`, `CLIAuthSession`, the
 `DashboardCLIAuthSandbox` protocol, and
 `BubblewrapDashboardCLIAuthSandbox`. Persistence preparation returns one
 redacted context containing the durable lease and its normal authority seed or
@@ -423,9 +467,11 @@ all invoke guarded abandonment with the matching closed reason, subject to the
 post-launch child-death proof, and remove that stage. No stage or lease may be
 reused by another session or child.
 
-The old canonical file may remain as a DB-originated compatibility projection
-for components that cannot yet consume a private stage.  Its write path holds
-the cross-process file lock and writes atomically with mode `0600`.  A missing
+A canonical file may remain only on the session-host credential volume as a
+DB-originated compatibility projection delivered by the control plane for
+components that cannot yet consume a private stage. Domain-daemon copies or
+shared canonical symlinks into a goal HOME are not compatibility paths. Its
+write path holds the cross-process file lock and writes atomically with mode `0600`.  A missing
 or contended lock is no longer permission to proceed unlocked: a component
 that requires that projection fails the associated operation before child
 launch.  A fenced runtime child does not need to read or mutate that projection
@@ -481,10 +527,13 @@ the documented envelope or leak the new internal state through it.
 
 ### D7 — Restart, malformed evidence, and ambiguity fail closed
 
-At daemon or dashboard startup, fence-aware restore reads the complete current
-binding from the selected system-global pool.  It may construct a local
-projection/stage only after that binding validates.  It never completes an
-operation from a file left by a crashed parent and never treats an old process's
+At startup, deterministic domain-daemon wiring delegates runtime restoration
+to the control plane without resolving or mounting provider credentials. The
+control-plane restore reads the complete current binding from the selected
+system-global pool and may construct a projection/stage on the session-host
+credential volume through its authenticated channel only after validation.
+The dashboard uses the control-plane service listener, not direct host access.
+Restore never completes an operation from a file left by a crashed parent and never treats an old process's
 PID, a stage directory, file timestamp, or a matching-looking document as an
 operation receipt.
 
@@ -570,9 +619,11 @@ The implementation has five ordered additive stages:
    can adopt that valid row once as `legacy_adoption`.  A malformed row remains
    unavailable.  After any generation has existed, a null/mismatched binding
    is unprovable rather than eligible for automatic adoption.
-4. **All producer cutover.**  Route dashboard replacement/revoke, device auth,
-   runtime invocation/prewarm, health probe, startup restore, model verify,
-   direct dispatcher, and connector restoration through the new typed methods.
+4. **All producer cutover.** Route dashboard replacement/revoke, device auth,
+   goal invocation/prewarm, health probe, startup restore, model verify,
+   former direct dispatcher, and connector restoration through the control-plane
+   typed authority methods and session-host staging/transport in D0. Domain
+   lifecycle callers delegate and never regain provider credentials.
    Add a source-level completeness test so no Codex call site retains generic
    raw-value CAS or local-file successor flush.
 5. **Activation verification.**  Enable normal launches only after every
@@ -659,12 +710,14 @@ state that dashboard fingerprints remain display-only and non-persistent.
 3. Implement the typed `CredentialStore` repository and replace Codex-only
    generic load/store/CAS/health calls.  Keep non-Codex `CredentialStore`
    behavior unchanged.
-4. Convert staged device auth, runtime invocation, prewarm, health, connector
-   restoration, model verification, and direct dispatcher paths to
-   prepare/launch/complete. Convert startup restoration to the separate
-   read-only complete-current-binding projection path so it does not create an
-   operation it will never launch. Remove the local-file successor cache/flush
-   route in the same commit.
+4. Retarget staged device auth, goal invocation, prewarm, health, connector
+   restoration, model verification, and former direct dispatcher callers to
+   control-plane prepare/launch/complete with session-host execution. Transport
+   login and OAuth synchronization through the control-plane service listener.
+   Convert startup restoration to the separate control-plane read-only
+   complete-current-binding projection on the session-host volume, creating no
+   operation it will never launch and no domain-local provider credential. Remove
+   the local-file successor cache/flush route in the same commit.
 5. Update specs and operator/developer docs, then run focused unit, real
    PostgreSQL migration/ACL/concurrency, adapter, API, lifecycle, and
    source-completeness tests before broader repository gates.
@@ -674,7 +727,9 @@ state that dashboard fingerprints remain display-only and non-persistent.
 
 ## Open Questions
 
-None.  The approved Option-A shape supplies the material authority choice:
+None. Adopted RFC 0038 D3 supplies the goal-runtime placement and deny-all
+adapter policy; this spec-only conformance introduces no new owner decision.
+The approved Option-A shape supplies the material authority choice:
 opaque DB-issued generation with exact-operation fencing.  The remaining
 constants are already owned by existing operation boundaries (runtime effective
 deadline, bounded prewarm/health deadline, and provider device-auth timeout),
@@ -689,7 +744,9 @@ This packet follows the merged implementation change
 delta owns the initial `MODIFIED` replacement of `core-credentials` requirement
 `Live Codex Device-Auth Reconciliation`. Before implementing this packet, land
 and sync/archive that predecessor (or otherwise establish its exact canonical
-wording), rebase, and validate composition. This packet supplies a full
-`MODIFIED` replacement of the separate canonical `core-spawner` requirement
+wording) and validate composition. This is a future runtime-implementation
+composition obligation, not a prerequisite to this spec-only D3 conformance;
+the predecessor's later rollout/deployment tasks are not claimed complete.
+This packet supplies a full `MODIFIED` replacement of the separate canonical `core-spawner` requirement
 `Pre-Launch and Prewarm Codex Auth Synchronization`; it does not create a
 parallel additive stage requirement or retain the old local-fallback scenarios.

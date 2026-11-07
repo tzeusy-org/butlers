@@ -15,7 +15,7 @@ tests/contracts/test_chronicler_no_llm.py.)
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -27,6 +27,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -45,30 +47,13 @@ _T_WITHIN_24H = datetime.now(UTC) - timedelta(hours=2)  # live: always within ra
 _T_OUTSIDE_24H = datetime.now(UTC) - timedelta(hours=25)  # live: always outside rate-limit window
 
 
-class _Row(dict):
-    """dict subclass that mimics asyncpg Record."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return super().get(key, default)
-
-
-def _row(data: dict) -> _Row:
-    return _Row(data)
-
-
 def _make_episode_row(
     *,
     privacy: str = "normal",
     canonical_privacy: str = "normal",
-) -> _Row:
+) -> Record:
     _now = datetime.now(UTC)
-    return _row(
+    return Record(
         {
             "id": _EPISODE_ID,
             "source_name": "work",
@@ -138,10 +123,7 @@ def _load_chronicler_router():
     module_name = "chronicler_api_router"
     if module_name in sys.modules:
         return sys.modules[module_name]
-    spec = importlib.util.spec_from_file_location(module_name, _ROUTER_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = mod
-    spec.loader.exec_module(mod)
+    mod = importlib.import_module("butlers.api._roster.chronicler.router")
     return mod
 
 
@@ -152,10 +134,10 @@ def _load_chronicler_router():
 
 def _make_app_no_dispatch(pool: AsyncMock) -> Any:
     """App with no dispatch function wired (returns 503 for explain)."""
-    chronicler_mod = _load_chronicler_router()
+    _chronicler_mod = _load_chronicler_router()
     db = _mock_db(pool)
     app = create_app(api_key="")
-    app.dependency_overrides[chronicler_mod._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     # _get_day_close_dispatch_fn left as-is → returns None
     return app
 
@@ -165,7 +147,7 @@ def _make_app_with_dispatch(pool: AsyncMock, dispatch_fn: Any) -> Any:
     chronicler_mod = _load_chronicler_router()
     db = _mock_db(pool)
     app = create_app(api_key="")
-    app.dependency_overrides[chronicler_mod._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[chronicler_mod._get_day_close_dispatch_fn] = lambda: dispatch_fn
     return app
 
@@ -193,7 +175,7 @@ class TestEpisodeExplainHappyPath:
             fetchrow_side_effect=[
                 _make_episode_row(),  # episode lookup
                 None,  # rate-limit check: no existing cache row
-                _row({"cache_built_at": fresh_built_at}),  # final row fetch after write
+                Record({"cache_built_at": fresh_built_at}),  # final row fetch after write
             ],
             fetch_returns=[],  # no linked events, no corrections
         )
@@ -221,7 +203,7 @@ class TestEpisodeExplainHappyPath:
             fetchrow_side_effect=[
                 _make_episode_row(),
                 None,  # no existing rate-limit row
-                _row({"cache_built_at": fresh_built_at}),
+                Record({"cache_built_at": fresh_built_at}),
             ],
             fetch_returns=[],
         )
@@ -250,7 +232,7 @@ class TestEpisodeExplainHappyPath:
             fetchrow_side_effect=[
                 _make_episode_row(),
                 None,
-                _row({"cache_built_at": fresh_built_at}),
+                Record({"cache_built_at": fresh_built_at}),
             ],
             fetch_returns=[],
         )
@@ -284,7 +266,7 @@ class TestEpisodeExplainRateLimit:
         pool = _mock_pool(
             fetchrow_side_effect=[
                 _make_episode_row(),  # episode lookup
-                _row({"cache_built_at": _T_WITHIN_24H}),  # existing recent cache row
+                Record({"cache_built_at": _T_WITHIN_24H}),  # existing recent cache row
             ]
         )
         app = _make_app_no_dispatch(pool)
@@ -308,7 +290,7 @@ class TestEpisodeExplainRateLimit:
         pool = _mock_pool(
             fetchrow_side_effect=[
                 _make_episode_row(),  # episode lookup
-                _row({"cache_built_at": _T_OUTSIDE_24H}),  # old cache row
+                Record({"cache_built_at": _T_OUTSIDE_24H}),  # old cache row
             ]
         )
         app = _make_app_no_dispatch(pool)

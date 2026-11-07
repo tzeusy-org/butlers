@@ -18,8 +18,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.api.deps import get_db
 from butlers.tools.relationship.meeting_debrief import meeting_debrief_pending
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -30,28 +29,12 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory", "relationship"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=1,
-        init=register_jsonb_codec,
-        server_settings={"search_path": "relationship, public"},
-    )
+async def debrief_pool(db) -> asyncpg.Pool:
+    p = await db("core", "memory", "relationship", schema="relationship", max_size=1)
     for table in ("public.entities", "relationship.meeting_debriefs"):
         await p.execute(f"TRUNCATE TABLE {table} CASCADE")  # noqa: S608
-    yield p
-    await p.close()
+    return p
 
 
 async def _entity(pool: asyncpg.Pool, name: str, posture: str) -> uuid.UUID:
@@ -87,19 +70,21 @@ async def _debrief(
     )
 
 
-async def test_endpoint_matches_the_tool_including_posture_filtering(pool: asyncpg.Pool) -> None:
-    active = await _entity(pool, "Sam Example", "active")
-    quiet = await _entity(pool, "Quiet Example", "quiet")
+async def test_endpoint_matches_the_tool_including_posture_filtering(
+    debrief_pool: asyncpg.Pool,
+) -> None:
+    active = await _entity(debrief_pool, "Sam Example", "active")
+    quiet = await _entity(debrief_pool, "Quiet Example", "quiet")
     now = datetime.now(UTC)
     await _debrief(
-        pool,
+        debrief_pool,
         "Older sync",
         [{"entity_id": str(active), "name": "Sam Example", "email": "sam@example.test"}],
         prompted_at=now - timedelta(days=1),
         position=1,
     )
     await _debrief(
-        pool,
+        debrief_pool,
         "Newer sync",
         [
             {"entity_id": str(active), "name": "Sam Example", "email": "sam@example.test"},
@@ -110,21 +95,21 @@ async def test_endpoint_matches_the_tool_including_posture_filtering(pool: async
         position=1,
     )
     await _debrief(
-        pool,
+        debrief_pool,
         "Only quiet",
         [{"entity_id": str(quiet), "name": "Quiet Example", "email": "d@example.test"}],
         prompted_at=now - timedelta(hours=1),
         position=2,
     )
 
-    expected = await meeting_debrief_pending(pool)
+    expected = await meeting_debrief_pending(debrief_pool)
 
     db = MagicMock(spec=DatabaseManager)
-    db.pool.return_value = pool
+    db.pool.return_value = debrief_pool
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: db
             break
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

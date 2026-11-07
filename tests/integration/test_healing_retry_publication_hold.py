@@ -1,8 +1,7 @@
-"""Real-Postgres contract: the admin retry never reopens a held publication lineage (bu-gv2x2t).
+"""Retired Retry has no effects; actual QA admission retains publication holds.
 
-POST /api/healing/attempts/{id}/retry skips the cooldown gate, so it must honour the
-publication hold itself: while an operation for the fingerprint is ``egress_started`` or
-``ambiguous`` it refuses, inserts no attempt and dispatches no agent.
+Real migrated PostgreSQL independently reads original rows and authoritative
+create_or_join_attempt outcomes across held/pre-egress/reconciled lineage.
 """
 
 from __future__ import annotations
@@ -16,8 +15,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_mcp_manager
-from butlers.api.routers.healing import _get_db_manager, _get_dispatch_fn
+from butlers.api.deps import get_db, get_mcp_manager
+from butlers.core.healing.tracking import PublicationLineageHeld, create_or_join_attempt
 from butlers.core.qa.publication.binding import OperationKind, PublicationBinding, request_digest
 from butlers.core.qa.publication.state import (
     begin_operation,
@@ -25,7 +24,6 @@ from butlers.core.qa.publication.state import (
     record_outcome,
     record_reconciliation,
 )
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = [
@@ -39,9 +37,10 @@ _PAYLOAD = request_digest({"title": "Fix", "labels": ["qa"]})
 _PR = "pr-7"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+@pytest.fixture
+def core_url(fresh_db) -> str:
+    """One clone shared by the API pool and the QA-role pool of a test."""
+    return fresh_db("core")
 
 
 async def _set_qa_role(connection: asyncpg.Connection) -> None:
@@ -49,8 +48,8 @@ async def _set_qa_role(connection: asyncpg.Connection) -> None:
 
 
 @pytest.fixture
-async def api_pool(migrated_db_url: str):
-    pool = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=4)
+async def api_pool(core_url: str):
+    pool = await asyncpg.create_pool(core_url, min_size=1, max_size=4)
     try:
         yield pool
     finally:
@@ -58,8 +57,8 @@ async def api_pool(migrated_db_url: str):
 
 
 @pytest.fixture
-async def qa_pool(migrated_db_url: str):
-    pool = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=4, setup=_set_qa_role)
+async def qa_pool(core_url: str):
+    pool = await asyncpg.create_pool(core_url, min_size=1, max_size=4, setup=_set_qa_role)
     try:
         yield pool
     finally:
@@ -92,9 +91,8 @@ class _Client:
         db = MagicMock(spec=DatabaseManager)
         db.credential_shared_pool.return_value = pool
         self.app = create_app()
-        self.app.dependency_overrides[_get_db_manager] = lambda: db
+        self.app.dependency_overrides[get_db] = lambda: db
         self.app.dependency_overrides[get_mcp_manager] = lambda: self.mcp
-        self.app.dependency_overrides[_get_dispatch_fn] = lambda: self.dispatch
 
     async def retry(self, attempt_id: uuid.UUID) -> httpx.Response:
         async with httpx.AsyncClient(
@@ -126,36 +124,76 @@ async def _bound_operation(qa_pool, attempt_id: uuid.UUID):
     )
 
 
+async def _egress_started_on_active_attempt(api_pool, qa_pool, attempt_id: uuid.UUID):
+    """Start egress while the attempt is active, then close it as ``failed``.
+
+    Egress may only start for an active attempt (``attempt_not_active``); the
+    hold under test is the one that outlives the attempt reaching terminal.
+    """
+    await api_pool.execute(
+        "UPDATE public.healing_attempts SET status = 'investigating', closed_at = NULL "
+        "WHERE id = $1",
+        attempt_id,
+    )
+    operation = await _bound_operation(qa_pool, attempt_id)
+    assert await mark_egress_started(qa_pool, operation.id)
+    await api_pool.execute(
+        "UPDATE public.healing_attempts SET status = 'failed', closed_at = now() WHERE id = $1",
+        attempt_id,
+    )
+    return operation
+
+
 @pytest.mark.parametrize("stage", ["egress_started", "ambiguous"])
 async def test_retry_of_a_held_fingerprint_is_refused_with_no_insert_or_dispatch(
     api_pool, qa_pool, failed_attempt, stage: str
 ) -> None:
     attempt_id, fingerprint = failed_attempt
-    operation = await _bound_operation(qa_pool, attempt_id)
-    assert await mark_egress_started(qa_pool, operation.id)
+    operation = await _egress_started_on_active_attempt(api_pool, qa_pool, attempt_id)
     if stage == "ambiguous":
         assert await record_outcome(qa_pool, operation.id, "ambiguous")
     client = _Client(api_pool)
 
     response = await client.retry(attempt_id)
 
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "publication_lineage_held"
+    assert response.status_code == 404
+    with pytest.raises(PublicationLineageHeld):
+        await create_or_join_attempt(
+            qa_pool,
+            fingerprint,
+            "general",
+            2,
+            "E",
+            "x:y",
+            uuid.uuid4(),
+            enforce_publication_hold=True,
+        )
     assert await _attempt_count(api_pool, fingerprint) == 1
     client.dispatch.assert_not_awaited()
     client.mcp.get_client.assert_not_awaited()
 
 
-async def test_retry_without_a_hold_proceeds_as_before(api_pool, failed_attempt) -> None:
+async def test_retry_without_a_hold_proceeds_as_before(api_pool, qa_pool, failed_attempt) -> None:
     attempt_id, fingerprint = failed_attempt
     client = _Client(api_pool)
 
     response = await client.retry(attempt_id)
 
-    assert response.status_code == 201
-    assert response.json()["dispatched"] is True
+    assert response.status_code == 404
+    assert await _attempt_count(api_pool, fingerprint) == 1
+    _, created = await create_or_join_attempt(
+        qa_pool,
+        fingerprint,
+        "general",
+        2,
+        "E",
+        "x:y",
+        uuid.uuid4(),
+        enforce_publication_hold=True,
+    )
+    assert created is True
     assert await _attempt_count(api_pool, fingerprint) == 2
-    client.dispatch.assert_awaited_once()
+    client.dispatch.assert_not_awaited()
 
 
 async def test_a_bound_operation_that_never_started_egress_does_not_hold(
@@ -167,7 +205,19 @@ async def test_a_bound_operation_that_never_started_egress_does_not_hold(
 
     response = await client.retry(attempt_id)
 
-    assert response.status_code == 201
+    assert response.status_code == 404
+    assert await _attempt_count(api_pool, fingerprint) == 1
+    _, created = await create_or_join_attempt(
+        qa_pool,
+        fingerprint,
+        "general",
+        2,
+        "E",
+        "x:y",
+        uuid.uuid4(),
+        enforce_publication_hold=True,
+    )
+    assert created is True
     assert await _attempt_count(api_pool, fingerprint) == 2
 
 
@@ -175,16 +225,37 @@ async def test_retry_proceeds_once_the_hold_is_reconciled(
     api_pool, qa_pool, failed_attempt
 ) -> None:
     attempt_id, fingerprint = failed_attempt
-    operation = await _bound_operation(qa_pool, attempt_id)
-    assert await mark_egress_started(qa_pool, operation.id)
+    operation = await _egress_started_on_active_attempt(api_pool, qa_pool, attempt_id)
     client = _Client(api_pool)
-    assert (await client.retry(attempt_id)).status_code == 409
+    assert (await client.retry(attempt_id)).status_code == 404
+    with pytest.raises(PublicationLineageHeld):
+        await create_or_join_attempt(
+            qa_pool,
+            fingerprint,
+            "general",
+            2,
+            "E",
+            "x:y",
+            uuid.uuid4(),
+            enforce_publication_hold=True,
+        )
 
     assert await record_reconciliation(
         qa_pool, operation.id, "resource_found", observed_object_id=_PR
     )
     response = await client.retry(attempt_id)
 
-    assert response.status_code == 201
+    assert response.status_code == 404
+    _, created = await create_or_join_attempt(
+        qa_pool,
+        fingerprint,
+        "general",
+        2,
+        "E",
+        "x:y",
+        uuid.uuid4(),
+        enforce_publication_hold=True,
+    )
+    assert created is True
     assert await _attempt_count(api_pool, fingerprint) == 2
-    client.dispatch.assert_awaited_once()
+    client.dispatch.assert_not_awaited()

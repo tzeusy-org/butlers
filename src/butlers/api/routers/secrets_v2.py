@@ -205,36 +205,37 @@ from uuid import UUID
 
 import httpx
 from asyncpg.exceptions import InvalidSchemaNameError, PostgresError, UndefinedTableError
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from butlers._sql_utils import escape_like_pattern
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
+from butlers.api.deps import Db
 from butlers.api.models import ApiMeta, ApiResponse
-from butlers.api.models.audit import (
-    PROBE_FAILURE_VOCABULARY as PROBE_FAILURE_VOCABULARY,  # re-export; see below
-)
-from butlers.api.models.audit import clamp_failure_category
 from butlers.api.models.cli_auth import CLIAuthSessionState
 from butlers.api.routers import audit as audit_router
 from butlers.cli_auth.registry import PROVIDERS
 from butlers.cli_auth.session import CLIAuthSession, store_session
+from butlers.core.audit import (
+    PROBE_FAILURE_VOCABULARY as PROBE_FAILURE_VOCABULARY,  # re-export; see below
+)
+from butlers.core.audit import clamp_failure_category
 from butlers.core.credential_keys import normalize_credential_key
 from butlers.core.runtime_probe_control.keys import RESERVED_SIGNING_KEY_SECRET_NAME
 from butlers.credential_store import CredentialStore
-from butlers.google_credentials import KEY_CLIENT_ID, KEY_CLIENT_SECRET
+from butlers.google_credentials import (
+    KEY_CLIENT_ID,
+    KEY_CLIENT_SECRET,
+    GoogleTokenPayloadError,
+    mint_access_token,
+)
 from butlers.secrets_provider_catalog import PROVIDER_CATALOG, ProviderMetadata
 from butlers.spotify_credentials import SPOTIFY_MANAGED_ENTITY_INFO_TYPES
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/secrets", tags=["secrets"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -1983,9 +1984,15 @@ _SYSTEM_KEY_USED_BY: dict[str, tuple[str, ...]] = {
     "BUTLER_TELEGRAM_TOKEN": ("telegram",),
     "APPROVAL_CALLBACK_SECRET": ("approvals", "telegram"),
     "APPROVAL_CALLBACK_CONNECTOR_TOKEN": ("approvals", "telegram"),
+    # Owner-audio authorship HMAC key (bu-dhloi1.20) — resolved once at Telegram connector
+    # startup; absent means voice transcripts carry no owner authorship at goal admission.
+    "AUDIO_AUTHORSHIP_KEY": ("telegram",),
     # Finance payment-destination fingerprint key (bu-s11n0s.21) — HMAC key resolved
     # once at FinanceModule startup; absent means bill destinations read as unverifiable.
     "FINANCE_PAYMENT_DESTINATION_KEY": ("finance",),
+    # Owner-outbound dedup HMAC key (bu-szrvwu) — resolved once at user-client
+    # connector startup; absent means no owner-outbound point events are recorded.
+    "OWNER_OUTBOUND_DEDUP_KEY": ("telegram_user_client", "whatsapp_user_client"),
     # S3-compatible blob storage — core infra wired at butler startup
     # (lifecycle.py, api/routers/blob_storage.py), not a single opt-in module.
     "BLOB_S3_ENDPOINT_URL": ("blob_storage",),
@@ -2334,14 +2341,14 @@ async def _fetch_user_secrets(
 
     google_entity_ids = [
         str(row["entity_id"])
-        for row, provider in zip(rows, providers_by_row)
+        for row, provider in zip(rows, providers_by_row, strict=True)
         if provider == "google"
     ]
     google_scopes_map = await _fetch_google_granted_scopes(pool, google_entity_ids)
     google_expiry_map = await _fetch_google_test_mode_expiry(pool, google_entity_ids)
 
     results: list[UserSecret] = []
-    for row, provider in zip(rows, providers_by_row):
+    for row, provider in zip(rows, providers_by_row, strict=True):
         value: str | None = row["value"]
         last_test_ok: bool | None = row["last_test_ok"]
         entity_id = str(row["entity_id"])
@@ -2472,6 +2479,41 @@ async def _fetch_cli_secrets(
         )
 
     return results
+
+
+def _store_only_cli_placeholders() -> dict[str, str]:
+    """Return ``{credential key: display name}`` for store-only CLI providers.
+
+    An ``api_key`` provider without a ``token_path`` keeps its credential only
+    in ``butler_secrets`` (e.g. ``cli-auth/claude``), so a missing row is the
+    whole story: without a ``never_set`` placeholder the owner has no row on
+    the Passport to paste the first key into. File-backed providers are
+    excluded because their login flows create the row.
+    """
+    return {
+        f"cli-auth/{provider.name}": provider.display_name
+        for provider in PROVIDERS.values()
+        if provider.auth_mode == "api_key" and provider.token_path is None
+    }
+
+
+def _missing_store_only_cli_placeholders(
+    *,
+    cli_secrets: list[CliRuntime],
+    system_secrets: list[SystemSecret],
+) -> list[CliRuntime]:
+    """Return ``never_set`` rows for store-only providers with no row anywhere.
+
+    A key present in any family — including a legacy per-butler ``cli-auth``
+    row the Passport relocates to CLI — is real state, and a placeholder
+    beside it would shadow it in the CLI dedupe.
+    """
+    present = {secret.key for secret in cli_secrets} | {secret.key for secret in system_secrets}
+    return [
+        CliRuntime(key=key, category="cli-auth", description=label, state="never_set")
+        for key, label in _store_only_cli_placeholders().items()
+        if key not in present
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -2796,7 +2838,8 @@ async def get_inventory(
             "When omitted, defaults to the owner entity (projection-lens semantics)."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[InventoryData]:
     """Return the aggregated secrets inventory for the passport-book /secrets page.
 
@@ -2928,6 +2971,17 @@ async def get_inventory(
         user_secrets = shared_result.user_secrets
         cli_secrets = shared_result.cli_secrets
         identities = shared_result.identities
+        # Only a readable shared source can prove a store-only key is unset.
+        cli_secrets = sorted(
+            [
+                *cli_secrets,
+                *_missing_store_only_cli_placeholders(
+                    cli_secrets=cli_secrets,
+                    system_secrets=system_secrets,
+                ),
+            ],
+            key=lambda secret: secret.key,
+        )
 
     # --- Build response ---
     # State counts (aggregate and family-specific) must be computed over a
@@ -3410,7 +3464,8 @@ async def get_user_credential(
             "When omitted, defaults to the owner entity (projection-lens semantics)."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[UserSecretDetail]:
     """Return full evidence payload for a single user-scoped credential.
 
@@ -3454,7 +3509,8 @@ async def get_user_credential(
 )
 async def get_system_credential(
     key: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SystemCredentialDetail]:
     """Return the content-blind evidence payload for one system credential.
 
@@ -3531,7 +3587,8 @@ async def get_system_credential(
 )
 async def get_cli_credential(
     credential_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CliCredentialDetail]:
     """Return the content-blind evidence payload for one CLI runtime token.
 
@@ -3566,7 +3623,11 @@ async def get_cli_credential(
             detail="CLI credential source unavailable for shared-public",
         ) from exc
     if detail is None:
-        raise HTTPException(status_code=404, detail="Credential not found")
+        placeholder_label = _store_only_cli_placeholders().get(credential_id)
+        if placeholder_label is None:
+            raise HTTPException(status_code=404, detail="Credential not found")
+        # Mirror the inventory's never_set placeholder so the page can open it.
+        detail = CliRuntimeDetail(id=credential_id, label=placeholder_label, state="never_set")
 
     return ApiResponse[CliCredentialDetail](data=_content_blind_cli_detail(detail), meta=ApiMeta())
 
@@ -3633,7 +3694,8 @@ async def get_audit_history(
             f"(default {_AUDIT_DEFAULT_LIMIT}, max {_AUDIT_MAX_LIMIT})."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[AuditEvent]]:
     """Return recent audit events for a single credential.
 
@@ -3818,7 +3880,8 @@ async def get_breaks_catalogue(
             "available in meta.by_provider."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[BreakEntry]]:
     """Return feature catalogue rows for the WhatBreaks affordance.
 
@@ -4198,7 +4261,6 @@ register_revoke_handler(
 _VERIFY_TIMEOUT_S = 10.0
 
 # The Google token endpoint for exchanging a refresh token for an access token.
-_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 # GitHub user endpoint — works for both classic PATs and fine-grained PATs.
 _GITHUB_USER_URL = "https://api.github.com/user"
@@ -4632,49 +4694,30 @@ async def _verify_oauth_credential(
 
         try:
             async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
-                # Step 1: Exchange refresh token for an access token.
-                token_resp = await client.post(
-                    _GOOGLE_TOKEN_URL,
-                    data={
-                        "grant_type": "refresh_token",
-                        "refresh_token": refresh_token,
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                    },
+                token = await mint_access_token(
+                    client,
+                    refresh_token=refresh_token,
+                    client_id=client_id,
+                    client_secret=client_secret,
                 )
+        except httpx.HTTPStatusError as exc:
+            code = exc.response.status_code
+            return f"live_failed:{code}", code, f"token_exchange HTTP {code}"
+        except GoogleTokenPayloadError as exc:
+            reasons = {
+                "invalid_json": "invalid JSON response",
+                "no_access_token": "no access_token in response",
+                "invalid_token_payload": "invalid token payload",
+            }
+            return f"live_failed:{exc.kind}", None, f"token_exchange: {reasons[exc.kind]}"
         except Exception as exc:  # noqa: BLE001
-            # Network error — cannot distinguish bad credential from bad network.
             logger.warning(
                 "_verify_oauth_credential: network error during token exchange for provider=%s: %s",
                 provider,
                 exc,
             )
             return "skipped_local_check", None, None
-
-        if token_resp.status_code != 200:
-            # Token exchange failure IS a credential failure (expired / revoked refresh token).
-            reason = f"token_exchange HTTP {token_resp.status_code}"
-            logger.debug(
-                "_verify_oauth_credential: token exchange failed for provider=%s: %s",
-                provider,
-                reason,
-            )
-            return f"live_failed:{token_resp.status_code}", token_resp.status_code, reason
-
-        try:
-            token_data = token_resp.json()
-        except Exception as exc:  # noqa: BLE001
-            reason = f"token_exchange: invalid JSON response: {exc}"
-            logger.warning("_verify_oauth_credential: provider=%s %s", provider, reason)
-            return "live_failed:invalid_json", None, reason
-
-        access_token = token_data.get("access_token")
-        if not access_token:
-            reason = "token_exchange: no access_token in response"
-            logger.warning("_verify_oauth_credential: provider=%s %s", provider, reason)
-            return "live_failed:no_access_token", None, reason
-
-        bearer_value = access_token
+        bearer_value = token.access_token
 
     # ------------------------------------------------------------------
     # Branch B: PAT / direct-bearer providers (no token exchange)
@@ -4849,65 +4892,48 @@ async def _verify_google_capabilities(
 
     try:
         async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
-            token_resp = await client.post(
-                _GOOGLE_TOKEN_URL,
-                data={
-                    "grant_type": "refresh_token",
-                    "refresh_token": refresh_token,
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                },
+            token = await mint_access_token(
+                client,
+                refresh_token=refresh_token,
+                client_id=client_id,
+                client_secret=client_secret,
             )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("_verify_google_capabilities: network error during token exchange: %s", exc)
-        return _skipped_capabilities()
-
-    if token_resp.status_code != 200:
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
         test_mode_expired = await _google_test_mode_expired(shared_pool, entity_id)
-        reason = f"token_exchange HTTP {token_resp.status_code}"
+        reason = f"token_exchange HTTP {code}"
         if test_mode_expired:
             reason += " (token likely expired: 7-day test-mode limit)"
         return [
             _CapabilityProbe(
                 capability=cap,
                 ok=False,
-                code=token_resp.status_code,
+                code=code,
                 message=reason,
-                probe_status=f"live_failed:{token_resp.status_code}",
+                probe_status=f"live_failed:{code}",
             )
             for cap in _GOOGLE_CAPABILITY_ORDER
         ]
-
-    try:
-        token_data = token_resp.json()
+    except GoogleTokenPayloadError as exc:
+        reasons = {
+            "invalid_json": "invalid JSON response",
+            "no_access_token": "no access_token in response",
+            "invalid_token_payload": "invalid token payload",
+        }
+        return [
+            _CapabilityProbe(
+                capability=cap,
+                ok=False,
+                code=None,
+                message=f"token_exchange: {reasons[exc.kind]}",
+                probe_status=f"live_failed:{exc.kind}",
+            )
+            for cap in _GOOGLE_CAPABILITY_ORDER
+        ]
     except Exception as exc:  # noqa: BLE001
-        reason = f"token_exchange: invalid JSON response: {exc}"
-        logger.warning("_verify_google_capabilities: %s", reason)
-        return [
-            _CapabilityProbe(
-                capability=cap,
-                ok=False,
-                code=None,
-                message=reason,
-                probe_status="live_failed:invalid_json",
-            )
-            for cap in _GOOGLE_CAPABILITY_ORDER
-        ]
-
-    access_token = token_data.get("access_token")
-    if not access_token:
-        reason = "token_exchange: no access_token in response"
-        logger.warning("_verify_google_capabilities: %s", reason)
-        return [
-            _CapabilityProbe(
-                capability=cap,
-                ok=False,
-                code=None,
-                message=reason,
-                probe_status="live_failed:no_access_token",
-            )
-            for cap in _GOOGLE_CAPABILITY_ORDER
-        ]
+        logger.warning("_verify_google_capabilities: network error during token exchange: %s", exc)
+        return _skipped_capabilities()
+    access_token = token.access_token
 
     async def _mint_health_access_token() -> tuple[str | None, _CapabilityProbe | None]:
         """Exchange the refresh token for a HEALTH-ONLY access token.
@@ -4924,20 +4950,39 @@ async def _verify_google_capabilities(
 
         try:
             async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
-                resp = await client.post(
-                    _GOOGLE_TOKEN_URL,
-                    data={
-                        "grant_type": "refresh_token",
-                        "refresh_token": refresh_token,
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                        "scope": " ".join(sorted(GOOGLE_HEALTH_SCOPE_URLS)),
-                    },
+                token = await mint_access_token(
+                    client,
+                    refresh_token=refresh_token,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    scopes=frozenset(GOOGLE_HEALTH_SCOPE_URLS),
                 )
+        except httpx.HTTPStatusError as exc:
+            code = exc.response.status_code
+            return None, _CapabilityProbe(
+                capability="health",
+                ok=False,
+                code=code,
+                message=f"health token down-scope exchange HTTP {code}",
+                probe_status=f"live_failed:{code}",
+            )
+        except GoogleTokenPayloadError as exc:
+            reasons = {
+                "invalid_json": "invalid JSON response",
+                "no_access_token": "no access_token in response",
+                "invalid_token_payload": "invalid token payload",
+            }
+            return None, _CapabilityProbe(
+                capability="health",
+                ok=False,
+                code=None,
+                message=f"health token down-scope exchange: {reasons[exc.kind]}",
+                probe_status=f"live_failed:{exc.kind}",
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "_verify_google_capabilities: network error during health down-scope "
-                "token exchange: %s",
+                "_verify_google_capabilities: network error during health "
+                "down-scope token exchange: %s",
                 exc,
             )
             return None, _CapabilityProbe(
@@ -4947,30 +4992,9 @@ async def _verify_google_capabilities(
                 message=None,
                 probe_status="skipped_local_check",
             )
-        if resp.status_code != 200:
-            return None, _CapabilityProbe(
-                capability="health",
-                ok=False,
-                code=resp.status_code,
-                message=f"health token down-scope exchange HTTP {resp.status_code}",
-                probe_status=f"live_failed:{resp.status_code}",
-            )
-        try:
-            data = resp.json()
-        except Exception:  # noqa: BLE001
-            return None, _CapabilityProbe(
-                capability="health",
-                ok=False,
-                code=None,
-                message="health token down-scope exchange: invalid JSON response",
-                probe_status="live_failed:invalid_json",
-            )
-        # Google reports the scopes actually attached to the minted token; a
-        # response without any googlehealth scope means the grant is missing —
-        # the authoritative "not granted" signal. (Absent ``scope`` field →
-        # fall through to the API call rather than fabricating a verdict.)
-        granted_scope = data.get("scope")
-        if granted_scope is not None and "googlehealth" not in granted_scope:
+        # Absent scope falls through to the API. A reported scope without a
+        # Health family is the existing authoritative not-granted signal.
+        if token.scope is not None and "googlehealth" not in token.scope:
             return None, _CapabilityProbe(
                 capability="health",
                 ok=False,
@@ -4978,16 +5002,7 @@ async def _verify_google_capabilities(
                 message="403 restricted-scope (health scope not granted)",
                 probe_status="live_failed:403",
             )
-        token = data.get("access_token")
-        if not token:
-            return None, _CapabilityProbe(
-                capability="health",
-                ok=False,
-                code=None,
-                message="health token down-scope exchange: no access_token in response",
-                probe_status="live_failed:no_access_token",
-            )
-        return token, None
+        return token.access_token, None
 
     async def _probe_one(capability: str) -> _CapabilityProbe:
         url = _GOOGLE_CAPABILITY_ENDPOINTS[capability]
@@ -5162,7 +5177,8 @@ async def rotate_user_credential(
             "Entity UUID for the credential to rotate. When omitted, defaults to the owner entity."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[UserSecretDetail]:
     """Rotate (replace) the stored value for a user-scoped credential.
 
@@ -5304,7 +5320,8 @@ async def disconnect_user_credential(
             "When omitted, defaults to the owner entity."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[DisconnectStatus]:
     """Disconnect (remove) a user-scoped credential.
 
@@ -5422,7 +5439,7 @@ async def disconnect_user_credential(
 # ``last_test_message`` cache column, and the audit row — withheld from the
 # caller, not destroyed.
 #
-# The tuple itself now lives in ``butlers.api.models.audit`` (bu-vhie6): the
+# The tuple itself now lives in ``butlers.core.audit`` (bu-vhie6): the
 # same closed vocabulary is what ``public.audit_log.failure_category`` stores
 # at rest, and ``routers/audit`` cannot import this router.  It is re-exported
 # here so ``secrets_v2.PROBE_FAILURE_VOCABULARY`` keeps resolving for every
@@ -5488,7 +5505,8 @@ async def probe_user_credential(
             "Entity UUID for the credential to probe. When omitted, defaults to the owner entity."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TestResult]:
     """Probe a user-scoped credential and record the test result.
 
@@ -5830,7 +5848,8 @@ async def reauthorize_user_credential(
             "When omitted, defaults to the owner entity."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ReauthorizeResponse]:
     """Initiate an OAuth (re)authorization dance for a user-scoped credential.
 
@@ -6118,7 +6137,8 @@ async def _write_system_audit(
 async def set_system_credential(
     key: str,
     body: SystemSetRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SystemCredentialDetail]:
     """Set (first-time), rotate (update existing), or override (per-butler) a system credential.
 
@@ -6404,7 +6424,8 @@ async def set_system_credential(
 )
 async def probe_system_credential(
     key: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TestResult]:
     """Probe a system credential and record the test result.
 
@@ -6680,7 +6701,8 @@ async def delete_system_credential(
             "or a butler name to remove the per-butler override row (audit: revoked)."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SystemDeleteStatus]:
     """Remove a system credential row.
 
@@ -6968,7 +6990,8 @@ class CliRevokeResult(BaseModel):
 async def rotate_cli_credential(
     credential_id: str,
     body: CliRotateRequest | None = None,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CliRotateResult]:
     """Persist or rotate the secret value for a CLI runtime token.
 
@@ -7167,7 +7190,8 @@ async def rotate_cli_credential(
 )
 async def revoke_cli_credential(
     credential_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CliRevokeResult]:
     """Revoke (delete) a CLI runtime token.
 
@@ -7302,7 +7326,8 @@ class CliReauthorizeResponse(BaseModel):
 )
 async def reauthorize_cli_credential(
     credential_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CliReauthorizeResponse]:
     """Initiate (or resume) re-authentication for a CLI runtime provider.
 
@@ -7394,7 +7419,7 @@ async def reauthorize_cli_credential(
         try:
             await session.start()
             # Wait briefly for the device code to appear in stdout.
-            await session.wait(timeout=10.0)
+            await session.wait(timeout_s=10.0)
         except Exception as exc:  # noqa: BLE001
             if provider_def.name == "codex":
                 # Device-code subprocess errors can contain provider auth
@@ -7502,7 +7527,8 @@ class ProbeAllResponse(BaseModel):
     response_model=ApiResponse[ProbeAllResponse],
 )
 async def probe_all_credentials(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ProbeAllResponse]:
     """Sweep every probeable credential and report a per-row outcome.
 

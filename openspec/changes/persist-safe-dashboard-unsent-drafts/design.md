@@ -84,7 +84,7 @@ The approved candidate allowlist is exact:
 | `chronicles.correction` | Submit episode correction | corrected title when currently rendered, privacy choice, note |
 | `butler-state.set` | Set new butler-state value | key, JSON value |
 | `butler-state.edit` | Edit existing butler-state value | target key, JSON value |
-| `calendar.user-event` | Create/edit user event dialog | source, title, start, end, timezone, description, location, selected entity IDs |
+| `calendar.user-event` (retired) | Provider-event create/edit dialog retired by the calendar operator cut | No draft registration; retained quick-add create is outside this surface |
 | `calendar.butler-event` | Create/edit butler event dialog | butler, event kind, title, start, end, timezone, recurrence, cron, until boundary and enabled choices |
 
 The table includes the six health forms and every form family named in `bu-itw51`; it does not narrow the outcome to chat. Calendar inline description editing remains outside this change because it already has a direct save-on-blur contract rather than an unsent submit lifecycle. Model prompt, MCP/config, and ingestion-rule editors are unlisted and remain ineligible pending their own privacy and lifecycle review.
@@ -104,7 +104,7 @@ Logical identity dimensions are:
 | Relationship verbs | entity ID plus exact verb |
 | Episode correction | episode ID |
 | Butler state | butler plus `create`, or `edit` plus the existing state-key identity |
-| User calendar | source/calendar lane plus `create`, or `edit` plus provider/event identity |
+| User calendar (retired) | No draft context: the provider-event dialog and `calendar.user-event` registration are retired; quick-add create remains outside this surface |
 | Butler calendar | butler lane plus `create`, or `edit` plus event/schedule/reminder identity |
 
 Route pathname, dialog open count, mount order, component name, labels, titles, and other mutable prose never participate. A chat draft therefore survives movement between matching chat surfaces. Floating-chat page context is excluded so a restored message is paired only with the context chip visibly current at send time.

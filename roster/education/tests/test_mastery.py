@@ -13,11 +13,15 @@ Coverage:
 
 from __future__ import annotations
 
+import importlib
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+from butlers.testing.fake_pool import FakeConnection, fake_pool
+from butlers.testing.records import Record as _make_row
 
 pytestmark = pytest.mark.unit
 
@@ -25,104 +29,6 @@ pytestmark = pytest.mark.unit
 # Helpers: mock asyncpg pool / connection builder
 # (same pattern as test_mind_maps.py)
 # ---------------------------------------------------------------------------
-
-
-class _MockRecord:
-    """Minimal asyncpg.Record-like object backed by a dict."""
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self._data = data
-
-    def __getitem__(self, key: str) -> Any:
-        return self._data[key]
-
-    def __iter__(self):
-        return iter(self._data)
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    def keys(self):
-        return self._data.keys()
-
-    def values(self):
-        return self._data.values()
-
-    def items(self):
-        return self._data.items()
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return self._data.get(key, default)
-
-
-def _make_row(data: dict[str, Any]) -> _MockRecord:
-    return _MockRecord(data)
-
-
-def _make_pool(
-    *,
-    fetchrow_returns: list[Any] | None = None,
-    fetch_returns: list[Any] | None = None,
-    fetchval_returns: list[Any] | None = None,
-    execute_returns: list[str] | None = None,
-) -> AsyncMock:
-    """Build an AsyncMock behaving like an asyncpg.Pool (direct pool calls)."""
-    pool = AsyncMock()
-
-    if fetchrow_returns is not None:
-        pool.fetchrow = AsyncMock(side_effect=list(fetchrow_returns))
-    else:
-        pool.fetchrow = AsyncMock(return_value=None)
-
-    if fetch_returns is not None:
-        pool.fetch = AsyncMock(side_effect=list(fetch_returns))
-    else:
-        pool.fetch = AsyncMock(return_value=[])
-
-    if fetchval_returns is not None:
-        pool.fetchval = AsyncMock(side_effect=list(fetchval_returns))
-    else:
-        pool.fetchval = AsyncMock(return_value=0)
-
-    if execute_returns is not None:
-        pool.execute = AsyncMock(side_effect=list(execute_returns))
-    else:
-        pool.execute = AsyncMock(return_value="UPDATE 1")
-
-    return pool
-
-
-def _make_conn(
-    *,
-    fetchrow_returns: list[Any] | None = None,
-    fetch_returns: list[Any] | None = None,
-    fetchval_returns: list[Any] | None = None,
-    execute_returns: list[str] | None = None,
-) -> AsyncMock:
-    """Build an AsyncMock behaving like an asyncpg connection."""
-    conn = AsyncMock()
-
-    if fetchrow_returns is not None:
-        conn.fetchrow = AsyncMock(side_effect=list(fetchrow_returns))
-    else:
-        conn.fetchrow = AsyncMock(return_value=None)
-
-    if fetch_returns is not None:
-        conn.fetch = AsyncMock(side_effect=list(fetch_returns))
-    else:
-        conn.fetch = AsyncMock(return_value=[])
-
-    if fetchval_returns is not None:
-        conn.fetchval = AsyncMock(side_effect=list(fetchval_returns))
-    else:
-        conn.fetchval = AsyncMock(return_value=0)
-
-    if execute_returns is not None:
-        conn.execute = AsyncMock(side_effect=list(execute_returns))
-    else:
-        conn.execute = AsyncMock(return_value="UPDATE 1")
-
-    return conn
 
 
 def _response_row(
@@ -165,7 +71,7 @@ def _node_row(
     }
 
 
-def _make_pool_with_conn(conn: AsyncMock) -> AsyncMock:
+def _make_pool_with_conn(conn: FakeConnection) -> AsyncMock:
     """Build a pool whose acquire() context manager yields the given conn."""
     pool = MagicMock()
     # pool.acquire() is an async context manager: __aenter__ returns conn
@@ -183,7 +89,7 @@ def _make_pool_with_conn(conn: AsyncMock) -> AsyncMock:
     return pool
 
 
-def _make_conn_with_transaction(conn: AsyncMock) -> AsyncMock:
+def _make_conn_with_transaction(conn: FakeConnection) -> FakeConnection:
     """Wire conn.transaction() as an async context manager."""
     tx_ctx = MagicMock()
     tx_ctx.__aenter__ = AsyncMock(return_value=None)
@@ -199,6 +105,15 @@ def _make_conn_with_transaction(conn: AsyncMock) -> AsyncMock:
 
 class TestComputeMasteryScore:
     """Unit tests for the mastery score computation helper."""
+
+    def test_missing_recency_weight_is_rejected(self, monkeypatch) -> None:
+        from butlers.tools.education.mastery import _compute_mastery_score
+
+        # A broken internal weight table must not silently drop a response.
+        mastery = importlib.import_module("butlers.tools.education.mastery")
+        monkeypatch.setattr(mastery, "_WEIGHTS_5", [1.0, 2.0, 4.0, 8.0])
+        with pytest.raises(ValueError):
+            _compute_mastery_score([0, 1, 2, 3, 4])
 
     def test_empty_qualities_returns_zero(self) -> None:
         from butlers.tools.education.mastery import _compute_mastery_score
@@ -323,13 +238,15 @@ class TestMasteryRecordResponseValidation:
 
         response_id = str(uuid.uuid4())
         conn = _make_conn_with_transaction(
-            _make_conn(
-                fetchval_returns=[response_id],
-                fetch_returns=[
-                    [_make_row({"quality": 3})],  # last 5 responses
-                ],
+            FakeConnection(
+                fetchval=AsyncMock(side_effect=[response_id]),
+                fetch=AsyncMock(
+                    side_effect=[
+                        [_make_row({"quality": 3})],  # last 5 responses
+                    ]
+                ),
                 # fetchrow returns None → node not found in this map
-                fetchrow_returns=[None],
+                fetchrow=AsyncMock(side_effect=[None]),
             )
         )
         pool = _make_pool_with_conn(conn)
@@ -344,13 +261,16 @@ class TestMasteryRecordResponseValidation:
 
         response_id = str(uuid.uuid4())
         conn = _make_conn_with_transaction(
-            _make_conn(
-                fetchval_returns=[response_id],
-                fetch_returns=[
-                    [_make_row({"quality": 0})],  # last 5 responses
-                    [],  # last 3 review responses
-                ],
-                fetchrow_returns=[_make_row({"mastery_status": "unseen"})],
+            FakeConnection(
+                fetchval=AsyncMock(side_effect=[response_id]),
+                fetch=AsyncMock(
+                    side_effect=[
+                        [_make_row({"quality": 0})],  # last 5 responses
+                        [],  # last 3 review responses
+                    ]
+                ),
+                fetchrow=AsyncMock(side_effect=[_make_row({"mastery_status": "unseen"})]),
+                execute="UPDATE 1",
             )
         )
         pool = _make_pool_with_conn(conn)
@@ -365,13 +285,16 @@ class TestMasteryRecordResponseValidation:
 
         response_id = str(uuid.uuid4())
         conn = _make_conn_with_transaction(
-            _make_conn(
-                fetchval_returns=[response_id],
-                fetch_returns=[
-                    [_make_row({"quality": 5})],
-                    [],
-                ],
-                fetchrow_returns=[_make_row({"mastery_status": "unseen"})],
+            FakeConnection(
+                fetchval=AsyncMock(side_effect=[response_id]),
+                fetch=AsyncMock(
+                    side_effect=[
+                        [_make_row({"quality": 5})],
+                        [],
+                    ]
+                ),
+                fetchrow=AsyncMock(side_effect=[_make_row({"mastery_status": "unseen"})]),
+                execute="UPDATE 1",
             )
         )
         pool = _make_pool_with_conn(conn)
@@ -394,13 +317,16 @@ class TestMasteryRecordResponseInsert:
 
         response_id = str(uuid.uuid4())
         conn = _make_conn_with_transaction(
-            _make_conn(
-                fetchval_returns=[response_id],
-                fetch_returns=[
-                    [_make_row({"quality": 3})],  # last 5 responses
-                    [],  # last 3 review responses
-                ],
-                fetchrow_returns=[_make_row({"mastery_status": "learning"})],
+            FakeConnection(
+                fetchval=AsyncMock(side_effect=[response_id]),
+                fetch=AsyncMock(
+                    side_effect=[
+                        [_make_row({"quality": 3})],  # last 5 responses
+                        [],  # last 3 review responses
+                    ]
+                ),
+                fetchrow=AsyncMock(side_effect=[_make_row({"mastery_status": "learning"})]),
+                execute="UPDATE 1",
             )
         )
         pool = _make_pool_with_conn(conn)
@@ -418,13 +344,16 @@ class TestMasteryRecordResponseInsert:
 
         response_id = str(uuid.uuid4())
         conn = _make_conn_with_transaction(
-            _make_conn(
-                fetchval_returns=[response_id],
-                fetch_returns=[
-                    [_make_row({"quality": 4})],
-                    [],
-                ],
-                fetchrow_returns=[_make_row({"mastery_status": "learning"})],
+            FakeConnection(
+                fetchval=AsyncMock(side_effect=[response_id]),
+                fetch=AsyncMock(
+                    side_effect=[
+                        [_make_row({"quality": 4})],
+                        [],
+                    ]
+                ),
+                fetchrow=AsyncMock(side_effect=[_make_row({"mastery_status": "learning"})]),
+                execute="UPDATE 1",
             )
         )
         pool = _make_pool_with_conn(conn)
@@ -459,13 +388,16 @@ class TestMasteryRecordResponseInsert:
 
         response_id = str(uuid.uuid4())
         conn = _make_conn_with_transaction(
-            _make_conn(
-                fetchval_returns=[response_id],
-                fetch_returns=[
-                    [_make_row({"quality": 0})],
-                    [],
-                ],
-                fetchrow_returns=[_make_row({"mastery_status": "unseen"})],
+            FakeConnection(
+                fetchval=AsyncMock(side_effect=[response_id]),
+                fetch=AsyncMock(
+                    side_effect=[
+                        [_make_row({"quality": 0})],
+                        [],
+                    ]
+                ),
+                fetchrow=AsyncMock(side_effect=[_make_row({"mastery_status": "unseen"})]),
+                execute="UPDATE 1",
             )
         )
         pool = _make_pool_with_conn(conn)
@@ -483,13 +415,16 @@ class TestMasteryRecordResponseInsert:
 
         response_id = str(uuid.uuid4())
         conn = _make_conn_with_transaction(
-            _make_conn(
-                fetchval_returns=[response_id],
-                fetch_returns=[
-                    [_make_row({"quality": 3})],
-                    [_make_row({"quality": 3})],  # last 3 review responses
-                ],
-                fetchrow_returns=[_make_row({"mastery_status": "learning"})],
+            FakeConnection(
+                fetchval=AsyncMock(side_effect=[response_id]),
+                fetch=AsyncMock(
+                    side_effect=[
+                        [_make_row({"quality": 3})],
+                        [_make_row({"quality": 3})],  # last 3 review responses
+                    ]
+                ),
+                fetchrow=AsyncMock(side_effect=[_make_row({"mastery_status": "learning"})]),
+                execute="UPDATE 1",
             )
         )
         pool = _make_pool_with_conn(conn)
@@ -516,20 +451,23 @@ class TestMasteryRecordResponseScoring:
         quality: int,
         response_type: str = "review",
         review_qualities: list[int] | None = None,
-    ) -> tuple[Any, AsyncMock]:
+    ) -> tuple[Any, FakeConnection]:
         """Helper: set up mock and call mastery_record_response. Returns (result, conn)."""
         from butlers.tools.education.mastery import mastery_record_response
 
         response_id = str(uuid.uuid4())
         review_rows = [_make_row({"quality": q}) for q in (review_qualities or [])]
         conn = _make_conn_with_transaction(
-            _make_conn(
-                fetchval_returns=[response_id],
-                fetch_returns=[
-                    [_make_row({"quality": q}) for q in qualities_from_db],
-                    review_rows,
-                ],
-                fetchrow_returns=[_make_row({"mastery_status": current_status})],
+            FakeConnection(
+                fetchval=AsyncMock(side_effect=[response_id]),
+                fetch=AsyncMock(
+                    side_effect=[
+                        [_make_row({"quality": q}) for q in qualities_from_db],
+                        review_rows,
+                    ]
+                ),
+                fetchrow=AsyncMock(side_effect=[_make_row({"mastery_status": current_status})]),
+                execute="UPDATE 1",
             )
         )
         pool = _make_pool_with_conn(conn)
@@ -561,19 +499,22 @@ class TestMasteryRecordResponseScoring:
 
         response_id = str(uuid.uuid4())
         conn = _make_conn_with_transaction(
-            _make_conn(
-                fetchval_returns=[response_id],
-                fetch_returns=[
-                    [
-                        _make_row({"quality": 5}),
-                        _make_row({"quality": 4}),
-                        _make_row({"quality": 3}),
-                        _make_row({"quality": 2}),
-                        _make_row({"quality": 1}),
-                    ],
-                    [],  # last 3 review responses
-                ],
-                fetchrow_returns=[_make_row({"mastery_status": "reviewing"})],
+            FakeConnection(
+                fetchval=AsyncMock(side_effect=[response_id]),
+                fetch=AsyncMock(
+                    side_effect=[
+                        [
+                            _make_row({"quality": 5}),
+                            _make_row({"quality": 4}),
+                            _make_row({"quality": 3}),
+                            _make_row({"quality": 2}),
+                            _make_row({"quality": 1}),
+                        ],
+                        [],  # last 3 review responses
+                    ]
+                ),
+                fetchrow=AsyncMock(side_effect=[_make_row({"mastery_status": "reviewing"})]),
+                execute="UPDATE 1",
             )
         )
         pool = _make_pool_with_conn(conn)
@@ -603,7 +544,7 @@ class TestMasteryStateMachineInRecordResponse:
         review_qualities: list[int] | None = None,
         qualities_from_db: list[int] | None = None,
         expect_mastery_graduation: bool = False,
-    ) -> tuple[Any, AsyncMock]:
+    ) -> tuple[Any, FakeConnection]:
         """Set up mock and call mastery_record_response."""
         from butlers.tools.education.mastery import mastery_record_response
 
@@ -616,13 +557,16 @@ class TestMasteryStateMachineInRecordResponse:
         if expect_mastery_graduation:
             fetchval_side_effects.extend([1, 1])  # unmastered=1, node_count=1 (no auto-complete)
         conn = _make_conn_with_transaction(
-            _make_conn(
-                fetchval_returns=fetchval_side_effects,
-                fetch_returns=[
-                    [_make_row({"quality": q}) for q in db_qualities],
-                    review_rows,
-                ],
-                fetchrow_returns=[_make_row({"mastery_status": current_status})],
+            FakeConnection(
+                fetchval=AsyncMock(side_effect=fetchval_side_effects),
+                fetch=AsyncMock(
+                    side_effect=[
+                        [_make_row({"quality": q}) for q in db_qualities],
+                        review_rows,
+                    ]
+                ),
+                fetchrow=AsyncMock(side_effect=[_make_row({"mastery_status": current_status})]),
+                execute="UPDATE 1",
             )
         )
         pool = _make_pool_with_conn(conn)
@@ -637,7 +581,7 @@ class TestMasteryStateMachineInRecordResponse:
         )
         return response_id, conn
 
-    def _get_status_from_update_call(self, conn: AsyncMock) -> str | None:
+    def _get_status_from_update_call(self, conn: FakeConnection) -> str | None:
         """Extract the mastery_status value from the UPDATE execute call."""
         update_call = conn.execute.call_args
         if update_call is None:
@@ -803,19 +747,22 @@ class TestMasteryStateMachineInRecordResponse:
 class TestMasteryRecordResponseAtomicity:
     """mastery_record_response wraps all writes in a single transaction."""
 
-    async def test_uses_transaction(self) -> None:
+    async def test_uses_transaction(self, monkeypatch) -> None:
         """conn.transaction() is used for atomicity."""
         from butlers.tools.education.mastery import mastery_record_response
 
         response_id = str(uuid.uuid4())
         conn = _make_conn_with_transaction(
-            _make_conn(
-                fetchval_returns=[response_id],
-                fetch_returns=[
-                    [_make_row({"quality": 3})],
-                    [],
-                ],
-                fetchrow_returns=[_make_row({"mastery_status": "learning"})],
+            FakeConnection(
+                fetchval=AsyncMock(side_effect=[response_id]),
+                fetch=AsyncMock(
+                    side_effect=[
+                        [_make_row({"quality": 3})],
+                        [],
+                    ]
+                ),
+                fetchrow=AsyncMock(side_effect=[_make_row({"mastery_status": "learning"})]),
+                execute="UPDATE 1",
             )
         )
         pool = _make_pool_with_conn(conn)
@@ -824,6 +771,26 @@ class TestMasteryRecordResponseAtomicity:
             pool, str(uuid.uuid4()), str(uuid.uuid4()), "Q", "A", quality=3
         )
         conn.transaction.assert_called_once()
+
+        # This proves exception propagation through the mocked transaction,
+        # not PostgreSQL rollback. No node update may follow broken scoring.
+        conn.fetchval = AsyncMock(return_value=response_id)
+        conn.fetch = AsyncMock(return_value=[_make_row({"quality": q}) for q in range(5)])
+        conn.fetchrow.reset_mock()
+        conn.execute.reset_mock()
+        transaction = conn.transaction.return_value
+        transaction.__aexit__.reset_mock()
+        mastery = importlib.import_module("butlers.tools.education.mastery")
+        monkeypatch.setattr(mastery, "_WEIGHTS_5", [1.0, 2.0, 4.0, 8.0])
+        with pytest.raises(ValueError):
+            await mastery_record_response(
+                pool, str(uuid.uuid4()), str(uuid.uuid4()), "Q", "A", quality=3
+            )
+        conn.fetchval.assert_awaited_once()
+        conn.fetchrow.assert_not_awaited()
+        conn.execute.assert_not_awaited()
+        transaction.__aexit__.assert_awaited_once()
+        assert transaction.__aexit__.await_args.args[0] is ValueError
 
 
 # ---------------------------------------------------------------------------
@@ -842,7 +809,7 @@ class TestMasteryGetNodeHistory:
             _make_row(_response_row(node_id=node_id, quality=5)),
             _make_row(_response_row(node_id=node_id, quality=3)),
         ]
-        pool = _make_pool(fetch_returns=[rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[rows]))
         result = await mastery_get_node_history(pool, node_id)
         assert len(result) == 2
         assert result[0]["quality"] == 5
@@ -851,7 +818,7 @@ class TestMasteryGetNodeHistory:
     async def test_returns_empty_list_when_no_responses(self) -> None:
         from butlers.tools.education.mastery import mastery_get_node_history
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
         result = await mastery_get_node_history(pool, str(uuid.uuid4()))
         assert result == []
 
@@ -861,7 +828,7 @@ class TestMasteryGetNodeHistory:
 
         node_id = str(uuid.uuid4())
         rows = [_make_row(_response_row(node_id=node_id, quality=4))]
-        pool = _make_pool(fetch_returns=[rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[rows]))
         result = await mastery_get_node_history(pool, node_id, limit=3)
         # Verify limit was passed as an argument to the SQL call
         call_args_str = str(pool.fetch.call_args)
@@ -874,7 +841,7 @@ class TestMasteryGetNodeHistory:
 
         node_id = str(uuid.uuid4())
         rows = [_make_row(_response_row(node_id=node_id, quality=i)) for i in range(8)]
-        pool = _make_pool(fetch_returns=[rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[rows]))
         result = await mastery_get_node_history(pool, node_id)
         assert len(result) == 8
 
@@ -882,7 +849,7 @@ class TestMasteryGetNodeHistory:
         """SQL query uses ORDER BY responded_at DESC."""
         from butlers.tools.education.mastery import mastery_get_node_history
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
         await mastery_get_node_history(pool, str(uuid.uuid4()))
         sql = pool.fetch.call_args.args[0]
         assert "responded_at" in sql
@@ -894,7 +861,7 @@ class TestMasteryGetNodeHistory:
 
         node_id = str(uuid.uuid4())
         row = _response_row(node_id=node_id, quality=3, session_id=None)
-        pool = _make_pool(fetch_returns=[[_make_row(row)]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[_make_row(row)]]))
         result = await mastery_get_node_history(pool, node_id, limit=1)
         assert len(result) == 1
         required_keys = {
@@ -933,9 +900,9 @@ class TestMasteryGetMapSummary:
                 "avg_mastery_score": 0.75,
             }
         )
-        pool = _make_pool(
-            fetchrow_returns=[summary_row],
-            fetch_returns=[[]],  # no struggling nodes
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[summary_row]),
+            fetch=AsyncMock(side_effect=[[]]),  # no struggling nodes
         )
         result = await mastery_get_map_summary(pool, map_id)
         assert result["total_nodes"] == 10
@@ -960,9 +927,9 @@ class TestMasteryGetMapSummary:
                 "avg_mastery_score": 0.8,
             }
         )
-        pool = _make_pool(
-            fetchrow_returns=[summary_row],
-            fetch_returns=[[]],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[summary_row]),
+            fetch=AsyncMock(side_effect=[[]]),
         )
         result = await mastery_get_map_summary(pool, map_id)
         assert abs(result["avg_mastery_score"] - 0.8) < 1e-9
@@ -982,9 +949,9 @@ class TestMasteryGetMapSummary:
                 "avg_mastery_score": 0.0,
             }
         )
-        pool = _make_pool(
-            fetchrow_returns=[summary_row],
-            fetch_returns=[[]],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[summary_row]),
+            fetch=AsyncMock(side_effect=[[]]),
         )
         result = await mastery_get_map_summary(pool, map_id)
         assert result["total_nodes"] == 0
@@ -1009,9 +976,9 @@ class TestMasteryGetMapSummary:
                 "avg_mastery_score": 0.0,
             }
         )
-        pool = _make_pool(
-            fetchrow_returns=[summary_row],
-            fetch_returns=[[]],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[summary_row]),
+            fetch=AsyncMock(side_effect=[[]]),
         )
         result = await mastery_get_map_summary(pool, map_id)
         # Verify the SQL sent to the DB includes COALESCE wrapping the SUM expressions
@@ -1060,12 +1027,14 @@ class TestMasteryGetMapSummary:
         ]
 
         # fetch calls: 1) aggregate query uses fetchrow, 2) detect_struggles uses fetch (twice)
-        pool = _make_pool(
-            fetchrow_returns=[summary_row],
-            fetch_returns=[
-                [struggling_node_row],  # node list from detect_struggles
-                batched_response_rows,  # batched response history for all nodes
-            ],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[summary_row]),
+            fetch=AsyncMock(
+                side_effect=[
+                    [struggling_node_row],  # node list from detect_struggles
+                    batched_response_rows,  # batched response history for all nodes
+                ]
+            ),
         )
         result = await mastery_get_map_summary(pool, map_id)
         assert struggling_node_id in result["struggling_node_ids"]
@@ -1082,7 +1051,7 @@ class TestMasteryDetectStruggles:
     async def test_returns_empty_when_no_nodes(self) -> None:
         from butlers.tools.education.mastery import mastery_detect_struggles
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
         result = await mastery_detect_struggles(pool, str(uuid.uuid4()))
         assert result == []
 
@@ -1101,7 +1070,7 @@ class TestMasteryDetectStruggles:
             _make_row({"node_id": node_id, "quality": 0, "rn": 2}),
             _make_row({"node_id": node_id, "quality": 2, "rn": 3}),
         ]
-        pool = _make_pool(fetch_returns=[[node_row], responses])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[node_row], responses]))
         result = await mastery_detect_struggles(pool, map_id)
         assert len(result) == 1
         assert result[0]["id"] == node_id
@@ -1124,7 +1093,7 @@ class TestMasteryDetectStruggles:
             _make_row({"node_id": node_id, "quality": 1, "rn": 2}),
             _make_row({"node_id": node_id, "quality": 2, "rn": 3}),  # oldest of 3
         ]
-        pool = _make_pool(fetch_returns=[[node_row], responses])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[node_row], responses]))
         result = await mastery_detect_struggles(pool, map_id)
         # consecutive_low_quality not triggered (quality=3 breaks it)
         # declining score: score([2,1,3]) vs score([1,3]) vs score([3])
@@ -1153,7 +1122,7 @@ class TestMasteryDetectStruggles:
             _make_row({"node_id": node_id, "quality": 3, "rn": 2}),
             _make_row({"node_id": node_id, "quality": 5, "rn": 3}),  # oldest of 3
         ]
-        pool = _make_pool(fetch_returns=[[node_row], responses])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[node_row], responses]))
         result = await mastery_detect_struggles(pool, map_id)
         assert len(result) >= 1
         assert any("declining_score" in r["reason"] for r in result)
@@ -1165,7 +1134,7 @@ class TestMasteryDetectStruggles:
         map_id = str(uuid.uuid4())
         # mastery_detect_struggles filters out mastered nodes in the SQL query
         # So if no node_rows returned, result is empty
-        pool = _make_pool(fetch_returns=[[]])  # no non-mastered nodes
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))  # no non-mastered nodes
         result = await mastery_detect_struggles(pool, map_id)
         assert result == []
 
@@ -1183,7 +1152,7 @@ class TestMasteryDetectStruggles:
             _make_row({"node_id": node_id, "quality": 0, "rn": 1}),
             _make_row({"node_id": node_id, "quality": 0, "rn": 2}),
         ]
-        pool = _make_pool(fetch_returns=[[node_row], responses])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[node_row], responses]))
         result = await mastery_detect_struggles(pool, map_id)
         assert result == []
 
@@ -1210,7 +1179,7 @@ class TestMasteryDetectStruggles:
             _make_row({"node_id": node_id, "quality": 1, "rn": 2}),
             _make_row({"node_id": node_id, "quality": 2, "rn": 3}),  # oldest of 3
         ]
-        pool = _make_pool(fetch_returns=[[node_row], responses])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[node_row], responses]))
         result = await mastery_detect_struggles(pool, map_id)
         assert len(result) == 1
         assert "consecutive_low_quality" in result[0]["reason"]
@@ -1237,7 +1206,7 @@ class TestMasteryDetectStruggles:
             _make_row({"node_id": node_id, "quality": 0, "rn": 2}),
             _make_row({"node_id": node_id, "quality": 2, "rn": 3}),
         ]
-        pool = _make_pool(fetch_returns=[[node_row], responses])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[node_row], responses]))
         result = await mastery_detect_struggles(pool, map_id)
         assert len(result) == 1
         r = result[0]
@@ -1262,7 +1231,7 @@ class TestMasteryDetectStruggles:
             _make_row({"node_id": node_id, "quality": 5, "rn": 2}),
             _make_row({"node_id": node_id, "quality": 5, "rn": 3}),
         ]
-        pool = _make_pool(fetch_returns=[[node_row], responses])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[node_row], responses]))
         result = await mastery_detect_struggles(pool, map_id)
         assert result == []
 
@@ -1270,7 +1239,7 @@ class TestMasteryDetectStruggles:
         """The node fetch SQL explicitly excludes mastered status."""
         from butlers.tools.education.mastery import mastery_detect_struggles
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
         await mastery_detect_struggles(pool, str(uuid.uuid4()))
         sql = pool.fetch.call_args.args[0]
         assert "mastered" in sql

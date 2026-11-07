@@ -23,6 +23,8 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -51,19 +53,12 @@ _SPOTIFY_MANAGED_TYPES = (
 # ---------------------------------------------------------------------------
 
 
-def _make_row(data: dict) -> MagicMock:
-    row = MagicMock()
-    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
-    row.get = MagicMock(side_effect=lambda key, default=None: data.get(key, default))
-    return row
-
-
-def _make_owner_row(roles: list[str] | None = None) -> MagicMock:
+def _make_owner_row(roles: list[str] | None = None) -> Record:
     """Simulate a row returned by the owner-entity roles query.
 
     ``_get_owner_roles`` in the router accesses ``row['roles']``.
     """
-    return _make_row(
+    return Record(
         {
             "id": uuid4(),
             "roles": roles if roles is not None else ["owner"],
@@ -76,9 +71,9 @@ def _make_entity_info_row(
     secured: bool = True,
     value: str = _SECRET_VALUE,
     info_type: str = _SECRET_TYPE,
-) -> MagicMock:
+) -> Record:
     """Simulate a row returned by the public.entity_info SELECT."""
-    return _make_row(
+    return Record(
         {
             "id": _INFO_ID,
             "type": info_type,
@@ -125,8 +120,8 @@ def _make_reveal_app(
     app = create_app()
     router_mod = None
     for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             router_mod = router_module
             break
 
@@ -213,9 +208,9 @@ class TestRevealEntitySecret:
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
         app = create_app()
-        for butler_name, router_module in app.state.butler_routers:
+        for butler_name, _router_module in app.state.butler_routers:
             if butler_name == "relationship":
-                app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+                app.dependency_overrides[get_db] = lambda: mock_db
                 break
 
         resp = await _get(app)
@@ -271,7 +266,7 @@ class TestRevealEntitySecret:
         existence.  An entity with only e.g. ['admin'] roles must be rejected.
         """
         # Build a pool where the owner row has roles=['admin'] (no 'owner' role)
-        non_owner_row = _make_row({"id": uuid4(), "roles": ["admin"]})
+        non_owner_row = Record({"id": uuid4(), "roles": ["admin"]})
         entry_row = _make_entity_info_row(secured=True)
 
         mock_pool = AsyncMock()
@@ -281,9 +276,9 @@ class TestRevealEntitySecret:
         mock_db.pool.return_value = mock_pool
 
         app = create_app()
-        for butler_name, router_module in app.state.butler_routers:
-            if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-                app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+        for butler_name, _router_module in app.state.butler_routers:
+            if butler_name == "relationship":
+                app.dependency_overrides[get_db] = lambda: mock_db
                 break
 
         resp = await _get(app)
@@ -300,9 +295,9 @@ async def test_generic_relationship_writes_reject_connector_managed_spotify_type
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
+    for butler_name, _router_module in app.state.butler_routers:
         if butler_name == "relationship":
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     path = f"/api/relationship/entities/{_ENTITY_ID}/info"

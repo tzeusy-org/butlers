@@ -254,6 +254,14 @@ is derived from an actual check (bu-9r3hd.5).
     `result: "pass" | "fail" | "pending" | "degraded"`, and `detail: string | null`.
     `"pending"` means the drill has never run yet -- a real "unknown" state, never
     presented as a passing drill.
+  - `offsite_copy: OffsiteCopyFacts` -- outcome of the most recent off-node restic copy
+    of the dump directory, having `result: "success" | "failed" | "unknown" |
+    "disabled"`, `finished_at: string | null`, `reason: string | null` (a fixed
+    vocabulary), `snapshot_id: string | null` (hex), and `stale: boolean`.
+    `"disabled"` means the deployment runs no copy job; `"unknown"` means it does but
+    no readable receipt exists, which is never presented as a copy. `stale` is `true`
+    when an enabled copy has reported no run within 36 hours. A failed or stale
+    enabled copy is named in the system verdict banner.
 - **AND** the response wraps in the standard `ApiResponse<BackupFacts>` envelope
 
 #### Scenario: Unavailable backup source degrades gracefully
@@ -338,6 +346,9 @@ the "your data has been seen by these endpoints" surface.
     within the audit window
   - `data_types: string[]` -- array of coarse data type labels observed in the
     egress events (e.g., `["session_prompt", "calendar_event", "message_text"]`)
+  - `audit_action: string | null` -- the exact `public.audit_log` `action` the actor
+    stands for (e.g., `"llm_api_call"`); every listed actor is registered, so it is
+    always set
 - **AND** the response wraps in the standard `ApiResponse<EgressCatalog>` envelope
 
 #### Scenario: Egress catalog is derived from the audit log
@@ -380,6 +391,18 @@ the "your data has been seen by these endpoints" surface.
   `"other"` bucket with a display name of `"Other / Unrecognized"`
 - **AND** the actor registry is the authoritative list of actor identifiers and
   display names; the implementation bead is responsible for populating it
+
+#### Scenario: Egress actors link to their audit log rows
+
+- **WHEN** the System page renders the data-egress tile and an actor carries a non-null
+  `audit_action`
+- **THEN** that actor's row is a link to
+  `/audit-log?action=<audit_action>&noise=all`, with the action URL-encoded, so the
+  audit log opens filtered to exactly the events behind that actor
+- **AND** the client reads the action from the response and never re-derives the actor
+  registry
+- **AND** an actor whose `audit_action` is `null` renders as plain text rather than a
+  link with no single predicate
 
 ### Requirement: System Verdict Source Settlement
 
@@ -684,6 +707,94 @@ duplicate panel.
 - **THEN** that row never computes or displays a QA-dispatch suppression
   count (owner conditions have no QA-dispatch suppression concept), while
   infra-ledger rows retain the existing suppression-count behavior
+
+#### Scenario: Sphere filter narrows owner-ledger commitments server-side
+
+- **WHEN** `GET /api/system/conditions?ledger=owner&sphere=<work|personal|undeclared>`
+  is called
+- **THEN** only owner-ledger commitment rows (`metadata.class = 'commitment'`)
+  are returned: `work` and `personal` match `metadata.sphere` exactly, and
+  `undeclared` matches commitment rows with no `sphere` key
+- **AND** the predicate runs in SQL, so `total` counts the filtered set rather
+  than the fetched page
+- **AND** a `sphere` with `ledger=infra`, or any other value, returns HTTP 400
+  naming the allowed values; omitting `sphere` leaves the response unchanged
+- **AND** no sphere is ever inferred (REQ-commitment-lifecycle-010)
+
+#### Scenario: Panel offers a sphere control only for commitments
+
+- **WHEN** the Standing Conditions panel shows owner-ledger commitment rows
+- **THEN** it offers an All spheres / Work / Personal / Undeclared control that
+  refetches the owner ledger with the chosen `sphere`, leaving the infra
+  query and infra rows unchanged
+- **AND** the control stays visible while a sphere is chosen, with an explicit
+  empty message when that sphere has no commitments
+
+### Requirement: Supervised Dashboard Background Work Health
+
+ID: REQ-system-overview-page-008
+Source: Non-Negotiable Rule 4; owner decision bu-c6wjr Option D (2026-08-13)
+Scope: v1-mandatory
+
+The System page SHALL expose persisted work health for every dashboard-api
+`supervise_lifespan_loop` consumer, separately from process liveness, ordinary
+scheduled tasks, and fleet connector health. The supervisor SHALL retain its
+existing restart and cancellation behavior. Recording failure SHALL NOT stop work.
+
+Current state SHALL be fenced by immutable process-instance identity and boot
+ordering: after a newer process claims a job, an older process SHALL NOT update
+its state. A new instance SHALL start without credit for the previous instance's
+success. Periodic work SHALL be `ok` only after a successful tick within its
+configured interval plus grace (one quarter interval, at least five seconds),
+`error` after failed or partially failed work, and `stale` when successful work
+or initial work becomes overdue. Continuous work SHALL be `ok` only with a
+recent connection/progress observation, `degraded` while reconnecting, and
+`error` after three consecutive reconnect failures. Disabled work SHALL be
+`disabled`; absent/current-instance-mismatched evidence SHALL be `unknown`.
+Starting, unknown, stale and unavailable SHALL never imply successful work.
+
+The shared current-state and transition tables SHALL store fixed safe reason
+codes, timestamps and counters, never exception text, tracebacks, URLs or
+credential values. Retention SHALL keep at most 100 transitions per job within
+30 days; every successful recording transaction SHALL prune both bounds, even
+when the current state is unchanged. Dashboard-owned storage SHALL remain
+protected from runtime-role writes and reads after bootstrap public-table grants.
+
+`GET /api/system/background-jobs` SHALL return an owner-dashboard fact envelope
+with `jobs_available` and registered `jobs`, including bounded recent transitions.
+Storage read or outstanding recording failure SHALL return `jobs_available=false`,
+never an empty all-clear. The System page SHALL show loading, request error,
+unavailable, empty, and each job state distinctly, with last successful work or
+connection progress and recorded failure counts. This surface SHALL NOT page,
+notify, execute work, or change scheduling or feature enablement.
+
+#### Scenario: A living loop catches a tick failure
+
+- **WHEN** a supervised loop catches an exception or reports partial failure
+- **THEN** its current health reports failed work while the loop continues
+- **AND** a later successful tick records recovery without storing private error text
+
+#### Scenario: Restart and concurrent old writer
+
+- **WHEN** a newer dashboard process claims a job after an older process succeeded
+- **THEN** the job starts without the old success, and subsequent old writes are fenced
+
+#### Scenario: Continuous connection fails and recovers
+
+- **WHEN** the LISTEN bridge reconnects unsuccessfully three consecutive times
+- **THEN** health moves from degraded to error
+- **AND** a successful listener connection records recovery and fresh progress
+
+#### Scenario: Storage cannot provide work evidence
+
+- **WHEN** recording or reading background health fails
+- **THEN** work continues and the owner sees unavailable evidence, not healthy emptiness
+
+#### Scenario: Retention and privacy survive runtime bootstrap grants
+
+- **WHEN** transitions exceed either retention bound and another tick records
+- **THEN** only the newest 100 within 30 days remain per job, using safe reason codes
+- **AND** runtime roles cannot read or forge dashboard health after bootstrap replay
 
 ## Source References
 

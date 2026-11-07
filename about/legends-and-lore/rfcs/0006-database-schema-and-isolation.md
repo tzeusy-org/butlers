@@ -139,8 +139,11 @@ the pool, assuming the runtime role created by the `core_001_foundation` migrati
 - A butler CANNOT access another butler's schema.
 - A butler CANNOT write to `public` tables unless explicitly authorized by the write authorization
   matrix below (enforced by PostgreSQL role privileges, not just application convention).
-- If the runtime role does not exist (e.g., in a development environment without CREATEROLE), the
-  butler logs a warning and falls back to operating with the shared database user's privileges.
+- Runtime pools fail closed in every environment when the designated role is missing,
+  cannot be verified or assumed, or is unconfigured for a butler schema. No deployment
+  setting permits shared-user runtime continuation. Each acquire re-establishes the role;
+  revoked membership refuses before the connection reaches a caller. Owned partial
+  connections/pools are cleaned up, with causal errors retained and content-blind diagnostics.
 - asyncpg's built-in `RESET ALL` on connection return restores the connecting user's role for pool
   safety.
 
@@ -273,16 +276,16 @@ runs no installer, grants no privilege and trusts no writable completion marker.
 Staged and legitimately finalized states both remain supported; consumed installer
 grants are not demanded back on repeat or second-schema migrations. Protected
 point-of-use guards and managed privileged rollback constraints remain independent.
-Direct runtime development fallback does not waive online migration/startup
-admission, DND authorization or hardened role enforcement. The profile is current
+Fail-closed runtime role establishment does not waive online migration/startup
+admission or the independent DND authorization boundary. The profile is current
 catalog evidence, not script-history attestation. It does not enable the recovery
 executor or provide its secret. See the [operator procedure](../../../docs/data_and_storage/reviewed-bootstrap.md).
 
 #### Execution Order at Startup
 
 1. Core migrations (`chain="core"`)
-2. Module migrations (for each enabled module with non-None `migration_revisions()`)
-3. Butler-specific migrations (if `has_butler_chain(butler_name)` returns True)
+2. Butler-specific migrations (if `has_butler_chain(butler_name)` returns True)
+3. Declared module migration directories, in dependency order, excluding the already-run butler chain
 
 Each chain is upgraded to its head independently. Alembic tracks applied revisions per-chain in the `alembic_version` table within the target schema.
 
@@ -372,7 +375,7 @@ Butlers is a user-federated platform (each user owns their instance). This shape
 ## Integration
 
 - **RFC 0001:** Database provisioning occurs at phase 6, core migrations at phase 7, module migrations at phase 8, credential store creation at phase 8b.
-- **RFC 0002:** Modules declare their migration chains via `migration_revisions()`.
+- **RFC 0002:** CLI and daemon select declared modules' chains from recognized non-empty directories; roster-root aliases and private schemas are preserved.
 - **RFC 0003:** Switchboard-specific tables (`routing_log`, `triage_rules`, `ingestion_events`) live in the switchboard schema.
 - **RFC 0004:** All identity tables reside in the `public` schema with the access model described there.
 - **RFC 0007:** The dashboard reads from all butler schemas (via a privileged connection) to provide cross-butler views.

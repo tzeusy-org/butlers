@@ -19,13 +19,13 @@ from typing import Any
 
 import pytest
 
-from butlers.tools.switchboard.routing.transport import (
+from butlers.tools.switchboard.runtime_attention.outbox import OutboxEpisode, ServiceLease
+from butlers.tools.switchboard.runtime_attention.worker import RuntimeAttentionDeliveryWorker
+from butlers.tools.switchboard.transport import (
     CONFIRMED,
     TransportOutcome,
     TransportResult,
 )
-from butlers.tools.switchboard.runtime_attention.outbox import OutboxEpisode, ServiceLease
-from butlers.tools.switchboard.runtime_attention.worker import RuntimeAttentionDeliveryWorker
 
 pytestmark = [pytest.mark.unit]
 

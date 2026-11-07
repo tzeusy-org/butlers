@@ -6,11 +6,15 @@ Encapsulates all Gemini CLI-specific logic:
 - GEMINI.md / AGENTS.md system prompt reading
 - Result parsing: extracts text output and tool call records
 
-The Gemini CLI is invoked with ``--prompt`` to pass the user prompt
-and ``--sandbox=false`` to disable sandboxing. The system prompt
-(from GEMINI.md or AGENTS.md) is passed inline via ``--system-prompt``.
-MCP server configs are written to a per-invocation temporary settings file
-that the CLI reads as its system settings.
+The Gemini CLI is invoked headless with ``--prompt``, ``-o stream-json`` (JSONL events
+carrying text, tool calls, usage and the terminal result), ``-m`` for the configured model,
+``--skip-trust`` (headless runs in an untrusted folder exit 55) and ``--sandbox=false``.
+The system prompt (from GEMINI.md or AGENTS.md) is written to a per-invocation file named by
+``GEMINI_SYSTEM_MD``, which replaces the CLI's built-in system prompt. MCP server configs
+and the turn limit (``model.maxSessionTurns``; the CLI has no turn flag) are written to a
+per-invocation temporary settings file that the CLI reads as its system settings. The CLI
+ignores a system settings file unless it sits on a root-owned path no group or other user
+can write, so it is staged under ``_SETTINGS_ROOT`` (see :func:`_settings_staging_root`).
 
 Runtime authentication is handled by CLI-level OAuth tokens
 (device-code flow via the dashboard).
@@ -25,19 +29,115 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 
 from butlers.core.child_env import without_owner_auth
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
+from butlers.core.runtimes.served_identity import (
+    TerminalResultError,
+    append_stream,
+    observe_invocation,
+)
 
 logger = logging.getLogger(__name__)
 
 # Default timeout for Gemini CLI invocation (5 minutes)
 _DEFAULT_TIMEOUT_SECONDS = 300
+
+# The CLI's prefix for every MCP tool name (``mcp_<server>_<tool>``); no built-in uses it.
+_MCP_TOOL_PREFIX = "mcp_"
+
+# ``--allowed-mcp-server-names`` value for a session with no butler MCP server. Without an
+# allowlist the CLI starts every user- and project-level MCP server it finds, and the CLI
+# rejects an empty name ("mcpName is required"), so a name no server uses admits none.
+_NO_MCP_SERVERS_ALLOWLIST = "butlers-no-mcp-servers"
+
+# ``--skip-trust`` trusts the working directory (the butler's roster dir). gemini-cli 0.66.0
+# then registers skills from ``<cwd>/.gemini/skills`` and ``<cwd>/.agents/skills`` and reads
+# subagents from ``<cwd>/.gemini/agents``. Butler skills reach the model as files the
+# prompt points at, not through the CLI's registry, so the registries are switched off.
+_CWD_CONFINEMENT_SETTINGS: dict[str, Any] = {
+    "skills": {"enabled": False},
+    "experimental": {"enableAgents": False},
+}
+
+# A headless prompt starting with ``/`` runs as a slash command, including a custom command
+# from ``<cwd>/.gemini/commands``. The CLI trims whitespace before that check, but not a
+# zero-width space, so one in front keeps the prompt text going to the model as text.
+_SLASH_COMMAND_GUARD = "\u200b"
+
+# gemini-cli 0.66.0 also runs headless prompts through ``handleAtCommand``: every ``@path`` or
+# ``@server:uri`` token inlines a workspace file (falling back to the first ``**/*path*`` glob
+# match) or an MCP resource into the prompt, and a failed read aborts the run. Prompts carry
+# routed external text, so no ``@`` may reach that parser. It skips an ``@`` preceded by a
+# backslash and has no setting to switch it off; this mirrors the CLI's own ``escapeAtSymbols``.
+_AT_COMMAND = re.compile(r"(?<!\\)@")
+
+
+def _escape_at_commands(prompt: str) -> str:
+    """Keep every ``@`` in prompt text from being expanded as a gemini-cli at-command."""
+    return _AT_COMMAND.sub(r"\\@", prompt)
+
+
+# The CLI hands an unresolved ``\@`` to the model verbatim. Without this system-prompt line
+# the model copies the backslash into email recipients, handles, and other tool arguments.
+_AT_ESCAPE_NOTE = (
+    "`\\@` in the input is an escaped `@`; write a plain `@` in quotes and tool arguments."
+)
+
+
+# gemini-cli substitutes these ``${...}`` tokens in a GEMINI_SYSTEM_MD file (its
+# ``applySubstitutions``) and has no escape syntax. A zero-width space after ``$`` keeps a
+# butler prompt's literal text from being replaced by the CLI's tool or skill listings.
+_SYSTEM_MD_TOKEN = re.compile(
+    r"\$(?=\{(?:AgentSkills|SubAgents|AvailableTools|[^{}\s]+_ToolName)\})"
+)
+
+
+def _escape_system_md(system_prompt: str) -> str:
+    """Neutralize the CLI's system-prompt substitution tokens in literal prompt text."""
+    return _SYSTEM_MD_TOKEN.sub("$\u200b", system_prompt)
+
+
+# Parent of the per-invocation settings directories. gemini-cli 0.66.0 reads a system
+# settings file only if the file and every ancestor directory are owned by uid 0 and not
+# group/other-writable; otherwise it warns on stderr and runs without it, so the session
+# loses its MCP servers and turn limit. ``/tmp`` (mode 1777) never passes.
+_SETTINGS_ROOT = Path("/run/butlers-gemini")
+
+
+def _settings_staging_root() -> Path:
+    """Return a settings staging root the CLI will trust, or raise ``RuntimeError``.
+
+    Creates ``_SETTINGS_ROOT`` (mode 0700) if needed, then applies the CLI's ownership
+    check to it and each ancestor. The butlers image runs as root, so this holds in the
+    container; an unprivileged process fails here rather than spawn an unconfined session.
+    """
+    try:
+        _SETTINGS_ROOT.mkdir(mode=0o700, exist_ok=True)
+        resolved = Path(os.path.realpath(_SETTINGS_ROOT))
+        for path in (resolved, *resolved.parents):
+            st = os.stat(path)
+            if st.st_uid != 0:
+                reason = f"{path} is not owned by root"
+            elif st.st_mode & 0o022:
+                reason = f"{path} is group- or world-writable"
+            else:
+                continue
+            break
+        else:
+            return _SETTINGS_ROOT
+    except OSError as exc:
+        reason = str(exc)
+    raise RuntimeError(
+        f"Gemini CLI would ignore settings staged under {_SETTINGS_ROOT}: {reason}. "
+        "It reads system settings only from root-owned, non-group/world-writable paths."
+    )
 
 
 def _find_gemini_binary() -> str:
@@ -99,11 +199,14 @@ def _to_gemini_server(server: Mapping[str, Any]) -> dict[str, Any]:
 def _parse_gemini_output(stdout: str, stderr: str) -> tuple[str | None, list[dict[str, Any]]]:
     """Parse Gemini CLI output into (result_text, tool_calls).
 
-    The Gemini CLI may output JSON or plain text to stdout. We attempt
-    to parse JSON-lines first:
-    - ``type: "message"`` — contains the assistant's text response
-    - ``type: "tool_use"`` or ``type: "functionCall"`` — tool invocations
-    - ``type: "result"`` — final result
+    The adapter requests ``-o stream-json``, whose 0.66.0 JSONL events are parsed here
+    (recorded shapes in ``tests/fixtures/gemini_stream_json``):
+    - ``type: "message"`` — ``role`` plus string ``content``. The ``user`` echo of the
+      prompt is skipped; consecutive ``assistant`` chunks marked ``delta: true`` are
+      joined into one text segment, and segments split by other events join with newlines
+    - ``type: "tool_use"`` (``tool_name``/``tool_id``/``parameters``) or the older
+      ``functionCall`` shape — tool invocations
+    - ``type: "result"`` — terminal status and stats (no text in 0.66.0)
 
     If the output is not valid JSON, we treat the entire stdout as
     plain text result.
@@ -128,11 +231,13 @@ def _parse_gemini_output(stdout: str, stderr: str) -> tuple[str | None, list[dic
     # Try to parse as JSON-lines (one JSON object per line)
     lines = stdout.strip().splitlines()
     parsed_any_json = False
+    delta_open = False
 
     for line in lines:
         line = line.strip()
         if not line:
             continue
+        continuing, delta_open = delta_open, False
 
         try:
             obj = json.loads(line)
@@ -149,10 +254,21 @@ def _parse_gemini_output(stdout: str, stderr: str) -> tuple[str | None, list[dic
         obj_type = obj.get("type", "")
 
         if obj_type == "message":
-            # Extract text content from message objects
+            if obj.get("role", "assistant") != "assistant":
+                # stream-json echoes the prompt as a ``user`` message; it is not output.
+                continue
             content = obj.get("content", "")
             if isinstance(content, str) and content:
-                text_parts.append(content)
+                if obj.get("delta") is True:
+                    if continuing:
+                        text_parts[-1] += content
+                    else:
+                        text_parts.append(content)
+                    delta_open = True
+                else:
+                    text_parts.append(content)
+            elif isinstance(content, str):
+                delta_open = continuing
             elif isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict):
@@ -186,36 +302,102 @@ def _parse_gemini_output(stdout: str, stderr: str) -> tuple[str | None, list[dic
 
 
 def _extract_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
-    """Extract a normalized tool call dict from a Gemini JSON object.
+    """Normalize a Gemini tool call, tagging CLI built-ins.
 
-    Handles both standard ``tool_use`` format and Gemini's
-    ``functionCall`` format.
+    Handles the stream-json ``tool_use`` event (``tool_name``/``tool_id``/``parameters``),
+    Gemini's ``functionCall`` container, and the standard ``tool_use`` block.
 
-    Parameters
-    ----------
-    obj:
-        A JSON object representing a tool call.
-
-    Returns
-    -------
-    dict[str, Any]
-        Normalized tool call with 'id', 'name', and 'input' keys.
+    The CLI names every MCP tool ``mcp_<server>_<tool>`` (0.66.0 enforces the prefix);
+    any other name is a CLI built-in (``run_shell_command``, ``read_file``,
+    ``list_directory``, ...) and is marked ``builtin`` so the spawner never mistakes it
+    for confirmed MCP work, matching the Claude adapter.
     """
-    # Gemini functionCall format: {"functionCall": {"name": ..., "args": ...}}
     fn_call = obj.get("functionCall", {})
     if fn_call and isinstance(fn_call, dict):
-        return {
+        record = {
             "id": obj.get("id", ""),
             "name": fn_call.get("name", ""),
             "input": fn_call.get("args", fn_call.get("arguments", {})),
         }
+    elif "tool_name" in obj:
+        record = {
+            "id": obj.get("tool_id", ""),
+            "name": obj.get("tool_name", ""),
+            "input": obj.get("parameters", {}),
+        }
+    else:
+        record = {
+            "id": obj.get("id", ""),
+            "name": obj.get("name", ""),
+            "input": obj.get("input", obj.get("args", obj.get("arguments", {}))),
+        }
+    if not str(record["name"] or "").startswith(_MCP_TOOL_PREFIX):
+        record["builtin"] = True
+    return record
 
-    # Standard tool_use format
-    return {
-        "id": obj.get("id", ""),
-        "name": obj.get("name", ""),
-        "input": obj.get("input", obj.get("args", obj.get("arguments", {}))),
-    }
+
+def _gemini_tools_ran(stdout: str, tool_calls: list[dict[str, Any]]) -> bool:
+    """Return whether the stream proves a tool ran, for ``is_pre_tool_call``.
+
+    Evidence is any parsed tool call or a ``result`` event whose
+    ``stats.tool_calls`` is positive. That counter is the CLI's telemetry total
+    (``metrics.tools.totalCalls``), so it also counts tool calls that emit no
+    top-level ``tool_use`` event, such as a subagent's.
+    """
+    if tool_calls:
+        return True
+    for line in stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(obj, dict) or obj.get("type") != "result":
+            continue
+        stats = obj.get("stats")
+        count = stats.get("tool_calls") if isinstance(stats, dict) else None
+        if type(count) is int and count > 0:
+            return True
+    return False
+
+
+# Environment warnings gemini-cli 0.66.0 prints to stderr on every headless run in the
+# container; they never explain a failure, so ``error_detail`` drops them.
+_STDERR_NOISE = (
+    "256-color support not detected",
+    "True color (24-bit) support not detected",
+    "Ripgrep is not available. Falling back to GrepTool.",
+)
+
+
+def _strip_stderr_noise(stderr: str) -> str:
+    """Return ``stderr`` without lines carrying a known gemini-cli environment warning."""
+    lines = stderr.splitlines()
+    return "\n".join(line for line in lines if not any(n in line for n in _STDERR_NOISE))
+
+
+def _gemini_terminal_error_text(stdout: str) -> str | None:
+    """Return the last failed ``result`` event's ``error.message``, else ``None``.
+
+    Stream-json writes the CLI's fatal error there (``status: "error"``). Each
+    stdout line is a CLI-encoded event, so model text and tool output stay
+    nested inside ``message``/``tool_result`` events and cannot forge one;
+    usage-limit detection can trust it where ``error_detail`` falls back to
+    raw stdout.
+    """
+    text: str | None = None
+    for line in stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(obj, dict) or obj.get("type") != "result":
+            continue
+        if obj.get("status") != "error":
+            continue
+        error = obj.get("error")
+        message = error.get("message") if isinstance(error, dict) else None
+        text = message.strip() if isinstance(message, str) and message.strip() else None
+    return text
 
 
 class GeminiAdapter(RuntimeAdapter):
@@ -223,7 +405,7 @@ class GeminiAdapter(RuntimeAdapter):
 
     Invokes the Gemini CLI binary via subprocess. The adapter handles:
     - Locating the ``gemini`` binary on PATH
-    - Passing system prompts via ``--system-prompt`` flag
+    - Passing system prompts via a ``GEMINI_SYSTEM_MD`` file
     - Writing MCP config in Gemini-compatible JSON format
     - Passing through env vars
     - Parsing CLI output into (result_text, tool_calls)
@@ -261,6 +443,8 @@ class GeminiAdapter(RuntimeAdapter):
             return self._gemini_binary
         return _find_gemini_binary()
 
+    @override
+    @observe_invocation("gemini")
     async def invoke(
         self,
         prompt: str,
@@ -275,15 +459,21 @@ class GeminiAdapter(RuntimeAdapter):
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
         """Invoke the Gemini CLI with the given prompt and configuration.
 
-        Builds the command line, passes the system prompt via
-        ``--system-prompt``, and parses the output. When ``mcp_servers`` is
-        non-empty it is written through :meth:`build_config_file` into a
-        per-invocation temporary directory that the CLI is pointed at as its
-        system settings file (``GEMINI_CLI_SYSTEM_SETTINGS_PATH``, which Gemini
-        ranks above user and project settings), and ``--allowed-mcp-server-names``
-        limits the session to the configured servers so user- or project-level
-        MCP servers are not reachable. That confinement covers MCP servers
-        only: Gemini's built-in shell, file and web tools are not confined
+        Builds the command line, stages the system prompt as the
+        ``GEMINI_SYSTEM_MD`` file in a per-invocation temporary directory under
+        :func:`_settings_staging_root`, and
+        parses the stream-json output. ``mcp_servers`` and the ``max_turns`` limit
+        are written through :meth:`build_config_file` into that directory, which the
+        CLI is pointed at as its system settings file
+        (``GEMINI_CLI_SYSTEM_SETTINGS_PATH``, which Gemini ranks above user and
+        project settings). ``--allowed-mcp-server-names`` limits the session to the
+        configured servers, or to none when ``mcp_servers`` is empty, so user- or
+        project-level MCP servers are not reachable even though ``--skip-trust``
+        trusts the working directory. The same settings switch off the CLI's skill and
+        subagent registries, and a prompt starting with ``/`` is sent as text, so the
+        working directory's ``.gemini/`` skills, agents and commands never load. The CLI
+        has no setting to stop it loading ``<cwd>/GEMINI.md``, so the roster ships none.
+        That confinement does not reach Gemini's built-in shell, file and web tools
         (``--sandbox=false``). The user home is left alone so the CLI's
         OAuth credentials keep working.
 
@@ -297,6 +487,10 @@ class GeminiAdapter(RuntimeAdapter):
             MCP server configurations for the butler.
         env:
             Environment variables for the subprocess (will be filtered).
+        max_turns:
+            Turn limit, staged as ``model.maxSessionTurns``.
+        model:
+            Model id passed as ``-m``; the CLI default applies when omitted.
         cwd:
             Working directory for the Gemini process.
         timeout:
@@ -305,8 +499,9 @@ class GeminiAdapter(RuntimeAdapter):
         Returns
         -------
         tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]
-            A tuple of (result_text, tool_calls, usage). Usage is always
-            None for the Gemini adapter (no token reporting).
+            A tuple of (result_text, tool_calls, usage). Valid terminal
+            stream counters supply normalized uncached/cache usage; absent
+            or contradictory counters remain unknown.
 
         Raises
         ------
@@ -314,6 +509,12 @@ class GeminiAdapter(RuntimeAdapter):
             If the gemini binary is not found on PATH.
         TimeoutError
             If the Gemini process exceeds the timeout.
+        RuntimeError
+            If the Gemini process exits non-zero with no failed terminal result, or
+            the settings staging root fails the CLI's ownership check (before spawn).
+        TerminalResultError
+            If the stream carries a failed terminal result (``status: "error"``),
+            at any exit code; it keeps the attempt's usage and tool calls.
         """
         binary = self._get_binary()
         effective_timeout = timeout or _DEFAULT_TIMEOUT_SECONDS
@@ -321,42 +522,53 @@ class GeminiAdapter(RuntimeAdapter):
         # Filter environment variables
         filtered_env = None if env is None else _filter_env(env)
 
-        # Build command
-        cmd = [
-            binary,
-            "--sandbox=false",
-        ]
-
-        # Pass system prompt via --system-prompt flag
-        if system_prompt:
-            cmd.extend(["--system-prompt", system_prompt])
-
-        # Pass prompt via --prompt flag
-        cmd.extend(["--prompt", prompt])
-
-        config_dir = tempfile.TemporaryDirectory(prefix="butlers-gemini-")
-        if mcp_servers:
-            # Gemini's ``url`` key is SSE; the butler endpoint is streamable HTTP, which
-            # Gemini names ``httpUrl``.
-            gemini_servers = {name: _to_gemini_server(cfg) for name, cfg in mcp_servers.items()}
-            config_path = self.build_config_file(gemini_servers, Path(config_dir.name))
-            filtered_env = {
-                **(filtered_env if filtered_env is not None else os.environ),
-                "GEMINI_CLI_SYSTEM_SETTINGS_PATH": str(config_path),
-            }
-            cmd.extend(["--allowed-mcp-server-names", ",".join(gemini_servers)])
-
-        logger.debug("Invoking Gemini CLI: %s", " ".join(cmd[:3]) + " ...")
+        # Build command. ``--skip-trust``: headless runs in an untrusted folder exit 55.
+        # ``-o stream-json``: the default text output carries no usage or terminal result.
+        cmd = [binary, "--sandbox=false", "--skip-trust", "-o", "stream-json"]
+        if model:
+            cmd.extend(["-m", model])
+        if prompt.lstrip().startswith("/"):
+            prompt = _SLASH_COMMAND_GUARD + prompt
+        sent_prompt = _escape_at_commands(prompt)
+        if sent_prompt != prompt:
+            system_prompt = "\n\n".join(filter(None, [system_prompt, _AT_ESCAPE_NOTE]))
+        cmd.extend(["--prompt", sent_prompt])
 
         cmd_for_log = " ".join(cmd[:3]) + " ..."
         proc = None
+        config_dir: tempfile.TemporaryDirectory[str] | None = None
 
         try:
+            config_dir = tempfile.TemporaryDirectory(
+                prefix="butlers-gemini-", dir=_settings_staging_root()
+            )
+            staged_env: dict[str, str] = {}
+            if system_prompt:
+                # The CLI has no system-prompt flag and its strict parser rejects unknown
+                # ones; GEMINI_SYSTEM_MD names a file that replaces the built-in prompt.
+                system_md = Path(config_dir.name) / "system.md"
+                system_md.write_text(_escape_system_md(system_prompt), encoding="utf-8")
+                staged_env["GEMINI_SYSTEM_MD"] = str(system_md)
+            # Gemini's ``url`` key is SSE; the butler endpoint is streamable HTTP, which
+            # Gemini names ``httpUrl``.
+            gemini_servers = {name: _to_gemini_server(cfg) for name, cfg in mcp_servers.items()}
+            config_path = self.build_config_file(
+                gemini_servers, Path(config_dir.name), max_session_turns=max_turns
+            )
+            staged_env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"] = str(config_path)
+            allowed_servers = ",".join(gemini_servers) or _NO_MCP_SERVERS_ALLOWLIST
+            cmd.extend(["--allowed-mcp-server-names", allowed_servers])
+            child_env = {
+                **(filtered_env if filtered_env is not None else os.environ),
+                **staged_env,
+            }
+
+            logger.debug("Invoking Gemini CLI: %s", cmd_for_log)
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=filtered_env,
+                env=child_env,
                 cwd=str(cwd) if cwd else None,
             )
 
@@ -372,6 +584,13 @@ class GeminiAdapter(RuntimeAdapter):
                 logger.debug("Gemini stderr: %s", stderr[:500])
 
             returncode = proc.returncode or 0
+            served = append_stream(
+                self,
+                "gemini",
+                stdout,
+                configured=model,
+                completion="error" if returncode else "success",
+            )
             self._last_process_info = {
                 "pid": proc.pid,
                 "exit_code": returncode,
@@ -380,21 +599,37 @@ class GeminiAdapter(RuntimeAdapter):
                 "runtime_type": "gemini",
             }
 
+            aggregate = served["executions"][0]["aggregate_usage"] if served["executions"] else {}
+            usage = aggregate if aggregate.get("input_tokens") is not None else None
+            terminal_error = any(item["error"]["is_error"] is True for item in served["executions"])
+            if terminal_error and (terminal_text := _gemini_terminal_error_text(stdout)):
+                self._last_process_info["terminal_error_text"] = terminal_text
             if returncode != 0:
-                error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+                cause = _strip_stderr_noise(stderr).strip()
+                error_detail = cause or stdout.strip() or f"exit code {returncode}"
                 logger.error("Gemini CLI exited with code %d: %s", returncode, error_detail)
                 self._last_process_info["error_detail"] = error_detail
-                # On non-zero exit the adapter raises immediately — no tool calls
-                # were captured by the adapter itself, so this is pre-tool-call.
-                # The spawner will layer in daemon-side tool-call capture.
-                self._last_process_info["is_pre_tool_call"] = True
-                raise RuntimeError(f"Gemini CLI exited with code {returncode}: {error_detail}")
+                message = f"Gemini CLI exited with code {returncode}: {error_detail}"
+                if not terminal_error:
+                    # No result envelope: nothing proves work started, so this is
+                    # pre-tool-call. The spawner layers in daemon-side capture.
+                    self._last_process_info["is_pre_tool_call"] = True
+                    raise RuntimeError(message)
+                # Stream-json emits ``result``/``status: error`` and then exits with
+                # the error's code (turn limit is 53); keep its usage and tool evidence.
+                _, tool_calls = _parse_gemini_output(stdout, stderr)
+                self._last_process_info["is_pre_tool_call"] = not _gemini_tools_ran(
+                    stdout, tool_calls
+                )
+                raise TerminalResultError(served, usage, tool_calls, message)
 
             result_text, tool_calls = _parse_gemini_output(stdout, stderr)
-            # Token reporting contract: Gemini CLI does not expose token counts
-            # in its output format. Usage is None — no ledger row will be written
-            # for this invocation. This is intentional and documented.
-            return result_text, tool_calls, None
+            if terminal_error:
+                self._last_process_info["is_pre_tool_call"] = not _gemini_tools_ran(
+                    stdout, tool_calls
+                )
+                raise TerminalResultError(served, usage, tool_calls)
+            return result_text, tool_calls, usage
 
         except TimeoutError:
             logger.error("Gemini CLI timed out after %ds", effective_timeout)
@@ -435,12 +670,15 @@ class GeminiAdapter(RuntimeAdapter):
             raise
 
         finally:
-            config_dir.cleanup()
+            if config_dir is not None:
+                config_dir.cleanup()
 
     def build_config_file(
         self,
         mcp_servers: dict[str, Any],
         tmp_dir: Path,
+        *,
+        max_session_turns: int | None = None,
     ) -> Path:
         """Write MCP config in Gemini-compatible JSON format.
 
@@ -454,15 +692,23 @@ class GeminiAdapter(RuntimeAdapter):
             Dict mapping server name to config (must include 'url' key).
         tmp_dir:
             Temporary directory to write the config file into.
+        max_session_turns:
+            When positive, written as ``model.maxSessionTurns``, the CLI's only turn
+            limit; reaching it ends the run with a ``FatalTurnLimitedError`` result
+            and exit code 53.
 
         Returns
         -------
         Path
             Path to the generated gemini_mcp.json file.
         """
-        config = {"mcpServers": mcp_servers}
+        config: dict[str, Any] = {"mcpServers": mcp_servers, **_CWD_CONFINEMENT_SETTINGS}
+        if max_session_turns is not None and max_session_turns > 0:
+            config["model"] = {"maxSessionTurns": max_session_turns}
         config_path = tmp_dir / "gemini_mcp.json"
-        config_path.write_text(json.dumps(config, indent=2))
+        config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        # The CLI skips a group/other-writable system settings file; don't depend on umask.
+        config_path.chmod(0o600)
         return config_path
 
     def parse_system_prompt_file(self, config_dir: Path) -> str:

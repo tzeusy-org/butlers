@@ -25,11 +25,15 @@ import asyncio
 import logging
 import uuid
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
+import httpx
 import pytest
+from fastmcp import FastMCP
 from pydantic import BaseModel, ValidationError
 
 import butlers.modules._roster_home.actuation as ha_actuation
@@ -50,6 +54,7 @@ from butlers.modules.approvals.execution_context import (
     set_approval_execution_context,
 )
 from butlers.modules.base import Module, ToolMeta
+from butlers.testing.mcp import registered_tools
 
 pytestmark = pytest.mark.unit
 
@@ -59,6 +64,7 @@ EXPECTED_HA_TOOLS = {
     "ha_list_areas",
     "ha_list_services",
     "ha_get_history",
+    "ha_get_recorded_history",
     "ha_get_statistics",
     "ha_render_template",
     "ha_call_service",
@@ -75,10 +81,166 @@ EXPECTED_HA_READ_ONLY_TOOLS = {
     "ha_list_areas",
     "ha_list_services",
     "ha_get_history",
+    "ha_get_recorded_history",
     "ha_get_statistics",
     "ha_render_template",
     "ha_maintenance_list",
 }
+
+
+class TestRecordedHistory:
+    async def test_named_ordered_durable_history_and_source_freshness(self, mock_mcp) -> None:
+        start = datetime(2026, 10, 1, tzinfo=UTC)
+        rows = [
+            {"entity_id": "sensor.room", "state": "20", "recorded_at": start},
+            {"entity_id": "sensor.room", "state": "21", "recorded_at": start + timedelta(hours=1)},
+        ]
+        pool = SimpleNamespace(
+            fetch=AsyncMock(return_value=rows),
+            fetchrow=AsyncMock(
+                return_value={
+                    "status": "healthy",
+                    "last_success_at": start,
+                    "lease_current": True,
+                }
+            ),
+        )
+        module = HomeAssistantModule()
+        await module.register_tools(mock_mcp, {}, SimpleNamespace(pool=pool), butler_name="home")
+        tool = (await registered_tools(mock_mcp))["ha_get_recorded_history"]
+        module._client = MagicMock()
+        module._client.get = AsyncMock(side_effect=AssertionError("must not contact HA"))
+        result = await tool(
+            ["sensor.room"], start.isoformat(), (start + timedelta(days=1)).isoformat()
+        )
+        assert result == {
+            "status": "ok",
+            "transitions": rows,
+            "truncated": False,
+            "source": {"status": "healthy", "last_success_at": start},
+        }
+        sql, entities, lower, upper, count = pool.fetch.await_args.args
+        assert entities == ["sensor.room"] and lower == start and upper == start + timedelta(days=1)
+        assert count == 501
+        assert "entity_id = ANY($1::text[])" in sql
+        assert "recorded_at >= $2 AND recorded_at < $3" in sql
+        assert "ORDER BY recorded_at ASC, id ASC" in sql and "LIMIT $4" in sql
+        assert "attributes" not in sql
+        assert "now()" in pool.fetchrow.await_args.args[0]
+        pool.fetch.return_value = [{**rows[0], "attributes": {"unit": "C"}}]
+        with_attributes = await tool(
+            ["sensor.room"],
+            start.isoformat(),
+            (start + timedelta(days=31)).isoformat(),
+            limit=2000,
+            include_attributes=True,
+        )
+        assert with_attributes["transitions"][0]["attributes"] == {"unit": "C"}
+        assert "attributes" in pool.fetch.await_args.args[0]
+        assert pool.fetch.await_args.args[-1] == 2001
+        module._client.get.assert_not_awaited()
+
+    async def test_stored_history_survives_outage_and_missing_or_expired_health(
+        self, mock_mcp
+    ) -> None:
+        last = datetime(2026, 10, 1, tzinfo=UTC)
+        rows = [{"entity_id": "person.owner", "state": "home", "recorded_at": last}]
+        pool = SimpleNamespace(fetch=AsyncMock(return_value=rows), fetchrow=AsyncMock())
+        module = HomeAssistantModule()
+        await module.register_tools(
+            mock_mcp, {"read_only": True}, SimpleNamespace(pool=pool), butler_name="home"
+        )
+        tool = (await registered_tools(mock_mcp))["ha_get_recorded_history"]
+        for health, expected in [
+            ({"status": "error", "last_success_at": last, "lease_current": False}, "error"),
+            ({"status": "healthy", "last_success_at": last, "lease_current": False}, "stale"),
+            ({"status": "healthy", "last_success_at": None, "lease_current": False}, "unknown"),
+            (None, "unknown"),
+        ]:
+            pool.fetchrow.return_value = health
+            result = await tool(
+                ["person.owner"], last.isoformat(), (last + timedelta(days=1)).isoformat()
+            )
+            assert result["status"] == "ok" and result["transitions"] == rows
+            assert result["source"] == {
+                "status": expected,
+                "last_success_at": health["last_success_at"] if health else None,
+            }
+        pool.fetch.return_value = []
+        empty = await tool(
+            ["person.owner"], last.isoformat(), (last + timedelta(days=1)).isoformat()
+        )
+        assert empty["status"] == "ok" and empty["transitions"] == []
+        assert empty["source"]["status"] == "unknown"
+
+    @pytest.mark.parametrize(
+        "change,refused",
+        [
+            ({"entity_ids": []}, True),
+            ({"entity_ids": [""]}, True),
+            ({"start": "not-a-date"}, True),
+            ({"start": "2026-10-01T00:00:00"}, True),
+            ({"end": "2026-10-01T00:00:00Z"}, True),
+            ({"end": "2026-11-02T00:00:00Z"}, True),
+            ({"limit": 2001}, True),
+            ({"limit": 0}, True),
+            ({"limit": True}, True),
+            ({"limit": 1}, False),
+        ],
+    )
+    async def test_recorded_history_bounds_and_truncation(self, mock_mcp, change, refused) -> None:
+        pool = SimpleNamespace(
+            fetch=AsyncMock(
+                return_value=[
+                    {
+                        "entity_id": "sensor.room",
+                        "state": str(i),
+                        "recorded_at": datetime(2026, 10, 1, i, tzinfo=UTC),
+                    }
+                    for i in range(2)
+                ]
+            ),
+            fetchrow=AsyncMock(return_value=None),
+        )
+        module = HomeAssistantModule()
+        await module.register_tools(mock_mcp, {}, SimpleNamespace(pool=pool), butler_name="home")
+        tool = (await registered_tools(mock_mcp))["ha_get_recorded_history"]
+        args = {
+            "entity_ids": ["sensor.room"],
+            "start": "2026-10-01T00:00:00Z",
+            "end": "2026-10-02T00:00:00Z",
+            **change,
+        }
+        if refused:
+            with pytest.raises(ValueError):
+                await tool(**args)
+            pool.fetch.assert_not_awaited()
+            pool.fetchrow.assert_not_awaited()
+        else:
+            result = await tool(**args)
+            assert result["truncated"] is True
+            assert result["transitions"] == pool.fetch.return_value[:1]
+            assert pool.fetch.await_args.args[-1] == 2
+
+    async def test_missing_storage_or_grant_is_typed_unavailable(self, mock_mcp) -> None:
+        module = HomeAssistantModule()
+        pool = SimpleNamespace(fetch=AsyncMock(), fetchrow=AsyncMock(return_value=None))
+        await module.register_tools(mock_mcp, {}, SimpleNamespace(pool=pool), butler_name="home")
+        tool = (await registered_tools(mock_mcp))["ha_get_recorded_history"]
+        args = (["sensor.room"], "2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z")
+        for error, reason in [
+            (asyncpg.UndefinedTableError("private SQL details"), "missing_table"),
+            (asyncpg.InsufficientPrivilegeError("private SQL details"), "permission_denied"),
+            (asyncpg.PostgresConnectionError("private endpoint"), "database_unavailable"),
+        ]:
+            for phase in ("health", "history"):
+                pool.fetchrow.side_effect = error if phase == "health" else None
+                pool.fetch.side_effect = error if phase == "history" else None
+                result = await tool(*args)
+                assert result == {"status": "unavailable", "reason": reason}
+                assert "transitions" not in result
+        module._db = None
+        assert await tool(*args) == {"status": "unavailable", "reason": "database_unavailable"}
 
 
 # ---------------------------------------------------------------------------
@@ -92,22 +254,8 @@ def ha_module() -> HomeAssistantModule:
 
 
 @pytest.fixture
-def mock_mcp() -> MagicMock:
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_args, **kwargs):
-        declared_name = kwargs.get("name")
-
-        def decorator(fn):
-            tools[declared_name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    return mcp
+def mock_mcp() -> FastMCP:
+    return FastMCP("providers8-home_assistant-tools")
 
 
 # ---------------------------------------------------------------------------
@@ -214,14 +362,14 @@ class TestToolRegistration:
         await ha_module.register_tools(
             mcp=mock_mcp, config={"url": "http://ha.local"}, db=None, butler_name="test-butler"
         )
-        assert set(mock_mcp._registered_tools.keys()) == EXPECTED_HA_TOOLS
+        assert set((await registered_tools(mock_mcp)).keys()) == EXPECTED_HA_TOOLS
 
     async def test_read_only_registers_only_query_tools(self, mock_mcp: MagicMock) -> None:
         module = HomeAssistantModule()
         await module.register_tools(
             mcp=mock_mcp, config={"read_only": True}, db=None, butler_name="test-butler"
         )
-        assert set(mock_mcp._registered_tools.keys()) == EXPECTED_HA_READ_ONLY_TOOLS
+        assert set((await registered_tools(mock_mcp)).keys()) == EXPECTED_HA_READ_ONLY_TOOLS
 
     def test_default_registry_includes_home_assistant(self) -> None:
         from butlers.modules.registry import default_registry
@@ -246,12 +394,15 @@ class TestOnStartup:
             "butlers.credential_store.resolve_owner_entity_info",
             new=AsyncMock(side_effect=_resolve),
         ):
-            with patch("httpx.AsyncClient", return_value=MagicMock()):
+            with patch("httpx.AsyncClient", return_value=MagicMock()) as factory:
                 with patch.object(HomeAssistantModule, "_ws_connect_and_seed", new=AsyncMock()):
                     await ha_module.on_startup(config={}, db=mock_db)
 
         assert ha_module._url == "http://ha.local"
         assert ha_module._token == "test-token"
+        assert factory.call_args.kwargs["verify"] is False
+        assert factory.call_args.kwargs["timeout"] == httpx.Timeout(5.0)
+        assert factory.call_args.kwargs["headers"]["Authorization"] == "Bearer test-token"
 
     async def test_startup_raises_if_url_missing(self, ha_module: HomeAssistantModule) -> None:
         mock_db = MagicMock()
@@ -918,7 +1069,7 @@ async def _registered_actuation(mock_mcp, monkeypatch, args, *, units=None):
     monkeypatch.setattr(module, "_emit_actuation_event", event)
     return SimpleNamespace(
         module=module,
-        tool=mock_mcp._registered_tools["ha_call_service"],
+        tool=(await registered_tools(mock_mcp))["ha_call_service"],
         client=client,
         pool=pool,
         park=park,
@@ -1433,3 +1584,118 @@ async def test_promoted_approval_context_is_exact(mock_mcp, monkeypatch):
         finally:
             reset_approval_execution_context(token)
         _assert_parked(case, args, result, case_id)
+
+
+@pytest.mark.parametrize(
+    "domain,service,target",
+    [
+        ("notify", "mobile_app_guest", None),
+        ("tts", "speak", {"entity_id": "media_player.shared_speaker"}),
+    ],
+)
+async def test_message_audience_is_classified_independently_of_physical_risk(
+    mock_mcp, monkeypatch, domain, service, target
+):
+    args = {
+        "domain": domain,
+        "service": service,
+        "target": target,
+        "data": {"message": "Synthetic announcement"},
+    }
+    case = await _registered_actuation(mock_mcp, monkeypatch, args)
+    resolver = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration", resolver
+    )
+    outcome = await case.tool(**args)
+    assert outcome["status"] == "pending_approval"
+    assert outcome["risk"] == "protected"  # The physical boundary is conserved.
+    resolver.assert_awaited()
+    assert outcome["communication"] == {"effect_class": "communicate", "owner_only": False}
+    assert "non-owner communication" in case.park.await_args.kwargs["why"]
+    assert case.park.await_args.kwargs["tool_args"] == args
+    case.client.post.assert_not_awaited()
+    case.client.get.assert_not_awaited()
+
+
+async def test_owner_notification_keeps_its_independent_protected_gate(mock_mcp, monkeypatch):
+    args = {
+        "domain": "notify",
+        "service": "mobile_app_owner",
+        "target": None,
+        "data": {"message": "Synthetic owner message", "title": "Synthetic"},
+    }
+    case = await _registered_actuation(mock_mcp, monkeypatch, args)
+    resolver = AsyncMock(return_value=SimpleNamespace(roles=["owner"]))
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration", resolver
+    )
+    result = await case.tool(**args)
+    resolver.assert_awaited_once_with(case.pool, "other", "home_assistant:notify:mobile_app_owner")
+    assert result["communication"] == {"effect_class": "communicate", "owner_only": True}
+    assert result["risk"] == "protected"
+    assert result["status"] == "pending_approval"
+    assert "non-owner communication" not in case.park.await_args.kwargs["why"]
+    assert case.park.await_args.kwargs["tool_args"] == args
+    case.client.post.assert_not_awaited()
+
+
+@pytest.mark.parametrize("selector", ["target", "area_id", "label_id"])
+async def test_owner_notifier_does_not_authorize_unresolved_data_targets(
+    mock_mcp, monkeypatch, selector
+):
+    from butlers.roster_imports import roster_module
+
+    actuation = roster_module("home", "modules/actuation")
+    args = {
+        "domain": "notify",
+        "service": "generic_owner_notifier",
+        "target": None,
+        "data": {"message": "Synthetic routed message", selector: ["guest-destination"]},
+    }
+    case = await _registered_actuation(mock_mcp, monkeypatch, args)
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration",
+        AsyncMock(return_value=SimpleNamespace(roles=["owner"])),
+    )
+    outcome = await case.tool(**args)
+    assert outcome["communication"] == {"effect_class": "communicate", "owner_only": False}
+    assert actuation.communication_parties(
+        "notify", "generic_owner_notifier", None, args["data"]
+    ) == (True, None)
+    # This corrects classification; the pre-existing physical gate already parks.
+    assert outcome["risk"] == "protected"
+    assert outcome["status"] == "pending_approval"
+    assert "non-owner communication" in case.park.await_args.kwargs["why"]
+    assert case.park.await_args.kwargs["tool_args"] == args
+    case.client.post.assert_not_awaited()
+
+
+async def test_ws_malformed_frame_withholds_content_and_keeps_valid_delivery(
+    ha_module: HomeAssistantModule, caplog: pytest.LogCaptureFixture
+) -> None:
+    from types import SimpleNamespace
+
+    import aiohttp
+
+    secret = "SYNTHETIC-HA-PRIVATE-FRAME"
+    ha_module._shutdown = False
+    ha_module._ws_connected = True
+    ha_module._record_ha_source_error = AsyncMock()
+    ha_module._start_poll_fallback = MagicMock()
+    ha_module._schedule_reconnect = MagicMock()
+    ha_module._dispatch_ws_message = AsyncMock()
+    ha_module._ws_connection = SimpleNamespace(
+        closed=False,
+        receive=AsyncMock(
+            side_effect=[
+                SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data=secret),
+                SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data='{"type":"pong"}'),
+                SimpleNamespace(type=aiohttp.WSMsgType.CLOSE),
+            ]
+        ),
+    )
+    await ha_module._ws_message_loop()
+    ha_module._dispatch_ws_message.assert_awaited_once_with({"type": "pong"})
+    assert secret not in caplog.text
+    assert any("invalid" in r.getMessage() for r in caplog.records)

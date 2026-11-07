@@ -9,16 +9,13 @@ per RFC 0014 §D7.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import logging
-import sys
 import time
 import zoneinfo
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
-from pathlib import Path
 from typing import Annotated, Any, Protocol
 from uuid import UUID
 
@@ -28,7 +25,7 @@ from opentelemetry import trace
 
 from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
+from butlers.api.deps import ButlerUnreachableError, Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import (
     ApiResponse,
     ErrorDetail,
@@ -36,6 +33,8 @@ from butlers.api.models import (
     PaginatedResponse,
     PaginationMeta,
 )
+from butlers.api.owner_control import require_dashboard_owner_control
+from butlers.chronicler import location_retention as _location_retention
 from butlers.chronicler.adapters.comms import CHANNEL_LABELS
 from butlers.chronicler.adapters.sessions import (
     EXCLUDED_TRIGGER_SOURCE_PREFIX,
@@ -63,6 +62,7 @@ from butlers.chronicler.day_close_cache import (
     resolve_day_close_timezone,
 )
 from butlers.chronicler.editorial import WAKING_HOUR_END, WAKING_HOUR_START, day_window_utc
+from butlers.chronicler.history_repair import pending_numeric_repair_dates, try_shared_lock
 from butlers.chronicler.models import RoutineOrigin
 from butlers.chronicler.prose_admission import classify_day_close_candidate
 from butlers.chronicler.rollups import DEFAULT_TIMEZONE as ROLLUPS_DEFAULT_TIMEZONE
@@ -76,73 +76,64 @@ from butlers.chronicler.storage import (
     update_routine,
     upsert_tier2_cache,
 )
+from butlers.roster_imports import roster_module
 
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("chronicler_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["chronicler_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("chronicler", "api/models", api_source=__file__)
 
-    ChroniclerPointEvent = _models.ChroniclerPointEvent
-    ChroniclerEpisode = _models.ChroniclerEpisode
-    ChroniclerOverride = _models.ChroniclerOverride
-    SourceStateRow = _models.SourceStateRow
-    SubsourceCheckpoint = _models.SubsourceCheckpoint
-    SubmitCorrectionRequest = _models.SubmitCorrectionRequest
-    ResolveGapInterviewRequest = _models.ResolveGapInterviewRequest
-    AggregateByDayRow = _models.AggregateByDayRow
-    SourceBreakdownEntry = _models.SourceBreakdownEntry
-    CategoryBucket = _models.CategoryBucket
-    CategoryBuckets = _models.CategoryBuckets
-    DayCloseFreshResponse = _models.DayCloseFreshResponse
-    DayCloseStaleResponse = _models.DayCloseStaleResponse
-    DayCloseInvalidResponse = _models.DayCloseInvalidResponse
-    DayCloseRefreshRequest = _models.DayCloseRefreshRequest
-    DayCloseRefreshResponse = _models.DayCloseRefreshResponse
-    DayCloseRefreshQuietResponse = _models.DayCloseRefreshQuietResponse
-    EpisodeExplainResponse = _models.EpisodeExplainResponse
-    OpsSessionRow = _models.OpsSessionRow
-    ProjectionHealthRow = _models.ProjectionHealthRow
-    ChroniclesAttentionItem = _models.ChroniclesAttentionItem
-    ChroniclesBriefing = _models.ChroniclesBriefing
-    ChroniclesBriefingSubqueryAvailability = _models.ChroniclesBriefingSubqueryAvailability
-    ChroniclesKpi = _models.ChroniclesKpi
-    ChroniclesLaneHours = _models.ChroniclesLaneHours
-    ChroniclesRecentDay = _models.ChroniclesRecentDay
-    ChroniclesStreaks = _models.ChroniclesStreaks
-    EvidenceChainLink = _models.EvidenceChainLink
-    ActivityEvidenceChain = _models.ActivityEvidenceChain
-    CorrectionPrompt = _models.CorrectionPrompt
-    CorrectionPrompts = _models.CorrectionPrompts
-    RoutineRow = _models.RoutineRow
-    CreateRoutineRequest = _models.CreateRoutineRequest
-    UpdateRoutineRequest = _models.UpdateRoutineRequest
-    RollupLaneRow = _models.RollupLaneRow
-    RollupFlagRow = _models.RollupFlagRow
-    RollupDay = _models.RollupDay
-    RollupsResponse = _models.RollupsResponse
-    BalanceLaneRow = _models.BalanceLaneRow
-    BalanceResponse = _models.BalanceResponse
-    TrendLaneDay = _models.TrendLaneDay
-    TrendLaneSeries = _models.TrendLaneSeries
-    TrendAnomaly = _models.TrendAnomaly
-    TrendsResponse = _models.TrendsResponse
-    CompanionEntry = _models.CompanionEntry
-    WhoYouWereWithResponse = _models.WhoYouWereWithResponse
-else:  # pragma: no cover — defensive
-    raise RuntimeError("Failed to load chronicler API models module")
+ChroniclerPointEvent = _models.ChroniclerPointEvent
+ChroniclerEpisode = _models.ChroniclerEpisode
+ChroniclerOverride = _models.ChroniclerOverride
+SourceStateRow = _models.SourceStateRow
+SubsourceCheckpoint = _models.SubsourceCheckpoint
+SubmitCorrectionRequest = _models.SubmitCorrectionRequest
+ResolveGapInterviewRequest = _models.ResolveGapInterviewRequest
+AggregateByDayRow = _models.AggregateByDayRow
+SourceBreakdownEntry = _models.SourceBreakdownEntry
+CategoryBucket = _models.CategoryBucket
+CategoryBuckets = _models.CategoryBuckets
+DayCloseFreshResponse = _models.DayCloseFreshResponse
+DayCloseStaleResponse = _models.DayCloseStaleResponse
+DayCloseInvalidResponse = _models.DayCloseInvalidResponse
+DayCloseRefreshRequest = _models.DayCloseRefreshRequest
+DayCloseRefreshResponse = _models.DayCloseRefreshResponse
+DayCloseRefreshQuietResponse = _models.DayCloseRefreshQuietResponse
+EpisodeExplainResponse = _models.EpisodeExplainResponse
+OpsSessionRow = _models.OpsSessionRow
+ProjectionHealthRow = _models.ProjectionHealthRow
+ChroniclesAttentionItem = _models.ChroniclesAttentionItem
+ChroniclesBriefing = _models.ChroniclesBriefing
+ChroniclesBriefingSubqueryAvailability = _models.ChroniclesBriefingSubqueryAvailability
+ChroniclesKpi = _models.ChroniclesKpi
+ChroniclesLaneHours = _models.ChroniclesLaneHours
+ChroniclesRecentDay = _models.ChroniclesRecentDay
+ChroniclesStreaks = _models.ChroniclesStreaks
+EvidenceChainLink = _models.EvidenceChainLink
+ActivityEvidenceChain = _models.ActivityEvidenceChain
+CorrectionPrompt = _models.CorrectionPrompt
+CorrectionPrompts = _models.CorrectionPrompts
+RoutineRow = _models.RoutineRow
+CreateRoutineRequest = _models.CreateRoutineRequest
+UpdateRoutineRequest = _models.UpdateRoutineRequest
+LocationRetentionPolicyResponse = _models.LocationRetentionPolicyResponse
+UpdateLocationRetentionRequest = _models.UpdateLocationRetentionRequest
+RollupLaneRow = _models.RollupLaneRow
+RollupFlagRow = _models.RollupFlagRow
+RollupDay = _models.RollupDay
+RollupsResponse = _models.RollupsResponse
+BalanceLaneRow = _models.BalanceLaneRow
+BalanceResponse = _models.BalanceResponse
+TrendLaneDay = _models.TrendLaneDay
+TrendLaneSeries = _models.TrendLaneSeries
+TrendAnomaly = _models.TrendAnomaly
+TrendsResponse = _models.TrendsResponse
+CompanionEntry = _models.CompanionEntry
+WhoYouWereWithResponse = _models.WhoYouWereWithResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chronicler", tags=["chronicler"])
 
 BUTLER_DB = "chronicler"
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 class DayCloseDispatchCallable(Protocol):
@@ -170,11 +161,44 @@ def _get_day_close_dispatch_fn() -> DayCloseDispatchCallable | None:
 def _pool(db: DatabaseManager):
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Chronicler butler database is not available",
-        )
+        ) from exc
+
+
+async def _numeric_snapshot(
+    pool: Any,
+    *,
+    start_date: date,
+    end_date: date,
+    flag_start_date: date,
+    flag_end_date: date,
+) -> tuple[list[Any], list[Any], set[date], bool]:
+    """Read rollups, flags and repair status under one shared repair fence.
+
+    If an invalidator owns the exclusive fence, fail closed by marking the
+    whole requested interval pending rather than returning stale materialized
+    values.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if not await try_shared_lock(conn):
+                pending = set()
+                current = start_date
+                while current <= end_date:
+                    pending.add(current)
+                    current += timedelta(days=1)
+                return [], [], pending, True
+            pending = await pending_numeric_repair_dates(
+                conn, start_date=start_date, end_date=end_date
+            )
+            rollups = await list_daily_rollups_range(conn, start_date=start_date, end_date=end_date)
+            flags = await list_daily_rollup_flags_range(
+                conn, start_date=flag_start_date, end_date=flag_end_date
+            )
+            return rollups, flags, pending, False
 
 
 def _coerce_payload(value: Any) -> dict[str, Any]:
@@ -285,7 +309,8 @@ async def list_events(
     include_tombstoned: bool = Query(False),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[ChroniclerPointEvent]:
     pool = _pool(db)
 
@@ -353,7 +378,8 @@ async def list_episodes(
     include_tombstoned: bool = Query(False),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[ChroniclerEpisode]:
     if (overlaps_start is None) != (overlaps_end is None):
         raise HTTPException(
@@ -427,7 +453,8 @@ async def list_episodes(
 async def get_episode(
     episode_id: UUID,
     include_tombstoned: bool = Query(False),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ChroniclerEpisode:
     pool = _pool(db)
     clause = "" if include_tombstoned else "AND tombstone_at IS NULL"
@@ -449,7 +476,8 @@ async def get_episode(
 )
 async def list_episode_events(
     episode_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[ChroniclerPointEvent]:
     pool = _pool(db)
     # 404 if episode doesn't exist.
@@ -482,7 +510,8 @@ async def list_episode_events(
 )
 async def list_episode_corrections(
     episode_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[ChroniclerOverride]:
     pool = _pool(db)
     exists = await pool.fetchval(
@@ -515,7 +544,8 @@ async def submit_episode_correction(
     episode_id: UUID,
     request: Request,
     body: SubmitCorrectionRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ChroniclerOverride:
     """Record an owner correction for one episode.
 
@@ -701,7 +731,8 @@ def _build_episode_bundle(
 async def explain_episode(
     episode_id: UUID,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     dispatch_fn: DayCloseDispatchCallable | None = Depends(_get_day_close_dispatch_fn),
 ) -> EpisodeExplainResponse:
     """Invoke a Tier-2 LLM drilldown for a specific episode (rate-limited: 1 per 24 h per episode).
@@ -979,7 +1010,8 @@ def _rows_to_source_state(
 
 @router.get("/source-state", response_model=ApiResponse[list[SourceStateRow]])
 async def list_source_state(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[SourceStateRow]]:
     """Return one record per registered source adapter joined with its projection checkpoints.
 
@@ -1038,7 +1070,8 @@ async def list_ops_sessions(
     since: datetime | None = Query(None, description="started_at >= since"),
     until: datetime | None = Query(None, description="started_at < until"),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[OpsSessionRow]:
     """Return operational sessions excluded from the user-facing Chronicles.
 
@@ -1118,7 +1151,8 @@ async def list_ops_sessions(
 
 @router.get("/projection-health", response_model=ApiResponse[list[ProjectionHealthRow]])
 async def projection_health(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ProjectionHealthRow]]:
     """Return per-checkpoint projection health from ``projection_checkpoints``.
 
@@ -1187,7 +1221,8 @@ async def aggregate_by_category(
         ),
     ),
     include_tombstoned: bool = Query(False),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CategoryBuckets]:
     """Return total episode duration bucketed by category across the requested window.
 
@@ -1476,7 +1511,8 @@ async def aggregate_by_day(
         ),
     ),
     include_tombstoned: bool = Query(False),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[AggregateByDayRow]:
     """Return time-bucketed episode durations grouped by (day, category).
 
@@ -1795,7 +1831,8 @@ async def get_rollups(
         None,
         description="Inclusive range end (local calendar day). Must be paired with start_date.",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[RollupsResponse]:
     """Return daily rollups + deterministic anomaly flags for one day or a range.
 
@@ -1902,11 +1939,12 @@ async def get_rollups(
 
         rollups_source_error = False
         try:
-            rollup_rows = await list_daily_rollups_range(
-                pool, start_date=range_start, end_date=range_end
-            )
-            flag_rows = await list_daily_rollup_flags_range(
-                pool, start_date=range_start, end_date=range_end
+            rollup_rows, flag_rows, pending_dates, _read_busy = await _numeric_snapshot(
+                pool,
+                start_date=range_start,
+                end_date=range_end,
+                flag_start_date=range_start,
+                flag_end_date=range_end,
             )
         except Exception:
             logger.exception(
@@ -1933,6 +1971,8 @@ async def get_rollups(
 
             if rollups_source_error:
                 status = "unknown"
+            elif current in pending_dates:
+                status = "pending_repair"
             elif day_rollups:
                 status = "materialized"
             else:
@@ -1985,7 +2025,9 @@ async def get_rollups(
             # first rollup row. None when not materialized (no rows carry it) or
             # when the labeling pass has not run — a legitimate absence, not an
             # error, so ``rollups_source_error`` is unaffected.
-            day_narrative = day_rollups[0].narrative if day_rollups else None
+            day_narrative = (
+                day_rollups[0].narrative if status == "materialized" and day_rollups else None
+            )
 
             days.append(
                 RollupDay(
@@ -2016,8 +2058,8 @@ async def get_rollups(
 #
 # bu-jc6htw.2 (Chronicler IEA p9b, split from old p9 per eng-bar review).
 # Both endpoints read chronicler.daily_rollups (the same materialized
-# per-day/per-lane totals GET /rollups reads) and derive a trailing rolling
-# "usual" baseline via balance.compute_daily_balance — see balance.py's
+# per-day/per-lane totals GET /rollups reads) and derive the personal-baseline
+# "usual" band via balance.compute_daily_balance — see balance.py's
 # module docstring for why this does NOT depend on the separate memory
 # write-back loop (tasks.md S8, bu-93y4rt).
 
@@ -2050,23 +2092,24 @@ async def get_daily_balance(
         le=_BALANCE_MAX_LOOKBACK_DAYS,
         description="Trailing local-day window (excluding today) used for the 'usual' baseline",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[BalanceResponse]:
     """Return the target day's per-lane totals annotated against the owner's
     rolling baseline ("vs usual").
 
     ``date`` uses the same local-day semantics as ``GET /rollups``
-    (``rollups.DEFAULT_TIMEZONE``). The baseline is the trailing mean over
-    ``lookback_days`` materialized prior days for each lane — a lane with no
-    baseline history yet reports ``baseline_seconds=null`` rather than a
-    fabricated 0 (see ``BalanceLaneRow`` docstring).
+    (``rollups.DEFAULT_TIMEZONE``). The baseline is the owner's personal band
+    (median and MAD, ``butlers.core.baselines``) over the ``lookback_days``
+    prior days for each lane — a lane with too little history yet reports
+    ``state="insufficient_history"`` and ``baseline_seconds=null`` rather than
+    a fabricated 0 (see ``BalanceLaneRow`` docstring).
 
     Mirrors ``GET /rollups``'s three-state day status
     (``materialized``/``not_yet_materialized``/``unknown``) and the
     ``feeder_dark``-marks-lane-unavailable cross-reference.
     """
     baseline_start = balance_date - timedelta(days=lookback_days)
-    baseline_end = balance_date - timedelta(days=1)
 
     _tracer = trace.get_tracer("butlers.chronicler")
     with _tracer.start_as_current_span("chronicler.balance") as span:
@@ -2074,15 +2117,20 @@ async def get_daily_balance(
 
         balance_source_error = False
         try:
-            target_rows = await list_daily_rollups_range(
-                pool, start_date=balance_date, end_date=balance_date
+            (
+                snapshot_rows,
+                target_flags,
+                pending_dates,
+                _read_busy,
+            ) = await _numeric_snapshot(
+                pool,
+                start_date=baseline_start,
+                end_date=balance_date,
+                flag_start_date=balance_date,
+                flag_end_date=balance_date,
             )
-            baseline_rows = await list_daily_rollups_range(
-                pool, start_date=baseline_start, end_date=baseline_end
-            )
-            target_flags = await list_daily_rollup_flags_range(
-                pool, start_date=balance_date, end_date=balance_date
-            )
+            target_rows = [row for row in snapshot_rows if row.local_date == balance_date]
+            baseline_rows = [row for row in snapshot_rows if row.local_date < balance_date]
         except Exception:
             logger.exception("chronicler.balance: query failed for date=%s", balance_date)
             balance_source_error = True
@@ -2092,6 +2140,8 @@ async def get_daily_balance(
 
         if balance_source_error:
             status = "unknown"
+        elif pending_dates:
+            status = "pending_repair"
         elif target_rows:
             status = "materialized"
         else:
@@ -2100,12 +2150,17 @@ async def get_daily_balance(
         lanes: list[BalanceLaneRow] = []
         if status == "materialized":
             day_seconds_by_lane = {r.lane: r.seconds for r in target_rows}
-            baseline_seconds_by_lane: dict[str, list[int]] = defaultdict(list)
+            baseline_samples_by_lane: dict[str, dict[date, int]] = defaultdict(dict)
             for r in baseline_rows:
-                baseline_seconds_by_lane[r.lane].append(r.seconds)
+                baseline_samples_by_lane[r.lane][r.local_date] = r.seconds
             dark_sources = _dark_sources_from_flags(target_flags)
 
-            for lb in compute_daily_balance(day_seconds_by_lane, baseline_seconds_by_lane):
+            for lb in compute_daily_balance(
+                day_seconds_by_lane,
+                baseline_samples_by_lane,
+                local_date=balance_date,
+                lookback_days=lookback_days,
+            ):
                 lanes.append(
                     BalanceLaneRow(
                         lane=lb.lane,
@@ -2113,6 +2168,9 @@ async def get_daily_balance(
                         baseline_seconds=lb.baseline_seconds,
                         delta_seconds=lb.delta_seconds,
                         baseline_sample_days=lb.baseline_sample_days,
+                        state=lb.state,
+                        band_low=lb.band_low,
+                        band_high=lb.band_high,
                         unavailable=bool(sources_for_lane(lb.lane) & dark_sources),
                     )
                 )
@@ -2149,16 +2207,17 @@ async def get_trends(
         le=_BALANCE_MAX_LOOKBACK_DAYS,
         description="Trailing local-day window used for each day's 'usual' baseline.",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TrendsResponse]:
     """Return week/month-grained per-lane balance trends, streaks, and anomalies.
 
     Each day in the window gets the same vs-baseline treatment as
-    ``GET /balance`` (trailing ``lookback_days`` mean, ``feeder_dark``
-    cross-reference). ``streak_days`` is the trailing run of consecutive
+    ``GET /balance`` (personal band over the trailing ``lookback_days``,
+    ``feeder_dark`` cross-reference). ``streak_days`` is the trailing run of consecutive
     non-zero-activity days ending at ``end_date``. ``anomalies`` flags days
-    whose delta clears ``balance.is_lane_anomalous``'s thresholds — a day
-    needs a full-size baseline sample before it can be flagged, so the start
+    that fall outside the lane's personal band (``balance.is_lane_anomalous``)
+    — a lane needs enough baseline days before it can be scored, so the start
     of a rollup history never produces spurious anomalies.
     """
     if window not in _TRENDS_WINDOW_DAYS:
@@ -2185,12 +2244,14 @@ async def get_trends(
         pool = _pool(db)
 
         trends_source_error = False
+        pending_dates: set[date] = set()
         try:
-            all_rows = await list_daily_rollups_range(
-                pool, start_date=fetch_start, end_date=resolved_end
-            )
-            all_flags = await list_daily_rollup_flags_range(
-                pool, start_date=start_date, end_date=resolved_end
+            all_rows, all_flags, pending_dates, _read_busy = await _numeric_snapshot(
+                pool,
+                start_date=fetch_start,
+                end_date=resolved_end,
+                flag_start_date=start_date,
+                flag_end_date=resolved_end,
             )
         except Exception:
             logger.exception(
@@ -2217,6 +2278,11 @@ async def get_trends(
             day_rows = rows_by_date.get(current, [])
             if trends_source_error:
                 day_status = "unknown"
+            elif any(
+                current - timedelta(days=lookback_days) <= pending_day <= current
+                for pending_day in pending_dates
+            ):
+                day_status = "pending_repair"
             elif day_rows:
                 day_status = "materialized"
             else:
@@ -2226,16 +2292,21 @@ async def get_trends(
                 day_seconds_by_lane = {r.lane: r.seconds for r in day_rows}
                 baseline_start = current - timedelta(days=lookback_days)
                 baseline_end = current - timedelta(days=1)
-                baseline_seconds_by_lane: dict[str, list[int]] = defaultdict(list)
+                baseline_samples_by_lane: dict[str, dict[date, int]] = defaultdict(dict)
                 for d in range(lookback_days):
                     day_in_baseline = baseline_end - timedelta(days=d)
                     if day_in_baseline < baseline_start:
                         break
                     for r in rows_by_date.get(day_in_baseline, []):
-                        baseline_seconds_by_lane[r.lane].append(r.seconds)
+                        baseline_samples_by_lane[r.lane][day_in_baseline] = r.seconds
                 dark_sources = _dark_sources_from_flags(flags_by_date.get(current, []))
 
-                for lb in compute_daily_balance(day_seconds_by_lane, baseline_seconds_by_lane):
+                for lb in compute_daily_balance(
+                    day_seconds_by_lane,
+                    baseline_samples_by_lane,
+                    local_date=current,
+                    lookback_days=lookback_days,
+                ):
                     unavailable = bool(sources_for_lane(lb.lane) & dark_sources)
                     lane_series[lb.lane].append(
                         TrendLaneDay(
@@ -2244,6 +2315,10 @@ async def get_trends(
                             seconds=lb.seconds,
                             baseline_seconds=lb.baseline_seconds,
                             delta_seconds=lb.delta_seconds,
+                            state=lb.state,
+                            band_low=lb.band_low,
+                            band_high=lb.band_high,
+                            baseline_sample_days=lb.baseline_sample_days,
                             unavailable=unavailable,
                         )
                     )
@@ -2256,7 +2331,7 @@ async def get_trends(
                                 seconds=lb.seconds,
                                 baseline_seconds=lb.baseline_seconds,
                                 delta_seconds=lb.delta_seconds,
-                                direction="spike" if lb.delta_seconds > 0 else "drop",
+                                direction="spike" if lb.state == "above" else "drop",
                             )
                         )
             else:
@@ -2272,7 +2347,12 @@ async def get_trends(
             TrendLaneSeries(
                 lane=lane,
                 days=lane_series[lane],
-                streak_days=compute_lane_streak(lane_daily_seconds[lane]),
+                streak_days=(
+                    None
+                    if trends_source_error
+                    or any(day.status == "pending_repair" for day in lane_series[lane])
+                    else compute_lane_streak(lane_daily_seconds[lane])
+                ),
             )
             for lane in sorted(LANES)
         ]
@@ -2327,7 +2407,8 @@ async def get_who_you_were_with(
     start_at: datetime | None = Query(None, description="Inclusive window start (UTC or tz-aware)"),
     end_at: datetime | None = Query(None, description="Exclusive window end (UTC or tz-aware)"),
     tz: str = Query("UTC", description="IANA timezone for display purposes"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[WhoYouWereWithResponse]:
     """Return the resolved people the owner spent time with in the window.
 
@@ -2535,7 +2616,8 @@ async def get_day_close_cache(
         description="Required exact IANA timezone for the requested local day",
         include_in_schema=False,
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> DayCloseFreshResponse | DayCloseStaleResponse | DayCloseInvalidResponse | JSONResponse:
     """Return cached day-close prose, a stale marker, or an invalid marker.
 
@@ -2871,7 +2953,8 @@ def _today_in_timezone(
 async def refresh_day_close(
     request: Request,
     body: DayCloseRefreshRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
 ) -> DayCloseRefreshResponse | DayCloseRefreshQuietResponse | JSONResponse:
     """Re-invoke the day-close Tier-2 path on demand (rate-limited per local-day tuple).
@@ -3232,7 +3315,8 @@ async def get_briefing(
         None,
         description="IANA timezone name. Defaults to Chronicler's stable fallback.",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ChroniclesBriefing:
     """Editorial briefing for a single day window.
 
@@ -3289,7 +3373,8 @@ async def get_attention(
         None, alias="date", description="YYYY-MM-DD; defaults to yesterday in UTC"
     ),
     tz: str | None = Query(None),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ChroniclesAttentionItem]]:
     """Attention list for a single day window.
 
@@ -3310,7 +3395,8 @@ async def get_kpi(
         None, alias="date", description="YYYY-MM-DD; defaults to yesterday in UTC"
     ),
     tz: str | None = Query(None),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ChroniclesKpi]:
     """KPI snapshot for a single day window.
 
@@ -3357,7 +3443,8 @@ def _coerce_ref_list(value: Any) -> list[str]:
 )
 async def get_evidence_chain(
     episode_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ActivityEvidenceChain:
     """Return the evidence chain backing an activity — "why is this counted?".
 
@@ -3425,7 +3512,8 @@ async def list_correction_prompts(
     end_at: datetime | None = Query(None, description="Exclusive window end (UTC or tz-aware)"),
     tz: str = Query("UTC", description="IANA timezone for display purposes"),
     limit: int = Query(100, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CorrectionPrompts]:
     """Surface the window's low-confidence activities as correction prompts.
 
@@ -3571,13 +3659,13 @@ def _validate_routine_window(window_start: dt_time, window_end: dt_time) -> None
 def _validate_routine_timezone(tz: str) -> None:
     try:
         zoneinfo.ZoneInfo(tz)
-    except (zoneinfo.ZoneInfoNotFoundError, KeyError, ValueError):
+    except (zoneinfo.ZoneInfoNotFoundError, KeyError, ValueError) as exc:
         # ValueError covers an empty/malformed key ("" -> "keys must be
         # normalized relative paths"); without it a blank timezone would 500.
         raise HTTPException(
             status_code=400,
             detail=f"Unrecognized IANA timezone: {tz!r}",
-        )
+        ) from exc
 
 
 def _routine_to_row(routine: Any) -> RoutineRow:
@@ -3606,7 +3694,8 @@ def _routine_to_row(routine: Any) -> RoutineRow:
 @router.get("/routines", response_model=ApiResponse[list[RoutineRow]])
 async def list_chronicler_routines(
     enabled_only: bool = Query(False, description="Only return enabled routines."),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[RoutineRow]]:
     """List owner-reviewable weekly routines, ordered by dow_mask then window start.
 
@@ -3623,7 +3712,8 @@ async def list_chronicler_routines(
 async def create_chronicler_routine(
     request: Request,
     body: CreateRoutineRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> RoutineRow:
     """Declare an owner work schedule (``origin='declared'``, bu-whhll.11).
 
@@ -3666,7 +3756,8 @@ async def patch_chronicler_routine(
     routine_id: UUID,
     request: Request,
     body: UpdateRoutineRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> RoutineRow:
     """Owner review/edit: enable/disable, rename, or re-schedule a routine.
 
@@ -3742,7 +3833,8 @@ async def patch_chronicler_routine(
 async def delete_chronicler_routine(
     routine_id: UUID,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Response:
     """Delete an owner-declared routine (bu-whhll.11).
 
@@ -3782,7 +3874,8 @@ async def delete_chronicler_routine(
 @router.post("/gap-interview/resolve")
 async def resolve_gap_interview(
     body: ResolveGapInterviewRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict[str, Any]:
     """Apply a one-tap gap-interview answer (bu-whhll.12).
 
@@ -3810,3 +3903,83 @@ async def resolve_gap_interview(
         answer=body.answer,
         now=datetime.now(UTC),
     )
+
+
+# ── Location retention policy (bu-s11n0s.7) ────────────────────────────────
+
+
+def _location_retention_response(
+    policy: _location_retention.LocationRetentionPolicy,
+) -> LocationRetentionPolicyResponse:
+    return LocationRetentionPolicyResponse(
+        days=policy.days,
+        version=policy.version,
+        updated_at=policy.updated_at,
+        min_days=_location_retention.MIN_RETENTION_DAYS,
+        max_days=_location_retention.MAX_RETENTION_DAYS,
+        raw_age_basis=_location_retention.RAW_AGE_BASIS,
+        precision_after_forgetting=_location_retention.PRECISION_AFTER_FORGETTING,
+        covered_sources=list(_location_retention.COVERED_SOURCES),
+        status=_location_retention.ENFORCEMENT_STATUS,
+    )
+
+
+_LOCATION_RETENTION_UNAVAILABLE = "Location retention policy is unavailable"
+
+
+@router.get("/location-retention", response_model=LocationRetentionPolicyResponse)
+async def get_location_retention(*, db: Db) -> LocationRetentionPolicyResponse:
+    """Return the declared raw OwnTracks retention horizon and its semantics.
+
+    A missing policy row fails closed (503) rather than reporting a default.
+    """
+    pool = _pool(db)
+    try:
+        policy = await _location_retention.get_location_retention_policy(pool)
+    except _location_retention.PolicyUnavailable as exc:
+        raise HTTPException(status_code=503, detail=_LOCATION_RETENTION_UNAVAILABLE) from exc
+    return _location_retention_response(policy)
+
+
+@router.put("/location-retention", response_model=LocationRetentionPolicyResponse)
+async def put_location_retention(
+    request: Request,
+    body: UpdateLocationRetentionRequest = Body(...),
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> LocationRetentionPolicyResponse:
+    """Owner sets the raw location horizon (1..30 days) by compare-and-set.
+
+    ``expected_version`` must name the stored version, else 409 with the
+    current policy. The actor is the authenticated owner, never a body field.
+    """
+    actor = authenticated_principal()
+    pool = _pool(db)
+    try:
+        policy = await _location_retention.set_location_retention_policy(
+            pool, days=body.days, expected_version=body.expected_version, actor=actor
+        )
+    except _location_retention.PolicyVersionConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Location retention policy changed; reload and retry",
+                "current_version": exc.current.version,
+                "current_days": exc.current.days,
+            },
+        ) from exc
+    except _location_retention.PolicyUnavailable as exc:
+        raise HTTPException(status_code=503, detail=_LOCATION_RETENTION_UNAVAILABLE) from exc
+
+    await emit_dashboard_audit(
+        db,
+        butler="chronicler",
+        operation="location_retention_set",
+        method="PUT",
+        path="/api/chronicler/location-retention",
+        body={"days": policy.days, "version": policy.version},
+        response_status=200,
+        request=request,
+    )
+    return _location_retention_response(policy)

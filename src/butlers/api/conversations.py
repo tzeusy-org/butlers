@@ -4,23 +4,33 @@ Provides CRUD functions over ``public.dashboard_conversations`` and
 ``public.dashboard_messages``.  All functions accept an asyncpg Pool and
 return plain dicts so callers can construct Pydantic models as needed.
 
-UUID7 generation follows the pattern in the Switchboard ingest module.
+Shared message/reply writers are re-exported from ``butlers.conversation_messages``;
+the pipeline uses that transport-neutral implementation directly. UUID7 generation
+follows the pattern in the Switchboard ingest module.
 """
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
-import secrets
-import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 import asyncpg
 
-from butlers.api.chat_stream import publish_chat_stream_event
+from butlers.api.pagination import decode_cursor, encode_cursor
+from butlers.conversation_messages import (
+    _generate_uuid7 as _generate_uuid7,
+)
+from butlers.conversation_messages import (
+    conversation_reply_create as conversation_reply_create,
+)
+from butlers.conversation_messages import (
+    message_create as message_create,
+)
+from butlers.core.goal_lineage import taint_insert, taint_read
+from butlers.core.stamp_account import account_records
 
 logger = logging.getLogger(__name__)
 
@@ -33,33 +43,6 @@ _HEADLINE_OPTIONS = (
     f"StartSel={_HL_START},StopSel={_HL_STOP},MaxFragments=1,MaxWords=35,MinWords=15"
 )
 _MESSAGE_SEARCH_MAX_QUERY_LEN = 512
-
-# Provider resume handles are considered fresh for this long after their last
-# refresh. Chosen as a generous same-day window: long enough that a user
-# picking a conversation back up later the same day still gets warm
-# prompt-cache continuity, short enough that a handle from days ago (likely
-# evicted provider-side already) is never worth an attempted resume. Pure
-# staleness check -- there is no separate eviction job (bu-ep4ks.8 [decision]).
-_PROVIDER_SESSION_TTL_SECONDS: int = 24 * 60 * 60
-
-
-# ---------------------------------------------------------------------------
-# UUID7 helper (time-ordered)
-# ---------------------------------------------------------------------------
-
-
-def _generate_uuid7() -> UUID:
-    """Generate a UUIDv7-compatible UUID (time-ordered)."""
-    timestamp_ms = int(datetime.now(UTC).timestamp() * 1000) & ((1 << 48) - 1)
-    rand_a = secrets.randbits(12)
-    rand_b = secrets.randbits(62)
-
-    value = timestamp_ms << 80
-    value |= 0x7 << 76
-    value |= rand_a << 64
-    value |= 0b10 << 62
-    value |= rand_b
-    return uuid.UUID(int=value)
 
 
 # ---------------------------------------------------------------------------
@@ -397,123 +380,6 @@ async def conversation_get_or_create_by_thread(
         return dict(existing), False
 
 
-async def conversation_get_provider_session(
-    pool: asyncpg.Pool,
-    conversation_id: UUID,
-    *,
-    butler_name: str,
-) -> dict[str, Any] | None:
-    """Fetch the current provider resume handle for a conversation, if any.
-
-    Returns ``None`` when the conversation has never had a provider session
-    recorded (including when the conversation itself does not exist) --
-    callers treat that identically to "cold start", never as an error.
-    """
-    row = await pool.fetchrow(
-        """
-        SELECT provider_session_id, provider_runtime_type, provider_session_updated_at
-        FROM public.dashboard_conversations
-        WHERE id = $1 AND butler_name = $2
-        """,
-        conversation_id,
-        butler_name,
-    )
-    if row is None or row["provider_session_id"] is None:
-        return None
-    return dict(row)
-
-
-async def conversation_set_provider_session(
-    pool: asyncpg.Pool,
-    conversation_id: UUID,
-    *,
-    butler_name: str,
-    provider_session_id: str,
-    provider_runtime_type: str,
-) -> None:
-    """Record the provider-native session id minted for a conversation's turn.
-
-    Overwrites any prior handle -- "one memory per thread" means only the
-    most recent provider session is ever worth resuming from.
-    """
-    await pool.execute(
-        """
-        UPDATE public.dashboard_conversations
-        SET provider_session_id = $3,
-            provider_runtime_type = $4,
-            provider_session_updated_at = now()
-        WHERE id = $1 AND butler_name = $2
-        """,
-        conversation_id,
-        butler_name,
-        provider_session_id,
-        provider_runtime_type,
-    )
-
-
-async def conversation_clear_provider_session(
-    pool: asyncpg.Pool,
-    conversation_id: UUID,
-    *,
-    butler_name: str,
-) -> None:
-    """Evict a conversation's provider resume handle (fall-back-to-cold).
-
-    Callers invoke this when a resume attempt fails (the provider rejects
-    the handle as expired or unknown) so the *next* turn cold-starts cleanly
-    instead of repeatedly retrying a dead handle.
-    """
-    await pool.execute(
-        """
-        UPDATE public.dashboard_conversations
-        SET provider_session_id = NULL,
-            provider_runtime_type = NULL,
-            provider_session_updated_at = NULL
-        WHERE id = $1 AND butler_name = $2
-        """,
-        conversation_id,
-        butler_name,
-    )
-
-
-def resolve_resume_handle(
-    provider_session: dict[str, Any] | None,
-    *,
-    runtime_type: str,
-    ttl_seconds: int = _PROVIDER_SESSION_TTL_SECONDS,
-    now: datetime | None = None,
-) -> str | None:
-    """Return a usable provider resume handle, or ``None`` if not applicable.
-
-    Pure function (no DB access) so eviction/TTL logic is unit-testable
-    without a pool. A handle is usable only when:
-
-    - one is present at all,
-    - it was minted by the *same* ``runtime_type`` the caller is about to
-      invoke (resume tokens are provider-specific and never portable across
-      adapters), and
-    - its ``provider_session_updated_at`` is within ``ttl_seconds`` of `now`.
-
-    Any other case (missing, runtime mismatch, expired) returns ``None`` --
-    the caller's contract is to treat that as a transparent cold start, never
-    an error.
-    """
-    if provider_session is None:
-        return None
-    handle = provider_session.get("provider_session_id")
-    if not handle:
-        return None
-    if provider_session.get("provider_runtime_type") != runtime_type:
-        return None
-    updated_at = provider_session.get("provider_session_updated_at")
-    if updated_at is None:
-        return None
-    effective_now = now if now is not None else datetime.now(UTC)
-    if effective_now - updated_at > timedelta(seconds=ttl_seconds):
-        return None
-    return handle
-
-
 async def conversation_search(
     pool: asyncpg.Pool,
     *,
@@ -637,26 +503,6 @@ def _message_search_deep_link(*, session_id: UUID | None, butler_name: str) -> s
     return f"/butlers/{butler_name}"
 
 
-def encode_message_search_cursor(rank: float, created_at: datetime, message_id: UUID | str) -> str:
-    """Encode a message-search keyset position into an opaque cursor string."""
-    payload = {"r": rank, "ca": created_at.isoformat(), "id": str(message_id)}
-    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
-
-
-def decode_message_search_cursor(cursor: str) -> tuple[float, datetime, str]:
-    """Decode a message-search cursor back to ``(rank, created_at, message_id)``.
-
-    Raises:
-        ValueError: If the cursor is malformed or cannot be decoded.
-    """
-    try:
-        raw = base64.urlsafe_b64decode(cursor.encode())
-        payload = json.loads(raw)
-        return float(payload["r"]), datetime.fromisoformat(payload["ca"]), str(payload["id"])
-    except (KeyError, ValueError, TypeError) as exc:
-        raise ValueError(f"Invalid cursor: {exc}") from exc
-
-
 async def message_search(
     pool: asyncpg.Pool,
     *,
@@ -688,16 +534,17 @@ async def message_search(
     trip) rather than raising or matching everything — callers must never
     treat "no search term" as "return everything" or fabricate a recall.
 
-    Returns ``{"items": [...], "next_cursor": str | None, "has_more": bool}``.
+    Returns ``{"items": [...], "next_cursor": str | None}``.
     Each item: ``message_id``, ``conversation_id``, ``role``, ``created_at``,
     ``butler_name``, ``session_id``, ``snippet``, ``highlight_ranges``
     (``[start, end)`` offsets into ``snippet``), ``deep_link``.
 
     Raises:
-        ValueError: ``query`` exceeds 512 characters, or ``cursor`` is malformed.
+        ValueError: ``query`` exceeds 512 characters.
+        InvalidCursorError: ``cursor`` is malformed (a ``ValueError`` and a 400).
     """
     if not query or not query.strip():
-        return {"items": [], "next_cursor": None, "has_more": False}
+        return {"items": [], "next_cursor": None}
     if len(query) > _MESSAGE_SEARCH_MAX_QUERY_LEN:
         raise ValueError(f"query exceeds the {_MESSAGE_SEARCH_MAX_QUERY_LEN}-character limit")
 
@@ -705,11 +552,13 @@ async def message_search(
     cursor_created_at: datetime | None = None
     cursor_message_id: str | None = None
     if cursor is not None:
-        cursor_rank, cursor_created_at, cursor_message_id = decode_message_search_cursor(cursor)
+        cursor_rank, cursor_created_at, cursor_message_id = decode_cursor(
+            cursor, (float, datetime, UUID), scope="message-search"
+        )
 
     fetch_limit = limit + 1
     rows = await pool.fetch(
-        """
+        f"""
         WITH q AS (
             SELECT plainto_tsquery('english', $1) AS tsq
         ),
@@ -723,7 +572,8 @@ async def message_search(
                 c.butler_name,
                 c.source_channel,
                 ts_rank(m.search_vector, q.tsq)::float8 AS rank,
-                ts_headline('english', m.content, q.tsq, $6) AS headline
+                ts_headline('english', m.content, q.tsq, $6) AS headline,
+                {taint_read("m")}
             FROM public.dashboard_messages m
             JOIN public.dashboard_conversations c ON c.id = m.conversation_id
             CROSS JOIN q
@@ -753,6 +603,7 @@ async def message_search(
 
     has_more = len(rows) > limit
     page_rows = rows[:limit]
+    account_records(page_rows, owner_authored_message)
 
     items: list[dict[str, Any]] = []
     for row in page_rows:
@@ -776,11 +627,11 @@ async def message_search(
     next_cursor: str | None = None
     if has_more and page_rows:
         last = page_rows[-1]
-        next_cursor = encode_message_search_cursor(
-            last["rank"], last["created_at"], last["message_id"]
+        next_cursor = encode_cursor(
+            (last["rank"], last["created_at"], last["message_id"]), scope="message-search"
         )
 
-    return {"items": items, "next_cursor": next_cursor, "has_more": has_more}
+    return {"items": items, "next_cursor": next_cursor}
 
 
 async def message_thread_window(
@@ -804,12 +655,14 @@ async def message_thread_window(
     back to the wrong anchor).
     """
     rows = await pool.fetch(
-        """
+        f"""
         WITH ordered AS (
-            SELECT id, role, content, created_at, session_id, model_name,
-                   ROW_NUMBER() OVER (ORDER BY created_at ASC, id ASC) AS rn
-            FROM public.dashboard_messages
-            WHERE conversation_id = $1
+            SELECT m.id, m.role, m.content, m.created_at, m.session_id, m.model_name,
+                   c.source_channel, {taint_read("m")},
+                   ROW_NUMBER() OVER (ORDER BY m.created_at ASC, m.id ASC) AS rn
+            FROM public.dashboard_messages m
+            JOIN public.dashboard_conversations c ON c.id = m.conversation_id
+            WHERE m.conversation_id = $1
         ),
         anchor AS (
             SELECT CASE
@@ -817,7 +670,8 @@ async def message_thread_window(
                 ELSE (SELECT rn FROM ordered WHERE id = $2)
             END AS anchor_rn
         )
-        SELECT o.id, o.role, o.content, o.created_at, o.session_id, o.model_name
+        SELECT o.id, o.role, o.content, o.created_at, o.session_id, o.model_name,
+               o.source_channel, o.taint_goal_id, o.taint_invocation_id
         FROM ordered o, anchor
         WHERE anchor.anchor_rn IS NOT NULL
           AND o.rn BETWEEN anchor.anchor_rn - $3 AND anchor.anchor_rn + $4
@@ -828,7 +682,17 @@ async def message_thread_window(
         before,
         after,
     )
+    account_records(rows, owner_authored_message)
     return [dict(r) for r in rows]
+
+
+def owner_authored_message(row: Any) -> bool:
+    """D6 authority of a conversation-history row: the owner's own dashboard turn.
+
+    Replies are model output and other channels carry other senders, so
+    neither is owner-authored (RFC 0038 D6); their read is not owner-untainted.
+    """
+    return row.get("role") == "user" and row.get("source_channel") == "dashboard"
 
 
 async def conversation_summary(
@@ -863,86 +727,12 @@ async def conversation_summary(
 # Message CRUD
 # ---------------------------------------------------------------------------
 
-
-async def message_create(
-    pool: asyncpg.Pool,
-    *,
-    conversation_id: UUID,
-    role: str,
-    content: str,
-    session_id: UUID | None = None,
-    model_name: str | None = None,
-    input_tokens: int | None = None,
-    output_tokens: int | None = None,
-    duration_ms: int | None = None,
-    tool_calls: list[dict[str, Any]] | None = None,
-    error: str | None = None,
-    request_id: UUID | None = None,
-    sources: list[str] | None = None,
-    citations: list[dict[str, Any]] | None = None,
-    routed_butler: str | None = None,
-    page_context: dict[str, Any] | None = None,
-    captured_at: datetime | None = None,
-) -> dict[str, Any]:
-    """Insert a new message row.  Returns the full message dict.
-
-    ``page_context``/``captured_at`` carry the dashboard ContextChip snapshot
-    for a user-role message (bu-0ynlk.4); ``captured_at`` defaults to now()
-    whenever ``page_context`` is supplied and the caller omits it.
-    """
-    msg_id = _generate_uuid7()
-    now = datetime.now(UTC)
-    if page_context is not None and captured_at is None:
-        captured_at = now
-    await pool.execute(
-        """
-        INSERT INTO public.dashboard_messages
-            (id, conversation_id, role, content, created_at,
-             session_id, model_name, input_tokens, output_tokens,
-             duration_ms, tool_calls, error, request_id, sources, citations,
-             routed_butler, page_context, captured_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-        """,
-        msg_id,
-        conversation_id,
-        role,
-        content,
-        now,
-        session_id,
-        model_name,
-        input_tokens,
-        output_tokens,
-        duration_ms,
-        tool_calls,
-        error,
-        request_id,
-        sources,
-        citations,
-        routed_butler,
-        page_context,
-        captured_at,
-    )
-
-    return {
-        "id": msg_id,
-        "conversation_id": conversation_id,
-        "role": role,
-        "content": content,
-        "created_at": now,
-        "session_id": session_id,
-        "model_name": model_name,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "duration_ms": duration_ms,
-        "tool_calls": tool_calls,
-        "error": error,
-        "request_id": request_id,
-        "sources": sources,
-        "citations": citations,
-        "routed_butler": routed_butler,
-        "page_context": page_context,
-        "captured_at": captured_at,
-    }
+#: One message as every reader returns it, including the RFC 0038 D6 taint
+#: stamp; the table is aliased ``m``.
+_MESSAGE_COLUMNS = f"""id, conversation_id, role, content, created_at,
+    session_id, model_name, input_tokens, output_tokens,
+    duration_ms, tool_calls, error, request_id, sources, citations,
+    routed_butler, page_context, captured_at, {taint_read("m")}"""
 
 
 async def message_create_idempotent(
@@ -968,21 +758,18 @@ async def message_create_idempotent(
     """
     now = datetime.now(UTC)
     captured_at = now if page_context is not None else None
+    taint = taint_insert(8)  # empty: the owner's dashboard message is never exposed
     inserted = await pool.fetchrow(
-        """
-        INSERT INTO public.dashboard_messages
+        f"""
+        INSERT INTO public.dashboard_messages AS m
             (id, conversation_id, role, content, created_at,
              session_id, model_name, input_tokens, output_tokens,
              duration_ms, tool_calls, error, request_id, sources, citations,
-             routed_butler, page_context, captured_at)
+             routed_butler, page_context, captured_at{taint.columns})
         VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-                NULL, NULL, NULL, NULL, $6, $7)
+                NULL, NULL, NULL, NULL, $6, $7{taint.placeholders})
         ON CONFLICT (id) DO NOTHING
-        RETURNING id, conversation_id, role, content, created_at,
-                  session_id, model_name, input_tokens, output_tokens,
-                  duration_ms, tool_calls, error, request_id, sources, citations,
-                  routed_butler,
-                  page_context, captured_at
+        RETURNING {_MESSAGE_COLUMNS}
         """,
         message_id,
         conversation_id,
@@ -991,20 +778,13 @@ async def message_create_idempotent(
         now,
         page_context,
         captured_at,
+        *taint.values,
     )
     if inserted is not None:
         return dict(inserted), True
 
     existing = await pool.fetchrow(
-        """
-        SELECT id, conversation_id, role, content, created_at,
-               session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id, sources, citations,
-               routed_butler,
-               page_context, captured_at
-        FROM public.dashboard_messages
-        WHERE id = $1
-        """,
+        f"SELECT {_MESSAGE_COLUMNS} FROM public.dashboard_messages m WHERE id = $1",
         message_id,
     )
     if existing is None:
@@ -1026,15 +806,7 @@ async def message_get_by_id(
 ) -> dict[str, Any] | None:
     """Fetch a dashboard message by its client-provided identity."""
     row = await pool.fetchrow(
-        """
-        SELECT id, conversation_id, role, content, created_at,
-               session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id, sources, citations,
-               routed_butler,
-               page_context, captured_at
-        FROM public.dashboard_messages
-        WHERE id = $1
-        """,
+        f"SELECT {_MESSAGE_COLUMNS} FROM public.dashboard_messages m WHERE id = $1",
         message_id,
     )
     return dict(row) if row else None
@@ -1065,70 +837,6 @@ async def message_set_session_id_if_null(
     )
 
 
-async def conversation_reply_create(
-    pool: asyncpg.Pool,
-    conversation_id: UUID,
-    *,
-    message: str,
-    request_id: UUID | None = None,
-    sources: list[str] | None = None,
-    citations: list[dict[str, Any]] | None = None,
-    routed_butler: str | None = None,
-    session_id: UUID | None = None,
-    tool_calls: list[dict[str, Any]] | None = None,
-) -> dict[str, Any] | None:
-    """Persist the ``conversation_reply`` confirm-loop message for a conversation.
-
-    Writes an assistant-role row and bumps the conversation's message count.
-    Returns the created message dict, or ``None`` if ``conversation_id`` does
-    not reference an existing conversation (the caller — the ``conversation_reply``
-    MCP tool — surfaces this as an actionable error to the calling model rather
-    than raising, since a stale/hallucinated id is a model-correctable mistake).
-
-    ``sources`` carries an answer-lane reply's citations (see the
-    ``conversation_reply`` MCP tool); ``None`` for every other lane.
-
-    ``session_id``/``tool_calls`` are the ambient runtime session id and the
-    executed tool calls captured for this turn (best-effort — ``None`` when
-    the runtime context is unavailable, e.g. a session that never bound one).
-
-    Publishes a best-effort ``reply_ready`` NOTIFY on the request's
-    chat-stream channel (see ``butlers.api.chat_stream``) so an SSE generator
-    watching this turn wakes immediately instead of waiting for its next
-    safety-net poll (bu-0ynlk.7). A dropped/failed NOTIFY never affects this
-    write — the poll remains the source of truth either way.
-    """
-    exists = await pool.fetchval(
-        "SELECT 1 FROM public.dashboard_conversations WHERE id = $1", conversation_id
-    )
-    if not exists:
-        return None
-
-    msg = await message_create(
-        pool,
-        conversation_id=conversation_id,
-        role="assistant",
-        content=message,
-        request_id=request_id,
-        sources=sources,
-        citations=citations,
-        routed_butler=routed_butler,
-        session_id=session_id,
-        tool_calls=tool_calls,
-    )
-    await pool.execute(
-        """
-        UPDATE public.dashboard_conversations
-        SET message_count = message_count + 1, updated_at = now()
-        WHERE id = $1
-        """,
-        conversation_id,
-    )
-    if request_id is not None:
-        await publish_chat_stream_event(pool, request_id, "reply_ready")
-    return msg
-
-
 async def message_list(
     pool: asyncpg.Pool,
     conversation_id: UUID,
@@ -1149,13 +857,9 @@ async def message_list(
     )
 
     rows = await pool.fetch(
-        """
-        SELECT id, conversation_id, role, content, created_at,
-               session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id, sources, citations,
-               routed_butler,
-               page_context, captured_at
-        FROM public.dashboard_messages
+        f"""
+        SELECT {_MESSAGE_COLUMNS}
+        FROM public.dashboard_messages m
         WHERE conversation_id = $1
         ORDER BY created_at ASC
         OFFSET $2 LIMIT $3
@@ -1203,11 +907,11 @@ async def message_find_reply_since(
     session finishes, so polling session completion would miss it.
     """
     row = await pool.fetchrow(
-        """
+        f"""
         SELECT id, content, created_at, session_id, model_name,
                input_tokens, output_tokens, duration_ms, tool_calls, error, request_id,
-               sources, citations, routed_butler
-        FROM public.dashboard_messages
+               sources, citations, routed_butler, {taint_read("m")}
+        FROM public.dashboard_messages m
         WHERE conversation_id = $1 AND role = 'assistant' AND created_at > $2
         ORDER BY created_at ASC
         LIMIT 1

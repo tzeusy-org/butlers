@@ -28,8 +28,8 @@ from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
     MCPClientManager,
+    OptionalDb,
     get_butler_configs,
-    get_db_manager,
     get_mcp_manager,
 )
 from butlers.api.models import (
@@ -129,20 +129,6 @@ def _parse_issues_window(window: str) -> timedelta | None:
         )
     amount, unit = match.groups()
     return timedelta(hours=int(amount)) if unit == "h" else timedelta(days=int(amount))
-
-
-def _get_db_manager() -> DatabaseManager | None:
-    """Stub dependency for DatabaseManager injection.
-
-    Overridden by ``wire_db_dependencies()`` at app startup.  Returns ``None``
-    when the DatabaseManager has not been initialized (e.g. partial startup or
-    unit-test context without a live DB), allowing the issues endpoint to
-    remain available with reduced functionality.
-    """
-    try:
-        return get_db_manager()
-    except RuntimeError:
-        return None
 
 
 async def _list_audit_error_issues(
@@ -371,7 +357,8 @@ async def _check_butler_reachability(
 async def list_issues(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
     include_dismissed: bool = Query(
         False,
         description=(
@@ -561,7 +548,8 @@ async def _reachability_ack_watermark(
 @router.post("/dismiss", response_model=ApiResponse[dict], status_code=200)
 async def dismiss_issue(
     body: DismissIssueRequest = Body(...),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[dict]:
     """Acknowledge an issue group so it no longer appears in the active feed.
 
@@ -612,7 +600,8 @@ async def dismiss_issue(
 @router.delete("/dismiss/{issue_key:path}", response_model=ApiResponse[dict], status_code=200)
 async def undismiss_issue(
     issue_key: str,
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[dict]:
     """Remove a dismissal so the issue group can reappear in the feed.
 
@@ -687,7 +676,8 @@ async def group_for_audit_row(
             "contains the audit row, so an old failure still resolves."
         ),
     ),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[AuditIssueGroupRef]:
     """Resolve one ``public.audit_log`` failure row to its exact Issues group.
 
@@ -814,7 +804,8 @@ async def list_issue_occurrences(
     limit: int = Query(
         50, ge=1, le=500, description="Max occurrences to return (default 50, max 500)"
     ),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> PaginatedResponse[AuditLogEntry]:
     """Return the raw ``public.audit_log`` rows behind one audit-derived issue group.
 

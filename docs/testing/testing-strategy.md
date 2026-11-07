@@ -34,6 +34,31 @@ Tests that require Docker via testcontainers. The primary integration target is 
 
 A subset of integration tests specifically for database operations. These use testcontainers with real PostgreSQL and test migration chains, schema isolation, and query correctness.
 
+Every DB-backed test gets its database from one factory, `src/butlers/testing/db.py`, through
+three root `conftest.py` fixtures:
+
+- `db_pool`: a pool on a fresh core-migrated database.
+- `db`: an async factory for other chains, for example
+  `await db("core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard")`.
+- `fresh_db`: a sync factory returning a URL, for migration-subject tests, for example
+  `fresh_db("core", revisions={"core": "core_170"})`. Call it from sync fixtures and tests only:
+  on a cold template it migrates with `asyncio.run`, which fails inside an async fixture.
+- `db.open(url, schema=...)`: a pool on a `fresh_db` URL, for tests that need both the pool and
+  the URL (raw `asyncpg.connect` sessions, admin connections); it closes at teardown too.
+
+Each xdist worker migrates once per distinct chain request into a template database; every
+test then gets its own `CREATE DATABASE ... TEMPLATE` clone, so isolation stays per test while
+the migration cost is paid once. The fixtures run on the session event loop, so async tests
+that use them carry `pytest.mark.asyncio(loop_scope="session")`. Code that takes a dashboard
+`DatabaseManager` gets `butlers.testing.db_manager.db_manager({"general": pool}, ...)`: the real
+manager over the test's pools, with production lookups, `KeyError` refusals and fan-out.
+
+Do not add a per-file `pool` or `migrated_db_url` fixture, a hand-written fake manager with its
+own `pool` method, or hand-written `CREATE TABLE` DDL: `scripts/check_test_db_fixtures.py` (run by
+`tests/scripts/test_check_test_db_fixtures.py`) freezes the existing ones per file in
+`scripts/test-db-fixtures-baseline.json` and fails on any new one (bu-rvgzmf.1). After removing
+some, lower the baseline with `python3 scripts/check_test_db_fixtures.py --update-baseline`.
+
 ### End-to-End Tests (`@pytest.mark.e2e`)
 
 Full-stack tests that require an authenticated `claude` CLI, `ANTHROPIC_API_KEY`, and Docker. These test the complete trigger-to-response flow; see the [E2E suite](e2e/README.md).
@@ -57,10 +82,12 @@ Long-running tests excluded from default CI. Run with `-m nightly`. These cover 
 
 ## Scheduled CI (`.github/workflows/nightly.yml`)
 
-Two jobs run on a schedule (`0 2 * * *` UTC) and via `workflow_dispatch`, never on `push`/`pull_request` — they surface hazards early without gating PR merges or the required `check`/`frontend`/`frontend-e2e` checks:
+These jobs run on a schedule (`0 2 * * *` UTC) and via `workflow_dispatch`, never on `push`/`pull_request`. They surface hazards early without gating PR merges or the required `alls-green` check (Playwright `frontend-e2e` is required through `alls-green`):
 
 - **`nightly`** — the `@pytest.mark.nightly` long-running/stress suite plus migration tests.
-- **`faketime-matrix`** — reruns the full unit+integration suite (excluding `e2e`/`bench`/`perf`/`nightly`) twice, with the runner's wall clock shifted `+45d` and `+120d` via `LD_PRELOAD`-ed `libfaketime`. This catches wall-clock time-bomb tests — a fixture that freezes one clock reading and compares it against a later, fresh `datetime.now()`/`date.today()` call, so the test only fails once real time drifts past whatever date was baked in at authoring time — before it detonates on `main` at its real trigger date. libfaketime does not affect the monotonic clock (asyncio sleep/timeout semantics are unchanged) or the Postgres service container's own clock (SQL `NOW()` stays real), so it only reaches Python-level wall-clock reads. The job carries `timeout-minutes: 90` and the run step passes `pytest-timeout`'s `--timeout=300` (scoped to this leg only) so a single wall-clock-confused hang surfaces as a named test failure — and the run concludes `failure` (triggering GitHub's scheduled-workflow-failure email) — instead of silently eating the whole 6h job limit and concluding `cancelled`.
+- **`coverage-shards` → `coverage-preflight` → `coverage-report`** — the only covered run of the suite: all five unit and six integration pytest-split groups with `CI_COVERAGE=1`, combined into the `ci-combined-coverage-report` artifact and the main coverage badge. Required CI runs the same tests untraced.
+- **`durations-refresh`** — merges the untraced per-test durations of every lane group of the latest successful merge-group CI run into `.test_durations` (covered timings skewed group balance), uploads it, and on Monday's scheduled run (or a manual dispatch) on `main` opens a PR with it. It never pushes to `main`.
+- **`faketime-matrix`** — reruns the full unit+integration suite (excluding `e2e`/`bench`/`perf`/`nightly`) twice, with the runner's wall clock shifted `+45d` and `+120d` via `LD_PRELOAD`-ed `libfaketime`. This catches wall-clock time-bomb tests — a fixture that freezes one clock reading and compares it against a later, fresh `datetime.now()`/`date.today()` call, so the test only fails once real time drifts past whatever date was baked in at authoring time — before it detonates on `main` at its real trigger date. libfaketime does not affect the monotonic clock (asyncio sleep/timeout semantics are unchanged). The root `conftest.py` runs the shared Postgres testcontainer under the same library and offset, so SQL `now()` agrees with Python's clock and a DB test needs no marker to survive the shift. Tests that need a live TLS handshake or a timed thread wait carry `faketime_fragile` and are deselected from this leg only. The job carries `timeout-minutes: 75` and the run step passes `pytest-timeout`'s `--timeout=300` (scoped to this leg only) so a single wall-clock-confused hang surfaces as a named test failure — and the run concludes `failure` (triggering GitHub's scheduled-workflow-failure email) — instead of silently eating the whole 6h job limit and concluding `cancelled`.
 
 ## Parallel Execution
 
@@ -96,7 +123,7 @@ make test-plan BASE=origin/main
 uv run --no-sync pytest path/to/test_file.py::test_name -q --tb=short -n 0
 
 # Hygiene for changed Python paths.
-uv run ruff check src/ tests/ roster/ conftest.py --output-format concise
+uv run ruff check src/ tests/ roster/ scripts/ conftest.py --output-format concise
 uv run ruff format --check src/ tests/ roster/ conftest.py -q
 ```
 
@@ -112,7 +139,7 @@ make test-ci-integration
 ```
 
 CI also runs static checks and a separate smoke/release-evidence step; terminal
-hosted CI is the only evidence for the whole `check` job. For a given SHA, one
+hosted CI is the only evidence for the whole `alls-green` check. For a given SHA, one
 owner may run a broad local lane from a clean worktree; its receipt records the
 SHA and rejects dirty state. Reviewers reuse only a matching clean receipt and
 run focused checks for any finding rather than repeating the entire suite.

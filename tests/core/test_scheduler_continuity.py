@@ -24,10 +24,8 @@ import asyncpg
 import pytest
 
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, build_day_close_prompt_hooks
-from butlers.core.scheduler import _prepare_scheduled_prompt, _prepend_seasonal_context
+from butlers.core.scheduler.prompt import _prepare_scheduled_prompt, _prepend_seasonal_context
 from butlers.core.task_continuity import record_carry_forward
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -37,27 +35,10 @@ pytestmark = [
 _asyncio_session = pytest.mark.asyncio(loop_scope="session")
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
-    )
-    await p.execute("TRUNCATE TABLE scheduled_tasks CASCADE")
-    # public.task_continuity has RLS FORCEd with no DELETE policy (matching
-    # public.expected_signals' precedent), and this pool's login is an
-    # ordinary non-superuser role, so a cleanup DELETE here would silently
-    # no-op. Tests use unique task names instead of relying on row cleanup.
-    yield p
-    await p.close()
+async def general_pool(db):
+    """Core chain migrated into the ``general`` butler schema."""
+    return await db("core", schemas={"core": "general"}, schema="general")
 
 
 class _Dispatch:
@@ -80,7 +61,7 @@ def _past(minutes: int = 5) -> datetime:
 
 
 async def _create_continuity_task(pool: asyncpg.Pool, name: str, prompt: str) -> uuid.UUID:
-    from butlers.core.scheduler import schedule_create
+    from butlers.core.scheduler.crud import schedule_create
 
     task_id = await schedule_create(pool, name, "*/1 * * * *", prompt)
     await pool.execute(
@@ -92,14 +73,14 @@ async def _create_continuity_task(pool: asyncpg.Pool, name: str, prompt: str) ->
 
 
 @_asyncio_session
-async def test_second_run_carries_first_runs_carry_forward_with_age(pool) -> None:
+async def test_second_run_carries_first_runs_carry_forward_with_age(general_pool) -> None:
     task_name = "continuity-task"
-    await _create_continuity_task(pool, task_name, "Do the thing")
+    await _create_continuity_task(general_pool, task_name, "Do the thing")
 
     dispatch1 = _Dispatch(butler_name="health")
-    from butlers.core.scheduler import tick
+    from butlers.core.scheduler.dispatch import tick
 
-    count = await tick(pool, dispatch1, butler_name="health")
+    count = await tick(general_pool, dispatch1, butler_name="health")
     assert count == 1
     # Run 1: no live row yet -> honest gap wording (AC7), not silence.
     assert "no carry-forward" in dispatch1.calls[0]["prompt"]
@@ -107,7 +88,7 @@ async def test_second_run_carries_first_runs_carry_forward_with_age(pool) -> Non
     # Simulate run 1's session calling carry_forward.
     session_1 = uuid.uuid4()
     await record_carry_forward(
-        pool,
+        general_pool,
         butler_name="health",
         task_name=task_name,
         session_id=session_1,
@@ -115,11 +96,11 @@ async def test_second_run_carries_first_runs_carry_forward_with_age(pool) -> Non
     )
 
     # Advance the task to due again for run 2.
-    await pool.execute(
+    await general_pool.execute(
         "UPDATE scheduled_tasks SET next_run_at = $2 WHERE name = $1", task_name, _past()
     )
     dispatch2 = _Dispatch(butler_name="health")
-    count2 = await tick(pool, dispatch2, butler_name="health")
+    count2 = await tick(general_pool, dispatch2, butler_name="health")
     assert count2 == 1
 
     dispatched_prompt = dispatch2.calls[0]["prompt"]
@@ -129,15 +110,15 @@ async def test_second_run_carries_first_runs_carry_forward_with_age(pool) -> Non
 
 
 @_asyncio_session
-async def test_gap_is_named_when_a_run_never_called_carry_forward(pool) -> None:
+async def test_gap_is_named_when_a_run_never_called_carry_forward(general_pool) -> None:
     """AC7: run N records nothing -> run N+1 names the gap, not silence."""
     task_name = "continuity-gap-task"
-    await _create_continuity_task(pool, task_name, "Check something")
+    await _create_continuity_task(general_pool, task_name, "Check something")
 
-    from butlers.core.scheduler import tick
+    from butlers.core.scheduler.dispatch import tick
 
     dispatch = _Dispatch(butler_name="health")
-    count = await tick(pool, dispatch, butler_name="health")
+    count = await tick(general_pool, dispatch, butler_name="health")
     assert count == 1
     assert f"## Task Continuity — {task_name}" in dispatch.calls[0]["prompt"]
     assert "The last run recorded no carry-forward." in dispatch.calls[0]["prompt"]
@@ -145,18 +126,18 @@ async def test_gap_is_named_when_a_run_never_called_carry_forward(pool) -> None:
 
 @_asyncio_session
 async def test_two_concurrent_ticks_dispatch_at_most_once_and_carry_forward_stays_single_row(
-    pool,
+    general_pool,
 ) -> None:
     """AC8: the atomic occurrence claim means only one tick's session can ever
     call carry_forward for a given occurrence, so exactly one live row results."""
     task_name = "continuity-race-task"
-    await _create_continuity_task(pool, task_name, "Race me")
+    await _create_continuity_task(general_pool, task_name, "Race me")
 
-    from butlers.core.scheduler import tick
+    from butlers.core.scheduler.dispatch import tick
 
     async def dispatch_and_record(kwargs: dict[str, Any]) -> None:
         await record_carry_forward(
-            pool,
+            general_pool,
             butler_name="health",
             task_name=task_name,
             session_id=uuid.uuid4(),
@@ -167,14 +148,14 @@ async def test_two_concurrent_ticks_dispatch_at_most_once_and_carry_forward_stay
     dispatch_b = _Dispatch(butler_name="health", on_dispatch=dispatch_and_record)
 
     counts = await asyncio.gather(
-        tick(pool, dispatch_a, butler_name="health"),
-        tick(pool, dispatch_b, butler_name="health"),
+        tick(general_pool, dispatch_a, butler_name="health"),
+        tick(general_pool, dispatch_b, butler_name="health"),
     )
 
     assert sum(counts) == 1
     assert len(dispatch_a.calls) + len(dispatch_b.calls) == 1
 
-    rows = await pool.fetch(
+    rows = await general_pool.fetch(
         "SELECT id FROM public.task_continuity WHERE butler_name = $1 AND task_name = $2 "
         "AND is_live",
         "health",
@@ -184,7 +165,7 @@ async def test_two_concurrent_ticks_dispatch_at_most_once_and_carry_forward_stay
 
 
 @_asyncio_session
-async def test_chronicler_day_close_prompt_unaffected_when_not_opted_in(pool) -> None:
+async def test_chronicler_day_close_prompt_unaffected_when_not_opted_in(general_pool) -> None:
     """AC10: chronicler's day-close prompt is byte-identical without continuity=true.
 
     Retiring the bespoke day-close hook onto the general layer is explicitly a
@@ -192,17 +173,20 @@ async def test_chronicler_day_close_prompt_unaffected_when_not_opted_in(pool) ->
     strict no-op for a task that has not opted in, which is what makes that
     future migration safe to attempt later.
     """
-    from butlers.core.scheduler import schedule_create, tick
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.dispatch import tick
 
-    task_id = await schedule_create(pool, DAY_CLOSE_TASK_NAME, "5 1 * * *", "Chronicle the day")
-    await pool.execute(
+    task_id = await schedule_create(
+        general_pool, DAY_CLOSE_TASK_NAME, "5 1 * * *", "Chronicle the day"
+    )
+    await general_pool.execute(
         "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", task_id, _past()
     )
     # continuity defaults to false — deliberately not set here.
 
     prompt_hooks = build_day_close_prompt_hooks(timezone="UTC")
     dispatch = _Dispatch(butler_name="chronicler")
-    count = await tick(pool, dispatch, butler_name="chronicler", prompt_hooks=prompt_hooks)
+    count = await tick(general_pool, dispatch, butler_name="chronicler", prompt_hooks=prompt_hooks)
     assert count == 1
 
     dispatched_prompt = dispatch.calls[0]["prompt"]

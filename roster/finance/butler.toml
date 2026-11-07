@@ -105,5 +105,11 @@ cron = "50 6 * * *"
 dispatch_mode = "job"
 job_name = "calendar_overlay_contribution"
 
-# RFC 0015: report errors to QA; this module never dispatches locally.
-[modules.self_healing]
+# RFC 0015: core always registers the error relay; no module opt-in is required.
+
+# Keep guest invitations on this same provider/account owner.
+# Capability adds no unrelated tool gates or standing rules.
+[modules.approvals]
+groups = ["actions"]
+enabled = false
+domain_producers = ["calendar"]

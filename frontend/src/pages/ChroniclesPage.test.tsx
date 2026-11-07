@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { act, useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { MemoryRouter, useNavigate } from "react-router";
+import { MemoryRouter, useLocation, useNavigate } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ChroniclesPage from "@/pages/ChroniclesPage";
@@ -45,7 +45,16 @@ let _isFetching = false;
 let _isError = false;
 let _isPlaceholderData = false;
 let _refetch = vi.fn();
-let _drilldownArgs: { date: string; tz: string } | undefined;
+let _drilldownArgs:
+  | { date: string; tz: string; onEpisodeSelect?: (episodeId: string) => void }
+  | undefined;
+let _location = "";
+let _episodeRead: { isLoading: boolean; error: Error | null; data: undefined } = {
+  isLoading: true,
+  error: null,
+  data: undefined,
+};
+const _episodeIdsRead: string[] = [];
 let _navigate: ((to: string) => void) | undefined;
 let _timezone = "Asia/Singapore";
 
@@ -64,11 +73,32 @@ vi.mock("@/hooks/use-chronicles-briefing", () => ({
 
 vi.mock("@/api/client.ts", () => ({ postChroniclerDayCloseRefresh }));
 
+// The real EpisodeDrawer renders for the `?episode=` door; only its data reads
+// are stubbed so each test controls the drawer's own loading/error state.
+vi.mock("@/hooks/use-chronicles", () => {
+  const idle = { data: undefined, isLoading: false, error: null };
+  return {
+    useChroniclerEpisode: (episodeId: string) => {
+      _episodeIdsRead.push(episodeId);
+      return _episodeRead;
+    },
+    useChroniclerEpisodeEvents: () => idle,
+    useChroniclerEpisodeCorrections: () => idle,
+    useChroniclerEvidenceChain: () => idle,
+    useChroniclerExplain: () => ({ mutate: vi.fn(), isPending: false }),
+    useSubmitEpisodeCorrection: () => ({ mutate: vi.fn(), isPending: false }),
+  };
+});
+
 // The drilldown panel pulls in heavy modules (Gantt, Map, Scrubber). For these
 // editorial smoke tests we stub it out; content visibility is tested in its
 // own component spec.
 vi.mock("@/components/chronicles/ChroniclesDrilldownPanel", () => ({
-  ChroniclesDrilldownPanel: (args: { date: string; tz: string }) => {
+  ChroniclesDrilldownPanel: (args: {
+    date: string;
+    tz: string;
+    onEpisodeSelect?: (episodeId: string) => void;
+  }) => {
     _drilldownArgs = args;
     return <section aria-label="Chronicles drilldown stub" data-testid="drilldown" />;
   },
@@ -76,6 +106,10 @@ vi.mock("@/components/chronicles/ChroniclesDrilldownPanel", () => ({
 
 function NavigationHarness() {
   const navigate = useNavigate();
+  const location = useLocation();
+  useEffect(() => {
+    _location = `${location.pathname}${location.search}`;
+  }, [location]);
   useEffect(() => {
     _navigate = navigate;
     return () => {
@@ -950,6 +984,62 @@ describe("ChroniclesPage editorial archetype", () => {
     expect(html).not.toContain("Stale headline that must not render.");
     expect(html).not.toContain("Stale prose that must not render.");
     expect(html).not.toContain("Chronicles drilldown stub");
+  });
+
+  describe("episode query door", () => {
+    beforeEach(() => {
+      _briefing = buildBriefing({ date: "2026-05-05" });
+      _episodeIdsRead.length = 0;
+      _episodeRead = { isLoading: true, error: null, data: undefined };
+    });
+
+    const drawer = () => document.body.querySelector('[data-testid="episode-drawer"]');
+
+    it("date plus episode opens the existing drawer for that exact episode over the day", () => {
+      const { container, unmount } = mountPage(
+        "/chronicles?date=2026-05-05&episode=ep-123&keep=1",
+      );
+      expect(drawer()).not.toBeNull();
+      expect(new Set(_episodeIdsRead)).toEqual(new Set(["ep-123"]));
+      expect(_briefingArgs?.date).toBe("2026-05-05");
+      expect(container.querySelector('[data-testid="drilldown"]')).not.toBeNull();
+      unmount();
+    });
+
+    it("closing the drawer removes only episode", () => {
+      const { unmount } = mountPage("/chronicles?keep=a&date=2026-05-05&episode=ep-123&keep=b");
+      act(() => {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      });
+      expect(_location).toBe("/chronicles?keep=a&date=2026-05-05&keep=b");
+      unmount();
+    });
+
+    it("an unknown episode fails inside the drawer and keeps the day page", () => {
+      _episodeRead = { isLoading: false, error: new Error("Episode not found"), data: undefined };
+      const { container, unmount } = mountPage("/chronicles?date=2026-05-05&episode=missing");
+      const error = drawer()?.querySelector('[data-testid="episode-drawer-error"]');
+      expect(error?.textContent).toContain("Episode not found");
+      expect(container.textContent).toContain("Quiet day.");
+      expect(container.querySelector('[data-testid="drilldown"]')).not.toBeNull();
+      unmount();
+    });
+
+    it("a date-only link renders no drawer and reads no episode", () => {
+      const { unmount } = mountPage("/chronicles?date=2026-05-05");
+      expect(drawer()).toBeNull();
+      expect(_episodeIdsRead).toEqual([]);
+      expect(_location).toBe("/chronicles?date=2026-05-05");
+      unmount();
+    });
+
+    it("an in-page episode click opens the same door", () => {
+      const { unmount } = mountPage("/chronicles?date=2026-05-05");
+      act(() => _drilldownArgs?.onEpisodeSelect?.("ep-9"));
+      expect(_location).toBe("/chronicles?date=2026-05-05&episode=ep-9");
+      expect(drawer()).not.toBeNull();
+      unmount();
+    });
   });
 
   describe("palette verbs + bindings (bu-t64p2)", () => {

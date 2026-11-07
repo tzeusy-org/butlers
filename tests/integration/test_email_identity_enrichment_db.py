@@ -10,13 +10,9 @@ and the actual ``relationship.entity_facts`` / ``public.entities`` / real
 ``relationship_assert_fact`` central-writer FK/constraint shapes are verified,
 not just asserted against a mock.
 
-Schema is hand-rolled (mirrors the sibling precedent in
-tests/integration/test_pending_actions_writers_jsonb_roundtrip.py) rather than
-running the full "core" + "relationship" Alembic chains: only the columns the
-code under test actually touches are created, matching the real DDL
-(core_002_identity.py's public.entities, 013_relationship_facts.py's
-relationship.entity_facts, 014_predicate_registry.py's
-relationship.entity_predicate_registry). ``propose_insight_candidate`` and
+Schema is the real migrated core, relationship (``relationship`` schema) and
+approvals (``public``) chains, the same layout the hand-rolled fixture used to
+mirror. ``propose_insight_candidate`` and
 ``state_set`` are stubbed — both are unrelated concerns that already fail
 gracefully by design (a missing insight-candidates table is swallowed by the
 job's own try/except; state_set is fire-and-forget observability).
@@ -33,39 +29,6 @@ from types import ModuleType
 from typing import Any
 
 import pytest
-
-from butlers.testing.approval_delivery_schema import install_approval_delivery_schema
-from butlers.testing.schema_standins import (
-    APPROVAL_EVENTS,
-    APPROVAL_RULES,
-    ENTITY_PREDICATE_REGISTRY,
-    PENDING_ACTIONS,
-)
-
-
-def _apply_evidence_schema():
-    """Load ``roster/relationship/tests/evidence_schema.py`` by path.
-
-    ``roster/`` is not an importable package from ``tests/`` (no ``__init__``,
-    not on ``sys.path``), but the rel_034 DDL must not be copy-pasted here — it
-    would drift from the migration the moment either side changes.
-    """
-    import importlib.util
-    from pathlib import Path
-
-    schema_path = (
-        Path(__file__).resolve().parents[2]
-        / "roster"
-        / "relationship"
-        / "tests"
-        / "evidence_schema.py"
-    )
-    spec = importlib.util.spec_from_file_location("_rel034_evidence_schema", schema_path)
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.apply_evidence_schema
-
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -88,87 +51,19 @@ def _get_rjobs() -> ModuleType:
 
 _ASSERT_FACT_PATCH = "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact"
 
-_NOW = datetime(2026, 7, 1, tzinfo=UTC)
-
 
 @pytest.fixture
-async def identity_pool(provisioned_postgres_pool):
-    """Provision the minimal real-shaped tables the code under test touches."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name  VARCHAR NOT NULL,
-                entity_type     VARCHAR NOT NULL DEFAULT 'other',
-                aliases         TEXT[] NOT NULL DEFAULT '{}',
-                metadata        JSONB DEFAULT '{}'::jsonb,
-                roles           TEXT[] NOT NULL DEFAULT '{}',
-                created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-                id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate   TEXT        NOT NULL,
-                object      TEXT        NOT NULL,
-                object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-                src         TEXT        NOT NULL,
-                conf        FLOAT       NOT NULL DEFAULT 1.0 CHECK (conf >= 0.0 AND conf <= 1.0),
-                last_seen   TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                weight      INT,
-                verified    BOOL        NOT NULL DEFAULT false,
-                "primary"   BOOL,
-                validity    TEXT        NOT NULL DEFAULT 'active'
-                                CHECK (validity IN ('active', 'retracted', 'superseded')),
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        # Required by relationship_assert_fact's _insert_active_fact:
-        # "INSERT ... ON CONFLICT (subject, predicate, object) WHERE validity='active'"
-        # needs a matching partial unique index (mirrors rel_013's uq_ef_spo_active).
-        await pool.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-                ON relationship.entity_facts (subject, predicate, object)
-                WHERE validity = 'active'
-        """)
-        # rel_034: the central writer stamps assert provenance on the fact row
-        # and persists evidence in the same transaction, so a hand-rolled
-        # entity_facts without those objects cannot execute the writer at all.
-        await _apply_evidence_schema()(pool)
-        await pool.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        await pool.execute("""
-            INSERT INTO relationship.entity_predicate_registry (predicate, kind, object_kind)
-            VALUES ('has-email', 'contact', 'literal')
-            ON CONFLICT (predicate) DO NOTHING
-        """)
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS public.ingestion_events (
-                id                       UUID PRIMARY KEY,
-                received_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-                source_channel           TEXT NOT NULL,
-                source_provider          TEXT NOT NULL DEFAULT 'gmail',
-                source_endpoint_identity TEXT NOT NULL DEFAULT 'gmail:user:test@example.com',
-                source_sender_identity   TEXT,
-                source_sender_display_name TEXT,
-                source_thread_identity   TEXT,
-                external_event_id        TEXT NOT NULL DEFAULT '',
-                dedupe_key               TEXT NOT NULL UNIQUE,
-                dedupe_strategy          TEXT NOT NULL DEFAULT 'connector_api',
-                ingestion_tier           TEXT NOT NULL DEFAULT 'full',
-                policy_tier              TEXT NOT NULL DEFAULT 'default',
-                status                   TEXT NOT NULL DEFAULT 'ingested'
-            )
-        """)
-        await pool.execute(PENDING_ACTIONS.ddl())
-        await pool.execute(APPROVAL_RULES.ddl())
-        await pool.execute(APPROVAL_EVENTS.ddl())
-        await install_approval_delivery_schema(pool)
-        yield pool
+async def identity_pool(db):
+    """The real chains the code under test touches, with approval admission enabled."""
+    pool = await db("core", "relationship", "approvals", schemas={"relationship": "relationship"})
+    await pool.execute(
+        "UPDATE public.approvals_policy "
+        "SET quiet_start_hour = NULL, quiet_end_hour = NULL, timezone = 'UTC' WHERE id = 1"
+    )
+    await pool.execute(
+        "UPDATE approval_delivery_rollout SET admission_enabled = true WHERE singleton"
+    )
+    return pool
 
 
 async def _insert_event(
@@ -182,12 +77,16 @@ async def _insert_event(
     await pool.execute(
         """
         INSERT INTO public.ingestion_events
-            (id, received_at, source_channel, source_sender_identity,
-             source_sender_display_name, source_thread_identity, dedupe_key, status)
-        VALUES ($1, $2, 'email', $3, $4, $5, $6, 'ingested')
+            (id, received_at, source_channel, source_provider, source_endpoint_identity,
+             source_sender_identity, source_sender_display_name, source_thread_identity,
+             external_event_id, dedupe_key, dedupe_strategy, ingestion_tier, policy_tier,
+             status)
+        VALUES ($1, $2, 'email', 'gmail', 'gmail:user:test@example.com', $3, $4, $5, '',
+                $6, 'connector_api', 'full', 'default', 'ingested')
         """,
         uuid.uuid4(),
-        _NOW - timedelta(days=day_offset),
+        # The job's lookback window ends at the wall clock, so events must too.
+        datetime.now(UTC) - timedelta(days=day_offset),
         address,
         display_name,
         thread_id,
@@ -346,76 +245,6 @@ class TestEmailIdentityEnrichmentJobRealDb:
             "SELECT COUNT(*) FROM pending_actions WHERE tool_name = 'relationship_assert_fact'"
         )
         assert action_count == 1
-
-
-class TestBackfillScriptRealDb:
-    async def test_links_existing_entity_via_real_central_writer(self, identity_pool) -> None:
-        import importlib.util
-        from pathlib import Path
-
-        script_path = (
-            Path(__file__).resolve().parent.parent.parent
-            / "scripts"
-            / "backfill_email_identity_facts.py"
-        )
-        spec = importlib.util.spec_from_file_location(
-            "backfill_email_identity_facts_db", script_path
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        pool = identity_pool
-        existing_id = await pool.fetchval(
-            "INSERT INTO public.entities (canonical_name, entity_type) "
-            "VALUES ('John Doe', 'person') RETURNING id"
-        )
-        await _insert_event(pool, address="john.doe@example.com", thread_id="t1", day_offset=0)
-
-        summary = await mod.backfill_email_identity_facts(
-            pool, lookback_days=180, row_limit=20_000, dry_run=False
-        )
-
-        assert summary["linked"] == 1
-        assert summary["errors"] == 0
-
-        fact_row = await pool.fetchrow(
-            "SELECT subject, object, validity FROM relationship.entity_facts "
-            "WHERE predicate = 'has-email' AND object = $1",
-            "john.doe@example.com",
-        )
-        assert fact_row is not None
-        assert fact_row["subject"] == existing_id
-        assert fact_row["validity"] == "active"
-
-    async def test_dry_run_leaves_no_fact_behind(self, identity_pool) -> None:
-        import importlib.util
-        from pathlib import Path
-
-        script_path = (
-            Path(__file__).resolve().parent.parent.parent
-            / "scripts"
-            / "backfill_email_identity_facts.py"
-        )
-        spec = importlib.util.spec_from_file_location(
-            "backfill_email_identity_facts_db_dryrun", script_path
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        pool = identity_pool
-        await pool.fetchval(
-            "INSERT INTO public.entities (canonical_name, entity_type) "
-            "VALUES ('John Doe', 'person') RETURNING id"
-        )
-        await _insert_event(pool, address="john.doe@example.com", thread_id="t1", day_offset=0)
-
-        summary = await mod.backfill_email_identity_facts(
-            pool, lookback_days=180, row_limit=20_000, dry_run=True
-        )
-
-        assert summary["linked"] == 1  # "would link"
-        fact_count = await pool.fetchval("SELECT COUNT(*) FROM relationship.entity_facts")
-        assert fact_count == 0
 
 
 # ---------------------------------------------------------------------------

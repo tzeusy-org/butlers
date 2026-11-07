@@ -17,7 +17,6 @@ import asyncpg
 import pytest
 
 import butlers.jobs._roster.finance_jobs as finance_jobs
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.finance.memorial_claims import list_memorial_open_claims
 
 _SOURCE = "finance:memorial-claim"
@@ -140,13 +139,8 @@ pytestmark_db = [
 
 
 @pytest.fixture
-def db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "finance"],
-        schemas={"finance": "finance"},
-    )
+def db_url(fresh_db) -> str:
+    return fresh_db("core", "finance", schemas={"finance": "finance"})
 
 
 async def _entity(conn: asyncpg.Connection, name: str, posture: str) -> uuid.UUID:

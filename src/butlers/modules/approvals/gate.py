@@ -25,11 +25,14 @@ import inspect
 import json
 import logging
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import butlers.core.approvals_hooks as approval_hooks
 from butlers.config import ApprovalConfig, ApprovalRiskTier
+from butlers.core.goal_lineage import approving_lineage
 from butlers.identity import (
     ResolvedContact,
     resolve_channel_contact_with_owner_corroboration,
@@ -183,9 +186,18 @@ def _unpinned_safety_critical_args(
     auto-approve.  On any failure to parse the rule constraints, every present
     safety-critical argument is treated as unpinned (fail-closed).
     """
+    return _unpinned_args(tool_args, _critical_args(tool_meta), matching_rule)
+
+
+def _critical_args(tool_meta: ToolMeta | None) -> frozenset[str]:
     if tool_meta is None:
-        return []
-    critical = {arg for arg, sensitive in tool_meta.arg_sensitivities.items() if sensitive}
+        return frozenset()
+    return frozenset(arg for arg, sensitive in tool_meta.arg_sensitivities.items() if sensitive)
+
+
+def _unpinned_args(
+    tool_args: dict[str, Any], critical: frozenset[str], matching_rule: dict[str, Any]
+) -> list[str]:
     if not critical:
         return []
 
@@ -287,6 +299,68 @@ def match_standing_rule(
 
     logger.warning("Standing rule selected but not found in source rows: %s", selected_id)
     return None
+
+
+# Tools whose standing-rule approval must also freeze (prepare) the arguments
+# under the owner's admitted permission before the approved row exists.
+RULE_PREPARED_TOOLS = frozenset({"relationship_assert_fact"})
+
+
+@dataclass(frozen=True, slots=True)
+class RuleAdmission:
+    """The standing rule admitted for one call, or why none was."""
+
+    rule: dict[str, Any] | None
+    unpinned: tuple[str, ...] = ()
+
+
+async def admit_standing_rule(
+    db: Any,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    critical_args: frozenset[str],
+    *,
+    eligible: Callable[[dict[str, Any]], bool] | None = None,
+) -> RuleAdmission:
+    """Select the standing rule that may auto-approve this call, if any.
+
+    The one admission path shared by the approval gate and goal parking:
+    match among active rules (optionally pre-filtered by ``eligible``), require
+    an admitted owner permission for a relationship fact rule, and refuse a
+    rule that leaves a safety-critical argument unpinned. ``db`` is a pool or
+    a connection. The caller still claims the rule's use atomically.
+    """
+    rows = await db.fetch(
+        "SELECT * FROM approval_rules WHERE tool_name = $1 AND active = true "
+        "ORDER BY created_at DESC, id ASC",
+        tool_name,
+    )
+    if eligible is not None:
+        rows = [row for row in rows if eligible(dict(row))]
+    matching_rule = match_standing_rule(tool_name, tool_args, rows)
+    if matching_rule is None:
+        return RuleAdmission(None)
+    if tool_name == "relationship_assert_fact":
+        from butlers.tools.relationship.fact_authority import admitted_rule_report
+
+        if await admitted_rule_report(db, matching_rule["id"]) is None:
+            return RuleAdmission(None)
+    # Safety-critical gating: a standing rule may only auto-approve when it
+    # pins every safety-critical argument the owning module declared via
+    # tool_metadata().  An unpinned safety-critical arg means the rule is
+    # too broad to blanket-approve this call, so the call parks (fail-closed;
+    # this tightens the gate and never bypasses it).
+    unpinned = _unpinned_args(tool_args, critical_args, matching_rule)
+    if unpinned:
+        logger.info(
+            "Gate: standing rule %s leaves safety-critical arg(s) %s unpinned for "
+            "tool %r; parking instead of auto-approving",
+            matching_rule.get("id"),
+            unpinned,
+            tool_name,
+        )
+        return RuleAdmission(None, tuple(unpinned))
+    return RuleAdmission(matching_rule)
 
 
 def _extract_channel_identity(
@@ -505,7 +579,7 @@ async def apply_approval_gates(
     metadata = tool_metadata or {}
     originals: dict[str, Any] = {}
 
-    for tool_name, tool_config in gated_tools.items():
+    for tool_name, _tool_config in gated_tools.items():
         tool_obj = await _resolve_registered_tool(mcp, tool_name)
         if tool_obj is None:
             logger.warning(
@@ -541,6 +615,30 @@ async def apply_approval_gates(
         _add_dossier_metadata_to_tool_schema(tool_obj)
 
     return originals
+
+
+async def _goal_approval_covers(pool: Any, tool_name: str, tool_args: dict[str, Any]) -> bool:
+    """A verified approval_ref covers this exact call and names this domain's approved action.
+
+    The lineage proves the broker approved exactly these raw arguments; the
+    action row proves the approval was this domain's, for this goal and tool,
+    and has not been settled.
+    """
+    lineage = approving_lineage(tool_name, tool_args)
+    if lineage is None:
+        return False
+    try:
+        action_id = uuid.UUID(str(lineage.approval_ref))
+    except ValueError:
+        return False
+    row = await pool.fetchrow(
+        "SELECT id FROM pending_actions WHERE id = $1 AND goal_id = $2 AND tool_name = $3 "
+        "AND status = 'approved' AND execution_result IS NULL",
+        action_id,
+        lineage.goal_id,
+        tool_name,
+    )
+    return row is not None
 
 
 def _make_gate_wrapper(
@@ -601,6 +699,10 @@ def _make_gate_wrapper(
 
     async def gate_wrapper(**kwargs: Any) -> dict[str, Any]:
         tool_args = dict(kwargs)
+        # A broker-forwarded approved effect (RFC 0038 D7): the verified
+        # approval_ref covering this exact call is the approval, so it runs
+        # once instead of parking again.
+        approved_by_goal = await _goal_approval_covers(pool, tool_name, tool_args)
 
         # Dossier metadata is always gate-only and is never forwarded to target
         # resolution, standing-rule matching, persistence as tool args, or the
@@ -615,6 +717,8 @@ def _make_gate_wrapper(
         argument_error = _unexpected_tool_argument_error(tool_name, original_fn, tool_args)
         if argument_error is not None:
             return argument_error
+        if approved_by_goal:
+            return await original_fn(**tool_args)
 
         action_id = uuid.uuid4()
         now = datetime.now(UTC)
@@ -780,45 +884,18 @@ def _make_gate_wrapper(
         dossier = dossier_or_error
 
         # No owner bypass: check standing rules.
-        rules = await pool.fetch(
-            "SELECT * FROM approval_rules WHERE tool_name = $1 AND active = true "
-            "ORDER BY created_at DESC, id ASC",
-            tool_name,
-        )
-
-        matching_rule = match_standing_rule(tool_name, tool_args, rules)
-
-        if tool_name == "relationship_assert_fact" and matching_rule is not None:
-            from butlers.tools.relationship.fact_authority import admitted_rule_report
-
-            if await admitted_rule_report(pool, matching_rule["id"]) is None:
-                matching_rule = None
-
-        # Safety-critical gating: a standing rule may only auto-approve when it
-        # pins every safety-critical argument the owning module declared via
-        # tool_metadata().  An unpinned safety-critical arg means the rule is
-        # too broad to blanket-approve this call, so we fall through to parking
-        # (fail-closed; this tightens the gate and never bypasses it).
-        unpinned_critical: list[str] = []
-        if matching_rule is not None:
-            unpinned_critical = _unpinned_safety_critical_args(tool_args, tool_meta, matching_rule)
-            if unpinned_critical:
-                logger.info(
-                    "Gate: standing rule %s leaves safety-critical arg(s) %s unpinned for "
-                    "tool %r; parking instead of auto-approving",
-                    matching_rule.get("id"),
-                    unpinned_critical,
-                    tool_name,
-                )
+        admission = await admit_standing_rule(pool, tool_name, tool_args, _critical_args(tool_meta))
+        matching_rule = admission.rule
+        unpinned_critical = list(admission.unpinned)
 
         rule_claimed = False
         rule_exhausted = False
-        if matching_rule is not None and resolved_contact is not None and not unpinned_critical:
+        if matching_rule is not None and resolved_contact is not None:
             # Target with a matching standing rule: claim one use atomically with the
             # approved-action insert, so racing calls cannot exceed max_uses.
             rule_id = matching_rule["id"]
 
-            if tool_name == "relationship_assert_fact":
+            if tool_name in RULE_PREPARED_TOOLS:
                 from butlers.tools.relationship.fact_authority import prepare_rule_assertion
 
                 tool_args = await prepare_rule_assertion(pool, action_id, tool_args, rule_id)
@@ -853,7 +930,7 @@ def _make_gate_wrapper(
             rule_claimed = claimed_row is not None
             if not rule_claimed:
                 rule_exhausted = True
-                if tool_name == "relationship_assert_fact":
+                if tool_name in RULE_PREPARED_TOOLS:
                     from butlers.tools.relationship.fact_authority import release_rule_assertion
 
                     # Park the already-prepared args, but not the standing-rule decision.

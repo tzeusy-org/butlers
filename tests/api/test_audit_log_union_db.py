@@ -45,15 +45,13 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
+from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_db, get_mcp_manager
 from butlers.api.routers import audit as audit_module
 from butlers.api.routers import model_settings as model_settings_module
-from butlers.api.routers import schedules as schedules_module
 from butlers.api.routers.audit import AuditTableNotAvailableError, log_audit_entry
 from butlers.core.state import state_set
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+from tests.audit_helpers import clear_audit_log_for_test
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -66,36 +64,20 @@ AUDIT_PATH = "/api/audit-log"
 BASE_URL = "http://test"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the core chain (public.audit_log) and the switchboard chain.
+@pytest.fixture
+async def audit_pool(db) -> asyncpg.Pool:
+    """Core (public.audit_log) + switchboard chains, flat topology.
 
-    Flat topology (both chains land in ``public``), mirroring the single-DB
-    deployment the read endpoint queries. The switchboard chain creates the
-    legacy ``dashboard_audit_log`` (migration 001) and then drops it (sw_026),
-    so the migrated DB exposes only ``public.audit_log`` — matching production."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-    )
+    The switchboard chain creates the legacy ``dashboard_audit_log`` (migration
+    001) and then drops it (sw_026), so only ``public.audit_log`` remains, as in
+    production."""
+    p = await db("core", "switchboard")
+    await clear_audit_log_for_test(p)
+    return p
 
 
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE public.audit_log CASCADE")
-    yield p
-    await p.close()
-
-
-@pytest.fixture
-def audit_app(pool: asyncpg.Pool) -> FastAPI:
+def audit_app(audit_pool: asyncpg.Pool) -> FastAPI:
     """FastAPI app whose audit router is wired to the real migrated pool.
 
     The credential-shared pool (public.audit_log) and the ``switchboard`` pool
@@ -103,11 +85,11 @@ def audit_app(pool: asyncpg.Pool) -> FastAPI:
     as the read endpoint expects in a single-database deployment.
     """
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.credential_shared_pool.return_value = pool
-    mock_db.pool.return_value = pool
+    mock_db.credential_shared_pool.return_value = audit_pool
+    mock_db.pool.return_value = audit_pool
 
     application = create_app()
-    application.dependency_overrides[audit_module._get_db_manager] = lambda: mock_db
+    application.dependency_overrides[get_db] = lambda: mock_db
     return application
 
 
@@ -118,7 +100,7 @@ async def _get(app: FastAPI, path: str) -> httpx.Response:
 
 
 async def test_log_audit_entry_lands_in_canonical_audit_log(
-    pool: asyncpg.Pool, audit_app: FastAPI
+    audit_pool: asyncpg.Pool, audit_app: FastAPI
 ) -> None:
     """As of bu-h47nm, log_audit_entry routes to ``public.audit_log`` (not the
     legacy ``dashboard_audit_log``); the row appears on /audit-log directly.
@@ -126,7 +108,7 @@ async def test_log_audit_entry_lands_in_canonical_audit_log(
     Field mapping: butler->actor, operation->action, request_summary.path->target.
     """
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = pool
+    mock_db.pool.return_value = audit_pool
     await log_audit_entry(
         mock_db,
         butler="qa",
@@ -135,7 +117,7 @@ async def test_log_audit_entry_lands_in_canonical_audit_log(
     )
 
     # The writer lands the row in the canonical table.
-    canonical_count = await pool.fetchval("SELECT count(*) FROM public.audit_log")
+    canonical_count = await audit_pool.fetchval("SELECT count(*) FROM public.audit_log")
     assert canonical_count == 1
 
     resp = await _get(audit_app, AUDIT_PATH)
@@ -153,7 +135,7 @@ async def test_log_audit_entry_lands_in_canonical_audit_log(
 
 @pytest.mark.parametrize("refused", [False, True])
 async def test_schedule_toggle_audit_attributes_owner_and_records_outcome(
-    pool: asyncpg.Pool, audit_app: FastAPI, refused: bool
+    audit_pool: asyncpg.Pool, audit_app: FastAPI, refused: bool
 ) -> None:
     schedule_id = uuid.uuid4()
     result = (
@@ -182,8 +164,8 @@ async def test_schedule_toggle_audit_attributes_owner_and_records_outcome(
         }
     )
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = pool
-    audit_app.dependency_overrides[schedules_module._get_db_manager] = lambda: mock_db
+    mock_db.pool.return_value = audit_pool
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
     mock_client = AsyncMock()
     mock_client.call_tool.return_value = [MagicMock(text=json.dumps(result))]
     mock_manager = AsyncMock(spec=MCPClientManager)
@@ -198,7 +180,7 @@ async def test_schedule_toggle_audit_attributes_owner_and_records_outcome(
         )
 
     assert response.status_code == (409 if refused else 200)
-    row = await pool.fetchrow(
+    row = await audit_pool.fetchrow(
         "SELECT actor, target, metadata, result, error FROM public.audit_log "
         "WHERE action = 'schedule.toggle'"
     )
@@ -232,7 +214,7 @@ async def test_schedule_toggle_audit_attributes_owner_and_records_outcome(
     ],
 )
 async def test_legacy_schedule_mutation_audits_owner_and_observed_outcome(
-    pool: asyncpg.Pool, audit_app: FastAPI, operation: str, mode: str
+    audit_pool: asyncpg.Pool, audit_app: FastAPI, operation: str, mode: str
 ) -> None:
     schedule_id = uuid.uuid4()
     method = {"create": "POST", "update": "PUT", "delete": "DELETE", "trigger": "POST"}[operation]
@@ -264,8 +246,8 @@ async def test_legacy_schedule_mutation_audits_owner_and_observed_outcome(
         else {"id": str(schedule_id), "status": expected_status}
     )
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = pool
-    audit_app.dependency_overrides[schedules_module._get_db_manager] = lambda: mock_db
+    mock_db.pool.return_value = audit_pool
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
     mock_client = AsyncMock()
     mock_client.call_tool.return_value = [MagicMock(text=json.dumps(mcp_result))]
     mock_manager = AsyncMock(spec=MCPClientManager)
@@ -288,7 +270,7 @@ async def test_legacy_schedule_mutation_audits_owner_and_observed_outcome(
         assert response.json()["data"]["status"] == (
             "error" if mode == "refused" else expected_status
         )
-    row = await pool.fetchrow(
+    row = await audit_pool.fetchrow(
         "SELECT actor, target, metadata, result, error FROM public.audit_log WHERE action = $1",
         f"schedule.{operation}",
     )
@@ -327,12 +309,12 @@ async def test_legacy_schedule_mutation_audits_owner_and_observed_outcome(
 
 
 async def test_canonical_and_legacy_rows_merged_ts_desc(
-    pool: asyncpg.Pool, audit_app: FastAPI
+    audit_pool: asyncpg.Pool, audit_app: FastAPI
 ) -> None:
     """Two canonical rows (one inserted directly, one via the rerouted
     log_audit_entry writer) interleave by ts DESC and the total is correct."""
     # Direct canonical row (older).
-    await pool.execute(
+    await audit_pool.execute(
         "INSERT INTO public.audit_log (actor, action, ts) "
         "VALUES ($1, $2, now() - interval '1 hour')",
         "owner",
@@ -340,7 +322,7 @@ async def test_canonical_and_legacy_rows_merged_ts_desc(
     )
     # Newer row via log_audit_entry (also canonical, post bu-h47nm).
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = pool
+    mock_db.pool.return_value = audit_pool
     await log_audit_entry(
         mock_db,
         butler="qa",
@@ -359,12 +341,12 @@ async def test_canonical_and_legacy_rows_merged_ts_desc(
 
 
 async def test_action_filter_matches_legacy_operation(
-    pool: asyncpg.Pool, audit_app: FastAPI
+    audit_pool: asyncpg.Pool, audit_app: FastAPI
 ) -> None:
     """?action= filters canonical rows by their action label (operation maps to
     action via the log_audit_entry shim)."""
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = pool
+    mock_db.pool.return_value = audit_pool
     await log_audit_entry(mock_db, butler="qa", operation="schedule.delete", request_summary={})
     await log_audit_entry(mock_db, butler="qa", operation="state.delete", request_summary={})
 
@@ -376,16 +358,16 @@ async def test_action_filter_matches_legacy_operation(
 
 
 async def test_key_filter_excludes_rows_without_credential_target(
-    pool: asyncpg.Pool, audit_app: FastAPI
+    audit_pool: asyncpg.Pool, audit_app: FastAPI
 ) -> None:
     """The credential-key filter (?key=) must never match rows with no credential
     target, preserving its exact semantics."""
     # Row with no credential target (shim writer leaves target NULL).
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = pool
+    mock_db.pool.return_value = audit_pool
     await log_audit_entry(mock_db, butler="qa", operation="schedule.create", request_summary={})
     # Canonical row with a credential target.
-    await pool.execute(
+    await audit_pool.execute(
         "INSERT INTO public.audit_log (actor, action, target) VALUES ($1, $2, $3)",
         "owner",
         "rotated",
@@ -401,7 +383,7 @@ async def test_key_filter_excludes_rows_without_credential_target(
 
 
 async def test_append_metadata_roundtrips_as_object_not_double_encoded_string(
-    pool: asyncpg.Pool, audit_app: FastAPI
+    audit_pool: asyncpg.Pool, audit_app: FastAPI
 ) -> None:
     """Real-Postgres regression for the append() jsonb double-encoding fix
     (JARVIS audit move 6, bu-qvnce.6).
@@ -423,7 +405,7 @@ async def test_append_metadata_roundtrips_as_object_not_double_encoded_string(
     """
     non_json_safe_id = uuid.uuid4()
     row_id = await audit_module.append(
-        pool,
+        audit_pool,
         "owner",
         "model_priority_change",
         metadata={"request_id": non_json_safe_id, "nested": {"nums": [1, 2, 3]}},
@@ -431,7 +413,7 @@ async def test_append_metadata_roundtrips_as_object_not_double_encoded_string(
     )
     assert row_id > 0
 
-    row = await pool.fetchrow(
+    row = await audit_pool.fetchrow(
         "SELECT metadata, result, error FROM public.audit_log WHERE id = $1", row_id
     )
     stored_metadata = row["metadata"]
@@ -456,7 +438,7 @@ async def test_append_metadata_roundtrips_as_object_not_double_encoded_string(
 
 
 async def test_privileged_filter_is_a_consequence_allowlist(
-    pool: asyncpg.Pool, audit_app: FastAPI
+    audit_pool: asyncpg.Pool, audit_app: FastAPI
 ) -> None:
     """The real SQL path selects consequential rows and every explicit error.
 
@@ -483,7 +465,7 @@ async def test_privileged_filter_is_a_consequence_allowlist(
         ("models.verify_all", "success"),
         ("runtime.heartbeat", "error"),
     ]
-    await pool.executemany(
+    await audit_pool.executemany(
         "INSERT INTO public.audit_log (actor, action, result) VALUES ('owner', $1, $2)",
         rows,
     )
@@ -514,11 +496,11 @@ async def test_privileged_filter_is_a_consequence_allowlist(
 
 
 async def test_model_delete_audits_and_cascade_deletes_overrides(
-    pool: asyncpg.Pool, audit_app: FastAPI
+    audit_pool: asyncpg.Pool, audit_app: FastAPI
 ) -> None:
     """The model delete route leaves audit evidence after the FK cascade."""
     entry_id = uuid.uuid4()
-    await pool.execute(
+    await audit_pool.execute(
         """
         INSERT INTO public.model_catalog
             (id, alias, runtime_type, model_id, complexity_tier)
@@ -527,7 +509,7 @@ async def test_model_delete_audits_and_cascade_deletes_overrides(
         entry_id,
         f"audit-delete-{entry_id}",
     )
-    await pool.execute(
+    await audit_pool.execute(
         """
         INSERT INTO public.butler_model_overrides
             (butler_name, catalog_entry_id, enabled, priority, complexity_tier)
@@ -537,8 +519,8 @@ async def test_model_delete_audits_and_cascade_deletes_overrides(
     )
 
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.credential_shared_pool.return_value = pool
-    audit_app.dependency_overrides[model_settings_module._get_db_manager] = lambda: mock_db
+    mock_db.credential_shared_pool.return_value = audit_pool
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
 
     transport = httpx.ASGITransport(app=audit_app)
     async with httpx.AsyncClient(transport=transport, base_url=BASE_URL) as client:
@@ -546,18 +528,20 @@ async def test_model_delete_audits_and_cascade_deletes_overrides(
 
     assert resp.status_code == 200
     assert (
-        await pool.fetchval("SELECT count(*) FROM public.model_catalog WHERE id = $1", entry_id)
+        await audit_pool.fetchval(
+            "SELECT count(*) FROM public.model_catalog WHERE id = $1", entry_id
+        )
         == 0
     )
     assert (
-        await pool.fetchval(
+        await audit_pool.fetchval(
             "SELECT count(*) FROM public.butler_model_overrides WHERE catalog_entry_id = $1",
             entry_id,
         )
         == 0
     )
 
-    audit_row = await pool.fetchrow(
+    audit_row = await audit_pool.fetchrow(
         """
         SELECT actor, action, target, note, metadata, result
         FROM public.audit_log
@@ -577,11 +561,11 @@ async def test_model_delete_audits_and_cascade_deletes_overrides(
 
 
 async def test_model_delete_impact_counts_live_overrides_without_mutation(
-    pool: asyncpg.Pool, audit_app: FastAPI
+    audit_pool: asyncpg.Pool, audit_app: FastAPI
 ) -> None:
     """The confirmation count comes from live FK rows and exposes no override content."""
     entry_id = uuid.uuid4()
-    await pool.execute(
+    await audit_pool.execute(
         """
         INSERT INTO public.model_catalog
             (id, alias, runtime_type, model_id, complexity_tier)
@@ -590,7 +574,7 @@ async def test_model_delete_impact_counts_live_overrides_without_mutation(
         entry_id,
         f"impact-{entry_id}",
     )
-    await pool.executemany(
+    await audit_pool.executemany(
         """
         INSERT INTO public.butler_model_overrides
             (butler_name, catalog_entry_id, enabled, priority, complexity_tier)
@@ -600,15 +584,15 @@ async def test_model_delete_impact_counts_live_overrides_without_mutation(
     )
 
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.credential_shared_pool.return_value = pool
-    audit_app.dependency_overrides[model_settings_module._get_db_manager] = lambda: mock_db
+    mock_db.credential_shared_pool.return_value = audit_pool
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
 
     response = await _get(audit_app, f"/api/settings/models/{entry_id}/delete-impact")
 
     assert response.status_code == 200
     assert response.json()["data"] == {"id": str(entry_id), "override_count": 3}
     assert (
-        await pool.fetchval(
+        await audit_pool.fetchval(
             "SELECT count(*) FROM public.butler_model_overrides WHERE catalog_entry_id = $1",
             entry_id,
         )
@@ -617,13 +601,13 @@ async def test_model_delete_impact_counts_live_overrides_without_mutation(
 
 
 async def test_model_create_rolls_back_when_audit_is_unavailable(
-    pool: asyncpg.Pool, audit_app: FastAPI
+    audit_pool: asyncpg.Pool, audit_app: FastAPI
 ) -> None:
     """A 503 audit failure cannot leave an unaudited catalog row committed."""
     alias = f"audit-create-rollback-{uuid.uuid4()}"
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.credential_shared_pool.return_value = pool
-    audit_app.dependency_overrides[model_settings_module._get_db_manager] = lambda: mock_db
+    mock_db.credential_shared_pool.return_value = audit_pool
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
 
     with patch.object(
         model_settings_module.audit,
@@ -644,18 +628,20 @@ async def test_model_create_rolls_back_when_audit_is_unavailable(
 
     assert resp.status_code == 503
     assert (
-        await pool.fetchval("SELECT count(*) FROM public.model_catalog WHERE alias = $1", alias)
+        await audit_pool.fetchval(
+            "SELECT count(*) FROM public.model_catalog WHERE alias = $1", alias
+        )
         == 0
     )
 
 
 async def test_model_delete_rolls_back_catalog_and_cascade_when_audit_is_unavailable(
-    pool: asyncpg.Pool, audit_app: FastAPI
+    audit_pool: asyncpg.Pool, audit_app: FastAPI
 ) -> None:
     """A 503 audit failure restores both the catalog row and its override."""
     entry_id = uuid.uuid4()
     alias = f"audit-delete-rollback-{entry_id}"
-    await pool.execute(
+    await audit_pool.execute(
         """
         INSERT INTO public.model_catalog
             (id, alias, runtime_type, model_id, complexity_tier)
@@ -664,7 +650,7 @@ async def test_model_delete_rolls_back_catalog_and_cascade_when_audit_is_unavail
         entry_id,
         alias,
     )
-    await pool.execute(
+    await audit_pool.execute(
         """
         INSERT INTO public.butler_model_overrides
             (butler_name, catalog_entry_id, enabled, priority, complexity_tier)
@@ -673,8 +659,8 @@ async def test_model_delete_rolls_back_catalog_and_cascade_when_audit_is_unavail
         entry_id,
     )
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.credential_shared_pool.return_value = pool
-    audit_app.dependency_overrides[model_settings_module._get_db_manager] = lambda: mock_db
+    mock_db.credential_shared_pool.return_value = audit_pool
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
 
     with patch.object(
         model_settings_module.audit,
@@ -687,11 +673,13 @@ async def test_model_delete_rolls_back_catalog_and_cascade_when_audit_is_unavail
 
     assert resp.status_code == 503
     assert (
-        await pool.fetchval("SELECT count(*) FROM public.model_catalog WHERE id = $1", entry_id)
+        await audit_pool.fetchval(
+            "SELECT count(*) FROM public.model_catalog WHERE id = $1", entry_id
+        )
         == 1
     )
     assert (
-        await pool.fetchval(
+        await audit_pool.fetchval(
             "SELECT count(*) FROM public.butler_model_overrides WHERE catalog_entry_id = $1",
             entry_id,
         )
@@ -700,26 +688,26 @@ async def test_model_delete_rolls_back_catalog_and_cascade_when_audit_is_unavail
 
 
 async def test_audit_owner_timezone_day_bounds_include_the_entire_owner_day(
-    pool: asyncpg.Pool, audit_app: FastAPI
+    audit_pool: asyncpg.Pool, audit_app: FastAPI
 ) -> None:
     """From=To is an inclusive owner-local day, independent of server UTC."""
     owner_tz = ZoneInfo("Asia/Singapore")
-    await state_set(pool, "settings.general", {"timezone": owner_tz.key})
-    same_day_early = await pool.fetchval(
+    await state_set(audit_pool, "settings.general", {"timezone": owner_tz.key})
+    same_day_early = await audit_pool.fetchval(
         """
         INSERT INTO public.audit_log (ts, actor, action, result)
         VALUES ($1, 'owner', 'model.update', 'success') RETURNING id
         """,
         datetime(2026, 7, 10, 16, 15, tzinfo=UTC),  # 00:15 on 2026-07-11 SGT
     )
-    same_day_late = await pool.fetchval(
+    same_day_late = await audit_pool.fetchval(
         """
         INSERT INTO public.audit_log (ts, actor, action, result)
         VALUES ($1, 'owner', 'model.update', 'success') RETURNING id
         """,
         datetime(2026, 7, 11, 15, 45, tzinfo=UTC),  # 23:45 on 2026-07-11 SGT
     )
-    next_day = await pool.fetchval(
+    next_day = await audit_pool.fetchval(
         """
         INSERT INTO public.audit_log (ts, actor, action, result)
         VALUES ($1, 'owner', 'model.update', 'success') RETURNING id
@@ -736,3 +724,120 @@ async def test_audit_owner_timezone_day_bounds_include_the_entire_owner_day(
     ids = {entry["id"] for entry in resp.json()["data"]}
     assert {same_day_early, same_day_late} <= ids
     assert next_day not in ids
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+async def test_override_reason_audit_commits_once_and_sql_fault_rolls_back(
+    audit_pool: asyncpg.Pool, audit_app: FastAPI, method: str
+) -> None:
+    """Real mutation/audit transaction with separate committed readbacks.
+
+    REQ-dashboard-model-settings-006. Auth uses the existing authenticated app
+    fixture; this proves database atomicity, not a live authentication ceremony.
+    """
+    entry_id = uuid.uuid4()
+    suffix = entry_id.hex
+    trigger = f"override_audit_fault_{suffix}"
+    function = f"public.{trigger}"
+    await audit_pool.execute(
+        "INSERT INTO public.model_catalog "
+        "(id,alias,runtime_type,model_id,complexity_tier) "
+        "VALUES ($1,$2,'codex','gpt-5','workhorse')",
+        entry_id,
+        f"override-reason-{suffix}",
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = audit_pool
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
+    action = "model.override.upsert" if method == "PUT" else "model.override.delete"
+    base_path = "/api/butlers/general/model-overrides"
+
+    async def seed_override():
+        return await audit_pool.fetchval(
+            "INSERT INTO public.butler_model_overrides "
+            "(butler_name,catalog_entry_id,enabled,priority) VALUES ('general',$1,true,7) "
+            "RETURNING id",
+            entry_id,
+        )
+
+    async def read_override():
+        # A fresh acquisition sees only committed state, not the request's TX.
+        async with audit_pool.acquire() as observer:
+            return await observer.fetchrow(
+                "SELECT id,enabled,priority,complexity_tier "
+                "FROM public.butler_model_overrides WHERE catalog_entry_id=$1",
+                entry_id,
+            )
+
+    def body(reason):
+        result = {"reason": reason, "actor": "caller-forgery"}
+        if method == "PUT":
+            result["overrides"] = [
+                {"catalog_entry_id": str(entry_id), "enabled": False, "priority": 9}
+            ]
+        return result
+
+    try:
+        override_id = await seed_override() if method == "DELETE" else None
+        path = f"{base_path}/{override_id}" if method == "DELETE" else base_path
+        transport = httpx.ASGITransport(app=audit_app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url=BASE_URL) as client:
+            response = await client.request(method, path, json=body("  deliberate change  "))
+            assert response.status_code == 200
+            stored = await read_override()
+            if method == "PUT":
+                assert stored["enabled"] is False and stored["priority"] == 9
+            else:
+                assert stored is None
+            async with audit_pool.acquire() as observer:
+                rows = await observer.fetch(
+                    "SELECT actor,action,note,result FROM public.audit_log ORDER BY ts"
+                )
+            assert len(rows) == 1
+            assert dict(rows[0]) == {
+                "actor": "owner",
+                "action": action,
+                "note": "deliberate change",
+                "result": "success",
+            }
+
+            if method == "DELETE":
+                override_id = await seed_override()
+                path = f"{base_path}/{override_id}"
+            before = await read_override()
+            # The real SQL fault occurs after the business mutation, inside its
+            # audit INSERT. Error telemetry may still append its separate row.
+            await audit_pool.execute(
+                f"CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                "BEGIN IF NEW.action IN ('model.override.upsert','model.override.delete') "
+                "AND NEW.note='force-override-audit-failure' THEN "
+                "RAISE EXCEPTION 'controlled override audit failure' USING ERRCODE='P0001'; "
+                "END IF; RETURN NEW; END $$"
+            )
+            await audit_pool.execute(
+                f"CREATE TRIGGER {trigger} BEFORE INSERT ON public.audit_log "
+                f"FOR EACH ROW EXECUTE FUNCTION {function}()"
+            )
+            failed_body = body("force-override-audit-failure")
+            if method == "PUT":
+                failed_body["overrides"][0]["priority"] = 88
+            response = await client.request(method, path, json=failed_body)
+            assert response.status_code == 500
+            assert await read_override() == before
+            async with audit_pool.acquire() as observer:
+                assert (
+                    await observer.fetchval(
+                        "SELECT count(*) FROM public.audit_log WHERE action=$1", action
+                    )
+                    == 1
+                )
+    finally:
+        # Always attempt each independent cleanup even when an earlier step
+        # fails; cleanup failures propagate and all objects are test-owned.
+        try:
+            await audit_pool.execute(f"DROP TRIGGER IF EXISTS {trigger} ON public.audit_log")
+        finally:
+            try:
+                await audit_pool.execute(f"DROP FUNCTION IF EXISTS {function}()")
+            finally:
+                await audit_pool.execute("DELETE FROM public.model_catalog WHERE id=$1", entry_id)

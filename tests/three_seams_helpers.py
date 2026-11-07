@@ -1,6 +1,9 @@
 """Immutable public source controls for the run16 seam regressions.
 
-Bodies are exact public source at 461e03b32ac3b88e2a92d487432f77a73aa2b829.
+Stored bodies and hashes are exact public source at
+461e03b32ac3b88e2a92d487432f77a73aa2b829. Only the private compiled
+create_catalog_entry copy adapts its transaction boundary for current owned
+audit append; its historical SQL and allowance omission remain unchanged.
 They execute against the same disposable migrated PostgreSQL fixture as the fix;
 no shallow-checkout git fetch, applied migration edit or live connection is used.
 Virtual filenames live under tests/fixtures/historical/<revision>/<original path>
@@ -23,8 +26,25 @@ def baseline_function(name: str, globals_: dict[str, Any]):
     item = json.loads(raw)[name]
     assert hashlib.sha256(item["body"].encode()).hexdigest() == item["body_sha256"]
     namespace = dict(globals_)
+    body = item["body"]
+    if name == "create_catalog_entry":
+        # Keep the stored body exact. Adapt its old definition-time dependency
+        # in the private namespace, and only its compiled transaction boundary
+        # for the current audit owner; preserve the historical SQL/arguments.
+        from butlers.api.deps import get_db
+        from butlers.core.audit_transaction import audit_transaction
+
+        namespace["_get_db_manager"] = get_db
+        original_context = "async with pool.acquire() as connection, connection.transaction():"
+        owned_context = "async with pool.acquire() as connection, audit_transaction(connection):"
+        assert body.count(original_context) == 1
+        assert owned_context not in body
+        adapted_body = body.replace(original_context, owned_context, 1)
+        assert adapted_body.replace(owned_context, original_context, 1) == body
+        body = adapted_body
+        namespace["audit_transaction"] = audit_transaction
     filename = Path(__file__).parent / "fixtures" / "historical" / item["git_sha"] / item["path"]
-    exec(compile(item["body"], str(filename), "exec"), namespace)
+    exec(compile(body, str(filename), "exec"), namespace)
     return namespace[name]
 
 

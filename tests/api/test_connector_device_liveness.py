@@ -31,7 +31,8 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.ingestion_connectors import _get_db_manager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -39,14 +40,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_row(data: dict) -> MagicMock:
-    """Build a mock asyncpg record."""
-    row = MagicMock()
-    row.__getitem__ = lambda self, k: data[k]
-    row.get = lambda k, default=None: data.get(k, default)
-    return row
 
 
 def _registry_row(
@@ -61,10 +54,10 @@ def _registry_row(
     parent_endpoint_identity: str | None = None,
     checkpoint_cursor: str | None = None,
     checkpoint_updated_at: dt.datetime | None = None,
-) -> MagicMock:
+) -> Record:
     if first_seen_at is None:
         first_seen_at = dt.datetime(2024, 1, 1, 0, 0, 0, tzinfo=dt.UTC)
-    return _make_row(
+    return Record(
         {
             "connector_type": connector_type,
             "endpoint_identity": endpoint_identity,
@@ -85,10 +78,8 @@ def _registry_row(
     )
 
 
-def _device_row(
-    *, connector_type: str, sender_identity: str, last_seen_at: dt.datetime
-) -> MagicMock:
-    return _make_row(
+def _device_row(*, connector_type: str, sender_identity: str, last_seen_at: dt.datetime) -> Record:
+    return Record(
         {
             "connector_type": connector_type,
             "sender_identity": sender_identity,
@@ -109,7 +100,7 @@ def _make_pool_with_fetch_sequence(fetch_calls: list[list]) -> AsyncMock:
 def _wire_db(app: FastAPI, pool: AsyncMock) -> None:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
 
 async def _get_summaries(app: FastAPI) -> dict:

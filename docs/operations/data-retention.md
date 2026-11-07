@@ -106,16 +106,20 @@ partitions accumulate.
 
 Candidates move from `pending` to a terminal status (`delivered`, `filtered`,
 `expired`, `withdrawn`).  Only terminal rows are eligible for cleanup; `pending` rows are
-never touched.
+never touched.  The Switchboard's daily insight delivery cycle (`cleanup_old_rows()`) never
+deletes candidates; pruner [C] is the only deletion path.
 
 ---
 
 ### `public.insight_amendments`
 
-**Decision: BOUNDED BY INSIGHT LIFECYCLE**
+**Decision: KEEP FOREVER as evidence; orphans settle to `orphaned`** (owner decision 2026-10-27)
 
-One row per (delivered candidate, premise resolution), removed by `ON DELETE
-CASCADE` when the candidate is pruned. No independent retention concern.
+One row per (delivered candidate, premise resolution): the record of an owner-visible
+correction. Since `core_312` the table has no foreign key to `insight_candidates`, so rows
+outlive candidate cleanup and nothing deletes them. The broker's `cleanup_old_rows` settles
+a `pending` or `fold` row whose candidate is gone to the terminal `orphaned` state, so a
+correction with nothing left to correct never waits forever.
 
 ---
 
@@ -190,3 +194,11 @@ terminal-status rows older than `ttl_days` (default 90).
 `recorded_at` is older than `ttl_days`.  It enforces the 90-day floor:
 `ttl_days < 90` raises `ValueError`.
 `job_args = {enabled = true, dry_run = false, ttl_days = 90}`.
+
+## Controlled Switchboard drain
+
+The [controlled retention runbook](controlled-retention-drain.md) separates the
+fixed-cutoff read-only tool and isolated atomic-batch rehearsals from future
+owner-run deletion. Owner choice A on 2026-11-04 permits one content-blind dev
+dry run, not a retention schedule change. The original full tool outcome remains
+open pending target-bound recovery/owner admission, actual evidence and review.

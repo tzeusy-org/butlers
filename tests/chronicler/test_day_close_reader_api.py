@@ -24,7 +24,7 @@ tests/contracts/test_chronicler_no_cross_schema.py.)
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import json
 import sys
 from datetime import UTC, datetime
@@ -36,6 +36,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -55,32 +57,15 @@ _CACHE_START = datetime(2026, 4, 23, 0, 0, 0, tzinfo=UTC)
 _CACHE_END = datetime(2026, 4, 24, 0, 0, 0, tzinfo=UTC)
 
 
-class _Row(dict):
-    """dict subclass that mimics asyncpg Record."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return super().get(key, default)
-
-
-def _row(data: dict) -> _Row:
-    return _Row(data)
-
-
 def _cache_row(
     *,
     prose: str = "Yesterday was a productive day.",
     provenance_refs: list[str] | None = None,
     cache_built_at: datetime = _T_CACHE_BUILT,
     date_label: str | None = "2026-04-23",
-) -> _Row:
+) -> Record:
     refs = provenance_refs if provenance_refs is not None else ["core.sessions:abc123"]
-    return _row(
+    return Record(
         {
             "cache_key": "day_close:2026-04-23:tz:UTC",
             "start_at": _CACHE_START,
@@ -125,10 +110,7 @@ def _load_chronicler_router():
     module_name = "chronicler_api_router"
     if module_name in sys.modules:
         return sys.modules[module_name]
-    spec = importlib.util.spec_from_file_location(module_name, _ROUTER_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = mod
-    spec.loader.exec_module(mod)
+    mod = importlib.import_module("butlers.api._roster.chronicler.router")
     return mod
 
 
@@ -138,10 +120,10 @@ def _load_chronicler_router():
 
 
 def _make_app(pool):
-    chronicler_mod = _load_chronicler_router()
+    _chronicler_mod = _load_chronicler_router()
     db = _mock_db(pool)
     app = create_app(api_key="")
-    app.dependency_overrides[chronicler_mod._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     return app
 
 
@@ -169,7 +151,7 @@ class TestDayCloseReaderInvalid:
 
     async def test_invalid_row_returns_invalid_without_prose(self):
         """A row with a persisted invalid_reason never returns prose, even fresh."""
-        cr = _row(
+        cr = Record(
             {
                 "cache_key": "day_close:2026-04-23:tz:UTC",
                 "start_at": _CACHE_START,
@@ -198,7 +180,7 @@ class TestDayCloseReaderInvalid:
     async def test_invalid_row_takes_precedence_over_staleness(self):
         """A row that is both stale and invalid returns invalid-without-prose,
         not the stale marker (admission validation precedes staleness)."""
-        cr = _row(
+        cr = Record(
             {
                 "cache_key": "day_close:2026-04-23:tz:UTC",
                 "start_at": _CACHE_START,
@@ -229,7 +211,7 @@ class TestDayCloseReaderInvalid:
         Direct GET must contain it before querying staleness, just as the
         editorial cache reader does.
         """
-        cr = _row(
+        cr = Record(
             {
                 "cache_key": "day_close:2026-04-23:tz:Asia/Singapore",
                 "start_at": _CACHE_START,
@@ -244,7 +226,7 @@ class TestDayCloseReaderInvalid:
         pool = _mock_pool(
             fetchrow_side_effect=[
                 cr,
-                _row({"last_invalidating_event_at": None}),
+                Record({"last_invalidating_event_at": None}),
             ]
         )
         app = _make_app(pool)
@@ -302,7 +284,7 @@ class TestDayCloseReaderInvalid:
         pool = _mock_pool(
             fetchrow_side_effect=[
                 _cache_row(prose=prose, date_label=date_label),
-                _row({"last_invalidating_event_at": None}),
+                Record({"last_invalidating_event_at": None}),
             ]
         )
         app = _make_app(pool)
@@ -423,7 +405,7 @@ class TestDayCloseReaderTimezoneIdentity:
         pool = _mock_pool(
             fetchrow_side_effect=[
                 _cache_row(),
-                _row({"last_invalidating_event_at": None}),
+                Record({"last_invalidating_event_at": None}),
             ]
         )
         app = _make_app(pool)
@@ -463,7 +445,7 @@ class TestDayCloseReaderTimezoneIdentity:
     async def test_legacy_date_only_cache_row_is_a_miss(self):
         """Preserved date-only rows are not a fallback for a timezone-qualified read."""
 
-        async def legacy_only_cache(*args: Any) -> _Row | None:
+        async def legacy_only_cache(*args: Any) -> Record | None:
             return _cache_row() if args[1] == "day_close:2026-04-23" else None
 
         pool = _mock_pool()
@@ -486,7 +468,7 @@ class TestDayCloseReaderFreshCache:
         """No staleness signals → fresh response with prose + provenance_refs."""
         cr = _cache_row()
         # staleness query returns MAX(ts) = NULL (no invalidators)
-        stale_row = _row({"last_invalidating_event_at": None})
+        stale_row = Record({"last_invalidating_event_at": None})
         pool = _mock_pool(fetchrow_side_effect=[cr, stale_row])
         app = _make_app(pool)
         async with httpx.AsyncClient(
@@ -503,7 +485,7 @@ class TestDayCloseReaderFreshCache:
     async def test_fresh_cache_provenance_refs_as_json_string(self):
         """provenance_refs stored as JSON string is decoded correctly."""
         refs_json = json.dumps(["spotify.session_summary:s1"])
-        cr = _row(
+        cr = Record(
             {
                 "cache_key": "day_close:2026-04-23:tz:UTC",
                 "start_at": _CACHE_START,
@@ -514,7 +496,7 @@ class TestDayCloseReaderFreshCache:
                 "date_label": "2026-04-23",
             }
         )
-        stale_row = _row({"last_invalidating_event_at": None})
+        stale_row = Record({"last_invalidating_event_at": None})
         pool = _mock_pool(fetchrow_side_effect=[cr, stale_row])
         app = _make_app(pool)
         async with httpx.AsyncClient(
@@ -528,8 +510,8 @@ class TestDayCloseReaderFreshCache:
 class TestDayCloseReaderStaleness:
     """Each test covers one invalidation signal independently."""
 
-    def _stale_row(self, ts: datetime) -> _Row:
-        return _row({"last_invalidating_event_at": ts})
+    def _stale_row(self, ts: datetime) -> Record:
+        return Record({"last_invalidating_event_at": ts})
 
     async def _assert_stale(self, invalidating_ts: datetime) -> dict:
         """Helper: build app, call endpoint, assert stale response."""
@@ -562,7 +544,7 @@ class TestDayCloseReaderStaleness:
         # The staleness query returns MAX — simulate two signals where MAX = _T_AFTER_2
         cr = _cache_row()
         # The DB MAX query already returns the tiebreak; just return the larger ts.
-        stale_row = _row({"last_invalidating_event_at": _T_AFTER_2})
+        stale_row = Record({"last_invalidating_event_at": _T_AFTER_2})
         pool = _mock_pool(fetchrow_side_effect=[cr, stale_row])
         app = _make_app(pool)
         async with httpx.AsyncClient(
@@ -600,8 +582,8 @@ class TestDayCloseProvenanceRefStaleness:
     window so the window-scoped branches would miss it.
     """
 
-    def _stale_row(self, ts: datetime) -> _Row:
-        return _row({"last_invalidating_event_at": ts})
+    def _stale_row(self, ts: datetime) -> Record:
+        return Record({"last_invalidating_event_at": ts})
 
     async def test_stale_due_to_provenance_episode_updated_outside_window(self):
         """Episode cited in provenance_refs updated outside cached window triggers stale.
@@ -650,7 +632,7 @@ class TestDayCloseProvenanceRefStaleness:
         This test verifies the correct argument is passed.
         """
         cr = _cache_row(provenance_refs=["core.sessions:abc"])
-        stale_row = _row({"last_invalidating_event_at": None})
+        stale_row = Record({"last_invalidating_event_at": None})
         pool = _mock_pool(fetchrow_side_effect=[cr, stale_row])
         app = _make_app(pool)
         async with httpx.AsyncClient(
@@ -671,7 +653,7 @@ class TestDayCloseProvenanceRefStaleness:
         """Provenance-ref branches do not trigger stale when no updates occurred."""
         cr = _cache_row(provenance_refs=["core.sessions:session-abc"])
         # MAX returns NULL → fresh
-        stale_row = _row({"last_invalidating_event_at": None})
+        stale_row = Record({"last_invalidating_event_at": None})
         pool = _mock_pool(fetchrow_side_effect=[cr, stale_row])
         app = _make_app(pool)
         async with httpx.AsyncClient(
@@ -693,8 +675,8 @@ class TestDayCloseCorrectedStartAtStaleness:
     (which scope via the episode's current window position) would miss it.
     """
 
-    def _stale_row(self, ts: datetime) -> _Row:
-        return _row({"last_invalidating_event_at": ts})
+    def _stale_row(self, ts: datetime) -> Record:
+        return Record({"last_invalidating_event_at": ts})
 
     async def test_stale_due_to_corrected_start_at_inside_window(self):
         """Override created after cache_built_at with corrected_start_at inside [start, end) → stale.
@@ -724,7 +706,7 @@ class TestDayCloseCorrectedStartAtStaleness:
         """Override with corrected_start_at outside the window does not trigger stale."""
         cr = _cache_row()
         # MAX returns NULL — no corrected_start_at override falls inside the window.
-        stale_row = _row({"last_invalidating_event_at": None})
+        stale_row = Record({"last_invalidating_event_at": None})
         pool = _mock_pool(fetchrow_side_effect=[cr, stale_row])
         app = _make_app(pool)
         async with httpx.AsyncClient(
@@ -778,8 +760,8 @@ class TestDayCloseCorrectedStartAtPointEventStaleness:
     ensures target_kind='point_event' overrides are caught independently.
     """
 
-    def _stale_row(self, ts: datetime) -> _Row:
-        return _row({"last_invalidating_event_at": ts})
+    def _stale_row(self, ts: datetime) -> Record:
+        return Record({"last_invalidating_event_at": ts})
 
     async def test_stale_due_to_point_event_corrected_start_at_inside_window(self):
         """Override on a point_event with corrected_start_at inside [start, end) → stale.
@@ -809,7 +791,7 @@ class TestDayCloseCorrectedStartAtPointEventStaleness:
         """Override on a point_event with corrected_start_at outside window does not stale."""
         cr = _cache_row()
         # MAX returns NULL — no corrected_start_at override on point_event falls inside the window.
-        stale_row = _row({"last_invalidating_event_at": None})
+        stale_row = Record({"last_invalidating_event_at": None})
         pool = _mock_pool(fetchrow_side_effect=[cr, stale_row])
         app = _make_app(pool)
         async with httpx.AsyncClient(

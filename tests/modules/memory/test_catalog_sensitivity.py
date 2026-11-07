@@ -15,7 +15,7 @@ higher-sensitivity rows, while an authorized caller does.
 from __future__ import annotations
 
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -64,6 +64,34 @@ class TestServerDerivedCatalogReadPolicy:
         assert policy.allowed_sensitivities == ("normal",)
 
 
+class TestSearchCatalogEmbeddingHandoff:
+    async def test_default_semantic_search_computes_one_embedding(self) -> None:
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[])
+        engine = MagicMock()
+        vector = [0.125, -0.25]
+        engine.embed.return_value = vector
+
+        results = await catalog_search.search_catalog(
+            pool,
+            "prompt",
+            engine,
+            mode="semantic",
+            read_policy=catalog_search.resolve_catalog_read_policy("normal"),
+        )
+
+        assert results == []
+        engine.embed.assert_called_once_with("prompt")
+        pool.fetch.assert_awaited_once()
+        sql, embedding, tenant_id, sensitivities, limit = pool.fetch.await_args.args
+        assert "embedding <=> $1" in sql
+        assert "chronicler_catalog_row_visible(memory_catalog.id)" in sql
+        assert embedding == str(vector)
+        assert tenant_id == "shared"
+        assert sensitivities == ["normal"]
+        assert limit == 10
+
+
 # ---------------------------------------------------------------------------
 # Integration tests — require Docker + Postgres
 # ---------------------------------------------------------------------------
@@ -71,34 +99,7 @@ class TestServerDerivedCatalogReadPolicy:
 
 @pytest.mark.integration
 class TestCatalogSensitivityFilteringIntegration:
-    """Sensitivity filtering against a real public.memory_catalog table."""
-
-    @pytest.fixture
-    async def catalog_pool(self, provisioned_postgres_pool):
-        """Provision a fresh DB with a minimal public.memory_catalog table."""
-        async with provisioned_postgres_pool() as pool:
-            await pool.execute(
-                """
-                CREATE TABLE IF NOT EXISTS public.memory_catalog (
-                    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    tenant_id     TEXT NOT NULL DEFAULT 'shared',
-                    source_schema TEXT NOT NULL,
-                    source_table  TEXT NOT NULL,
-                    source_id     UUID NOT NULL,
-                    source_butler TEXT NOT NULL DEFAULT 'memory',
-                    memory_type   TEXT NOT NULL,
-                    title         TEXT,
-                    summary       TEXT,
-                    search_text   TEXT,
-                    search_vector tsvector,
-                    sensitivity   TEXT,
-                    -- Mirrors the real public.memory_catalog schema (core_009):
-                    -- the catalog search excludes stale rows via invalid_at IS NULL.
-                    invalid_at    TIMESTAMPTZ
-                )
-                """
-            )
-            yield pool
+    """Sensitivity filtering against the core-migrated public.memory_catalog (core_009)."""
 
     async def _insert(self, pool, *, text: str, sensitivity: str | None) -> uuid.UUID:
         source_id = uuid.uuid4()
@@ -106,9 +107,9 @@ class TestCatalogSensitivityFilteringIntegration:
             """
             INSERT INTO public.memory_catalog (
                 source_schema, source_table, source_id, memory_type,
-                summary, search_text, search_vector, sensitivity, tenant_id
+                summary, search_vector, sensitivity, tenant_id
             )
-            VALUES ($1, $2, $3, $4, $5, $5, to_tsvector('english', $5), $6, 'shared')
+            VALUES ($1, $2, $3, $4, $5, to_tsvector('english', $5), $6, 'shared')
             """,
             "memory",
             "facts",
@@ -120,9 +121,9 @@ class TestCatalogSensitivityFilteringIntegration:
         return source_id
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_low_auth_caller_excludes_sensitive_results(self, catalog_pool) -> None:
+    async def test_low_auth_caller_excludes_sensitive_results(self, db_pool) -> None:
         """A default ('normal') caller never receives pii/confidential rows."""
-        pool = catalog_pool
+        pool = db_pool
         await self._insert(pool, text="alpha bravo charlie", sensitivity="normal")
         await self._insert(pool, text="alpha bravo charlie", sensitivity="pii")
         await self._insert(pool, text="alpha bravo charlie", sensitivity="confidential")
@@ -140,9 +141,9 @@ class TestCatalogSensitivityFilteringIntegration:
         assert sensitivities == {"normal"}, f"leaked sensitive rows: {sensitivities}"
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_null_sensitivity_treated_as_normal(self, catalog_pool) -> None:
+    async def test_null_sensitivity_treated_as_normal(self, db_pool) -> None:
         """Rows with NULL sensitivity are visible to a default caller."""
-        pool = catalog_pool
+        pool = db_pool
         await self._insert(pool, text="delta echo foxtrot", sensitivity=None)
 
         engine = MagicMock()
@@ -157,9 +158,9 @@ class TestCatalogSensitivityFilteringIntegration:
         assert results[0]["sensitivity"] is None
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_authorized_caller_receives_higher_sensitivity(self, catalog_pool) -> None:
+    async def test_authorized_caller_receives_higher_sensitivity(self, db_pool) -> None:
         """A caller authorized to 'confidential' receives all lower levels too."""
-        pool = catalog_pool
+        pool = db_pool
         await self._insert(pool, text="golf hotel india", sensitivity="normal")
         await self._insert(pool, text="golf hotel india", sensitivity="pii")
         await self._insert(pool, text="golf hotel india", sensitivity="confidential")
@@ -177,9 +178,9 @@ class TestCatalogSensitivityFilteringIntegration:
         assert sensitivities == {"normal", "pii", "confidential"}, sensitivities
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_pii_caller_excludes_confidential(self, catalog_pool) -> None:
+    async def test_pii_caller_excludes_confidential(self, db_pool) -> None:
         """A caller authorized to 'pii' still does not see 'confidential' rows."""
-        pool = catalog_pool
+        pool = db_pool
         await self._insert(pool, text="juliet kilo lima", sensitivity="pii")
         await self._insert(pool, text="juliet kilo lima", sensitivity="confidential")
 
@@ -196,9 +197,9 @@ class TestCatalogSensitivityFilteringIntegration:
         assert sensitivities == {"pii"}, sensitivities
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_catalog_search_rejects_caller_authority_argument(self, catalog_pool) -> None:
+    async def test_catalog_search_rejects_caller_authority_argument(self, db_pool) -> None:
         """The shared primitive has no caller-controlled authority fallback."""
-        pool = catalog_pool
+        pool = db_pool
         await self._insert(pool, text="mike november oscar", sensitivity="normal")
         await self._insert(pool, text="mike november oscar", sensitivity="pii")
         await self._insert(pool, text="mike november oscar", sensitivity="confidential")

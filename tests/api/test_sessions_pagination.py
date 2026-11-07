@@ -18,8 +18,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.read_models.sessions_v1 import decode_session_cursor
-from butlers.api.routers.sessions import _get_db_manager as _sessions_get_db
+from butlers.api.deps import get_db as _sessions_get_db
+from butlers.api.read_models.sessions import decode_session_cursor
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -240,7 +240,7 @@ async def test_sessions_malformed_cursor_returns_422() -> None:
 
 async def test_sessions_accepts_valid_cursor() -> None:
     """A well-formed cursor is accepted and a second page is fetched (200)."""
-    from butlers.api.read_models.sessions_v1 import encode_session_cursor
+    from butlers.api.read_models.sessions import encode_session_cursor
 
     cursor = encode_session_cursor(_NOW, uuid4())
     app = _make_app_with_sessions([_make_session_row()])

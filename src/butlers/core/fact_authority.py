@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import hashlib
+import importlib
 import json
 import secrets
 import time
@@ -25,6 +26,8 @@ import httpx
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from butlers.core.attention_urgency import AttentionOrigin, _current_origin, accepted_source_origin
+
 AUTHORITY_TOKENS = frozenset({"owner", "owner_device", "third_party", "system", "mixed"})
 INVOCATION_HEADER = "X-Butlers-Fact-Invocation"
 SOURCE_HEADER = "X-Butlers-Fact-Source"
@@ -34,6 +37,40 @@ RECEIVER_PATH = "/internal/fact-source/receiver"
 # Capture must not consume all source connections while waiting for its owner.
 # Keep these deadlines local; other registry/resolver callers retain their policy.
 _CAPTURE_TIMEOUT_SECONDS = 5.0
+
+
+async def _owning_endpoint(pool: Any, target: str) -> str | None:
+    """Return the admitted MCP endpoint of an owning butler, or None.
+
+    Admission matches route(): under the receiver-derived cutover the legacy
+    registry liveness projection is no longer refreshed, so a quiet owner would
+    read as stale there (bu-n7zmbp.20). The receiver resolver decides instead,
+    including its single fenced recheck of a stale target. A refusal is final;
+    it never falls back to the legacy projection.
+    """
+    from butlers.tools.switchboard.registry.registry import (
+        DEFAULT_ROUTE_CONTRACT_VERSION,
+        receiver_route_cutover_enabled,
+    )
+
+    if receiver_route_cutover_enabled():
+        # The routing package re-exports a route() function under the module's
+        # name, so import the module itself explicitly.
+        route = importlib.import_module("butlers.tools.switchboard.routing.route")
+        decision, _, _ = await route._resolve_receiver_route_target(
+            pool,
+            target,
+            required_capability=None,
+            route_contract_version=DEFAULT_ROUTE_CONTRACT_VERSION,
+        )
+        if decision is None or decision.state != "ready":
+            return None
+        return decision.endpoint_url
+
+    from butlers.tools.switchboard.registry.registry import resolve_routing_target
+
+    row, _ = await resolve_routing_target(pool, target)
+    return None if row is None else row["endpoint_url"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +184,7 @@ class _SourceClaim:
     expires: float
     source_digest: str
     invocation: tuple[str, str] | None = None
+    attention_origin: AttentionOrigin | None = None
 
 
 class FactSourceContextRegistry:
@@ -176,15 +214,12 @@ class FactSourceContextRegistry:
 
         from butlers.core.mcp_urls import canonical_runtime_mcp_url, resolve_cross_container_mcp_url
         from butlers.identity import IdentityResolutionQueryError, ResolvedContact
-        from butlers.tools.switchboard.registry.registry import resolve_routing_target
 
         try:
-            target, _ = await resolve_routing_target(self.pool, "relationship")
-            if target is None:
+            owning_url = await _owning_endpoint(self.pool, "relationship")
+            if owning_url is None:
                 raise ValueError("owning identity resolver unavailable")
-            endpoint = resolve_cross_container_mcp_url(
-                canonical_runtime_mcp_url(target["endpoint_url"])
-            )
+            endpoint = resolve_cross_container_mcp_url(canonical_runtime_mcp_url(owning_url))
             async with Client(endpoint, timeout=5) as client:
                 result = await client.call_tool(
                     "identity_resolve_channels",
@@ -221,15 +256,12 @@ class FactSourceContextRegistry:
         from fastmcp import Client
 
         from butlers.core.mcp_urls import canonical_runtime_mcp_url, resolve_cross_container_mcp_url
-        from butlers.tools.switchboard.registry.registry import resolve_routing_target
 
         try:
-            target, _ = await resolve_routing_target(self.pool, "relationship")
-            if target is None:
+            owning_url = await _owning_endpoint(self.pool, "relationship")
+            if owning_url is None:
                 raise ValueError("owning identity writer unavailable")
-            endpoint = resolve_cross_container_mcp_url(
-                canonical_runtime_mcp_url(target["endpoint_url"])
-            )
+            endpoint = resolve_cross_container_mcp_url(canonical_runtime_mcp_url(owning_url))
             async with Client(endpoint, timeout=5) as client:
                 await client.call_tool(
                     "identity_assert_sender_channel",
@@ -430,18 +462,17 @@ class FactSourceContextRegistry:
         if claim.invocation is not None and claim.invocation != binding:
             raise ValueError("source admission already claimed")
         claim.invocation = binding
+        claim.attention_origin = accepted_source_origin(row, claim.report.original_entity_id)
         return claim.report
 
     async def recover(self, target: str, receiver_capability: str) -> str:
         # Receiver addresses come from this source's actual registry, never the
         # request body. The ephemeral receiver claim proves possession of its
         # own durable, source-verified acceptance, rather than a copied UUID.
-        from butlers.tools.switchboard.registry.registry import resolve_routing_target
-
-        receiver, _ = await resolve_routing_target(self.pool, target)
-        if receiver is None:
+        receiver_url = await _owning_endpoint(self.pool, target)
+        if receiver_url is None:
             raise ValueError("registered receiver is unavailable")
-        parts = urlsplit(receiver["endpoint_url"])
+        parts = urlsplit(receiver_url)
         url = urlunsplit((parts.scheme, parts.netloc, RECEIVER_PATH, "", ""))
         async with httpx.AsyncClient(trust_env=False, timeout=5) as client:
             response = await client.post(url, json={"capability": receiver_capability})
@@ -488,6 +519,9 @@ class FactSourceContextRegistry:
                 return JSONResponse(
                     {
                         "report": report.to_record(),
+                        "attention_origin": claim.attention_origin.record()
+                        if claim.attention_origin
+                        else {},
                         "receipt": {
                             "request_id": str(claim.request_id),
                             "digest": claim.source_digest,
@@ -577,6 +611,7 @@ class _Invocation:
     report: FactWriteContext
     source_request: uuid.UUID | None
     deadline: float
+    attention_origin: AttentionOrigin | None = None
 
 
 # The registries hold private producer objects, not copies from public routing
@@ -645,6 +680,7 @@ async def admit_incoming_source(
         response.raise_for_status()
         payload = response.json()
         _incoming_receipt.set(payload.get("receipt"))
+        _current_origin.set(AttentionOrigin.from_record(payload.get("attention_origin", {})))
         return FactWriteContext.from_record(payload["report"])
 
 
@@ -656,12 +692,27 @@ async def register_invocation(
     routed: bool,
 ) -> str:
     report = _current_report.get()
+    attention_origin = _current_origin.get()
     if _incoming_source.get():
-        report = await admit_incoming_source(target, runtime_session, source_endpoint)
+        origin_token = _current_origin.set(None)
+        try:
+            report = await admit_incoming_source(target, runtime_session, source_endpoint)
+            attention_origin = _current_origin.get()
+        finally:
+            _current_origin.reset(origin_token)
     elif _pipeline_source.get() is not None:
         if _source_registry is None:
             raise ValueError("source issuer is unavailable")
-        report = _source_registry._reports.get(_pipeline_source.get())
+        # Reuse the source-owned verifier and its current durable eligibility;
+        # never accept a caller-supplied report or UUID as attention authority.
+        source_token = _source_registry.issue(_pipeline_source.get(), target)
+        try:
+            report = await _source_registry.verify(
+                source_token, target, _incarnation, runtime_session
+            )
+            attention_origin = _source_registry._claims[source_token].attention_origin
+        finally:
+            _source_registry._claims.pop(source_token, None)
     if report is None:
         report = FactWriteContext("third_party" if routed else "system")
     now = time.monotonic()
@@ -669,7 +720,12 @@ async def register_invocation(
         _invocations.pop(stale_token, None)
     token = secrets.token_urlsafe(32)
     _invocations[token] = _Invocation(
-        target, runtime_session, report, _pipeline_source.get(), time.monotonic() + 3600
+        target,
+        runtime_session,
+        report,
+        _pipeline_source.get(),
+        time.monotonic() + 3600,
+        attention_origin,
     )
     return token
 
@@ -690,11 +746,13 @@ def accepted_source_scope(operation: Any) -> Any:
     @wraps(operation)
     async def isolated(*args: Any, **kwargs: Any) -> Any:
         token = _pipeline_source.set(None)
+        origin_token = _current_origin.set(None)
         try:
             return await operation(*args, **kwargs)
         finally:
             source_id = _pipeline_source.get()
             _pipeline_source.reset(token)
+            _current_origin.reset(origin_token)
             if source_id is not None and _source_registry is not None:
                 _source_registry._reports.pop(source_id, None)
                 _source_registry._source_digests.pop(source_id, None)
@@ -703,11 +761,24 @@ def accepted_source_scope(operation: Any) -> Any:
 
 
 def current_fact_write_context() -> FactWriteContext:
-    """No HTTP/MCP admission means internal SYSTEM, never inferred owner."""
+    """No HTTP/MCP admission means internal SYSTEM, never inferred owner.
+
+    A broker-forwarded call reads authority from its verified goal lineage
+    only, and an owner-class report under an exposed lineage is refused.
+    """
+    from butlers.core.goal_lineage import current_lineage, refuse_owner_authority_under_exposure
+
     context = _current_report.get()
     if context is not None:
+        refuse_owner_authority_under_exposure(context.authority)
         return context
-    from butlers.api.owner_auth.context import in_http_request, verified_http_principal
+    lineage = current_lineage()
+    if lineage is not None:
+        if lineage.exposed or lineage.origin == "third_party":
+            return FactWriteContext("third_party")
+        # Owner origin carries no sender entity, like the owner surface.
+        return FactWriteContext("owner_device" if lineage.origin == "owner" else "system")
+    from butlers.core.owner_auth_context import in_http_request, verified_http_principal
 
     if in_http_request.get():
         if verified_http_principal.get() != "owner":

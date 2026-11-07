@@ -25,7 +25,8 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.priority_contacts import _get_db_manager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -71,15 +72,8 @@ def _app_with_mock_db(
             shared_pool.fetchrow = AsyncMock(return_value=None)
             shared_pool.execute = AsyncMock(return_value="DELETE 0")
         mock_db.credential_shared_pool.return_value = shared_pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_db
-
-
-def _make_record(row: dict):
-    """Return a MagicMock that supports dict-style item access."""
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda key: row[key])
-    return m
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +85,7 @@ async def test_list_priority_contacts_200(app):
     row = _make_priority_contact_row()
     pool = AsyncMock()
     pool.fetchval = AsyncMock(return_value=1)
-    pool.fetch = AsyncMock(return_value=[_make_record(row)])
+    pool.fetch = AsyncMock(return_value=[Record(row)])
     _app_with_mock_db(app, shared_pool=pool)
 
     async with httpx.AsyncClient(
@@ -137,7 +131,7 @@ async def test_post_priority_contact_validates_against_entities(app):
     # Two fetchval calls: (1) entity-exists check → True, (2) entity_id duplicate
     # guard → False (not yet a priority contact).
     pool.fetchval = AsyncMock(side_effect=[True, False])
-    pool.fetchrow = AsyncMock(return_value=_make_record(inserted_row))
+    pool.fetchrow = AsyncMock(return_value=Record(inserted_row))
     _app_with_mock_db(app, shared_pool=pool)
 
     async with httpx.AsyncClient(
@@ -178,7 +172,7 @@ async def test_post_priority_contact_201(app):
     pool = AsyncMock()
     # Two fetchval calls: entity-exists → True, entity_id duplicate guard → False.
     pool.fetchval = AsyncMock(side_effect=[True, False])
-    pool.fetchrow = AsyncMock(return_value=_make_record(inserted_row))
+    pool.fetchrow = AsyncMock(return_value=Record(inserted_row))
     _app_with_mock_db(app, shared_pool=pool)
 
     async with httpx.AsyncClient(
@@ -322,7 +316,7 @@ async def test_post_priority_contact_emits_audit(app):
     pool = AsyncMock()
     # Two fetchval calls: entity-exists → True, entity_id duplicate guard → False.
     pool.fetchval = AsyncMock(side_effect=[True, False])
-    pool.fetchrow = AsyncMock(return_value=_make_record(inserted_row))
+    pool.fetchrow = AsyncMock(return_value=Record(inserted_row))
     _app_with_mock_db(app, shared_pool=pool)
 
     with patch(

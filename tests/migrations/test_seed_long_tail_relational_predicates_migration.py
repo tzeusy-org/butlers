@@ -12,12 +12,13 @@ Parent epic: bu-5vpyh — relational-edges-single-home
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -40,16 +41,8 @@ _EXPECTED_PREDICATES = [
 ]
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("rel_026", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _collect_upgrade_sqls() -> list[str]:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_026")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -59,7 +52,7 @@ def _collect_upgrade_sqls() -> list[str]:
 
 
 def _collect_downgrade_sqls() -> list[str]:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_026")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -90,7 +83,7 @@ def test_downgrade_does_not_drop_table() -> None:
 
 def test_new_predicates_count() -> None:
     """Migration must seed exactly 7 predicates (the complete long-tail triage set)."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_026")
     assert len(mod._NEW_PREDICATES) == 7, (
         f"Expected 7 new predicates in rel_026, got {len(mod._NEW_PREDICATES)}"
     )
@@ -101,20 +94,14 @@ def test_new_predicates_count() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _provision_registry(pool) -> None:
-    """Create minimal prerequisites: schema and entity_predicate_registry."""
-    await pool.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-    # schema-standin-exempt: a deliberately minimal registry prerequisite for
-    # rel_026's seed assertions, not a copy claiming current-head parity.
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
-            predicate   TEXT        NOT NULL PRIMARY KEY,
-            kind        TEXT        NOT NULL CHECK (kind IN ('contact', 'relational', 'override')),
-            object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-            description TEXT,
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
+async def _registry_pool(db):
+    """The real relationship registry as rel_026's predecessor left it."""
+    return await db(
+        "core",
+        "relationship",
+        schemas={"relationship": "relationship"},
+        revisions={"relationship": "rel_025"},
+    )
 
 
 async def _run_upgrade(pool) -> None:
@@ -132,60 +119,57 @@ async def _run_downgrade(pool) -> None:
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_all_predicates_present_after_upgrade(provisioned_postgres_pool) -> None:
+async def test_all_predicates_present_after_upgrade(db) -> None:
     """All 7 new predicates are in entity_predicate_registry after upgrade."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_registry(pool)
-        await _run_upgrade(pool)
+    pool = await _registry_pool(db)
+    await _run_upgrade(pool)
 
-        for predicate in _EXPECTED_PREDICATES:
-            row = await pool.fetchrow(
-                "SELECT kind, object_kind FROM relationship.entity_predicate_registry "
-                "WHERE predicate = $1",
-                predicate,
-            )
-            assert row is not None, f"'{predicate}' must be present after upgrade"
-            assert row["kind"] == "relational", (
-                f"'{predicate}' must have kind='relational', got {row['kind']!r}"
-            )
-            assert row["object_kind"] == "entity", (
-                f"'{predicate}' must have object_kind='entity', got {row['object_kind']!r}"
-            )
+    for predicate in _EXPECTED_PREDICATES:
+        row = await pool.fetchrow(
+            "SELECT kind, object_kind FROM relationship.entity_predicate_registry "
+            "WHERE predicate = $1",
+            predicate,
+        )
+        assert row is not None, f"'{predicate}' must be present after upgrade"
+        assert row["kind"] == "relational", (
+            f"'{predicate}' must have kind='relational', got {row['kind']!r}"
+        )
+        assert row["object_kind"] == "entity", (
+            f"'{predicate}' must have object_kind='entity', got {row['object_kind']!r}"
+        )
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_upgrade_is_idempotent(provisioned_postgres_pool) -> None:
+async def test_upgrade_is_idempotent(db) -> None:
     """Running upgrade() twice does not raise and produces exactly one row per predicate."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_registry(pool)
-        await _run_upgrade(pool)
-        await _run_upgrade(pool)  # must not raise
+    pool = await _registry_pool(db)
+    await _run_upgrade(pool)
+    await _run_upgrade(pool)  # must not raise
 
-        for predicate in _EXPECTED_PREDICATES:
-            count = await pool.fetchval(
-                "SELECT COUNT(*) FROM relationship.entity_predicate_registry WHERE predicate = $1",
-                predicate,
-            )
-            assert count == 1, (
-                f"Expected exactly 1 '{predicate}' row after idempotent re-upgrade, got {count}"
-            )
+    for predicate in _EXPECTED_PREDICATES:
+        count = await pool.fetchval(
+            "SELECT COUNT(*) FROM relationship.entity_predicate_registry WHERE predicate = $1",
+            predicate,
+        )
+        assert count == 1, (
+            f"Expected exactly 1 '{predicate}' row after idempotent re-upgrade, got {count}"
+        )
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_downgrade_removes_seeded_rows(provisioned_postgres_pool) -> None:
+async def test_downgrade_removes_seeded_rows(db) -> None:
     """Downgrade removes all 7 seeded rows."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_registry(pool)
-        await _run_upgrade(pool)
-        await _run_downgrade(pool)
+    pool = await _registry_pool(db)
+    await _run_upgrade(pool)
+    await _run_downgrade(pool)
 
-        for predicate in _EXPECTED_PREDICATES:
-            count = await pool.fetchval(
-                "SELECT COUNT(*) FROM relationship.entity_predicate_registry WHERE predicate = $1",
-                predicate,
-            )
-            assert count == 0, f"'{predicate}' must be absent after downgrade, got {count} rows"
+    for predicate in _EXPECTED_PREDICATES:
+        count = await pool.fetchval(
+            "SELECT COUNT(*) FROM relationship.entity_predicate_registry WHERE predicate = $1",
+            predicate,
+        )
+        assert count == 0, f"'{predicate}' must be absent after downgrade, got {count} rows"

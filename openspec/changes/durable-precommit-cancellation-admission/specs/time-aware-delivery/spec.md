@@ -23,6 +23,22 @@ rows, recalculate a target, re-gate the parent wake release, or use the legacy
 unguarded flush path for a cancelled cohort. Future effective egress SHALL
 preserve the receipt's DND evidence and complete its own Messenger admission.
 
+Cancellation-return coordination SHALL remain deterministic under RFC 0038
+D1/D2/D7 and SHALL NOT admit a reasoning goal, invoke an LLM or start a session.
+Its existing finalization/publication and parent DND-abort packets SHALL reach
+each frozen origin through named, recipient-bound service-plane endpoints with
+fixed schemas and authenticated per-endpoint caller allowlists, not a generic
+route proxy. Recipient operations SHALL authenticate the current-fence
+Switchboard coordinator; payload origin claims SHALL NOT establish authority or
+select a different endpoint target. Endpoints and recipient operations SHALL
+be non-LLM-presentable and absent from the session listener. An unavailable
+endpoint SHALL preserve the complete cohort and existing scheduler-ineligible
+retention/retry behavior rather than authorize partial visibility.
+
+ID: REQ-time-aware-delivery-001
+Source: proposal.md; design.md D0–D7; RFC 0038 D1/D2/D7
+Scope: v1-mandatory
+
 #### Scenario: Cancellation-ready row remains invisible to ordinary flush
 - **WHEN** an origin has recorded its local finalization receipt but has not
   received a complete finalization digest and publish authorization

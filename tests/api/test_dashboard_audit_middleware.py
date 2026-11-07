@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import httpx
 import pytest
 
 from butlers.api.audit_emit import build_user_context, emit_dashboard_audit, redact_body
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db as _audit_get_db
 from tests.api.auth_helpers import _DOMAIN_KEY
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -80,7 +82,7 @@ class TestEmitDashboardAudit:
     """
 
     async def test_inserts_row_on_success(self):
-        mock_pool = AsyncMock()
+        mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
         mock_pool.fetchval = AsyncMock(return_value=1)
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
@@ -116,7 +118,7 @@ class TestEmitDashboardAudit:
         assert metadata["user_context"]["source"] == "dashboard"
 
     async def test_explicit_user_context_overrides_default(self):
-        mock_pool = AsyncMock()
+        mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
         mock_pool.fetchval = AsyncMock(return_value=1)
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
@@ -144,7 +146,7 @@ class TestEmitDashboardAudit:
         )
 
     async def test_swallows_db_errors(self):
-        mock_pool = AsyncMock()
+        mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
         mock_pool.fetchval = AsyncMock(side_effect=RuntimeError("db gone"))
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
@@ -159,7 +161,7 @@ class TestEmitDashboardAudit:
         )
 
     async def test_body_redaction_applied(self):
-        mock_pool = AsyncMock()
+        mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
         mock_pool.fetchval = AsyncMock(return_value=1)
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
@@ -240,7 +242,7 @@ class TestDashboardAuditMiddleware:
     def _make_app_with_mock_db(self):
         """Create an app where get_db_manager returns a mock that records execute calls."""
         app = create_app(api_key="")
-        mock_pool = AsyncMock()
+        mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
         mock_pool.execute = AsyncMock()
         mock_pool.fetchval = AsyncMock(return_value=0)
         mock_pool.fetch = AsyncMock(return_value=[])
@@ -316,6 +318,51 @@ class TestDashboardAuditMiddleware:
         summary = metadata["request_summary"]
         assert summary["method"] == "DELETE"
         assert "/api/test-detail-check" in summary["path"]
+
+    async def test_counter_action_is_route_template_not_raw_path(self):
+        """Distinct ids share one series; unmatched paths share the unmatched bucket."""
+        from opentelemetry import metrics
+        from opentelemetry.metrics import _internal as metrics_internal
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+        from opentelemetry.util._once import Once
+
+        app, mock_db, mock_pool = self._make_app_with_mock_db()
+        mock_pool.fetchval = AsyncMock(return_value=1)  # a positive row id is the append receipt
+        reader = InMemoryMetricReader()
+        previous = metrics_internal._METER_PROVIDER
+        metrics_internal._METER_PROVIDER_SET_ONCE = Once()
+        metrics_internal._METER_PROVIDER = None
+        metrics.set_meter_provider(MeterProvider(metric_readers=[reader]))
+        try:
+            with patch(
+                "butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db
+            ):
+
+                @app.delete("/api/test-counter/{item_id}")
+                async def _item_endpoint(item_id: str):
+                    return {}
+
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    await client.delete("/api/test-counter/aaa")
+                    await client.delete("/api/test-counter/bbb")
+                    await client.delete("/api/no-such-route-1")
+                    await client.delete("/api/no-such-route-2")
+            points = {
+                dp.attributes["action"]: dp.value
+                for rm in reader.get_metrics_data().resource_metrics
+                for sm in rm.scope_metrics
+                for m in sm.metrics
+                if m.name == "butlers.audit.log.appended"
+                for dp in m.data.data_points
+            }
+        finally:
+            metrics_internal._METER_PROVIDER_SET_ONCE = Once()
+            metrics_internal._METER_PROVIDER = previous
+
+        assert points == {"DELETE /api/test-counter/{item_id}": 2, "DELETE unmatched": 2}
 
     async def test_middleware_populates_user_context(self):
         """Middleware emits a user_context with owner principal + request metadata.
@@ -395,6 +442,41 @@ class TestDashboardAuditMiddleware:
         audit_trace_id = metadata["request_summary"].get("trace_id")
         assert audit_trace_id == header_trace_id
 
+    async def test_capture_no_body_policy_is_route_owned_not_caller_selectable(self):
+        """Capture intake routes never retain bodies; no caller header selects that policy.
+
+        RFC0037 "Capture audit and validation do not retain source bodies".
+        """
+        app, mock_db, mock_pool = self._make_app_with_mock_db()
+        sentinel = "capture-audit-sentinel-91e2"
+
+        with patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db):
+
+            @app.post("/api/test-capture-opt-out")
+            async def _ordinary_endpoint():
+                return {"ok": True}
+
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                await client.post(
+                    "/api/test-capture-opt-out",
+                    json={"note": sentinel},
+                    headers={"X-Capture-Intake": "x", "X-No-Body-Audit": "1"},
+                )
+                # Any spelling of the fixed capture route keeps the no-body policy,
+                # even one the router redirects before the handler runs.
+                await client.post("/api/general/captures/", json={"note": sentinel})
+
+        audits = [c[0] for c in mock_pool.fetchval.call_args_list if "public.audit_log" in str(c)]
+        ordinary, capture = audits[-2:]
+        assert ordinary[7]["request_summary"]["body"] == {"note": sentinel}
+        assert capture[2] == "general_capture_admit" and capture[3] == "/api/general/captures"
+        summary = capture[7]["request_summary"]
+        assert "body" not in summary and summary["outcome"] == {"category": "not_routed"}
+        assert capture[7]["user_context"]["principal"] == "owner"
+        assert sentinel not in repr(capture)
+
 
 # ---------------------------------------------------------------------------
 # Integration: audit READ endpoint not broken
@@ -404,9 +486,8 @@ class TestDashboardAuditMiddleware:
 class TestAuditReadEndpoint:
     async def test_get_audit_log_returns_paginated_structure(self):
         """GET /api/audit-log still works correctly after middleware changes."""
-        from butlers.api.routers.audit import _get_db_manager as _audit_get_db
 
-        mock_pool = AsyncMock()
+        mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
         mock_pool.fetchval = AsyncMock(return_value=0)
         mock_pool.fetch = AsyncMock(return_value=[])
         mock_db = MagicMock(spec=DatabaseManager)
@@ -453,9 +534,23 @@ class TestInferButler:
         assert _infer_butler("/api/health") == "dashboard"
 
 
+_CALLBACK_ID = "12345678-1234-5678-1234-567812345678"
+_CALLBACK_SECRET = "synthetic-retired-callback-secret"
+_CALLBACK_CREDENTIAL = "synthetic-callback-credential"
+
+
+def _callback_headers():
+    return {"X-Butlers-Approval-Callback-Token": _CALLBACK_CREDENTIAL}
+
+
+def _callback_token():
+    return f"dsk1:{_CALLBACK_ID}:0:0123456789abcdef"
+
+
 @pytest.fixture
 def callback_privacy(monkeypatch, caplog):
     import logging
+    from types import SimpleNamespace
 
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
     from opentelemetry.metrics import NoOpMeterProvider
@@ -463,7 +558,9 @@ def callback_privacy(monkeypatch, caplog):
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-    from tests.api.test_decisions import _callback_app
+    from butlers.api.app import create_app
+    from butlers.credential_store import CredentialStore
+    from tests.api.auth_helpers import _DomainOwnerState
 
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
@@ -483,8 +580,18 @@ def callback_privacy(monkeypatch, caplog):
     monkeypatch.setenv("OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE", ".*")
     caplog.set_level(logging.DEBUG)
     logging.getLogger("callback_privacy_control").warning("callback-capture-live-control")
-    fixture = _callback_app(monkeypatch)
-    fixture.connection.fetchval = AsyncMock(return_value=1)
+    connection = SimpleNamespace(
+        fetchval=AsyncMock(return_value=1),
+        fetchrow=AsyncMock(),
+        is_in_transaction=lambda: False,
+    )
+    resolve = AsyncMock()
+    monkeypatch.setattr(CredentialStore, "resolve", resolve)
+    db = SimpleNamespace(pool=lambda name: connection)
+    app = create_app(api_key="synthetic-owner-key")
+    app.state.owner_auth_service = _DomainOwnerState("synthetic-owner-key")
+    app.state.approval_callback_connector_token = _CALLBACK_CREDENTIAL
+    fixture = SimpleNamespace(app=app, db=db, connection=connection, resolve=resolve)
     fixture.exporter = exporter
     monkeypatch.setattr("butlers.api.dashboard_audit_middleware.get_db_manager", lambda: fixture.db)
     try:
@@ -522,7 +629,7 @@ def _assert_callback_private(fixture, response, caplog, *private):
     prompt_segment = summary["path"].rstrip("/").split("/")[-2]
     if len(prompt_segment) == 36:
         assert summary["path_params"] == {"param_0": prompt_segment}
-    assert summary["body"] == {"redacted": "decision_callback"}
+    assert summary["body"] == {"redacted": "unmatched_route"}
     assert summary["response_status"] == response.status_code
     assert str(row[6]) == response.headers["x-trace-id"] == summary["trace_id"]
     assert row[7]["user_context"]["principal"] == "owner"
@@ -540,14 +647,6 @@ def _assert_callback_private(fixture, response, caplog, *private):
 async def test_choose_validation_and_audit_never_expose_body(callback_privacy, caplog):
     import json
 
-    from tests.api.test_decisions import (
-        _CALLBACK_CREDENTIAL,
-        _CALLBACK_ID,
-        _CALLBACK_SECRET,
-        _callback_headers,
-        _callback_token,
-    )
-
     fixture = callback_privacy
     token = _callback_token()
     good = {"token": token, "option_index": 0}
@@ -564,6 +663,7 @@ async def test_choose_validation_and_audit_never_expose_body(callback_privacy, c
         ('{"token":' + json.dumps(token), 422),
         (json.dumps(token), 422),
         (json.dumps([token]), 422),
+        (b'"\xff"', 404),
         ('{"token":' + json.dumps(token) + ',"option_index":0' + " " * 17000 + "}", 200),
         ("{" + " " * 16370 + '"token":' + json.dumps(token) + ',"option_index":0}', 200),
         ("{" + " " * 16370 + '"token":' + json.dumps(token), 422),
@@ -572,18 +672,15 @@ async def test_choose_validation_and_audit_never_expose_body(callback_privacy, c
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=fixture.app), base_url="http://test"
     ) as client:
-        for body, status in bodies:
+        for body, _retired_status in bodies:
             before = len(_callback_audits(fixture))
             response = await client.post(
                 f"/api/decisions/prompts/{_CALLBACK_ID}/choose",
                 content=body,
-                headers={**_callback_headers(), "Content-Type": "application/json"},
+                headers={"X-API-Key": "synthetic-owner-key", "Content-Type": "application/json"},
             )
-            assert response.status_code == status
-            if status != 200:
-                assert response.json()["detail"] == (
-                    "invalid_callback_token" if status == 403 else "invalid_callback_request"
-                )
+            assert response.status_code == 404
+            assert response.json() == {"detail": "Not Found"}
             assert len(_callback_audits(fixture)) == before + 1
             _assert_callback_private(
                 fixture,
@@ -599,15 +696,14 @@ async def test_choose_validation_and_audit_never_expose_body(callback_privacy, c
             json=good,
             headers={"X-API-Key": "synthetic-owner-key"},
         )
-        assert invalid_path.status_code == 422
-        assert invalid_path.json() == {"detail": "invalid_callback_request"}
+        assert invalid_path.status_code == 404
+        assert invalid_path.json() == {"detail": "Not Found"}
         _assert_callback_private(
             fixture, invalid_path, caplog, token, token[-12:], _CALLBACK_SECRET
         )
 
 
 async def test_choose_trailing_slash_audit_retains_metadata_only(callback_privacy, caplog):
-    from tests.api.test_decisions import _CALLBACK_ID, _callback_headers, _callback_token
 
     fixture = callback_privacy
     token = _callback_token()
@@ -633,13 +729,6 @@ async def test_choose_trailing_slash_audit_retains_metadata_only(callback_privac
 async def test_choose_failures_keep_secret_and_token_out_of_error_telemetry(
     callback_privacy, caplog
 ):
-    from tests.api.test_decisions import (
-        _CALLBACK_CREDENTIAL,
-        _CALLBACK_ID,
-        _CALLBACK_SECRET,
-        _callback_headers,
-        _callback_token,
-    )
 
     fixture = callback_privacy
     token = _callback_token()
@@ -647,23 +736,16 @@ async def test_choose_failures_keep_secret_and_token_out_of_error_telemetry(
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=fixture.app), base_url="http://test"
     ) as client:
-        for where, status in [(fixture.credential_row, 503), (fixture.recorded, 500)]:
+        for where in (fixture.resolve, fixture.connection.fetchrow):
             where.side_effect = RuntimeError(private)
             response = await client.post(
                 f"/api/decisions/prompts/{_CALLBACK_ID}/choose",
                 json={"option_index": 0, "token": token},
-                headers=_callback_headers(),
+                headers={"X-API-Key": "synthetic-owner-key"},
             )
-            assert response.status_code == status
-            if status == 500:
-                assert response.json() == {
-                    "error": {
-                        "code": "INTERNAL_ERROR",
-                        "message": "Internal server error",
-                        "butler": None,
-                        "details": None,
-                    }
-                }
+            assert response.status_code == 404
+            assert response.json() == {"detail": "Not Found"}
+            where.assert_not_awaited()
             _assert_callback_private(
                 fixture,
                 response,
@@ -673,4 +755,3 @@ async def test_choose_failures_keep_secret_and_token_out_of_error_telemetry(
                 _CALLBACK_SECRET,
                 _CALLBACK_CREDENTIAL,
             )
-            where.side_effect = None

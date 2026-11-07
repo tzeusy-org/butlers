@@ -192,7 +192,7 @@ async def test_start_succeeds_in_degraded_mode_for_terminal_startup_states(
     monkeypatch.setattr(mgr, "_graceful_disconnect", AsyncMock())
     monkeypatch.setattr(mgr, "_STARTUP_POLL_INTERVAL_S", 0.0)
     monkeypatch.setattr(
-        "butlers.connectors.bridge_manager._http_get_unix",
+        "butlers.connectors.bridge_manager.BridgeClient.request_json",
         AsyncMock(return_value={"state": state}),
     )
 
@@ -220,7 +220,7 @@ async def test_start_clears_degraded_if_bridge_recovers_before_health_loop(
     monkeypatch.setattr(mgr, "_graceful_disconnect", AsyncMock())
     monkeypatch.setattr(mgr, "_STARTUP_POLL_INTERVAL_S", 0.0)
     monkeypatch.setattr(
-        "butlers.connectors.bridge_manager._http_get_unix",
+        "butlers.connectors.bridge_manager.BridgeClient.request_json",
         AsyncMock(side_effect=[{"state": "pair_required"}, {"state": "connected"}]),
     )
 
@@ -251,7 +251,7 @@ async def test_start_times_out_when_degraded_states_are_not_allowed(
     monkeypatch.setattr(mgr, "_graceful_disconnect", AsyncMock())
     monkeypatch.setattr(mgr, "_STARTUP_POLL_INTERVAL_S", 0.0)
     monkeypatch.setattr(
-        "butlers.connectors.bridge_manager._http_get_unix",
+        "butlers.connectors.bridge_manager.BridgeClient.request_json",
         AsyncMock(return_value={"state": "disconnected"}),
     )
 
@@ -285,7 +285,7 @@ async def test_pair_required_never_times_out_startup_readiness_even_when_not_all
     monkeypatch.setattr(mgr, "_graceful_disconnect", AsyncMock())
     monkeypatch.setattr(mgr, "_STARTUP_POLL_INTERVAL_S", 0.0)
     monkeypatch.setattr(
-        "butlers.connectors.bridge_manager._http_get_unix",
+        "butlers.connectors.bridge_manager.BridgeClient.request_json",
         AsyncMock(return_value={"state": "pair_required"}),
     )
 
@@ -337,7 +337,7 @@ async def test_pair_required_never_escalates_to_invalidated_session(
     mgr = BridgeSubprocessManager(_make_config(invalidated_session_threshold_s=300.0))
     mgr._process = _fake_process(returncode=None)
     monkeypatch.setattr(
-        "butlers.connectors.bridge_manager._http_get_unix",
+        "butlers.connectors.bridge_manager.BridgeClient.request_json",
         AsyncMock(return_value={"state": "pair_required"}),
     )
 
@@ -375,7 +375,7 @@ async def test_start_succeeds_when_bridge_exits_into_terminal_degraded_mode(
     monkeypatch.setattr(mgr, "_graceful_disconnect", AsyncMock())
     monkeypatch.setattr(mgr, "_STARTUP_POLL_INTERVAL_S", 0.01)
     monkeypatch.setattr(
-        "butlers.connectors.bridge_manager._http_get_unix",
+        "butlers.connectors.bridge_manager.BridgeClient.request_json",
         AsyncMock(side_effect=ConnectionError("bridge not ready")),
     )
 
@@ -438,7 +438,7 @@ async def test_poll_status_degrades_when_link_dead_despite_connected_state(
     mgr = BridgeSubprocessManager(_make_config())
     mgr._process = _fake_process(returncode=None)
     monkeypatch.setattr(
-        "butlers.connectors.bridge_manager._http_get_unix",
+        "butlers.connectors.bridge_manager.BridgeClient.request_json",
         AsyncMock(return_value={"state": "connected", "connected": False, "logged_in": True}),
     )
     await mgr._poll_status()
@@ -454,7 +454,7 @@ async def test_poll_status_healthy_when_connected_and_logged_in(
     mgr._process = _fake_process(returncode=None)
     mgr._set_degraded("was down")
     monkeypatch.setattr(
-        "butlers.connectors.bridge_manager._http_get_unix",
+        "butlers.connectors.bridge_manager.BridgeClient.request_json",
         AsyncMock(return_value={"state": "connected", "connected": True, "logged_in": True}),
     )
     await mgr._poll_status()
@@ -470,7 +470,7 @@ async def test_poll_status_healthy_without_liveness_fields(
     mgr = BridgeSubprocessManager(_make_config())
     mgr._process = _fake_process(returncode=None)
     monkeypatch.setattr(
-        "butlers.connectors.bridge_manager._http_get_unix",
+        "butlers.connectors.bridge_manager.BridgeClient.request_json",
         AsyncMock(return_value={"state": "connected"}),
     )
     await mgr._poll_status()
@@ -591,7 +591,7 @@ async def test_poll_status_escalates_disconnected_past_threshold(
     mgr = BridgeSubprocessManager(_make_config(invalidated_session_threshold_s=300.0))
     mgr._process = _fake_process(returncode=None)
     monkeypatch.setattr(
-        "butlers.connectors.bridge_manager._http_get_unix",
+        "butlers.connectors.bridge_manager.BridgeClient.request_json",
         AsyncMock(return_value={"state": "disconnected", "connected": False, "logged_in": False}),
     )
 
@@ -613,7 +613,7 @@ async def test_poll_status_escalates_connected_but_link_dead_past_threshold(
     mgr = BridgeSubprocessManager(_make_config(invalidated_session_threshold_s=300.0))
     mgr._process = _fake_process(returncode=None)
     monkeypatch.setattr(
-        "butlers.connectors.bridge_manager._http_get_unix",
+        "butlers.connectors.bridge_manager.BridgeClient.request_json",
         AsyncMock(return_value={"state": "connected", "connected": False, "logged_in": False}),
     )
 

@@ -18,26 +18,25 @@ Configured via ``[modules.google_drive]`` in butler.toml.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json as _json
 import logging
 import mimetypes
 import re
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from butlers.google_credentials import (
+    GoogleTokenCache,
     MissingGoogleCredentialsError,
     _pool_acquire,
     resolve_google_credentials,
 )
 from butlers.modules.base import Module, ToolMeta
-from butlers.oauth_token_payload import (
-    OAuthTokenValidationError,
-    validate_oauth_token_payload,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +45,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
-_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 _DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
 
 _FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
@@ -70,7 +68,6 @@ _RATE_LIMIT_MAX_RETRIES = 3
 _RATE_LIMIT_BASE_DELAY_S = 1.0
 
 # Token expiry safety margin (spec §3.4): refresh 60s before expiry
-_TOKEN_EXPIRY_MARGIN_S = 60
 
 # Extension to MIME type map for MIME inference (spec §5.4)
 _EXT_MIME_MAP: dict[str, str] = {
@@ -171,13 +168,6 @@ class _DriveTokenCache:
     def __init__(self) -> None:
         self._access_token: str | None = None
         self._expires_at: float = 0.0
-        self._lock = asyncio.Lock()
-
-    def _is_fresh(self) -> bool:
-        return (
-            self._access_token is not None
-            and time.monotonic() < self._expires_at - _TOKEN_EXPIRY_MARGIN_S
-        )
 
     async def get_token(
         self,
@@ -189,25 +179,15 @@ class _DriveTokenCache:
         on_refreshed: Any | None = None,
     ) -> str:
         """Return a valid access token, refreshing if needed."""
-        if self._is_fresh():
-            assert self._access_token is not None
-            return self._access_token
-
-        async with self._lock:
-            # Double-checked locking: another coroutine may have refreshed
-            if self._is_fresh():
-                assert self._access_token is not None
-                return self._access_token
-
-            await self._refresh(
-                client_id=client_id,
-                client_secret=client_secret,
-                refresh_token=refresh_token,
-                http_client=http_client,
-                on_refreshed=on_refreshed,
-            )
-            assert self._access_token is not None
-            return self._access_token
+        await self._refresh(
+            client_id=client_id,
+            client_secret=client_secret,
+            refresh_token=refresh_token,
+            http_client=http_client,
+            on_refreshed=on_refreshed,
+        )
+        assert self._access_token is not None
+        return self._access_token
 
     async def _refresh(
         self,
@@ -218,51 +198,33 @@ class _DriveTokenCache:
         http_client: httpx.AsyncClient,
         on_refreshed: Any | None,
     ) -> None:
+        async def notify() -> None:
+            if on_refreshed is not None:
+                try:
+                    await on_refreshed()
+                except Exception:
+                    logger.debug("Google Drive token callback failed (best-effort)")
+
+        cache = getattr(self, "_google_token_cache", None)
+        if cache is None:
+            cache = self._google_token_cache = GoogleTokenCache(
+                self, expiry_field="_expires_at", clock=time.monotonic
+            )
         try:
-            response = await http_client.post(
-                _GOOGLE_TOKEN_URL,
-                data={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "refresh_token": refresh_token,
-                    "grant_type": "refresh_token",
-                },
+            await cache.get_token(
+                http_client,
+                client_id=client_id,
+                client_secret=client_secret,
+                refresh_token=refresh_token,
+                on_refreshed=notify,
                 headers={"Accept": "application/json"},
             )
         except httpx.HTTPError as exc:
-            raise RuntimeError(
-                f"Google Drive token refresh failed: {_redact_creds(str(exc))}"
-            ) from exc
-
-        if response.status_code < 200 or response.status_code >= 300:
-            raise RuntimeError(
-                f"Google Drive token refresh failed (HTTP {response.status_code}): "
-                f"{_redact_creds(response.text[:200])}"
-            )
-
-        # Validate the whole payload before touching module state, so a
-        # malformed 200 cannot leave a stale token paired with a fresh expiry.
-        try:
-            token = validate_oauth_token_payload(response.json())
-        except OAuthTokenValidationError as exc:
+            raise RuntimeError("Google Drive token refresh failed") from exc
+        except ValueError as exc:
             raise RuntimeError(
                 "Google Drive token refresh returned an invalid token payload"
             ) from exc
-
-        self._access_token = token.access_token
-        self._expires_at = time.monotonic() + token.expires_in
-
-        logger.debug("Google Drive token refreshed (expires_in=%ds)", token.expires_in)
-
-        # Update last_token_refresh_at in google_accounts (spec §3.4)
-        if on_refreshed is not None:
-            try:
-                await on_refreshed()
-            except Exception:
-                logger.debug(
-                    "GoogleDriveModule: failed to invoke on_refreshed callback",
-                    exc_info=True,
-                )
 
 
 # ---------------------------------------------------------------------------
@@ -502,24 +464,123 @@ class GoogleDriveModule(Module):
         self._credentials_ok: bool = False
         self._butler_name: str = "butler"
         self._db: Any | None = None
+        self._approval_enqueuer: Callable[[str, dict[str, Any], str], Awaitable[str]] | None = None
         # In-memory folder cache: (butler_name, account_email) -> folder_id
         self._folder_cache: dict[tuple[str, str], str] = {}
+
+    def set_approval_enqueuer(
+        self, enqueuer: Callable[[str, dict[str, Any], str], Awaitable[str]]
+    ) -> None:
+        """Use the owning daemon's existing durable approval producer."""
+        self._approval_enqueuer = enqueuer
+
+    async def _destination_audience(
+        self, folder_id: str
+    ) -> tuple[str | None, list[tuple[str, str]] | None, str | None]:
+        """Read the destination's complete effective ACL; never infer owner from name.
+
+        Group/domain/public access requires approval; incomplete reads refuse.
+        The root alias becomes concrete. ACLs are rechecked before replay, but
+        Google does not provide an atomic ACL/write compare-and-swap here.
+        """
+        assert self._client is not None
+        concrete = folder_id if folder_id != "root" else None
+        try:
+            response = await self._client.get(
+                f"files/{folder_id}", params={"fields": "id,mimeType,trashed"}
+            )
+            if response.status_code != 200:
+                return None, None, None
+            metadata = response.json()
+            if metadata.get("mimeType") != _FOLDER_MIME_TYPE or metadata.get("trashed"):
+                return None, None, None
+            if folder_id != "root" and metadata.get("id") != folder_id:
+                return None, None, None
+            concrete = metadata.get("id")
+            if not isinstance(concrete, str) or not concrete:
+                return None, None, None
+            parties: list[tuple[str, str]] = []
+            audience = []
+            unresolved = False
+            token = None
+            seen = set()
+            for _ in range(20):
+                params = {
+                    "fields": (
+                        "nextPageToken,permissions(id,type,emailAddress,role,domain,"
+                        "allowFileDiscovery,deleted,expirationTime,pendingOwner,permissionDetails,view)"
+                    ),
+                    "pageSize": 100,
+                    "supportsAllDrives": "true",
+                }
+                if token:
+                    params["pageToken"] = token
+                response = await self._client.get(f"files/{concrete}/permissions", params=params)
+                if response.status_code != 200:
+                    return None, None, None
+                page = response.json()
+                permissions = page.get("permissions")
+                if not isinstance(permissions, list):
+                    return None, None, None
+                for permission in permissions:
+                    if (
+                        not isinstance(permission, dict)
+                        or not isinstance(permission.get("id"), str)
+                        or permission.get("type") not in {"user", "group", "domain", "anyone"}
+                        or permission.get("role")
+                        not in {
+                            "owner",
+                            "organizer",
+                            "fileOrganizer",
+                            "writer",
+                            "commenter",
+                            "reader",
+                        }
+                    ):
+                        return None, None, None
+                    audience.append(permission)
+                    if (
+                        permission["type"] != "user"
+                        or permission.get("deleted")
+                        or not isinstance(permission.get("emailAddress"), str)
+                    ):
+                        unresolved = True
+                    else:
+                        parties.append(("email", permission["emailAddress"]))
+                token = page.get("nextPageToken")
+                if token is not None and not isinstance(token, str):
+                    return None, None, None
+                if not token:
+                    if not audience:
+                        return None, None, None
+                    normalized = sorted(
+                        _json.dumps(p, sort_keys=True, separators=(",", ":"), allow_nan=False)
+                        for p in audience
+                    )
+                    encoded = _json.dumps(
+                        {"folder_id": concrete, "permissions": normalized}, sort_keys=True
+                    ).encode()
+                    return (
+                        concrete,
+                        None if unresolved else parties,
+                        hashlib.sha256(encoded).hexdigest(),
+                    )
+                if not isinstance(token, str) or token in seen:
+                    return None, None, None
+                seen.add(token)
+            return None, None, None
+        except Exception:
+            return None, None, None
 
     # ------------------------------------------------------------------
     # Module ABC properties (spec §3.1)
     # ------------------------------------------------------------------
 
-    @property
-    def name(self) -> str:
-        return "google_drive"
+    name = "google_drive"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return GoogleDriveConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
 
     def migration_revisions(self) -> str | None:
         """Return Alembic branch label for this module's migrations."""
@@ -528,8 +589,28 @@ class GoogleDriveModule(Module):
     def tool_metadata(self) -> dict[str, ToolMeta]:
         """Declare sensitivity for write tools (spec §6.2)."""
         return {
-            "drive_write_file": ToolMeta(arg_sensitivities={"content": True}),
-            "drive_move_file": ToolMeta(arg_sensitivities={"file_id": True, "new_parent_id": True}),
+            "drive_write_file": ToolMeta(
+                arg_sensitivities={
+                    "content": True,
+                    "name": True,
+                    "folder_id": True,
+                    "destination_audience_digest": True,
+                }
+            ),
+            "drive_create_folder": ToolMeta(
+                arg_sensitivities={
+                    "name": True,
+                    "parent_id": True,
+                    "destination_audience_digest": True,
+                }
+            ),
+            "drive_move_file": ToolMeta(
+                arg_sensitivities={
+                    "file_id": True,
+                    "new_parent_id": True,
+                    "destination_audience_digest": True,
+                }
+            ),
         }
 
     # ------------------------------------------------------------------
@@ -735,7 +816,7 @@ class GoogleDriveModule(Module):
     # Butler folder hierarchy (spec §4)
     # ------------------------------------------------------------------
 
-    async def _ensure_butler_folder(self, butler_name: str) -> str:
+    async def _ensure_butler_folder(self, butler_name: str) -> str | dict[str, Any]:
         """Ensure butlers/{butler_name}/ folder exists and return its Drive ID.
 
         Uses a two-level hierarchy:
@@ -781,11 +862,16 @@ class GoogleDriveModule(Module):
             parent_id=None,
         )
 
+        if isinstance(root_id, dict):
+            return root_id
+
         # --- Create per-butler subfolder ---
         folder_id = await self._find_or_create_folder(
             name=butler_name,
             parent_id=root_id,
         )
+        if isinstance(folder_id, dict):
+            return folder_id
         folder_path = f"{self._config.butler_folder_name}/{butler_name}"
 
         # Cache in DB and memory
@@ -797,7 +883,7 @@ class GoogleDriveModule(Module):
         self,
         name: str,
         parent_id: str | None,
-    ) -> str:
+    ) -> str | dict[str, Any]:
         """Find an existing folder by name+parent, or create it."""
         assert self._client is not None
 
@@ -811,25 +897,40 @@ class GoogleDriveModule(Module):
         resp = await self._client.get("files", params={"q": q, "fields": "files(id,name)"})
         if resp.status_code == 200:
             files = resp.json().get("files", [])
-            if files:
+            if len(files) == 1:
                 return files[0]["id"]
 
-        # Not found — create it
-        body: dict[str, Any] = {"name": name, "mimeType": _FOLDER_MIME_TYPE}
-        if parent_id:
-            body["parents"] = [parent_id]
-
-        resp = await self._client.post(
-            f"{_DRIVE_API_BASE}/files",
-            json=body,
-            params={"fields": "id"},
-        )
-        if resp.status_code not in (200, 201):
-            raise RuntimeError(
-                f"Google Drive: failed to create folder '{name}' "
-                f"(HTTP {resp.status_code}): {resp.text[:200]}"
-            )
-        return resp.json()["id"]
+        # Bootstrap is itself an existing folder-creation command. On a shared
+        # parent its approval creates only this missing component, not the
+        # original content operation; the caller must retry and recheck it.
+        if resp.status_code != 200:
+            return {
+                "status": "approval_unavailable",
+                "operation_complete": False,
+                "message": "Default folder lookup is unavailable",
+            }
+        if len(files) > 1:
+            return {
+                "status": "approval_unavailable",
+                "operation_complete": False,
+                "message": "Default folder path is ambiguous",
+            }
+        result = await self._drive_create_folder(name, parent_id=parent_id or "root")
+        if "folder_id" in result:
+            return result["folder_id"]
+        return {
+            **result,
+            "status": (
+                "bootstrap_approval_required"
+                if result.get("status") == "approval_required"
+                else result.get("status", "error")
+            ),
+            "operation_complete": False,
+            "message": (
+                "Approve this folder creation, then retry the original operation; "
+                "content is not approved."
+            ),
+        }
 
     async def _get_cached_folder_id(
         self,
@@ -1059,6 +1160,7 @@ class GoogleDriveModule(Module):
         content: str,
         folder_id: str | None = None,
         mime_type: str | None = None,
+        destination_audience_digest: str | None = None,
     ) -> dict[str, Any]:
         if self._client is None:
             return self._not_configured_error()
@@ -1067,6 +1169,35 @@ class GoogleDriveModule(Module):
             resolved_folder_id = folder_id
             if resolved_folder_id is None:
                 resolved_folder_id = await self._ensure_butler_folder(self._butler_name)
+                if isinstance(resolved_folder_id, dict):
+                    return resolved_folder_id
+
+            from butlers.modules.party_approval import gate_party_call
+
+            resolved_folder_id, parties, digest = await self._destination_audience(
+                resolved_folder_id
+            )
+            if resolved_folder_id is None:
+                return {"status": "approval_unavailable", "message": "Destination is unresolved"}
+            if destination_audience_digest is not None and destination_audience_digest != digest:
+                return {
+                    "status": "destination_changed",
+                    "message": "Destination audience changed; request approval again",
+                }
+            pending = await gate_party_call(
+                self,
+                tool_name="drive_write_file",
+                arguments={
+                    "name": name,
+                    "content": content,
+                    "folder_id": resolved_folder_id,
+                    "mime_type": mime_type,
+                    "destination_audience_digest": digest,
+                },
+                parties=parties,
+            )
+            if pending is not None:
+                return pending
 
             inferred_mime = mime_type or _infer_mime_type(name)
             content_bytes = content.encode()
@@ -1121,6 +1252,7 @@ class GoogleDriveModule(Module):
         self,
         name: str,
         parent_id: str | None = None,
+        destination_audience_digest: str | None = None,
     ) -> dict[str, Any]:
         if self._client is None:
             return self._not_configured_error()
@@ -1129,6 +1261,33 @@ class GoogleDriveModule(Module):
             resolved_parent_id = parent_id
             if resolved_parent_id is None:
                 resolved_parent_id = await self._ensure_butler_folder(self._butler_name)
+                if isinstance(resolved_parent_id, dict):
+                    return resolved_parent_id
+
+            from butlers.modules.party_approval import gate_party_call
+
+            resolved_parent_id, parties, digest = await self._destination_audience(
+                resolved_parent_id
+            )
+            if resolved_parent_id is None:
+                return {"status": "approval_unavailable", "message": "Destination is unresolved"}
+            if destination_audience_digest is not None and destination_audience_digest != digest:
+                return {
+                    "status": "destination_changed",
+                    "message": "Destination audience changed; request approval again",
+                }
+            pending = await gate_party_call(
+                self,
+                tool_name="drive_create_folder",
+                arguments={
+                    "name": name,
+                    "parent_id": resolved_parent_id,
+                    "destination_audience_digest": digest,
+                },
+                parties=parties,
+            )
+            if pending is not None:
+                return pending
 
             body: dict[str, Any] = {
                 "name": name,
@@ -1163,11 +1322,36 @@ class GoogleDriveModule(Module):
         self,
         file_id: str,
         new_parent_id: str,
+        destination_audience_digest: str | None = None,
     ) -> dict[str, Any]:
         if self._client is None:
             return self._not_configured_error()
 
         try:
+            from butlers.modules.party_approval import gate_party_call
+
+            resolved_parent_id, parties, digest = await self._destination_audience(new_parent_id)
+            if resolved_parent_id is None:
+                return {"status": "approval_unavailable", "message": "Destination is unresolved"}
+            if destination_audience_digest is not None and destination_audience_digest != digest:
+                return {
+                    "status": "destination_changed",
+                    "message": "Destination audience changed; request approval again",
+                }
+            pending = await gate_party_call(
+                self,
+                tool_name="drive_move_file",
+                arguments={
+                    "file_id": file_id,
+                    "new_parent_id": resolved_parent_id,
+                    "destination_audience_digest": digest,
+                },
+                parties=parties,
+            )
+            if pending is not None:
+                return pending
+            new_parent_id = resolved_parent_id
+
             # Get current parents and file name
             meta_resp = await self._client.get(
                 f"files/{file_id}",
@@ -1308,6 +1492,7 @@ class GoogleDriveModule(Module):
             content: str,
             folder_id: str | None = None,
             mime_type: str | None = None,
+            destination_audience_digest: str | None = None,
         ) -> dict[str, Any]:
             """Upload a file to Google Drive.
 
@@ -1316,45 +1501,65 @@ class GoogleDriveModule(Module):
                 content: Text content to upload.
                 folder_id: Target folder. Defaults to butler's folder.
                 mime_type: MIME type override. Inferred from name if omitted.
+                destination_audience_digest: Optional audience snapshot from a parked call;
+                    never an approval token. Changed or unavailable ACLs refuse replay.
 
             Returns:
                 ``{"file_id": ..., "web_view_link": ..., "name": ..., "mime_type": ...}``
             """
             return await module._drive_write_file(
-                name=name, content=content, folder_id=folder_id, mime_type=mime_type
+                name=name,
+                content=content,
+                folder_id=folder_id,
+                mime_type=mime_type,
+                destination_audience_digest=destination_audience_digest,
             )
 
         @mcp.tool(name="drive_create_folder")
         async def drive_create_folder(
             name: str,
             parent_id: str | None = None,
+            destination_audience_digest: str | None = None,
         ) -> dict[str, Any]:
             """Create a folder in Google Drive.
 
             Args:
                 name: Folder name.
                 parent_id: Parent folder ID. Defaults to butler's subfolder.
+                destination_audience_digest: Optional audience snapshot from a parked call;
+                    never an approval token. Changed or unavailable ACLs refuse replay.
 
             Returns:
                 ``{"folder_id": ..., "name": ..., "web_view_link": ...}``
             """
-            return await module._drive_create_folder(name=name, parent_id=parent_id)
+            return await module._drive_create_folder(
+                name=name,
+                parent_id=parent_id,
+                destination_audience_digest=destination_audience_digest,
+            )
 
         @mcp.tool(name="drive_move_file")
         async def drive_move_file(
             file_id: str,
             new_parent_id: str,
+            destination_audience_digest: str | None = None,
         ) -> dict[str, Any]:
             """Move a file to a different folder.
 
             Args:
                 file_id: The Drive file ID to move.
                 new_parent_id: Target folder ID.
+                destination_audience_digest: Optional audience snapshot from a parked call;
+                    never an approval token. Changed or unavailable ACLs refuse replay.
 
             Returns:
                 ``{"status": "ok", "file_id": ..., "new_parent_id": ...}``
             """
-            return await module._drive_move_file(file_id=file_id, new_parent_id=new_parent_id)
+            return await module._drive_move_file(
+                file_id=file_id,
+                new_parent_id=new_parent_id,
+                destination_audience_digest=destination_audience_digest,
+            )
 
         @mcp.tool(name="drive_search_files")
         async def drive_search_files(

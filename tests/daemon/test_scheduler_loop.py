@@ -19,6 +19,7 @@ import pytest
 
 from butlers.config import ButlerConfig, ConfigError, SchedulerConfig, load_config
 from butlers.daemon import ButlerDaemon
+from butlers.testing.daemon import write_butler_config
 
 pytestmark = pytest.mark.unit
 
@@ -60,80 +61,6 @@ def _make_butler_toml(
         ]
     (tmp_path / "butler.toml").write_text("\n".join(lines))
     return tmp_path
-
-
-def _patch_infra():
-    """Return patches for all infrastructure dependencies used by ButlerDaemon.start()."""
-    mock_pool = AsyncMock()
-
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_audit_db = MagicMock()
-    mock_audit_db.connect = AsyncMock()
-    mock_audit_db.close = AsyncMock()
-    mock_audit_db.pool = AsyncMock()
-
-    _db_call_count = 0
-
-    def _db_from_env_factory(db_name: str) -> MagicMock:
-        nonlocal _db_call_count
-        _db_call_count += 1
-        if _db_call_count == 1:
-            return mock_db
-        return mock_audit_db
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    return {
-        "db_from_env": patch(
-            "butlers.lifecycle.Database.from_env", side_effect=_db_from_env_factory
-        ),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "get_adapter": patch(
-            "butlers.lifecycle.get_adapter",
-            return_value=type(
-                "MockAdapter",
-                (),
-                {
-                    "binary_name": "claude",
-                    "__init__": lambda self, **kwargs: None,
-                },
-            ),
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "mock_db": mock_db,
-        "mock_audit_db": mock_audit_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
 
 
 def _make_daemon_with_loop(butler_dir: Path, name: str, interval: int) -> ButlerDaemon:
@@ -182,41 +109,27 @@ class TestSchedulerConfig:
 class TestSchedulerLoopBehavior:
     """Tests for the _scheduler_loop() coroutine behavior."""
 
-    async def test_task_lifecycle_and_tick_params(self, tmp_path: Path) -> None:
-        """Task created on start, cleared after shutdown; tick() gets the runtime pool and name.
+    @pytest.mark.integration
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_task_is_created_on_start_and_cleared_on_shutdown(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
+        """The real startup starts the scheduler loop; the real shutdown clears it."""
+        booted = await booted_daemon(write_butler_config(tmp_path, "general"))
+        daemon = booted.daemon
+        assert isinstance(daemon._scheduler_loop_task, asyncio.Task)
+        assert not daemon._scheduler_loop_task.done()
+
+        await booted.shutdown()
+
+        assert daemon._scheduler_loop_task is None
+
+    async def test_tick_gets_the_runtime_pool_and_name(self, tmp_path: Path) -> None:
+        """tick() gets the runtime pool and name.
 
         QA's policy read uses tick's primary pool, so it must be the daemon's own
         role-scoped pool rather than the audit pool passed as eligibility_pool.
         """
-        butler_dir = _make_butler_toml(tmp_path)
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-            patches["recover_route_inbox"],
-        ):
-            daemon = ButlerDaemon(butler_dir)
-            await daemon.start()
-
-        try:
-            assert daemon._scheduler_loop_task is not None
-            assert isinstance(daemon._scheduler_loop_task, asyncio.Task)
-        finally:
-            await daemon.shutdown()
-
-        assert daemon._scheduler_loop_task is None
-
         # tick() called with correct stagger_key and butler_name
         tick_calls: list[tuple] = []
 
@@ -356,3 +269,104 @@ class TestSchedulerLoopBehavior:
             except asyncio.CancelledError:
                 pass
         assert all(s == 42 for s in sleep_calls)
+
+
+async def test_deferred_actual_delivery_rechecks_outage_and_recovery(monkeypatch):
+    """REQ-context-bus-016: no direct deferred-send bypass of unavailable reads."""
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from butlers import background
+
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+    pool.fetch = AsyncMock(return_value=[])
+    client = MagicMock(call_tool=AsyncMock(return_value=SimpleNamespace(is_error=False, data={})))
+    envelope = {
+        "schema_version": "notify.v1",
+        "delivery": {
+            "intent": "send",
+            "priority": "high",
+            "message": "routine",
+            "recipient": "owner",
+        },
+    }
+
+    completed = []
+
+    async def tick(pool, dispatch, *, notify_fn, **kwargs):
+        from uuid import uuid4
+
+        from butlers.core.scheduler.deferred_pass import _tick_deferred_notification_pass
+
+        now = datetime.now(UTC)
+        anchor = now - timedelta(minutes=1)
+        state = {"status": "pending", "deliver_at": anchor}
+        queued = MagicMock(fetchval=AsyncMock(return_value=True))
+        row = {
+            "id": uuid4(),
+            "butler_name": "health",
+            "channel": "telegram",
+            "message": "routine",
+            "priority": "high",
+            "envelope": envelope,
+        }
+
+        async def fetch(*args):
+            return [row] if state["status"] == "pending" else []
+
+        async def execute(sql, *args):
+            if "SET status = 'expired'" in sql and state["deliver_at"] < args[0]:
+                state["status"] = "expired"
+            elif "SET status = 'delivered'" in sql:
+                state["status"] = "delivered"
+            return "UPDATE 1"
+
+        queued.fetch = AsyncMock(side_effect=fetch)
+        queued.execute = AsyncMock(side_effect=execute)
+        pool.fetchrow.side_effect = RuntimeError("policy unavailable")
+        assert await _tick_deferred_notification_pass(queued, now, notify_fn=notify_fn) == 0
+        assert state == {"status": "pending", "deliver_at": anchor}
+        client.call_tool.assert_not_awaited()
+        pool.fetchrow.side_effect = None
+        pool.fetch.side_effect = RuntimeError("context unavailable")
+        for _ in range(2):
+            assert await _tick_deferred_notification_pass(queued, now, notify_fn=notify_fn) == 0
+            assert state == {"status": "pending", "deliver_at": anchor}
+            client.call_tool.assert_not_awaited()
+        pool.fetch.side_effect = None
+        assert await _tick_deferred_notification_pass(queued, now, notify_fn=notify_fn) == 1
+        assert state["status"] == "delivered"
+        assert await _tick_deferred_notification_pass(queued, now, notify_fn=notify_fn) == 0
+        client.call_tool.assert_awaited_once()
+        # Original queue expiry still retires stale work; it never becomes a
+        # send permission while attention reads remain unavailable.
+        state["status"] = "pending"
+        pool.fetch.side_effect = RuntimeError("context unavailable")
+        assert (
+            await _tick_deferred_notification_pass(
+                queued, now + timedelta(hours=25), notify_fn=notify_fn
+            )
+            == 0
+        )
+        assert state == {"status": "expired", "deliver_at": anchor}
+        client.call_tool.assert_awaited_once()
+        completed.append(True)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(background.asyncio, "sleep", _fast_sleep)
+    await asyncio.wait_for(
+        background.scheduler_loop(
+            pool=pool,
+            dispatch_fn=AsyncMock(),
+            interval=0,
+            butler_name="health",
+            tick_fn=tick,
+            get_switchboard_client=lambda: client,
+            get_db=lambda: SimpleNamespace(pool=pool),
+        ),
+        timeout=2,
+    )
+    # The production loop catches ordinary tick failures. Assert outside it so
+    # neither a swallowed test assertion nor cancellation can manufacture PASS.
+    assert completed == [True]

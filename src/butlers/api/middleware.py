@@ -45,12 +45,22 @@ def _is_approval_callback_route(request: Request) -> bool:
 
     The connector credential is deliberately narrower than the dashboard API
     key: it can read one approval detail or transition it through the established
-    approve/deny routes, read one decision prompt or record its one-tap choice
-    (bu-ckkpz.3), and nothing else under ``/api``.
+    approve/deny routes, and nothing else under ``/api``.
     """
     segments = request.url.path.split("/")
-    if segments[:4] == ["", "api", "decisions", "prompts"]:
-        return _is_decision_prompt_callback_route(request.method, segments)
+    if segments[:3] == ["", "api", "owner-delivery"]:
+        # Canonical owner-delivery card actions and stale-card retraction (bu-dhloi1.13).
+        if request.method == "POST" and segments[3:] == ["actions"]:
+            return True
+        if request.method == "GET" and segments[3:] == ["retractions"]:
+            return True
+        if request.method != "POST" or len(segments) != 5 or segments[3] != "retractions":
+            return False
+        try:
+            UUID(segments[4])
+        except ValueError:
+            return False
+        return True
     if len(segments) not in {4, 5} or segments[:3] != ["", "api", "approvals"]:
         return False
     try:
@@ -68,19 +78,6 @@ def _is_approval_callback_route(request: Request) -> bool:
             "deny",
         }
     )
-
-
-def _is_decision_prompt_callback_route(method: str, segments: list[str]) -> bool:
-    """``GET /api/decisions/prompts/<uuid>`` and ``POST .../<uuid>/choose`` only."""
-    if len(segments) not in {5, 6}:
-        return False
-    try:
-        UUID(segments[4])
-    except ValueError:
-        return False
-    if method == "GET":
-        return len(segments) == 5
-    return method == "POST" and len(segments) == 6 and segments[5] == "choose"
 
 
 async def _handle_butler_unreachable(

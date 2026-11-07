@@ -30,11 +30,12 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID, uuid4
 
-from butlers.connectors.known_contact_state import (
+from butlers.core.known_contact_state import (
     CLASSIFICATION_KEY,
     KnownContactSnapshot,
     parse_ack,
 )
+from butlers.ingestion_spans import CHANNEL_KIND_CAPABILITY, ChannelKind
 
 if TYPE_CHECKING:
     from butlers.connectors.mcp_client import CachedMCPClient
@@ -154,6 +155,7 @@ class ConnectorHeartbeat:
         get_checkpoint: Callable[[], tuple[str | None, datetime | None]] | None = None,
         get_capabilities: Callable[[], dict[str, object]] | None = None,
         get_contact_snapshot: Callable[[], KnownContactSnapshot] | None = None,
+        channel_kind: ChannelKind | None = None,
     ) -> None:
         """Initialize heartbeat task.
 
@@ -165,6 +167,9 @@ class ConnectorHeartbeat:
             get_checkpoint: Optional callable that returns (cursor, updated_at) tuple
             get_capabilities: Optional callable that returns a capabilities dict
                 (e.g. {"backfill": True}). Included in heartbeat as "capabilities" key.
+            channel_kind: The channel kind this connector registers
+                (REQ-connector-base-spec-003): ``"feed"`` for a device or telemetry feed.
+                Sent as ``capabilities.channel_kind``; omitted means a message channel.
         """
         self._config = config
         self._mcp_client = mcp_client
@@ -173,6 +178,7 @@ class ConnectorHeartbeat:
         self._get_checkpoint = get_checkpoint
         self._get_capabilities = get_capabilities
         self._get_contact_snapshot = get_contact_snapshot
+        self._channel_kind = channel_kind
         self._publication_lock = asyncio.Lock()
         self._admission_epoch: str | None = None
         self._last_acknowledged_generation: int | None = None
@@ -342,10 +348,11 @@ class ConnectorHeartbeat:
             }
 
         # Add capabilities if available (e.g. {"backfill": True})
-        if self._get_capabilities is not None:
-            capabilities = self._get_capabilities()
-            if capabilities:
-                envelope["capabilities"] = capabilities
+        capabilities = dict(self._get_capabilities() or {}) if self._get_capabilities else {}
+        if self._channel_kind is not None:
+            capabilities[CHANNEL_KIND_CAPABILITY] = self._channel_kind
+        if capabilities:
+            envelope["capabilities"] = capabilities
 
         return envelope
 
@@ -438,7 +445,7 @@ class ConnectorHeartbeat:
             task = asyncio.create_task(self._mcp_client.call_tool("connector.heartbeat", envelope))
             done, _ = await asyncio.wait({task}, timeout=max(0, deadline - loop.time()))
             if not done or loop.time() >= deadline:
-                logger.warning("Gmail classification publication outcome=timeout")
+                logger.warning("Connector classification publication outcome=timeout")
                 return False
             result = task.result()
             ack = (
@@ -447,7 +454,7 @@ class ConnectorHeartbeat:
                 else None
             )
             if ack is None or self._active_attempt != attempt:
-                logger.warning("Gmail classification publication outcome=invalid_ack")
+                logger.warning("Connector classification publication outcome=invalid_ack")
                 return False
             if ack["admitted"]:
                 self._admission_epoch = ack["admission_epoch"]
@@ -455,15 +462,15 @@ class ConnectorHeartbeat:
                 return True
             if self._admission_epoch == sent["admission_epoch"]:
                 self._admission_epoch = None
-            logger.warning("Gmail classification publication outcome=refused")
+            logger.warning("Connector classification publication outcome=refused")
             return False
         except TimeoutError:
-            logger.warning("Gmail classification publication outcome=timeout")
+            logger.warning("Connector classification publication outcome=timeout")
             return False
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.warning("Gmail classification publication outcome=failed")
+            logger.warning("Connector classification publication outcome=failed")
             return False
         finally:
             if acquired:

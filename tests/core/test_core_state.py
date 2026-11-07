@@ -5,11 +5,9 @@ from __future__ import annotations
 import asyncio
 import shutil
 
-import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.core.state import CASConflictError
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -19,96 +17,68 @@ pytestmark = [
 _asyncio_session = pytest.mark.asyncio(loop_scope="session")
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core migrations applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str):
-    """Return an asyncpg pool with state table cleared between tests.
-
-    Register the JSONB codec so writes match production behaviour
-    (``state_set`` passes Python dicts/lists, not pre-serialized JSON strings).
-    """
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=5,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE state CASCADE")
-    yield p
-    await p.close()
-
-
 # ---------------------------------------------------------------------------
 # state_get / state_set / state_delete
 # ---------------------------------------------------------------------------
 
 
 @_asyncio_session
-async def test_state_get_set_delete(pool):
+async def test_state_get_set_delete(db_pool):
     """state_get returns stored value; missing returns None; delete removes key."""
     from butlers.core.state import state_delete, state_get, state_set
 
-    assert await state_get(pool, "nonexistent") is None
+    assert await state_get(db_pool, "nonexistent") is None
 
-    await state_set(pool, "key1", {"a": 1})
-    assert await state_get(pool, "key1") == {"a": 1}
+    await state_set(db_pool, "key1", {"a": 1})
+    assert await state_get(db_pool, "key1") == {"a": 1}
 
     # Update
-    await state_set(pool, "key1", "updated")
-    assert await state_get(pool, "key1") == "updated"
+    await state_set(db_pool, "key1", "updated")
+    assert await state_get(db_pool, "key1") == "updated"
 
     # Delete
-    await state_delete(pool, "key1")
-    assert await state_get(pool, "key1") is None
+    await state_delete(db_pool, "key1")
+    assert await state_get(db_pool, "key1") is None
 
     # Delete missing key is noop
-    await state_delete(pool, "key1")  # should not raise
+    await state_delete(db_pool, "key1")  # should not raise
 
 
 @_asyncio_session
-async def test_state_set_version_tracking(pool):
+async def test_state_set_version_tracking(db_pool):
     """state_set increments version on update; first insert is version 1."""
     from butlers.core.state import state_set
 
-    v1 = await state_set(pool, "versioned", "first")
+    v1 = await state_set(db_pool, "versioned", "first")
     assert v1 == 1
 
-    v2 = await state_set(pool, "versioned", "second")
+    v2 = await state_set(db_pool, "versioned", "second")
     assert v2 == 2
 
-    v3 = await state_set(pool, "versioned", "third")
+    v3 = await state_set(db_pool, "versioned", "third")
     assert v3 == 3
 
 
 @_asyncio_session
-async def test_state_list(pool):
+async def test_state_list(db_pool):
     """state_list returns all entries; prefix filter works."""
     from butlers.core.state import state_list, state_set
 
-    await state_set(pool, "app.x", 1)
-    await state_set(pool, "app.y", 2)
-    await state_set(pool, "other.z", 3)
+    await state_set(db_pool, "app.x", 1)
+    await state_set(db_pool, "app.y", 2)
+    await state_set(db_pool, "other.z", 3)
 
-    all_entries = await state_list(pool)
+    all_entries = await state_list(db_pool)
     assert len(all_entries) >= 3
 
-    app_entries = await state_list(pool, prefix="app.")
+    app_entries = await state_list(db_pool, prefix="app.")
     # state_list returns key strings by default (keys_only=True)
     assert all(e.startswith("app.") for e in app_entries)
     assert len(app_entries) == 2
 
 
 @_asyncio_session
-async def test_state_list_prefix_with_wildcard_is_not_widened(pool):
+async def test_state_list_prefix_with_wildcard_is_not_widened(db_pool):
     """A prefix containing % is treated as a literal, not a LIKE wildcard.
 
     Regression guard for bu-76w4b: without escape_like_pattern(), a prefix
@@ -118,13 +88,13 @@ async def test_state_list_prefix_with_wildcard_is_not_widened(pool):
     from butlers.core.state import state_list, state_set
 
     # Two keys that do NOT start with the literal "app%"
-    await state_set(pool, "app.x", 1)
-    await state_set(pool, "other.z", 2)
+    await state_set(db_pool, "app.x", 1)
+    await state_set(db_pool, "other.z", 2)
 
     # A key that DOES start with the literal "app%"
-    await state_set(pool, "app%suffix", 3)
+    await state_set(db_pool, "app%suffix", 3)
 
-    results = await state_list(pool, prefix="app%")
+    results = await state_list(db_pool, prefix="app%")
     # Only the key that literally starts with "app%" should be returned.
     assert results == ["app%suffix"]
 
@@ -135,33 +105,33 @@ async def test_state_list_prefix_with_wildcard_is_not_widened(pool):
 
 
 @_asyncio_session
-async def test_state_cas_success_and_failure(pool):
+async def test_state_cas_success_and_failure(db_pool):
     """CAS succeeds on matching version; fails on mismatch; no-op on missing key."""
     from butlers.core.state import state_compare_and_set, state_set
 
-    v1 = await state_set(pool, "cas-key", "initial")
-    new_v = await state_compare_and_set(pool, "cas-key", v1, "updated")
+    v1 = await state_set(db_pool, "cas-key", "initial")
+    new_v = await state_compare_and_set(db_pool, "cas-key", v1, "updated")
     assert new_v == v1 + 1
 
     # Wrong version fails
-    with pytest.raises(Exception):
-        await state_compare_and_set(pool, "cas-key", v1, "bad")
+    with pytest.raises(CASConflictError):
+        await state_compare_and_set(db_pool, "cas-key", v1, "bad")
 
     # Missing key fails
-    with pytest.raises(Exception):
-        await state_compare_and_set(pool, "no-such-key", 1, "val")
+    with pytest.raises(CASConflictError):
+        await state_compare_and_set(db_pool, "no-such-key", 1, "val")
 
 
 @_asyncio_session
-async def test_state_cas_concurrent_exactly_one_wins(pool):
+async def test_state_cas_concurrent_exactly_one_wins(db_pool):
     """Concurrent CAS on same key: exactly one succeeds."""
     from butlers.core.state import state_compare_and_set, state_set
 
-    v = await state_set(pool, "race-key", "initial")
+    v = await state_set(db_pool, "race-key", "initial")
 
     results = await asyncio.gather(
-        state_compare_and_set(pool, "race-key", v, "winner-a"),
-        state_compare_and_set(pool, "race-key", v, "winner-b"),
+        state_compare_and_set(db_pool, "race-key", v, "winner-a"),
+        state_compare_and_set(db_pool, "race-key", v, "winner-b"),
         return_exceptions=True,
     )
     successes = [r for r in results if isinstance(r, int)]
@@ -177,37 +147,37 @@ async def test_state_cas_concurrent_exactly_one_wins(pool):
 
 
 @_asyncio_session
-async def test_state_claim_if_changed_wins_on_absent_key(pool):
+async def test_state_claim_if_changed_wins_on_absent_key(db_pool):
     """Claiming a key that doesn't exist yet wins."""
     from butlers.core.state import state_claim_if_changed, state_get
 
-    won = await state_claim_if_changed(pool, "claim-key", "value-a")
+    won = await state_claim_if_changed(db_pool, "claim-key", "value-a")
     assert won is True
-    assert await state_get(pool, "claim-key") == "value-a"
+    assert await state_get(db_pool, "claim-key") == "value-a"
 
 
 @_asyncio_session
-async def test_state_claim_if_changed_loses_on_same_value(pool):
+async def test_state_claim_if_changed_loses_on_same_value(db_pool):
     """Re-claiming the same value that's already stored loses (no-op)."""
     from butlers.core.state import state_claim_if_changed
 
-    assert await state_claim_if_changed(pool, "claim-key", "value-a") is True
-    assert await state_claim_if_changed(pool, "claim-key", "value-a") is False
+    assert await state_claim_if_changed(db_pool, "claim-key", "value-a") is True
+    assert await state_claim_if_changed(db_pool, "claim-key", "value-a") is False
 
 
 @_asyncio_session
-async def test_state_claim_if_changed_wins_on_different_value(pool):
+async def test_state_claim_if_changed_wins_on_different_value(db_pool):
     """Claiming a new, different value wins even though the key already exists."""
     from butlers.core.state import state_claim_if_changed, state_get
 
-    assert await state_claim_if_changed(pool, "claim-key", "value-a") is True
-    won = await state_claim_if_changed(pool, "claim-key", "value-b")
+    assert await state_claim_if_changed(db_pool, "claim-key", "value-a") is True
+    won = await state_claim_if_changed(db_pool, "claim-key", "value-b")
     assert won is True
-    assert await state_get(pool, "claim-key") == "value-b"
+    assert await state_get(db_pool, "claim-key") == "value-b"
 
 
 @_asyncio_session
-async def test_state_claim_if_changed_concurrent_same_value_exactly_one_wins(pool):
+async def test_state_claim_if_changed_concurrent_same_value_exactly_one_wins(db_pool):
     """Two overlapping claims for the same (key, value) pair: exactly one wins.
 
     This is the primitive publish_domain_event_once's atomic dedup claim
@@ -217,8 +187,8 @@ async def test_state_claim_if_changed_concurrent_same_value_exactly_one_wins(poo
     from butlers.core.state import state_claim_if_changed
 
     results = await asyncio.gather(
-        state_claim_if_changed(pool, "race-claim-key", "trip-race"),
-        state_claim_if_changed(pool, "race-claim-key", "trip-race"),
+        state_claim_if_changed(db_pool, "race-claim-key", "trip-race"),
+        state_claim_if_changed(db_pool, "race-claim-key", "trip-race"),
     )
     assert sorted(results) == [False, True]
 

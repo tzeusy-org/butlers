@@ -39,7 +39,7 @@ Self-guarding (cross-chain drop hazard + opaque-failure avoidance):
     2026-07-15; this guard is defense for any that appear before rollout.)
 
 Applied per butler schema like every migration in this module chain
-(``src/butlers/migrations.py`` runs the ``memory`` chain once per schema);
+(``src/butlers/migrations/__init__.py`` runs the ``memory`` chain once per schema);
 unqualified ``facts`` resolves via each schema's search_path.
 
 ``downgrade()`` restores the original ``validity = 'active'`` predicates.

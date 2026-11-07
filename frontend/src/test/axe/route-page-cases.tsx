@@ -23,6 +23,7 @@ import MealsPage from "@/pages/MealsPage";
 import ResearchPage from "@/pages/ResearchPage";
 import SettingsPermissionsPage from "@/pages/SettingsPermissionsPage";
 import SettingsModelsPage from "@/pages/SettingsModelsPage";
+import SettingsProjectionsPage from "@/pages/SettingsProjectionsPage";
 import { EntitiesIndexPage } from "@/components/relationship/EntitiesIndexPage";
 import ConcentrationPage from "@/components/relationship/ConcentrationPage";
 import CirclesPage from "@/components/relationship/CirclesPage";
@@ -38,6 +39,7 @@ export const ROUTE_AXE_CASES = [
   ["/system", SystemPage], ["/health/measurements", MeasurementsPage], ["/health/medications", MedicationsPage],
   ["/health/conditions", ConditionsPage], ["/health/symptoms", SymptomsPage], ["/health/meals", MealsPage],
   ["/health/research", ResearchPage], ["/settings/permissions", SettingsPermissionsPage], ["/settings/models", SettingsModelsPage],
+  ["/settings/projections", SettingsProjectionsPage],
   ["/entities/index", EntitiesIndexPage], ["/entities/concentration", ConcentrationPage], ["/entities/circles", CirclesPage],
   ["/entities/index?has=contact", EntitiesIndexPage],
   ["/chat", ChatPage],

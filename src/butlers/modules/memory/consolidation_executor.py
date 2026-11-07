@@ -30,7 +30,12 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from butlers.modules.memory.consolidation_parser import ConsolidationResult
-from butlers.modules.memory.content_authority import combine_authorities
+from butlers.modules.memory.content_authority import (
+    PARTITIONS,
+    combine_authorities,
+    partition_of,
+    partition_sql,
+)
 from butlers.modules.memory.storage import (
     StaleSupersessionTargetError,
     _lookup_episode_ttl_days,
@@ -257,6 +262,22 @@ async def _persist_artifact_with_evidence(
     return artifact_id
 
 
+def _bind_persist(
+    store: Callable[..., Awaitable[uuid.UUID]], *args: Any, **kwargs: Any
+) -> Callable[[Any], Awaitable[uuid.UUID]]:
+    """Bind one artifact's store arguments now; the evidence transaction supplies the pool."""
+
+    async def persist(connection_pool: Any) -> uuid.UUID:
+        return await store(connection_pool, *args, **kwargs)
+
+    return persist
+
+
+async def _store_fact_id(connection_pool: Any, *args: Any, **kwargs: Any) -> uuid.UUID:
+    store_result = await store_fact(connection_pool, *args, **kwargs)
+    return store_result["id"]
+
+
 async def _load_episode_authorities(
     pool: Any, source_episode_ids: list[uuid.UUID]
 ) -> dict[uuid.UUID, tuple[str | None, uuid.UUID | None]]:
@@ -286,6 +307,45 @@ def _derive_artifact_authority(
     return authority, (entity_ids.pop() if len(entity_ids) == 1 else None)
 
 
+def _validate_partition_membership(
+    source_episode_ids: list[uuid.UUID],
+    episode_authorities: dict[uuid.UUID, tuple[str | None, uuid.UUID | None]],
+    partition: str,
+) -> None:
+    """Fail the whole partition when a source episode's authority left it.
+
+    Runs inside the persistence fence, after evidence validation and before any
+    artifact write, so a partition that no longer matches its persisted stamps
+    takes the existing failed/dead-letter path with nothing persisted.
+    """
+    for episode_id in source_episode_ids:
+        authority = episode_authorities.get(episode_id, (None, None))[0]
+        if partition_of(authority) != partition:
+            raise ConsolidationEvidenceValidationError(
+                "claimed episode authority does not match its consolidation partition"
+            )
+
+
+async def _confirmation_target_admitted(
+    pool: Any,
+    fact_id: uuid.UUID,
+    *,
+    tenant_id: str,
+    butler_name: str,
+    partition_filter: str,
+) -> bool:
+    """True when a confirmation targets a fact of this tenant, butler and partition."""
+    return bool(
+        await pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM facts WHERE id = $1 AND tenant_id = $2"
+            " AND source_butler = $3" + partition_filter + ")",
+            fact_id,
+            tenant_id,
+            butler_name,
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # Executor
 # ---------------------------------------------------------------------------
@@ -306,6 +366,7 @@ async def execute_consolidation(
     source_schema: str | None = None,
     claim_token: str | None = None,
     lease_duration_seconds: int = 300,
+    authority_partition: str | None = None,
     _claim_persistence_fenced: bool = False,
     _episode_ttl_days: int | None = None,
 ) -> dict[str, Any]:
@@ -351,11 +412,20 @@ async def execute_consolidation(
             transaction.
         lease_duration_seconds: Lease duration used to renew a valid claim
             immediately before protected persistence begins.
+        authority_partition: ``"owner"``, ``"system"`` or ``"non_owner"`` when
+            the caller consolidated one authority partition
+            (``run_consolidation`` always does). Every source episode's
+            persisted authority is revalidated against it before any write,
+            and update targets and confirmations are admitted only within the
+            same tenant, source butler and partition. ``None`` keeps the
+            legacy unpartitioned behavior for direct callers.
 
     Returns:
         Dict with stats: facts_created, facts_updated, rules_created,
         confirmations_made, episodes_consolidated, episode_ttl_days, errors
     """
+    if authority_partition is not None and authority_partition not in PARTITIONS:
+        raise ValueError(f"unknown consolidation partition {authority_partition!r}")
     # Runtime execution happens outside a transaction, but persistence cannot:
     # a replacement claimant must win before any derived write becomes visible.
     # Lock and renew every source row first, then recurse through the existing
@@ -390,6 +460,7 @@ async def execute_consolidation(
                         source_schema=source_schema,
                         claim_token=claim_token,
                         lease_duration_seconds=lease_duration_seconds,
+                        authority_partition=authority_partition,
                         _claim_persistence_fenced=True,
                         _episode_ttl_days=episode_ttl_days,
                     )
@@ -415,12 +486,14 @@ async def execute_consolidation(
     # Derived knowledge inherits the weakest authority among its evidence
     # episodes, from the server-held stamp, never from anything in the content.
     episode_authorities = await _load_episode_authorities(pool, source_episode_ids)
+    if authority_partition is not None:
+        _validate_partition_membership(source_episode_ids, episode_authorities, authority_partition)
 
     # When the caller wants catalog write-behind but didn't resolve a schema
     # itself (e.g. the deterministic scheduled-job path, which has no access
     # to the module's toml config), fall back to the pool's own
     # current_schema() — the same idiom used by
-    # scheduled_jobs.py::_infer_current_schema and core/scheduler.py — rather
+    # scheduled_jobs.py::_infer_current_schema and core/scheduler/ — rather
     # than silently dropping catalog writes for the whole run.
     if enable_shared_catalog and not source_schema:
         source_schema = await pool.fetchval("SELECT current_schema()")
@@ -430,6 +503,12 @@ async def execute_consolidation(
         _episode_ttl_days
         if _episode_ttl_days is not None
         else await _lookup_episode_ttl_days(pool, retention_class)
+    )
+
+    # A partitioned run may update or confirm only a fact its own session was
+    # shown: same tenant, source butler and authority partition.
+    target_partition_filter = (
+        f"  AND {partition_sql(authority_partition)}\n" if authority_partition is not None else ""
     )
 
     # --- New facts ---
@@ -456,31 +535,29 @@ async def execute_consolidation(
                 new_fact_evidence[fact_index] if source_episode_ids else [], episode_authorities
             )
 
-            async def persist_new_fact(connection_pool: Any) -> uuid.UUID:
-                store_result = await store_fact(
-                    connection_pool,
-                    fact.subject,
-                    fact.predicate,
-                    fact.content,
-                    embedding_engine,
-                    importance=fact.importance,
-                    permanence=fact.permanence,
-                    scope=effective_scope,
-                    tags=fact.tags,
-                    source_butler=butler_name,
-                    entity_id=fact_entity_id,
-                    object_entity_id=fact_object_entity_id,
-                    valid_at=fact.valid_at,
-                    tenant_id=tenant_id,
-                    request_id=request_id,
-                    enable_shared_catalog=enable_shared_catalog,
-                    source_schema=source_schema,
-                    enforce_consolidation_edge_allowlist=fact_object_entity_id is not None,
-                    consolidation_edge_classification=consolidation_edge_classification,
-                    content_authority=fact_authority,
-                    authority_entity_id=fact_authority_entity,
-                )
-                return store_result["id"]
+            persist_new_fact = _bind_persist(
+                _store_fact_id,
+                fact.subject,
+                fact.predicate,
+                fact.content,
+                embedding_engine,
+                importance=fact.importance,
+                permanence=fact.permanence,
+                scope=effective_scope,
+                tags=fact.tags,
+                source_butler=butler_name,
+                entity_id=fact_entity_id,
+                object_entity_id=fact_object_entity_id,
+                valid_at=fact.valid_at,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                enable_shared_catalog=enable_shared_catalog,
+                source_schema=source_schema,
+                enforce_consolidation_edge_allowlist=fact_object_entity_id is not None,
+                consolidation_edge_classification=consolidation_edge_classification,
+                content_authority=fact_authority,
+                authority_entity_id=fact_authority_entity,
+            )
 
             await _persist_artifact_with_evidence(
                 pool,
@@ -515,7 +592,8 @@ async def execute_consolidation(
                   AND validity IN ('active', 'fading')
                   AND valid_at IS NULL
                   AND object_entity_id IS NULL
-                """,
+                """
+                + target_partition_filter,
                 target_id,
                 tenant_id,
                 butler_name,
@@ -569,27 +647,24 @@ async def execute_consolidation(
                 episode_authorities,
             )
             try:
-
-                async def persist_updated_fact(connection_pool: Any) -> uuid.UUID:
-                    store_result = await store_fact(
-                        connection_pool,
-                        target["subject"],
-                        target["predicate"],
-                        fact.content,
-                        embedding_engine,
-                        permanence=fact.permanence,
-                        scope=target["scope"],
-                        source_butler=butler_name,
-                        entity_id=fact_entity_id,
-                        tenant_id=tenant_id,
-                        request_id=request_id,
-                        expected_supersedes_id=target_id,
-                        enable_shared_catalog=enable_shared_catalog,
-                        source_schema=source_schema,
-                        content_authority=update_authority,
-                        authority_entity_id=update_authority_entity,
-                    )
-                    return store_result["id"]
+                persist_updated_fact = _bind_persist(
+                    _store_fact_id,
+                    target["subject"],
+                    target["predicate"],
+                    fact.content,
+                    embedding_engine,
+                    permanence=fact.permanence,
+                    scope=target["scope"],
+                    source_butler=butler_name,
+                    entity_id=fact_entity_id,
+                    tenant_id=tenant_id,
+                    request_id=request_id,
+                    expected_supersedes_id=target_id,
+                    enable_shared_catalog=enable_shared_catalog,
+                    source_schema=source_schema,
+                    content_authority=update_authority,
+                    authority_entity_id=update_authority_entity,
+                )
 
                 await _persist_artifact_with_evidence(
                     pool,
@@ -622,21 +697,20 @@ async def execute_consolidation(
                 new_rule_evidence[rule_index] if source_episode_ids else [], episode_authorities
             )
 
-            async def persist_new_rule(connection_pool: Any) -> uuid.UUID:
-                return await store_rule(
-                    connection_pool,
-                    rule.content,
-                    embedding_engine,
-                    scope=effective_scope,
-                    tags=rule.tags,
-                    source_butler=butler_name,
-                    tenant_id=tenant_id,
-                    request_id=request_id,
-                    enable_shared_catalog=enable_shared_catalog,
-                    source_schema=source_schema,
-                    content_authority=rule_authority,
-                    authority_entity_id=rule_authority_entity,
-                )
+            persist_new_rule = _bind_persist(
+                store_rule,
+                rule.content,
+                embedding_engine,
+                scope=effective_scope,
+                tags=rule.tags,
+                source_butler=butler_name,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                enable_shared_catalog=enable_shared_catalog,
+                source_schema=source_schema,
+                content_authority=rule_authority,
+                authority_entity_id=rule_authority_entity,
+            )
 
             await _persist_artifact_with_evidence(
                 pool,
@@ -654,6 +728,21 @@ async def execute_consolidation(
     # --- Confirmations ---
     for confirmation_id in parsed.confirmations:
         try:
+            if authority_partition is not None and not await _confirmation_target_admitted(
+                pool,
+                uuid.UUID(confirmation_id),
+                tenant_id=tenant_id,
+                butler_name=butler_name,
+                partition_filter=target_partition_filter,
+            ):
+                logger.warning(
+                    "Skipping out-of-partition confirmation %s for tenant %s and butler %s",
+                    confirmation_id,
+                    tenant_id,
+                    butler_name,
+                )
+                errors.append(f"Failed to confirm fact {confirmation_id}")
+                continue
             await confirm_memory(pool, "fact", uuid.UUID(confirmation_id))
             confirmations_made += 1
         except Exception as exc:

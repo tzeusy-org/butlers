@@ -124,12 +124,18 @@ printf '%s\n' "$now"
     _write_executable(fake_bin / "sleep", "#!/usr/bin/env bash\nexit 0\n")
     _write_executable(fake_bin / "sudo", "#!/usr/bin/env bash\nexit 1\n")
     _write_executable(fake_bin / "bd", "#!/usr/bin/env bash\nexit 0\n")
-    # No live Kubernetes release unless a test opts in (compose.sh k8s guard).
+    # A successful local config inspection with no selected context models a
+    # standalone host; an attempted unknown cluster query still fails.
     _write_executable(
         fake_bin / "kubectl",
         "#!/usr/bin/env bash\n"
+        'if [[ "$*" == "config view"* ]]; then\n'
+        '  [[ -z "${TEST_K8S_REPLICAS:-}" ]] || printf "offline-context"\n'
+        "  exit 0\n"
+        "fi\n"
         '[[ -n "${TEST_K8S_REPLICAS:-}" ]] || exit 1\n'
-        'printf "%s" "$TEST_K8S_REPLICAS"\n',
+        'printf "present %s" "$TEST_K8S_REPLICAS"\n'
+        '[[ "$*" != *".status.replicas"* ]] || printf " 0"\n',
     )
     _write_executable(
         fake_bin / "git",

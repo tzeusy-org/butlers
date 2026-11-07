@@ -63,6 +63,7 @@ vi.mock("@/hooks/use-contacts", () => ({
 
 vi.mock("@/hooks/use-system", () => ({
   useButlerHeartbeats: vi.fn(() => ({ data: null, isLoading: false, error: null })),
+  useBackgroundJobs: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
   useInstanceFacts: vi.fn(() => ({ data: null, isLoading: false, error: null })),
   useDatabaseFacts: vi.fn(() => ({ data: null, isLoading: false, error: null })),
   useBackupFacts: vi.fn(() => ({ data: null, isLoading: false, error: null })),
@@ -498,6 +499,9 @@ describe("ButlerDetailPage — keyboard tab navigation", () => {
     expect(setSearchParams).toHaveBeenLastCalledWith({ tab: "collections" }, { replace: true });
 
     fireEvent.keyDown(window, { key: "8" });
+    expect(setSearchParams).toHaveBeenLastCalledWith({ tab: "projects" }, { replace: true });
+
+    fireEvent.keyDown(window, { key: "9" });
     expect(setSearchParams).toHaveBeenLastCalledWith({ tab: "system" }, { replace: true });
   });
 
@@ -774,7 +778,9 @@ describe("Spec scenario -- detail body remains token-only", () => {
   });
 
   it("no hex or oklch color literals appear in the rendered page body", () => {
-    const html = renderPage();
+    // ButlerMark owns the butler identity palette and applies it inline as a
+    // light-dark() pair; that is the one sanctioned colour literal.
+    const html = renderPage().replace(/light-dark\(oklch\([^)]*\), oklch\([^)]*\)\)/g, "");
     expect(html).not.toMatch(/#[0-9a-fA-F]{3,6}[^;]/);
     expect(html).not.toContain("oklch(");
   });

@@ -27,7 +27,7 @@ from uuid import UUID
 import pytest
 from asyncpg.exceptions import UndefinedTableError
 
-from butlers.api.read_models.search_v1 import (
+from butlers.api.read_models.search import (
     CONTACT_COLUMNS,
     ENTITY_COLUMNS,
     ENTITY_FACTS_SNIPPET_COLUMNS,
@@ -47,6 +47,7 @@ from butlers.api.read_models.search_v1 import (
     row_to_session,
     row_to_state,
 )
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -59,13 +60,6 @@ _SESSION_ID = UUID("00000000-0000-0000-0000-000000000003")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_record(d: dict) -> MagicMock:
-    """Wrap a dict in a MagicMock that supports subscript access."""
-    m = MagicMock()
-    m.__getitem__ = lambda self, k: d[k]
-    return m
 
 
 def _entity_dict(**overrides) -> dict:
@@ -178,7 +172,7 @@ def test_state_columns_has_matched_field_case():
 
 
 def test_row_to_entity_maps_all_fields():
-    row = _make_record(_entity_dict())
+    row = Record(_entity_dict())
     dto = row_to_entity(row)
     assert isinstance(dto, EntitySearchRow)
     assert dto.id == _ENTITY_ID
@@ -188,13 +182,13 @@ def test_row_to_entity_maps_all_fields():
 
 
 def test_row_to_entity_none_aliases_becomes_empty_list():
-    row = _make_record(_entity_dict(aliases=None))
+    row = Record(_entity_dict(aliases=None))
     dto = row_to_entity(row)
     assert dto.aliases == []
 
 
 def test_row_to_entity_none_entity_type():
-    row = _make_record(_entity_dict(entity_type=None))
+    row = Record(_entity_dict(entity_type=None))
     dto = row_to_entity(row)
     assert dto.entity_type is None
 
@@ -205,7 +199,7 @@ def test_row_to_entity_none_entity_type():
 
 
 def test_row_to_contact_maps_all_fields():
-    row = _make_record(_contact_dict())
+    row = Record(_contact_dict())
     dto = row_to_contact(row)
     assert isinstance(dto, ContactSearchRow)
     assert dto.id == _ENTITY_ID
@@ -222,7 +216,7 @@ def test_row_to_contact_maps_all_fields():
 
 
 def test_row_to_session_maps_all_fields():
-    row = _make_record(_session_dict())
+    row = Record(_session_dict())
     dto = row_to_session(row)
     assert isinstance(dto, SessionSearchRow)
     assert dto.id == _SESSION_ID
@@ -236,15 +230,13 @@ def test_row_to_session_maps_all_fields():
 
 
 def test_row_to_session_matched_field_result():
-    row = _make_record(_session_dict(matched_field="result"))
+    row = Record(_session_dict(matched_field="result"))
     dto = row_to_session(row)
     assert dto.matched_field == "result"
 
 
 def test_row_to_session_none_optional_fields():
-    row = _make_record(
-        _session_dict(result=None, trigger_source=None, success=None, duration_ms=None)
-    )
+    row = Record(_session_dict(result=None, trigger_source=None, success=None, duration_ms=None))
     dto = row_to_session(row)
     assert dto.result is None
     assert dto.trigger_source is None
@@ -258,7 +250,7 @@ def test_row_to_session_none_optional_fields():
 
 
 def test_row_to_state_maps_all_fields():
-    row = _make_record(_state_dict())
+    row = Record(_state_dict())
     dto = row_to_state(row)
     assert isinstance(dto, StateSearchRow)
     assert dto.key == "user.prefs.theme"
@@ -268,13 +260,13 @@ def test_row_to_state_maps_all_fields():
 
 
 def test_row_to_state_matched_field_value():
-    row = _make_record(_state_dict(matched_field="value"))
+    row = Record(_state_dict(matched_field="value"))
     dto = row_to_state(row)
     assert dto.matched_field == "value"
 
 
 def test_row_to_state_none_optional_fields():
-    row = _make_record(_state_dict(value_text=None, updated_at=None))
+    row = Record(_state_dict(value_text=None, updated_at=None))
     dto = row_to_state(row)
     assert dto.value_text is None
     assert dto.updated_at is None
@@ -287,7 +279,7 @@ def test_row_to_state_none_optional_fields():
 
 async def test_query_entity_search_returns_typed_dtos():
     mock_pool = AsyncMock()
-    mock_pool.fetch = AsyncMock(return_value=[_make_record(_entity_dict())])
+    mock_pool.fetch = AsyncMock(return_value=[Record(_entity_dict())])
 
     result, degraded = await query_entity_search(mock_pool, "%alice%", 20)
 
@@ -339,7 +331,7 @@ async def test_query_entity_search_genuine_failure_flags_degraded():
 
 async def test_query_contact_search_returns_typed_dtos():
     mock_pool = AsyncMock()
-    entity_row = _make_record(_contact_dict())
+    entity_row = Record(_contact_dict())
     mock_pool.fetch = AsyncMock(side_effect=[[entity_row], []])  # second call: empty ef_rows
     result, degraded = await query_contact_search(mock_pool, "%alice%", 20)
     assert len(result) == 1
@@ -355,8 +347,8 @@ async def test_query_contact_search_returns_typed_dtos():
 async def test_query_contact_search_populates_email_from_entity_facts():
     """Two-phase: contact has entity_id → email populated from entity_facts."""
     mock_pool = AsyncMock()
-    contact_row = _make_record(_contact_dict())
-    ef_row = _make_record(
+    contact_row = Record(_contact_dict())
+    ef_row = Record(
         {"entity_id": _ENTITY_ID, "predicate": "has-email", "object": "alice@example.com"}
     )
     mock_pool.fetch = AsyncMock(side_effect=[[contact_row], [ef_row]])
@@ -371,10 +363,8 @@ async def test_query_contact_search_populates_email_from_entity_facts():
 async def test_query_contact_search_populates_phone_from_entity_facts():
     """Two-phase: phone is populated from entity_facts has-phone predicate."""
     mock_pool = AsyncMock()
-    contact_row = _make_record(_contact_dict())
-    ef_row = _make_record(
-        {"entity_id": _ENTITY_ID, "predicate": "has-phone", "object": "+1-555-0100"}
-    )
+    contact_row = Record(_contact_dict())
+    ef_row = Record({"entity_id": _ENTITY_ID, "predicate": "has-phone", "object": "+1-555-0100"})
     mock_pool.fetch = AsyncMock(side_effect=[[contact_row], [ef_row]])
 
     result, degraded = await query_contact_search(mock_pool, "%alice%", 20)
@@ -387,7 +377,7 @@ async def test_query_contact_search_populates_phone_from_entity_facts():
 async def test_query_contact_search_second_fetch_always_runs():
     """After bu-tzyuh all results have entity_id, so snippet fetch always runs."""
     mock_pool = AsyncMock()
-    entity_row = _make_record(_contact_dict())  # entity_id always set
+    entity_row = Record(_contact_dict())  # entity_id always set
     mock_pool.fetch = AsyncMock(side_effect=[[entity_row], []])
     result, degraded = await query_contact_search(mock_pool, "%alice%", 20)
     assert mock_pool.fetch.call_count == 2
@@ -431,7 +421,7 @@ def _make_db_with_fan_out(result: dict, failed: list[str] | None = None) -> Magi
 
 
 async def test_query_session_search_returns_typed_dtos():
-    db = _make_db_with_fan_out({"assistant": [_make_record(_session_dict())]})
+    db = _make_db_with_fan_out({"assistant": [Record(_session_dict())]})
 
     result, degraded = await query_session_search(db, "%weather%", 20)
 
@@ -444,8 +434,8 @@ async def test_query_session_search_returns_typed_dtos():
 async def test_query_session_search_multiple_butlers():
     db = _make_db_with_fan_out(
         {
-            "assistant": [_make_record(_session_dict())],
-            "secretary": [_make_record(_session_dict(matched_field="result"))],
+            "assistant": [Record(_session_dict())],
+            "secretary": [Record(_session_dict(matched_field="result"))],
         }
     )
 
@@ -467,7 +457,7 @@ async def test_query_session_search_threads_per_butler_degraded_sources():
     """A butler whose fan-out query failed is surfaced as a degraded source,
     not silently merged into a truthful-looking empty result."""
     db = _make_db_with_fan_out(
-        {"assistant": [_make_record(_session_dict())], "finance": []},
+        {"assistant": [Record(_session_dict())], "finance": []},
         failed=["finance"],
     )
 
@@ -493,7 +483,7 @@ async def test_query_session_search_structural_failure_flags_sentinel():
 
 
 async def test_query_state_search_returns_typed_dtos():
-    db = _make_db_with_fan_out({"assistant": [_make_record(_state_dict())]})
+    db = _make_db_with_fan_out({"assistant": [Record(_state_dict())]})
 
     result, degraded = await query_state_search(db, "%theme%", 20)
 
@@ -519,7 +509,7 @@ async def test_query_state_search_passes_pattern_and_limit():
 
 async def test_query_state_search_threads_per_butler_degraded_sources():
     db = _make_db_with_fan_out(
-        {"assistant": [_make_record(_state_dict())], "health": []},
+        {"assistant": [Record(_state_dict())], "health": []},
         failed=["health"],
     )
 

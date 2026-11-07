@@ -50,6 +50,7 @@ call ``conversation_reply`` — is a manual live-stack check, not something this
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from typing import Any
@@ -80,9 +81,7 @@ from butlers.db import register_jsonb_codec
 from butlers.migrations import _build_alembic_config
 from butlers.modules.pipeline import MessagePipeline
 from butlers.testing.migration import (
-    create_migrated_test_db,
     migration_bootstrap_db_url,
-    migration_db_name,
 )
 
 # The whole file needs a real database; skip cleanly where Docker is absent.
@@ -108,7 +107,7 @@ _MOCK_BUTLERS = [
 ]
 
 # Patch targets — mirror the paths the shipped code imports from.
-_CLASSIFY_BUTLERS_PATH = "butlers.tools.switchboard.routing.classify._load_available_butlers"
+_REGISTRY_BUTLERS_PATH = "butlers.tools.switchboard.registry.registry.load_available_butlers"
 _ROUTE_PATH = "butlers.tools.switchboard.routing.route.route"
 
 _RETAINED_DASHBOARD_CONVERSATION_COLUMNS = {
@@ -134,28 +133,36 @@ _RETIRED_DASHBOARD_CONVERSATION_AGGREGATES = {
 
 
 @pytest.fixture
-def migrated_db_url(postgres_container) -> str:
-    """Fresh database with the real ``core`` + ``switchboard`` Alembic chains.
+async def lineage_pool(fresh_db):
+    """Pool on a fresh core + switchboard clone, switchboard chain in its own schema.
 
-    Function-scoped (a unique db name per test) so each test gets full
-    isolation without inter-test truncation. ``create_migrated_test_db``
-    installs the required extensions before running migrations.
+    bu-nz1wx: production's schema-qualified ``switchboard.message_inbox`` writes
+    (ingest_v1) resolve as in the one-db/multi-schema topology. The core
+    per-butler tables the spawned-session stand-in writes (``sessions``,
+    ``dashboard_messages``, ``conversations``) exist in every butler schema and
+    only ``public.sessions`` carries the core_155 cache-token columns, so
+    ``public`` wins the search path and switchboard-only objects (the partition
+    function) resolve by fallthrough. ``db()`` can only put a butler schema
+    first, so this opens the pool itself with the production JSONB codec.
     """
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-        # bu-nz1wx: provision the switchboard chain into the real ``switchboard``
-        # schema so production's schema-qualified ``switchboard.message_inbox``
-        # writes (ingest_v1) resolve — mirroring production's one-db/multi-schema
-        # topology. Core tables stay in public; the test's own message_inbox reads
-        # are schema-qualified below, so the pool keeps the default search_path.
-        schemas={"switchboard": "switchboard"},
+    url = await asyncio.to_thread(
+        fresh_db, "core", "switchboard", schemas={"switchboard": "switchboard"}
     )
+    p = await asyncpg.create_pool(
+        url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "public, switchboard"},
+    )
+    try:
+        yield p
+    finally:
+        await p.close()
 
 
 @pytest.fixture
-def rollback_db_url(postgres_container) -> str:
+def rollback_db_url(fresh_db) -> str:
     """Core chain stopped at ``core_175`` — the revision the rollback test owns.
 
     Rollback is not uniformly available across the core chain: revisions after
@@ -163,12 +170,7 @@ def rollback_db_url(postgres_container) -> str:
     bootstrap-only, so a chain migrated to head cannot be walked back to
     ``core_174``.  Bounding the upgrade keeps this test on its own revision.
     """
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-        revisions={"core": "core_175"},
-    )
+    return fresh_db("core", revisions={"core": "core_175"})
 
 
 @pytest.fixture
@@ -182,38 +184,6 @@ def bootstrap_db_url(postgres_container, rollback_db_url: str) -> str:
 async def rollback_pool(rollback_db_url: str):
     """asyncpg pool over the ``core_175``-bounded database (catalog reads only)."""
     p = await asyncpg.create_pool(rollback_db_url, min_size=1, max_size=2)
-    try:
-        yield p
-    finally:
-        await p.close()
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str):
-    """asyncpg pool over the migrated database.
-
-    ``register_jsonb_codec`` is wired as the connection ``init`` so JSONB
-    columns (``message_inbox.request_context``, ``dashboard_messages.tool_calls``,
-    ``sessions.cost`` …) auto-encode dicts exactly the way the production
-    ``butlers.db.Database`` pool does — without it, ``ingest_v1`` fails to
-    persist request_context.
-    """
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-        # bu-nz1wx: switchboard tables + the message_inbox partition function live
-        # in the ``switchboard`` schema; the core per-butler tables this test's
-        # spawned-session stand-in writes (``sessions``, ``dashboard_messages``,
-        # ``conversations``) live in ``public`` and exist in every butler schema —
-        # only ``public.sessions`` carries the core_155 cache-token columns. So
-        # ``public`` must win for those bare core reads/writes, while the
-        # switchboard-only objects (the partition function; the qualified
-        # ``switchboard.message_inbox`` writes) resolve by fallthrough. Hence
-        # ``public`` first, then ``switchboard``.
-        server_settings={"search_path": "public, switchboard"},
-    )
     try:
         yield p
     finally:
@@ -321,7 +291,7 @@ async def _read_request_context(pool: asyncpg.Pool, message_inbox_id: UUID) -> d
 
 
 @pytest.mark.integration
-async def test_dashboard_message_lineage_end_to_end(pool):
+async def test_dashboard_message_lineage_end_to_end(lineage_pool):
     """ingest → real pipeline route → mock-spawned session → intact lineage.
 
     Asserts the request_id returned by ``ingest_v1`` is the same id that flows
@@ -332,7 +302,7 @@ async def test_dashboard_message_lineage_end_to_end(pool):
     """
     message_text = "Record: dinner with Alice cost $80, split evenly."
     conversation_id, user_msg = await _seed_conversation_and_user_message(
-        pool, message_text=message_text
+        lineage_pool, message_text=message_text
     )
 
     # --- Real ingest surface -------------------------------------------------
@@ -342,15 +312,15 @@ async def test_dashboard_message_lineage_end_to_end(pool):
         message_text=message_text,
         pinned_target=_TARGET_BUTLER,
     )
-    with patch(_CLASSIFY_BUTLERS_PATH, new_callable=AsyncMock, return_value=_MOCK_BUTLERS):
-        ingest_response = await ingest_v1(pool, envelope, enable_thread_affinity=False)
+    with patch(_REGISTRY_BUTLERS_PATH, new_callable=AsyncMock, return_value=_MOCK_BUTLERS):
+        ingest_response = await ingest_v1(lineage_pool, envelope, enable_thread_affinity=False)
 
     assert ingest_response.status == "accepted"
     ingest_request_id: UUID = ingest_response.request_id
     assert isinstance(ingest_request_id, UUID)
 
     # The pin was recorded on request_context for the pipeline to honour.
-    request_context = await _read_request_context(pool, ingest_request_id)
+    request_context = await _read_request_context(lineage_pool, ingest_request_id)
     assert request_context["triage_decision"] == "route_to"
     assert request_context["triage_target"] == _TARGET_BUTLER
     assert request_context["source_thread_identity"] == str(conversation_id)
@@ -422,7 +392,7 @@ async def test_dashboard_message_lineage_end_to_end(pool):
     dispatch_fn = AsyncMock(side_effect=AssertionError("dispatch_fn should not be called"))
 
     with patch(_ROUTE_PATH, side_effect=mock_route):
-        pipeline = MessagePipeline(switchboard_pool=pool, dispatch_fn=dispatch_fn)
+        pipeline = MessagePipeline(switchboard_pool=lineage_pool, dispatch_fn=dispatch_fn)
         result = await pipeline.process(
             message_text=message_text,
             tool_args={
@@ -448,7 +418,7 @@ async def test_dashboard_message_lineage_end_to_end(pool):
     assert captured["recovered_request_id"] == ingest_request_id
 
     # --- dashboard_messages reply row carries the real request_id ------------
-    reply_row = await pool.fetchrow(
+    reply_row = await lineage_pool.fetchrow(
         """
         SELECT conversation_id, role, request_id, session_id, content
         FROM public.dashboard_messages
@@ -461,12 +431,14 @@ async def test_dashboard_message_lineage_end_to_end(pool):
     assert reply_row["conversation_id"] == conversation_id
 
     # The SSE poller (message_find_reply_since) finds exactly this reply.
-    polled = await message_find_reply_since(pool, conversation_id, since=user_msg["created_at"])
+    polled = await message_find_reply_since(
+        lineage_pool, conversation_id, since=user_msg["created_at"]
+    )
     assert polled is not None
     assert polled["request_id"] == ingest_request_id
 
     # --- sessions row carries the same request_id + real metadata ------------
-    session_row = await pool.fetchrow(
+    session_row = await lineage_pool.fetchrow(
         """
         SELECT id, request_id, model, input_tokens, output_tokens, success
         FROM sessions
@@ -486,7 +458,7 @@ async def test_dashboard_message_lineage_end_to_end(pool):
     assert str(reply_row["request_id"]) == session_row["request_id"] == str(ingest_request_id)
 
     # --- message_inbox lifecycle reflects the successful bypass route --------
-    inbox_state = await pool.fetchval(
+    inbox_state = await lineage_pool.fetchval(
         "SELECT lifecycle_state FROM switchboard.message_inbox WHERE id = $1", ingest_request_id
     )
     assert inbox_state == "parsed"
@@ -498,7 +470,7 @@ async def test_dashboard_message_lineage_end_to_end(pool):
 
 
 @pytest.mark.integration
-async def test_dashboard_message_spawn_failure_leaves_no_orphaned_lineage(pool):
+async def test_dashboard_message_spawn_failure_leaves_no_orphaned_lineage(lineage_pool):
     """When the spawn boundary fails, the failure is recorded honestly.
 
     No ``dashboard_messages`` assistant reply and no ``sessions`` row are left
@@ -507,7 +479,7 @@ async def test_dashboard_message_spawn_failure_leaves_no_orphaned_lineage(pool):
     """
     message_text = "Log: coffee $6 this morning."
     conversation_id, user_msg = await _seed_conversation_and_user_message(
-        pool, message_text=message_text
+        lineage_pool, message_text=message_text
     )
 
     envelope = build_dashboard_envelope(
@@ -516,11 +488,11 @@ async def test_dashboard_message_spawn_failure_leaves_no_orphaned_lineage(pool):
         message_text=message_text,
         pinned_target=_TARGET_BUTLER,
     )
-    with patch(_CLASSIFY_BUTLERS_PATH, new_callable=AsyncMock, return_value=_MOCK_BUTLERS):
-        ingest_response = await ingest_v1(pool, envelope, enable_thread_affinity=False)
+    with patch(_REGISTRY_BUTLERS_PATH, new_callable=AsyncMock, return_value=_MOCK_BUTLERS):
+        ingest_response = await ingest_v1(lineage_pool, envelope, enable_thread_affinity=False)
     assert ingest_response.status == "accepted"
     ingest_request_id: UUID = ingest_response.request_id
-    request_context = await _read_request_context(pool, ingest_request_id)
+    request_context = await _read_request_context(lineage_pool, ingest_request_id)
 
     async def failing_route(
         pool_arg, *, target_butler, tool_name, args, source_butler="switchboard", **_kwargs
@@ -532,7 +504,7 @@ async def test_dashboard_message_spawn_failure_leaves_no_orphaned_lineage(pool):
     dispatch_fn = AsyncMock(side_effect=AssertionError("dispatch_fn should not be called"))
 
     with patch(_ROUTE_PATH, side_effect=failing_route):
-        pipeline = MessagePipeline(switchboard_pool=pool, dispatch_fn=dispatch_fn)
+        pipeline = MessagePipeline(switchboard_pool=lineage_pool, dispatch_fn=dispatch_fn)
         result = await pipeline.process(
             message_text=message_text,
             tool_args={
@@ -555,7 +527,7 @@ async def test_dashboard_message_spawn_failure_leaves_no_orphaned_lineage(pool):
     # --- No orphaned assistant reply; the user turn is untouched -------------
     role_counts = {
         r["role"]: r["n"]
-        for r in await pool.fetch(
+        for r in await lineage_pool.fetch(
             """
             SELECT role, COUNT(*) AS n
             FROM public.dashboard_messages
@@ -569,20 +541,20 @@ async def test_dashboard_message_spawn_failure_leaves_no_orphaned_lineage(pool):
     assert role_counts.get("assistant", 0) == 0, "no assistant reply should exist on failure"
 
     # No dashboard_messages row anywhere carries this request_id.
-    orphan_replies = await pool.fetchval(
+    orphan_replies = await lineage_pool.fetchval(
         "SELECT COUNT(*) FROM public.dashboard_messages WHERE request_id = $1",
         ingest_request_id,
     )
     assert orphan_replies == 0
 
     # --- No half-born session row for the failed spawn -----------------------
-    session_count = await pool.fetchval(
+    session_count = await lineage_pool.fetchval(
         "SELECT COUNT(*) FROM sessions WHERE request_id = $1", str(ingest_request_id)
     )
     assert session_count == 0
 
     # --- message_inbox records the failure, not a false 'parsed' -------------
-    inbox_state = await pool.fetchval(
+    inbox_state = await lineage_pool.fetchval(
         "SELECT lifecycle_state FROM switchboard.message_inbox WHERE id = $1", ingest_request_id
     )
     assert inbox_state == "errored"

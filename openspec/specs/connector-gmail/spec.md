@@ -336,6 +336,11 @@ The connector SHALL implement the optional backfill polling protocol for dashboa
 - **AND** server-side cursor is persisted via the progress call
 - **AND** if `backfill.progress` returns `paused`, `cancelled`, or `cost_capped`, the connector stops backfill immediately
 
+#### Scenario: Backfill calls survive reconnect-retry
+- **WHEN** the connector's Switchboard MCP client resends a `backfill.progress` or `backfill.poll` call after a transport drop, though Switchboard already applied the first
+- **THEN** each progress report carries only the counters since the previous report plus a fresh `progress_token`, and Switchboard applies a report whose token equals the job's last applied token at most once, answering the job's current status
+- **AND** `backfill.poll` hands the connector its already-`active` job (with its cursor) before claiming another `pending` job, so a lost poll response does not orphan the claimed job
+
 #### Scenario: Backfill cost tracking
 - **WHEN** backfill messages are submitted
 - **THEN** estimated LLM cost per message is tracked from payload size and per-token cost estimate

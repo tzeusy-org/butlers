@@ -4,7 +4,7 @@
 //
 // Data source: useBackupFacts -> GET /api/system/backups
 // Fields used: backup_source_reachable, last_backup_at, last_backup_status,
-// backup_stale, last_run, restore_drill
+// backup_stale, last_run, restore_drill, offsite_copy
 //
 // bu-9r3hd.5: the "Reachable" badge used to render green purely from
 // backup_source_reachable, regardless of whether the backup artifact was
@@ -21,9 +21,20 @@
 // gets its own row. result="unknown" is the absence of a signal -- it never
 // moves the badge in either direction, exactly as the QA source raises no
 // finding on it (core/qa/sources/infra_state.py).
+//
+// bu-ivuf9u: the off-node restic copy gets its own row. A local dump and its
+// volume die together on single-node storage, so "Healthy" says nothing about
+// whether a copy exists anywhere else. The row never changes the badge, which
+// stays a verdict on the local artifact; the System verdict banner aggregates
+// a failed or stale copy instead.
 // ---------------------------------------------------------------------------
 
-import type { BackupFacts, BackupRunFacts, RestoreDrillFacts } from "@/api/types"
+import type {
+  BackupFacts,
+  BackupRunFacts,
+  OffsiteCopyFacts,
+  RestoreDrillFacts,
+} from "@/api/types"
 import {
   Tile,
   TileContent,
@@ -31,6 +42,7 @@ import {
   TileHeader,
   TileTitle,
 } from "@/components/ui/Tile"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { useBackupFacts } from "@/hooks/use-system"
@@ -51,22 +63,6 @@ function TileSkeleton() {
           <Skeleton className="h-8 w-40" />
           <Skeleton className="h-4 w-52" />
         </div>
-      </TileContent>
-    </Tile>
-  )
-}
-
-function TileError() {
-  return (
-    <Tile degraded>
-      <TileHeader>
-        <TileTitle>Backups</TileTitle>
-        <TileDescription>Backup recency and reachability</TileDescription>
-      </TileHeader>
-      <TileContent>
-        <p data-testid="backup-tile-error" className="text-destructive text-sm">
-          Could not load backup facts.
-        </p>
       </TileContent>
     </Tile>
   )
@@ -209,6 +205,83 @@ function BackupRunRow({ run }: { run: BackupRunFacts | undefined }) {
   )
 }
 
+// Human wording for the copy script's fixed reason vocabulary (mirrored from
+// _OFFSITE_COPY_REASONS in core/backup_facts.py). Anything else renders no
+// detail, for the same mounted-volume reason as BACKUP_RUN_FAILURE_DETAIL.
+const OFFSITE_COPY_FAILURE_DETAIL: Record<string, string> = {
+  config_missing: "copy job configuration incomplete",
+  no_dumps: "no local dump to copy",
+  repo_unreachable: "repository unreachable",
+  repo_init_failed: "repository initialization failed",
+  backup_failed: "restic backup failed",
+  retention_failed: "snapshot retention failed",
+  unexpected_error: "unexpected error",
+}
+
+/**
+ * The off-node copy's own outcome. Disabled (or an older backend) says so
+ * plainly; a stale or never-recorded copy is a problem, never "Copied".
+ */
+function OffsiteCopyRow({ copy }: { copy: OffsiteCopyFacts | undefined }) {
+  if (!copy || copy.result === "disabled") {
+    return (
+      <div>
+        <dt className="text-muted-foreground text-xs">Off-node copy</dt>
+        <dd data-testid="backup-tile-offsite-disabled" className="text-muted-foreground text-sm">
+          Not configured
+        </dd>
+      </div>
+    )
+  }
+
+  if (copy.result === "success" && !copy.stale) {
+    return (
+      <div>
+        <dt className="text-muted-foreground text-xs">Off-node copy</dt>
+        <dd data-testid="backup-tile-offsite-success" className="text-sm">
+          <span className="text-[var(--green)]">Copied</span>
+          {copy.finished_at ? (
+            <>
+              {" "}
+              <Time value={copy.finished_at} mode="relative" />
+            </>
+          ) : null}
+          {copy.snapshot_id ? (
+            <span className="text-muted-foreground"> -- snapshot {copy.snapshot_id}</span>
+          ) : null}
+        </dd>
+      </div>
+    )
+  }
+
+  let label: string
+  let detail: string | undefined
+  if (copy.result === "failed") {
+    label = "Failed"
+    detail = copy.reason ? OFFSITE_COPY_FAILURE_DETAIL[copy.reason] : undefined
+  } else if (copy.result === "unknown") {
+    label = "No copy recorded"
+  } else {
+    label = "Stale"
+    detail = "no copy run in the last 36 hours"
+  }
+  return (
+    <div>
+      <dt className="text-muted-foreground text-xs">Off-node copy</dt>
+      <dd data-testid="backup-tile-offsite-problem" className="text-sm">
+        <span className="text-[var(--red-text)]">{label}</span>
+        {copy.finished_at ? (
+          <>
+            {" "}
+            <Time value={copy.finished_at} mode="relative" />
+          </>
+        ) : null}
+        {detail ? <span className="text-muted-foreground"> -- {detail}</span> : null}
+      </dd>
+    </div>
+  )
+}
+
 const RESTORE_DRILL_LEDGER_UNAVAILABLE_DETAIL = "restore drill ledger unavailable"
 
 function RestoreDrillRow({ drill }: { drill: RestoreDrillFacts | undefined }) {
@@ -269,14 +342,22 @@ function RestoreDrillRow({ drill }: { drill: RestoreDrillFacts | undefined }) {
  * a failure.
  */
 export function BackupTile() {
-  const { data: response, isPending, isError } = useBackupFacts()
+  const q = useBackupFacts()
 
-  if (isPending) return <TileSkeleton />
-  if (isError) return <TileError />
+  return (
+    <QueryTile q={q} title="Backups" description="Backup recency and reachability"
+      errorMessage="Could not load backup facts." errorTestId="backup-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <BackupContent response={response} />}
+    </QueryTile>
+  )
+}
 
-  const facts = response?.data
+function BackupContent({ response }: {
+  response: NonNullable<ReturnType<typeof useBackupFacts>["data"]>
+}) {
+  const facts = response.data
 
-  if (!facts?.backup_source_reachable) {
+  if (!facts.backup_source_reachable) {
     return (
       <Tile degraded>
         <TileHeader>
@@ -319,6 +400,7 @@ export function BackupTile() {
           </div>
           <BackupRunRow run={facts.last_run} />
           <RestoreDrillRow drill={facts.restore_drill} />
+          <OffsiteCopyRow copy={facts.offsite_copy} />
         </dl>
       </TileContent>
     </Tile>

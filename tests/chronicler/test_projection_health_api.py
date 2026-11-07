@@ -13,17 +13,18 @@ Covers:
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -34,23 +35,6 @@ _ROUTER_PATH = Path(__file__).resolve().parents[2] / "roster" / "chronicler" / "
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-class _Row(dict):
-    """dict subclass that mimics asyncpg Record."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return super().get(key, default)
-
-
-def _row(data: dict) -> _Row:
-    return _Row(data)
 
 
 def _mock_pool(*, fetch_return=None):
@@ -77,10 +61,7 @@ def _load_chronicler_router():
     module_name = "chronicler_api_router"
     if module_name in sys.modules:
         return sys.modules[module_name]
-    spec = importlib.util.spec_from_file_location(module_name, _ROUTER_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = mod
-    spec.loader.exec_module(mod)
+    mod = importlib.import_module("butlers.api._roster.chronicler.router")
     return mod
 
 
@@ -90,12 +71,12 @@ def _load_chronicler_router():
 
 
 def _make_app(*, checkpoint_rows=None):
-    chronicler_mod = _load_chronicler_router()
+    _chronicler_mod = _load_chronicler_router()
     pool = _mock_pool(fetch_return=checkpoint_rows or [])
     db = _mock_db(pool)
 
     app = create_app(api_key="")
-    app.dependency_overrides[chronicler_mod._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     return app, pool
 
 
@@ -122,7 +103,7 @@ class TestProjectionHealthAPI:
         t = datetime(2026, 4, 28, 10, 0, 0, tzinfo=UTC)
         wm = datetime(2026, 4, 27, 23, 59, 0, tzinfo=UTC)
         rows = [
-            _row(
+            Record(
                 {
                     "source_name": "core.sessions",
                     "subsource": "butler_a",
@@ -152,7 +133,7 @@ class TestProjectionHealthAPI:
     async def test_last_error_surfaced(self):
         """When last_error is set on a checkpoint, it appears in the response."""
         rows = [
-            _row(
+            Record(
                 {
                     "source_name": "spotify.session_summary",
                     "subsource": "",
@@ -178,7 +159,7 @@ class TestProjectionHealthAPI:
         rows_projected=0 is returned as 0 (not null) — the zero-vs-null distinction
         is the contract."""
         rows = [
-            _row(
+            Record(
                 {
                     "source_name": "steam.play_history",
                     "subsource": "",

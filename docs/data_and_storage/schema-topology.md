@@ -26,16 +26,39 @@ PostgreSQL Database: butlers
 
 The `public` schema contains tables that multiple butlers need to read. It is the canonical location for identity resolution data:
 
-- **`public.entities`** -- Entity graph nodes. Each entity has a `canonical_name`, `entity_type`, `roles` array, and `metadata` JSONB.
+- **`public.entities`** -- Entity graph nodes. Each entity has a `canonical_name`, `entity_type`, `roles` array, and `metadata` JSONB. `merged_into`, `deleted`, `unidentified` and `placeholder_name` (core_318) are trigger-kept copies of `metadata` and `canonical_name` for the public MCP row filter (RFC 0039 D2); application code keeps reading and writing `metadata`.
+- **`public.entity_graph_withheld_counts`** -- Withheld graph stubs per entity and `<source_schema>.<source_table>` (core_318). A definer trigger on `public.entity_graph_edges` is the only writer, and that trigger also keeps `publish_key`; butler roles read it. The trigger is deferred to commit and takes one advisory lock per source first (core_319), so counts change at commit and their row order cannot deadlock. Both exist for the public MCP projection (RFC 0039 D2).
 - **`public.entity_info`** -- Key-value pairs attached to entities. Used for credential storage (e.g., `google_oauth_refresh` tokens). UNIQUE on `(entity_id, type)`.
 - **`public.google_accounts`** -- Connected Google account registry with companion entities.
 - **`public.memory_catalog`** -- Cross-butler discovery index over memory items: a searchable
   summary plus provenance pointers back to the owning butler's schema. It is not a canonical store;
   full recall routes back to the owning schema.
-- **`public.qa_publication_operations`** -- Durable QA publication operation ledger (core_266; core_267 adds forward-only stage, immutable binding and exact reconciliation; core_268 adds set-once `new_object_id` and set-once `result` (checked after the stage-forward rule), a result/stage CHECK and a held-row delete guard):
+- **`public.qa_publication_operations`** -- Durable QA publication operation ledger (core_266; core_267 adds forward-only stage, immutable binding and exact reconciliation; core_268 adds set-once `new_object_id` and set-once `result` (checked after the stage-forward rule), a result/stage CHECK and a held-row delete guard; core_298 lets a held `pr_create` reconcile `resource_found` by adopting a PR number; core_300 adds the set-once `egress_started_at` stamp that absence settles from):
   one row per attempt and closed operation kind, with binding/payload digests, stage and result.
   Only `butler_qa_rw` writes (forced RLS); every runtime role reads. An unresolved row holds its
   fingerprint lineage. See [QA Publication Boundary](../operations/qa-publication-boundary.md).
+- **`public.qa_publication_exports`** -- Retained sealed QA export bytes (core_294): one immutable
+  row per attempt, written by the publisher before its first egress so a failed or ambiguous
+  publication stays recoverable after worktree teardown. core_301 adds `pruned_at`: 30 days after
+  a terminal attempt closes with no held lineage, the bytes are emptied and the row stays as a
+  binding tombstone. Only `butler_qa_rw` writes (forced RLS);
+  every runtime role reads. See [QA Publication Boundary](../operations/qa-publication-boundary.md).
+- **`public.owner_places`** -- The owner place registry (core_303): named places with a stable
+  UUID, kind, five-decimal centre, radius, aliases, exact SSIDs, optional HA zone, `paused`,
+  CAS `version` and soft `deleted_at`. Written only by the owner Home dashboard editor (the table
+  owner); non-FORCE RLS lets only `butler_travel_rw` and `butler_chronicler_rw` read it and no
+  runtime role write it. See [Home Butler](../butlers/home.md#owner-places).
+- **`public.qa_publication_refusals`** -- QA publisher refusal receipts (core_302): one immutable,
+  content-free row (status, category) per attempt the publisher refused before retaining an export,
+  so the case API can prove such an attempt `unpublished`. Fenced like the exports table. See
+  [QA Publication Boundary](../operations/qa-publication-boundary.md).
+- **`public.owner_delivery_*`** -- Canonical owner-delivery ledger (core_317, dark): subjects,
+  presentations, single-use token verifiers, append-only receipts and the RFC 0023 source map,
+  plus the `owner_delivery_rollout` flag. In `public` because subject CAS, the owning approval
+  decision and the receipt share one butler-role transaction. Non-FORCE RLS limits each
+  `butler_<schema>_rw` to its own `owning_schema` rows; triggers enforce immutability,
+  generation fences and append-only history for every role. See
+  [Owner delivery](../api_and_protocols/owner-delivery.md).
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
   [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
 
@@ -218,3 +241,39 @@ and core-only installations below this additive revision stay unstamped; retries
 unknown state. A caller's dashboard label, actor, status or boolean is not this producer witness.
 The shared public-table grants and trusted-host premise remain unchanged; the stamp is not a
 credential or protection against a compromised trusted database actor.
+
+## Dark Switchboard goal ledger
+
+`sw_047` adds `switchboard.{goals,invocations,effects,budgets,admission_decisions,goal_inbox}`
+for RFC0038's unwired admission slice. `core_273` adds a nullable explicit
+`runtime_config.goal_admission_config` snapshot in each migrated core schema;
+only Switchboard's snapshot is consumed. These ordinary owner-held tables enable
+non-FORCE RLS for the exact Switchboard runtime, preserving migration-owner full
+backup while denying other runtimes after bootstrap regrants. `sw_057` adds the
+S1 label columns (`label_*`, `admitted_label_*`, `exposure_cause`) to goals,
+invocations, effects and inbox rows, their validating CHECKs and join triggers,
+and the owner-only `switchboard.invocation_exposure_measurements` view; it adds
+no table and no second `control.goals` schema. `sw_058` (M7, bu-4c7nvp.1.2) adds
+the dark typed-boundary stores `goal_handles`, `extraction_cache`,
+`goal_child_results` and `source_containments`, each labelled with the sw_057
+grammar where it holds content, insert-only for the runtime (a child result
+row gains its one result) and guarded against update, delete and truncate.
+`sw_059` adds the owner tighten-only law:
+`switchboard.owner_policy_{state,terms,receipts,holds}` (the generation
+singleton, the terms, one receipt per owner action, and the content-blind
+holds). Under RLS the runtime may only read terms and the generation and append
+holds. Durability and tighten-only triggers guard every role; `sw_060` admits a
+loosening (receipt action `loosen`) only under a `policy_loosen` dashboard
+step-up consumed in the same transaction; see the
+[capability broker](../architecture/capability-broker.md#owner-law-s1-bu-dhloi110). See
+[goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
+source keys, lock order, policy snapshots and actual verification obligations.
+
+### Steam status evidence
+
+`connectors.steam_status_history` (core_314) is append-only observed Steam
+status evidence for the Chronicler projection, unique on `(steam_id, observed_at)`.
+The connector records detected changes independently of ingest; Chronicler reads
+through its SELECT-only runtime role. The established `connector_writer` role
+writes the table. Bootstrap replay maintains the read grant. The table survives
+source downgrade so rolling back a producer cannot erase captured observations.

@@ -90,6 +90,8 @@ def test_editing_a_frozen_block_makes_it_fail_until_it_carries_the_lines(tmp_pat
     path = _delta(tmp_path, "old", "widgets", legacy)
     assert _run(tmp_path, "--write-baseline").returncode == 0
     assert _run(tmp_path).returncode == 0  # frozen debt passes
+    baseline = tmp_path / "baseline.json"
+    frozen = baseline.read_bytes()
 
     path.write_text(legacy.replace("SHALL do the thing", "SHALL do another thing"), "utf-8")
     edited = _run(tmp_path)
@@ -97,6 +99,26 @@ def test_editing_a_frozen_block_makes_it_fail_until_it_carries_the_lines(tmp_pat
     assert "missing ID" in edited.stdout
 
     path.write_text(_doc("MODIFIED", _block("Legacy", req_id=_rid("widgets", 2))), "utf-8")
+    identified = _run(tmp_path)
+    assert identified.returncode == 1
+    assert "stale baseline" in identified.stdout
+    assert "old/widgets/Legacy" in identified.stdout
+    assert _run(tmp_path, "--strict").returncode == 0  # strict ignores the stale exemption
+    baseline.write_text("{}\n", encoding="utf-8")
+    assert _run(tmp_path).returncode == 0
+
+    # An archived/removed block is stale too; retain an identified active spec
+    # so this tests stale refusal rather than the separate empty-scan boundary.
+    baseline.write_bytes(frozen)
+    path.unlink()
+    _delta(
+        tmp_path, "current", "widgets", _doc("ADDED", _block("Current", req_id=_rid("widgets", 3)))
+    )
+    gone = _run(tmp_path)
+    assert gone.returncode == 1
+    assert "stale baseline" in gone.stdout
+    assert "old/widgets/Legacy" in gone.stdout
+    baseline.write_text("{}\n", encoding="utf-8")
     assert _run(tmp_path).returncode == 0
 
 
@@ -185,6 +207,80 @@ def test_a_modified_block_may_keep_its_canonical_id_but_not_take_another_require
 
     assert result.returncode == 1
     assert "belongs to requirement 'Existing'" in result.stdout
+
+
+@pytest.mark.parametrize("shape", ["single", "chain", "synced"])
+@pytest.mark.parametrize("number, expected_exit", [(1, 0), (5, 1)])
+def test_a_renamed_modified_requirement_keeps_its_canonical_identity(
+    tmp_path: Path, number: int, expected_exit: int, shape: str
+) -> None:
+    canonical_id = _rid("widgets", 1)
+    canonical_name = "Renamed" if shape == "synced" else "Existing"
+    _canonical(
+        tmp_path, "widgets", "## Requirements\n\n" + _block(canonical_name, req_id=canonical_id)
+    )
+    rename = (
+        "## RENAMED Requirements\n\n"
+        "- FROM: `### Requirement: Existing`\n"
+        "- TO: `### Requirement: Renamed`\n\n"
+    )
+    modified_name = "Renamed"
+    if shape == "chain":
+        rename += "- FROM: `### Requirement: Renamed`\n- TO: `### Requirement: Final`\n\n"
+        modified_name = "Final"
+    _delta(
+        tmp_path,
+        "rename",
+        "widgets",
+        rename + _doc("MODIFIED", _block(modified_name, req_id=_rid("widgets", number))),
+    )
+
+    result = _run(tmp_path, "--strict")
+
+    assert result.returncode == expected_exit
+    if expected_exit:
+        assert f"already has canonical ID {canonical_id}" in result.stdout
+    else:
+        assert "All 1 ADDED/MODIFIED requirement block(s) carry trace lines" in result.stdout
+
+
+def test_a_rename_only_authorizes_identity_in_its_own_delta_outside_code_fences(
+    tmp_path: Path,
+) -> None:
+    rid = _rid("widgets", 1)
+    _canonical(tmp_path, "widgets", "## Requirements\n\n" + _block("Existing", req_id=rid))
+    rename = (
+        "## RENAMED Requirements\n\n"
+        "- FROM: `### Requirement: Existing`\n"
+        "- TO: `### Requirement: Renamed`\n\n"
+    )
+    _delta(tmp_path, "other", "widgets", rename)
+    modified = _doc("MODIFIED", _block("Renamed", req_id=rid))
+    for prefix in ("", "~~~~markdown\n" + rename + "~~~~\n", rename.replace("RENAMED", "REMOVED")):
+        _delta(tmp_path, "current", "widgets", prefix + modified)
+        result = _run(tmp_path, "--strict")
+        assert result.returncode == 1
+        assert "belongs to requirement 'Existing'" in result.stdout
+
+    _delta(tmp_path, "current", "widgets", rename + modified)
+    assert _run(tmp_path, "--strict").returncode == 0
+
+    cycle = (
+        "## RENAMED Requirements\n\n"
+        "- FROM: `### Requirement: Loop A`\n"
+        "- TO: `### Requirement: Loop B`\n"
+        "- FROM: `### Requirement: Loop B`\n"
+        "- TO: `### Requirement: Loop A`\n\n"
+    )
+    _delta(
+        tmp_path,
+        "current",
+        "widgets",
+        cycle + _doc("MODIFIED", _block("Loop A", req_id=_rid("widgets", 5))),
+    )
+    result = _run(tmp_path, "--strict")
+    assert result.returncode == 1
+    assert "cyclic RENAMED requirement lineage" in result.stdout
 
 
 def test_two_changes_modifying_different_requirements_with_one_new_id_collide(
@@ -335,3 +431,73 @@ def test_two_added_blocks_with_one_requirement_name_and_id_collide_under_strict(
 
     assert result.returncode == 1
     assert f"duplicate new ID {rid}" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "collision",
+    ["duplicate", "canonical_added", "canonical_modified", "canonical_remint", "pending_remint"],
+)
+@pytest.mark.parametrize("write", [False, True])
+def test_identity_conflicts_refuse_matching_freezes_and_baseline_writes(
+    tmp_path: Path, collision: str, write: bool
+) -> None:
+    import hashlib
+
+    kind = "ADDED" if collision in {"duplicate", "canonical_added"} else "MODIFIED"
+    number = 2 if collision in {"canonical_remint", "pending_remint"} else 1
+    body = _block("Fresh", req_id=_rid("widgets", number), source=False)
+    _delta(tmp_path, "a", "widgets", _doc(kind, body))
+    # Existing unidentified debt can still be frozen; this is not a blanket
+    # refusal of baseline writes or of a matching legacy exemption.
+    assert _run(tmp_path, "--write-baseline").returncode == 0
+    assert _run(tmp_path).returncode == 0
+    baseline = tmp_path / "baseline.json"
+    if collision == "duplicate":
+        other = _block("Other", req_id=_rid("widgets", 1), source=False)
+        _delta(tmp_path, "b", "widgets", _doc("ADDED", other))
+        # Simulate an existing/forged content-addressed collision exemption.
+        # The public ratchet format includes kind, name and normalized body.
+        normalized = " ".join(
+            " ".join(line.split())
+            for line in ["ADDED", "Other", *other.splitlines()[1:]]
+            if line.strip()
+        )
+        frozen = json.loads(baseline.read_text())
+        frozen["b/widgets/Other"] = hashlib.sha256(normalized.encode()).hexdigest()
+        baseline.write_text(json.dumps(frozen, indent=2, sort_keys=True) + "\n")
+    elif collision == "pending_remint":
+        _delta(tmp_path, "b", "widgets", _doc("ADDED", _block("Fresh", req_id=_rid("widgets", 1))))
+    else:
+        canonical_name = "Fresh" if collision == "canonical_remint" else "Existing"
+        _canonical(
+            tmp_path,
+            "widgets",
+            "## Requirements\n\n" + _block(canonical_name, req_id=_rid("widgets", 1)),
+        )
+    before = baseline.read_bytes()
+    result = _run(tmp_path, *(["--write-baseline"] if write else []))
+    assert result.returncode == 1, result.stdout
+    assert "ID" in result.stdout
+    assert baseline.read_bytes() == before
+
+
+@pytest.mark.parametrize("kind", ["ADDED", "MODIFIED", "REMOVED", "RENAMED"])
+def test_repeated_delta_sections_refuse_all_modes_but_fenced_examples_pass(
+    tmp_path: Path, kind: str
+) -> None:
+    first = _doc(kind, _block("One", req_id=_rid("widgets", 1)))
+    second = _doc(kind.lower(), _block("Two", req_id=_rid("widgets", 2)))
+    path = _delta(tmp_path, "c", "widgets", first)
+    assert _run(tmp_path).returncode == 0
+    # Mixed fence characters/lengths must retain existing OpenSpec parity.
+    path.write_text(first + "\n~~~~markdown\n```\n" + second + "\n~~~~\n")
+    assert _run(tmp_path).returncode == 0
+    path.write_text(first + "\n" + second)
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text("{}\n")
+    before = baseline.read_bytes()
+    for flags in ([], ["--strict"], ["--write-baseline"]):
+        result = _run(tmp_path, *flags)
+        assert result.returncode == 1, (flags, result.stdout)
+        assert f"repeated {kind} Requirements section" in result.stdout
+        assert baseline.read_bytes() == before

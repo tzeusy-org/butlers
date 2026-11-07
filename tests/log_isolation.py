@@ -8,10 +8,10 @@ definer-test flake fixed in bu-w4c1iw).  An autouse fixture here wraps every
 test and removes only the DB log handlers attached during it.
 
 ``pyproject.toml`` loads this plugin for every pytest run (``-p
-tests.log_isolation``), like ``tests/quarantine.py``.  It is a plugin rather
-than a root ``conftest.py`` fixture because the condensation ledger guard
-treats any root ``conftest.py`` edit as a change to every test beneath it, and
-this fixture cannot remove an assertion.  It imports ``butlers`` only inside
+tests.log_isolation``), like ``tests/quarantine.py``.  It was written as a
+plugin rather than a root ``conftest.py`` fixture because the since-retired
+condensation ledger guard treated any root ``conftest.py`` edit as a change to
+every test beneath it.  It imports ``butlers`` only inside
 the context manager: pytest loads ``-p`` plugins before the root
 ``conftest.py``, whose guard explains a ``butlers`` that resolves outside this
 checkout.

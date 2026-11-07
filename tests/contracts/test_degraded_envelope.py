@@ -53,13 +53,14 @@ from butlers.api.deps import (
     ButlerUnreachableError,
     MCPClientManager,
     get_butler_configs,
+    get_db_optional,
     get_mcp_manager,
     get_pricing,
 )
-from butlers.api.routers.memory import _get_db_manager as _memory_get_db
-from butlers.api.routers.notifications import _get_db_manager as _notifications_get_db
-from butlers.api.routers.search import _get_db_manager as _search_get_db
-from butlers.api.routers.secrets_v2 import _get_db_manager as _secrets_get_db
+from butlers.api.deps import get_db as _memory_get_db
+from butlers.api.deps import get_db as _notifications_get_db
+from butlers.api.deps import get_db as _search_get_db
+from butlers.api.deps import get_db as _secrets_get_db
 from butlers.core.pricing import ModelPricing, PricingConfig
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 from tests.api.test_api_approvals import (
@@ -78,10 +79,10 @@ from tests.api.test_butlers_board import (
     _build_app as _make_board_app,
 )
 from tests.api.test_butlers_board import (
-    _FakeButlerPool as _BoardButlerPool,
+    _db as _board_db,
 )
 from tests.api.test_butlers_board import (
-    _FakeDb as _BoardFakeDb,
+    _FakeButlerPool as _BoardButlerPool,
 )
 from tests.api.test_butlers_board import (
     _FakeSwitchboardPool as _BoardSwitchboardPool,
@@ -90,15 +91,6 @@ from tests.api.test_butlers_board import (
     _registry_row as _board_registry_row,
 )
 from tests.api.test_calendar_conflict_radar import _build_app as _make_conflicts_app
-from tests.api.test_calendar_dedup_review import (
-    _DUP_PARAMS,
-)
-from tests.api.test_calendar_dedup_review import (
-    _build_app as _make_duplicates_app,
-)
-from tests.api.test_calendar_dedup_review import (
-    _FakePool as _DedupFakePool,
-)
 from tests.api.test_calendar_workspace import (
     _audit_row,
     _workspace_event_row,
@@ -115,11 +107,11 @@ from tests.api.test_memory import (
     _EntityMemoryPool,
     _InspectPool,
     _make_entity_row,
+    _memory_db,
     _MemoryDetailPool,
-    _MemoryFanOutDB,
     _RaisingMemoryPool,
     _RaisingStatsPool,
-    _StatsDB,
+    _stats_db,
     _StatsPool,
 )
 from tests.api.test_notifications import (
@@ -325,22 +317,6 @@ def _case_calendar_audit() -> DegradedCase:
     return DegradedCase("calendar_workspace_audit", _run)
 
 
-def _case_calendar_duplicates() -> DegradedCase:
-    async def _run() -> None:
-        with patch(
-            "butlers.api.routers.calendar_workspace._fetch_flattened_workspace_rows",
-            AsyncMock(side_effect=RuntimeError("pool down")),
-        ):
-            app, _db = _make_duplicates_app(create_app(), workspace_rows={}, pool=_DedupFakePool())
-            resp = await _request(app, "GET", "/api/calendar/workspace/duplicates", _DUP_PARAMS)
-        assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert data["clusters"] == []
-        assert data["available"] is False
-
-    return DegradedCase("calendar_workspace_duplicates", _run)
-
-
 # ---------------------------------------------------------------------------
 # butlers board (bu-86c4c.17 / bu-qvnce.1)
 # ---------------------------------------------------------------------------
@@ -352,7 +328,7 @@ def _case_board() -> DegradedCase:
             ButlerConnectionInfo(name="finance", port=41105),
             ButlerConnectionInfo(name="general", port=41101),
         ]
-        db = _BoardFakeDb(
+        db = _board_db(
             switchboard=_BoardSwitchboardPool(
                 rows=[_board_registry_row("finance"), _board_registry_row("general")]
             ),
@@ -407,7 +383,7 @@ def _case_notifications_stats() -> DegradedCase:
 
 def _case_memory_stats() -> DegradedCase:
     async def _run() -> None:
-        db = _StatsDB(
+        db = _stats_db(
             {
                 "atlas": _StatsPool(counts={"consolidation_status = 'dead_letter'": 3}),
                 "finance": _RaisingStatsPool(RuntimeError("connection reset by peer")),
@@ -426,7 +402,7 @@ def _case_memory_stats() -> DegradedCase:
 
 def _case_memory_retention_stats() -> DegradedCase:
     async def _run() -> None:
-        db = _StatsDB(
+        db = _stats_db(
             {
                 "atlas": _StatsPool(retention={"expired": 0, "eligible": 1}),
                 "finance": _StatsPool(retention_exc=RuntimeError("connection reset by peer")),
@@ -467,7 +443,7 @@ def _case_memory_retention_stats() -> DegradedCase:
 
 def _case_memory_list(endpoint: str, name: str) -> DegradedCase:
     async def _run() -> None:
-        db = _MemoryFanOutDB(
+        db = _memory_db(
             {
                 "atlas": _EmptyMemoryPool(),
                 "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
@@ -486,7 +462,7 @@ def _case_memory_list(endpoint: str, name: str) -> DegradedCase:
 
 def _case_memory_entities() -> DegradedCase:
     async def _run() -> None:
-        db = _MemoryFanOutDB(
+        db = _memory_db(
             {
                 "atlas": _EntityListPool(uuid4()),
                 "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
@@ -505,7 +481,7 @@ def _case_memory_entities() -> DegradedCase:
 
 def _case_memory_detail() -> DegradedCase:
     async def _run() -> None:
-        db = _MemoryFanOutDB(
+        db = _memory_db(
             {
                 "atlas": _MemoryDetailPool(),
                 "finance": _MemoryDetailPool(error=RuntimeError("connection reset by peer")),
@@ -523,7 +499,7 @@ def _case_memory_detail() -> DegradedCase:
 def _case_memory_entity_detail() -> DegradedCase:
     async def _run() -> None:
         entity_id = uuid4()
-        db = _MemoryFanOutDB(
+        db = _memory_db(
             {
                 "atlas": _EntityMemoryPool(entity=_make_entity_row(entity_id)),
                 "finance": _EntityMemoryPool(fact_error=RuntimeError("connection reset by peer")),
@@ -540,7 +516,7 @@ def _case_memory_entity_detail() -> DegradedCase:
 
 def _case_memory_inspect() -> DegradedCase:
     async def _run() -> None:
-        db = _MemoryFanOutDB(
+        db = _memory_db(
             {
                 "atlas": _InspectPool(),
                 "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
@@ -561,7 +537,7 @@ def _case_memory_reembed_pending() -> DegradedCase:
 
         healthy_pool = object()
         failed_pool = object()
-        db = _MemoryFanOutDB({"general": healthy_pool, "health": failed_pool})
+        db = _memory_db({"general": healthy_pool, "health": failed_pool})
         app = create_app()
         app.dependency_overrides[_memory_get_db] = lambda: db
 
@@ -684,7 +660,7 @@ def _case_settings_console() -> DegradedCase:
             app.dependency_overrides[get_butler_configs] = lambda: _CONSOLE_BUTLERS
             app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
             app.dependency_overrides[get_pricing] = lambda: _CONSOLE_PRICING
-            app.dependency_overrides[console_mod._get_db_manager] = lambda: None
+            app.dependency_overrides[get_db_optional] = lambda: None
 
             spend_err_item = console_mod.AttentionItem(
                 id="subsystem_error:spend",
@@ -744,7 +720,6 @@ REGISTRY: list[DegradedCase] = [
     _case_calendar_entries(),
     _case_calendar_conflicts(),
     _case_calendar_audit(),
-    _case_calendar_duplicates(),
     _case_board(),
     _case_notifications_list(),
     _case_notifications_stats(),

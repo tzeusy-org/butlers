@@ -18,6 +18,8 @@
  *     autonomy rules (formerly the orphaned /approvals/rules CRUD page),
  *     with live use counts and inline revoke.
  *   - Policy section: Owner Attention Policy editor
+ *   - Standing-reply drafts: author/edit/revoke/preview inactive reply
+ *     templates; previews report authority none, no activation (bu-jv1moa.42)
  *   - History section: last 30 decided approvals — each row opens its
  *     (read-only) dossier via /approvals/:id.
  *   - Attention Ledger section: delivery-vs-suppression per source, with any
@@ -33,7 +35,7 @@
  * bu-86c4c.12 — One Trust Console: Autonomy panel, /approvals/:id, ranking
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -47,6 +49,8 @@ import {
   retryApproval,
   updateApprovalsPolicy,
 } from "@/api/index.ts";
+import type { DisplayedApprovalCall, OwnerDeliveryCard } from "@/api/types";
+import { useDocumentVisible } from "@/hooks/use-document-visible";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
@@ -68,6 +72,7 @@ import {
   useApprovalDecisionMutations,
   UNDO_WINDOW_MS,
   type DecisionVerb,
+  type ViewedApproval,
 } from "@/hooks/use-approval-decisions.ts";
 import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner.tsx";
 import { RulePromotionBanner } from "@/components/approvals/rule-promotion-banner.tsx";
@@ -82,6 +87,7 @@ import {
 import { AutonomyPanel } from "@/components/approvals/autonomy-panel.tsx";
 import { ApprovalTeachingDigest } from "@/components/approvals/approval-teaching-digest.tsx";
 import { AttentionLedgerPanel } from "@/components/approvals/attention-ledger-panel.tsx";
+import { ReplyTemplateDraftsPanel } from "@/components/approvals/reply-template-drafts-panel.tsx";
 import { UnroutableAttentionPanel } from "@/components/approvals/unroutable-attention-panel.tsx";
 import { ApprovalsVerdictOpener } from "@/components/approvals/approvals-verdict-opener.tsx";
 import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
@@ -591,6 +597,7 @@ function Dossier({
   allowAbandon,
   allowPendingDecisionControls,
   onApprove,
+  onCallShown,
   onDeny,
   onDefer,
   approvePending,
@@ -619,8 +626,9 @@ function Dossier({
   allowAbandon: boolean;
   /** A Stalled flat row must never reopen ordinary pending decision controls. */
   allowPendingDecisionControls: boolean;
-  onApprove: () => void;
-  onDeny: (reason?: string) => void;
+  onApprove: (displayedCall: DisplayedApprovalCall, ownerDelivery?: OwnerDeliveryCard | null) => void;
+  onCallShown: (view: ViewedApproval | null) => void;
+  onDeny: (reason?: string, ownerDelivery?: OwnerDeliveryCard | null) => void;
   onDefer: (hours: number) => void;
   approvePending: boolean;
   denyPending: boolean;
@@ -639,13 +647,36 @@ function Dossier({
   const [showDefer, setShowDefer] = useState(false);
   const [denyReason, setDenyReason] = useState("");
 
+  // This GET mints card tokens and records a delivery, so it waits until the
+  // owner can see the tab, however this row came to be selected (bu-dhloi1.95).
+  const documentVisible = useDocumentVisible();
   const { data, isLoading, isFetching, error } = useQuery({
     queryKey: reviewSource === undefined ? Q.detail(actionId) : [...Q.detail(actionId), "review-source", reviewSource],
     queryFn: () => reviewSource === undefined ? getApprovalDetail(actionId) : getApprovalDetail(actionId, reviewSource),
-    enabled: !!actionId && !verifiedDetail,
+    enabled: !!actionId && !verifiedDetail && documentVisible,
     refetchOnMount: reviewSource !== undefined ? "always" : true,
     retry: reviewSource !== undefined ? false : undefined,
   });
+
+  const shownDetail = verifiedDetail ?? data?.data;
+  const dossierLoading = !verifiedDetail &&
+    (isLoading || (!documentVisible && !data) || (reviewSource !== undefined && isFetching));
+  const dossierUnavailable = (!verifiedDetail && !!error) || !shownDetail;
+  const canApproveShownCall = !dossierLoading && !dossierUnavailable &&
+    shownDetail?.id === actionId && shownDetail.status === "pending" && allowPendingDecisionControls;
+  useLayoutEffect(() => {
+    // Query data can survive a hidden loading/error pane. Only hand the
+    // keyboard a call whose safe preview is actually rendered in this pane,
+    // clearing it before a newly hidden pane can receive another keypress.
+    onCallShown(canApproveShownCall && shownDetail?.call_preview
+      ? {
+          id: actionId,
+          displayed_call: { ...shownDetail.call_preview.displayed_call },
+          owner_delivery: shownDetail.owner_delivery,
+        }
+      : null);
+    return () => onCallShown(null);
+  }, [actionId, shownDetail, canApproveShownCall, onCallShown]);
 
   function handleDefer() {
     const h = parseInt(deferHours, 10);
@@ -658,7 +689,7 @@ function Dossier({
 
   const paneOrder = phoneFirst ? " max-md:-order-1" : "";
 
-  if (!verifiedDetail && (isLoading || (reviewSource !== undefined && isFetching))) {
+  if (dossierLoading) {
     return (
       <div
         className={`flex-1 flex items-center justify-center text-muted-foreground text-sm font-mono${paneOrder}`}
@@ -699,6 +730,14 @@ function Dossier({
       className={`flex-1 min-w-0 min-h-[20rem] md:min-h-0 overflow-y-auto p-6 relative${paneOrder}`}
       data-testid="approval-dossier-pane"
     >
+      <section aria-label="Stored call preview" className="mb-6 whitespace-pre-wrap break-words">
+        {detail.call_preview ? <>
+          <h3 className="font-medium">{detail.call_preview.title}</h3>
+          {detail.call_preview.facts.map((fact, index) => <div key={index}>
+            <strong>{fact.label}</strong><p>{fact.value}</p>
+          </div>)}
+        </> : <p>Open only: an exact safe preview is unavailable. Approval is disabled.</p>}
+      </section>
       {/* Floating decision cluster — a zero-height sticky overlay so it floats
           over the top-right corner without reserving flow space (the body is
           not pushed down). Stays pinned on scroll; the wrapper is click-through
@@ -724,8 +763,8 @@ function Dossier({
               <>
                 <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-background/85 backdrop-blur-sm px-2 py-2 shadow-sm">
                   <button
-                    onClick={onApprove}
-                    disabled={approvePending}
+                    onClick={() => { if (detail.id === actionId && detail.call_preview) onApprove({ ...detail.call_preview.displayed_call }, detail.owner_delivery); }}
+                    disabled={approvePending || detail.id !== actionId || !detail.call_preview}
                     className={[
                       "py-1.5 px-4 rounded font-medium text-sm max-md:min-h-11 max-md:min-w-11",
                       "bg-foreground text-background",
@@ -735,7 +774,7 @@ function Dossier({
                     {approvePending ? "Approving…" : "Approve"}
                   </button>
                   <button
-                    onClick={() => onDeny(denyReason.trim() || undefined)}
+                    onClick={() => onDeny(denyReason.trim() || undefined, detail.owner_delivery)}
                     disabled={denyPending}
                     className={[
                       "py-1.5 px-3 rounded text-sm border transition-colors max-md:min-h-11 max-md:min-w-11",
@@ -766,7 +805,7 @@ function Dossier({
                   onChange={(e) => setDenyReason(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !denyPending) {
-                      onDeny(denyReason.trim() || undefined);
+                      onDeny(denyReason.trim() || undefined, detail.owner_delivery);
                     }
                   }}
                   placeholder="Deny reason (optional)"
@@ -1878,6 +1917,7 @@ export default function ApprovalsPage() {
     isFetchedAfterMount &&
     routeId !== undefined &&
     !stalledRouteIsListed;
+  const documentVisible = useDocumentVisible();
   const {
     data: stalledRouteVerification,
     isSuccess: isStalledRouteVerificationSuccess,
@@ -1886,8 +1926,10 @@ export default function ApprovalsPage() {
     isError: isStalledRouteVerificationError,
   } = useQuery({
     queryKey: [...Q.stalledRouteVerification(routeId ?? "", dataUpdatedAt), reviewSource],
-    queryFn: () => reviewSource === undefined ? getApprovalDetail(routeId ?? "") : getApprovalDetail(routeId ?? "", reviewSource),
-    enabled: shouldVerifyStalledRoute,
+    // Status only: this verifier never renders the card, so it must not mint one.
+    queryFn: () => getApprovalDetail(routeId ?? "", reviewSource, { statusOnly: true }),
+    // The same GET as the dossier's, so it waits for a visible tab too.
+    enabled: shouldVerifyStalledRoute && documentVisible,
     // A direct stalled URL is an authorization boundary, not a prefetch hint:
     // never inherit data from the ordinary dossier key and always make a new
     // request when this verifier mounts. The rail-generation key above also
@@ -1966,9 +2008,11 @@ export default function ApprovalsPage() {
     onDecided: advanceSelectionPast,
     undoWindow: true,
   });
+  const [shownCall, setShownCall] = useState<ViewedApproval | null>(null);
   const approve = useCallback(
-    (actionId: string) => {
-      approveMut.mutate(actionId, {
+    (view: ViewedApproval) => {
+      const actionId = view.id;
+      approveMut.mutate(view, {
         onSuccess: () => setTeachingActionId(actionId),
       });
     },
@@ -2095,7 +2139,18 @@ export default function ApprovalsPage() {
       {
         key: "a",
         description: "Approve selected",
-        handler: () => scheduleDecision(id, "approve", () => approve(id)),
+        handler: () => {
+          if (shownCall?.id !== id) {
+            toast.error("Review the stored call before approving.");
+            return;
+          }
+          const view = {
+            id,
+            displayed_call: { ...shownCall.displayed_call },
+            owner_delivery: shownCall.owner_delivery,
+          };
+          scheduleDecision(id, "approve", () => approve(view));
+        },
         command: {
           id: "approve-next",
           label: "Approve selected approval",
@@ -2105,7 +2160,10 @@ export default function ApprovalsPage() {
       {
         key: "d",
         description: "Deny selected",
-        handler: () => scheduleDecision(id, "deny", () => deny({ id })),
+        handler: () => {
+          const ownerDelivery = shownCall?.id === id ? shownCall.owner_delivery : undefined;
+          scheduleDecision(id, "deny", () => deny({ id, owner_delivery: ownerDelivery }));
+        },
         command: {
           id: "deny-selected-approval",
           label: "Deny selected approval",
@@ -2124,7 +2182,7 @@ export default function ApprovalsPage() {
         },
       },
     ];
-  }, [activeLane, approve, cancelDecision, defer, deny, effectiveSelected, scheduleDecision, scheduledDecisions]);
+  }, [activeLane, approve, cancelDecision, defer, deny, effectiveSelected, scheduleDecision, scheduledDecisions, shownCall]);
 
   const { hints: triageHints } = useListTriage({
     ids: pendingIds,
@@ -2360,14 +2418,15 @@ export default function ApprovalsPage() {
             reviewSource={reviewSource}
             allowAbandon={activeLane !== "stalled"}
             allowPendingDecisionControls={activeLane !== "stalled"}
-            onApprove={() => approve(dossierSelected)}
-            onDeny={(reason) => denyMut.mutate({ id: dossierSelected, reason })}
+            onApprove={(displayed_call, owner_delivery) => approve({ id: dossierSelected, displayed_call, owner_delivery })}
+            onCallShown={setShownCall}
+            onDeny={(reason, owner_delivery) => denyMut.mutate({ id: dossierSelected, reason, owner_delivery })}
             onDefer={(hours) => deferMut.mutate({ id: dossierSelected, hours })}
             // Scoped to THIS approval's id, not just "some mutation of this
             // kind is in flight" -- approving item A no longer mislabels the
             // very next dossier (item B) as already approving (JARVIS audit
             // move 9's page-global-pending finding).
-            approvePending={approveMut.isPending && approveMut.variables === dossierSelected}
+            approvePending={approveMut.isPending && approveMut.variables?.id === dossierSelected}
             denyPending={denyMut.isPending && denyMut.variables?.id === dossierSelected}
             deferPending={deferMut.isPending && deferMut.variables?.id === dossierSelected}
             pendingVerb={scheduledDecisions.get(dossierSelected)?.verb ?? null}
@@ -2393,6 +2452,7 @@ export default function ApprovalsPage() {
       {/* Bottom sections — policy, history, and the attention ledger */}
       <div className="px-6 pb-8 border-t border-border overflow-y-auto shrink-0 max-h-[40vh]">
         <PolicySection />
+        <ReplyTemplateDraftsPanel />
         <HistorySection />
         <AttentionLedgerPanel />
       </div>

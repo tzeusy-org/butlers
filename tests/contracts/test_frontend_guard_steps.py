@@ -23,12 +23,9 @@ HOSTED_COMMANDS = [
     for line in step["run"].splitlines()
     if line.strip()
 ]
-# Hosted commands the runner deliberately does not run (`npm run lint` chains visual-role-css).
+# Hosted commands the runner deliberately does not run.
 _NOT_LOCAL = {
     "npm ci",
-    "npm run lint:visual-role-css",
-    "node --test --test-timeout=300000 scripts/worktree-tooling-contract.mjs"
-    " route-a-api-receipt.test.mjs",
 }
 
 
@@ -48,9 +45,6 @@ def test_every_hosted_frontend_command_is_run_locally_or_declared_hosted_only() 
     local = {f"npm run {script}" for _, script in runner.STEPS}
     hosted_only = {f"npm run {script}" for script in runner.HOSTED_ONLY}
     assert set(HOSTED_COMMANDS) == local | hosted_only | _NOT_LOCAL
-    # `npm run lint` chains lint:visual-role-css, which is why it is not a local step of its own.
-    lint = json.loads((ROOT / "frontend/package.json").read_text())["scripts"]["lint"]
-    assert "lint:visual-role-css" in lint
 
 
 @pytest.mark.unit
@@ -60,30 +54,30 @@ def test_every_local_step_is_a_real_npm_script() -> None:
 
 
 @pytest.mark.unit
-def test_make_check_guards_passes_the_configured_condensation_base(tmp_path) -> None:
+def test_make_check_guards_passes_the_configured_guards_base(tmp_path) -> None:
     # Execute the real recipe with recording tools; skip unrelated prerequisites.
     tools = tmp_path / "bin"
     tools.mkdir()
     log = tmp_path / "python-arguments"
     for name, body in {
         "python3": '#!/bin/sh\nprintf "%s\\n" "$*" >> "$ARGUMENT_LOG"\n',
-        "git": "#!/bin/sh\nexit 0\n",
+        "git": '#!/bin/sh\nprintf "git %s\\n" "$*" >> "$ARGUMENT_LOG"\n',
         "openspec": "#!/bin/sh\nexit 0\n",
     }.items():
         tool = tools / name
         tool.write_text(body)
         tool.chmod(0o755)
     prerequisites = (
+        "check-host-policy-selectors",
         "check-lock",
         "lint",
         "check-format",
         "check-for-update-joins",
         "check-em-dashes",
-        "check-spec-overwrites",
-        "check-countable-tasks",
+        "check-requirement-trace",
+        "check-requirement-citations",
         "check-duplicate-names",
         "check-session-links",
-        "check-condensation-ledger",
     )
     subprocess.run(
         [
@@ -93,7 +87,7 @@ def test_make_check_guards_passes_the_configured_condensation_base(tmp_path) -> 
             str(ROOT / "Makefile"),
             *(f"--assume-old={name}" for name in prerequisites),
             "check-guards",
-            "CONDENSATION_BASE=review-fork",
+            "GUARDS_BASE=review-fork",
             "BASE=unrelated-base",
         ],
         cwd=ROOT,
@@ -101,7 +95,7 @@ def test_make_check_guards_passes_the_configured_condensation_base(tmp_path) -> 
         check=True,
         capture_output=True,
     )
-    assert (
-        "scripts/frontend_guards.py --base review-fork --skip-inventory"
-        in log.read_text().splitlines()
-    )
+    commands = log.read_text().splitlines()
+    assert "scripts/frontend_guards.py --base review-fork" in commands
+    assert not any("extract-frontend-copy.py" in command for command in commands)
+    assert not any("COPY_INVENTORY.md" in command for command in commands)

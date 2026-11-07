@@ -36,7 +36,8 @@ from contextlib import asynccontextmanager
 import httpx
 import pytest
 
-from butlers.api.routers.memory import _get_db_manager
+from butlers.api.deps import get_db
+from butlers.testing.db_manager import db_manager
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -46,84 +47,17 @@ pytestmark = [
 ]
 
 
-# Minimal subset of the real rules schema (001_memory_schema.py) covering
-# every column the stats/list/inspect handlers select or filter on, plus the
-# episodes/facts/consolidation_runs tables GET /api/memory/stats also queries
-# in the same fan-out (an UndefinedTableError on any one of them drops the
-# whole pool from the response as "no memory schema" — see
-# _is_missing_memory_schema_error — so all four must exist for a meaningful
-# stats assertion, mirroring test_memory_stats_consolidation_e2e.py).
-_RULES_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS episodes (
-    content_authority TEXT, authority_entity_id UUID,
-    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    consolidated         BOOLEAN NOT NULL DEFAULT false,
-    consolidation_status TEXT    NOT NULL DEFAULT 'pending'
-);
-CREATE TABLE IF NOT EXISTS episode_tombstones (
-    episode_id UUID PRIMARY KEY,
-    deleted_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS facts (
-    content_authority TEXT, authority_entity_id UUID,
-    id       BIGSERIAL PRIMARY KEY,
-    validity TEXT NOT NULL DEFAULT 'active'
-);
-CREATE TABLE IF NOT EXISTS public.consolidation_runs (
-    id                 BIGSERIAL PRIMARY KEY,
-    butler             TEXT NOT NULL,
-    consolidated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    episodes_processed INT NOT NULL DEFAULT 0,
-    facts_produced     INT NOT NULL DEFAULT 0,
-    facts_updated      INT NOT NULL DEFAULT 0,
-    rules_created      INT NOT NULL DEFAULT 0,
-    confirmations_made INT NOT NULL DEFAULT 0,
-    errors             INT NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS rules (
-    content_authority TEXT, authority_entity_id UUID, endorsed_at TIMESTAMPTZ, endorsed_by UUID,
-    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    content              TEXT NOT NULL,
-    search_vector        tsvector,
-    scope                TEXT NOT NULL DEFAULT 'global',
-    maturity             TEXT NOT NULL DEFAULT 'candidate',
-    confidence           FLOAT NOT NULL DEFAULT 0.5,
-    decay_rate           FLOAT NOT NULL DEFAULT 0.008,
-    permanence           TEXT NOT NULL DEFAULT 'standard',
-    effectiveness_score  FLOAT NOT NULL DEFAULT 0.0,
-    applied_count        INTEGER NOT NULL DEFAULT 0,
-    success_count        INTEGER NOT NULL DEFAULT 0,
-    harmful_count        INTEGER NOT NULL DEFAULT 0,
-    source_episode_id    UUID,
-    source_butler        TEXT,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_applied_at      TIMESTAMPTZ,
-    last_evaluated_at    TIMESTAMPTZ,
-    tags                 JSONB DEFAULT '[]'::jsonb,
-    metadata             JSONB DEFAULT '{}'::jsonb,
-    retired_at           TIMESTAMPTZ
-);
-"""
-
-
-class _SinglePoolDB:
-    """DatabaseManager stand-in exposing one real pool under one butler name."""
-
-    def __init__(self, butler: str, pool: object) -> None:
-        self._butler = butler
-        self._pool = pool
-        self.butler_names = [butler]
-
-    def pool(self, name: str) -> object:
-        if name != self._butler:
-            raise KeyError(f"No pool for butler: {name}")
-        return self._pool
+# Each test gets a fresh clone migrated by the real core + memory chains, so
+# every table GET /api/memory/stats fans out to (episodes, facts, rules,
+# public.consolidation_runs, ...) exists with its real shape. An
+# UndefinedTableError on any one of them would drop the whole pool from the
+# response as "no memory schema" (see _is_missing_memory_schema_error).
 
 
 @asynccontextmanager
 async def _app_client(db: object):
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -152,110 +86,104 @@ async def _insert_rule(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_stats_maturity_buckets_exclude_forgotten_rules(provisioned_postgres_pool) -> None:
+async def test_stats_maturity_buckets_exclude_forgotten_rules(db) -> None:
     """Each maturity bucket (incl. the Proven-rules KPI) excludes forgotten rules."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_RULES_SCHEMA_SQL)
+    pool = await db("core", "memory")
 
-        await _insert_rule(pool, content="live candidate", maturity="candidate")
-        await _insert_rule(
-            pool, content="forgotten candidate", maturity="candidate", forgotten=True
-        )
-        await _insert_rule(pool, content="live established", maturity="established")
-        await _insert_rule(
-            pool, content="forgotten established", maturity="established", forgotten=True
-        )
-        await _insert_rule(pool, content="live proven", maturity="proven")
-        await _insert_rule(pool, content="another live proven", maturity="proven")
-        await _insert_rule(pool, content="forgotten proven", maturity="proven", forgotten=True)
-        await _insert_rule(pool, content="live anti-pattern", maturity="anti_pattern")
-        await _insert_rule(
-            pool, content="forgotten anti-pattern", maturity="anti_pattern", forgotten=True
-        )
+    await _insert_rule(pool, content="live candidate", maturity="candidate")
+    await _insert_rule(pool, content="forgotten candidate", maturity="candidate", forgotten=True)
+    await _insert_rule(pool, content="live established", maturity="established")
+    await _insert_rule(
+        pool, content="forgotten established", maturity="established", forgotten=True
+    )
+    await _insert_rule(pool, content="live proven", maturity="proven")
+    await _insert_rule(pool, content="another live proven", maturity="proven")
+    await _insert_rule(pool, content="forgotten proven", maturity="proven", forgotten=True)
+    await _insert_rule(pool, content="live anti-pattern", maturity="anti_pattern")
+    await _insert_rule(
+        pool, content="forgotten anti-pattern", maturity="anti_pattern", forgotten=True
+    )
 
-        db = _SinglePoolDB("memory", pool)
-        async with _app_client(db) as client:
-            resp = await client.get("/api/memory/stats")
+    manager = db_manager({"memory": pool})
+    async with _app_client(manager) as client:
+        resp = await client.get("/api/memory/stats")
 
-        assert resp.status_code == 200
-        data = resp.json()["data"]
+    assert resp.status_code == 200
+    data = resp.json()["data"]
 
-        # total_rules stays a raw table count (matches total_facts convention).
-        assert data["total_rules"] == 9
-        assert data["candidate_rules"] == 1
-        assert data["established_rules"] == 1
-        # The dashboard "Proven rules" KPI (MemoryOverture) reads this field.
-        assert data["proven_rules"] == 2
-        assert data["anti_pattern_rules"] == 1
+    # total_rules stays a raw table count (matches total_facts convention).
+    assert data["total_rules"] == 9
+    assert data["candidate_rules"] == 1
+    assert data["established_rules"] == 1
+    # The dashboard "Proven rules" KPI (MemoryOverture) reads this field.
+    assert data["proven_rules"] == 2
+    assert data["anti_pattern_rules"] == 1
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_list_rules_excludes_forgotten_by_default(provisioned_postgres_pool) -> None:
+async def test_list_rules_excludes_forgotten_by_default(db) -> None:
     """GET /api/memory/rules (the standing-orders register) hides forgotten rules
     unless ?forgotten=true is passed explicitly."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_RULES_SCHEMA_SQL)
+    pool = await db("core", "memory")
 
-        live_id = await _insert_rule(pool, content="live rule", maturity="proven")
-        forgotten_id = await _insert_rule(
-            pool, content="forgotten rule", maturity="proven", forgotten=True
-        )
+    live_id = await _insert_rule(pool, content="live rule", maturity="proven")
+    forgotten_id = await _insert_rule(
+        pool, content="forgotten rule", maturity="proven", forgotten=True
+    )
 
-        db = _SinglePoolDB("memory", pool)
+    manager = db_manager({"memory": pool})
 
-        async with _app_client(db) as client:
-            default_resp = await client.get("/api/memory/rules")
-            forgotten_resp = await client.get("/api/memory/rules", params={"forgotten": "true"})
+    async with _app_client(manager) as client:
+        default_resp = await client.get("/api/memory/rules")
+        forgotten_resp = await client.get("/api/memory/rules", params={"forgotten": "true"})
 
-        assert default_resp.status_code == 200
-        default_ids = {row["id"] for row in default_resp.json()["data"]}
-        assert str(live_id) in default_ids
-        assert str(forgotten_id) not in default_ids
-        assert default_resp.json()["meta"]["total"] == 1
+    assert default_resp.status_code == 200
+    default_ids = {row["id"] for row in default_resp.json()["data"]}
+    assert str(live_id) in default_ids
+    assert str(forgotten_id) not in default_ids
+    assert default_resp.json()["meta"]["total"] == 1
 
-        assert forgotten_resp.status_code == 200
-        forgotten_ids = {row["id"] for row in forgotten_resp.json()["data"]}
-        assert forgotten_ids == {str(forgotten_id)}
+    assert forgotten_resp.status_code == 200
+    forgotten_ids = {row["id"] for row in forgotten_resp.json()["data"]}
+    assert forgotten_ids == {str(forgotten_id)}
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_inspect_rule_search_excludes_forgotten(provisioned_postgres_pool) -> None:
+async def test_inspect_rule_search_excludes_forgotten(db) -> None:
     """GET /api/memory/inspect?kind=rule (the search bar) never surfaces a
     forgotten rule, matching the MCP recall/keyword_search convention."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_RULES_SCHEMA_SQL)
+    pool = await db("core", "memory")
 
-        live_id = await _insert_rule(pool, content="visible rule", maturity="proven")
-        await _insert_rule(pool, content="hidden rule", maturity="proven", forgotten=True)
+    live_id = await _insert_rule(pool, content="visible rule", maturity="proven")
+    await _insert_rule(pool, content="hidden rule", maturity="proven", forgotten=True)
 
-        db = _SinglePoolDB("memory", pool)
-        async with _app_client(db) as client:
-            resp = await client.get("/api/memory/inspect", params={"kind": "rule"})
+    manager = db_manager({"memory": pool})
+    async with _app_client(manager) as client:
+        resp = await client.get("/api/memory/inspect", params={"kind": "rule"})
 
-        assert resp.status_code == 200
-        ids = {row["id"] for row in resp.json()["data"]}
-        assert ids == {str(live_id)}
+    assert resp.status_code == 200
+    ids = {row["id"] for row in resp.json()["data"]}
+    assert ids == {str(live_id)}
 
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_inspect_rule_total_counts_exactly_the_rows_it_returns(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """meta.total comes from a count(*) under the row filter, so a forgotten rule
     is neither returned nor counted (bu-kqnum.14.5)."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_RULES_SCHEMA_SQL)
+    pool = await db("core", "memory")
 
-        await _insert_rule(pool, content="visible rule", maturity="proven")
-        await _insert_rule(pool, content="hidden rule", maturity="proven", forgotten=True)
+    await _insert_rule(pool, content="visible rule", maturity="proven")
+    await _insert_rule(pool, content="hidden rule", maturity="proven", forgotten=True)
 
-        db = _SinglePoolDB("memory", pool)
-        async with _app_client(db) as client:
-            resp = await client.get("/api/memory/inspect", params={"kind": "rule"})
+    manager = db_manager({"memory": pool})
+    async with _app_client(manager) as client:
+        resp = await client.get("/api/memory/inspect", params={"kind": "rule"})
 
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["meta"]["total"] == len(body["data"]) == 1
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["meta"]["total"] == len(body["data"]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -265,78 +193,73 @@ async def test_inspect_rule_total_counts_exactly_the_rows_it_returns(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_stats_maturity_buckets_exclude_retired_rules(provisioned_postgres_pool) -> None:
+async def test_stats_maturity_buckets_exclude_retired_rules(db) -> None:
     """Each maturity bucket excludes retired rules; a separate retired_rules
     field counts them instead of silently dropping them from any total."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_RULES_SCHEMA_SQL)
+    pool = await db("core", "memory")
 
-        await _insert_rule(pool, content="live candidate", maturity="candidate")
-        await _insert_rule(pool, content="retired candidate", maturity="candidate", retired=True)
-        await _insert_rule(pool, content="live proven", maturity="proven")
-        await _insert_rule(pool, content="another live proven", maturity="proven")
-        await _insert_rule(pool, content="retired proven", maturity="proven", retired=True)
+    await _insert_rule(pool, content="live candidate", maturity="candidate")
+    await _insert_rule(pool, content="retired candidate", maturity="candidate", retired=True)
+    await _insert_rule(pool, content="live proven", maturity="proven")
+    await _insert_rule(pool, content="another live proven", maturity="proven")
+    await _insert_rule(pool, content="retired proven", maturity="proven", retired=True)
 
-        db = _SinglePoolDB("memory", pool)
-        async with _app_client(db) as client:
-            resp = await client.get("/api/memory/stats")
+    manager = db_manager({"memory": pool})
+    async with _app_client(manager) as client:
+        resp = await client.get("/api/memory/stats")
 
-        assert resp.status_code == 200
-        data = resp.json()["data"]
+    assert resp.status_code == 200
+    data = resp.json()["data"]
 
-        # total_rules stays a raw table count (matches total_facts convention).
-        assert data["total_rules"] == 5
-        assert data["candidate_rules"] == 1
-        assert data["proven_rules"] == 2
-        assert data["retired_rules"] == 2
+    # total_rules stays a raw table count (matches total_facts convention).
+    assert data["total_rules"] == 5
+    assert data["candidate_rules"] == 1
+    assert data["proven_rules"] == 2
+    assert data["retired_rules"] == 2
 
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_list_rules_includes_retired_with_retired_at_populated(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """GET /api/memory/rules (the standing-orders register) does NOT hide
     retired rules by default (unlike forgotten) — it annotates them with
     retired_at so the frontend can visually distinguish them."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_RULES_SCHEMA_SQL)
+    pool = await db("core", "memory")
 
-        live_id = await _insert_rule(pool, content="live rule", maturity="proven")
-        retired_id = await _insert_rule(
-            pool, content="retired rule", maturity="proven", retired=True
-        )
+    live_id = await _insert_rule(pool, content="live rule", maturity="proven")
+    retired_id = await _insert_rule(pool, content="retired rule", maturity="proven", retired=True)
 
-        db = _SinglePoolDB("memory", pool)
-        async with _app_client(db) as client:
-            resp = await client.get("/api/memory/rules")
+    manager = db_manager({"memory": pool})
+    async with _app_client(manager) as client:
+        resp = await client.get("/api/memory/rules")
 
-        assert resp.status_code == 200
-        rows = {row["id"]: row for row in resp.json()["data"]}
-        assert {str(live_id), str(retired_id)} == set(rows)
-        assert rows[str(live_id)]["retired_at"] is None
-        assert rows[str(retired_id)]["retired_at"] is not None
+    assert resp.status_code == 200
+    rows = {row["id"]: row for row in resp.json()["data"]}
+    assert {str(live_id), str(retired_id)} == set(rows)
+    assert rows[str(live_id)]["retired_at"] is None
+    assert rows[str(retired_id)]["retired_at"] is not None
 
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_inspect_rule_search_includes_retired_with_retired_at_populated(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """GET /api/memory/inspect?kind=rule surfaces retired rules (unlike
     forgotten ones, which it hard-excludes) with retired_at populated."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_RULES_SCHEMA_SQL)
+    pool = await db("core", "memory")
 
-        live_id = await _insert_rule(pool, content="visible live rule", maturity="proven")
-        retired_id = await _insert_rule(
-            pool, content="visible retired rule", maturity="proven", retired=True
-        )
+    live_id = await _insert_rule(pool, content="visible live rule", maturity="proven")
+    retired_id = await _insert_rule(
+        pool, content="visible retired rule", maturity="proven", retired=True
+    )
 
-        db = _SinglePoolDB("memory", pool)
-        async with _app_client(db) as client:
-            resp = await client.get("/api/memory/inspect", params={"kind": "rule"})
+    manager = db_manager({"memory": pool})
+    async with _app_client(manager) as client:
+        resp = await client.get("/api/memory/inspect", params={"kind": "rule"})
 
-        assert resp.status_code == 200
-        rows = {row["id"]: row for row in resp.json()["data"]}
-        assert {str(live_id), str(retired_id)} == set(rows)
-        assert rows[str(retired_id)]["rule"]["retired_at"] is not None
-        assert rows[str(live_id)]["rule"]["retired_at"] is None
+    assert resp.status_code == 200
+    rows = {row["id"]: row for row in resp.json()["data"]}
+    assert {str(live_id), str(retired_id)} == set(rows)
+    assert rows[str(retired_id)]["rule"]["retired_at"] is not None
+    assert rows[str(live_id)]["rule"]["retired_at"] is None

@@ -13,8 +13,11 @@ pytestmark = pytest.mark.unit
 async def _exercise_http_contract(monkeypatch, query, expected_path, expected_params, result):
     real_client = httpx.AsyncClient
     requests = []
-    response = httpx.Response(200, json={"status": "success", "data": {"result": result}})
-    failure = None
+    # The handler serves whatever response/failure the scenario last staged.
+    staged = {
+        "response": httpx.Response(200, json={"status": "success", "data": {"result": result}}),
+        "failure": None,
+    }
 
     def handle(request):
         requests.append(request)
@@ -28,9 +31,9 @@ async def _exercise_http_contract(monkeypatch, query, expected_path, expected_pa
             "write": 30.0,
             "pool": 30.0,
         }
-        if failure is not None:
-            raise failure
-        return response
+        if staged["failure"] is not None:
+            raise staged["failure"]
+        return staged["response"]
 
     def client(**kwargs):
         assert set(kwargs) == {"timeout"}
@@ -38,7 +41,7 @@ async def _exercise_http_contract(monkeypatch, query, expected_path, expected_pa
 
     monkeypatch.setattr(prometheus.httpx, "AsyncClient", client)
     assert await query() == result
-    response = httpx.Response(200, json={"status": "success", "data": {"result": []}})
+    staged["response"] = httpx.Response(200, json={"status": "success", "data": {"result": []}})
     assert await query() == []
 
     for response, expected in (
@@ -49,21 +52,22 @@ async def _exercise_http_contract(monkeypatch, query, expected_path, expected_pa
         (httpx.Response(200, json={"status": "error", "error": "query refused"}), "query refused"),
         (httpx.Response(200, json={"status": "unknown"}), "Prometheus returned status: unknown"),
     ):
+        staged["response"] = response
         assert await query() == [{"error": expected}]
 
-    response = httpx.Response(500, content=b"")
+    staged["response"] = httpx.Response(500, content=b"")
     assert "500" in (await query())[0]["error"]
-    response = httpx.Response(200, text="not json")
+    staged["response"] = httpx.Response(200, text="not json")
     assert (await query())[0]["error"].startswith("Unexpected error during Prometheus")
-    failure = httpx.ConnectError("controlled network failure")
+    staged["failure"] = httpx.ConnectError("controlled network failure")
     assert await query() == [
         {"error": "Network error contacting Prometheus: controlled network failure"}
     ]
-    failure = RuntimeError("controlled unexpected failure")
+    staged["failure"] = RuntimeError("controlled unexpected failure")
     assert (await query())[0]["error"].endswith("controlled unexpected failure")
-    failure = None
+    staged["failure"] = None
     # Relocation preserves the original extraction behavior outside the request try block.
-    response = httpx.Response(200, json={"status": "success", "data": {}})
+    staged["response"] = httpx.Response(200, json={"status": "success", "data": {}})
     with pytest.raises(KeyError, match="result"):
         await query()
     assert len(requests) == 13
@@ -77,7 +81,9 @@ async def test_instant_query_preserves_http_result_and_error_contract(monkeypatc
         with monkeypatch.context() as scoped:
             await _exercise_http_contract(
                 scoped,
-                lambda: prometheus.async_query("http://prometheus.invalid", "up", evaluation_time),
+                lambda evaluation_time=evaluation_time: prometheus.async_query(
+                    "http://prometheus.invalid", "up", evaluation_time
+                ),
                 "/api/v1/query",
                 params,
                 [{"metric": {"job": "fixture"}, "value": [1, "2"]}],

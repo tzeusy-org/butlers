@@ -21,7 +21,6 @@ from butlers.core.approval_delivery_worker import (
     HandoffResult,
     start_approval_delivery_worker,
 )
-from butlers.db import register_jsonb_codec
 from butlers.modules.approvals import delivery_lifecycle
 from butlers.modules.approvals.delivery_lifecycle import (
     defer_pending_action,
@@ -34,7 +33,6 @@ from butlers.modules.approvals.delivery_recovery import (
 from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.approvals.module import ApprovalsModule
 from butlers.modules.approvals.park import ParkAdmission, park_pending_action
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -44,28 +42,9 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "approvals"],
-    )
-
-
 @pytest.fixture
-async def delivery_pool(migrated_db_url: str):
-    pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=8,
-        init=register_jsonb_codec,
-    )
-    await pool.execute(
-        "TRUNCATE approval_delivery_attempts, approval_delivery_cohort_members, "
-        "approval_delivery_presentations, approval_delivery_cohorts, "
-        "approval_delivery_intents, approval_events, pending_actions CASCADE"
-    )
+async def delivery_pool(db):
+    pool = await db("core", "approvals", max_size=8)
     await pool.execute(
         "UPDATE public.approvals_policy SET quiet_start_hour = NULL, "
         "quiet_end_hour = NULL, timezone = 'UTC' WHERE id = 1"
@@ -74,8 +53,7 @@ async def delivery_pool(migrated_db_url: str):
         "UPDATE approval_delivery_rollout "
         "SET admission_enabled = true, worker_enabled = false WHERE singleton"
     )
-    yield pool
-    await pool.close()
+    return pool
 
 
 async def _park(pool: asyncpg.Pool, *, ordinal: int = 0) -> ParkAdmission:
@@ -236,6 +214,13 @@ async def test_skip_locked_claims_are_distinct_and_stale_fences_cannot_write(
     assert first is not None and second is not None
     assert first.presentation_id != second.presentation_id
     assert first.claim_fence == second.claim_fence == 1
+    # The default claim lease is 30 seconds of database time.
+    lease = await delivery_pool.fetchval(
+        "SELECT EXTRACT(EPOCH FROM claim_expires_at - updated_at)::double precision "
+        "FROM approval_delivery_presentations WHERE id = $1",
+        first.presentation_id,
+    )
+    assert 29.9 <= lease <= 30.0 + 1e-3
     await delivery_pool.execute(
         "UPDATE approval_delivery_presentations "
         "SET claim_expires_at = clock_timestamp() - interval '1 second' WHERE id = $1",
@@ -288,6 +273,37 @@ async def test_missing_current_owner_is_prestart_retry_scheduled_from_database_t
         "SELECT outcome = 'safe_retry' FROM approval_delivery_attempts"
     )
 
+    # Drive the same presentation through the ladder: 15s doubling over six
+    # exponent steps plus 0-20% jitter, capped at 15 minutes, measured from
+    # each attempt's database completion time.
+    delay_sql = """
+        SELECT a.attempt_number,
+               EXTRACT(EPOCH FROM p.next_attempt_at - a.completed_at)::double precision
+          FROM approval_delivery_attempts AS a
+          JOIN approval_delivery_presentations AS p ON p.id = a.presentation_id
+         WHERE p.presentation_key = $1
+         ORDER BY a.attempt_number DESC
+         LIMIT 1
+    """
+    delays = [tuple(await delivery_pool.fetchrow(delay_sql, admission.presentation_key))]
+    for _ in range(7):
+        await delivery_pool.execute(
+            # schedule_check requires next_attempt_at >= not_before; one
+            # statement-stable now() value rewinds both together.
+            "UPDATE approval_delivery_presentations "
+            "SET not_before = now() - interval '1 second', "
+            "next_attempt_at = now() - interval '1 second' "
+            "WHERE presentation_key = $1",
+            admission.presentation_key,
+        )
+        assert await worker.process_one() is True
+        delays.append(tuple(await delivery_pool.fetchrow(delay_sql, admission.presentation_key)))
+    assert [attempt for attempt, _ in delays] == list(range(1, 9))
+    for (attempt, delay), base in zip(delays, (15, 30, 60, 120, 240, 480, 900, 900), strict=True):
+        assert base - 1e-3 <= delay <= min(900, base * 1.2) + 1e-3, (attempt, delay)
+    assert delays[-1][1] == pytest.approx(900.0, abs=1e-3)
+    assert runtime.handoffs == []
+
 
 # Spec: REQ-approval-delivery-intent-recovery-002; current render, recipient and callback stay out of durable local state.
 async def test_confirmed_delivery_renders_current_material_only_in_memory(
@@ -298,6 +314,14 @@ async def test_confirmed_delivery_renders_current_material_only_in_memory(
     await delivery_pool.execute(
         "UPDATE pending_actions SET why = 'updated-render-sentinel' WHERE id = $1",
         admission.action_id,
+    )
+    # The card offers one-tap Approve/Reject (and so mints a callback token) only for a
+    # tool with an exact-call preview; make the parked call one so the oracle below
+    # still proves the token is never persisted.
+    await delivery_pool.execute(
+        "UPDATE pending_actions SET tool_name = 'email_send_message', tool_args = $2 WHERE id = $1",
+        admission.action_id,
+        {"to": "dana@x.com", "subject": "Re: Thursday", "body": "Thursday at 3pm works."},
     )
     runtime = _Runtime(handoff_result=HandoffResult("confirmed", provider_reference="ref-1"))
     worker = ApprovalDeliveryWorker(
@@ -799,7 +823,7 @@ async def test_defer_replaces_prestart_generation_at_database_time(
     rows = await delivery_pool.fetch(
         """
         SELECT p.presentation_generation, p.state,
-               p.presentation_key, p.not_before = pa.expires_at AS due_matches_expiry
+               p.presentation_key, p.not_before < pa.expires_at AS decidable_when_due
           FROM approval_delivery_intents AS i
           JOIN pending_actions AS pa ON pa.id = i.action_id
           JOIN approval_delivery_presentations AS p ON p.intent_id = i.id
@@ -810,7 +834,7 @@ async def test_defer_replaces_prestart_generation_at_database_time(
     assert [row["presentation_generation"] for row in rows] == [1, 2]
     assert [row["state"] for row in rows] == ["superseded", "ready"]
     assert rows[1]["presentation_key"] == f"{admission.action_key}:p:2"
-    assert rows[1]["due_matches_expiry"] is True
+    assert rows[1]["decidable_when_due"] is True
     assert await delivery_pool.fetchval("SELECT count(*) FROM deferred_notifications") == 0
 
 

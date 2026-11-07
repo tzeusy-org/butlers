@@ -4,7 +4,7 @@
  * Verifies the rewired contracts for the dashboard-relationship facts drill and
  * neighbour ranking (backend PR #2180):
  * - getEntityFacts sends keyset filters (predicate / validity / store / limit /
- *   cursor) and reads the {items, next_cursor, has_more} envelope.
+ *   cursor) and reads the {items, next_cursor, limit} Page envelope.
  * - getEntityNeighbours sends rank / per_predicate and reads the remainders map.
  */
 
@@ -34,7 +34,7 @@ import { getEntityFacts, getEntityNeighbours } from "./client.ts";
 // ---------------------------------------------------------------------------
 
 describe("getEntityFacts — keyset contract", () => {
-  it("returns the {items, next_cursor, has_more} envelope", async () => {
+  it("returns the {items, next_cursor, limit} envelope", async () => {
     mockJson({
       items: [
         {
@@ -56,7 +56,7 @@ describe("getEntityFacts — keyset contract", () => {
         },
       ],
       next_cursor: "CURSOR_2",
-      has_more: true,
+      limit: 50,
     });
 
     const res = await getEntityFacts("e1");
@@ -64,7 +64,7 @@ describe("getEntityFacts — keyset contract", () => {
     expect(res.items[0].store).toBe("identity");
     expect(res.items[0].staleness_band).toBe("fresh");
     expect(res.next_cursor).toBe("CURSOR_2");
-    expect(res.has_more).toBe(true);
+    expect(res.limit).toBe(50);
     // No filters → bare path.
     const url: string = mockFetch.mock.calls[0][0];
     expect(url).toContain("/entities/e1/facts");
@@ -72,7 +72,7 @@ describe("getEntityFacts — keyset contract", () => {
   });
 
   it("sends predicate / validity / store / limit / cursor query params", async () => {
-    mockJson({ items: [], next_cursor: null, has_more: false });
+    mockJson({ items: [], next_cursor: null, limit: 50 });
     await getEntityFacts("e1", {
       predicate: "works-at",
       validity: "superseded",
@@ -91,7 +91,7 @@ describe("getEntityFacts — keyset contract", () => {
   });
 
   it("does not send omitted params", async () => {
-    mockJson({ items: [], next_cursor: null, has_more: false });
+    mockJson({ items: [], next_cursor: null, limit: 20 });
     await getEntityFacts("e1", { limit: 20 });
     const url: string = mockFetch.mock.calls[0][0];
     expect(url).toContain("limit=20");

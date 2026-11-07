@@ -20,6 +20,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from urllib.parse import urlparse
 
 import asyncpg
@@ -34,6 +35,7 @@ from butlers.core.approval_delivery_authority import (
     ProtectedApprovalMCP,
     SourceApprovalAdmission,
     approval_companion_mcp,
+    approval_delivery_composition,
 )
 from butlers.core.approval_delivery_transport import RecoveryAuthorityError
 from butlers.core.approval_delivery_worker import ApprovalDeliveryWorker, HandoffResult
@@ -81,7 +83,7 @@ def authority_db_url(postgres_container) -> str:
     for schema, chains in (
         ("relationship", ["core", "memory", "relationship", "approvals"]),
         ("switchboard", ["core", "switchboard"]),
-        ("messenger", ["core", "messenger"]),
+        ("messenger", ["core", "messenger", "approvals"]),
     ):
         for chain in chains:
             command.upgrade(
@@ -110,7 +112,11 @@ async def authority_pools(authority_db_url):
             "relationship.approval_delivery_cohorts, "
             "relationship.approval_delivery_intents, relationship.approval_events, "
             "relationship.pending_actions, switchboard.notifications, "
-            "switchboard.message_inbox, messenger.approval_delivery_handoffs CASCADE"
+            "switchboard.message_inbox, messenger.approval_delivery_handoffs, "
+            "messenger.approval_delivery_attempts, messenger.approval_delivery_cohort_members, "
+            "messenger.approval_delivery_presentations, messenger.approval_delivery_cohorts, "
+            "messenger.approval_delivery_intents, messenger.approval_events, "
+            "messenger.pending_actions CASCADE"
         )
     finally:
         await cleanup.close()
@@ -158,6 +164,9 @@ async def authority_pools(authority_db_url):
         source = pools["relationship"]
         await source.execute(
             "UPDATE approval_delivery_rollout SET admission_enabled=true, worker_enabled=false"
+        )
+        await pools["messenger"].execute(
+            "UPDATE approval_delivery_rollout SET admission_enabled=false, worker_enabled=false"
         )
         await source.execute(
             "UPDATE public.approvals_policy SET quiet_start_hour=NULL, quiet_end_hour=NULL, "
@@ -235,7 +244,7 @@ async def _registered_servers(pools):
         messenger_registration,
         lambda *_args, **_kwargs: messenger_registration.tool(),
     )
-    return switchboard, switchboard_mcp, messenger_mcp, providers
+    return switchboard, switchboard_mcp, messenger_mcp, providers, daemon
 
 
 async def _admit_source_actions(pool, *, ordinal, count=1):
@@ -332,6 +341,7 @@ async def _ordinary_tcp_mcp(registered):
 
 
 _CASES = [
+    "production-composition",
     "accepted",
     "cohort",
     "missing",
@@ -375,6 +385,7 @@ _CASES = [
 # REQ-butler-messenger-001, REQ-butler-messenger-002.
 @pytest.mark.parametrize("case", _CASES)
 async def test_registered_source_authority_transport(authority_pools, case, caplog, monkeypatch):
+    monkeypatch.setenv("DASHBOARD_URL", "https://dashboard.example.test")
     caplog.set_level(logging.INFO, logger="butlers.mcp_wrappers")
     from butlers import mcp_wrappers
 
@@ -397,11 +408,19 @@ async def test_registered_source_authority_transport(authority_pools, case, capl
     source = SourceApprovalAdmission(
         ApprovalDeliveryRepository(pools["relationship"]), owning_schema="relationship"
     )
+    # The source authority signs references; output resolution is not part of
+    # caller authority and must not restore raw action URLs.
     minted_proofs = []
     callback_tokens = []
     actual_mint = source.mint
 
     async def observed_mint(*args, **kwargs):
+        envelope = args[1]
+        for action in envelope.get("actions", []):
+            assert "dashboard_url" not in action
+            if action["verb"] == "open_dashboard":
+                assert action["reference"]["kind"] == "self"
+                assert action["reference"]["route_key"] in {"approval_detail", "approvals_queue"}
         proof = await actual_mint(*args, **kwargs)
         minted_proofs.append(proof)
         callback_tokens.extend(
@@ -412,7 +431,126 @@ async def test_registered_source_authority_transport(authority_pools, case, capl
         return proof
 
     monkeypatch.setattr(source, "mint", observed_mint)
-    module, switchboard_mcp, messenger_mcp, providers = await _registered_servers(pools)
+    module, switchboard_mcp, messenger_mcp, providers, messenger = await _registered_servers(pools)
+    if case == "production-composition":
+        # Registry routing applies this chart-owned host mapping before the
+        # bound companion is called; it still never opens a TCP delivery path.
+        monkeypatch.setenv("BUTLERS_HOST", "butlers-up.example.test")
+        from butlers.core.approval_callbacks import verify_approval_callback_token
+        from butlers.credential_store import CredentialStore
+        from butlers.modules.approvals.module import ApprovalsModule
+
+        # Actual registered Messenger object, real owning-role stores/resolvers,
+        # and the exact production composition (the host hookup has a unit owner).
+        pool = pools["messenger"]
+        approvals = ApprovalsModule()
+        await approvals.on_startup(None, pool)
+        try:
+            await approvals.register_tools(messenger_mcp, None, pool, "messenger")
+            await pool.execute(
+                "UPDATE approval_delivery_rollout SET admission_enabled=true, worker_enabled=true"
+            )
+            messenger.config.db_schema = "messenger"
+            messenger.config.port = 41102
+            messenger.mcp = messenger_mcp
+            messenger._modules.append(approvals)
+            messenger._module_runtime_states = {
+                "approvals": SimpleNamespace(health="active", enabled=True)
+            }
+            messenger._approval_delivery_runtime = None
+            messenger._approval_delivery_task = None
+            messenger._approval_delivery_stop = None
+            messenger._credential_store = CredentialStore(pool)
+            await messenger._credential_store.store("APPROVAL_CALLBACK_SECRET", "synthetic-secret")
+            # A configured candidate does not grant owner authority: production
+            # composition and Messenger both run the real owning-role verifier.
+            messenger._resolve_default_notify_recipient = AsyncMock(return_value=_RECIPIENT)
+            completed = asyncio.Event()
+            actual_complete = ApprovalDeliveryRepository.complete_handoff
+
+            async def observe_completion(repository, claim, result):
+                committed = await actual_complete(repository, claim, result)
+                if committed and result.classification == "confirmed":
+                    completed.set()
+                return committed
+
+            monkeypatch.setattr(ApprovalDeliveryRepository, "complete_handoff", observe_completion)
+            switchboard = SimpleNamespace(
+                config=SimpleNamespace(name="switchboard"),
+                mcp=switchboard_mcp,
+                _modules=[module],
+                _module_runtime_states={
+                    "switchboard": SimpleNamespace(health="active", enabled=True)
+                },
+            )
+            action_id = uuid.uuid4()
+            requested_at = datetime.now(UTC)
+            call = {"chat_id": "500600700", "text": "Synthetic exact approved call"}
+            await park_pending_action(
+                pool,
+                action_id=action_id,
+                tool_name="telegram_send_message",
+                tool_args=call,
+                agent_summary="Synthetic exact approved call",
+                requested_at=requested_at,
+                expires_at=requested_at + timedelta(hours=2),
+                why="Synthetic owner-requested send.",
+                evidence=[],
+                blast_radius="contact",
+                reversibility="compensable",
+                origin_butler="messenger",
+            )
+            async with (
+                asyncio.timeout(30),
+                approval_delivery_composition([switchboard, messenger]) as production,
+            ):
+                assert production is not None
+                await completed.wait()
+                assert (
+                    await pool.fetchval("SELECT state FROM approval_delivery_presentations")
+                    == "delivered"
+                )
+                assert len(providers["telegram"].calls) == 1
+                assert await pool.fetchval("SELECT count(*) FROM approval_delivery_intents") == 1
+                assert (
+                    await pool.fetchval("SELECT count(*) FROM approval_delivery_presentations") == 1
+                )
+                handoff = await pool.fetchrow("SELECT * FROM approval_delivery_handoffs")
+                assert handoff["issuer"] == handoff["owning_schema"] == "messenger"
+                assert handoff["handoff_class"] == "confirmed"
+                provider_args, provider_kwargs = providers["telegram"].calls[0]
+                assert provider_args[0] == _RECIPIENT
+                assert call["chat_id"] in provider_args[1] and call["text"] in provider_args[1]
+                buttons = provider_kwargs["reply_markup"]["inline_keyboard"]
+                tokens = [
+                    button["callback_data"]
+                    for row in buttons
+                    for button in row
+                    if "callback_data" in button
+                ]
+                assert len(tokens) == 2
+                for token in tokens:
+                    verified = verify_approval_callback_token(
+                        token, requested_at=requested_at, secret="synthetic-secret"
+                    )
+                    assert verified is not None and verified.action_id == action_id
+                    assert (
+                        verify_approval_callback_token(
+                            token, requested_at=requested_at, secret="wrong-secret"
+                        )
+                        is None
+                    )
+                assert (
+                    await pool.fetchval("SELECT status FROM pending_actions WHERE id=$1", action_id)
+                    == "pending"
+                )
+            assert messenger._approval_delivery_runtime is None
+            assert messenger._approval_delivery_task is None
+            assert module._approval_recovery_call is None
+            assert len(providers["telegram"].calls) == 1
+        finally:
+            await approvals.on_shutdown()
+        return
     with tempfile.TemporaryDirectory(prefix="approval-", dir=Path.home()) as folder:
         sockets = Path(folder)
         topology = ApprovalAuthorityTopology(
@@ -435,6 +573,12 @@ async def test_registered_source_authority_transport(authority_pools, case, capl
             assert (await runtime.handoff(control, envelope)).classification == "confirmed"
             assert (await runtime.handoff(control, envelope)).classification == "confirmed"
             assert len(providers["telegram"].calls) == 1
+            dashboard_button = providers["telegram"].calls[0][1]["reply_markup"]["inline_keyboard"][
+                -1
+            ][0]
+            assert dashboard_button["url"].startswith("https://dashboard.example.test/approvals/")
+            assert dashboard_button["text"] == "Open dashboard.example.test (dashboard)"
+
             assert await repo.complete_handoff(control, HandoffResult("confirmed"))
             repo, claim, payload = await _claimed_presentation(
                 pools["relationship"], ordinal=1, cohort=case == "cohort"
@@ -846,6 +990,66 @@ asyncio.run(main())
                 )
                 is False
             )
-        assert list(sockets.iterdir()) == []
+        assert await asyncio.to_thread(lambda: list(sockets.iterdir())) == []
         assert module._approval_recovery_call is None and not module._approval_recovery_verifiers
         assert await source.verify(payload, proof) == {"allowed": False}
+
+
+async def test_actual_recovery_ledger_never_replays_native_telegram_unknown_receipt(
+    authority_pools, monkeypatch
+):
+    """Actual authenticated handoff retains an ambiguous provider attempt across callers."""
+    import httpx
+
+    from butlers.modules.telegram import TelegramModule
+
+    pools = authority_pools
+    module, switchboard_mcp, messenger_mcp, providers, _messenger = await _registered_servers(pools)
+    native = TelegramModule()
+    native._db = SimpleNamespace(pool=pools["messenger"])
+    native._butler_name = "messenger"
+    requests = []
+
+    async def post(url, *, json):
+        requests.append(json)
+        raise httpx.ReadTimeout("controlled unknown provider receipt")
+
+    monkeypatch.setattr(native, "_get_client", lambda: SimpleNamespace(post=post))
+    monkeypatch.setattr(native, "_base_url", lambda: "https://telegram.test")
+    providers["telegram"]._send_message = native._send_message
+    providers["telegram"].supports_inert_link_delivery = True
+    source = SourceApprovalAdmission(
+        ApprovalDeliveryRepository(pools["relationship"]), owning_schema="relationship"
+    )
+    with tempfile.TemporaryDirectory(prefix="approval-long-", dir=Path.home()) as folder:
+        topology = ApprovalAuthorityTopology(
+            sources={"relationship": source},
+            switchboard_registered=switchboard_mcp,
+            switchboard_module=module,
+            messenger_registered=messenger_mcp,
+            messenger_registry_url=_MESSENGER_URL,
+            socket_directory=Path(folder),
+        )
+        async with asyncio.timeout(45), topology:
+            runtime = topology.runtime(
+                "relationship",
+                resolve_owner_recipient=lambda: asyncio.sleep(0, result=_RECIPIENT),
+                resolve_callback_secret=lambda: asyncio.sleep(0, result="synthetic-secret"),
+            )
+            _, claim, envelope = await _claimed_presentation(pools["relationship"], ordinal=70)
+            first = await runtime.handoff(claim, envelope)
+            second = await runtime.handoff(claim, envelope)
+            assert first.classification == second.classification == "ambiguous"
+            assert len(requests) == 1
+            if envelope.get("render_links_inert"):
+                assert requests[0]["link_preview_options"] == {"is_disabled": True}
+            else:
+                assert "link_preview_options" not in requests[0]
+            async with pools["messenger"].acquire() as independent:
+                row = await independent.fetchrow(
+                    "SELECT handoff_class,provider_reference,provider_started_at "
+                    "FROM approval_delivery_handoffs WHERE presentation_key=$1",
+                    claim.presentation_key,
+                )
+            assert row["handoff_class"] == "ambiguous"
+            assert row["provider_reference"] is None and row["provider_started_at"] is not None

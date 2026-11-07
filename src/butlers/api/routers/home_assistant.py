@@ -26,8 +26,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 
+from butlers.api.deps import OptionalDb
 from butlers.api.models.home_assistant import (
     HAConfigRequest,
     HAConfigResponse,
@@ -40,6 +41,7 @@ from butlers.credential_store import (
     resolve_owner_entity_info,
     upsert_owner_entity_info,
 )
+from butlers.home_assistant_client import rest_client
 
 logger = logging.getLogger(__name__)
 
@@ -57,15 +59,6 @@ _ALL_EI_TYPES = (_EI_HA_URL, _EI_HA_TOKEN)
 # ---------------------------------------------------------------------------
 # Dependency injection stub
 # ---------------------------------------------------------------------------
-
-
-def _get_db_manager() -> Any:
-    """Stub replaced at startup by wire_db_dependencies().
-
-    When not wired (e.g. in tests that don't boot the full app), returns None
-    so endpoints degrade gracefully.
-    """
-    return None
 
 
 def _resolve_pool(db_manager: Any):
@@ -154,11 +147,8 @@ async def _validate_ha_connection(url: str, token: str) -> None:
     probe_url = f"{base}/api/"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                probe_url,
-                headers={"Authorization": f"Bearer {token}"},
-            )
+        async with rest_client(base, token, timeout=10.0) as client:
+            resp = await client.get(probe_url)
     except httpx.TimeoutException as exc:
         raise _HAValidationError(
             f"Connection to Home Assistant timed out: {exc}",
@@ -194,7 +184,8 @@ async def _validate_ha_connection(url: str, token: str) -> None:
 
 @router.get("", response_model=HAStatusResponse)
 async def get_ha_status(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> HAStatusResponse:
     """Return the current Home Assistant connection state.
 
@@ -248,7 +239,8 @@ async def get_ha_status(
 @router.post("", response_model=HAConfigResponse)
 async def configure_ha(
     body: HAConfigRequest,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> HAConfigResponse:
     """Validate and store Home Assistant URL + access token.
 
@@ -297,7 +289,8 @@ async def configure_ha(
 
 @router.delete("", response_model=HADeleteResponse)
 async def delete_ha_config(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> HADeleteResponse:
     """Remove stored Home Assistant credentials from entity_info.
 

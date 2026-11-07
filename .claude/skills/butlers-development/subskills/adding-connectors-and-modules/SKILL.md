@@ -79,6 +79,13 @@ Key requirements:
 
 ### Phase 4: Connector Spec
 
+Give each connector one canonical frozen row in `src/butlers/connector_catalog.py`
+and obtain runtime identity through `connector_descriptor()`. Keep aliases,
+secondary pairs and stored-event spellings explicit; do not add configurable
+identity environment variables or duplicate connector lists. A descriptor row
+does not authorize a new wire pair, credential store or registration. Follow the
+existing RFC/spec change process for any genuinely new contract.
+
 Implement the connector base contract from `openspec/specs/connector-base-spec/spec.md`. **This is the most complex component.** See [references/connector-base-obligations.md](references/connector-base-obligations.md) for the full checklist.
 
 Critical obligations that are easy to miss:
@@ -115,7 +122,15 @@ Use `/opsx:ff` to fast-forward artifact creation:
 /opsx:ff <service>-integration
 ```
 
-This creates: proposal → design → specs (one per capability) → tasks.
+Create artifacts for the actual workflow. A new eligible single-butler change without
+local delta specs can use `single-butler`; new standalone integrations that require a
+design use `living-specs`. New multi-PR programs may use `spec-driven`
+local deltas; all existing legacy programs retain their resolved schemas unchanged.
+Retained delta programs keep
+their existing local requirements. A cross-butler contract, shared schema or security boundary
+requires a design. Keep canonical requirements in `openspec/specs/` and update an affected
+requirement in the source change when observable behavior changes. Read existing designs and
+preserve every spec, review and verification gate.
 
 ## Codex Adapter
 

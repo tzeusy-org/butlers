@@ -90,8 +90,10 @@ Recovery (emitted from healing/dispatch.py and qa/dispatch.py):
 Domain events (emitted from core_tools/_domain_events.py):
 
   butlers.domain_event.delivery_failed_permanent_total Counter
-      (labels: source_butler, destination_butler, reason=non_retryable|attempts_exhausted)
+      (labels: emitter_butler, source_butler, destination_butler,
+       reason=non_retryable|attempts_exhausted)
       Durable domain-event delivery transitions that can no longer be retried.
+      Each emitter primes its routes at zero on startup.
 
 Failover (emitted from spawner.py same-tier failover loop):
 
@@ -115,8 +117,11 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterable
 
 from opentelemetry import metrics
+
+from butlers.core.logging import get_butler_context
 
 logger = logging.getLogger(__name__)
 
@@ -417,26 +422,88 @@ def _domain_event_delivery_failed_permanent_total() -> metrics.Counter:
 
 def record_domain_event_delivery_failed_permanent(
     *,
+    emitter_butler: str,
     source_butler: str,
     destination_butler: str,
     reason: str,
 ) -> None:
     """Record one durable domain-event ``failed_permanent`` transition.
 
+    ``emitter_butler`` names the daemon recording the transition: the
+    publisher for a fresh fan-out, Switchboard for a reconciliation sweep.
+    Two daemons can record the same route, and without it their cumulative
+    counts would land on one series and interleave.
+
     ``reason`` is deliberately closed to the two ledger transition paths.
-    Callers provide only registered butler names for source and destination;
-    event IDs, event types, payloads, exceptions, and timestamps are never
-    metric attributes.
+    Callers provide only registered butler names; event IDs, event types,
+    payloads, exceptions, and timestamps are never metric attributes.
     """
     if reason not in _DOMAIN_EVENT_DELIVERY_FAILURE_REASONS:
         raise ValueError(f"unsupported failed-permanent reason: {reason!r}")
     _domain_event_delivery_failed_permanent_total().add(
         1,
         {
+            "emitter_butler": emitter_butler,
             "source_butler": source_butler,
             "destination_butler": destination_butler,
             "reason": reason,
         },
+    )
+
+
+def prime_domain_event_delivery_failed_permanent(
+    *,
+    emitter_butler: str,
+    routes: Iterable[tuple[str, str]],
+) -> None:
+    """Create every ``(source, destination)`` route series this emitter can write, at zero.
+
+    Alert rules read the counter through ``increase()``, which needs a prior
+    sample; a series created by its first failure would hide that failure.
+    """
+    counter = _domain_event_delivery_failed_permanent_total()
+    for source_butler, destination_butler in routes:
+        for reason in sorted(_DOMAIN_EVENT_DELIVERY_FAILURE_REASONS):
+            counter.add(
+                0,
+                {
+                    "emitter_butler": emitter_butler,
+                    "source_butler": source_butler,
+                    "destination_butler": destination_butler,
+                    "reason": reason,
+                },
+            )
+
+
+# ---------------------------------------------------------------------------
+# Memory knowledge-gap instruments
+# ---------------------------------------------------------------------------
+
+_KNOWLEDGE_GAP_CLOSURE_FAILURE_STAGES = frozenset({"closure", "reservation"})
+_UNKNOWN_BUTLER = "unknown"
+
+
+def _knowledge_gap_closure_failures_total() -> metrics.Counter:
+    """Counter: swallowed knowledge-gap bookkeeping failures (butler and stage labels)."""
+    return get_meter().create_counter(
+        name="butlers.memory.knowledge_gap_closure_failures_total",
+        description="Knowledge-gap bookkeeping failures swallowed so the fact write could commit",
+        unit="failures",
+    )
+
+
+def record_knowledge_gap_closure_failure(*, stage: str) -> None:
+    """Record one swallowed knowledge-gap closure failure.
+
+    ``stage`` is closed to the bookkeeping steps that run on a fact write's connection.
+    ``butler`` is the registered butler name from the logging context, or ``unknown`` when
+    the write runs outside any butler context. Entity, predicate, fact IDs and exception
+    text are never metric attributes.
+    """
+    if stage not in _KNOWLEDGE_GAP_CLOSURE_FAILURE_STAGES:
+        raise ValueError(f"unsupported knowledge-gap closure failure stage: {stage!r}")
+    _knowledge_gap_closure_failures_total().add(
+        1, {"butler": get_butler_context() or _UNKNOWN_BUTLER, "stage": stage}
     )
 
 

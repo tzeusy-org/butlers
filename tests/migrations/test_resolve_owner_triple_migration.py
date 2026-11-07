@@ -1,4 +1,4 @@
-"""Integration test: public.resolve_owner_triple SECURITY DEFINER (core_145/core_233).
+"""Integration test: public.resolve_owner_triple SECURITY DEFINER (core_145 to core_296).
 
 Closes the gap identified in bu-6ui2o: the mocked-pool unit tests in
 ``test_gate.py`` and ``test_identity_resolution.py`` cover the Python layer
@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import uuid
 from urllib.parse import urlparse
 
 import asyncpg
@@ -48,39 +49,33 @@ pytestmark = [
 ]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Module-scoped fixtures (provisioned once per test module)
+# Fixtures (a fresh migrated clone per test)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _ISOLATED_ROLE = "butler_isolated_rw_core145"
 _ISOLATED_ROLE_PASSWORD = "isolated_test_pw_core145"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision core, relationship, and Messenger approvals schemas.
-
-    The ``core`` chain creates ``public.entities`` and
-    ``public.resolve_owner_triple`` (core_145).  The ``relationship`` chain
-    creates ``relationship.entity_facts``.  The approvals chain supplies real
-    pending/rule tables under Messenger's schema for guard-level assertions.
-    """
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "relationship", "approvals"],
+@pytest.fixture
+def owner_db_url(fresh_db) -> str:
+    """Core (``resolve_owner_triple``), relationship facts, and Messenger approvals."""
+    return fresh_db(
+        "core",
+        "relationship",
+        "approvals",
         schemas={"relationship": "relationship", "approvals": "messenger"},
     )
 
 
-@pytest.fixture(scope="module")
-async def migration_pool(migrated_db_url: str) -> asyncpg.Pool:
+@pytest.fixture
+async def migration_pool(owner_db_url: str) -> asyncpg.Pool:
     """Migration-role asyncpg pool to the migrated disposable database."""
-    pool = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    pool = await asyncpg.create_pool(owner_db_url, min_size=1, max_size=3)
     yield pool
     await pool.close()
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
     """Seed owner + non-owner entities and matching ``entity_facts`` rows.
 
@@ -238,10 +233,10 @@ async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
     }
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 async def isolated_role_pool(
     postgres_container,
-    migrated_db_url: str,
+    owner_db_url: str,
 ) -> asyncpg.Pool:
     """Pool connected as a schema-isolated butler role.
 
@@ -258,7 +253,7 @@ async def isolated_role_pool(
     runs under SET ROLE butler_<schema>_rw and cannot read relationship.entity_facts
     directly.  The SECURITY DEFINER function bridges that gap.
     """
-    parsed = urlparse(migrated_db_url)
+    parsed = urlparse(owner_db_url)
     db_name = parsed.path.lstrip("/")
 
     # The migrated DB URL deliberately authenticates as a NOCREATEROLE normal
@@ -307,10 +302,10 @@ async def isolated_role_pool(
     await pool.close()
 
 
-@pytest.fixture(scope="module")
-async def messenger_role_pool(migrated_db_url: str) -> asyncpg.Pool:
+@pytest.fixture
+async def messenger_role_pool(owner_db_url: str) -> asyncpg.Pool:
     """Production Database pool constrained by the real Messenger runtime role."""
-    parsed = urlparse(migrated_db_url)
+    parsed = urlparse(owner_db_url)
     database = Database(
         db_name=parsed.path.lstrip("/"),
         schema="messenger",
@@ -319,7 +314,6 @@ async def messenger_role_pool(migrated_db_url: str) -> asyncpg.Pool:
         port=parsed.port or 5432,
         user=parsed.username or "postgres",
         password=parsed.password or "",
-        strict_role_enforcement=True,
         min_pool_size=1,
         max_pool_size=2,
     )
@@ -840,6 +834,458 @@ async def test_core_233_downgrade_and_reapply_restores_function_behavior(
                 ["collision@example.test"],
             )
             is None
+        )
+    finally:
+        await pool.close()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Endpoint custody holds (core_293, bu-s11n0s.1; core_295, bu-s11n0s.25; core_296, bu-s11n0s.29)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_HOLD_INSERT = """
+INSERT INTO public.custody_holds
+    (owner_entity_id, target_kind, target_digest, generation, episode_id, reason,
+     source_command_id)
+VALUES ($1, $2, public.custody_target_digest($2, $3), $4, gen_random_uuid(), 'lost',
+        gen_random_uuid())
+RETURNING id
+"""
+
+
+async def _release(pool: asyncpg.Pool, hold_id) -> None:
+    await pool.execute("UPDATE public.custody_holds SET released_at = now() WHERE id = $1", hold_id)
+
+
+class TestEndpointCustodyHolds:
+    """REQ-endpoint-custody-holds-006: active holds refuse owner resolution.
+
+    REQ-endpoint-custody-holds-002: runtime roles cannot forge hold lifecycle.
+    """
+
+    async def test_held_owner_endpoints_stop_resolving_until_release(
+        self,
+        migration_pool: asyncpg.Pool,
+        isolated_role_pool: asyncpg.Pool,
+        seeded_data: dict,
+    ) -> None:
+        """Email, Telegram and WhatsApp-by-phone holds refuse owner; release restores."""
+        from butlers.identity import resolve_owner_channel_via_definer
+
+        owner_id = seeded_data["owner_id"]
+        await migration_pool.executemany(
+            """
+            INSERT INTO relationship.entity_facts
+                (subject, predicate, object, object_kind, src, "primary", validity)
+            VALUES ($1, $2, $3, 'literal', 'test', true, 'active')
+            """,
+            [
+                (owner_id, "has-email", "Held.Owner@Example.Test"),
+                (owner_id, "has-handle", "telegram:900100200"),
+            ],
+        )
+        targets = (
+            ("email", "held.owner@example.test", "has-email", "held.owner@example.test"),
+            ("telegram_bot", "900100200", "has-handle", "telegram:900100200"),
+            ("whatsapp_jid", "15551112222@s.whatsapp.net", "has-phone", "15551112222"),
+        )
+
+        async def resolves(channel: str, value: str) -> bool:
+            result = await resolve_owner_channel_via_definer(
+                isolated_role_pool, channel, value, raise_on_error=True
+            )
+            return result is not None and result[0].entity_id == owner_id
+
+        for channel, value, _, _ in targets:
+            assert await resolves(channel, value), channel
+
+        holds = [
+            await migration_pool.fetchval(_HOLD_INSERT, owner_id, kind, key, 1)
+            for _, _, kind, key in targets
+        ]
+        try:
+            for channel, value, _, _ in targets:
+                assert not await resolves(channel, value), channel
+            # An unheld sibling endpoint of the same owner keeps resolving.
+            assert await resolves("email", seeded_data["owner_primary_email"])
+            # Held means not owner, not ambiguous: the content-blind read agrees.
+            assert await isolated_role_pool.fetchval(
+                "SELECT public.custody_target_held('has-email', $1)",
+                "Held.Owner@Example.Test",
+            )
+        finally:
+            for hold_id in holds:
+                await _release(migration_pool, hold_id)
+
+        for channel, value, _, _ in targets:
+            assert await resolves(channel, value), channel
+
+        # Generations are monotonic per target and never reset on rehold.
+        with pytest.raises(asyncpg.PostgresError, match="next generation"):
+            await migration_pool.fetchval(
+                _HOLD_INSERT, owner_id, "has-email", "held.owner@example.test", 1
+            )
+        rehold = await migration_pool.fetchval(
+            _HOLD_INSERT, owner_id, "has-email", "held.owner@example.test", 2
+        )
+        assert not await resolves("email", "held.owner@example.test")
+        await _release(migration_pool, rehold)
+
+    async def test_hold_history_is_owner_maintained_and_immutable(
+        self,
+        migration_pool: asyncpg.Pool,
+        messenger_role_pool: asyncpg.Pool,
+        seeded_data: dict,
+    ) -> None:
+        """Runtime roles cannot read, forge, release or delete; history never rewinds."""
+        owner_id = seeded_data["owner_id"]
+        hold_id = await migration_pool.fetchval(
+            _HOLD_INSERT, owner_id, "has-handle", "telegram:immutable-hold-1", 1
+        )
+        try:
+            # Denied outright, or (after a bootstrap DML regrant) zero rows under RLS.
+            try:
+                visible = await messenger_role_pool.fetchval(
+                    "SELECT count(*) FROM public.custody_holds"
+                )
+            except asyncpg.PostgresError:
+                visible = 0
+            assert visible == 0
+            with pytest.raises(asyncpg.PostgresError):
+                await messenger_role_pool.fetchval(
+                    _HOLD_INSERT, owner_id, "has-handle", "telegram:forged-hold-1", 1
+                )
+            for statement in (
+                "UPDATE public.custody_holds SET released_at = now() WHERE id = $1",
+                "DELETE FROM public.custody_holds WHERE id = $1",
+            ):
+                try:
+                    await messenger_role_pool.execute(statement, hold_id)
+                except asyncpg.PostgresError:
+                    pass
+            row = await migration_pool.fetchrow(
+                "SELECT generation, released_at FROM public.custody_holds WHERE id = $1",
+                hold_id,
+            )
+            assert row is not None and row["released_at"] is None
+            assert (
+                await migration_pool.fetchval(
+                    "SELECT count(*) FROM public.custody_holds "
+                    "WHERE target_digest = "
+                    "public.custody_target_digest('has-handle', 'telegram:forged-hold-1')"
+                )
+                == 0
+            )
+
+            for statement in (
+                "DELETE FROM public.custody_holds WHERE id = $1",
+                "UPDATE public.custody_holds SET generation = 9 WHERE id = $1",
+            ):
+                with pytest.raises(asyncpg.PostgresError):
+                    await migration_pool.execute(statement, hold_id)
+            with pytest.raises(asyncpg.PostgresError):
+                await migration_pool.execute("TRUNCATE public.custody_holds")
+            # TRUNCATE ... CASCADE follows foreign keys only, so an entity
+            # reset can never reach hold history; the guard checks the owner.
+            assert (
+                await migration_pool.fetchval(
+                    "SELECT count(*) FROM pg_constraint "
+                    "WHERE contype = 'f' AND (conrelid = 'public.custody_holds'::regclass "
+                    "OR confrelid = 'public.custody_holds'::regclass)"
+                )
+                == 0
+            )
+            with pytest.raises(asyncpg.PostgresError, match="existing owner entity"):
+                await migration_pool.fetchval(
+                    _HOLD_INSERT, uuid.uuid4(), "has-handle", "telegram:orphan-hold-1", 1
+                )
+        finally:
+            await _release(migration_pool, hold_id)
+        with pytest.raises(asyncpg.PostgresError, match="released once"):
+            await migration_pool.execute(
+                "UPDATE public.custody_holds SET released_at = NULL WHERE id = $1",
+                hold_id,
+            )
+
+    async def test_hold_covers_every_equivalent_owner_phone_spelling(
+        self,
+        migration_pool: asyncpg.Pool,
+        isolated_role_pool: asyncpg.Pool,
+        seeded_data: dict,
+    ) -> None:
+        """A held phone also demotes the owner's other spellings of that number (core_295).
+
+        '+65 8765 0123' and '87650123' digest differently, and the candidate
+        '0087650123' suffix-matches only the unheld local spelling. The hold must
+        still refuse owner, even after the held spelling stops being active.
+        """
+        owner_id = seeded_data["owner_id"]
+        fact_ids = [
+            await migration_pool.fetchval(
+                """
+                INSERT INTO relationship.entity_facts
+                    (subject, predicate, object, object_kind, src, "primary", validity)
+                VALUES ($1, 'has-phone', $2, 'literal', 'test', false, 'active')
+                RETURNING id
+                """,
+                owner_id,
+                spelling,
+            )
+            for spelling in ("+65 8765 0123", "87650123")
+        ]
+
+        async def resolves(digits: str) -> bool:
+            row = await isolated_role_pool.fetchrow(
+                "SELECT entity_id FROM public.resolve_owner_triple($1, $2)",
+                "owner-channel",
+                [f"phone-digits:{digits}"],
+            )
+            return row is not None and row["entity_id"] == owner_id
+
+        assert await resolves("0087650123")
+        hold_id = await migration_pool.fetchval(
+            _HOLD_INSERT, owner_id, "has-phone", "+65 8765 0123", 1
+        )
+        try:
+            assert not await resolves("0087650123")
+            assert not await resolves("87650123")
+            await migration_pool.execute(
+                "UPDATE relationship.entity_facts SET validity = 'superseded' WHERE id = $1",
+                fact_ids[0],
+            )
+            assert not await resolves("0087650123")
+        finally:
+            await _release(migration_pool, hold_id)
+            await migration_pool.execute(
+                "DELETE FROM relationship.entity_facts WHERE id = ANY($1::uuid[])", fact_ids
+            )
+
+    async def test_hold_covers_spellings_beyond_the_candidate_length_window(
+        self,
+        migration_pool: asyncpg.Pool,
+        isolated_role_pool: asyncpg.Pool,
+        seeded_data: dict,
+    ) -> None:
+        """Hold coverage is transitive across spellings of one number (core_296).
+
+        '0065 8765 0123' (12 digits) and '87650123' (8 digits) are too far apart
+        for the candidate suffix rule to relate them directly, yet the candidate
+        '87650123' matches the unheld spelling. Every owner phone sharing the
+        trailing eight digits stays held; a different number keeps resolving.
+        """
+        owner_id = seeded_data["owner_id"]
+        fact_ids = [
+            await migration_pool.fetchval(
+                """
+                INSERT INTO relationship.entity_facts
+                    (subject, predicate, object, object_kind, src, "primary", validity)
+                VALUES ($1, 'has-phone', $2, 'literal', 'test', false, 'active')
+                RETURNING id
+                """,
+                owner_id,
+                spelling,
+            )
+            for spelling in ("0065 8765 0123", "87650123", "+65 9123 4567")
+        ]
+
+        async def resolves(digits: str) -> bool:
+            row = await isolated_role_pool.fetchrow(
+                "SELECT entity_id FROM public.resolve_owner_triple($1, $2)",
+                "owner-channel",
+                [f"phone-digits:{digits}"],
+            )
+            return row is not None and row["entity_id"] == owner_id
+
+        try:
+            assert await resolves("87650123")
+            hold_id = await migration_pool.fetchval(
+                _HOLD_INSERT, owner_id, "has-phone", "0065 8765 0123", 1
+            )
+            try:
+                assert not await resolves("87650123")
+                assert not await resolves("6587650123")
+                assert await resolves("6591234567")
+            finally:
+                await _release(migration_pool, hold_id)
+            assert await resolves("87650123")
+        finally:
+            await migration_pool.execute(
+                "DELETE FROM relationship.entity_facts WHERE id = ANY($1::uuid[])", fact_ids
+            )
+
+    async def test_legacy_predicate_mode_never_resolves_an_unholdable_fact(
+        self,
+        migration_pool: asyncpg.Pool,
+        isolated_role_pool: asyncpg.Pool,
+        seeded_data: dict,
+    ) -> None:
+        """Exact legacy predicates outside the custody universe cannot carry owner (core_295)."""
+        owner_id = seeded_data["owner_id"]
+        fact_id = await migration_pool.fetchval(
+            """
+            INSERT INTO relationship.entity_facts
+                (subject, predicate, object, object_kind, src, "primary", validity)
+            VALUES ($1, 'has-legacy-owner-id', 'legacy-owner-1', 'literal', 'test', true,
+                    'active')
+            RETURNING id
+            """,
+            owner_id,
+        )
+        try:
+            assert (
+                await isolated_role_pool.fetchrow(
+                    "SELECT entity_id FROM public.resolve_owner_triple($1, $2)",
+                    "has-legacy-owner-id",
+                    ["legacy-owner-1"],
+                )
+                is None
+            )
+        finally:
+            await migration_pool.execute(
+                "DELETE FROM relationship.entity_facts WHERE id = $1", fact_id
+            )
+
+
+async def test_core_295_moves_custody_functions_to_the_maintenance_owner(
+    postgres_container,
+) -> None:
+    """Only the trusted database owner may replace a function a hold check calls.
+
+    The migration executor is deliberately not the database owner here, so the
+    assertion fails while any custody function stays with the executor.
+    """
+    db_url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        migration_db_name(),
+        ["core", "relationship"],
+        {"relationship": "relationship"},
+        {"core": "core_293"},
+    )
+    executor = urlparse(db_url).username
+    db_name = urlparse(db_url).path.lstrip("/")
+    trusted_owner = f"custody_owner_{uuid.uuid4().hex[:12]}"
+    admin = await asyncpg.connect(
+        postgres_container.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
+    )
+    try:
+        await admin.execute(f'CREATE ROLE "{trusted_owner}" NOLOGIN')
+        await admin.execute(f'GRANT "{trusted_owner}" TO "{executor}"')
+        await admin.execute(f'ALTER DATABASE "{db_name}" OWNER TO "{trusted_owner}"')
+        # The executor no longer owns the database; keep its ordinary access.
+        await admin.execute(f'GRANT CONNECT, TEMPORARY ON DATABASE "{db_name}" TO "{executor}"')
+    finally:
+        await admin.close()
+
+    config = _build_alembic_config(db_url, chains=["core"])
+    await asyncio.to_thread(command.upgrade, config, "core@head")
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    try:
+        owners = dict(
+            await pool.fetch(
+                """
+                SELECT p.proname, pg_get_userbyid(p.proowner)
+                FROM pg_proc p
+                JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE n.nspname = 'public'
+                  AND p.proname IN (
+                      'custody_target_digest', 'guard_custody_holds', 'custody_target_held'
+                  )
+                """
+            )
+        )
+        owners["custody_holds"] = await pool.fetchval(
+            "SELECT pg_get_userbyid(relowner) FROM pg_class "
+            "WHERE oid = 'public.custody_holds'::regclass"
+        )
+        assert owners == dict.fromkeys(
+            (
+                "custody_target_digest",
+                "guard_custody_holds",
+                "custody_target_held",
+                "custody_holds",
+            ),
+            trusted_owner,
+        )
+    finally:
+        await pool.close()
+
+
+async def test_core_293_downgrade_refuses_active_hold_and_reapplies(postgres_container) -> None:
+    """A rollback never silently restores trust in a held endpoint."""
+    db_url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        migration_db_name(),
+        ["core", "relationship"],
+        {"relationship": "relationship"},
+        {"core": "core_293"},
+    )
+    config = _build_alembic_config(db_url, chains=["core"])
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    try:
+        owner_id = await pool.fetchval(
+            "INSERT INTO public.entities (canonical_name, roles) VALUES ($1, $2) RETURNING id",
+            "Custody Owner",
+            ["owner"],
+        )
+        await pool.execute(
+            """
+            INSERT INTO relationship.entity_facts
+                (subject, predicate, object, object_kind, src, "primary", validity)
+            VALUES ($1, 'has-email', 'custody@example.test', 'literal', 'test', true, 'active')
+            """,
+            owner_id,
+        )
+        hold_id = await pool.fetchval(
+            _HOLD_INSERT, owner_id, "has-email", "custody@example.test", 1
+        )
+    finally:
+        await pool.close()
+
+    with pytest.raises(Exception, match="hold is active"):
+        await asyncio.to_thread(command.downgrade, config, "core_291")
+
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    try:
+        assert (
+            await pool.fetchrow(
+                "SELECT entity_id FROM public.resolve_owner_triple($1, $2)",
+                "owner-channel",
+                ["has-email:custody@example.test"],
+            )
+            is None
+        )
+        await _release(pool, hold_id)
+    finally:
+        await pool.close()
+
+    await asyncio.to_thread(command.downgrade, config, "core_291")
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    try:
+        assert await pool.fetchval("SELECT to_regclass('public.custody_holds')") is None
+        assert (
+            await pool.fetchval(
+                "SELECT entity_id FROM public.resolve_owner_triple($1, $2)",
+                "owner-channel",
+                ["has-email:custody@example.test"],
+            )
+            == owner_id
+        )
+    finally:
+        await pool.close()
+
+    await asyncio.to_thread(command.upgrade, config, "core@core_293")
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    try:
+        assert await pool.fetchval("SELECT count(*) FROM public.custody_holds") == 0
+        assert (
+            await pool.fetchval(
+                "SELECT entity_id FROM public.resolve_owner_triple($1, $2)",
+                "owner-channel",
+                ["has-email:custody@example.test"],
+            )
+            == owner_id
         )
     finally:
         await pool.close()

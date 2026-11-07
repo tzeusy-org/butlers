@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import shutil
 import uuid
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -21,6 +20,7 @@ import asyncpg
 import pytest
 
 from butlers.modules.memory import knowledge_gaps, storage
+from butlers.testing.fake_pool import AsyncCtx
 from tests.modules.memory.test_content_authority import (  # noqa: F401
     _engine,
     _routed,
@@ -42,6 +42,7 @@ from tests.modules.memory.test_knowledge_gaps import (  # noqa: F401
 from tests.modules.memory.test_memory_migration_integration import (  # noqa: F401
     memory_migrated_db,
 )
+from tests.polling import poll_until
 
 pytestmark = [
     pytest.mark.integration,
@@ -190,9 +191,8 @@ class _BorrowedPool:
     def __init__(self, pool, conn):
         self.pool, self.conn = pool, conn
 
-    @asynccontextmanager
-    async def acquire(self):
-        yield self.conn
+    def acquire(self):
+        return AsyncCtx(self.conn)
 
     def __getattr__(self, name):
         return getattr(self.pool, name)
@@ -212,15 +212,125 @@ async def _internal_edge(pool, left, right, predicate, *, sender=None, **kwargs)
         )
 
 
+async def test_mirrored_sensitive_writes_in_opposite_directions_do_not_deadlock(
+    pool_factory, session_hook
+):
+    """Each write stubs both subjects, and the withheld-count trigger locks a row for each."""
+    pool, owner, _ = await pool_factory()
+    session_hook(pool)
+    left, right = await _entity(pool), await _entity(pool)
+
+    async def _writes(subject, target):
+        predicate, _ = await _edge_predicates(pool, symmetric=True)
+        for _ in range(40):
+            await _internal_edge(pool, subject, target, predicate, sender=owner, sensitivity="pii")
+
+    results = await asyncio.gather(
+        _writes(left, right), _writes(right, left), return_exceptions=True
+    )
+    assert results == [None, None]
+
+
+async def test_batch_retractions_in_opposite_subject_order_do_not_deadlock(
+    pool_factory, session_hook
+):
+    """Two transactions each retract a stub of both subjects, in opposite order."""
+    pool, owner, _ = await pool_factory()
+    session_hook(pool)
+    left, right = await _entity(pool), await _entity(pool)
+
+    async def _stub(subject, target):
+        predicate, _ = await _edge_predicates(pool, inverse=False)
+        stored = await _internal_edge(
+            pool, subject, target, predicate, sender=owner, sensitivity="pii"
+        )
+        return stored["id"]
+
+    left_first, left_second = await _stub(left, right), await _stub(left, right)
+    right_first, right_second = await _stub(right, left), await _stub(right, left)
+
+    async with pool.acquire() as first, pool.acquire() as second:
+        second_pid = await second.fetchval("SELECT pg_backend_pid()")
+        first_tx = first.transaction()
+        await first_tx.start()
+        await storage.cascade_fact_retraction(first, [left_first])
+
+        async def _opposite_order():
+            async with second.transaction():
+                await storage.cascade_fact_retraction(second, [right_first])
+                await storage.cascade_fact_retraction(second, [left_second])
+
+        opposite = asyncio.create_task(_opposite_order())
+
+        async def _second_is_waiting_or_done() -> bool:
+            return opposite.done() or await pool.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND NOT granted)",
+                second_pid,
+            )
+
+        async with asyncio.timeout(10):
+            await poll_until(_second_is_waiting_or_done, interval_s=0.01)
+        await storage.cascade_fact_retraction(first, [right_second])
+        await first_tx.commit()
+        await opposite
+
+    remaining = await pool.fetch(
+        "SELECT entity_id FROM public.entity_graph_withheld_counts WHERE entity_id = ANY($1)",
+        [left, right],
+    )
+    assert remaining == []
+
+
+async def test_a_mirrored_write_and_a_retraction_of_its_inverse_fact_both_commit(
+    pool_factory, session_hook
+):
+    """The writer waits on the fact row; the retractor must not then wait on anything it holds."""
+    pool, owner, _ = await pool_factory()
+    session_hook(pool)
+    left, right = await _entity(pool), await _entity(pool)
+    predicate, _ = await _edge_predicates(pool, symmetric=True)
+    await _internal_edge(pool, left, right, predicate, sender=owner, sensitivity="pii")
+    inverse = await pool.fetchval(
+        "SELECT id FROM facts WHERE entity_id = $1 AND object_entity_id = $2",
+        right,
+        left,
+    )
+
+    async with pool.acquire() as retractor:
+        retractor_pid = await retractor.fetchval("SELECT pg_backend_pid()")
+        transaction = retractor.transaction()
+        await transaction.start()
+        await retractor.execute("UPDATE facts SET validity = 'retracted' WHERE id = $1", inverse)
+        writer = asyncio.create_task(
+            _internal_edge(pool, left, right, predicate, sender=owner, sensitivity="pii")
+        )
+
+        async def _writer_is_blocked() -> bool:
+            return await pool.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                "WHERE $1 = ANY(pg_blocking_pids(pid)))",
+                retractor_pid,
+            )
+
+        async with asyncio.timeout(10):
+            await poll_until(_writer_is_blocked, interval_s=0.01)
+        await storage.cascade_fact_retraction(retractor, [inverse])
+        await transaction.commit()
+        await writer
+
+
 async def _wait_for_advisory_wait(pool, pid):
     """Wait on PostgreSQL's actual lock waiter, never a scheduling sleep assumption."""
     async with asyncio.timeout(10):
-        while not await pool.fetchval(
-            "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1"
-            " AND locktype = 'advisory' AND NOT granted)",
-            pid,
-        ):
-            await asyncio.sleep(0.01)
+
+        async def _condition_met() -> bool:
+            return await pool.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1"
+                " AND locktype = 'advisory' AND NOT granted)",
+                pid,
+            )
+
+        await poll_until(_condition_met, interval_s=0.01)
 
 
 @pytest.mark.parametrize("first", ["capture", "writer"])
@@ -478,7 +588,7 @@ async def test_connected_outer_failure_or_cancel_rolls_back_both_facts_and_answe
 
 @pytest.mark.parametrize("failure", ["reservation", "direct", "inverse"])
 async def test_real_sql_bookkeeping_failure_recovers_its_savepoint_and_commits_facts(
-    pool_factory, session_hook, failure
+    pool_factory, session_hook, failure, request
 ):
     pool, owner, _ = await pool_factory()
     session_hook(pool)
@@ -486,7 +596,14 @@ async def test_real_sql_bookkeeping_failure_recovers_its_savepoint_and_commits_f
     forward, reverse = await _edge_predicates(pool)
     for entity, predicate in ((left, forward), (right, reverse)):
         await _decline(pool, await _conversation(pool), entity, predicate)
-    before = knowledge_gaps.closure_failures
+    from tests.core.test_otel_metrics import (
+        _collect_metrics,
+        _make_in_memory_provider,
+        _reset_metrics_global_state,
+    )
+
+    _provider, reader = _make_in_memory_provider()
+    request.addfinalizer(_reset_metrics_global_state)
 
     # Transparent connection observer: the real SQL error is issued by PostgreSQL
     # inside the production savepoint; no lock, closure, or database result is mocked.
@@ -531,7 +648,12 @@ async def test_real_sql_bookkeeping_failure_recovers_its_savepoint_and_commits_f
         tuple([(await _gap(pool, e, p))["status"] for e, p in ((left, forward), (right, reverse))])
         == expected
     )
-    assert knowledge_gaps.closure_failures == before + 1
+    (point,) = _collect_metrics(reader)["butlers.memory.knowledge_gap_closure_failures_total"]
+    assert dict(point.attributes) == {
+        "butler": "unknown",
+        "stage": "reservation" if failure == "reservation" else "closure",
+    }
+    assert point.value == 1
     [listed] = [
         g
         for g in await knowledge_gaps.list_gaps(pool)

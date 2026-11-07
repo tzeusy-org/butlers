@@ -67,10 +67,12 @@ E2E security tests SHALL validate credential isolation, MCP config lockdown, dat
 Source: RFC 0038 D3, D7 and D17
 Scope: v1-mandatory
 
+ID: REQ-testing-062
+
 #### Scenario: Credential sandbox testing
 - **WHEN** testing environment variable isolation
 - **THEN** a canary env var (`TEST_SECRET_CANARY`) is set, a goal is admitted, and the test asserts its invocations cannot access the undeclared variable
-- **AND** each invocation's environment holds only `PATH`, its staged model credential and its MCP config, and the session host holds no domain, database or connector credential
+- **AND** each invocation's environment holds only `PATH`, its staged model credential, its MCP config and adapter-owned non-secret pointers to files staged inside its sandbox, and the session host holds no domain, database or connector credential
 - **AND** one invocation cannot read another invocation's staged credential or files
 - **AND** runtime authentication uses CLI-level OAuth tokens, not API keys injected via env vars
 

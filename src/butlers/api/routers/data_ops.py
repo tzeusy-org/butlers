@@ -89,13 +89,14 @@ import zipfile
 from datetime import UTC, datetime
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
-from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
 from butlers.api.routers import audit
 from butlers.api.routers.webhooks import dispatch_event
+from butlers.core.chronicler_visibility import local_fact_visibility_condition
 
 logger = logging.getLogger(__name__)
 
@@ -154,11 +155,6 @@ _WIPE_PUBLIC_TABLES = [
     "public.webhooks",
     "public.approvals_policy",
 ]
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +369,8 @@ class WipeResponse(BaseModel):
 async def export_data(
     body: ExportRequest,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ExportResponse]:
     """Trigger a data export and return a signed URL with a 60-minute TTL.
 
@@ -572,6 +569,23 @@ async def _build_export_zip(pool: object, scope: str, db: object) -> bytes:
                 with zf.open(f"{safe_name}.ndjson", "w") as member_file:
                     for query, butler in sources:
                         source = pool if butler is None else db.pool(butler)  # type: ignore[attr-defined]
+                        if butler is not None and table_name.endswith(".memory.facts"):
+                            memory_schema = db.memory_schema_for_butler(butler)  # type: ignore[attr-defined]
+                            visibility = await local_fact_visibility_condition(
+                                source,
+                                memory_schema=memory_schema,
+                                alias="facts",
+                            )
+                            if visibility is not None:
+                                relation = (
+                                    f'"{memory_schema}"."facts"'
+                                    if memory_schema is not None
+                                    else "facts"
+                                )
+                                query = (
+                                    f"SELECT facts.* FROM {relation} AS facts "
+                                    f"WHERE {visibility} ORDER BY facts.created_at"
+                                )
                         rows = await source.fetch(query)  # type: ignore[attr-defined]
                         for row in rows:
                             cleaned = {k: v for k, v in dict(row).items() if k not in _SKIP_COLUMNS}
@@ -594,7 +608,8 @@ async def download_export(
     scope: str = Query(...),
     issued_at: int = Query(...),
     token: str = Query(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Response:
     """Download a previously requested export via its signed URL.
 
@@ -613,8 +628,10 @@ async def download_export(
 
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     zip_bytes = await _build_export_zip(pool, scope, db=db)
     encrypted = _encrypt_export(zip_bytes)
@@ -635,7 +652,8 @@ async def download_export(
 @router.delete("/wipe", response_model=ApiResponse[WipeResponse])
 async def wipe_data(
     body: WipeRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[WipeResponse]:
     """Destructively wipe all butler data.
 
@@ -671,8 +689,10 @@ async def wipe_data(
 
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     # --- Phase 2: record the wipe in audit_log BEFORE destruction ---
     await audit.append(pool, "owner", "data.wipe", note="Wipe initiated")
@@ -681,7 +701,7 @@ async def wipe_data(
     butler_schemas = await pool.fetch(
         "SELECT schema_name FROM information_schema.schemata "
         "WHERE schema_name NOT IN ('public', 'information_schema', 'pg_catalog', 'pg_toast') "
-        "  AND schema_name NOT LIKE 'pg_%'"
+        "  AND left(schema_name, 3) <> 'pg_'"
     )
     for row in butler_schemas:
         schema = row["schema_name"]

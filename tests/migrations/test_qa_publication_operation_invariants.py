@@ -505,3 +505,252 @@ def test_core_268_shared_hardening_survives_all_but_the_last_schema_downgrade(
             assert _hardening_objects(conn) == (1, 1, True, 1)
     finally:
         engine.dispose()
+
+
+# --- core_298: a held pr_create may reconcile by adopting the PR it created ---
+
+
+def _adopt(object_id: str, new_object_id: str | None) -> str:
+    new = "NULL" if new_object_id is None else f"'{new_object_id}'"
+    return (
+        "stage = 'reconciled', stage_order = 4, reconciliation = 'resource_found', "
+        f"reconciled_object_id = '{object_id}', new_object_id = {new}, reconciled_at = now()"
+    )
+
+
+def _held_unbound_row(conn, kind: str) -> uuid.UUID:
+    """An ambiguous row of ``kind`` that bound no expected object (as pr_create does)."""
+    attempt = _insert_attempt(conn)
+    conn.exec_driver_sql("SET ROLE butler_qa_rw")
+    operation_id = uuid.uuid4()
+    conn.exec_driver_sql(
+        f"""
+        INSERT INTO {_TABLE}
+            (id, attempt_id, kind, stage, stage_order, binding_digest, request_digest, result)
+        VALUES ('{operation_id}', '{attempt}', '{kind}', 'ambiguous', 3,
+                '{_DIGEST}', '{_DIGEST}', 'ambiguous')
+        """
+    )
+    conn.exec_driver_sql("RESET ROLE")
+    return operation_id
+
+
+@pytest.mark.parametrize(
+    ("kind", "assignment", "allowed"),
+    [
+        ("pr_create", _adopt("123", "123"), True),
+        ("pr_create", _adopt("123", None), False),
+        ("pr_create", _adopt("123", "124"), False),
+        ("pr_create", _adopt("0123", "0123"), False),
+        ("pr_create", _adopt("pr-7", "pr-7"), False),
+        ("branch_push", _adopt("123", "123"), False),
+    ],
+    ids=[
+        "adopts-pr-number",
+        "adoption-without-bound-new-object",
+        "adoption-binds-another-pr",
+        "not-a-pr-number",
+        "pr-label-not-number",
+        "only-pr-create-adopts",
+    ],
+)
+def test_unbound_pr_create_reconciles_only_by_adopting_a_pr_number(
+    db_url: str, kind: str, assignment: str, allowed: bool
+) -> None:
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            operation = _held_unbound_row(conn, kind)
+    finally:
+        engine.dispose()
+
+    if allowed:
+        _update_as_qa(db_url, operation, assignment)
+        assert _stage_of(db_url, operation) == "reconciled"
+    else:
+        _refused(db_url, operation, assignment, _CONSTRAINT_EXACT)
+        assert _stage_of(db_url, operation) == "ambiguous"
+
+
+_CONSTRAINT_EXACT = "ck_qa_publication_operations_exact_reconciliation"
+
+
+def _exact_check(conn) -> tuple[bool, bool]:
+    """(adoption arm present, constraint validated)."""
+    adoption, validated = conn.exec_driver_sql(
+        "SELECT position('pr_create' in pg_get_constraintdef(oid)) > 0, convalidated "
+        f"FROM pg_constraint WHERE conname = '{_CONSTRAINT_EXACT}'"
+    ).one()
+    return adoption, validated
+
+
+def test_core_298_downgrade_restores_the_exact_check_around_adopted_rows(
+    postgres_container,
+) -> None:
+    url = create_migration_db(postgres_container, migration_db_name())
+    asyncio.run(run_migrations(url, chain="core", schema="general"))
+    asyncio.run(run_migrations(url, chain="core", schema="switchboard"))
+    general = _build_alembic_config(url, chains=["core"], target_schema="general")
+    switchboard = _build_alembic_config(url, chains=["core"], target_schema="switchboard")
+    engine = create_engine(url)
+    try:
+        with engine.begin() as conn:
+            operation = _held_unbound_row(conn, "pr_create")
+        _update_as_qa(url, operation, _adopt("123", "123"))
+        with engine.connect() as conn:
+            assert _exact_check(conn) == (True, True)
+
+        # The other schema still runs core_298 code, so the adoption arm stays.
+        command.downgrade(general, "core_297")
+        with engine.connect() as conn:
+            assert _exact_check(conn) == (True, True)
+
+        # The last schema restores the core_267 rule; the adopted row keeps it NOT VALID.
+        command.downgrade(switchboard, "core_297")
+        with engine.connect() as conn:
+            assert _exact_check(conn) == (False, False)
+            assert _stage_of(url, operation) == "reconciled"
+
+        command.upgrade(general, "core@head")
+        command.upgrade(switchboard, "core@head")
+        with engine.connect() as conn:
+            assert _exact_check(conn) == (True, True)
+    finally:
+        engine.dispose()
+
+
+# --- core_300: the egress stamp that absence settles from ---
+
+_STAMP_CONSTRAINT = "ck_qa_publication_operations_stage_stamp"
+
+
+def _egress_stamp(db_url: str, operation_id: uuid.UUID):
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            return conn.exec_driver_sql(
+                f"SELECT egress_started_at, started_at FROM {_TABLE} WHERE id = '{operation_id}'"
+            ).one()
+    finally:
+        engine.dispose()
+
+
+def test_leaving_bound_stamps_the_egress_with_database_time(
+    db_url: str, operation: uuid.UUID
+) -> None:
+    assert _egress_stamp(db_url, operation)[0] is None
+
+    # A writer that predates core_300 does not set it; the guard anchors it anyway.
+    _update_as_qa(db_url, operation, _EGRESS)
+
+    stamped, started = _egress_stamp(db_url, operation)
+    assert stamped is not None and stamped >= started
+
+
+@pytest.mark.parametrize(
+    "rewrite",
+    ["egress_started_at = now() - interval '1 hour'", "egress_started_at = NULL"],
+    ids=["backdated", "cleared"],
+)
+def test_egress_stamp_is_set_once(db_url: str, operation: uuid.UUID, rewrite: str) -> None:
+    _update_as_qa(db_url, operation, f"{_EGRESS}, egress_started_at = now()")
+    stamped, _ = _egress_stamp(db_url, operation)
+
+    _refused(db_url, operation, rewrite, "egress_started_at is set-once")
+    _refused(db_url, operation, f"{_AMBIGUOUS}, {rewrite}", "egress_started_at is set-once")
+
+    assert _egress_stamp(db_url, operation)[0] == stamped
+    assert _stage_of(db_url, operation) == "egress_started"
+
+
+def test_bound_row_carries_no_egress_stamp(db_url: str, operation: uuid.UUID) -> None:
+    _refused(db_url, operation, "egress_started_at = now()", _STAMP_CONSTRAINT)
+
+
+def _stamp_objects(conn) -> tuple[int, int, bool]:
+    column = conn.exec_driver_sql(
+        "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' "
+        "AND table_name = 'qa_publication_operations' AND column_name = 'egress_started_at'"
+    ).scalar_one()
+    constraint = conn.exec_driver_sql(
+        f"SELECT count(*) FROM pg_constraint WHERE conname = '{_STAMP_CONSTRAINT}'"
+    ).scalar_one()
+    guard = conn.exec_driver_sql(
+        "SELECT bool_or(position('egress_started_at' in prosrc) > 0) FROM pg_proc "
+        "WHERE proname = 'qa_publication_operations_guard'"
+    ).scalar_one()
+    return column, constraint, bool(guard)
+
+
+def test_core_300_egress_stamp_survives_all_but_the_last_schema_downgrade(
+    postgres_container,
+) -> None:
+    url = create_migration_db(postgres_container, migration_db_name())
+    asyncio.run(run_migrations(url, chain="core", schema="general"))
+    asyncio.run(run_migrations(url, chain="core", schema="switchboard"))
+    general = _build_alembic_config(url, chains=["core"], target_schema="general")
+    switchboard = _build_alembic_config(url, chains=["core"], target_schema="switchboard")
+    engine = create_engine(url)
+    try:
+        with engine.begin() as conn:
+            held = _held_unbound_row(conn, "pr_create")
+        with engine.connect() as conn:
+            assert _stamp_objects(conn) == (1, 1, True)
+
+        # The other schema still runs core_300 code, so the column stays.
+        command.downgrade(general, "core_299")
+        with engine.connect() as conn:
+            assert _stamp_objects(conn) == (1, 1, True)
+
+        # The last schema leaves: the column goes and the core_268 guard still works.
+        command.downgrade(switchboard, "core_299")
+        with engine.connect() as conn:
+            assert _stamp_objects(conn) == (0, 0, False)
+        _update_as_qa(url, held, _ABSENT)
+        assert _stage_of(url, held) == "reconciled"
+
+        command.upgrade(general, "core@head")
+        command.upgrade(switchboard, "core@head")
+        with engine.connect() as conn:
+            assert _stamp_objects(conn) == (1, 1, True)
+    finally:
+        engine.dispose()
+
+
+def _row_at(conn, stage_values: str) -> uuid.UUID:
+    """A ``pr_create`` row inserted straight at ``stage_values`` (stage, order, result)."""
+    attempt = _insert_attempt(conn)
+    conn.exec_driver_sql("SET ROLE butler_qa_rw")
+    operation_id = uuid.uuid4()
+    conn.exec_driver_sql(
+        f"""
+        INSERT INTO {_TABLE}
+            (id, attempt_id, kind, binding_digest, request_digest, stage, stage_order, result)
+        VALUES ('{operation_id}', '{attempt}', 'pr_create', '{_DIGEST}', '{_DIGEST}',
+                {stage_values})
+        """
+    )
+    conn.exec_driver_sql("RESET ROLE")
+    return operation_id
+
+
+def test_core_300_backfills_only_rows_still_in_flight(postgres_container) -> None:
+    url = create_migration_db(postgres_container, migration_db_name())
+    asyncio.run(run_migrations(url, chain="core", schema="general"))
+    config = _build_alembic_config(url, chains=["core"], target_schema="general")
+    command.downgrade(config, "core_299")
+    engine = create_engine(url)
+    try:
+        with engine.begin() as conn:
+            bound = _row_at(conn, "'bound', 1, NULL")
+            in_flight = _row_at(conn, "'egress_started', 2, NULL")
+            ambiguous = _row_at(conn, "'ambiguous', 3, 'ambiguous'")
+
+        command.upgrade(config, "core@head")
+
+        assert _egress_stamp(url, bound)[0] is None
+        # The latest moment its egress can have begun: settles from the migration, not the bind.
+        assert _egress_stamp(url, in_flight)[0] is not None
+        assert _egress_stamp(url, ambiguous)[0] is None
+    finally:
+        engine.dispose()

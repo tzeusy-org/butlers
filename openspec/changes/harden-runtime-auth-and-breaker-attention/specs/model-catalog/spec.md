@@ -1,13 +1,30 @@
+Goal-runtime applicability: RFC 0038 D1-D3, D7 and D18; the explicit re-scope
+in generalist-lead-focused-delegation/collision-dispositions.md and task 4.2.
+The retained requirement/scenario names are stable across the switch. Target
+placement is specified below; historical receipts are not target proof.
+
 ## MODIFIED Requirements
 
 ### Requirement: Dispatch-Outcome Circuit Breaker
 
 The system SHALL exclude a catalog entry from resolution (initial resolve,
 effective-tier resolve, and same-tier failover) when its recent dispatch
-outcomes show it is systemically failing. Breaker state SHALL be derived
-entirely from `public.model_dispatch_attempts` at query time. Qualifying
+outcomes show it is systemically failing, without requiring a new schema column or migration. Breaker state SHALL
+be derived entirely from `public.model_dispatch_attempts` at query time
+(`butlers.core.model_routing._BREAKER_OPEN_CTE`, `get_breaker_state`,
+`get_breaker_states`). Qualifying
 outcomes SHALL be recorded through one serialized outcome path that uses a
 stable attempt-ID tie-breaker when timestamps are equal.
+
+In the goal runtime, qualifying dispatch outcomes SHALL be recorded by the
+deterministic goal runner/recorder for actual invocation attempts. References
+to routed work below mean that qualifying invocation execution, not a revived
+classifier, route-dispatch or domain Spawner. Canonical catalog identity,
+OpenCode mapping, aliases, failure threshold/cooldown, serialized attempt order,
+half-open behavior, explicit operator override and same-tier fallback SHALL
+retain every scenario below. Verification and benchmark probes SHALL remain
+D18 tool-less single-turn structured-output measurement functions: no broker or
+domain capabilities, synthetic qualifying success or breaker reset.
 
 ID: REQ-model-catalog-001
 Source: model-catalog Dispatch-Outcome Circuit Breaker; RFC 0001; RFC 0005; runtime-attention-outbox REQ-runtime-attention-outbox-001; design.md Decision 3
@@ -25,7 +42,8 @@ Scope: v1-mandatory
   of its `enabled` or `last_verified_ok` values
 - **AND** outcomes other than `runtime_failure`/`success` (`quota_skip`,
   `suppressed`, `exhausted`) SHALL NOT count toward or reset the
-  consecutive-failure window
+  consecutive-failure window — they are not systemic-failure signals about the
+  model itself
 
 #### Scenario: Half-open probe restores eligibility
 
@@ -33,8 +51,9 @@ Scope: v1-mandatory
   the half-open cooldown
 - **THEN** the entry SHALL become eligible for resolution again — the next
   resolution that selects it IS the probe, with no separate probe-token state
-- **AND** if that probe attempt succeeds, the trailing qualifying window stops
-  being all failures and the breaker closes
+- **AND** if that probe attempt succeeds, the trailing window's
+  `bool_and(outcome = 'runtime_failure')` becomes false (the qualifying window
+  stops being all failures) and the breaker closes
 - **AND** if that probe attempt fails, a fresh `runtime_failure` row extends
   the window and the breaker re-opens for another cooldown period
 
@@ -109,14 +128,16 @@ Scope: v1-mandatory
   to a catalog entry whose dispatch-outcome circuit breaker is open
 - **THEN** the rule SHALL be HONORED — the rule-selected model is returned, NOT
   excluded — because an operator spend rule is an explicit human override,
-  distinct from automatic tier/failover resolution
+  distinct from automatic tier/failover resolution (which DOES exclude
+  breaker-open entries); silently excluding it would turn an availability signal
+  into a hidden veto of operator configuration
 - **AND** the resolver SHALL log a WARNING naming the model, its consecutive
   failure count, and the rule, and surface the open `BreakerState` on
   `SpendRoutingResult.breaker_open`
 - **AND** the spawner SHALL record ONE informational
   `public.model_dispatch_attempts` row with outcome `breaker_open_override`
   (a `failure_reason` prefixed `Spend rule routed to breaker-open model`) so
-  the operator trail shows the breaker was open at rule-resolution time; this
+  the "why did this session fail" trail shows the breaker was open at rule-resolution time; this
   outcome is NOT `runtime_failure`/`success`, so it neither trips nor resets
   the breaker
 - **AND** existing same-tier failover (`next_same_tier_candidate`, which

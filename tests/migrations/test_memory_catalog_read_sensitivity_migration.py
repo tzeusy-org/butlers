@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.integration
 
@@ -17,19 +18,9 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location(
-        "core_209_memory_catalog_read_sensitivity", _MIGRATION_PATH
-    )
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 async def _apply_upgrade(pool: asyncpg.Pool) -> None:
     sqls: list[str] = []
-    migration = _load_migration()
+    migration = load_migration(_MIGRATION_PATH, "core_209_memory_catalog_read_sensitivity")
     mocked_op = MagicMock()
     mocked_op.execute.side_effect = sqls.append
     with patch.object(migration, "op", mocked_op):
@@ -39,22 +30,11 @@ async def _apply_upgrade(pool: asyncpg.Pool) -> None:
 
 
 @pytest.fixture
-async def runtime_config_pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(
-            """
-            CREATE TABLE runtime_config (
-                butler_name text PRIMARY KEY,
-                core_groups text[],
-                max_concurrent integer NOT NULL DEFAULT 3,
-                max_queued integer NOT NULL DEFAULT 10,
-                seeded_at timestamptz NOT NULL DEFAULT now(),
-                updated_at timestamptz NOT NULL DEFAULT now()
-            )
-            """
-        )
-        await _apply_upgrade(pool)
-        yield pool
+async def runtime_config_pool(db):
+    # core_209's predecessor: the real runtime_config without the read ceiling.
+    pool = await db("core", revisions={"core": "core_208"})
+    await _apply_upgrade(pool)
+    return pool
 
 
 @pytest.mark.asyncio(loop_scope="session")

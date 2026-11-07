@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any
 
 from butlers.core.general_settings import resolve_general_timezone
-from butlers.modules.base import group_enabled
+from butlers.modules.base import tool_registrar
 
 
 def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: C901
@@ -25,12 +25,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.health import wellness_ingest as _wellness
     from butlers.tools.health import workouts as _workouts
 
-    # Build a group-aware tool decorator: returns @mcp.tool() when the
-    # group is enabled, or a no-op passthrough when disabled.
-    def _tool(group: str):
-        if group_enabled(config, group):
-            return mcp.tool()
-        return lambda fn: fn  # no-op — function defined but not registered
+    _tool = tool_registrar(mcp, config)
 
     # =================================================================
     # Measurement tools

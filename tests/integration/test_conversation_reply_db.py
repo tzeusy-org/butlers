@@ -32,18 +32,20 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from butlers.api.conversations import (
-    conversation_clear_provider_session,
     conversation_create,
     conversation_get_or_create_by_thread,
-    conversation_get_provider_session,
     conversation_list,
     conversation_reply_create,
     conversation_search,
-    conversation_set_provider_session,
     conversation_set_routed_butler,
     message_create_idempotent,
     message_find_reply_since,
     message_get_by_id,
+)
+from butlers.core.conversation_sessions import (
+    conversation_clear_provider_session,
+    conversation_get_provider_session,
+    conversation_set_provider_session,
 )
 
 pytestmark = [

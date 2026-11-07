@@ -19,6 +19,7 @@ from butlers.core.attention_ledger import (
     URGENT_PRIORITY_THRESHOLD,
     attention_event_recorded_since,
     count_attention_events_since,
+    failed_attempts,
     find_notify_dispatch_for_session,
     get_suppressing_context,
     get_suppressing_context_signal,
@@ -96,6 +97,43 @@ class TestIsPriorityUrgent:
 
 
 class TestRecordAttentionEvent:
+    @pytest.mark.parametrize("registered_codec", [False, True], ids=["bare", "registered-codec"])
+    async def test_metadata_stays_an_object_across_jsonb_bind_boundaries(self, registered_codec):
+        """Model parameter encoding with the actual codec, without claiming native SQL proof."""
+        from butlers.db import encode_jsonb
+
+        class BoundaryPool:
+            stored_metadata = None
+
+            async def fetchval(self, query, *args):
+                value = args[10]
+                if "$11::text::jsonb" in query:
+                    # PostgreSQL first receives text; the JSONB codec is not selected.
+                    assert isinstance(value, str)
+                else:
+                    assert "$11::jsonb" in query
+                    if registered_codec:
+                        value = encode_jsonb(value)[1:].decode()
+                self.stored_metadata = json.loads(value)
+                return "boundary-row"
+
+        pool = BoundaryPool()
+        result = await record_attention_event(
+            pool,
+            origin_butler="health",
+            source="notify",
+            outcome="failed",
+            session_id="boundary-session",
+            metadata={"partial_delivery": True, "retryable": False},
+        )
+
+        assert result == "boundary-row"
+        assert pool.stored_metadata == {
+            "partial_delivery": True,
+            "retryable": False,
+            ATTENTION_LEDGER_SESSION_KEY: "boundary-session",
+        }
+
     async def test_none_pool_returns_none_without_error(self):
         result = await record_attention_event(
             None,
@@ -276,9 +314,25 @@ class TestAttentionEventRecordedSince:
         assert result is False
 
 
+class TestFailedAttempts:
+    """bu-jv1moa.54: ledger trouble never blocks a retrying send (real-PG counting lives in
+    tests/integration/test_attention_ledger_roundtrip.py)."""
+
+    @pytest.mark.parametrize("broken", ["no_pool", "query_error"])
+    async def test_fails_open_to_no_failures(self, broken):
+        pool = None
+        if broken == "query_error":
+            pool = AsyncMock()
+            pool.fetchrow = AsyncMock(side_effect=Exception("boom"))
+        assert await failed_attempts(pool, dedup_key="job:k") == (0, None)
+
+
 class TestGetSuppressingContextSignal:
     async def test_none_pool_returns_none(self):
-        assert await get_suppressing_context_signal(None) is None
+        from butlers.core.approvals_policy import AttentionReadUnavailable
+
+        with pytest.raises(AttentionReadUnavailable):
+            await get_suppressing_context_signal(None)
 
     async def test_no_active_signals_returns_none(self, monkeypatch):
         async def _fake_get_active_context(pool):
@@ -331,7 +385,10 @@ class TestGetSuppressingContextSignal:
             raise RuntimeError("boom")
 
         monkeypatch.setattr("butlers.context_bus.get_active_context", _raising)
-        assert await get_suppressing_context_signal(AsyncMock()) is None
+        from butlers.core.approvals_policy import AttentionReadUnavailable
+
+        with pytest.raises(AttentionReadUnavailable):
+            await get_suppressing_context_signal(AsyncMock())
 
     async def test_context_detail_uses_latest_suppressor_expiry(self, monkeypatch):
         """A DND plus sleeping hold cannot flush while either signal remains active."""

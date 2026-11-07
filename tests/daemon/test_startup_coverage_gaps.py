@@ -14,6 +14,8 @@ No live DB or network required.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from collections.abc import Iterator
 from pathlib import Path
@@ -66,20 +68,8 @@ class TestStep1bLoggingConfig:
         # Root log level is set to DEBUG
         assert logging.getLogger().level == logging.DEBUG
 
-    def test_configure_logging_attaches_credential_redaction_filter(self) -> None:
-        """configure_logging attaches a CredentialRedactionFilter to the root logger."""
-        from butlers.core.logging import CredentialRedactionFilter, configure_logging
-
-        configure_logging(level="INFO", fmt="text", log_root=None, butler_name="filter-test")
-
-        root = logging.getLogger()
-        filter_types = [type(f) for f in root.filters]
-        assert CredentialRedactionFilter in filter_types, (
-            "CredentialRedactionFilter must be attached to root logger after configure_logging()"
-        )
-
-    def test_configure_logging_creates_file_handlers_when_log_root_set(
-        self, tmp_path: Path
+    async def test_configure_logging_creates_file_handlers_when_log_root_set(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """configure_logging creates log subdirectories and file handlers when log_root provided."""
         from butlers.core.logging import configure_logging
@@ -94,6 +84,119 @@ class TestStep1bLoggingConfig:
         # Butler log file created
         butler_log = tmp_path / "butlers" / "filetest.log"
         assert butler_log.exists(), f"Expected {butler_log} to exist"
+
+        from butlers import lifecycle
+        from butlers.testing.fake_pool import fake_pool
+
+        # Exercise a real known phase through the production loop and JSON file
+        # handler. Exception arguments and custom names are deliberately private.
+        # The schedules phase reads the daemon's config first, so a daemon whose
+        # config raises fails that phase with a chosen error; nothing is patched.
+        private = "private-startup-detail-do-not-log"
+        custom_error = type(private, (ValueError,), {})
+        calls = []
+        failure: BaseException | None = None
+
+        class Daemon:
+            config_dir = tmp_path
+
+            @property
+            def config(self):
+                if calls[-1:] != ["schedules"]:  # the phase reads config several times
+                    calls.append("schedules")
+                if failure is not None:
+                    raise failure
+                return SimpleNamespace(name="filetest", type="butler", schedules=[])
+
+        daemon = Daemon()
+
+        async def before(actual_daemon, state):
+            assert actual_daemon is daemon
+            calls.append("before")
+            # No TOML schedules and no stored rows: the sync reads and writes nothing.
+            state.pool = fake_pool(fetch=AsyncMock(return_value=[]))
+            state.credential_store = SimpleNamespace(shared_pool=None)
+
+        async def after(actual_daemon, state):
+            calls.append("after")
+
+        known = [before, lifecycle._startup_schedules, after]
+
+        def records():
+            for handler in logging.getLogger().handlers:
+                handler.flush()
+            return [json.loads(line) for line in butler_log.read_text().splitlines()]
+
+        # Exact known types get broad categories; subclasses remain unknown.
+        for error, category in [
+            (ValueError(private), "validation"),
+            (TimeoutError(private), "timeout"),
+            (ConnectionError(private), "connection"),
+            (OSError(private), "os"),
+            (TypeError(private), "type"),
+            (RuntimeError(private), "runtime"),
+            (custom_error(private), "unknown"),
+        ]:
+            failure = error
+            calls.clear()
+            count = len(records())
+            with pytest.raises(Exception) as raised:
+                await lifecycle.run_startup(daemon, known)
+            assert raised.value is error
+            assert calls == ["before", "schedules"]
+            emitted = records()[count:]
+            assert len(emitted) == 1
+            assert emitted[0]["event"] == "Startup phase failed"
+            assert emitted[0]["startup_phase"] == "schedules"
+            assert emitted[0]["error_category"] == category
+            assert emitted[0]["butler"] == "filetest"
+            assert emitted[0]["logger"] == "butlers.lifecycle"
+            assert emitted[0]["level"] == "error"
+            assert "exception" not in emitted[0]
+            assert "exc_info" not in emitted[0]
+            assert private not in json.dumps(emitted)
+
+        # An arbitrary callable, even with a private name, has no trusted label.
+        async def unlabelled(actual_daemon, state):
+            raise failure
+
+        unlabelled.__name__ = private
+        failure = custom_error(private)
+        count = len(records())
+        with pytest.raises(custom_error) as raised:
+            await lifecycle.run_startup(daemon, [unlabelled, after])
+        assert raised.value is failure
+        assert records()[count:][0]["startup_phase"] == "unknown"
+        assert records()[count:][0]["error_category"] == "unknown"
+
+        failure = None
+        calls.clear()
+        count = len(records())
+        await lifecycle.run_startup(daemon, known)
+        assert calls == ["before", "schedules", "after"]
+        assert len(records()) == count
+
+        # Cancellation and other BaseExceptions retain their existing behavior.
+        for failure in [asyncio.CancelledError(private), BaseException(private)]:
+            calls.clear()
+            with pytest.raises(BaseException) as raised:
+                await lifecycle.run_startup(daemon, known)
+            assert raised.value is failure
+            assert calls == ["before", "schedules"]
+            assert len(records()) == count
+
+        # A broken logger must never replace the original startup exception.
+        failure = ValueError(private)
+        calls.clear()
+        with patch.object(lifecycle.logger, "error", side_effect=RuntimeError(private)):
+            with pytest.raises(ValueError) as raised:
+                await lifecycle.run_startup(daemon, known)
+        assert raised.value is failure
+        assert calls == ["before", "schedules"]
+        assert len(records()) == count
+        captured = capsys.readouterr()
+        assert private not in butler_log.read_text()
+        assert private not in captured.out + captured.err
 
     def test_configure_logging_no_file_handlers_without_log_root(self) -> None:
         """configure_logging with log_root=None does not add new file handlers."""
@@ -113,25 +216,6 @@ class TestStep1bLoggingConfig:
         assert not any(h.baseFilename.endswith("/nofile.log") for h in after_file_handlers), (
             "log_root=None should not create a per-butler file log"
         )
-
-    def test_credential_redaction_filter_scrubs_telegram_token(self) -> None:
-        """CredentialRedactionFilter redacts Telegram bot tokens in log messages."""
-        from butlers.core.logging import CredentialRedactionFilter
-
-        f = CredentialRedactionFilter()
-        record = logging.LogRecord(
-            name="test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="Calling https://api.telegram.org/bot1234567890:ABCDEFabcdef1234567890_ABCDEFG/sendMessage",
-            args=(),
-            exc_info=None,
-        )
-        result = f.filter(record)
-        assert result is True  # Never drops records
-        assert "REDACTED" in record.msg
-        assert "ABCDEFabcdef1234567890_ABCDEFG" not in record.msg
 
     def test_resolve_log_root_env_override_disables_file_logging(
         self, monkeypatch: pytest.MonkeyPatch
@@ -474,6 +558,22 @@ class TestStep13cCalendarApprovalWiring:
         else:
             daemon._modules = []
 
+        # Real approvals collaborator: the old helper omitted the loaded owner
+        # entirely. This wiring-only transport cannot execute without the real
+        # executor's exact-call context; no provider execution is claimed here.
+        from butlers.modules.approvals import ApprovalsModule
+        from butlers.modules.approvals.execution_context import get_approval_execution_context
+
+        approvals = ApprovalsModule()
+
+        async def dispatch(tool_name, arguments):
+            assert (
+                get_approval_execution_context(tool_name=tool_name, tool_args=arguments) is not None
+            )
+            raise AssertionError("Wiring-only fixture does not execute provider effects")
+
+        approvals.set_tool_executor(dispatch)
+        daemon._modules.append(approvals)
         return daemon, enqueuer_calls
 
     def test_wires_enqueuer_when_approvals_enabled_and_calendar_active(self) -> None:
@@ -556,7 +656,19 @@ class TestStep13cCalendarApprovalWiring:
         daemon._module_statuses = {}
         daemon.db = MagicMock()
         daemon.db.pool = mock_pool
-        daemon._modules = [_CalendarMod()]
+        from butlers.modules.approvals import ApprovalsModule
+        from butlers.modules.approvals.execution_context import get_approval_execution_context
+
+        approvals = ApprovalsModule()
+
+        async def dispatch(tool_name, arguments):
+            assert (
+                get_approval_execution_context(tool_name=tool_name, tool_args=arguments) is not None
+            )
+            raise AssertionError("Wiring-only fixture does not execute provider effects")
+
+        approvals.set_tool_executor(dispatch)
+        daemon._modules = [_CalendarMod(), approvals]
         # __init__ is bypassed above, so the cached park -> push runtime
         # (bu-mda0r) must be set explicitly like every other instance attr.
         daemon._approval_push_runtime = None
@@ -718,10 +830,6 @@ class TestStep6DbRoleWiring:
 # ===========================================================================
 
 
-class _StopAfterBlobStorage(Exception):
-    """Sentinel raised after step 8c to prove startup reached the next phase."""
-
-
 class _FakeCredentialStore:
     def __init__(self, values: dict[str, str | None]) -> None:
         self.values = values
@@ -736,111 +844,51 @@ class TestStep8cBlobStorageDegradation:
     """Step 8c: configured-but-unavailable S3 disables blob I/O without killing startup."""
 
     async def test_configured_s3_startup_failure_disables_blob_store_and_continues(
-        self, caplog: pytest.LogCaptureFixture
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from contextlib import ExitStack
+        """The phase builds the real S3 store; its failed check leaves blob I/O off.
 
+        The subject is the blob-storage phase, not the boot, so the phase runs
+        directly with nothing in the lifecycle patched (bu-rvgzmf.2); returning is
+        continuing. The store's connectivity check is the only stand-in (the root
+        conftest already stubs it for every test; here it fails).
+        """
         from butlers import lifecycle
-        from butlers.storage import BlobStorageStartupError
+        from butlers.storage import BlobStorageStartupError, S3BlobStore
 
-        class UnavailableS3BlobStore:
-            def __init__(self, **kwargs: Any) -> None:
-                self.kwargs = kwargs
+        checked: list[S3BlobStore] = []
 
-            async def startup_check(self) -> None:
-                raise BlobStorageStartupError(
-                    "Cannot reach S3 endpoint http://synology-garage:3900"
-                )
+        async def unreachable(self: S3BlobStore) -> None:
+            checked.append(self)
+            raise BlobStorageStartupError(f"Cannot reach S3 endpoint {self.endpoint_url}")
 
-        pool = AsyncMock()
-        daemon = MagicMock()
-        daemon.config = SimpleNamespace(
-            name="test-butler",
-            logging=SimpleNamespace(log_root=None, level="INFO", format="text"),
-            modules={},
-            env_required=[],
-            env_optional=[],
-            db_name="butlers",
-            db_schema="test_butler",
-        )
-        daemon.db = SimpleNamespace(pool=pool)
-        daemon._registry.load_all.return_value = []
-        daemon._select_startup_modules.return_value = []
-        daemon._validate_module_configs.return_value = {}
-        daemon._collect_module_credentials.return_value = {}
-        daemon._module_statuses = {}
-        daemon._cascade_module_failures.return_value = None
-        daemon._build_db_url.return_value = "postgresql://example/butlers"
-        daemon._db_log_handler = None
-
-        store = _FakeCredentialStore(
-            {
-                "BLOB_S3_ENDPOINT_URL": "http://synology-garage:3900",
-                "BLOB_S3_BUCKET": "butlers-dev",
-                "BLOB_S3_REGION": "garage",
-                "BLOB_S3_ACCESS_KEY_ID": "access-key",
-                "BLOB_S3_SECRET_ACCESS_KEY": "secret-key",
-            }
-        )
-        daemon._build_credential_store = AsyncMock(return_value=store)
+        monkeypatch.setattr(S3BlobStore, "startup_check", unreachable)
+        keys = {
+            "BLOB_S3_ENDPOINT_URL": "http://synology-garage:3900",
+            "BLOB_S3_BUCKET": "butlers-dev",
+            "BLOB_S3_REGION": "garage",
+            "BLOB_S3_ACCESS_KEY_ID": "access-key",
+            "BLOB_S3_SECRET_ACCESS_KEY": "secret-key",
+        }
+        store = _FakeCredentialStore(keys)
+        daemon = SimpleNamespace(config=SimpleNamespace(name="test-butler"), blob_store=object())
 
         caplog.set_level(logging.WARNING)
-        with ExitStack() as stack:
-            stack.enter_context(patch("butlers.core.logging.configure_logging"))
-            stack.enter_context(patch.object(lifecycle, "resolve_log_root", return_value=None))
-            stack.enter_context(patch.object(lifecycle, "init_telemetry"))
-            stack.enter_context(patch.object(lifecycle, "init_metrics"))
-            stack.enter_context(
-                patch.object(lifecycle, "_flatten_config_for_secret_scan", return_value={})
-            )
-            stack.enter_context(patch.object(lifecycle, "detect_secrets", return_value=[]))
-            stack.enter_context(patch.object(lifecycle, "validate_credentials"))
-            stack.enter_context(
-                patch.object(
-                    lifecycle, "validate_module_credentials_async", new=AsyncMock(return_value={})
-                )
-            )
-            stack.enter_context(patch.object(lifecycle, "run_migrations", new=AsyncMock()))
-            stack.enter_context(patch.object(lifecycle, "has_butler_chain", return_value=False))
-            stack.enter_context(patch.object(lifecycle, "S3BlobStore", UnavailableS3BlobStore))
-            stack.enter_context(
-                patch("butlers.core.butler_logging.ButlerLogger", return_value=MagicMock())
-            )
-            stack.enter_context(
-                patch(
-                    "butlers.core.butler_logging.ButlerDBLogHandler",
-                    return_value=logging.NullHandler(),
-                )
-            )
-            stack.enter_context(
-                patch("butlers.cli_auth.persistence.restore_tokens", new=AsyncMock(return_value={}))
-            )
-            stack.enter_context(
-                patch.object(
-                    lifecycle,
-                    "_ensure_owner_entity",
-                    new=AsyncMock(side_effect=_StopAfterBlobStorage),
-                )
-            )
+        await lifecycle._startup_blob_storage(
+            daemon, lifecycle.StartupState(credential_store=store)
+        )
 
-            with pytest.raises(_StopAfterBlobStorage):
-                await lifecycle.run_startup(daemon)
-
-        if daemon._db_log_handler is not None:
-            logging.getLogger().removeHandler(daemon._db_log_handler)
-
+        (built,) = checked
+        assert (built.endpoint_url, built.bucket) == ("http://synology-garage:3900", "butlers-dev")
         assert daemon.blob_store is None
         assert "S3 blob storage unavailable; blob operations will fail at runtime" in caplog.text
-        assert all(env_fallback is False for _, env_fallback in store.resolve_calls)
+        assert "Cannot reach S3 endpoint http://synology-garage:3900" in caplog.text
+        assert store.resolve_calls == [(key, False) for key in keys]
 
 
 # ===========================================================================
 # Step 8c2 — codex_authority wiring and degraded-evidence on authority loss
 # ===========================================================================
-
-
-class _StopAfterCliAuthRestore(Exception):
-    """Sentinel raised right after step 8c2 to prove startup reached the next phase."""
 
 
 class _AuthorityLostCredentialStore:
@@ -872,96 +920,32 @@ class _AuthorityLostCredentialStore:
 
 
 class TestStep8c2CodexAuthorityWiring:
-    """Step 8c2: run_startup wires credential_store through as codex_authority,
+    """Step 8c2: the CLI-auth phase passes credential_store through as codex_authority,
     and a lost/unavailable authority degrades CLI-auth restoration (logged,
     non-fatal) instead of silently continuing as if codex were healthy."""
 
     async def test_codex_authority_wired_and_authority_loss_degrades_without_crashing(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        from contextlib import ExitStack
-
+        """The phase runs directly, nothing in the lifecycle patched (bu-rvgzmf.2)."""
         from butlers import lifecycle
         from butlers.cli_auth.registry import PROVIDERS
 
-        pool = AsyncMock()
-        daemon = MagicMock()
-        daemon.config = SimpleNamespace(
-            name="test-butler",
-            logging=SimpleNamespace(log_root=None, level="INFO", format="text"),
-            modules={},
-            env_required=[],
-            env_optional=[],
-            db_name="butlers",
-            db_schema="test_butler",
-        )
-        daemon.db = SimpleNamespace(pool=pool)
-        daemon._registry.load_all.return_value = []
-        daemon._select_startup_modules.return_value = []
-        daemon._validate_module_configs.return_value = {}
-        daemon._collect_module_credentials.return_value = {}
-        daemon._module_statuses = {}
-        daemon._cascade_module_failures.return_value = None
-        daemon._build_db_url.return_value = "postgresql://example/butlers"
-        daemon._db_log_handler = None
-
         store = _AuthorityLostCredentialStore()
-        daemon._build_credential_store = AsyncMock(return_value=store)
-
         record_baseline = MagicMock()
 
         caplog.set_level(logging.WARNING)
-        with ExitStack() as stack:
-            stack.enter_context(patch("butlers.core.logging.configure_logging"))
-            stack.enter_context(patch.object(lifecycle, "resolve_log_root", return_value=None))
-            stack.enter_context(patch.object(lifecycle, "init_telemetry"))
-            stack.enter_context(patch.object(lifecycle, "init_metrics"))
-            stack.enter_context(
-                patch.object(lifecycle, "_flatten_config_for_secret_scan", return_value={})
-            )
-            stack.enter_context(patch.object(lifecycle, "detect_secrets", return_value=[]))
-            stack.enter_context(patch.object(lifecycle, "validate_credentials"))
-            stack.enter_context(
-                patch.object(
-                    lifecycle, "validate_module_credentials_async", new=AsyncMock(return_value={})
-                )
-            )
-            stack.enter_context(patch.object(lifecycle, "run_migrations", new=AsyncMock()))
-            stack.enter_context(patch.object(lifecycle, "has_butler_chain", return_value=False))
-            stack.enter_context(
-                patch("butlers.core.butler_logging.ButlerLogger", return_value=MagicMock())
-            )
-            stack.enter_context(
-                patch(
-                    "butlers.core.butler_logging.ButlerDBLogHandler",
-                    return_value=logging.NullHandler(),
-                )
-            )
-            # Isolate PROVIDERS to a single synthetic codex entry so restore_tokens
-            # exercises only the codex-authority path, never a real home-dir file.
-            codex_only = {"codex": PROVIDERS["codex"]}
-            stack.enter_context(patch("butlers.cli_auth.persistence.PROVIDERS", codex_only))
-            stack.enter_context(
-                patch(
-                    "butlers.core.runtimes._codex_auth_sync.record_auth_baseline",
-                    record_baseline,
-                )
-            )
-            stack.enter_context(
-                patch.object(
-                    lifecycle,
-                    "_ensure_owner_entity",
-                    new=AsyncMock(side_effect=_StopAfterCliAuthRestore),
-                )
+        # Isolate PROVIDERS to a single synthetic codex entry so restore_tokens
+        # exercises only the codex-authority path, never a real home-dir file.
+        with (
+            patch("butlers.cli_auth.persistence.PROVIDERS", {"codex": PROVIDERS["codex"]}),
+            patch("butlers.core.runtimes._codex_auth_sync.record_auth_baseline", record_baseline),
+        ):
+            await lifecycle._startup_cli_auth(
+                SimpleNamespace(), lifecycle.StartupState(credential_store=store)
             )
 
-            with pytest.raises(_StopAfterCliAuthRestore):
-                await lifecycle.run_startup(daemon)
-
-        if daemon._db_log_handler is not None:
-            logging.getLogger().removeHandler(daemon._db_log_handler)
-
-        # Wiring: run_startup passed the same credential_store through as
+        # Wiring: the phase passed the same credential_store through as
         # codex_authority — proven because a validated (non-None) authority
         # reached require_system_global_pool() before the read was attempted.
         assert store.require_system_global_pool_calls == 1
@@ -975,5 +959,5 @@ class TestStep8c2CodexAuthorityWiring:
         )
         record_baseline.assert_not_called()
 
-        # Non-fatal: startup proceeded past CLI-auth restoration to the next step.
+        # Non-fatal: the phase returned, and did not take its blanket skip path.
         assert "CLI auth token restoration skipped safely" not in caplog.text

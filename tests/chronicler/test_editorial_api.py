@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.chronicler import editorial
 from butlers.chronicler.editorial import (
     AttentionItem,
@@ -24,6 +25,7 @@ from butlers.chronicler.editorial import (
     Streaks,
     SubqueryAvailability,
 )
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -31,23 +33,13 @@ pytestmark = pytest.mark.unit
 _ROUTER_PATH = Path(__file__).resolve().parents[2] / "roster" / "chronicler" / "api" / "router.py"
 
 
-class _Row(dict):
-    """dict subclass that mimics asyncpg Record."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-
 class _Conn:
-    def __init__(self, *, fetchrow_returns: list[_Row | None] | None = None) -> None:
+    def __init__(self, *, fetchrow_returns: list[Record | None] | None = None) -> None:
         self.fetchrow_returns = list(fetchrow_returns or [])
         self.fetchrow_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
         self.fetchval_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
-    async def fetchrow(self, *args: Any, **kwargs: Any) -> _Row | None:
+    async def fetchrow(self, *args: Any, **kwargs: Any) -> Record | None:
         self.fetchrow_calls.append((args, kwargs))
         if self.fetchrow_returns:
             return self.fetchrow_returns.pop(0)
@@ -81,11 +73,8 @@ def _load_chronicler_router():
     module_name = "chronicler_api_router"
     if module_name in sys.modules:
         return sys.modules[module_name]
-    spec = importlib.util.spec_from_file_location(module_name, _ROUTER_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = mod
-    assert spec.loader is not None
-    spec.loader.exec_module(mod)
+    mod = importlib.import_module("butlers.api._roster.chronicler.router")
+    assert mod.__spec__ is not None and mod.__spec__.loader is not None
     return mod
 
 
@@ -96,9 +85,9 @@ def _mock_db(pool: _Pool):
 
 
 def _make_app(conn: _Conn):
-    chronicler_mod = _load_chronicler_router()
+    _chronicler_mod = _load_chronicler_router()
     app = create_app(api_key="")
-    app.dependency_overrides[chronicler_mod._get_db_manager] = lambda: _mock_db(_Pool(conn))
+    app.dependency_overrides[get_db] = lambda: _mock_db(_Pool(conn))
     return app
 
 
@@ -173,7 +162,7 @@ async def test_briefing_returns_cached_voice_for_matching_timezone_window(
 
     conn = _Conn(
         fetchrow_returns=[
-            _Row(
+            Record(
                 {
                     "prose": "Cached day-close prose.",
                     "cache_built_at": datetime(2026, 5, 8, 3, 0, tzinfo=UTC),
@@ -220,7 +209,7 @@ async def test_briefing_rejects_same_date_cache_from_other_timezone(
     # (2026-05-07T16:00Z to 2026-05-08T16:00Z), not Los Angeles's window.
     conn = _Conn(
         fetchrow_returns=[
-            _Row(
+            Record(
                 {
                     "prose": "Singapore day-close prose that must not leak.",
                     "cache_built_at": datetime(2026, 5, 8, 3, 0, tzinfo=UTC),
@@ -322,7 +311,7 @@ async def test_briefing_uses_templated_fallback_when_cache_invalid(
 
     conn = _Conn(
         fetchrow_returns=[
-            _Row(
+            Record(
                 {
                     "prose": '```json\n{"tool": "x"}\n```',
                     "cache_built_at": datetime(2026, 5, 8, 3, 0, tzinfo=UTC),
@@ -385,7 +374,7 @@ async def test_briefing_contains_legacy_malformed_cache_with_templated_copy(
 
     conn = _Conn(
         fetchrow_returns=[
-            _Row(
+            Record(
                 {
                     "prose": prose,
                     "cache_built_at": datetime(2026, 5, 8, 3, 0, tzinfo=UTC),
@@ -445,7 +434,7 @@ async def test_briefing_bypasses_cache_entirely_for_non_content_state(
     # A row exists in the cache — proof the state check runs BEFORE any read.
     conn = _Conn(
         fetchrow_returns=[
-            _Row(
+            Record(
                 {
                     "prose": "Would render if reached.",
                     "cache_built_at": datetime(2026, 4, 20, 3, 0, tzinfo=UTC),
@@ -508,7 +497,7 @@ async def test_briefing_bypasses_cache_for_named_source_failure(
     monkeypatch.setattr(editorial, "compose_briefing_payload", _fake_compose_degraded)
     conn = _Conn(
         fetchrow_returns=[
-            _Row(
+            Record(
                 {
                     "prose": "Would render if cache admission were reached.",
                     "cache_built_at": datetime(2026, 5, 8, 3, 0, tzinfo=UTC),

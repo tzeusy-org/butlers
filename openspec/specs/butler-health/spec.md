@@ -94,6 +94,9 @@ The health butler SHALL store measurements, symptoms, medication doses, medicati
 - **WHEN** `medication_log_dose` is called
 - **THEN** it MUST internally call `store_fact` with `predicate='took_dose'`, `valid_at=taken_at`, `entity_id=owner_entity_id`, `scope='health'`, and `metadata={medication_id, skipped, notes}`
 - **AND** `medication_history` MUST query facts with `predicate='took_dose'`
+- **AND** a medication's course MUST be every `medication` fact of its subject, across all validities, created after the subject's latest retraction before it and up to and including the first retraction at or after it; an edit (which supersedes the fact with a new id) continues the course, and a delete ends it so a re-add starts a new course
+- **AND** every dose read for one medication (`medication_history`, `trend_report` adherence, the adherence-dip insight scan, and the dashboard `GET /medications/{id}/doses`) MUST match doses whose `medication_id` is any fact of the medication's course; dose records MUST NOT be rewritten
+- **AND** the expected-dose denominator (`trend_report` and `GET /medications/{id}/adherence`) MUST cap the window at the course start (its earliest fact's `created_at`), not the current fact's `created_at`, so adherence never exceeds 100% after an edit
 
 #### Scenario: Medication property fact wrappers
 - **WHEN** `medication_add` is called
@@ -715,3 +718,45 @@ days SHALL be read from `public.state` (`settings.general`) with SGT as the fall
 - **WHEN** two runs overlap, such as the scheduler tick and the dashboard Trigger button
 - **THEN** exactly one delivery is made
 - **AND** the other run reports `skipped_concurrent`
+
+### Requirement: Last Workout Lookup
+
+The Health butler SHALL provide a read-only `workout_last` tool that answers "when did I last
+<activity>?" from active `workout_session` facts in the Health schema, without guessing.
+
+ID: REQ-butler-health-002
+Source: bu-q7vx1q.36; PR #4348 `workout_session` ingestion
+Scope: v1-mandatory
+
+#### Scenario: Latest matching workout is returned in the owner's time zone
+
+- **WHEN** `workout_last` is called with an activity and several active `workout_session` facts match it
+- **THEN** it SHALL return the fact with the latest `valid_at`
+- **AND** the result SHALL include `started_at` in the owner's configured general time zone (UTC when unavailable), `started_at_utc`, `duration_minutes`, `activity`, `source`, and the fact `id`
+- **AND** a start near a day boundary or a DST transition SHALL render the owner's local date and offset
+
+#### Scenario: Activity vocabulary is explicit
+
+- **WHEN** the activity is matched
+- **THEN** wording SHALL be normalised to lowercase tokens and mapped through the alias table: `run`, `jog`, `jogging` to running; `swim` to swimming; `ride`, `bike`, `cycle`, `cycling` to biking; `walk` to walking; `hike` to hiking; `lift`, `lifting`, `weights` to weightlifting
+- **AND** a stored activity matches when it contains every normalised query token
+- **AND** an omitted or blank activity SHALL match any workout
+- **AND** a token with no alias SHALL match only that token as written, as a whole token, so unlisted wording matches a stored activity only when it contains that exact token
+- **AND** matching SHALL page through active facts newest-first until a match is found, so a match older than many newer workouts of other activities is still returned
+
+#### Scenario: Source attribution and overlap
+
+- **WHEN** a result is returned
+- **THEN** `source` SHALL be `owner_logged` when the fact's `detection` is `manual` and `device` otherwise
+- **AND** when the latest matching device record overlaps an owner-logged matching record, the owner-logged record SHALL be returned
+
+#### Scenario: No matching workout is explicit absence
+
+- **WHEN** no active `workout_session` fact matches
+- **THEN** the tool SHALL return `found: false` with `reason: "no_workout_recorded"`
+- **AND** it SHALL NOT raise an error or return a guessed workout
+
+#### Scenario: Only active facts are read
+
+- **WHEN** a `workout_session` fact is retracted or superseded
+- **THEN** it SHALL NOT be considered

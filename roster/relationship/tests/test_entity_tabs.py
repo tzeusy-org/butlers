@@ -20,6 +20,9 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -36,8 +39,8 @@ _EARLIER = datetime(2026, 4, 29, 8, 0, 0, tzinfo=UTC)
 _EARLIEST = datetime(2026, 4, 28, 6, 0, 0, tzinfo=UTC)
 
 
-def _make_row(**kwargs) -> MagicMock:
-    """Build a MagicMock that behaves like an asyncpg Record.
+def _fact_row(**kwargs) -> Record:
+    """Build a facts-query record.
 
     Includes all six provenance fields returned by the updated SQL SELECT
     statements (src, conf, last_seen, weight, verified, primary).  These map
@@ -60,25 +63,21 @@ def _make_row(**kwargs) -> MagicMock:
         "primary": False,
         **kwargs,
     }
-    row = MagicMock()
-    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
-    return row
+    return Record(data)
 
 
 def _app_with_pool(
     *,
     entity_exists: bool = True,
     fetch_rows: list | None = None,
-) -> tuple[FastAPI, AsyncMock]:
+) -> tuple[FastAPI, FakePool]:
     """Wire a FastAPI app whose relationship DB pool returns controlled rows.
 
     ``entity_exists`` controls the ``fetchval`` response for the entity-exists
     check (returns 1 if True, None if False).
     ``fetch_rows`` is returned by pool.fetch for the facts query.
     """
-    mock_pool = AsyncMock()
-    mock_pool.fetchval = AsyncMock(return_value=1 if entity_exists else None)
-    mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
+    mock_pool = fake_pool(fetchval=1 if entity_exists else None, fetch=fetch_rows or [])
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
@@ -86,9 +85,9 @@ def _app_with_pool(
     app = create_app()
 
     # Find the relationship router module to override its _get_db_manager.
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app, mock_pool
@@ -111,19 +110,19 @@ class TestEntityNotes:
 
     async def test_returns_200_with_notes(self):
         rows = [
-            _make_row(
+            _fact_row(
                 predicate="contact_note",
                 content="Met at conference",
                 metadata={"emotion": "happy"},
                 valid_at=_NOW,
             ),
-            _make_row(
+            _fact_row(
                 predicate="contact_note",
                 content="Had coffee",
                 metadata={},
                 valid_at=_EARLIER,
             ),
-            _make_row(
+            _fact_row(
                 predicate="contact_note",
                 content="Called to catch up",
                 metadata=None,
@@ -139,7 +138,7 @@ class TestEntityNotes:
 
     async def test_notes_fields_populated_correctly(self):
         rows = [
-            _make_row(
+            _fact_row(
                 id=uuid4(),
                 predicate="contact_note",
                 content="Note with emotion",
@@ -158,9 +157,9 @@ class TestEntityNotes:
     async def test_notes_ordered_by_valid_at_desc(self):
         """DB sorts; test validates the query is invoked and order preserved."""
         rows = [
-            _make_row(content="newest", valid_at=_NOW),
-            _make_row(content="middle", valid_at=_EARLIER),
-            _make_row(content="oldest", valid_at=_EARLIEST),
+            _fact_row(content="newest", valid_at=_NOW),
+            _fact_row(content="middle", valid_at=_EARLIER),
+            _fact_row(content="oldest", valid_at=_EARLIEST),
         ]
         app, pool = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/notes")
@@ -180,9 +179,9 @@ class TestEntityInteractions:
 
     async def test_returns_all_interaction_subtypes(self):
         rows = [
-            _make_row(predicate="interaction_meeting", content="Standup", valid_at=_NOW),
-            _make_row(predicate="interaction_message", content="Slack DM", valid_at=_EARLIER),
-            _make_row(predicate="interaction_call", content="Phone call", valid_at=_EARLIEST),
+            _fact_row(predicate="interaction_meeting", content="Standup", valid_at=_NOW),
+            _fact_row(predicate="interaction_message", content="Slack DM", valid_at=_EARLIER),
+            _fact_row(predicate="interaction_call", content="Phone call", valid_at=_EARLIEST),
         ]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/interactions")
@@ -194,14 +193,14 @@ class TestEntityInteractions:
         assert types == {"meeting", "message", "call"}
 
     async def test_type_is_predicate_suffix(self):
-        rows = [_make_row(predicate="interaction_video_call", content="Zoom")]
+        rows = [_fact_row(predicate="interaction_video_call", content="Zoom")]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/interactions")
 
         assert resp.json()[0]["type"] == "video_call"
 
     async def test_sparse_direction_and_group_size_are_null(self):
-        rows = [_make_row(predicate="interaction_meeting", content="Team sync", metadata={})]
+        rows = [_fact_row(predicate="interaction_meeting", content="Team sync", metadata={})]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/interactions")
 
@@ -220,12 +219,12 @@ class TestMixedChannelInteractions:
 
     async def test_returns_all_entity_interactions(self):
         """Facts for the same entity_id are returned regardless of originating channel."""
-        telegram_fact = _make_row(
+        telegram_fact = _fact_row(
             predicate="interaction_message",
             content="Telegram message",
             metadata={"channel": "telegram"},
         )
-        email_fact = _make_row(
+        email_fact = _fact_row(
             predicate="interaction_message",
             content="Email reply",
             metadata={"channel": "email"},
@@ -238,13 +237,13 @@ class TestMixedChannelInteractions:
 
     async def test_no_deduplication_by_predicate_and_valid_at(self):
         """Two facts with same predicate and valid_at are both returned (different channels)."""
-        fact_a = _make_row(
+        fact_a = _fact_row(
             predicate="interaction_message",
             content="Telegram",
             valid_at=_NOW,
             metadata={"channel": "telegram"},
         )
-        fact_b = _make_row(
+        fact_b = _fact_row(
             predicate="interaction_message",
             content="Email",
             valid_at=_NOW,
@@ -266,12 +265,12 @@ class TestEntityTimeline:
 
     async def test_timeline_includes_all_predicate_families(self):
         rows = [
-            _make_row(predicate="interaction_meeting", content="meeting", valid_at=_NOW),
-            _make_row(predicate="contact_note", content="note", valid_at=_NOW),
-            _make_row(predicate="life_event", content="event", valid_at=_EARLIER),
-            _make_row(predicate="gift", content="gift", valid_at=_EARLIER),
-            _make_row(predicate="loan", content="loan", valid_at=_EARLIEST),
-            _make_row(predicate="dunbar_tier_override", content="override", valid_at=_EARLIEST),
+            _fact_row(predicate="interaction_meeting", content="meeting", valid_at=_NOW),
+            _fact_row(predicate="contact_note", content="note", valid_at=_NOW),
+            _fact_row(predicate="life_event", content="event", valid_at=_EARLIER),
+            _fact_row(predicate="gift", content="gift", valid_at=_EARLIER),
+            _fact_row(predicate="loan", content="loan", valid_at=_EARLIEST),
+            _fact_row(predicate="dunbar_tier_override", content="override", valid_at=_EARLIEST),
         ]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/timeline")
@@ -291,7 +290,7 @@ class TestEntityTimeline:
 
     async def test_timeline_kind_field_present(self):
         rows = [
-            _make_row(predicate="contact_note", content="x", valid_at=_NOW),
+            _fact_row(predicate="contact_note", content="x", valid_at=_NOW),
         ]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/timeline")
@@ -305,9 +304,9 @@ class TestEntityTimeline:
     async def test_timeline_preserves_db_sort_order(self):
         """DB handles ordering; response preserves the order returned by pool.fetch."""
         rows = [
-            _make_row(predicate="contact_note", content="newest", valid_at=_NOW),
-            _make_row(predicate="interaction_call", content="middle", valid_at=_EARLIER),
-            _make_row(predicate="gift", content="oldest", valid_at=_EARLIEST),
+            _fact_row(predicate="contact_note", content="newest", valid_at=_NOW),
+            _fact_row(predicate="interaction_call", content="middle", valid_at=_EARLIER),
+            _fact_row(predicate="gift", content="oldest", valid_at=_EARLIEST),
         ]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/timeline")
@@ -555,7 +554,7 @@ class TestSparseMetadataNull:
     """Scenario 12 — Missing metadata keys must render as null, not omitted."""
 
     async def test_note_emotion_null_when_absent(self):
-        rows = [_make_row(predicate="contact_note", content="Note", metadata={})]
+        rows = [_fact_row(predicate="contact_note", content="Note", metadata={})]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/notes")
 
@@ -564,7 +563,7 @@ class TestSparseMetadataNull:
         assert item["emotion"] is None
 
     async def test_note_emotion_null_when_metadata_is_none(self):
-        rows = [_make_row(predicate="contact_note", content="Note", metadata=None)]
+        rows = [_fact_row(predicate="contact_note", content="Note", metadata=None)]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/notes")
 
@@ -572,7 +571,7 @@ class TestSparseMetadataNull:
         assert item["emotion"] is None
 
     async def test_interaction_direction_and_group_size_null_when_absent(self):
-        rows = [_make_row(predicate="interaction_meeting", content="Sync", metadata={})]
+        rows = [_fact_row(predicate="interaction_meeting", content="Sync", metadata={})]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/interactions")
 
@@ -583,7 +582,7 @@ class TestSparseMetadataNull:
         assert item["group_size"] is None
 
     async def test_gift_sparse_fields_null_when_absent(self):
-        rows = [_make_row(predicate="gift", content="Book", metadata={})]
+        rows = [_fact_row(predicate="gift", content="Book", metadata={})]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/gifts")
 
@@ -594,7 +593,7 @@ class TestSparseMetadataNull:
         assert item["status"] is None
 
     async def test_loan_sparse_fields_null_when_absent(self):
-        rows = [_make_row(predicate="loan", content="Lent bike", metadata={})]
+        rows = [_fact_row(predicate="loan", content="Lent bike", metadata={})]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/loans")
 
@@ -605,7 +604,7 @@ class TestSparseMetadataNull:
 
     async def test_loan_fields_populated_when_present(self):
         rows = [
-            _make_row(
+            _fact_row(
                 predicate="loan",
                 content="Borrowed $50",
                 metadata={
@@ -627,7 +626,7 @@ class TestSparseMetadataNull:
         assert item["settled"] == "false"
 
     async def test_timeline_metadata_null_when_empty(self):
-        rows = [_make_row(predicate="contact_note", content="Note", metadata={})]
+        rows = [_fact_row(predicate="contact_note", content="Note", metadata={})]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/timeline")
 
@@ -637,7 +636,7 @@ class TestSparseMetadataNull:
         assert "metadata" in item
 
     async def test_timeline_metadata_null_when_none(self):
-        rows = [_make_row(predicate="contact_note", content="Note", metadata=None)]
+        rows = [_fact_row(predicate="contact_note", content="Note", metadata=None)]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/timeline")
 
@@ -673,7 +672,7 @@ class TestProvenanceContractOnTabEndpoints:
     )
     async def test_provenance_fields_present_in_response(self, path: str, predicate: str):
         """All six provenance fields must appear in every item, even if null."""
-        rows = [_make_row(predicate=predicate, content="test fact")]
+        rows = [_fact_row(predicate=predicate, content="test fact")]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/{path}")
 
@@ -696,7 +695,7 @@ class TestProvenanceContractOnTabEndpoints:
     )
     async def test_src_is_memory_module_legacy(self, path: str, predicate: str):
         """``src`` must be ``'memory_module_legacy'`` (the legacy facts table sentinel)."""
-        rows = [_make_row(predicate=predicate, content="test fact")]
+        rows = [_fact_row(predicate=predicate, content="test fact")]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/{path}")
 
@@ -717,7 +716,7 @@ class TestProvenanceContractOnTabEndpoints:
     )
     async def test_nullable_provenance_fields_are_null(self, path: str, predicate: str):
         """``conf``, ``last_seen``, and ``weight`` must be null for legacy table rows."""
-        rows = [_make_row(predicate=predicate, content="test fact")]
+        rows = [_fact_row(predicate=predicate, content="test fact")]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/{path}")
 
@@ -740,7 +739,7 @@ class TestProvenanceContractOnTabEndpoints:
     )
     async def test_boolean_provenance_fields_have_defaults(self, path: str, predicate: str):
         """``verified`` must be false and ``primary`` must be false for legacy table rows."""
-        rows = [_make_row(predicate=predicate, content="test fact")]
+        rows = [_fact_row(predicate=predicate, content="test fact")]
         app, _ = _app_with_pool(fetch_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/{path}")
 
@@ -868,9 +867,9 @@ def _app_with_pool_linked_contacts(
     mock_db.pool.return_value = mock_pool
 
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app, mock_pool
@@ -1147,9 +1146,9 @@ def _app_with_entity_pool(
 
     app = create_app()
 
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app, mock_pool
@@ -1197,7 +1196,7 @@ class TestTimelineJsonbMetadata:
 
     async def test_dict_metadata_returns_200(self):
         rows = [
-            _make_row(
+            _fact_row(
                 predicate="contact_note",
                 content="Note",
                 metadata={"emotion": "happy"},
@@ -1212,7 +1211,7 @@ class TestTimelineJsonbMetadata:
     async def test_string_metadata_does_not_crash(self):
         # Pre-fix this raised the same dict() char-iteration error as the entity GET.
         rows = [
-            _make_row(
+            _fact_row(
                 predicate="contact_note",
                 content="Note",
                 metadata='{"emotion": "happy"}',
@@ -1271,9 +1270,9 @@ def _build_app_with_dual_pools(
     mock_db.pool.side_effect = _pool_lookup
 
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app, rel_pool, sw_pool
@@ -1465,9 +1464,9 @@ def _build_app_for_dunbar_patch(
     mock_db.pool.return_value = pool
 
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     # Patch the engine module the router imports lazily.

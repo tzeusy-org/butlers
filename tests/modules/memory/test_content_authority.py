@@ -8,6 +8,7 @@ visibility.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import uuid
 from contextlib import contextmanager
@@ -28,10 +29,13 @@ from butlers.modules.memory import storage
 from butlers.modules.memory.consolidation_executor import execute_consolidation
 from butlers.modules.memory.consolidation_parser import ConsolidationResult, NewFact, NewRule
 from butlers.modules.memory.content_authority import (
+    HELD_FACT_SQL,
+    catalog_attribution,
     classify_routing_context,
     combine_authorities,
 )
 from butlers.modules.memory.tools import context as _context
+from butlers.modules.memory.tools import reading as _reading
 from butlers.modules.memory.tools import writing as _writing
 
 # Re-used so the migrated-DB provisioning stays defined in exactly one place.
@@ -91,6 +95,32 @@ def test_classify_routing_context(routing_context, owner_id, expected) -> None:
 )
 def test_combine_authorities(evidence, expected) -> None:
     assert combine_authorities(evidence) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("authority", "label"),
+    [
+        ("owner", None),
+        ("owner_device", None),
+        ("system", None),
+        (None, "source unverified"),
+        ("third_party", "from a third party"),
+        ("mixed", "partly from a third party"),
+    ],
+)
+def test_catalog_attribution_label(authority, label) -> None:
+    assert catalog_attribution(authority) == label
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("authority", "suffix"),
+    [("mixed", " (partly from a third party)"), ("owner", "")],
+)
+def test_fleet_knowledge_line_attribution_suffix(authority, suffix) -> None:
+    row = {"source_butler": "health", "title": "Sleep", "content_authority": authority}
+    assert _context._format_fleet_knowledge_line(row) == f"- [health] Sleep{suffix}\n"
 
 
 @pytest.mark.unit
@@ -406,3 +436,198 @@ async def test_legacy_rule_without_authority_is_excluded(pool_factory) -> None:
         rule_id,
     )
     assert rule_id not in await _admitted_rule_ids(pool)
+
+
+# REQ-module-memory-013 "Catalog readers attribute non-owner content".
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_catalog_rows_carry_fact_authority_and_tool_attributes_it(pool_factory) -> None:
+    pool, owner, stranger = await pool_factory()
+    engine = _engine()
+    tag = uuid.uuid4().hex[:8]
+    catalog = {"enable_shared_catalog": True, "source_schema": "public"}
+
+    with _session(owner):
+        own = await _writing.memory_store_fact(
+            pool, engine, "Owner", f"tea_{tag}", f"oolong {tag}", entity_id=str(owner), **catalog
+        )
+    with _session(stranger):
+        reported = await _writing.memory_store_fact(
+            pool,
+            engine,
+            "Owner",
+            f"coffee_{tag}",
+            f"espresso {tag}",
+            entity_id=str(owner),
+            **catalog,
+        )
+    with _session(owner):
+        legacy = await _writing.memory_store_fact(
+            pool, engine, "Owner", f"juice_{tag}", f"orange {tag}", entity_id=str(owner)
+        )
+    own_id, reported_id, legacy_id = (uuid.UUID(f["id"]) for f in (own, reported, legacy))
+    await pool.execute(
+        "UPDATE facts SET content_authority = NULL, authority_entity_id = NULL WHERE id = $1",
+        legacy_id,
+    )
+    # A row cataloged before the column existed starts NULL; the backfill syncs it.
+    await pool.execute(
+        "UPDATE public.memory_catalog SET content_authority = NULL WHERE source_id = $1", own_id
+    )
+
+    await storage.run_memory_catalog_backfill(pool, source_schema="public")
+
+    rows = await pool.fetch(
+        "SELECT source_id, content_authority FROM public.memory_catalog"
+        " WHERE source_table = 'facts' AND source_id = ANY($1::uuid[])",
+        [own_id, reported_id, legacy_id],
+    )
+    assert {r["source_id"]: r["content_authority"] for r in rows} == {
+        own_id: "owner",
+        reported_id: "third_party",
+        legacy_id: None,
+    }
+
+    results = await _reading.memory_catalog_search(
+        pool,
+        engine,
+        tag,
+        mode="keyword",
+        limit=50,
+        read_policy=await _search.load_catalog_read_policy(pool),
+    )
+    by_id = {r["source_id"]: r for r in results}
+    assert by_id[str(own_id)]["content_authority"] == "owner"
+    assert by_id[str(own_id)]["attribution"] is None
+    assert by_id[str(reported_id)]["attribution"] == "from a third party"
+    assert by_id[str(legacy_id)]["attribution"] == "source unverified"
+
+
+# REQ-module-memory-013 owner vouch for held facts (bu-jv1moa.14): additive, single
+# receipt under two connections, typed conflict for dead facts, reversible.
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_vouch_is_additive_single_receipt_and_reversible(pool_factory) -> None:
+    pool, owner, stranger = await pool_factory()
+    engine = _engine()
+    tag = uuid.uuid4().hex[:8]
+    catalog = {"enable_shared_catalog": True, "source_schema": "public"}
+    with _session(stranger):
+        stored = await _writing.memory_store_fact(
+            pool, engine, "Owner", f"car_{tag}", f"red {tag}", entity_id=str(owner), **catalog
+        )
+        hidden = await _writing.memory_store_fact(
+            pool,
+            engine,
+            "Owner",
+            f"diagnosis_{tag}",
+            f"private {tag}",
+            entity_id=str(owner),
+            sensitivity=sorted(storage.CATALOG_WRITE_EXCLUDED_SENSITIVITIES)[0],
+            **catalog,
+        )
+        dead = await _writing.memory_store_fact(
+            pool, engine, "Owner", f"bike_{tag}", f"blue {tag}", entity_id=str(owner)
+        )
+    fact_id, hidden_id, dead_id = (uuid.UUID(f["id"]) for f in (stored, hidden, dead))
+    lineage = "SELECT content_authority, authority_entity_id, source_episode_id, supersedes_id"
+    before = await pool.fetchrow(f"{lineage} FROM facts WHERE id = $1", fact_id)
+    assert before["content_authority"] == "third_party"
+
+    # Only the shared held predicate admits a vouch. Legacy/system and owner-class
+    # rows are complete no-ops, including an already-present catalog entry.
+    for authority in (None, "system", "owner", "owner_device"):
+        with _session(stranger):
+            ordinary = await _writing.memory_store_fact(
+                pool,
+                engine,
+                "Owner",
+                f"nonheld_{tag}_{authority}",
+                f"unchanged {tag}",
+                entity_id=str(owner),
+                **catalog,
+            )
+        ordinary_id = uuid.UUID(ordinary["id"])
+        # NULL represents a legacy row; explicit stamps exercise the persisted
+        # classifier independently of the session authority writer.
+        await pool.execute(
+            "UPDATE facts SET content_authority = $2 WHERE id = $1", ordinary_id, authority
+        )
+        fact_before = await pool.fetchrow("SELECT * FROM facts WHERE id = $1", ordinary_id)
+        catalog_before = await pool.fetchrow(
+            "SELECT * FROM public.memory_catalog WHERE source_table = 'facts' AND source_id = $1",
+            ordinary_id,
+        )
+        assert catalog_before is not None
+        assert fact_before["endorsed_at"] is None and fact_before["endorsed_by"] is None
+        for _ in range(2):
+            assert await storage.endorse_fact(pool, ordinary_id, endorsed_by=owner) == {
+                "fact_id": ordinary_id,
+                "content_authority": authority,
+                "endorsed_at": None,
+                "endorsed_by": None,
+                "changed": False,
+            }
+        assert await pool.fetchrow("SELECT * FROM facts WHERE id = $1", ordinary_id) == fact_before
+        assert (
+            await pool.fetchrow(
+                "SELECT * FROM public.memory_catalog WHERE source_table = 'facts' AND source_id = $1",
+                ordinary_id,
+            )
+            == catalog_before
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM memory_events WHERE event_type = 'fact_vouched' AND memory_id = $1",
+                ordinary_id,
+            )
+            == 0
+        )
+
+    # Two connections race: one CAS wins, both get the same receipt, one event.
+    first, second = await asyncio.gather(
+        storage.endorse_fact(pool, fact_id, endorsed_by=owner),
+        storage.endorse_fact(pool, fact_id, endorsed_by=owner),
+    )
+    assert sorted([first["changed"], second["changed"]]) == [False, True]
+    assert first["endorsed_at"] == second["endorsed_at"] is not None
+    assert first["endorsed_by"] == second["endorsed_by"] == owner
+    repeat = await storage.endorse_fact(pool, fact_id, endorsed_by=owner)
+    assert repeat["changed"] is False and repeat["endorsed_at"] == first["endorsed_at"]
+    events = "SELECT count(*) FROM memory_events WHERE event_type = 'fact_vouched'"
+    assert await pool.fetchval(f"{events} AND memory_id = $1", fact_id) == 1
+    assert await pool.fetchrow(f"{lineage} FROM facts WHERE id = $1", fact_id) == before
+    assert (
+        await pool.fetchval(
+            "SELECT content_authority FROM public.memory_catalog"
+            " WHERE source_table = 'facts' AND source_id = $1",
+            fact_id,
+        )
+        == "third_party"
+    )
+
+    # Clearing the stamps restores the prior admission state exactly.
+    await pool.execute(
+        "UPDATE facts SET endorsed_at = NULL, endorsed_by = NULL WHERE id = $1", fact_id
+    )
+    assert await pool.fetchval(f"SELECT {HELD_FACT_SQL} FROM facts WHERE id = $1", fact_id)
+    assert await pool.fetchrow(f"{lineage} FROM facts WHERE id = $1", fact_id) == before
+
+    # Endorsement never overrides the catalog's sensitivity exclusion.
+    assert (await storage.endorse_fact(pool, hidden_id, endorsed_by=owner))["changed"] is True
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.memory_catalog WHERE source_id = $1", hidden_id
+        )
+        == 0
+    )
+
+    # A retracted/superseded fact is a typed conflict and writes nothing.
+    for validity in ("retracted", "superseded"):
+        await pool.execute("UPDATE facts SET validity = $2 WHERE id = $1", dead_id, validity)
+        with pytest.raises(storage.FactNotEndorsableError):
+            await storage.endorse_fact(pool, dead_id, endorsed_by=owner)
+        assert await pool.fetchval("SELECT endorsed_at FROM facts WHERE id = $1", dead_id) is None
+    assert await pool.fetchval(f"{events} AND memory_id = $1", dead_id) == 0

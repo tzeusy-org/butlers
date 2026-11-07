@@ -1,6 +1,6 @@
 ## Context
 
-Proposed direction, awaiting exact owner adoption/release. Evidence is the accepted [monthly packet](../../../docs/reviews/2026-10-14-qa-month-packet.md), reviewed source `b747a55a530364d987fb37457c343193e9362fe7`, deployed image `c966a1cdde9e`. A scoped diff through origin/main `3bde6119914e066414451d3df609a8c20e84fa30` found no changes to the governing QA source/specs, doctrine or RFC0015. Refresh that check before release. This changes required behavior; it does not assert that the repair has shipped.
+Proposed direction, awaiting exact owner adoption/release. Evidence is the accepted [monthly packet](../../../docs/plans/2026-10-14-qa-month-packet.md), reviewed source `b747a55a530364d987fb37457c343193e9362fe7`, deployed image `c966a1cdde9e`. A scoped diff through origin/main `3bde6119914e066414451d3df609a8c20e84fa30` found no changes to the governing QA source/specs, doctrine or RFC0015. Refresh that check before release. This changes required behavior; it does not assert that the repair has shipped.
 
 The month produced 100 attempts, 95 linked sessions attributed to travel, 38 no-op outcomes and 15 publication failures; no QA PR was opened in the window. Discovery worked substantially better than investigation. The owner reported correcting identity to `tzeusy-orca`; the author-reported resolver/grant recheck was not retained and is currently unverified. Configured repository `tzeusy-org/butlers` does not prove publication capability, confinement or operational recovery.
 
@@ -84,3 +84,8 @@ No implementation-shaping question is delegated silently. Proposed defaults and 
 
 
 PR-review reconciliation against main `15705379bfd0c3879881de9c2466cb7b439b4bce`: PR #4509 has since landed the adopted RFC0038/generalist direction. The earlier no-drift comparison is historical. QA retains its separate engineering-executor boundary (D18); the proposed relay and provenance clauses now carry the adopted service-plane and verified goal-origin rules. No generalist runtime implementation or owner adoption of this QA proposal is claimed.
+
+### 7. Goal-runtime classification (RFC 0038 D18)
+
+The goal-runtime reconciliation (`bu-6a9xxw.8`, [goal-runtime-reconciliation.md](goal-runtime-reconciliation.md)) settles how this loop sits under RFC 0038. Investigation and follow-up sessions are D18 engineering executors launched by the surviving Spawner with trigger source `qa`: no goal, invocation token, broker grant or MCP server, and only the environment the `confine-qa-publication-authority` **Agent environment** scenario (REQ-qa-investigation-dispatch-001, Investigation Agent Sandbox) allows. Incident correlation, pending work, admission gates and the three-session/sixty-minute incident budget are QA-owned deterministic infrastructure, not goal admission. The `qa_triage_v1` staffer goal defined by the generalist staffer-qa delta is the only QA goal; it draws on its own D10 budget, never on the incident budget, and its judgment cannot launch, resume or reserve executor work. Executor usage and staffer-goal usage are reported apart. The staffer-qa Patrol Loop Lifecycle block now carries the generalist relay clause, so both archive orders converge without overwriting either change.
+

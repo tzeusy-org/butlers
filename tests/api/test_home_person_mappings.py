@@ -8,6 +8,7 @@ import logging
 import shutil
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import Mock
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
@@ -21,16 +22,17 @@ from sqlalchemy import create_engine
 from alembic import command
 from butlers.api import dashboard_audit_middleware
 from butlers.api.app import create_app
+from butlers.api.deps import get_db_optional
 from butlers.api.routers import home_person_mappings as mapping_router
 from butlers.api.routers.home_person_mappings import (
     _LOCK_NAMESPACE,
     MappingBatch,
     _decide_batch,
-    _get_db_manager,
     _key_digest,
 )
 from butlers.db import register_jsonb_codec
 from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.testing.db_manager import db_manager
 from butlers.testing.migration import (
     create_migration_db,
     init_db_sql_for_dbapi,
@@ -66,24 +68,17 @@ def _key(seed: bytes) -> str:
     return base64.urlsafe_b64encode(hashlib.sha256(seed).digest()).decode().rstrip("=")
 
 
-class _Manager:
-    """Dashboard DB-manager seam that counts pool requests; no pool means unavailable."""
-
-    def __init__(self) -> None:
-        self.serving: asyncpg.Pool | None = None
-        self.calls = 0
-
-    def pool(self, _name: str) -> asyncpg.Pool:
-        self.calls += 1
-        if self.serving is None:
-            raise RuntimeError("synthetic unavailable")
-        return self.serving
+def _serving(pool: asyncpg.Pool | None = None):
+    """Dashboard DB manager serving *pool* as switchboard; no pool means unavailable."""
+    return db_manager({} if pool is None else {"switchboard": pool})
 
 
 @pytest.fixture
 def seams(monkeypatch):
     """Observe actor, decoder, pool and generic-audit interaction without changing decisions."""
-    observed = SimpleNamespace(manager=_Manager(), actor_calls=0, decoder_calls=0, generic=[])
+    manager = _serving()
+    monkeypatch.setattr(manager, "pool", Mock(wraps=manager.pool))
+    observed = SimpleNamespace(manager=manager, actor_calls=0, decoder_calls=0, generic=[])
     actor = mapping_router.authenticated_principal
 
     def counted_actor() -> str:
@@ -113,7 +108,7 @@ def seams(monkeypatch):
 def _mounted(seams, app=None):
     """The production app and owner middleware, wired to the observed DB manager."""
     app = app if app is not None else create_authenticated_domain_app()
-    app.dependency_overrides[_get_db_manager] = lambda: seams.manager
+    app.dependency_overrides[get_db_optional] = lambda: seams.manager
     return app
 
 
@@ -341,13 +336,13 @@ async def test_mounted_body_bound_is_measured_from_received_octets(
     status, body, _ = await _raw_post(app, exact, _headers(_DELIVERIES[delivery]))
     # Proceeding means decode, actor derivation and one pool request, which is unavailable here.
     assert (status, body["error"]["code"]) == (503, "MAPPING_DATABASE_UNAVAILABLE")
-    assert (seams.decoder_calls, seams.actor_calls, seams.manager.calls) == (1, 1, 1)
+    assert (seams.decoder_calls, seams.actor_calls, seams.manager.pool.call_count) == (1, 1, 1)
 
     oversize = [*chunks(_padded_body(spelling, 32_769)), b'"private-later-chunk"']
     status, body, received = await _raw_post(app, oversize, _headers(_DELIVERIES[delivery]))
     assert (status, body) == (413, _TOO_LARGE)
     assert received < len(oversize)
-    assert (seams.decoder_calls, seams.actor_calls, seams.manager.calls) == (1, 1, 1)
+    assert (seams.decoder_calls, seams.actor_calls, seams.manager.pool.call_count) == (1, 1, 1)
     assert seams.generic == []
 
 
@@ -378,14 +373,14 @@ async def test_mounted_owner_boundary_refuses_before_body_actor_or_pool(seams) -
             expected_code,
             0,
         )
-    assert (seams.decoder_calls, seams.actor_calls, seams.manager.calls) == (0, 0, 0)
+    assert (seams.decoder_calls, seams.actor_calls, seams.manager.pool.call_count) == (0, 0, 0)
     assert seams.generic == []
 
     # Positive control: the same request with the owner credential reaches the pool seam.
     status, response, received = await _raw_post(configured, body, _headers(owner_key))
     assert (status, response["error"]["code"]) == (503, "MAPPING_DATABASE_UNAVAILABLE")
     assert received >= 1
-    assert seams.manager.calls == 1
+    assert seams.manager.pool.call_count == 1
 
 
 @pytest.mark.integration
@@ -766,7 +761,7 @@ async def test_real_postgres_serializes_competing_batches_and_rolls_back(
 
     # A failure after the explicit audit insert rolls back mapping, receipt and audit together,
     # and the mounted route never claims creation.
-    seams.manager.serving = mapping_pool
+    seams.manager = _serving(mapping_pool)
     rollback_entity = await _person(mapping_pool, f"mapping-rollback-{uuid4()}")
     rollback_key = _key(b"rollback")
     audits_before = await mapping_pool.fetchval(
@@ -942,7 +937,7 @@ async def test_real_postgres_entity_lifecycle_races_in_both_orders(
 async def test_mounted_duplicates_and_legacy_null_target_refuse_without_writes(
     mapping_pool, seams
 ) -> None:
-    seams.manager.serving = mapping_pool
+    seams.manager = _serving(mapping_pool)
     first = await _person(mapping_pool, f"mapping-duplicate-{uuid4()}")
     second = await _person(mapping_pool, f"mapping-duplicate-{uuid4()}")
     await mapping_pool.execute(
@@ -1030,7 +1025,7 @@ async def test_mounted_structural_refusals_are_fixed_422_without_writes(
     mapping_pool, seams
 ) -> None:
     """Every count, shape, identifier, key and query refusal is one fixed audited 422."""
-    seams.manager.serving = mapping_pool
+    seams.manager = _serving(mapping_pool)
     entity = str(uuid4())
     one = _body(_pairs(("person.structural_valid", entity)))
     bodies: dict[str, bytes] = {
@@ -1120,7 +1115,7 @@ async def test_mounted_structural_refusals_are_fixed_422_without_writes(
             (audit["outcome"], audit["failure_category"])
             for audit in await _audits(mapping_pool, details["receipt"])
         ] == [("refused", "request_invalid")], name
-        for header, value in key_headers:
+        for _header, value in key_headers:
             assert not await mapping_pool.fetchval(
                 "SELECT EXISTS (SELECT 1 FROM public.ha_person_mapping_receipts "
                 "WHERE key_digest = $1 AND outcome = 'success')",
@@ -1145,7 +1140,7 @@ async def test_mounted_count_and_length_edges_pass_structural_validation(
     mapping_pool, seams
 ) -> None:
     """Exactly 50 members and a 255-byte identifier clear validation and reach references."""
-    seams.manager.serving = mapping_pool
+    seams.manager = _serving(mapping_pool)
     cases = {
         "edge-50": [(f"person.edge_{i:02d}", str(uuid4())) for i in range(50)],
         "edge-255-bytes": [("person." + "a" * 248, str(uuid4()))],
@@ -1219,7 +1214,7 @@ async def test_mounted_outcomes_are_aggregate_replayable_and_sentinel_free(
             return True
 
     caplog.set_level(logging.DEBUG)
-    seams.manager.serving = mapping_pool
+    seams.manager = _serving(mapping_pool)
     app = _mounted(seams)
     exporter = InMemorySpanExporter()
     tracer_provider = TracerProvider()
@@ -1270,7 +1265,7 @@ async def test_mounted_outcomes_are_aggregate_replayable_and_sentinel_free(
                     batch(ha_sentinel, other_entity), _key(b"s-conflict")
                 ),
             }
-            seams.manager.serving = None
+            seams.manager = _serving()
             refusals["MAPPING_DATABASE_UNAVAILABLE"] = await post(
                 batch(refused_ha, other_entity), _key(b"s-unavailable")
             )

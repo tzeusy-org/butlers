@@ -52,12 +52,13 @@ import uuid
 from datetime import UTC, datetime
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
 from butlers.api.routers import audit
+from butlers.core.audit_transaction import audit_transaction
 from butlers.core.crypto import aes_gcm
 
 logger = logging.getLogger(__name__)
@@ -83,11 +84,6 @@ _WEBHOOK_PROJECTION = (
     "id, endpoint, events, enabled, secret_prefix, last_test_at, last_test_ok, "
     "retry_policy, created_at, updated_at"
 )
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -435,13 +431,16 @@ def dispatch_event(
 
 @router.get("", response_model=ApiResponse[list[WebhookRow]])
 async def list_webhooks(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[WebhookRow]]:
     """Return all webhook registrations ordered by created_at DESC."""
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     rows = await pool.fetch(
         f"SELECT {_WEBHOOK_PROJECTION} FROM public.webhooks ORDER BY created_at DESC"
@@ -457,7 +456,8 @@ async def list_webhooks(
 @router.post("", response_model=ApiResponse[WebhookWithSecret], status_code=201)
 async def create_webhook(
     body: WebhookCreate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[WebhookWithSecret]:
     """Create a new webhook registration with a server-generated signing secret.
 
@@ -467,8 +467,10 @@ async def create_webhook(
     """
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     secret = _generate_secret()
     secret_encrypted = _encrypt_secret(secret)
@@ -481,7 +483,7 @@ async def create_webhook(
     # The INSERT and the audit append run inside the same transaction (acquired
     # connection + conn.transaction()) so the audit row is atomic with the
     # state change — if either write fails, both roll back together.
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn, audit_transaction(conn):
         row = await conn.fetchrow(
             "INSERT INTO public.webhooks "
             "(id, endpoint, events, enabled, secret_encrypted, secret_prefix, "
@@ -515,13 +517,16 @@ async def create_webhook(
 @router.get("/{webhook_id}", response_model=ApiResponse[WebhookRow])
 async def get_webhook(
     webhook_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[WebhookRow]:
     """Return one webhook registration by ID."""
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     row = await pool.fetchrow(
         f"SELECT {_WEBHOOK_PROJECTION} FROM public.webhooks WHERE id = $1::uuid",
@@ -542,7 +547,8 @@ async def get_webhook(
 async def update_webhook(
     webhook_id: uuid.UUID,
     body: WebhookUpdate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[WebhookWithSecret]:
     """Update one webhook registration (partial update — only supplied fields change).
 
@@ -552,8 +558,10 @@ async def update_webhook(
     """
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     existing = await pool.fetchrow(
         "SELECT id, endpoint, events, enabled, secret_encrypted, secret_prefix, "
@@ -593,7 +601,7 @@ async def update_webhook(
     # The UPDATE and the audit append run inside the same transaction (acquired
     # connection + conn.transaction()) so the audit row is atomic with the
     # state change — if either write fails, both roll back together.
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn, audit_transaction(conn):
         row = await conn.fetchrow(
             "UPDATE public.webhooks "
             "SET endpoint = $1, events = $2::jsonb, enabled = $3, secret_encrypted = $4, "
@@ -639,18 +647,21 @@ class WebhookDeleteResponse(BaseModel):
 @router.delete("/{webhook_id}", response_model=ApiResponse[WebhookDeleteResponse])
 async def delete_webhook(
     webhook_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[WebhookDeleteResponse]:
     """Delete a webhook registration."""
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     # The DELETE and the audit append run inside the same transaction (acquired
     # connection + conn.transaction()) so the audit row is atomic with the
     # state change — if either write fails, both roll back together.
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn, audit_transaction(conn):
         result = await conn.execute(
             "DELETE FROM public.webhooks WHERE id = $1::uuid",
             str(webhook_id),
@@ -675,7 +686,8 @@ async def delete_webhook(
 @router.post("/{webhook_id}/test", response_model=ApiResponse[WebhookTestResult])
 async def test_webhook(
     webhook_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[WebhookTestResult]:
     """Synthesize a ``webhook.test`` event and fire it at the registered endpoint.
 
@@ -686,8 +698,10 @@ async def test_webhook(
     """
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     row = await pool.fetchrow(
         "SELECT id, endpoint, events, enabled, secret_encrypted, last_test_at, last_test_ok, "
@@ -724,7 +738,7 @@ async def test_webhook(
     # same transaction (acquired connection + conn.transaction()) so the audit
     # row is atomic with the state change — if either write fails, both roll
     # back together.
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn, audit_transaction(conn):
         await conn.execute(
             "UPDATE public.webhooks SET last_test_at = now(), last_test_ok = $1 "
             "WHERE id = $2::uuid",

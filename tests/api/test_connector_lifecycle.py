@@ -20,7 +20,7 @@ Endpoints tested:
 
 The tests mount the ingestion router via create_app() (shared `app` fixture)
 and wire the DB dependency by overriding
-``butlers.api.routers.ingestion_connectors._get_db_manager``.
+``butlers.api.deps.get_db``.
 
 Because the pause/run-now handlers use ``pool.acquire()`` context-manager
 semantics (not raw ``pool.fetchrow``), mocks must be built with a proper
@@ -39,7 +39,9 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.ingestion_connectors import _get_db_manager
+from butlers.api.deps import get_db
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -47,13 +49,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_row(data: dict):
-    row = MagicMock()
-    row.__getitem__ = lambda self, k: data[k]
-    row.get = lambda k, default=None: data.get(k, default)
-    return row
 
 
 def _connector_row(
@@ -70,26 +65,8 @@ def _connector_row(
     }
 
 
-def _make_conn(*, fetchrow_results: list):
-    """Build a mock asyncpg connection that returns results in sequence.
-
-    ``fetchrow_results`` is consumed left-to-right per awaited fetchrow() call.
-    Pass ``None`` to simulate a missing row (connector not found).
-    """
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(side_effect=fetchrow_results)
-
-    # transaction() must be an async context manager
-    @asynccontextmanager
-    async def _transaction():
-        yield
-
-    conn.transaction = _transaction
-    return conn
-
-
-def _make_tracking_conn(*, fetchrow_results: list, tx_state: dict):
-    """Like ``_make_conn`` but records transaction nesting depth in ``tx_state``.
+def _make_tracking_pool(*, fetchrow_results: list, tx_state: dict):
+    """A fake pool whose connection records transaction nesting depth in ``tx_state``.
 
     ``tx_state["depth"]`` is incremented on ``transaction()`` enter and
     decremented on exit, so a caller can observe whether a later call (e.g.
@@ -98,8 +75,7 @@ def _make_tracking_conn(*, fetchrow_results: list, tx_state: dict):
     distinguishes the buggy in-transaction audit (would roll the state change
     back on failure) from the fixed post-commit audit.
     """
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(side_effect=fetchrow_results)
+    pool = fake_pool(fetchrow=AsyncMock(side_effect=fetchrow_results))
 
     @asynccontextmanager
     async def _transaction():
@@ -109,19 +85,7 @@ def _make_tracking_conn(*, fetchrow_results: list, tx_state: dict):
         finally:
             tx_state["depth"] -= 1
 
-    conn.transaction = _transaction
-    return conn
-
-
-def _make_pool(conn: AsyncMock) -> AsyncMock:
-    """Wrap a mock connection in a mock pool with acquire() context-manager support."""
-    pool = AsyncMock()
-
-    @asynccontextmanager
-    async def _acquire():
-        yield conn
-
-    pool.acquire = _acquire
+    pool.connection.transaction = _transaction
     return pool
 
 
@@ -132,7 +96,7 @@ def _wire_db(app, pool, *, pool_available: bool = True):
         mock_db.pool.return_value = pool
     else:
         mock_db.pool.side_effect = KeyError("switchboard pool not available")
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_db
 
 
@@ -143,9 +107,8 @@ def _wire_db(app, pool, *, pool_available: bool = True):
 
 async def test_connector_pause_200_sets_state_and_audits(app):
     """POST pause on a healthy connector returns 200, sets state='paused', and audits."""
-    returned_row = _make_row(_connector_row(state="paused"))
-    conn = _make_conn(fetchrow_results=[returned_row])
-    pool = _make_pool(conn)
+    returned_row = Record(_connector_row(state="paused"))
+    pool = fake_pool(fetchrow=AsyncMock(side_effect=[returned_row]))
     _wire_db(app, pool)
 
     with patch(
@@ -168,8 +131,7 @@ async def test_connector_pause_200_sets_state_and_audits(app):
 async def test_connector_pause_404_not_found(app):
     """POST pause on a non-existent connector returns 404 (logic-driven: registry lookup → None)."""
     # fetchrow returns None → connector not in registry → handler raises HTTPException 404
-    conn = _make_conn(fetchrow_results=[None])
-    pool = _make_pool(conn)
+    pool = fake_pool(fetchrow=AsyncMock(side_effect=[None]))
     _wire_db(app, pool)
 
     async with httpx.AsyncClient(
@@ -188,10 +150,9 @@ async def test_connector_pause_404_not_found(app):
 async def test_connector_run_now_200_when_paused_and_audits(app):
     """POST run-now on a paused connector returns 200, clears pause, and audits."""
     # run-now does two fetchrow calls: SELECT FOR UPDATE (returns paused row), then UPDATE RETURNING
-    paused_row = _make_row(_connector_row(state="paused"))
-    updated_row = _make_row(_connector_row(state="unknown"))
-    conn = _make_conn(fetchrow_results=[paused_row, updated_row])
-    pool = _make_pool(conn)
+    paused_row = Record(_connector_row(state="paused"))
+    updated_row = Record(_connector_row(state="unknown"))
+    pool = fake_pool(fetchrow=AsyncMock(side_effect=[paused_row, updated_row]))
     _wire_db(app, pool)
 
     with patch(
@@ -211,9 +172,8 @@ async def test_connector_run_now_200_when_paused_and_audits(app):
 
 async def test_connector_run_now_409_when_not_paused(app):
     """POST run-now on a non-paused connector returns 409."""
-    healthy_row = _make_row(_connector_row(state="healthy"))
-    conn = _make_conn(fetchrow_results=[healthy_row])
-    pool = _make_pool(conn)
+    healthy_row = Record(_connector_row(state="healthy"))
+    pool = fake_pool(fetchrow=AsyncMock(side_effect=[healthy_row]))
     _wire_db(app, pool)
 
     async with httpx.AsyncClient(
@@ -233,15 +193,14 @@ async def test_connector_run_now_409_when_not_paused(app):
 async def test_connector_archive_200_sets_archived_and_audits(app):
     """POST archive returns 200, reports archived=true + timestamp, and audits."""
     archived_at = _dt.datetime(2026, 7, 10, 0, 0, 0, tzinfo=_dt.UTC)
-    returned_row = _make_row(
+    returned_row = Record(
         {
             "connector_type": "google_health",
             "endpoint_identity": "degraded",
             "archived_at": archived_at,
         }
     )
-    conn = _make_conn(fetchrow_results=[returned_row])
-    pool = _make_pool(conn)
+    pool = fake_pool(fetchrow=AsyncMock(side_effect=[returned_row]))
     _wire_db(app, pool)
 
     with patch(
@@ -263,8 +222,7 @@ async def test_connector_archive_200_sets_archived_and_audits(app):
 
 async def test_connector_archive_404_not_found(app):
     """POST archive on a non-existent (or soft-deleted) connector returns 404."""
-    conn = _make_conn(fetchrow_results=[None])
-    pool = _make_pool(conn)
+    pool = fake_pool(fetchrow=AsyncMock(side_effect=[None]))
     _wire_db(app, pool)
 
     async with httpx.AsyncClient(
@@ -277,15 +235,14 @@ async def test_connector_archive_404_not_found(app):
 
 async def test_connector_unarchive_200_clears_archived_and_audits(app):
     """POST unarchive returns 200, reports archived=false, and audits."""
-    returned_row = _make_row(
+    returned_row = Record(
         {
             "connector_type": "google_health",
             "endpoint_identity": "degraded",
             "archived_at": None,
         }
     )
-    conn = _make_conn(fetchrow_results=[returned_row])
-    pool = _make_pool(conn)
+    pool = fake_pool(fetchrow=AsyncMock(side_effect=[returned_row]))
     _wire_db(app, pool)
 
     with patch(
@@ -307,8 +264,7 @@ async def test_connector_unarchive_200_clears_archived_and_audits(app):
 
 async def test_connector_unarchive_404_not_found(app):
     """POST unarchive on a non-existent connector returns 404."""
-    conn = _make_conn(fetchrow_results=[None])
-    pool = _make_pool(conn)
+    pool = fake_pool(fetchrow=AsyncMock(side_effect=[None]))
     _wire_db(app, pool)
 
     async with httpx.AsyncClient(
@@ -336,10 +292,9 @@ async def test_connector_unarchive_404_not_found(app):
 
 async def test_connector_pause_audit_failure_does_not_roll_back_state(app):
     """A failing pause audit insert leaves the state committed and returns true state."""
-    returned_row = _make_row(_connector_row(state="paused"))
+    returned_row = Record(_connector_row(state="paused"))
     tx_state = {"depth": 0}
-    conn = _make_tracking_conn(fetchrow_results=[returned_row], tx_state=tx_state)
-    pool = _make_pool(conn)
+    pool = _make_tracking_pool(fetchrow_results=[returned_row], tx_state=tx_state)
     _wire_db(app, pool)
 
     audit_tx_depth: list[int] = []
@@ -367,11 +322,10 @@ async def test_connector_pause_audit_failure_does_not_roll_back_state(app):
 
 async def test_connector_run_now_audit_failure_does_not_roll_back_state(app):
     """A failing run-now audit insert leaves the cleared pause committed, returns true state."""
-    paused_row = _make_row(_connector_row(state="paused"))
-    updated_row = _make_row(_connector_row(state="unknown"))
+    paused_row = Record(_connector_row(state="paused"))
+    updated_row = Record(_connector_row(state="unknown"))
     tx_state = {"depth": 0}
-    conn = _make_tracking_conn(fetchrow_results=[paused_row, updated_row], tx_state=tx_state)
-    pool = _make_pool(conn)
+    pool = _make_tracking_pool(fetchrow_results=[paused_row, updated_row], tx_state=tx_state)
     _wire_db(app, pool)
 
     audit_tx_depth: list[int] = []

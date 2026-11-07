@@ -49,7 +49,7 @@ async def _run() -> None:
     # A synthetic (non-secret) fixture is bind-mounted at the real signer
     # path in this outer container so the proof below is about mount-view
     # exclusion, not mere host-wide absence of the file.
-    if not SIGNER_PATH.exists():
+    if not await asyncio.to_thread(SIGNER_PATH.exists):
         raise RuntimeError(
             "test setup error: synthetic signer fixture is missing from the outer container"
         )

@@ -9,8 +9,10 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { act as archiveAct, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { Link, useLocation, MemoryRouter, Route, Routes } from "react-router";
+import { useState, type ReactNode } from "react";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 
 import { ApiError } from "@/api/client";
 import type { ConversationSummary, Message } from "@/api/types";
@@ -34,6 +36,12 @@ import {
 import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { useConversationTurn } from "@/hooks/use-conversation-turn.ts";
 import { WIDGET_BUTLER } from "@/components/chat/chat-constants.ts";
+
+
+import { conversationKeys as archiveKeys } from "@/hooks/conversation-keys.ts";
+import * as archiveApi from "@/api/index.ts";
+import * as archiveDraft from "@/hooks/use-draft";
+import type { UseConversationTurnResult } from "@/hooks/use-conversation-turn.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
@@ -90,6 +98,12 @@ function mockTurn(visibleMessages: Message[] = []) {
   } as AnyMock);
 }
 
+// The shared header's rename/archive actions read the query client.
+function QueryWrapper({ children }: { children: ReactNode }) {
+  const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }));
+  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+}
+
 function renderPage(initialEntry: string) {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
@@ -98,12 +112,61 @@ function renderPage(initialEntry: string) {
         <Route path="/chat/:conversationId" element={<ChatPage />} />
       </Routes>
     </MemoryRouter>,
+    { wrapper: QueryWrapper },
   );
 }
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+describe("ChatPage — route moves between two conversations (bu-p5umi2.6)", () => {
+  it("settles on the second conversation without ping-ponging, send gated until its owner resolves", async () => {
+    vi.mocked(useConversations).mockReturnValue({ data: { data: [] } } as AnyMock);
+    vi.mocked(useConversationById).mockImplementation(((id: string | null) => ({
+      data: id ? makeConversation({ id, butler_name: id === "conv-b" ? "health" : "switchboard" }) : undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+    })) as AnyMock);
+    vi.mocked(useConversationMessages).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as AnyMock);
+    vi.mocked(usePricingMap).mockReturnValue({ data: null } as AnyMock);
+    mockTurn([]);
+    const locations: string[] = [];
+    function Spy() {
+      const loc = useLocation();
+      locations.push(loc.pathname);
+      return <Link to="/chat/conv-b">go-b</Link>;
+    }
+
+    render(
+      <MemoryRouter initialEntries={["/chat/conv-a"]}>
+        <Spy />
+        <Routes>
+          <Route path="/chat/:conversationId" element={<ChatPage />} />
+        </Routes>
+      </MemoryRouter>,
+      { wrapper: QueryWrapper },
+    );
+    locations.length = 0;
+
+    fireEvent.click(screen.getByText("go-b"));
+
+    await waitFor(() => expect(locations.at(-1)).toBe("/chat/conv-b"));
+    // One navigation, no bounce back to A.
+    expect(locations.filter((p) => p === "/chat/conv-a")).toHaveLength(0);
+    expect(locations.length).toBeLessThan(5);
+    expect(vi.mocked(useConversationById).mock.calls.at(-1)).toEqual(["conv-b"]);
+    const turnArgs = vi.mocked(useConversationTurn).mock.calls.at(-1)![0];
+    expect(turnArgs.activeConversationId).toBe("conv-b");
+    expect(turnArgs.butlerName).toBe("health");
+  });
 });
 
 describe("ChatPage — route resolution (bu-0ynlk.11)", () => {
@@ -476,5 +539,144 @@ describe("ChatPage — owner gate before send (bu-p5umi2.1)", () => {
     );
 
     expect(sendText).not.toHaveBeenCalled();
+  });
+});
+
+
+// REQ-dashboard-chat-ui-017: keep the real metadata/cache owner; control only
+// the unfinished turn boundary. Storage recovery runs in the browser companion.
+function runningArchiveFixture(owner: string, allArchived = false) {
+  vi.mocked(usePricingMap).mockImplementation(function useArchivePricing() {
+    return useQuery({ queryKey: ["pricing-map"], queryFn: async () => ({}) });
+  });
+  const conversation: ConversationSummary = {
+    id: "conv-1", butler_name: owner, title: "Existing thread", status: "active",
+    created_at: "2026-07-03T12:00:00.000Z", updated_at: "2026-07-04T12:00:00.000Z",
+    message_count: 1, routed_butler: null,
+  };
+  let server = { ...conversation, status: allArchived ? "archived" as const : "active" as const };
+  const archived: ConversationSummary = { ...conversation, id: "archived-first", title: "Earlier archived thread", status: "archived" };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  const list = archiveKeys.list(owner);
+  // A cached archived-first row must never win automatic resume.
+  client.setQueryData(list, { data: allArchived ? [server] : [archived, server], meta: {} });
+  client.setQueryData(archiveKeys.byId(conversation.id), server);
+  vi.mocked(useConversations).mockImplementation(function useArchiveList(butler, params) {
+    return useQuery({ queryKey: archiveKeys.list(butler, params), queryFn: async () => ({
+      data: butler === owner && (params?.status === "archived" ? server.status === "archived" : server.status === "active") ? [server] : [], meta: {},
+    }), staleTime: Infinity });
+  });
+  const history: Message = {
+    id: "saved-message", conversation_id: conversation.id, role: "user", content: "Original saved message",
+    tool_calls: null, error: null, model: null, input_tokens: null, output_tokens: null,
+    duration_ms: null, session_id: null, request_id: null, created_at: conversation.created_at,
+  };
+  vi.mocked(useConversationMessages).mockImplementation(function useArchiveMessages(butler, id) {
+    return useQuery({ queryKey: archiveKeys.messages(butler, id ?? ""), queryFn: async () => ({ data: id === conversation.id ? [history] : [], meta: {} }) });
+  });
+  const lookup = vi.spyOn(archiveApi, "getConversationById").mockImplementation(async (id) => {
+    if (id !== conversation.id) throw new Error("Unexpected fixture identity");
+    return server;
+  });
+  let resolvePatch = () => {};
+  const pending = new Promise<void>((resolve) => { resolvePatch = resolve; });
+  const patch = vi.fn(async (butler: string, id: string, body: { status?: "active" | "archived"; title?: string }) => {
+    expect([butler, id, body]).toEqual([owner, conversation.id, { status: "archived" }]);
+    await pending;
+    server = { ...server, status: "archived", updated_at: "2026-07-05T12:00:00.000Z" };
+    return server;
+  });
+  const patchSpy = vi.spyOn(archiveApi, "updateConversation").mockImplementation(patch);
+  let setRunning: (value: boolean) => void = () => {};
+  const stop = vi.fn(async () => { setRunning(false); });
+  const detach = vi.fn(() => { setRunning(false); });
+  const reset = vi.fn(() => { setRunning(false); });
+  const send = vi.fn(async () => {});
+  const turn = vi.mocked(useConversationTurn).mockImplementation(function useArchiveTurn(options): UseConversationTurnResult {
+    const [running, updateRunning] = useState(false);
+    setRunning = updateRunning;
+    const selected = options.butlerName === owner && options.activeConversationId === conversation.id;
+    const active = selected && running;
+    return {
+      streaming: active ? { conversationId: conversation.id, messageId: "unfinished-message", content: "Unfinished partial answer", pending: false, interrupted: false, stopReady: true } : null,
+      visibleMessages: selected ? [history] : [], sendError: null, setSendError: vi.fn(),
+      isStreaming: active, hasActiveRuntime: active,
+      contextPreview: { policy: "snapshot", label: "Chat", context: null }, includeContext: true,
+      toggleIncludeContext: vi.fn(), sendText: send, handleStop: stop, abandonCurrentStream: detach, resetTurnState: reset,
+    };
+  });
+  vi.mocked(useConversationById).mockImplementation(function useArchiveIdentity(id) {
+    return useQuery({ queryKey: archiveKeys.byId(id ?? ""), queryFn: () => archiveApi.getConversationById(id!), enabled: !!id, staleTime: Infinity });
+  });
+  const draft = vi.spyOn(archiveDraft, "useDraft");
+  return { client, list, conversation, patch, resolvePatch, stop, detach, reset, send, turn, draft,
+    start: () => setRunning(true),
+    dispose: () => { resolvePatch(); lookup.mockRestore(); patchSpy.mockRestore(); turn.mockRestore(); draft.mockRestore(); client.clear(); },
+  };
+}
+
+describe("Archive preserves the running posture (bu-0ynlk.25)", () => {
+  it("archives a running selected conversation without losing its draft, turn or owner", async () => {
+    const fixture = runningArchiveFixture("general");
+    function Surface() {
+      const location = useLocation();
+      return <><output data-testid="archive-route">{location.pathname}</output><Routes><Route path="/chat" element={<ChatPage />} /><Route path="/chat/:conversationId" element={<ChatPage />} /></Routes></>;
+    }
+    const mount = (client: QueryClient, path = "/chat/conv-1") => render(<MemoryRouter initialEntries={[path]}><QueryClientProvider client={client}><Surface /></QueryClientProvider></MemoryRouter>);
+    const view = mount(fixture.client);
+    try {
+
+      const input = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
+      await waitFor(() => expect(input.disabled).toBe(false));
+      await waitFor(() => expect(fixture.turn.mock.lastCall?.[0]).toMatchObject({ butlerName: "general", activeConversationId: "conv-1" }));
+      fireEvent.change(input, { target: { value: "half-written thought" } });
+      await archiveAct(async () => fixture.start());
+      const stop = screen.getByRole("button", { name: "Stop this turn" });
+      expect(stop.hasAttribute("disabled")).toBe(false);
+      expect(screen.getByText("Original saved message")).toBeTruthy();
+      expect(screen.getByText("Unfinished partial answer")).toBeTruthy();
+      expect(fixture.turn.mock.lastCall?.[0]).toMatchObject({ butlerName: "general", activeConversationId: "conv-1" });
+      expect(fixture.draft.mock.lastCall?.[1]).toEqual(["general", "conv-1"]);
+      const baseline = [fixture.send.mock.calls.length, fixture.stop.mock.calls.length, fixture.detach.mock.calls.length, fixture.reset.mock.calls.length];
+      const header = screen.getAllByRole("button", { name: "Actions for Existing thread (general)" }).at(-1)!;
+      fireEvent.keyDown(header, { key: "Enter" });
+      fireEvent.click(screen.getByRole("menuitem", { name: "Archive conversation" }));
+      await waitFor(() => expect(fixture.patch).toHaveBeenCalledTimes(1));
+      const conserved = () => {
+        expect([fixture.send.mock.calls.length, fixture.stop.mock.calls.length, fixture.detach.mock.calls.length, fixture.reset.mock.calls.length]).toEqual(baseline);
+        expect(screen.getByPlaceholderText("Type a message...")).toBe(input);
+        expect(input.value).toBe("half-written thought");
+        expect(screen.getByRole("button", { name: "Stop this turn" })).toBe(stop);
+        expect(stop.hasAttribute("disabled")).toBe(false);
+        expect(screen.getByText("Original saved message")).toBeTruthy();
+        expect(screen.getByText("Unfinished partial answer")).toBeTruthy();
+        expect(screen.getByTestId("archive-route").textContent).toBe("/chat/conv-1");
+        expect(fixture.turn.mock.lastCall?.[0]).toMatchObject({ butlerName: "general", activeConversationId: "conv-1" });
+        expect(fixture.draft.mock.lastCall?.[1]).toEqual(["general", "conv-1"]);
+        expect([fixture.send.mock.calls.length, fixture.stop.mock.calls.length, fixture.detach.mock.calls.length, fixture.reset.mock.calls.length]).toEqual(baseline);
+        expect(fixture.client.getQueryData(archiveKeys.byId("conv-1"))).toMatchObject({ status: "archived" });
+        expect(fixture.client.getQueryData<{data: ConversationSummary[]}>(fixture.list)?.data.some((row) => row.id === "conv-1")).toBe(false);
+        expect(screen.getByText(/Sending a message makes it active again/)).toBeTruthy();
+      };
+      conserved(); // optimistic state while PATCH is genuinely pending
+      await archiveAct(async () => fixture.resolvePatch());
+      await waitFor(() => expect(screen.getByRole("button", { name: "Unarchive" }).hasAttribute("disabled")).toBe(false));
+      conserved(); // confirmed cache reconciliation, still the same unfinished turn
+      expect(fixture.patch.mock.calls).toEqual([["general", "conv-1", {status: "archived"}]]);
+
+      fireEvent.click(stop);
+      await waitFor(() => expect(fixture.stop).toHaveBeenCalledTimes(baseline[1] + 1));
+      expect(screen.queryByRole("button", {name: "Stop this turn"})).toBeNull();
+      expect(input.value).toBe("half-written thought");
+    } finally { view.unmount(); fixture.dispose(); }
+    // Fresh mount with no active positive companion must remain a new thread.
+    const archivedOnly = runningArchiveFixture("general", true);
+    const fresh = mount(archivedOnly.client, "/chat");
+    try {
+
+      await waitFor(() => expect(screen.getByText("New conversation")).toBeTruthy());
+      expect(archivedOnly.turn.mock.lastCall?.[0].activeConversationId).toBeNull();
+      expect(archivedOnly.patch).not.toHaveBeenCalled();
+    } finally { fresh.unmount(); archivedOnly.dispose(); }
   });
 });

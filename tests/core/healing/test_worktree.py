@@ -27,7 +27,7 @@ import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -39,6 +39,9 @@ from butlers.core.healing.worktree import (
     reap_stale_worktrees,
     remove_healing_worktree,
 )
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.records import records
+from tests.polling import poll_until
 
 
 @pytest.fixture(autouse=True)
@@ -208,7 +211,15 @@ class TestCreateHealingWorktree:
             groups = []
             operation = None
 
-            async def helper_git(executable, *args, **kwargs):
+            async def helper_git(
+                executable,
+                *args,
+                mode=mode,
+                children=children,
+                groups=groups,
+                ready=ready,
+                **kwargs,
+            ):
                 assert executable == "git"
                 script = "import sys,time; print('READY',flush=True); " + (
                     "print('released'); print('companion',file=sys.stderr)"
@@ -230,11 +241,13 @@ class TestCreateHealingWorktree:
                 if flooded:
 
                     async def pipes_saturated():
-                        while not all(
-                            len(stream._buffer) > stream._limit and stream._paused
-                            for stream in (child.stdout, child.stderr)
-                        ):
-                            await asyncio.sleep(0.005)
+                        async def _condition_met() -> bool:
+                            return all(
+                                len(stream._buffer) > stream._limit and stream._paused
+                                for stream in (child.stdout, child.stderr)
+                            )
+
+                        await poll_until(_condition_met, interval_s=0.005)
 
                     await asyncio.wait_for(pipes_saturated(), 5)
                     assert child.stdout._paused and child.stderr._paused
@@ -386,22 +399,9 @@ class TestRemoveHealingWorktree:
 
 
 class TestReapStaleWorktrees:
-    def _make_pool(self, rows: list[dict]) -> MagicMock:
-        pool = MagicMock()
-
-        async def mock_fetch(*args, **kwargs):
-            sql = args[0]
-            if "branch_name = ANY" in sql:
-                return rows
-            return []
-
-        pool.fetch = AsyncMock(side_effect=mock_fetch)
-        return pool
-
     async def test_reap_stale_worktrees(self, tmp_path: Path, caplog) -> None:
         """Terminal+aged → reaped; active → preserved; orphaned worktree (no DB row) → WARNING; orphaned branch (no wt) deleted; mixed prefixes all reaped; custom prefix filter respected."""
         old = datetime.now(UTC) - timedelta(hours=36)
-        recent = datetime.now(UTC)
 
         # Terminal → reaped; active → preserved; orphaned worktree → reaped with WARNING
         terminal_branch = "self-healing/email/abc123def456-1710600000"
@@ -410,12 +410,9 @@ class TestReapStaleWorktrees:
         for b in (terminal_branch, active_branch, orphaned_branch):
             _worktree_path(tmp_path, b).mkdir(parents=True)
 
-        pool = MagicMock()
-
-        async def mock_fetch(*args, **kwargs):
-            sql = args[0]
-            if "branch_name = ANY" in sql:
-                return [
+        pool = fake_pool(
+            fetch=records(
+                [
                     {
                         "branch_name": terminal_branch,
                         "status": "failed",
@@ -427,14 +424,13 @@ class TestReapStaleWorktrees:
                         "branch_name": active_branch,
                         "status": "investigating",
                         "closed_at": None,
-                        "updated_at": recent,
+                        "updated_at": old,  # aged, but active: never reaped
                         "healing_session_id": str(uuid.uuid4()),
                     },
                     # orphaned_branch has no row → orphaned
                 ]
-            return []
-
-        pool.fetch = AsyncMock(side_effect=mock_fetch)
+            )
+        )
         remove_calls: list[str] = []
 
         async def mock_remove(repo_root, branch_name, **kwargs):
@@ -455,12 +451,9 @@ class TestReapStaleWorktrees:
         orphan_tmp.mkdir()
         (orphan_tmp / ".git").mkdir()
         orphan_branch = "self-healing/calendar/orphan000000-1710400000"
-        pool_orphan = MagicMock()
-
-        async def mock_fetch_orphan(*args, **kwargs):
-            sql = args[0]
-            if "branch_name = ANY" in sql:
-                return [
+        pool_orphan = fake_pool(
+            fetch=records(
+                [
                     {
                         "branch_name": orphan_branch,
                         "status": "failed",
@@ -469,9 +462,8 @@ class TestReapStaleWorktrees:
                         "healing_session_id": None,
                     }
                 ]
-            return []
-
-        pool_orphan.fetch = AsyncMock(side_effect=mock_fetch_orphan)
+            )
+        )
         git_calls: list[tuple] = []
 
         async def mock_run_git(*args, cwd, capture_stderr=True):
@@ -496,12 +488,9 @@ class TestReapStaleWorktrees:
         ]
         for b in branches:
             _worktree_path(mixed_tmp, b).mkdir(parents=True)
-        pool_mixed = MagicMock()
-
-        async def mock_fetch_mixed(*args, **kwargs):
-            sql = args[0]
-            if "branch_name = ANY" in sql:
-                return [
+        pool_mixed = fake_pool(
+            fetch=records(
+                [
                     {
                         "branch_name": b,
                         "status": "failed",
@@ -511,9 +500,8 @@ class TestReapStaleWorktrees:
                     }
                     for b in branches
                 ]
-            return []
-
-        pool_mixed.fetch = AsyncMock(side_effect=mock_fetch_mixed)
+            )
+        )
         remove_mixed: list[str] = []
 
         async def mock_remove_mixed(repo_root, branch_name, **kwargs):
@@ -534,12 +522,9 @@ class TestReapStaleWorktrees:
         qa_tmp.mkdir()
         qa_branch = "qa/email/bbb111111111-1710600001"
         _worktree_path(qa_tmp, qa_branch).mkdir(parents=True)
-        pool_qa = MagicMock()
-
-        async def mock_fetch_qa(*args, **kwargs):
-            sql = args[0]
-            if "branch_name = ANY" in sql:
-                return [
+        pool_qa = fake_pool(
+            fetch=records(
+                [
                     {
                         "branch_name": qa_branch,
                         "status": "failed",
@@ -548,9 +533,8 @@ class TestReapStaleWorktrees:
                         "healing_session_id": None,
                     }
                 ]
-            return []
-
-        pool_qa.fetch = AsyncMock(side_effect=mock_fetch_qa)
+            )
+        )
         remove_qa: list[str] = []
 
         async def mock_remove_qa(repo_root, branch_name, **kwargs):

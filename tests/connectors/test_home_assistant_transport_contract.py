@@ -34,7 +34,7 @@ async def test_subscriptions_are_not_ready_when_state_changed_ack_times_out() ->
     client._connected = True
     requested: list[str] = []
 
-    async def respond(command: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:
+    async def respond(command: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:  # noqa: ASYNC109 - fakes the HA command_sender
         del timeout
         requested.append(command["event_type"])
         if command["event_type"] == "state_changed":
@@ -151,3 +151,45 @@ def test_disconnect_clears_subscription_readiness() -> None:
 
     assert connector._subscriptions_ready is False
     assert connector._get_health_state()[0] == "degraded"
+
+
+@pytest.mark.parametrize("binary", [False, True])
+async def test_message_loop_delivers_coalesced_result_event_and_pong(binary: bool) -> None:
+    import json
+    from types import SimpleNamespace
+
+    import aiohttp
+
+    dispatch = AsyncMock()
+    client = _client()
+    client._dispatch = dispatch
+    client._connected = True
+    client._last_pong_time = 0
+    future = asyncio.get_running_loop().create_future()
+    client._ws_pending[7] = future
+    event = {"event_type": "state_changed", "data": {"entity_id": "sensor.synthetic"}}
+    payload = [
+        {"type": "result", "id": 7, "success": True, "result": {"ok": True}},
+        {"type": "event", "event": event},
+        {"type": "pong"},
+    ]
+    raw = json.dumps(payload)
+    connection = SimpleNamespace(closed=False)
+    connection.receive = AsyncMock(
+        side_effect=[
+            SimpleNamespace(
+                type=aiohttp.WSMsgType.BINARY if binary else aiohttp.WSMsgType.TEXT,
+                data=raw.encode() if binary else raw,
+            ),
+            SimpleNamespace(type=aiohttp.WSMsgType.CLOSE),
+        ]
+    )
+    client._ws_connection = connection
+    try:
+        await client._message_loop()
+        assert future.done(), "coalesced acknowledgement was dropped"
+        assert future.result() == {"ok": True}
+        dispatch.assert_awaited_once_with("state_changed", event)
+        assert client._last_pong_time > 0
+    finally:
+        future.cancel()

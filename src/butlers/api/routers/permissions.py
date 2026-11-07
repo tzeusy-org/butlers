@@ -12,24 +12,20 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
 from butlers.api.routers import audit
 from butlers.api.routers.webhooks import dispatch_event
 from butlers.api.security import validate_no_secrets
+from butlers.core.audit_transaction import audit_transaction
 from butlers.core.permissions import ENFORCED_PERMISSIONS, PERMISSION_DEFAULT_GRANTED
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/permissions", tags=["permissions"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -77,13 +73,16 @@ class PermissionUpdate(BaseModel):
 
 @router.get("", response_model=ApiResponse[PermissionsMatrix])
 async def get_permissions_matrix(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[PermissionsMatrix]:
     """Return the full permissions matrix across all butlers and permissions."""
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     # All registered butlers (the "rows" of the matrix).
     try:
@@ -159,7 +158,8 @@ async def set_permission(
     butler: str,
     perm: str,
     body: PermissionUpdate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[PermissionSetResponse]:
     """Flip one permission cell.
 
@@ -189,8 +189,10 @@ async def set_permission(
 
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     now = datetime.now(UTC)
 
@@ -201,7 +203,7 @@ async def set_permission(
         if not registered:
             raise HTTPException(status_code=422, detail={"error": "butler_not_registered"})
 
-        async with conn.transaction():
+        async with audit_transaction(conn):
             await conn.execute(
                 "INSERT INTO public.permissions (butler, permission, granted, reason, updated_at) "
                 "VALUES ($1, $2, $3, $4, $5) "

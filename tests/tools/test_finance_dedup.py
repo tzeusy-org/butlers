@@ -10,12 +10,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
 import butlers.tools.finance.transactions as _txn_module
+from butlers.testing.records import row
 from butlers.tools.finance.transactions import _deduplicate
 
 pytestmark = pytest.mark.unit
@@ -39,16 +40,10 @@ def _mock_pool(*, fetchrow_return=None, fetchval_return=None) -> AsyncMock:
     return pool
 
 
-def _make_row(txn_id: str) -> MagicMock:
-    row = MagicMock()
-    row.__getitem__ = MagicMock(side_effect=lambda k: txn_id if k == "id" else None)
-    return row
-
-
 async def test_p1_dedup_match_and_skip():
     """P1 matches on external_id+account_id; skipped when external_id=None; no P2/P3 on match."""
     # Match
-    pool = _mock_pool(fetchval_return=1, fetchrow_return=_make_row(_TXN_ID))
+    pool = _mock_pool(fetchval_return=1, fetchrow_return=row(id=_TXN_ID))
     assert (
         await _deduplicate(pool, {"external_id": "ext-123", "account_id": _ACCOUNT_ID}) == _TXN_ID
     )
@@ -63,7 +58,7 @@ async def test_p1_dedup_match_and_skip():
     pool3.fetchval.assert_not_called()
 
     # P1 match → no P2/P3 queries
-    pool4 = _mock_pool(fetchval_return=1, fetchrow_return=_make_row(_TXN_ID))
+    pool4 = _mock_pool(fetchval_return=1, fetchrow_return=row(id=_TXN_ID))
     await _deduplicate(
         pool4,
         {
@@ -81,7 +76,7 @@ async def test_p1_dedup_match_and_skip():
 async def test_p2_and_p3_dedup():
     """P2 matches source_message_id; P3 matches composite key and normalizes negative amounts."""
     # P2 match
-    pool = _mock_pool(fetchrow_return=_make_row(_TXN_ID))
+    pool = _mock_pool(fetchrow_return=row(id=_TXN_ID))
     result = await _deduplicate(
         pool, {"external_id": None, "account_id": None, "source_message_id": "email-123@ex.com"}
     )
@@ -101,5 +96,5 @@ async def test_p2_and_p3_dedup():
         "merchant": "Acme",
     }
     for amount in (Decimal("42.00"), Decimal("-42.00")):
-        pool3 = _mock_pool(fetchrow_return=_make_row(_TXN_ID))
+        pool3 = _mock_pool(fetchrow_return=row(id=_TXN_ID))
         assert await _deduplicate(pool3, {**base_txn, "amount": amount}) == _TXN_ID

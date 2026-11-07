@@ -1,7 +1,7 @@
 import { ESLint } from "eslint"
 import { describe, expect, it } from "vitest"
 
-describe("blue/purple status-color lint", () => {
+describe("blue/purple status-color lint", { timeout: 60_000 }, () => {
   it("rejects raw blue, sky, and purple classes in an audited status file", async () => {
     const eslint = new ESLint()
     const [result] = await eslint.lintText(

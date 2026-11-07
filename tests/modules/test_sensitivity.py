@@ -37,9 +37,7 @@ class _EmptyConfig(BaseModel):
 class _MinimalModule(Module):
     """Module with no tool_metadata override (uses default)."""
 
-    @property
-    def name(self) -> str:
-        return "minimal"
+    name = "minimal"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -67,9 +65,7 @@ class _MinimalModule(Module):
 class _AnnotatedModule(Module):
     """Module that declares explicit sensitivity metadata."""
 
-    @property
-    def name(self) -> str:
-        return "annotated"
+    name = "annotated"
 
     @property
     def config_schema(self) -> type[BaseModel]:

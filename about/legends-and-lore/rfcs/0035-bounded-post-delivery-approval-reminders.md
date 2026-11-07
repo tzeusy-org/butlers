@@ -161,9 +161,14 @@ at reminder admission:
    the current attention episode.
 
 The first four predicates are the reachability observation inventory from
-section 2. The fifth is action-episode policy and applies only to reminder and
-homecoming channel selection. It never removes historical channel outcomes
-from observational reachability derivation.
+section 2. For a direct reminder or reminder digest member, the fifth predicate
+is bound to that action's current attention episode. For the homecoming
+summary, it is instead bound to the singleton owner-presence epoch that owns
+the summary, not to any member action's episode. Prior original or reminder
+channel use by a member does not exclude that member from the summary. All four
+inventory predicates, egress re-verification, ambiguity exclusions, and the
+fixed channel order still apply. These episode-local predicates never remove
+historical channel outcomes from observational reachability derivation.
 
 Private addresses and handles are resolved only at egress, only from the
 owner's own active reachability fact, and are never taken from a caller, a
@@ -332,7 +337,9 @@ channel is eligible under section 3; otherwise it uses the same preferred then
 as one presentation in the burst window. Repeated activity, restart, or
 concurrent triggers replay the same epoch key and cannot create another
 summary. A post-start ambiguous homecoming handoff is reconciled under its same
-key and never reissued.
+key and never reissued. This presence epoch is only the summary's channel-use
+and deduplication identity. It does not create a new action attention episode,
+restore a reminder ordinal, or erase an action's channel-use history.
 
 ### 8. Disengagement denominator
 

@@ -49,13 +49,10 @@ from butlers.api.routers.ingestion_connectors import (
 )
 from butlers.connectors.cursor_store import NO_PARENT, save_cursor
 from butlers.connectors.google_drive import (
-    AccountHealthStatus,
-    GDriveConnectorManager,
-    MultiAccountHealthStatus,
+    DriveAccountSource,
 )
+from butlers.connectors.google_fleet import AccountHealthStatus, MultiAccountHealthStatus
 from butlers.connectors.home_assistant_checkpoint import save_ha_checkpoint
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -63,6 +60,13 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
+
+
+@pytest.fixture
+async def switchboard_pool(db) -> asyncpg.Pool:
+    """switchboard.connector_registry; switchboard FKs to core since sw_019."""
+    return await db("core", "switchboard", schemas={"switchboard": "switchboard"})
+
 
 _REGISTRY_COLUMNS = """
     connector_type,
@@ -74,36 +78,6 @@ _REGISTRY_COLUMNS = """
     checkpoint_cursor,
     checkpoint_updated_at
 """
-
-
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision core + switchboard chains — switchboard.connector_registry.
-
-    ``core`` is required alongside ``switchboard`` as of migration ``sw_019``
-    (bu-aga08): ``switchboard.routing_verdict_log`` FKs to
-    ``public.ingestion_events``, so the switchboard chain no longer migrates
-    standalone.
-    """
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-    )
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE switchboard.connector_registry")
-    yield p
-    await p.close()
 
 
 async def _dashboard_buckets(pool: asyncpg.Pool) -> tuple[list[str], list[str]]:
@@ -127,7 +101,7 @@ async def _dashboard_buckets(pool: asyncpg.Pool) -> tuple[list[str], list[str]]:
 
 
 async def test_self_identity_cursor_does_not_refill_unparented_bucket(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """CONTROL: a fresh cursor from a non-Health connector must not land unparented.
 
@@ -140,14 +114,14 @@ async def test_self_identity_cursor_does_not_refill_unparented_bucket(
     endpoint = "home_assistant:synthetic-host.invalid:8123"
 
     await save_ha_checkpoint(
-        pool,
+        switchboard_pool,
         endpoint,
         datetime(2026, 8, 25, 12, 0, 0, tzinfo=UTC),
         "sensor.synthetic_probe",
         "websocket",
     )
 
-    roster, unparented = await _dashboard_buckets(pool)
+    roster, unparented = await _dashboard_buckets(switchboard_pool)
     assert unparented == [], (
         f"A cursor keyed by the connector's own runtime identity landed in "
         f"unparented_checkpoints: {unparented!r}"
@@ -156,7 +130,7 @@ async def test_self_identity_cursor_does_not_refill_unparented_bucket(
 
 
 async def test_self_identity_cursor_row_is_unclaimed_not_storage(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """The row is ``unknown`` — unclaimed until a heartbeat proves a process owns it.
 
@@ -170,14 +144,14 @@ async def test_self_identity_cursor_row_is_unclaimed_not_storage(
     endpoint = "gmail:user:synthetic@example.invalid"
 
     await save_cursor(
-        pool,
+        switchboard_pool,
         "gmail",
         endpoint,
         '{"history_id": "1"}',
         parent_endpoint_identity=NO_PARENT,
     )
 
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT operational_role, parent_endpoint_identity FROM switchboard.connector_registry "
         "WHERE connector_type = $1 AND endpoint_identity = $2",
         "gmail",
@@ -188,13 +162,13 @@ async def test_self_identity_cursor_row_is_unclaimed_not_storage(
 
 
 async def test_declared_parent_nests_the_checkpoint_under_its_runtime_instance(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """A cursor key with extra dimensions stays storage state under its parent."""
     parent = "google_health:user:synthetic@example.invalid"
     child = f"{parent}:00000000-0000-4000-8000-000000000000:steps"
 
-    await pool.execute(
+    await switchboard_pool.execute(
         "INSERT INTO switchboard.connector_registry "
         "(connector_type, endpoint_identity, operational_role, last_heartbeat_at) "
         "VALUES ($1, $2, 'runtime_instance', NOW())",
@@ -202,14 +176,14 @@ async def test_declared_parent_nests_the_checkpoint_under_its_runtime_instance(
         parent,
     )
     await save_cursor(
-        pool,
+        switchboard_pool,
         "google_health",
         child,
         "cursor-synthetic-1",
         parent_endpoint_identity=parent,
     )
 
-    rows = await pool.fetch(
+    rows = await switchboard_pool.fetch(
         f"SELECT {_REGISTRY_COLUMNS} FROM switchboard.connector_registry WHERE deleted_at IS NULL"
     )
     roster_rows, checkpoint_rows = _partition_by_operational_role(rows)
@@ -220,7 +194,9 @@ async def test_declared_parent_nests_the_checkpoint_under_its_runtime_instance(
     assert [r["endpoint_identity"] for r in by_parent[("google_health", parent)]] == [child]
 
 
-async def test_save_cursor_never_writes_a_parentless_checkpoint(pool: asyncpg.Pool) -> None:
+async def test_save_cursor_never_writes_a_parentless_checkpoint(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
     """Invariant: every ``checkpoint`` row this module creates names a parent.
 
     This is what stops a NULL parent from meaning two different things. sw_031's
@@ -230,28 +206,30 @@ async def test_save_cursor_never_writes_a_parentless_checkpoint(pool: asyncpg.Po
     """
     parent = "google_health:user:synthetic@example.invalid"
     await save_cursor(
-        pool,
+        switchboard_pool,
         "google_health",
         f"{parent}:00000000-0000-4000-8000-000000000001:sleep",
         "cursor-synthetic-2",
         parent_endpoint_identity=parent,
     )
     await save_cursor(
-        pool,
+        switchboard_pool,
         "owntracks",
         "owntracks:synthetic-tracker",
         "1700000000",
         parent_endpoint_identity=NO_PARENT,
     )
 
-    orphans = await pool.fetch(
+    orphans = await switchboard_pool.fetch(
         "SELECT endpoint_identity FROM switchboard.connector_registry "
         "WHERE operational_role = 'checkpoint' AND parent_endpoint_identity IS NULL"
     )
     assert [r["endpoint_identity"] for r in orphans] == []
 
 
-async def test_drive_per_account_heartbeat_claims_the_runtime_role(pool: asyncpg.Pool) -> None:
+async def test_drive_per_account_heartbeat_claims_the_runtime_role(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
     """Drive's per-account rows are heartbeated by SQL, so that SQL must claim the role.
 
     Every other connector reaches ``connector.heartbeat``, which stamps
@@ -264,16 +242,24 @@ async def test_drive_per_account_heartbeat_claims_the_runtime_role(pool: asyncpg
     endpoint = f"google_drive:user:{email}"
 
     await save_cursor(
-        pool,
+        switchboard_pool,
         "google_drive",
         endpoint,
         '{"page_token": "synthetic-token"}',
         parent_endpoint_identity=NO_PARENT,
     )
 
-    manager = GDriveConnectorManager(
+    await switchboard_pool.execute(
+        "UPDATE switchboard.connector_registry SET capabilities = $1::jsonb "
+        "WHERE connector_type = $2 AND endpoint_identity = $3",
+        {"backfill": True},
+        "google_drive",
+        endpoint,
+    )
+
+    manager = DriveAccountSource(
         db_pool=None,  # type: ignore[arg-type]
-        cursor_pool=pool,
+        cursor_pool=switchboard_pool,
         heartbeat_interval_s=0,
     )
     manager.get_health = lambda: MultiAccountHealthStatus(  # type: ignore[method-assign]
@@ -296,16 +282,23 @@ async def test_drive_per_account_heartbeat_claims_the_runtime_role(pool: asyncpg
     manager._running = True
     task = asyncio.create_task(manager._account_heartbeat_loop())
     try:
-        await _wait_for_role(pool, "google_drive", endpoint, "runtime_instance")
+        await _wait_for_role(switchboard_pool, "google_drive", endpoint, "runtime_instance")
     finally:
         manager._running = False
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
 
-    roster, unparented = await _dashboard_buckets(pool)
+    roster, unparented = await _dashboard_buckets(switchboard_pool)
     assert unparented == []
     assert endpoint in roster
+    capabilities = await switchboard_pool.fetchval(
+        "SELECT capabilities FROM switchboard.connector_registry "
+        "WHERE connector_type = $1 AND endpoint_identity = $2",
+        "google_drive",
+        endpoint,
+    )
+    assert capabilities == {"backfill": True, "channel_kind": "feed"}
 
 
 async def _wait_for_role(
@@ -329,3 +322,57 @@ async def _wait_for_role(
             return
         await asyncio.sleep(0.02)
     raise AssertionError(f"operational_role stayed {role!r}, never became {expected!r}")
+
+
+async def test_heartbeat_without_checkpoint_keeps_the_saved_cursor(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
+    """A heartbeat that carries no checkpoint must not erase a saved cursor.
+
+    Gmail reports no checkpoint until its first save after a restart; on dev
+    (2026-10-27) that heartbeat overwrote the saved cursor with NULL and the
+    polling loop then failed every cycle with "Cursor not found in DB".
+    """
+    from butlers.tools.switchboard.connector.heartbeat import (
+        _persist_registry,
+        parse_connector_heartbeat,
+    )
+
+    endpoint = "gmail:user:synthetic@example.invalid"
+    cursor = '{"history_id": "42", "last_updated_at": "2026-10-27T13:27:00+00:00"}'
+    await save_cursor(
+        switchboard_pool, "gmail", endpoint, cursor, parent_endpoint_identity=NO_PARENT
+    )
+
+    envelope = parse_connector_heartbeat(
+        {
+            "schema_version": "connector.heartbeat.v1",
+            "connector": {
+                "connector_type": "gmail",
+                "endpoint_identity": endpoint,
+                "instance_id": "00000000-0000-4000-8000-000000000001",
+                "version": "test",
+            },
+            "status": {"state": "healthy", "uptime_s": 1},
+            "counters": {
+                "messages_ingested": 0,
+                "messages_failed": 0,
+                "source_api_calls": 0,
+                "checkpoint_saves": 0,
+                "dedupe_accepted": 0,
+            },
+            "sent_at": datetime.now(UTC).isoformat(),
+        }
+    )
+    assert envelope.checkpoint is None
+    await _persist_registry(switchboard_pool, envelope, datetime.now(UTC), None)
+
+    row = await switchboard_pool.fetchrow(
+        "SELECT checkpoint_cursor, checkpoint_updated_at, operational_role"
+        " FROM switchboard.connector_registry"
+        " WHERE connector_type = 'gmail' AND endpoint_identity = $1",
+        endpoint,
+    )
+    assert row["checkpoint_cursor"] == cursor
+    assert row["checkpoint_updated_at"] is not None
+    assert row["operational_role"] == "runtime_instance"

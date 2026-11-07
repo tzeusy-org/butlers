@@ -7,15 +7,12 @@ health butler's PostgreSQL database via asyncpg.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import os
 import re
-import sys
 from datetime import UTC, datetime, timedelta
 from math import isfinite
-from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -25,56 +22,61 @@ from butlers.api.briefing.cache import BriefingCache
 from butlers.api.briefing.classify import time_of_day
 from butlers.api.briefing.lint import first_violation, voice_lint_passes
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
-from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+from butlers.core import baselines as baselines_core
+from butlers.core.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.general_settings import load_general_settings, resolve_general_timezone
+from butlers.core.health_baseline_metrics import METRICS as BASELINE_METRICS
 from butlers.core.model_routing import Complexity
 from butlers.credential_store import CredentialStore
+from butlers.modules.memory.storage import (
+    OwnerAuthoredSupersessionError,
+    StaleSupersessionTargetError,
+)
+from butlers.roster_imports import roster_module
 
 # Dynamically load models module from the same directory
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("health_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["health_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("health", "api/models", api_source=__file__)
 
-    Briefing = _models.Briefing
-    Condition = _models.Condition
-    ConditionCreateRequest = _models.ConditionCreateRequest
-    ConditionUpdateRequest = _models.ConditionUpdateRequest
-    Dose = _models.Dose
-    DoseLogRequest = _models.DoseLogRequest
-    ExpectedSignalResponse = _models.ExpectedSignalResponse
-    ExpectedSignalsResponse = _models.ExpectedSignalsResponse
-    LatestMeasurementEntry = _models.LatestMeasurementEntry
-    LatestMeasurementsResponse = _models.LatestMeasurementsResponse
-    Meal = _models.Meal
-    MealCreateRequest = _models.MealCreateRequest
-    MealUpdateRequest = _models.MealUpdateRequest
-    Measurement = _models.Measurement
-    MeasurementCreateRequest = _models.MeasurementCreateRequest
-    MeasurementTypeInfo = _models.MeasurementTypeInfo
-    MeasurementTypesResponse = _models.MeasurementTypesResponse
-    MeasurementUpdateRequest = _models.MeasurementUpdateRequest
-    MeasurementSource = _models.MeasurementSource
-    MeasurementSourcesResponse = _models.MeasurementSourcesResponse
-    Medication = _models.Medication
-    MedicationAdherenceResponse = _models.MedicationAdherenceResponse
-    MedicationCreateRequest = _models.MedicationCreateRequest
-    MedicationUpdateRequest = _models.MedicationUpdateRequest
-    NutritionDailyAverage = _models.NutritionDailyAverage
-    NutritionSummaryResponse = _models.NutritionSummaryResponse
-    Research = _models.Research
-    ResearchCreateRequest = _models.ResearchCreateRequest
-    ResearchUpdateRequest = _models.ResearchUpdateRequest
-    SleepSessionResponse = _models.SleepSessionResponse
-    SleepStage = _models.SleepStage
-    Symptom = _models.Symptom
-    SymptomCreateRequest = _models.SymptomCreateRequest
-    SymptomUpdateRequest = _models.SymptomUpdateRequest
-    TrendBucket = _models.TrendBucket
-    TrendResponse = _models.TrendResponse
+BaselineResponse = _models.BaselineResponse
+BaselinesResponse = _models.BaselinesResponse
+Briefing = _models.Briefing
+Condition = _models.Condition
+ConditionCreateRequest = _models.ConditionCreateRequest
+ConditionUpdateRequest = _models.ConditionUpdateRequest
+Dose = _models.Dose
+DoseLogRequest = _models.DoseLogRequest
+ExpectedSignalResponse = _models.ExpectedSignalResponse
+ExpectedSignalsResponse = _models.ExpectedSignalsResponse
+LatestMeasurementEntry = _models.LatestMeasurementEntry
+LatestMeasurementsResponse = _models.LatestMeasurementsResponse
+Meal = _models.Meal
+MealCreateRequest = _models.MealCreateRequest
+MealUpdateRequest = _models.MealUpdateRequest
+Measurement = _models.Measurement
+MeasurementCreateRequest = _models.MeasurementCreateRequest
+MeasurementTypeInfo = _models.MeasurementTypeInfo
+MeasurementTypesResponse = _models.MeasurementTypesResponse
+MeasurementUpdateRequest = _models.MeasurementUpdateRequest
+MeasurementSource = _models.MeasurementSource
+MeasurementSourcesResponse = _models.MeasurementSourcesResponse
+Medication = _models.Medication
+MedicationAdherenceResponse = _models.MedicationAdherenceResponse
+MedicationCreateRequest = _models.MedicationCreateRequest
+MedicationUpdateRequest = _models.MedicationUpdateRequest
+NutritionDailyAverage = _models.NutritionDailyAverage
+NutritionSummaryResponse = _models.NutritionSummaryResponse
+Research = _models.Research
+ResearchCreateRequest = _models.ResearchCreateRequest
+ResearchUpdateRequest = _models.ResearchUpdateRequest
+SleepSessionResponse = _models.SleepSessionResponse
+SleepStage = _models.SleepStage
+Symptom = _models.Symptom
+SymptomCreateRequest = _models.SymptomCreateRequest
+SymptomUpdateRequest = _models.SymptomUpdateRequest
+TrendBucket = _models.TrendBucket
+TrendResponse = _models.TrendResponse
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +85,20 @@ router = APIRouter(prefix="/api/health", tags=["health"])
 BUTLER_DB = "health"
 
 
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
+def _stale_edit_conflict() -> HTTPException:
+    """409 for an edit whose record changed after the caller read it."""
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="The record changed since it was read. Reload it and edit its current version.",
+    )
+
+
+def _owner_authored_conflict() -> HTTPException:
+    """409 for an edit that would replace an owner-authored record with a non-owner one."""
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="This record was authored by the owner and cannot be replaced by this edit.",
+    )
 
 
 def _pool(db: DatabaseManager):
@@ -95,11 +108,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Health butler database is not available",
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +205,8 @@ async def list_measurements(
     until: str | None = Query(None, description="Filter up to this timestamp (inclusive)"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[Measurement]:
     """List measurements with optional type and date range filters.
 
@@ -309,7 +323,8 @@ def _contains_chartable_number(value: object) -> bool:
 
 @router.get("/measurements/types", response_model=MeasurementTypesResponse)
 async def get_measurement_types(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> MeasurementTypesResponse:
     """Return the active, data-derived vocabulary of measurement predicates.
 
@@ -409,7 +424,8 @@ def _measurement_response(result: dict) -> Measurement:
 @router.post("/measurements", response_model=Measurement, status_code=status.HTTP_201_CREATED)
 async def create_measurement(
     body: MeasurementCreateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Measurement:
     """Log a measurement via the butler's ``measurement_log`` fact-store path.
 
@@ -430,7 +446,7 @@ async def create_measurement(
             measured_at=body.measured_at,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _measurement_response(result)
 
 
@@ -438,7 +454,8 @@ async def create_measurement(
 async def update_measurement(
     measurement_id: str,
     body: MeasurementUpdateRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Measurement:
     """Update a measurement via the in-place ``measurement_update`` fact path.
 
@@ -462,14 +479,15 @@ async def update_measurement(
     try:
         result = await measurement_update(pool, measurement_id, **updates)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _measurement_response(result)
 
 
 @router.delete("/measurements/{measurement_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_measurement(
     measurement_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Soft-delete a measurement via ``measurement_delete`` (validity = retracted).
 
@@ -482,7 +500,7 @@ async def delete_measurement(
     try:
         await measurement_delete(pool, measurement_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -501,7 +519,8 @@ async def list_medications(
     active: bool | None = Query(None, description="Filter by active status"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[Medication]:
     """List medications with optional active status filter.
 
@@ -579,22 +598,28 @@ async def list_medication_doses(
     medication_id: str,
     since: str | None = Query(None, description="Filter from this timestamp (inclusive)"),
     until: str | None = Query(None, description="Filter up to this timestamp (inclusive)"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[Dose]:
     """List dose log entries for a specific medication.
 
     Reads from the ``facts`` table (predicate = ``took_dose``,
     scope = ``health``), the same surface written by the ``medication_log_dose``
-    MCP tool.  Doses are scoped to the medication via
-    ``metadata->>'medication_id'``.
+    MCP tool.  Doses are scoped to the medication by ``metadata->>'medication_id'``
+    matched against every fact of the medication's subject, so doses logged before
+    an edit (which supersedes the fact with a new id) stay listed.
     """
+    from butlers.tools.health._medication_utils import (  # pyright: ignore[reportMissingImports]
+        dose_of_medication_sql,
+    )
+
     pool = _pool(db)
 
     conditions: list[str] = [
         "predicate = 'took_dose'",
         "validity = 'active'",
         "scope = 'health'",
-        "metadata->>'medication_id' = $1",
+        dose_of_medication_sql("$1"),
     ]
     args: list[object] = [medication_id]
     idx = 2
@@ -684,7 +709,8 @@ def _dose_response(result: dict, medication_id: str) -> Dose:
 async def log_medication_dose(
     medication_id: str,
     body: DoseLogRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     cache: BriefingCache = Depends(get_health_briefing_cache),
 ) -> Dose:
     """Log a medication dose via the butler's ``medication_log_dose`` fact path.
@@ -714,7 +740,7 @@ async def log_medication_dose(
             notes=body.notes,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     cache.invalidate_all()
     return _dose_response(result, medication_id)
 
@@ -752,7 +778,8 @@ async def get_medication_adherence(
         ),
         ge=1,
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> MedicationAdherenceResponse:
     """Return frequency-expected dose-adherence stats for a single medication.
 
@@ -770,7 +797,7 @@ async def get_medication_adherence(
     from butlers.tools.health import medication_history
     from butlers.tools.health._medication_utils import (
         expected_dose_count,
-        frequency_to_doses_per_day,
+        scheduled_doses_per_day,
     )
 
     pool = _pool(db)
@@ -802,7 +829,7 @@ async def get_medication_adherence(
             end_date=effective_end,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     doses = result.get("doses") or []
     total = len(doses)
@@ -816,12 +843,12 @@ async def get_medication_adherence(
     # doses expected before it existed.
     medication = result.get("medication") or {}
     frequency = medication.get("frequency") or "daily"
-    doses_per_day = frequency_to_doses_per_day(frequency)
+    doses_per_day = scheduled_doses_per_day(frequency)
     expected = expected_dose_count(
         doses_per_day=doses_per_day,
         window_start=effective_start,
         window_end=effective_end,
-        medication_created_at=medication.get("created_at"),
+        medication_created_at=medication.get("first_seen_at") or medication.get("created_at"),
     )
 
     adherence_rate: float | None = None
@@ -879,7 +906,8 @@ def _medication_response(result: dict) -> Medication:
 @router.post("/medications", response_model=Medication, status_code=status.HTTP_201_CREATED)
 async def create_medication(
     body: MedicationCreateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Medication:
     """Create a medication via the butler's ``medication_add`` fact-store path.
 
@@ -906,14 +934,15 @@ async def create_medication(
 async def update_medication(
     medication_id: str,
     body: MedicationUpdateRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Medication:
     """Update a medication via the superseding ``medication_update`` fact path.
 
     Only the supplied (non-null) fields are merged into the existing medication
     fact; a new property fact is written under the same subject key so the prior
-    fact is superseded.  Returns 404 if the medication does not exist and 422 if
-    no updatable fields were provided.
+    fact is superseded.  Returns 404 if the medication does not exist, 409 if it changed
+    since it was read or is owner-authored, and 422 if no updatable fields were provided.
     """
     from butlers.tools.health import medication_update
 
@@ -926,15 +955,20 @@ async def update_medication(
         )
     try:
         result = await medication_update(pool, medication_id, **updates)
+    except StaleSupersessionTargetError as exc:
+        raise _stale_edit_conflict() from exc
+    except OwnerAuthoredSupersessionError as exc:
+        raise _owner_authored_conflict() from exc
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _medication_response(result)
 
 
 @router.delete("/medications/{medication_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_medication(
     medication_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Soft-delete a medication via ``medication_delete`` (validity = retracted).
 
@@ -947,7 +981,7 @@ async def delete_medication(
     try:
         await medication_delete(pool, medication_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -965,7 +999,8 @@ async def delete_medication(
 async def list_conditions(
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[Condition]:
     """List health conditions.
 
@@ -1043,7 +1078,8 @@ def _condition_response(result: dict) -> Condition:
 @router.post("/conditions", response_model=Condition, status_code=status.HTTP_201_CREATED)
 async def create_condition(
     body: ConditionCreateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Condition:
     """Create a condition via the butler's ``condition_add`` fact-store path.
 
@@ -1068,14 +1104,15 @@ async def create_condition(
 async def update_condition(
     condition_id: str,
     body: ConditionUpdateRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Condition:
     """Update a condition via the superseding ``condition_update`` fact path.
 
     Only the supplied (non-null) fields are merged into the existing condition
     fact; a new property fact is written under the same subject key so the prior
-    fact is superseded.  Returns 404 if the condition does not exist and 422 if
-    no updatable fields were provided.
+    fact is superseded.  Returns 404 if the condition does not exist, 409 if it changed
+    since it was read or is owner-authored, and 422 if no updatable fields were provided.
     """
     from butlers.tools.health import condition_update
 
@@ -1088,15 +1125,20 @@ async def update_condition(
         )
     try:
         result = await condition_update(pool, condition_id, **updates)
+    except StaleSupersessionTargetError as exc:
+        raise _stale_edit_conflict() from exc
+    except OwnerAuthoredSupersessionError as exc:
+        raise _owner_authored_conflict() from exc
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _condition_response(result)
 
 
 @router.delete("/conditions/{condition_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_condition(
     condition_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Soft-delete a condition via ``condition_delete`` (validity = retracted).
 
@@ -1109,7 +1151,7 @@ async def delete_condition(
     try:
         await condition_delete(pool, condition_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1131,7 +1173,8 @@ async def list_symptoms(
     until: str | None = Query(None, description="Filter up to this timestamp (inclusive)"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[Symptom]:
     """List symptoms with optional name and date range filters.
 
@@ -1238,7 +1281,8 @@ def _symptom_response(result: dict) -> Symptom:
 @router.post("/symptoms", response_model=Symptom, status_code=status.HTTP_201_CREATED)
 async def create_symptom(
     body: SymptomCreateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Symptom:
     """Log a symptom via the butler's ``symptom_log`` fact-store path.
 
@@ -1260,7 +1304,7 @@ async def create_symptom(
             occurred_at=body.occurred_at,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _symptom_response(result)
 
 
@@ -1268,7 +1312,8 @@ async def create_symptom(
 async def update_symptom(
     symptom_id: str,
     body: SymptomUpdateRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Symptom:
     """Update a symptom via the in-place ``symptom_update`` fact path.
 
@@ -1289,14 +1334,15 @@ async def update_symptom(
     try:
         result = await symptom_update(pool, symptom_id, **updates)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _symptom_response(result)
 
 
 @router.delete("/symptoms/{symptom_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_symptom(
     symptom_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Soft-delete a symptom via ``symptom_delete`` (validity = retracted).
 
@@ -1309,7 +1355,7 @@ async def delete_symptom(
     try:
         await symptom_delete(pool, symptom_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1353,7 +1399,8 @@ async def list_meals(
     until: str | None = Query(None, description="Filter up to this timestamp (inclusive)"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[Meal]:
     """List meals with optional type and date range filters."""
     pool = _pool(db)
@@ -1469,7 +1516,8 @@ def _meal_response(result: dict) -> Meal:
 @router.post("/meals", response_model=Meal, status_code=status.HTTP_201_CREATED)
 async def create_meal(
     body: MealCreateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Meal:
     """Log a meal via the butler's ``meal_log`` fact-store path.
 
@@ -1491,7 +1539,7 @@ async def create_meal(
             notes=body.notes,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _meal_response(result)
 
 
@@ -1499,7 +1547,8 @@ async def create_meal(
 async def update_meal(
     meal_id: str,
     body: MealUpdateRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Meal:
     """Update a meal via the in-place ``meal_update`` fact path.
 
@@ -1520,14 +1569,15 @@ async def update_meal(
     try:
         result = await meal_update(pool, meal_id, **updates)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _meal_response(result)
 
 
 @router.delete("/meals/{meal_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_meal(
     meal_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Soft-delete a meal via ``meal_delete`` (validity = retracted).
 
@@ -1540,7 +1590,7 @@ async def delete_meal(
     try:
         await meal_delete(pool, meal_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1560,7 +1610,8 @@ async def list_research(
     tag: str | None = Query(None, description="Filter by tag"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[Research]:
     """List or search research entries.
 
@@ -1664,7 +1715,8 @@ def _research_response(result: dict) -> Research:
 @router.post("/research", response_model=Research, status_code=status.HTTP_201_CREATED)
 async def create_research(
     body: ResearchCreateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Research:
     """Create a research note via the butler's ``research_save`` fact-store path.
 
@@ -1686,7 +1738,7 @@ async def create_research(
             condition_id=body.condition_id,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _research_response(result)
 
 
@@ -1694,14 +1746,15 @@ async def create_research(
 async def update_research(
     research_id: str,
     body: ResearchUpdateRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Research:
     """Update a research note via the superseding ``research_update`` fact path.
 
     Only the supplied (non-null) fields are merged into the existing research
     fact; a new property fact is written under the same subject key so the prior
-    fact is superseded.  Returns 404 if the note does not exist and 422 if no
-    updatable fields were provided.
+    fact is superseded.  Returns 404 if the note does not exist, 409 if it is
+    owner-authored, and 422 if no updatable fields were provided.
     """
     from butlers.tools.health import research_update
 
@@ -1714,15 +1767,18 @@ async def update_research(
         )
     try:
         result = await research_update(pool, research_id, **updates)
+    except OwnerAuthoredSupersessionError as exc:
+        raise _owner_authored_conflict() from exc
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _research_response(result)
 
 
 @router.delete("/research/{research_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_research(
     research_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Soft-delete a research note via ``research_delete`` (validity = retracted).
 
@@ -1735,7 +1791,7 @@ async def delete_research(
     try:
         await research_delete(pool, research_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1746,7 +1802,8 @@ async def delete_research(
 @router.get("/measurements/latest", response_model=LatestMeasurementsResponse)
 async def get_measurements_latest(
     types: str = Query(..., description="Comma-separated list of measurement types"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> LatestMeasurementsResponse:
     """Return the latest measurement row for each requested type.
 
@@ -1842,7 +1899,8 @@ def _parse_sleep_stages(stages: dict | None) -> list[SleepStage]:
 
 @router.get("/measurements/sleep/latest", response_model=SleepSessionResponse | None)
 async def get_sleep_latest(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> SleepSessionResponse | None:
     """Return the most recent sleep session.
 
@@ -1896,7 +1954,8 @@ async def get_sleep_latest(
 
 @router.get("/measurements/sources", response_model=MeasurementSourcesResponse)
 async def get_measurements_sources(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> MeasurementSourcesResponse:
     """Return all data sources observed across measurements.
 
@@ -1943,7 +2002,8 @@ async def get_measurements_sources(
 
 @router.get("/measurements/expected-signals", response_model=ExpectedSignalsResponse)
 async def get_measurement_expected_signals(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ExpectedSignalsResponse:
     """Return Health gap truth without turning unavailable evidence into absence."""
     pool = _pool(db)
@@ -1986,6 +2046,42 @@ async def get_measurement_expected_signals(
 
 
 # ---------------------------------------------------------------------------
+# GET /baselines: the stored personal baselines behind the Health deviation notices
+# ---------------------------------------------------------------------------
+
+
+@router.get("/baselines", response_model=BaselinesResponse)
+async def get_baselines(
+    db: Db,
+) -> BaselinesResponse:
+    """Return every Health metric's stored baseline, or a named reason for no band.
+
+    Read-only, through the Health butler's own pool. An unreadable store answers
+    a degraded envelope, never an empty list that would read as "no baselines".
+    """
+    try:
+        pool = _pool(db)
+        readings = await baselines_core.read_baselines(
+            pool,
+            [metric.key for metric in BASELINE_METRICS],
+            now=datetime.now(UTC),
+            refresh_intervals={metric.key: metric.refresh_interval for metric in BASELINE_METRICS},
+        )
+    except Exception:  # noqa: BLE001 -- the response carries explicit degradation
+        logger.warning("Health baselines read is unavailable")
+        return BaselinesResponse(
+            baselines=None,
+            available=False,
+            degraded_reason="baselines_unavailable",
+        )
+
+    return BaselinesResponse(
+        baselines=[BaselineResponse(**reading.as_dict()) for reading in readings],
+        available=True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /measurements/trend — hourly/daily aggregation for dashboard sparklines
 #
 # Aggregates facts rows for a single measurement type into time buckets.
@@ -2003,7 +2099,8 @@ async def get_measurements_trend(
     type: str = Query(..., description="Measurement type (e.g. 'glucose', 'weight')"),
     window_days: int = Query(14, description="Lookback window in days (1, 7, 14, 30, or 90)"),
     bucket: str = Query("daily", description="Bucket granularity: 'hourly' or 'daily'"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> TrendResponse:
     """Return aggregated trend buckets for a single measurement type.
 
@@ -2101,7 +2198,8 @@ async def get_nutrition_summary(
             "owner-timezone day (through 23:59:59.999999)."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> NutritionSummaryResponse:
     """Return aggregate nutrition totals and daily averages over a window.
 
@@ -2215,7 +2313,7 @@ async def _assert_owner_contact(pool: Any) -> Any:
         raise HTTPException(
             status_code=403,
             detail={"code": "forbidden", "message": "Owner contact assertion failed"},
-        )
+        ) from exc
 
     if row is None:
         raise HTTPException(
@@ -2653,7 +2751,8 @@ def _health_briefing_codex_authority(db: DatabaseManager) -> CredentialStore | N
 
 @router.get("/briefing", response_model=ApiResponse[Briefing])
 async def get_health_briefing(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     cache: BriefingCache = Depends(get_health_briefing_cache),
 ) -> ApiResponse[Briefing]:
     """Return the health Voice briefing for the authenticated owner.
@@ -2669,8 +2768,10 @@ async def get_health_briefing(
     """
     try:
         sw_pool = db.pool(SWITCHBOARD_DB)
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
     health_pool = _pool(db)
 
     # Owner-only gate (HTTP 403 for non-owner) — before any cache read or write.

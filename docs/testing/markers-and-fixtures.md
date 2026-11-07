@@ -25,9 +25,11 @@ read them there. The semantics that matter:
 - **`e2e` is not deselected by marker.** Every gate keeps it out with `--ignore=tests/e2e`, and its
   own conftest skips without credentials; see the [E2E suite](e2e/README.md). `benchmark`,
   `routing_accuracy` and `tool_accuracy` subdivide that suite.
-- **`pg_clock` and `faketime_fragile`** are deselected only from the nightly faketime legs: the
-  first mixes Postgres and Python clocks that libfaketime skews apart, the second waits on a timed
-  thread primitive that never expires under a shifted clock. Everywhere else they run.
+- **`pg_clock` and `faketime_fragile`** are deselected only from the nightly faketime legs. The
+  first mixes Postgres and Python clocks; the shared testcontainer now runs under the same offset,
+  so new DB tests do not need it and the existing marks are awaiting re-admission. The second waits
+  on a timed thread primitive, needs a PostgreSQL statement or lock timeout to fire, or needs a live
+  TLS certificate check, none of which works under a shifted clock. Everywhere else they run.
 - **`smoke`** is the fast operational gate with no real LLM; **`contract`** marks architectural
   invariant tests drawn from doctrine and RFCs.
 
@@ -39,16 +41,29 @@ The root `conftest.py` (at the repository root) provides fixtures visible to all
 
 A shared Postgres testcontainer for all DB-backed tests in the pytest session. Uses the `pgvector/pgvector:pg17` image. The container is started once and reused across all tests; isolation is achieved at the database level (each test gets a fresh DB).
 
+`_configure_postgres_container` gives it a 1 GB `/dev/shm`, because Docker's 64 MB default runs out once one container has served a large share of the suite. When the pytest process runs under libfaketime (`FAKETIME` set and `libfaketime` in `LD_PRELOAD`), the container gets the same library and offset, so SQL `now()` matches Python's shifted clock.
+
+Teardown requests container removal and anonymous PGDATA volume deletion everywhere except GitHub-hosted runners (`RUNNER_ENVIRONMENT=github-hosted`), decided by `_delete_session_data_volume`. CI has observed 25-60+ s volume-removal calls alongside restore-client timeouts. Retaining the volume until the disposable hosted VM is discarded mitigates possible teardown contention; these different-run observations do not establish causality, guarantee test/teardown ordering, or prove successful cleanup. Developer and self-hosted runners retain volume deletion and the existing removal retry/warning behavior.
+
+The ordinary backup/privileged restore client retains its 120 s budget and requests named-container cleanup with a separate 10 s budget after a timeout. Its timeout note exposes only capture presence, counts, and a fixed backup-marker observation; captured content is never copied into the note. Empty capture leaves execution stage unknown, and cleanup is not credited merely because it was requested. Native restore receipt, owner, and ACL assertions remain the acceptance checks.
+
 ```python
 @pytest.fixture(scope="session")
 def postgres_container() -> Iterator[PostgresContainer]:
-    with PostgresContainer("pgvector/pgvector:pg17") as pg:
-        yield pg
+    container = _configure_postgres_container(
+        PostgresContainer("pgvector/pgvector:pg17"), os.environ
+    )
+    try:
+        yield container.start()
+    finally:
+        container.stop(delete_volume=_delete_session_data_volume(os.environ))
 ```
 
 ### `provisioned_postgres_pool` (function scope)
 
-Creates a fresh database and asyncpg pool for a single test. Each invocation creates a database with a random name (`test_{uuid_hex[:12]}`), ensuring no table or schema leakage between tests.
+Creates a fresh database and an **administrative** asyncpg pool for a single test. Each invocation creates a database with a random name (`test_{uuid_hex[:12]}`), ensuring no table or schema leakage between tests. The container login owns this pool; it intentionally supports partial, legacy, and absent-table setup. It does not establish a runtime role and is not evidence of runtime authorization or isolation. Use migrated databases and real `SET ROLE` identities for that proof.
+
+Optional `schema=` validates and sets the administrative search path before provisioning; it neither creates that schema nor grants access. The pool retains the normal JSONB codec, finite SSL fallback, and context-owned cleanup on failure or cancellation. Runtime `Database` role refusals remain unchanged.
 
 ```python
 async with provisioned_postgres_pool() as pool:
@@ -59,6 +74,86 @@ async with provisioned_postgres_pool() as pool:
 Parameters:
 - `min_pool_size` (default: 1)
 - `max_pool_size` (default: 3)
+
+### `booted_daemon` (function scope)
+
+An async factory that boots a real butler daemon with no LLM
+(`src/butlers/testing/daemon.py`, bu-rvgzmf.2). It builds on the shared DB factory
+(`db`/`fresh_db`, bu-rvgzmf.1): each boot gets its own template clone.
+
+```python
+booted = await booted_daemon(config_dir)          # more chains: (config_dir, "core", "x")
+status = await booted.call_tool("status")         # over the daemon's real HTTP MCP endpoint
+await booted.shutdown()                           # optional; teardown shuts down the rest
+```
+
+- `ButlerDaemon.start()` runs every production startup phase with the real
+  `ModuleRegistry`, real FastMCP and the real `Spawner`. Only the runtime is
+  fake: for the whole test, every registered runtime type resolves to one
+  `FakeRuntime`, because the spawner builds a per-model adapter for whichever
+  type the catalog resolves. Each stand-in declares its production adapter's
+  capabilities, so model resolution picks the models production would. The fake
+  records invocations (`booted.runtime.invocations`, with `prompt` and
+  `system_prompt`) instead of starting a CLI.
+- Script replies with `booted.runtime.script(*replies)`: each invocation takes the
+  next entry (output text, an exception to raise, or a callable given the recorded
+  invocation), then `"ok"`. Work that runs in the background, such as a routed
+  session after `route.execute` accepts, is awaited with
+  `await booted.runtime.wait_for_invocations(n)`, which fails loudly on timeout.
+- Set `booted.runtime.supports_resume = True` to exercise provider-session resume:
+  each turn then reports a fresh `provider_session_id` (`fake-session-<n>`), and
+  each invocation records the `resume_session_id` the spawner passed.
+- `booted.admin_url` is the clone's owner connection (open it with
+  `butlers.testing.db.open_pool`), for seeding rows the butler's role may not
+  write, such as dashboard turns.
+- `booted_daemon(config_dir, credentials={...})` stores synthetic module
+  credentials in the butler's secret store before start; module credential checks
+  read only that store, never the environment.
+- `booted_daemon(config_dir, chain_schemas={"relationship": "relationship"})`
+  migrates other butlers' chains into their own schemas, for cross-butler reads
+  under production grants (for example `relationship.entity_facts`).
+- `tool_host` is for tests whose subject is a tool's SQL rather than the boot
+  (about 0.5 s per host, against about 2.3 s per boot).
+  - `host = await tool_host(config_dir)` clones the template, connects the
+    butler's pool under its production role, and registers the core tools on a
+    fresh FastMCP. No lifecycle phase runs or is patched.
+  - `await host.call("remind", ...)` runs a handler in process.
+  - `tool_host(config_dir, pool=fake_pool())` is the DB-free form, for handler tests
+    whose subject is not SQL: no clone, same registration.
+  - Tests that need the spawner, the Switchboard or module startup boot instead.
+- `shared_booted_daemon` shares one boot per module and configuration among tests
+  that only read daemon state (rejections, tool listings, status):
+  `booted = await shared_booted_daemon("general", registered=True)` takes the same
+  name, chains, `schema=`, `extra_toml=`, `credentials=` and `chain_schemas=` as a
+  boot. The fake
+  runtime is reset before each test. After each test the kit compares row counts in
+  `route_inbox`, `sessions`, `public.attention_ledger` and `scheduled_tasks`, and
+  the loaded config, with what the test was handed; any change fails the test with
+  `SharedDaemonMutated` and replaces that boot. Tests that route, run a session,
+  deliver a notification, schedule a task or change config use `booted_daemon`; patch a
+  shared daemon only through `monkeypatch`.
+- No lifecycle internal is patched. The kit injects a connected `Database`,
+  pre-sets the loaded config (a free port, the clone's name, no Switchboard) and
+  sets environment seams: file logs under a temp root, MCP warmup off (it is an
+  untracked task that would outlive shutdown).
+- `butler.toml` must use the one-db topology with a schema that has a runtime
+  role, for example `[butler.db] name = "butlers"` and `schema = "general"`. Each
+  chain migrates into that schema.
+- Boot registration needs the Switchboard chain's `public.register_butler_boot`
+  and a registry row. By default neither exists, so the daemon serves tools but
+  does not accept routes (`accepting_routes` is `False`) and a retry task runs
+  until shutdown cancels it. `booted_daemon(config_dir, registered=True)` also
+  migrates the Switchboard chain into its own schema and seeds the butler's row
+  with the Switchboard's own `seed_missing_roster_butlers`, so the boot commits an
+  epoch and accepts routes. The butler's name must then match its schema's runtime
+  role (`butler_<name>_rw`, e.g. name and schema both `general`).
+- Startup's `configure_logging` replaces root-logger handlers process-wide,
+  dropping pytest's capture handlers. The kit re-attaches them as soon as startup
+  returns, so `caplog` records what the running daemon logs, and restores the
+  original handlers after shutdown.
+- Async tests that use it carry `pytest.mark.asyncio(loop_scope="session")`.
+  `tests/testing/test_kit_booted_daemon.py` reports the cost of one boot as
+  `DAEMON-BOOT-SECONDS`.
 
 ## Shared Fixtures Module
 
@@ -101,6 +196,51 @@ def test_something(mock_spawner):
     mock_spawner.enqueue_result(SpawnerResult(success=True))
     ...
 ```
+
+## Explicit test-kit helpers
+
+Import DB-free helpers directly from `butlers.testing`; these are not root
+fixtures and do not provide SQL, JSONB, transaction, role or RLS evidence.
+Use a real migrated database when the behavior depends on those boundaries.
+
+- `records.row(**columns)` and `records.records(iterable_of_mappings)` return
+  fresh `Record` snapshots. Key/index lookup and `dict(record)` work; iteration
+  yields **values**, as asyncpg does. Missing keys and attribute access refuse.
+- `fake_pool.fake_pool(fetch=[...], execute="UPDATE 1")` configures only those
+  async calls. Unconfigured methods raise `AssertionError`; explicit `None`
+  is a configured result. Pass `AsyncMock(side_effect=...)` for queues or
+  failures. Pool and acquired connection share call assertions; `acquire()`
+  and connection `transaction()` create fresh `AsyncCtx` objects. Context
+  exits release once, including body exceptions and cancellation. Callable
+  SQL dispatch is refused.
+- `db_manager.db_manager({"general": pool}, schemas=..., memory_schemas=...,
+  modules={"home": ["approvals"]}, credential_pool=...)` returns the production
+  dashboard `DatabaseManager` serving the given pools (`db` clones, `fake_pool`
+  fakes or sentinels). Lookups, `KeyError("No pool for butler: …")` refusals,
+  the module census and `fan_out_with_status` behave as in the dashboard; it
+  connects nothing. Never hand-write a fake manager with its own `pool` method
+  (`scripts/check_test_db_fixtures.py` refuses it); to count or refuse lookups,
+  wrap the method with `Mock(wraps=manager.pool)` or `side_effect`.
+- `migration.load_migration(path, name=None)` imports a fresh module from an
+  explicit file without calling `upgrade` or `downgrade`. The default name is
+  `_migration_<file stem>`; use the existing caller's explicit name when its
+  identity matters. Opt-in `register=True` temporarily registers the module
+  for import-time consumers such as dataclasses and restores the prior
+  `sys.modules` entry even on failure. It does not provision a database.
+- `clock.FakeClock(aware_instant, monotonic=0)` exposes `now()` and
+  `monotonic()`. `advance(seconds_or_timedelta)` advances both; negative or
+  nonfinite advances refuse without changing either. The default origin is
+  fixed UTC. Inject these methods at existing seams, retaining purpose-specific
+  datetime adapters when needed; never patch event-loop, timeout or SQL clocks.
+
+- `mcp.registered_tools(server)` and `await mcp.tool_fn(server, name)` use a
+  real `FastMCP` server's public async registration API. Await both helpers;
+  the first returns a name-to-function snapshot, while the second looks up the
+  current registered `Tool.fn` and raises `KeyError(name)` for an unknown name.
+  Each lookup retains current wrappers and gates without unwrapping or caching.
+  Direct handler calls do not prove MCP transport validation or authorization.
+  Keep domain recorders and intentional registration failures; if real FastMCP
+  rejects a subject's signature, report the rejection instead of loosening it.
 
 ## Testcontainer Resilience
 
@@ -204,18 +344,17 @@ Tests can use this to skip gracefully when Docker is not installed.
   permission, and malformed verdict/classifier/planner evidence fails closed.
 - Lock, lint, format and SQL-safety checks execute in guards after the existing UV install
   recovery policy and frozen dev synchronization. Their command scopes match the former
-  preflight commands and local `make check-guards`. Fresh collection and both budgets belong
-  to early inventory; exact-once manifests, smoke/release cmd/SHA/duration/status/skips and
-  sanitized artifacts stay in preflight. Required check contains only the verdict step.
-  The independent owned `coverage-report` job waits for fresh inventory, all eleven covered
-  shards and complete-identity preflight, reads each raw CoverageData
-  database and its checkout/run/attempt/lane/shard/manifest/digest metadata, requires the
+  preflight commands and local `make check-guards`. Fresh collection, the lane-group totals, both budgets, smoke/release
+  cmd/SHA/duration/status/skips and sanitized artifacts belong to preflight. Required check contains only the verdict step.
+  The independent owned `coverage-report` job waits for all eleven covered groups and preflight,
+  reads each raw CoverageData database and its checkout/run/attempt/lane/group/config/digest
+  metadata, requires the
   complete measured source population and compatible tracing, then combines and publishes
   the report; only scheduled/manual main success may update the badge. Missing, empty,
   corrupt, stale or mismatched inputs fail
   reporting before publication. Coverage reporting never changes required test verdicts.
 - Protected merge-group and ordinary PR heavy shards receive exact `CI_COVERAGE=0`;
-  the owned daily/manual and pipeline-PR coverage workflow receives `1`. The standalone
+  the nightly coverage jobs (scheduled or manual) receive `1`. The standalone
   runner defaults to `1`; any supplied value other than literal `0` or `1` fails. Only
   enabled runs require `COVERAGE_FILE` and produce/upload raw coverage plus metadata. PRs
   retain the same paths, markers, workers, maxfail and sanitized JUnit evidence without
@@ -236,15 +375,45 @@ Tests can use this to skip gracefully when Docker is not installed.
   watchdog until healthy measurements justify a separate change.
 - Browser caches require the exact runner OS, architecture, package-lock hash and installed
   locked Playwright version. Cache failure is advisory; installation is mandatory on hits
-  and misses and always includes `--with-deps`. The installed-version reader checks all
+  and misses and always installs the OS dependencies first, as their own bounded
+  `install-deps` phase (apt under sudo; two attempts, 150/160 s) so a slow apt cannot consume
+  the browser download's 110/120 s deadline. The deps supervisor runs under noninteractive
+  sudo, starts apt in its own process group, and terminates and reaps that group's members
+  before permitting a retry. Cancellation or parent EOF triggers the same cleanup; an
+  unproven cleanup fails closed without starting another attempt. Reserved supervisor exit
+  outcomes 80/81/82/83 establish cleaned success/failure/deadline/cancellation; generic zero,
+  nonzero or signal exits never authorize retry. Cancellation/EOF (83) is never retryable,
+  including a direct supervisor cancellation with the Node parent still alive. Only a
+  confirmed cleaned elapsed deadline (82) selects the official-Ubuntu preference for the
+  existing second attempt; ordinary clean failure (81) retries the default route. The healthy
+  first attempt is unchanged. Recovery accepts only the witnessed Ubuntu24 noble deb822
+  source with the exact local mirror URI and three recognized Azure/archive/security
+  candidates. It changes only that copied Ubuntu URI and mirror priority, preserving all
+  source/trust fields, third-party bytes and ordinary dpkg/index/archive state. Unknown
+  layouts, ambiguous fields, links, writable/untrusted inputs and modified endpoints fail
+  closed. Copied configuration stays root-private; only nonsecret mirror data is sandbox
+  readable. The actual APT configuration reader compares ordinary settings and effective
+  private source paths, rejecting later source overrides, binary path overrides and rerooting.
+  Its child shares the existing process group/deadline; it never prints configuration data.
+  Partial setup removes only its own files, and a full overlay remains until child cleanup
+  is confirmed. Local fixture-reader controls do not prove Ubuntu24 parsing, sandbox access
+  or signed package transport; those require explicit actual-Ubuntu/hosted evidence.
+  Setup shares the child's cleanup lifetime. Non-reaping leader
+  observation retains the group identity through its last signal, before reaping. `EPERM` never crashes
+  the parent or establishes that a process is gone. The installed-version reader checks all
   three Playwright packages against the lock. Each attempt installs and launches the locked
   Chromium, rejects a missing/corrupt/wrong-version executable and closes it. Attempts two
   and three force repair; test retries are unchanged.
-  The Node installer supervises each Linux process group: TERM at 110 seconds, KILL by 120,
-  three attempts and two ten-second backoffs, with a 380-second outer deadline. It cleans
-  ordinary descendants even when their shell exits first; these bounds do not establish
+  The installer has a 720-second outer budget: two dependency attempts (TERM150/KILL160,
+  up to two seconds each for cleanup, one ten-second backoff), then three browser attempts
+  (TERM110/KILL120, two ten-second backoffs). It cleans ordinary descendants even when
+  their shell exits first; these bounds do not establish
   containment of deliberately detached hostile processes. Local synthetic install controls
-  prove the supervisor, not actual OS-package installation or hosted cache behavior.
+  prove the supervisor, not actual OS-package installation or hosted cache behavior. The
+  frontend-e2e job cap is provisionally 20 minutes: ceil((2*228s historical whole-job envelope
+  + 720s full installer reserve)/60). This source-derived adjustment retains observed setup
+  and does not establish current healthy p95 calibration. See the active
+  [failure matrix](playwright-installer-failure-matrix.md).
 - Root `conftest.py` also serialises testcontainers `DockerClient.run()` across xdist workers and
   caps `-n auto` at 3 workers (`PYTEST_XDIST_AUTO_WORKERS` overrides).
 - Startup timeouts (before a container starts) are host contention: reduce load and rely on the
@@ -269,13 +438,14 @@ Tests can use this to skip gracefully when Docker is not installed.
 
 ### Owned coverage pipeline validation
 
-`.github/workflows/ci-coverage.yml` owns daily/manual full coverage and validates
-coverage-pipeline path changes on PRs. It runs the same fresh full inventory,
-five unit and six integration commands, complete execution reconciliation and
-smoke fallback before the strict CoverageData reader. Inventory, execution and
-coverage metadata preserve the actual event, checkout, run and attempt. Both
+The nightly workflow (`.github/workflows/nightly.yml`) owns daily/manual full
+coverage; dispatch it on a branch to validate a coverage-pipeline change (owner
+decision bu-w72da2 = A retired the former PR-path workflow). It runs the same five unit and
+six integration pytest-split groups, the lane totals against fresh collect-only
+counts and the smoke command before the strict CoverageData reader. Coverage
+metadata preserves the actual event, checkout, run, attempt, lane and group. Both
 preflight and reporting fail visibly when any prerequisite fails, skips or is
-unknown. PR runs produce full report artifacts; only scheduled/manual main
+unknown. Every run uploads the full report artifact; only scheduled/manual main
 success can update the badge. Its exact Python/cache/frozen repair comes from
 the local setup composite, with existing finite job caps retained per row.
 

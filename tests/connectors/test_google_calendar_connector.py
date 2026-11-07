@@ -85,7 +85,7 @@ def test_internal_envelope_passes_parse_ingest_envelope() -> None:
     """Internally built envelope must validate against parse_ingest_envelope contract."""
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     env = _build_ingest_envelope(
         event_id="evt-3",
@@ -674,6 +674,27 @@ def test_classify_source_api_error_distinguishes_google_revocation_from_api_fail
         assert payload["error"] in detail
     else:
         assert str(status_code) in detail
+
+    nested = _google_token_http_error(
+        {"error": {"code": 503, "errors": [{"reason": "syntheticReason"}], "message": "Retry"}},
+        503,
+    )
+    assert _classify_source_api_error(nested) == (False, "code=503, message=Retry")
+    request = httpx.Request("GET", "https://www.googleapis.com/synthetic")
+    for body, expected in (
+        (b"", "HTTP 503"),
+        (b"synthetic plain body", "HTTP 503: synthetic plain body"),
+        (b"[]", "HTTP 503: []"),
+        (b'{"error": {}}', 'HTTP 503: {"error": {}}'),
+        (b"x" * 220, "HTTP 503: " + "x" * 200),
+    ):
+        response = httpx.Response(503, content=body, request=request)
+        error = httpx.HTTPStatusError("source failure", request=request, response=response)
+        assert _classify_source_api_error(error) == (False, expected)
+    assert _classify_source_api_error(httpx.ReadTimeout("synthetic timeout")) == (
+        False,
+        "ReadTimeout: synthetic timeout",
+    )
 
 
 @pytest.mark.parametrize(

@@ -10,7 +10,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.ingestion_connectors import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -60,7 +60,7 @@ def _cadence_row(endpoint_identity: str, point_count: int) -> MagicMock:
 def _wire_db(app: FastAPI, pool: AsyncMock) -> None:
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
 
 async def _get_summaries(app: FastAPI, pool: AsyncMock) -> dict:
@@ -148,4 +148,4 @@ async def test_archived_owntracks_identity_does_not_query_or_warn(app: FastAPI) 
     assert data["owntracks_cadence_available"] is True
     assert data["connectors"][0]["archived"] is True
     assert data["connectors"][0]["operational_warnings"] == []
-    assert pool.fetch.await_count == 3
+    assert not any("owntracks_points" in call.args[0] for call in pool.fetch.await_args_list)

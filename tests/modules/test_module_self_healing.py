@@ -1,13 +1,12 @@
-"""Condensed SelfHealingModule tests — behavioral contract only.
+"""Core QA relay tests — behavioral contract only.
 
 Replaces 53 tests with ~12 focused behavioral tests.
 
 Covers:
-- Module ABC compliance
-- SelfHealingConfig validation (defaults, extra rejected)
+- Retired module cannot be rediscovered
 - Tool registration (report_error, get_healing_status)
 - Tool sensitivity metadata
-- report_error: not configured returns error dict
+- report_error: unavailable QA returns an honest refusal
 - report_error: registered tool shim → QA relay path (bu-fbft2)
 - get_healing_status: empty list when no attempts
 - _serialize_attempt: handles UUID and datetime
@@ -27,48 +26,24 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
-from pydantic import ValidationError
 
+from butlers.core.qa.relay import QaRelay, _serialize_attempt
 from butlers.core.spawn_hooks import clear_spawner
-from butlers.modules.base import Module, ToolMeta
-from butlers.modules.self_healing import SelfHealingConfig, SelfHealingModule, _serialize_attempt
+from butlers.modules.base import ToolMeta
 
 pytestmark = pytest.mark.unit
 
 
-def _make_module() -> SelfHealingModule:
-    return SelfHealingModule()
+def _make_module() -> QaRelay:
+    return QaRelay("test-butler", None, lambda: None)
 
 
 class TestModuleABC:
     def test_module_contract(self) -> None:
-        """SelfHealingModule satisfies Module ABC: name, config_schema, revisions, registry."""
+        """QA relay is core; discovery cannot re-enable the retired module."""
         from butlers.modules.registry import default_registry
 
-        mod = _make_module()
-        assert issubclass(SelfHealingModule, Module)
-        assert mod.name == "self_healing"
-        assert mod.config_schema is SelfHealingConfig
-        # Schema owned by core migration (public.healing_attempts)
-        assert mod.migration_revisions() is None
-        assert "self_healing" in default_registry().available_modules
-
-
-class TestSelfHealingConfig:
-    def test_defaults(self) -> None:
-        cfg = SelfHealingConfig()
-        assert cfg.model_dump() == {
-            "enabled": True,
-            "severity_threshold": 2,
-            "max_concurrent": 2,
-            "cooldown_minutes": 60,
-            "circuit_breaker_threshold": 5,
-            "timeout_minutes": 30,
-        }
-
-    def test_extra_fields_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            SelfHealingConfig(unknown_field="x")
+        assert "self_healing" not in default_registry().available_modules
 
 
 class TestToolRegistration:
@@ -79,18 +54,17 @@ class TestToolRegistration:
         mcp.tool.side_effect = lambda **kw: (
             lambda fn: registered.__setitem__(kw.get("name") or fn.__name__, fn) or fn
         )
-        await mod.register_tools(mcp=mcp, config=None, db=None, butler_name="test-butler")
+        mod.register_tools(mcp)
         assert "report_error" in registered
         assert "get_healing_status" in registered
         assert set(registered) == {"report_error", "get_healing_status"}
 
     def test_tool_metadata_marks_sensitive_args(self) -> None:
-        mod = _make_module()
-        meta = mod.tool_metadata()
-        assert "report_error" in meta
-        report_meta = meta["report_error"]
+        from butlers.daemon import ButlerDaemon
+
+        daemon = ButlerDaemon(Path("/synthetic"))
+        report_meta = daemon._collect_tool_metadata()["report_error"]
         assert isinstance(report_meta, ToolMeta)
-        # error_message, traceback, context should be marked sensitive
         for key in ("error_message", "traceback", "context"):
             assert report_meta.arg_sensitivities.get(key) is True
 
@@ -103,7 +77,7 @@ class TestReportErrorBehavior:
         mcp.tool.side_effect = lambda **kw: (
             lambda fn: registered.__setitem__(kw.get("name") or fn.__name__, fn) or fn
         )
-        await mod.register_tools(mcp=mcp, config=None, db=None, butler_name="test-butler")
+        mod.register_tools(mcp)
 
         result = await registered["report_error"](
             error_type="test_error", error_message="test error"
@@ -142,21 +116,15 @@ class TestReportErrorBehavior:
             return {"result": response}
 
         for identity in ("relay-butler", "switchboard", "qa"):
-            mod = SelfHealingModule()
-            mcp = FastMCP(identity)
-            await mod.register_tools(mcp, None, None, identity)
-            if identity == "switchboard":
-                # Exercise the actual owned daemon wiring seam, without an external client.
-                daemon = ButlerDaemon(Path("/synthetic"))
-                daemon.config = ButlerConfig(name="switchboard", port=18999)
-                daemon.spawner = MagicMock()
-                daemon.mcp = switchboard
-                daemon._modules = [mod]
-                daemon._wire_module_runtime()
-                assert isinstance(mod._switchboard_client, LocalSwitchboardClient)
-            else:
-                # Per-call real in-process MCP transport, never a canned CallToolResult.
-                mod.wire_runtime(MagicMock(), "/synthetic", LocalSwitchboardClient(switchboard))
+            mcp = switchboard if identity == "switchboard" else FastMCP(identity)
+            daemon = ButlerDaemon(Path("/synthetic"))
+            daemon.config = ButlerConfig(name=identity, port=18999)
+            daemon.db = MagicMock(pool=None)
+            daemon.mcp = mcp
+            daemon.switchboard_client = (
+                None if identity == "switchboard" else LocalSwitchboardClient(switchboard)
+            )
+            daemon._register_core_tools()
             try:
                 async with Client(mcp) as source:
                     report = {
@@ -199,7 +167,7 @@ class TestRelayLifecycle:
     async def test_retry_tool_is_absent_with_surviving_tool_positive(self) -> None:
         mod = _make_module()
         mcp = FastMCP("relay-only")
-        await mod.register_tools(mcp, None, None, "relay-butler")
+        mod.register_tools(mcp)
         async with Client(mcp) as client:
             assert {t.name for t in await client.list_tools()} == {
                 "report_error",
@@ -210,62 +178,17 @@ class TestRelayLifecycle:
                 await client.call_tool("retry_healing", {"attempt_id": str(uuid.uuid4())})
 
     async def test_startup_shutdown_do_not_recover_or_reap(self, monkeypatch) -> None:
-        recovery = AsyncMock(return_value=0)
-        reaper = AsyncMock(return_value=[])
-        for name, counter in (
-            ("recover_stale_attempts", recovery),
-            ("reap_stale_worktrees", reaper),
-        ):
-            monkeypatch.setattr(f"butlers.modules.self_healing.{name}", counter, raising=False)
-            await counter()
-            counter.reset_mock()
+        """Core construction/registration owns no investigation lifecycle or pool."""
+        recovery, reaper = AsyncMock(), AsyncMock()
+        monkeypatch.setattr("butlers.core.healing.tracking.recover_stale_attempts", recovery)
+        monkeypatch.setattr("butlers.core.healing.worktree.reap_stale_worktrees", reaper)
         pool = MagicMock()
-        mod = _make_module()
-        await mod.on_startup(SelfHealingConfig(), MagicMock(pool=pool))
-        await mod.on_shutdown()
-        assert mod._pool is pool
+        relay = QaRelay("general", pool, lambda: None)
+        relay.register_tools(FastMCP("no-recovery"))
+        assert relay._pool is pool
         recovery.assert_not_awaited()
         reaper.assert_not_awaited()
-
-    async def test_disabled_and_legacy_keys_cannot_enable_dispatch(self) -> None:
-        """REQ-core-spawner-007: accepted legacy keys cannot supply dispatch authority."""
-        route_calls = []
-
-        class RelayClient:
-            async def call_tool(self, name, arguments):
-                if name == "list_butlers":
-                    return [{"name": "qa"}]
-                route_calls.append(arguments)
-                return {"result": {"accepted": True}}
-
-        # Extreme legacy thresholds remain accepted, inert compatibility input.
-        cfg = SelfHealingConfig(
-            severity_threshold=-1,
-            max_concurrent=0,
-            cooldown_minutes=999,
-            circuit_breaker_threshold=0,
-            timeout_minutes=0,
-        )
-        mod = _make_module()
-        await mod.on_startup(cfg, None)
-        mcp = FastMCP("legacy-config-relay")
-        await mod.register_tools(mcp, cfg, None, "relay-butler")
-        mod.wire_runtime(MagicMock(), "/synthetic", RelayClient())
-        async with Client(mcp) as client:
-            args = {"error_type": "ValueError", "error_message": "synthetic report"}
-            assert (await client.call_tool("report_error", args)).data["accepted"] is True
-            mod._config.enabled = False
-            refused = (await client.call_tool("report_error", args)).data
-            assert refused["accepted"] is False and refused["reason"] == "disabled"
-        assert len(route_calls) == 1
-        assert set(route_calls[0]["args"]) == {
-            "fingerprint",
-            "exception_type",
-            "call_site",
-            "severity",
-            "event_summary",
-            "source_butler",
-        }
+        pool.close.assert_not_called()
 
 
 class TestSerializeAttempt:
@@ -279,3 +202,34 @@ class TestSerializeAttempt:
         result = _serialize_attempt(attempt)
         assert isinstance(result["id"], str)
         assert isinstance(result["created_at"], str)
+
+
+async def test_core_qa_registration_without_module_or_core_groups():
+    """Real daemon registry and MCP execution remain available without opt-in."""
+    from butlers.config import ButlerConfig, RuntimeSeedConfig
+    from butlers.daemon import ButlerDaemon
+
+    daemon = ButlerDaemon(Path("/synthetic"))
+    daemon.config = ButlerConfig(
+        name="general", port=18999, runtime_seed=RuntimeSeedConfig(core_groups=())
+    )
+    daemon.db = MagicMock(pool=None)
+    daemon.mcp = FastMCP("core-qa-without-module")
+    daemon._modules = []
+    daemon._register_core_tools()
+    async with Client(daemon.mcp) as client:
+        names = {t.name for t in await client.list_tools()}
+        assert {"report_error", "get_healing_status"} <= names
+        result = (
+            await client.call_tool(
+                "report_error", {"error_type": "ValueError", "error_message": "synthetic report"}
+            )
+        ).data
+        assert result["accepted"] is False
+        assert result["reason"] == "qa_unavailable"
+    assert daemon._tool_module_map["report_error"] == "core"
+    assert daemon._collect_tool_metadata()["report_error"].arg_sensitivities == {
+        "error_message": True,
+        "traceback": True,
+        "context": True,
+    }

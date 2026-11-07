@@ -1,3 +1,5 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
 // ---------------------------------------------------------------------------
 // SymptomForm — reusable add/edit form for logged symptoms [bu-gk38e]
 //
@@ -61,9 +63,11 @@ export function SymptomForm({ symptom, onDone, onCancel }: SymptomFormProps) {
   const [occurredAt, setOccurredAt] = useState(isoToDateInput(symptom?.occurred_at));
   const [notes, setNotes] = useState(symptom?.notes ?? "");
 
+  const draft = useDraft("health.symptom", [isEdit ? "edit" : "create", symptom?.id ?? "new"], { name, severity, occurredAt, notes }, (next) => { setName(next.name as typeof name); setSeverity(next.severity as typeof severity); setOccurredAt(next.occurredAt as typeof occurredAt); setNotes(next.notes as typeof notes); });
+
   const createMutation = useCreateSymptom();
   const updateMutation = useUpdateSymptom();
-  const isPending = createMutation.isPending || updateMutation.isPending;
+  const isPending = createMutation.isPending || updateMutation.isPending || !!draft.session?.presentation.cleanup || !!draft.session?.presentation.submitting;
 
   function handleError(err: unknown) {
     const message =
@@ -83,6 +87,9 @@ export function SymptomForm({ symptom, onDone, onCancel }: SymptomFormProps) {
     const trimmedNotes = notes.trim();
     const occurredIso = occurredAtToIso(occurredAt);
 
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
     try {
       if (isEdit) {
         await updateMutation.mutateAsync({
@@ -94,7 +101,7 @@ export function SymptomForm({ symptom, onDone, onCancel }: SymptomFormProps) {
             notes: trimmedNotes === "" ? null : trimmedNotes,
           },
         });
-        toast.success("Symptom updated.");
+        if (draft.current(submission)) toast.success("Symptom updated.");
       } else {
         await createMutation.mutateAsync({
           name: trimmedName,
@@ -102,16 +109,17 @@ export function SymptomForm({ symptom, onDone, onCancel }: SymptomFormProps) {
           occurred_at: occurredIso,
           notes: trimmedNotes === "" ? null : trimmedNotes,
         });
-        toast.success("Symptom logged.");
+        if (draft.current(submission)) toast.success("Symptom logged.");
       }
-      onDone();
+      await draft.submitted(submission, onDone);
     } catch (err) {
-      handleError(err);
-    }
+      if (draft.current(submission)) handleError(err);
+    } finally { draft.finish(); }
   }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4" data-testid="symptom-form">
+      <DraftNotice session={draft.session} />
       <div className="space-y-2">
         <Label htmlFor="sym-name">Name</Label>
         <Input
@@ -162,7 +170,7 @@ export function SymptomForm({ symptom, onDone, onCancel }: SymptomFormProps) {
       </div>
 
       <div className="flex justify-end gap-2 pt-2">
-        <Button type="button" variant="ghost" onClick={onCancel} disabled={isPending}>
+        <Button type="button" variant="ghost" onClick={() => draft.dismiss(onCancel)} disabled={isPending}>
           Cancel
         </Button>
         <Button type="submit" disabled={isPending}>

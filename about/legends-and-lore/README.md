@@ -43,7 +43,7 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0022](rfcs/0022-cross-process-event-transport.md) | Cross-Process Event Transport (NOTIFY/LISTEN Fleet Event Bridge) | Accepted | PostgreSQL bridge decision and trade-offs; behavioral contract in [core-fleet-events](../../openspec/specs/core-fleet-events/spec.md). |
 | [0023](rfcs/0023-durable-approval-delivery-intent-recovery.md) | Durable Approval Delivery Intent Recovery | Accepted | Schema-local intent and fenced Messenger recovery decision; behavioral contract in [approval-delivery-intent-recovery](../../openspec/specs/approval-delivery-intent-recovery/spec.md), operational activation separately gated. |
 | [0024](rfcs/0024-messenger-private-email-correspondence-ledger.md) | Messenger-Private Email Correspondence Ledger | Proposed | Privacy-minimized Messenger outbound evidence ledger with bounded, aggregate-only Relationship enrichment. |
-| [0025](rfcs/0025-tracker-host-beads-projection-exporter.md) | Tracker-Host Beads Projection Exporter | Draft | Tracker-host exporter publishes a minimal active Beads projection to PostgreSQL for bounded runtime readers. |
+| [0025](rfcs/0025-tracker-host-beads-projection-exporter.md) | Tracker-Host Beads Projection Exporter | Withdrawn | Owner decision bu-g2zuv2 = A retires the product bridge; effective tracker isolation remains. |
 | [0026](rfcs/0026-commitment-lifecycle.md) | Evidence-Backed Commitment Lifecycle | Draft | Owner-condition ledger gains resolution, commitment metadata, closure receipts, escalation, and lifecycle evidence. |
 | [0027](rfcs/0027-runtime-tool-surface-discovery.md) | Runtime Tool Surface Discovery and Exposure | Accepted | Runtime-native Tool Search and deferred schema loading over an adapter-bounded corpus; canonical MCP listing stays complete. |
 | [0028](rfcs/0028-home-physical-actuation-contract.md) | Home Physical Actuation Contract | Accepted | Fail-closed HA risk map, approval boundary, per-attempt receipt, post-condition proof, rollback hints. |
@@ -57,6 +57,7 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0036](rfcs/0036-models-exact-path-vision-proof.md) | Models Exact-Path Vision Proof | Accepted | Bounded diagnostic controls and explicit proof application; implementation and real evidence remain gated. |
 | [0037](rfcs/0037-general-capture-and-private-source-boundaries.md) | General Capture and Private Source Boundaries | Accepted | Durable ordinary capture, source-owned receipts, private-safe vocabulary/search and source-fence readiness; implementation remains outstanding. |
 | [0038](rfcs/0038-goal-runtime-and-capability-authorization.md) | Goal Runtime and Capability Authorization | Accepted | Switchboard control plane admits goals, sandboxes lead and depth-1 child sessions, brokers origin-derived grants with exposure gating and domain-verified signed calls; `transact` disabled and messages to anyone but the owner always need owner approval; hard cutover replaces classify-and-route. |
+| [0039](rfcs/0039-public-mcp-read-surface.md) | Public MCP Read Surface | Accepted | Doctrine exception: one deterministic, gateway-fronted, read-only MCP server for the owner's AI clients, reading a one-way logical-replication projection; Worker-signed per-call assertions, per-domain kill switches, and an owner-approved `propose_fact` as the only write. Amends RFC 0038 D5/D6/D7/D13; implementation not started. |
 
 The RFC header is the single home for status detail (slices landed, gates, owner sign-off). The Status
 column is a one-word summary of it.
@@ -64,7 +65,7 @@ column is a one-word summary of it.
 ## Related
 
 - [ideas-ledger.md](ideas-ledger.md) — parked ideas from the JARVIS pursuit dossiers, each with why it was parked and its unpark condition.
-- [decisions/](decisions/2026-10-14-doctrine-focused-delegation.md) — dated doctrine amendment records; the 2026-10-14 record adopts the generalist-lead goal architecture and its hard cutover.
+- [decisions/](decisions/2026-10-14-doctrine-focused-delegation.md) — dated doctrine amendment records; the 2026-10-14 record adopts the generalist-lead goal architecture and its hard cutover; the [2026-11-04 record](decisions/2026-11-04-doctrine-public-mcp-read-surface.md) adopts the public MCP read surface exception (RFC 0039).
 
 ## Conventions
 

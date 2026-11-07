@@ -54,6 +54,9 @@ def test_failed_permanent_delivery_panel_and_paused_warning_rule_are_reset_safe(
     assert _PROMETHEUS_METRIC in query
     assert "increase(" in query
     assert "[15m]" in query
+    # Daemons pre-create route series at zero, so plain increase() sees a first failure;
+    # the sum drops emitter_butler, which separates two daemons' counts for one route.
+    assert query.startswith("sum by(source_butler, destination_butler, reason) (increase(")
     assert threshold["type"] == "threshold"
     assert threshold["expression"] == "B"
     assert threshold["conditions"][0]["evaluator"] == {"params": [0], "type": "gt"}

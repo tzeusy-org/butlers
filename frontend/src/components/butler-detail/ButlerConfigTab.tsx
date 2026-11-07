@@ -30,7 +30,7 @@ import { Button } from "@/components/ui/button";
 import { InlineActionLink } from "@/components/ui/inline-action-link";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
-import { ButlerPanelGrid, ErrorLine, KV, Panel } from "./atoms";
+import { ButlerPanelGrid, ErrorLine, KV, Panel } from "@/components/ui/atoms";
 import { useButler, useButlerConfig, useButlerModules } from "@/hooks/use-butlers";
 import type { ModuleStatus, ProcessFacts } from "@/api/types";
 

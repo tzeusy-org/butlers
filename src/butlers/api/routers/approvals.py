@@ -21,17 +21,20 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
+import anyio
 import asyncpg
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
+from fastmcp import Client as MCPClient
+from pydantic import BaseModel, ValidationError
 
 from butlers.api.approval_review import resolve_messenger_reviews
 from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
-from butlers.api.deps import MCPClientManager, get_mcp_manager
+from butlers.api.deps import Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
@@ -50,24 +53,40 @@ from butlers.api.models.approval import (
     ApprovalDenyRequest,
     ApprovalDetail,
     ApprovalGatedTool,
+    ApprovalGoalLineage,
     ApprovalMetrics,
     ApprovalRule,
     ApprovalRuleCreateRequest,
     ApprovalRuleFromActionRequest,
     ApprovalsPolicy,
     ApprovalsPolicyUpdate,
+    ApprovalStepUpOptionsRequest,
     ApprovalSummary,
     AutonomySuggestion,
     AutonomySuggestionDismissRequest,
+    DisplayedApprovalCall,
     EntityRef,
     ExpireStaleActionsResponse,
+    OwnerDeliveryCard,
     RuleConstraintSuggestion,
+    StandingReplyTemplateDraft,
+    StandingReplyTemplateDraftCreateRequest,
+    StandingReplyTemplateDraftEditRequest,
+    StandingReplyTemplateDraftRevokeRequest,
+    StandingReplyTemplatePreview,
+    StandingReplyTemplatePreviewRequest,
     TargetContact,
     UnroutableAttentionItem,
     UnroutableRetryResult,
 )
+from butlers.api.owner_auth.service import AuthError
+from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.api.routers import audit as audit_router
+from butlers.core import owner_delivery
+from butlers.core.audit_transaction import audit_transaction
+from butlers.core.dashboard_stepup import verified_dashboard_session
 from butlers.modules.approvals import operations as approvals_ops
+from butlers.modules.approvals import reply_templates
 from butlers.modules.approvals.decision_memory import (
     DecisionMemoryWriter,
     memory_pool_for_schema,
@@ -79,6 +98,7 @@ from butlers.modules.approvals.delivery_lifecycle import (
 )
 from butlers.modules.approvals.delivery_recovery import ApprovalDeliveryRepository
 from butlers.modules.approvals.executor import execute_approved_action
+from butlers.modules.approvals.goal_fence import GOAL_EFFECT_REQUIRES_BROKER, is_goal_effect
 from butlers.modules.approvals.models import (
     ActionStatus,
     PendingAction,
@@ -86,12 +106,22 @@ from butlers.modules.approvals.models import (
 from butlers.modules.approvals.models import (
     ApprovalRule as ApprovalRuleModel,
 )
+from butlers.modules.approvals.previews import args_digest, dashboard_call_preview
 from butlers.modules.approvals.redaction import redact_execution_result
 from butlers.modules.approvals.rules import is_rule_effective, validate_rule_constraints
 from butlers.modules.approvals.sensitivity import redact_constraints, redact_tool_args
+from butlers.modules.approvals.stepup import bind_rule_action, is_receipt, run_rule_write
 from butlers.modules.base import ToolMeta
 
 logger = logging.getLogger(__name__)
+
+
+def _optional_body(model: type[BaseModel]) -> Any:
+    """An optional JSON body: a fresh ``model()`` per request, documented with its defaults."""
+    return Body(
+        default_factory=model, json_schema_extra={"default": model().model_dump(mode="json")}
+    )
+
 
 router = APIRouter(prefix="/api/approvals", tags=["approvals"])
 
@@ -137,11 +167,6 @@ def emit_approvals_event(
 
 # Cache mapping (butler_name, table_name) -> has_table to avoid repeated system catalog queries
 _TABLE_CACHE: dict[tuple[str, str], bool] = {}
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _clear_table_cache():
@@ -302,10 +327,7 @@ def _decision_memory_settings_for(butler_name: str) -> _DecisionMemorySettings |
         validated_memory_config = MemoryModuleConfig.model_validate(memory_config)
 
         tool_metadata: dict[str, ToolMeta] = {}
-        configured_modules = set(config.modules)
-        for module in default_registry().load_all(config.modules):
-            if module.name not in configured_modules:
-                continue
+        for module in default_registry().load_from_config(config.modules):
             try:
                 tool_metadata.update(module.tool_metadata())
             except Exception:  # noqa: BLE001 -- daemon uses the same conservative fallback
@@ -566,6 +588,20 @@ def _pending_action_to_api(
         push_outcome=action.push_outcome,
         push_failed=_push_failed(action, delivery),
         delivery=delivery,
+        goal=_goal_lineage(action),
+    )
+
+
+def _goal_lineage(action: PendingAction) -> ApprovalGoalLineage | None:
+    """A broker-parked action's lineage; ``legacy`` and non-goal rows carry none."""
+    if action.goal_id is None or action.goal_invocation_id is None:
+        return None
+    return ApprovalGoalLineage(
+        goal_id=str(action.goal_id),
+        invocation_id=str(action.goal_invocation_id),
+        depth=action.goal_depth if action.goal_depth is not None else 0,
+        exposed=bool(action.goal_exposed),
+        origin=action.goal_origin,  # type: ignore[arg-type]  # approvals_020 CHECK
     )
 
 
@@ -627,6 +663,7 @@ def _pending_action_to_detail(
         blast_radius=action.blast_radius,
         reversibility=action.reversibility,
         proposed_action=proposed_action,
+        call_preview=dashboard_call_preview(action.tool_name, action.tool_args),
         status=action.status.value,
         decided_by=action.decided_by,
         decided_at=action.decided_at,
@@ -861,7 +898,11 @@ async def list_actions(
     until: str | None = Query(default=None),
     butler: str | None = Query(default=None),
     origin: str | None = Query(default=None),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    goal_id: UUID | None = Query(
+        default=None, description="Only actions a capability-broker goal parked (RFC 0038)."
+    ),
+    *,
+    db_mgr: Db,
 ) -> PaginatedResponse[ApprovalAction]:
     """List pending actions with filtering and pagination.
 
@@ -915,14 +956,21 @@ async def list_actions(
         args.append(origin)
         idx += 1
 
+    if goal_id is not None:
+        conditions.append(f"goal_id = ${idx}")
+        args.append(goal_id)
+        idx += 1
+
     if since is not None:
         try:
             since_dt = datetime.fromisoformat(since)
             conditions.append(f"requested_at >= ${idx}")
             args.append(since_dt)
             idx += 1
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid since timestamp: {since}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid since timestamp: {since}"
+            ) from exc
 
     if until is not None:
         try:
@@ -930,8 +978,10 @@ async def list_actions(
             conditions.append(f"requested_at <= ${idx}")
             args.append(until_dt)
             idx += 1
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid until timestamp: {until}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid until timestamp: {until}"
+            ) from exc
 
     where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
@@ -986,7 +1036,8 @@ async def list_executed_actions(
     since: str | None = Query(default=None),
     until: str | None = Query(default=None),
     butler: str | None = Query(default=None),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> PaginatedResponse[ApprovalAction]:
     """List executed actions for audit review.
 
@@ -1026,8 +1077,8 @@ async def list_executed_actions(
             conditions.append(f"approval_rule_id = ${idx}")
             args.append(parsed_rule_id)
             idx += 1
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}") from exc
 
     if since is not None:
         try:
@@ -1035,8 +1086,10 @@ async def list_executed_actions(
             conditions.append(f"decided_at >= ${idx}")
             args.append(since_dt)
             idx += 1
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid since timestamp: {since}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid since timestamp: {since}"
+            ) from exc
 
     if until is not None:
         try:
@@ -1044,8 +1097,10 @@ async def list_executed_actions(
             conditions.append(f"decided_at <= ${idx}")
             args.append(until_dt)
             idx += 1
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid until timestamp: {until}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid until timestamp: {until}"
+            ) from exc
 
     where_clause = " WHERE " + " AND ".join(conditions)
     all_rows: list[tuple[str, asyncpg.Record]] = []
@@ -1085,14 +1140,15 @@ async def list_executed_actions(
 @router.get("/actions/{action_id}")
 async def get_action(
     action_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalAction]:
     """Get details for a single pending action."""
 
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
     if not named_pools:
@@ -1127,76 +1183,38 @@ async def get_action(
 @router.post("/actions/{action_id}/approve")
 async def approve_action(
     action_id: str,
-    request: ApprovalActionApproveRequest = Body(default=ApprovalActionApproveRequest()),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    request: Annotated[ApprovalActionApproveRequest, _optional_body(ApprovalActionApproveRequest)],
+    *,
+    db_mgr: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[ApprovalAction]:
     """Approve a pending action and dispatch it for execution."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
     action_butler, target_pool = found
-    decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
-
-    # Read the action before approval so we have tool_name/args for dispatch
-    async with target_pool.acquire() as conn:
-        action_row = await conn.fetchrow(
-            "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1", parsed_id
-        )
-
-    async with target_pool.acquire() as conn:
-        result = await approvals_ops.approve_action(
-            conn,
-            action_id=action_id,
-            create_rule=request.create_rule,
-            decision_memory_writer=decision_memory_writer,
-        )
-
-    if "error" in result:
-        error_msg = result["error"]
-        if "not found" in error_msg.lower():
-            raise HTTPException(status_code=404, detail=error_msg)
-        if "cannot transition" in error_msg.lower():
-            raise HTTPException(status_code=409, detail=error_msg)
-        raise HTTPException(status_code=400, detail=error_msg)
-
-    # Dispatch the approved action via MCP call_tool on a running butler
-    if action_row is not None:
-        tool_name = action_row["tool_name"]
-        raw_args = action_row["tool_args"]
-        tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-
-        dispatch_outcome = await _dispatch_approved_action_outcome(
-            mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args, action_butler
-        )
-        if dispatch_outcome.kind == "executed" and dispatch_outcome.action is not None:
-            result = dispatch_outcome.action
-
-    # Build the ApprovalAction from the result dict, injecting the butler name
-    result.setdefault("butler", action_butler)
-    action_resp = ApprovalAction(
-        **{k: result[k] for k in ApprovalAction.model_fields if k in result}
+    return await approve_owning_action(
+        parsed_id=parsed_id,
+        actor_id=_decision_actor_id(None, callback_authenticated=False),
+        edits=None,
+        action_butler=action_butler,
+        target_pool=target_pool,
+        db_mgr=db_mgr,
+        mcp_mgr=mcp_mgr,
+        displayed_call=request.displayed_call,
+        require_displayed_call=True,
+        create_rule=request.create_rule,
+        decision_memory_writer=_decision_memory_writer_for(db_mgr, action_butler, target_pool),
     )
-    # Honest dispatch status (see approve_approval): only 'executed' actually ran.
-    action_resp.dispatched = action_resp.status == "executed"
-    # Emit stream event
-    _emit_kind_legacy = "executed" if action_resp.status == "executed" else "approved"
-    emit_approvals_event(
-        _emit_kind_legacy,
-        action_id,
-        butler=action_butler,
-        tool_name=action_resp.tool_name,
-        status=action_resp.status,
-    )
-    return ApiResponse(data=action_resp)
 
 
 _MCP_DISPATCH_TIMEOUT_S = 30.0
+_MCP_DISPATCH_PING_TIMEOUT_S = 5.0
 
 
 def _first_json_block(mcp_result: Any) -> Any:
@@ -1250,6 +1268,42 @@ def _safe_dispatch_detail(value: Any) -> str:
     return "executor returned an invalid or unsuccessful response"
 
 
+async def _invalidate_closed_dispatch_client(
+    manager: MCPClientManager, butler_name: str, client: MCPClient | None, error: Exception
+) -> None:
+    """Discard a proven closed session without replaying an irreversible call."""
+    if client is None or not isinstance(
+        error, (anyio.ClosedResourceError, anyio.BrokenResourceError)
+    ):
+        return
+    try:
+        await manager.invalidate_client(butler_name, expected_client=client)
+    except Exception:
+        # Cache cleanup must not replace the original truthful dispatch failure.
+        logger.warning("Failed to invalidate closed approval MCP client for %s", butler_name)
+
+
+async def _get_approved_dispatch_client(manager: MCPClientManager, butler_name: str) -> MCPClient:
+    """Recover a closed session with read-only pings before any action invocation.
+
+    The caller bounds this entire acquisition to the existing dispatch timeout.
+    Only ping may be repeated; the irreversible tool call stays outside here.
+    """
+    for attempt in range(2):
+        client = None
+        try:
+            client = await manager.get_client(butler_name)
+            await asyncio.wait_for(client.ping(), timeout=_MCP_DISPATCH_PING_TIMEOUT_S)
+            return client
+        except (anyio.ClosedResourceError, anyio.BrokenResourceError) as exc:
+            if client is None:
+                raise
+            await _invalidate_closed_dispatch_client(manager, butler_name, client, exc)
+            if attempt == 1:
+                raise
+    raise RuntimeError("Approval MCP preflight did not establish a client")
+
+
 async def _dispatch_approved_action_outcome(
     mcp_mgr: MCPClientManager,
     db_mgr: DatabaseManager,
@@ -1296,12 +1350,29 @@ async def _dispatch_approved_action_outcome(
         async def _deliver_notify(**kwargs: Any) -> dict[str, Any]:
             nonlocal dispatch_failure
 
-            dispatch_args = dict(kwargs)
-            # deliver expects source_butler; notify's tool_args don't include it.
-            dispatch_args.setdefault("source_butler", "switchboard")
+            if action_butler is None:
+                raise RuntimeError("approved notify requires its owning butler")
+            # notify's public kwargs are not deliver's signature. Preserve the
+            # approved delivery inside its canonical envelope; attribution comes
+            # only from the schema owning the action, never from tool arguments.
+            delivery = {"intent": "send", "message": "", **kwargs}
+            request_context = delivery.pop("request_context", None)
+            notify_request = {
+                "schema_version": "notify.v1",
+                "origin_butler": action_butler,
+                "delivery": delivery,
+            }
+            if request_context is not None:
+                notify_request["request_context"] = request_context
+            dispatch_args = {
+                "source_butler": action_butler,
+                "notify_request": notify_request,
+            }
+            client = None
             try:
                 client = await asyncio.wait_for(
-                    mcp_mgr.get_client("switchboard"), timeout=_MCP_DISPATCH_TIMEOUT_S
+                    _get_approved_dispatch_client(mcp_mgr, "switchboard"),
+                    timeout=_MCP_DISPATCH_TIMEOUT_S,
                 )
                 mcp_result = await asyncio.wait_for(
                     client.call_tool("deliver", dispatch_args), timeout=_MCP_DISPATCH_TIMEOUT_S
@@ -1312,6 +1383,7 @@ async def _dispatch_approved_action_outcome(
                     action_id,
                     exc_info=True,
                 )
+                await _invalidate_closed_dispatch_client(mcp_mgr, "switchboard", client, exc)
                 dispatch_failure = _DispatchOutcome(kind="unreachable")
                 raise RuntimeError("switchboard deliver is unreachable") from exc
 
@@ -1413,21 +1485,24 @@ async def _dispatch_approved_action_outcome(
     target_butlers = [action_butler]
 
     for butler_name in target_butlers:
+        client = None
         try:
             client = await asyncio.wait_for(
-                mcp_mgr.get_client(butler_name), timeout=_MCP_DISPATCH_TIMEOUT_S
+                _get_approved_dispatch_client(mcp_mgr, butler_name),
+                timeout=_MCP_DISPATCH_TIMEOUT_S,
             )
             mcp_result = await asyncio.wait_for(
                 client.call_tool("dispatch_approved_action", {"action_id": action_id}),
                 timeout=_MCP_DISPATCH_TIMEOUT_S,
             )
-        except Exception:
+        except Exception as exc:
             logger.warning(
                 "Failed to dispatch approved action %s via butler %s",
                 action_id,
                 butler_name,
                 exc_info=True,
             )
+            await _invalidate_closed_dispatch_client(mcp_mgr, butler_name, client, exc)
             return _DispatchOutcome(kind="unreachable")
 
         result = _first_json_block(mcp_result)
@@ -1477,14 +1552,15 @@ def _raise_retry_dispatch_failure(outcome: _DispatchOutcome) -> None:
 @router.post("/actions/{action_id}/retry")
 async def retry_action(
     action_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[ApprovalAction]:
     """Retry dispatch for an approved action that was not yet executed."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -1496,6 +1572,8 @@ async def retry_action(
 
     if row is None:
         raise HTTPException(status_code=404, detail=f"Action {action_id} not found")
+    if is_goal_effect(row):
+        raise HTTPException(status_code=409, detail=GOAL_EFFECT_REQUIRES_BROKER)
 
     status = row["status"]
     if status != "approved":
@@ -1534,14 +1612,15 @@ async def retry_action(
 @router.post("/actions/{action_id}/reject")
 async def reject_action(
     action_id: str,
-    request: ApprovalActionRejectRequest = Body(default=ApprovalActionRejectRequest()),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    request: Annotated[ApprovalActionRejectRequest, _optional_body(ApprovalActionRejectRequest)],
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalAction]:
     """Reject a pending action with optional reason."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -1558,6 +1637,8 @@ async def reject_action(
         )
 
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         error_msg = result["error"]
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
@@ -1579,7 +1660,8 @@ async def reject_action(
 
 @router.post("/actions/expire-stale")
 async def expire_stale_actions(
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ExpireStaleActionsResponse]:
     """Mark expired actions that are past their expires_at timestamp."""
     target_pools = await _find_all_approvals_pools(db_mgr, "pending_actions")
@@ -1631,10 +1713,81 @@ async def expire_stale_actions(
 # ---------------------------------------------------------------------------
 
 
+@router.post("/step-up/options")
+async def standing_rule_stepup_options(
+    body: ApprovalStepUpOptionsRequest,
+    request: Request,
+    *,
+    db_mgr: Db,
+) -> ApiResponse[dict]:
+    """Derive one exact intent; no rule, decision or factor is created here."""
+    session = verified_dashboard_session.get()
+    if session is None:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "dashboard_step_up_required", "open_dashboard": "/approvals"},
+        )
+    parameters = body.parameters
+    target_pool = None
+    try:
+        if body.kind == "create":
+            if set(parameters) - set(ApprovalRuleCreateRequest.model_fields):
+                raise ValueError
+            candidate = ApprovalRuleCreateRequest.model_validate(parameters)
+            if candidate.butler not in db_mgr.butler_names:
+                raise ValueError
+            named = await _find_named_approvals_pools(db_mgr, "approval_rules")
+            target_pool = next((pool for name, pool in named if name == candidate.butler), None)
+            parameters = candidate.model_dump(exclude={"butler"})
+        elif body.kind == "promotion":
+            if set(parameters) != {"suggestion_id"}:
+                raise ValueError
+            parsed_id = UUID(str(parameters["suggestion_id"]))
+            parameters = dict(suggestion_id=str(parsed_id))
+            for _, pool in await _find_named_approvals_pools(db_mgr, _SUGGESTIONS_TABLE):
+                async with pool.acquire() as connection:
+                    row = await connection.fetchrow(
+                        "SELECT suggestion_type FROM autonomy_suggestions WHERE id=$1", parsed_id
+                    )
+                if row is not None:
+                    if row["suggestion_type"] != "promotion":
+                        # Tightening/demotion has no new step-up requirement.
+                        return ApiResponse(data={"required": False})
+                    target_pool = pool
+                    break
+        else:
+            parsed_id = UUID(str(parameters["action_id"]))
+            found = await _find_action_pool(db_mgr, parsed_id)
+            if found is not None:
+                _, target_pool = found
+            if body.kind == "from_action":
+                if set(parameters) - set(ApprovalRuleFromActionRequest.model_fields):
+                    raise ValueError
+                candidate = ApprovalRuleFromActionRequest.model_validate(parameters)
+                parameters = candidate.model_dump()
+            else:
+                if set(parameters) - {"action_id", "edits", "displayed_call"}:
+                    raise ValueError
+                candidate = ApprovalApproveRequest.model_validate(parameters)
+                parameters = dict(action_id=str(parsed_id), **candidate.model_dump(mode="json"))
+        if target_pool is None:
+            raise HTTPException(status_code=503, detail="Step-up owning database unavailable")
+        async with target_pool.acquire() as connection:
+            # This read scope ends BEFORE the separate authentication call.
+            binding = await bind_rule_action(connection, body.kind, parameters)
+        service = request.app.state.owner_auth_service
+        return ApiResponse(data=await service.stepup_options(session, binding))
+    except AuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from None
+    except (ValueError, TypeError, KeyError, ValidationError):
+        raise HTTPException(status_code=400, detail="Step-up intent unavailable") from None
+
+
 @router.post("/rules")
 async def create_rule(
     request: ApprovalRuleCreateRequest = Body(...),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalRule]:
     """Create a new standing approval rule in the named butler's schema.
 
@@ -1652,9 +1805,9 @@ async def create_rule(
 
     try:
         risk_tier = _risk_tier_for_butler_tool(request.butler, request.tool_name)
-    except Exception:
+    except Exception as exc:
         logger.warning("Could not resolve approval policy for %s", request.butler, exc_info=True)
-        raise HTTPException(status_code=503, detail="Approval policy unavailable")
+        raise HTTPException(status_code=503, detail="Approval policy unavailable") from exc
     constraint_error = validate_rule_constraints(
         tool_name=request.tool_name,
         risk_tier=risk_tier,
@@ -1679,6 +1832,8 @@ async def create_rule(
         )
 
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         raise HTTPException(status_code=400, detail=result["error"])
 
     rule = ApprovalRule(**{k: result[k] for k in ApprovalRule.model_fields if k in result})
@@ -1688,13 +1843,16 @@ async def create_rule(
 @router.post("/rules/from-action")
 async def create_rule_from_action(
     request: ApprovalRuleFromActionRequest = Body(...),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalRule]:
     """Create a standing rule from a pending action."""
     try:
         parsed_id = UUID(request.action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {request.action_id}")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid action_id: {request.action_id}"
+        ) from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -1711,6 +1869,8 @@ async def create_rule_from_action(
         )
 
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         error_msg = result["error"]
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
@@ -1727,7 +1887,8 @@ async def list_rules(
     tool_name: str | None = Query(default=None),
     active: bool | None = Query(default=None),
     butler: str | None = Query(default=None),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> PaginatedResponse[ApprovalRule]:
     """List standing approval rules with filtering and pagination.
 
@@ -1810,7 +1971,8 @@ async def list_rules(
 
 @router.get("/gated-tools")
 async def list_gated_tools(
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[list[ApprovalGatedTool]]:
     """List every configured approval gate with its active narrowing rules.
 
@@ -1882,14 +2044,15 @@ async def list_gated_tools(
 @router.get("/rules/{rule_id}")
 async def get_rule(
     rule_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalRule]:
     """Get details for a single standing approval rule."""
 
     try:
         parsed_id = UUID(rule_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}") from exc
 
     target_pools = await _find_all_approvals_pools(db_mgr, "approval_rules")
     if not target_pools:
@@ -1915,13 +2078,14 @@ async def get_rule(
 @router.post("/rules/{rule_id}/revoke")
 async def revoke_rule(
     rule_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalRule]:
     """Revoke (deactivate) a standing approval rule."""
     try:
         parsed_id = UUID(rule_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}") from exc
 
     named_pools = await _find_named_approvals_pools(db_mgr, "approval_rules")
     if not named_pools:
@@ -1957,6 +2121,8 @@ async def revoke_rule(
         )
 
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         error_msg = result["error"]
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
@@ -1971,14 +2137,15 @@ async def revoke_rule(
 @router.get("/rules/suggestions/{action_id}")
 async def get_rule_suggestions(
     action_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[RuleConstraintSuggestion]:
     """Preview suggested constraints for creating a rule from a pending action."""
 
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -2008,13 +2175,242 @@ async def get_rule_suggestions(
 
 
 # ---------------------------------------------------------------------------
+# Standing-reply template drafts (inactive; bu-jv1moa.10)
+#
+# Owner-only authoring of typed template drafts.  Drafts live outside
+# approval_rules and carry no authority: there is no activation endpoint and
+# preview results always report ``authority: "none"``.  Activation belongs to
+# bu-jv1moa.28.  No MCP tool exposes these routes.
+# ---------------------------------------------------------------------------
+
+_DRAFTS_TABLE = "standing_reply_template_drafts"
+_DRAFTS_CURSOR_SCOPE = "approvals-reply-template-drafts"
+
+
+def _require_owner_dashboard_session() -> None:
+    """Refuse every caller except the owner's verified dashboard session.
+
+    An API key, connector callback or runtime session never carries a dashboard
+    session digest, so none of them can author or inspect drafts.
+    """
+    if verified_dashboard_session.get() is None:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "owner_dashboard_session_required", "open_dashboard": "/approvals"},
+        )
+
+
+def _template_draft_to_api(butler: str, draft: dict[str, Any]) -> StandingReplyTemplateDraft:
+    return StandingReplyTemplateDraft(
+        id=str(draft["id"]),
+        butler=butler,
+        tool_name=draft["tool_name"],
+        templates={
+            arg: reply_templates.render_template(segments)
+            for arg, segments in draft["content_templates"].items()
+        },
+        recipient_entity_ids=[str(e) for e in draft["recipient_entity_ids"]],
+        description=draft["description"],
+        state=draft["status"],
+        revision=draft["revision"],
+        created_at=draft["created_at"],
+        updated_at=draft["updated_at"],
+        revoked_at=draft["revoked_at"],
+    )
+
+
+def _raise_template_draft_error(exc: reply_templates.TemplateDraftError) -> None:
+    raise HTTPException(status_code=exc.status_code, detail={"error": exc.code}) from None
+
+
+async def _find_template_draft_pool(db_mgr: DatabaseManager, draft_id: UUID) -> tuple[str, Any]:
+    named = await _find_named_approvals_pools(db_mgr, _DRAFTS_TABLE)
+    if not named:
+        raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+    for butler_name, pool in named:
+        async with pool.acquire() as conn:
+            found = await conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM standing_reply_template_drafts WHERE id = $1)",
+                draft_id,
+            )
+        if found:
+            return butler_name, pool
+    raise HTTPException(status_code=404, detail={"error": "draft_not_found"})
+
+
+@router.post("/reply-templates")
+async def create_reply_template_draft(
+    request: StandingReplyTemplateDraftCreateRequest = Body(...),
+    *,
+    db_mgr: Db,
+) -> ApiResponse[StandingReplyTemplateDraft]:
+    """Save an inactive draft in the named butler's schema; replays return the original."""
+    _require_owner_dashboard_session()
+    if request.butler not in db_mgr.butler_names:
+        raise HTTPException(status_code=404, detail=f"Unknown butler: {request.butler}")
+    named = await _find_named_approvals_pools(db_mgr, _DRAFTS_TABLE)
+    pool = next((p for n, p in named if n == request.butler), None)
+    if pool is None:
+        raise HTTPException(
+            status_code=503, detail=f"Approvals unavailable for butler: {request.butler}"
+        )
+    try:
+        async with pool.acquire() as conn:
+            draft = await reply_templates.create_template_draft(
+                conn,
+                tool_name=request.tool_name,
+                templates=request.templates,
+                recipient_entity_ids=request.recipient_entity_ids,
+                description=request.description,
+                idempotency_key=request.idempotency_key,
+            )
+    except reply_templates.TemplateDraftError as exc:
+        _raise_template_draft_error(exc)
+    return ApiResponse(data=_template_draft_to_api(request.butler, draft))
+
+
+@router.get("/reply-templates")
+async def list_reply_template_drafts(
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    *,
+    db_mgr: Db,
+) -> Page[StandingReplyTemplateDraft]:
+    """List drafts across butlers, newest first."""
+    _require_owner_dashboard_session()
+    after = (
+        tuple(decode_cursor(cursor, (datetime, UUID), scope=_DRAFTS_CURSOR_SCOPE))
+        if cursor
+        else None
+    )
+    tracker = DegradedSources(logger)
+    merged: list[tuple[str, dict[str, Any]]] = []
+    for butler_name, pool in await _find_named_approvals_pools(
+        db_mgr, _DRAFTS_TABLE, tracker=tracker
+    ):
+        try:
+            async with pool.acquire() as conn:
+                rows = await reply_templates.list_template_drafts(
+                    conn, limit=limit + 1, after=after
+                )
+        except Exception:
+            tracker.mark(butler_name, msg="Could not read standing-reply template drafts")
+            continue
+        merged.extend((butler_name, row) for row in rows)
+    merged.sort(key=lambda item: (item[1]["created_at"], item[1]["id"]), reverse=True)
+    page = merged[:limit]
+    next_cursor = None
+    if len(merged) > limit:
+        last = page[-1][1]
+        next_cursor = encode_cursor((last["created_at"], last["id"]), scope=_DRAFTS_CURSOR_SCOPE)
+    return Page[StandingReplyTemplateDraft](
+        items=[_template_draft_to_api(name, row) for name, row in page],
+        next_cursor=next_cursor,
+        limit=limit,
+        sources_degraded=tracker.names or None,
+    )
+
+
+@router.get("/reply-templates/{draft_id}")
+async def get_reply_template_draft(
+    draft_id: UUID, *, db_mgr: Db
+) -> ApiResponse[StandingReplyTemplateDraft]:
+    _require_owner_dashboard_session()
+    butler_name, pool = await _find_template_draft_pool(db_mgr, draft_id)
+    try:
+        async with pool.acquire() as conn:
+            draft = await reply_templates.get_template_draft(conn, draft_id)
+    except reply_templates.TemplateDraftError as exc:
+        _raise_template_draft_error(exc)
+    return ApiResponse(data=_template_draft_to_api(butler_name, draft))
+
+
+@router.put("/reply-templates/{draft_id}")
+async def edit_reply_template_draft(
+    draft_id: UUID,
+    request: StandingReplyTemplateDraftEditRequest = Body(...),
+    *,
+    db_mgr: Db,
+) -> ApiResponse[StandingReplyTemplateDraft]:
+    """Replace a draft's content; a stale ``expected_revision`` returns 409."""
+    _require_owner_dashboard_session()
+    butler_name, pool = await _find_template_draft_pool(db_mgr, draft_id)
+    try:
+        async with pool.acquire() as conn:
+            draft = await reply_templates.edit_template_draft(
+                conn,
+                draft_id=draft_id,
+                expected_revision=request.expected_revision,
+                templates=request.templates,
+                recipient_entity_ids=request.recipient_entity_ids,
+                description=request.description,
+            )
+    except reply_templates.TemplateDraftError as exc:
+        _raise_template_draft_error(exc)
+    return ApiResponse(data=_template_draft_to_api(butler_name, draft))
+
+
+@router.post("/reply-templates/{draft_id}/revoke")
+async def revoke_reply_template_draft(
+    draft_id: UUID,
+    request: StandingReplyTemplateDraftRevokeRequest = Body(...),
+    *,
+    db_mgr: Db,
+) -> ApiResponse[StandingReplyTemplateDraft]:
+    """Mark a draft unavailable; the row is retained as history."""
+    _require_owner_dashboard_session()
+    butler_name, pool = await _find_template_draft_pool(db_mgr, draft_id)
+    try:
+        async with pool.acquire() as conn:
+            draft = await reply_templates.revoke_template_draft(
+                conn, draft_id=draft_id, expected_revision=request.expected_revision
+            )
+    except reply_templates.TemplateDraftError as exc:
+        _raise_template_draft_error(exc)
+    return ApiResponse(data=_template_draft_to_api(butler_name, draft))
+
+
+@router.post("/reply-templates/{draft_id}/preview")
+async def preview_reply_template_draft(
+    draft_id: UUID,
+    request: StandingReplyTemplatePreviewRequest = Body(...),
+    *,
+    db_mgr: Db,
+) -> ApiResponse[StandingReplyTemplatePreview]:
+    """Report whether a hypothetical call matches; nothing is sent, parked or approved."""
+    _require_owner_dashboard_session()
+    _butler_name, pool = await _find_template_draft_pool(db_mgr, draft_id)
+    try:
+        async with pool.acquire() as conn:
+            draft = await reply_templates.get_template_draft(conn, draft_id)
+    except reply_templates.TemplateDraftError as exc:
+        _raise_template_draft_error(exc)
+    contact = await _resolve_template_recipient(pool, request.tool_args)
+    preview = reply_templates.preview_template_draft(
+        draft,
+        tool_name=request.tool_name,
+        tool_args=request.tool_args,
+        resolved_recipient_entity_id=contact.entity_id if contact is not None else None,
+    )
+    return ApiResponse(data=StandingReplyTemplatePreview(**preview))
+
+
+async def _resolve_template_recipient(pool: Any, tool_args: dict[str, Any]) -> Any:
+    """Resolve the call's recipient with the gate's own target resolution."""
+    from butlers.modules.approvals.gate import resolve_action_target_contact
+
+    return await resolve_action_target_contact(pool, tool_args)
+
+
+# ---------------------------------------------------------------------------
 # Metrics endpoint
 # ---------------------------------------------------------------------------
 
 
 @router.get("/metrics")
 async def get_metrics(
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalMetrics]:
     """Get aggregate metrics for the approvals dashboard.
 
@@ -2056,6 +2452,7 @@ async def get_metrics(
     delivery_by_state: dict[str, int] = {}
     delivery_by_reason: dict[str, int] = {}
     delivery_sources_complete = bool(action_pools)
+    owner_delivery_retractions_given_up = 0
 
     for butler_name, pool in action_pools:
         try:
@@ -2141,6 +2538,9 @@ async def get_metrics(
                 if has_delivery:
                     try:
                         snapshot = await ApprovalDeliveryRepository(conn).backlog_snapshot()
+                        owner_delivery_retractions_given_up += (
+                            await owner_delivery.retractions_given_up(conn, surface="telegram")
+                        )
                     except Exception:
                         # Delivery observability is additive. A partial/mixed
                         # rollout must not erase otherwise healthy approval
@@ -2224,6 +2624,7 @@ async def get_metrics(
         delivery_by_state=delivery_by_state,
         delivery_by_reason=delivery_by_reason,
         delivery_sources_complete=delivery_sources_complete,
+        owner_delivery_retractions_given_up=owner_delivery_retractions_given_up,
     )
 
     sources_degraded = sorted(set(action_sources.names) | set(rule_sources.names))
@@ -2241,13 +2642,11 @@ async def get_metrics(
 async def _callback_secret_configured(db_mgr: DatabaseManager) -> bool | None:
     """Return whether APPROVAL_CALLBACK_SECRET resolves via the shared credential store.
 
-    Missing this Tier 1 secret structurally disables every approval push
-    (``emit_approval_push`` resolves 'failed' before dispatch, every time) --
-    previously visible only as a per-push warning log line an operator would
-    have to go looking for. Surfacing it on the metrics endpoint that the
-    dashboard already polls makes it a loud, always-visible degraded signal
-    instead (bu-mda0r). Returns ``None`` (undetermined, not "missing") when
-    the shared credential pool itself is unavailable.
+    Durable delivery needs this Tier 1 secret to sign single-action callbacks.
+    Surfacing its availability on the metrics endpoint that the dashboard
+    already polls keeps missing configuration visible without enabling delivery.
+    Returns ``None`` (undetermined, not "missing") when the shared credential
+    pool itself is unavailable.
     """
     from butlers.core.approval_callbacks import APPROVAL_CALLBACK_SECRET_KEY
     from butlers.credential_store import CredentialStore
@@ -2276,7 +2675,7 @@ async def _callback_secret_configured(db_mgr: DatabaseManager) -> bool | None:
 # New Dispatch-language endpoints (§8.1-§8.7)
 # ---------------------------------------------------------------------------
 
-_DECIDED_STATUSES = {"approved", "rejected", "expired", "executed", "abandoned"}
+_DECIDED_STATUSES = {"approved", "rejected", "expired", "executed", "abandoned", "cancelled"}
 _WAITING_STATUSES = {"pending"}
 _STALLED_STATUS = "approved"
 
@@ -2335,7 +2734,8 @@ async def list_approvals_flat(
         default="all", description="waiting|decided|stalled|all"
     ),
     limit: int = Query(default=100, ge=1, le=500),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[list[ApprovalSummary]]:
     """Flat list of approvals — GET /api/approvals?state=waiting|decided|stalled|all.
 
@@ -2422,7 +2822,8 @@ async def list_approvals_flat(
 async def list_approvals_history(
     since: str | None = Query(default=None, description="ISO 8601 timestamp"),
     limit: int = Query(default=30, ge=1, le=500),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[list[ApprovalSummary]]:
     """Decided approvals history — GET /api/approvals/history?since=.
 
@@ -2439,8 +2840,10 @@ async def list_approvals_history(
     if since is not None:
         try:
             since_dt = datetime.fromisoformat(since)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid since timestamp: {since}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid since timestamp: {since}"
+            ) from exc
 
     decided_statuses = list(_DECIDED_STATUSES)
     all_rows: list[tuple[str, asyncpg.Record]] = []
@@ -2484,7 +2887,8 @@ async def list_approvals_history(
 
 @router.get("/policy")
 async def get_approvals_policy(
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalsPolicy]:
     """Read the quiet-hours policy singleton — GET /api/approvals/policy."""
     pool = await _find_approvals_pool(db_mgr, "pending_actions")
@@ -2513,7 +2917,8 @@ async def get_approvals_policy(
 @router.put("/policy")
 async def update_approvals_policy(
     request: ApprovalsPolicyUpdate = Body(...),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalsPolicy]:
     """Update the Owner Attention Policy singleton — PUT /api/approvals/policy."""
     pool = await _find_approvals_pool(db_mgr, "pending_actions")
@@ -2521,7 +2926,7 @@ async def update_approvals_policy(
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
 
     try:
-        async with pool.acquire() as conn, conn.transaction():
+        async with pool.acquire() as conn, audit_transaction(conn):
             await conn.execute(
                 """
                 INSERT INTO public.approvals_policy
@@ -2559,7 +2964,8 @@ async def update_approvals_policy(
 @router.get("/unroutable", response_model=ApiResponse[list[UnroutableAttentionItem]])
 async def list_unroutable_attention(
     limit: int = Query(default=50, ge=1, le=200),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[list[UnroutableAttentionItem]]:
     """List replayable dashboard routing failures on the Command surface."""
     pool = _switchboard_pool(db_mgr)
@@ -2596,7 +3002,8 @@ async def list_unroutable_attention(
 )
 async def retry_unroutable_attention(
     dead_letter_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[UnroutableRetryResult]:
     """Re-enqueue one dashboard dead-letter with its existing lineage."""
     try:
@@ -2701,7 +3108,8 @@ async def list_suggestions(
     suggestion_type: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> PaginatedResponse[AutonomySuggestion]:
     """List autonomy suggestions with filtering and pagination.
 
@@ -2768,7 +3176,8 @@ async def list_suggestions(
 @router.post("/suggestions/{suggestion_id}/confirm")
 async def confirm_suggestion(
     suggestion_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[AutonomySuggestion]:
     """Confirm an autonomy suggestion, creating a standing approval rule.
 
@@ -2781,8 +3190,10 @@ async def confirm_suggestion(
     """
     try:
         parsed_id = UUID(suggestion_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid suggestion_id: {suggestion_id}")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid suggestion_id: {suggestion_id}"
+        ) from exc
 
     named_pools = await _find_named_approvals_pools(db_mgr, _SUGGESTIONS_TABLE)
     if not named_pools:
@@ -2810,12 +3221,6 @@ async def confirm_suggestion(
     if row is None:
         raise HTTPException(status_code=404, detail=f"Suggestion not found: {suggestion_id}")
 
-    if row["status"] != "pending":
-        raise HTTPException(
-            status_code=409,
-            detail=f"Suggestion has already been decided (status: {row['status']})",
-        )
-
     assert target_pool is not None
     assert action_butler is not None
     decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
@@ -2824,12 +3229,18 @@ async def confirm_suggestion(
     # writer now binds a native dict (bu-c8b8e/bu-cymc4), and a live-data
     # audit (2026-07-05) found zero autonomy_suggestions rows in any schema,
     # so no isinstance(str) double-encoding workaround is needed here.
-    representative_args = row.get("representative_args") or {}
-
     now = datetime.now(UTC)
     actor = "dashboard:rest-api"
 
-    async with target_pool.acquire() as conn:
+    async def write(conn):
+        row = await conn.fetchrow(
+            "SELECT * FROM autonomy_suggestions WHERE id=$1 FOR UPDATE", parsed_id
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Suggestion not found: {suggestion_id}")
+        if row["status"] != "pending":
+            raise HTTPException(status_code=409, detail="Suggestion has already been decided")
+        representative_args = row.get("representative_args") or {}
         if row.get("suggestion_type") == "demotion":
             # Revoke the referenced standing rule via the operations layer so that
             # the RULE_REVOKED audit event is recorded consistently.
@@ -2841,7 +3252,7 @@ async def confirm_suggestion(
                     conn,
                     rule_id=str(rule_id),
                     actor_id=actor,
-                    decision_memory_writer=decision_memory_writer,
+                    decision_memory_writer=None,
                 )
                 if "error" in revoke_result:
                     raise HTTPException(
@@ -2879,7 +3290,7 @@ async def confirm_suggestion(
                 arg_constraints=arg_constraints,
                 description=scope_desc,
                 actor_id=actor,
-                decision_memory_writer=decision_memory_writer,
+                decision_memory_writer=None,
             )
             if "error" in create_result:
                 raise HTTPException(
@@ -2900,6 +3311,52 @@ async def confirm_suggestion(
                 parsed_id,
             )
 
+        if updated is None:
+            raise HTTPException(status_code=500, detail="Failed to confirm suggestion")
+        if row["suggestion_type"] == "promotion":
+            from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
+
+            await record_approval_event(
+                conn,
+                ApprovalEventType.PROMOTION_CONFIRMED,
+                actor=f"user:{actor}",
+                rule_id=UUID(str(new_rule_id)),
+                reason=f"Suggestion {parsed_id} confirmed",
+                metadata={
+                    "suggestion_id": str(parsed_id),
+                    "suggestion_type": "promotion",
+                    "tool_name": row["tool_name"],
+                },
+                occurred_at=now,
+            )
+        return dict(updated)
+
+    async with target_pool.acquire() as conn:
+        if row.get("suggestion_type") == "promotion":
+            updated = await run_rule_write(
+                conn, "promotion", dict(suggestion_id=str(parsed_id)), write
+            )
+            if "error" in updated:
+                raise HTTPException(status_code=403, detail=updated)
+        else:
+            async with conn.transaction():
+                updated = await write(conn)
+    memory_rule_id = updated.get("resulting_rule_id") or (row.get("representative_args") or {}).get(
+        "rule_id"
+    )
+    if decision_memory_writer is not None and memory_rule_id and not is_receipt(updated):
+        try:
+            rule_row = await target_pool.fetchrow(
+                "SELECT * FROM approval_rules WHERE id=$1", UUID(str(memory_rule_id))
+            )
+            if rule_row is not None:
+                await decision_memory_writer.record_standing_rule(
+                    ApprovalRuleModel.from_row(rule_row),
+                    active=row.get("suggestion_type") == "promotion",
+                )
+        except Exception:
+            logger.warning("Suggestion decision memory writeback failed", exc_info=True)
+
     if updated is None:
         raise HTTPException(status_code=500, detail="Failed to confirm suggestion")
 
@@ -2910,8 +3367,11 @@ async def confirm_suggestion(
 @router.post("/suggestions/{suggestion_id}/dismiss")
 async def dismiss_suggestion(
     suggestion_id: str,
-    request: AutonomySuggestionDismissRequest = Body(default=AutonomySuggestionDismissRequest()),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    request: Annotated[
+        AutonomySuggestionDismissRequest, _optional_body(AutonomySuggestionDismissRequest)
+    ],
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[AutonomySuggestion]:
     """Dismiss an autonomy suggestion with an optional reason and cooldown.
 
@@ -2922,8 +3382,10 @@ async def dismiss_suggestion(
     """
     try:
         parsed_id = UUID(suggestion_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid suggestion_id: {suggestion_id}")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid suggestion_id: {suggestion_id}"
+        ) from exc
 
     suggestion_pools = await _find_all_approvals_pools(db_mgr, _SUGGESTIONS_TABLE)
     if not suggestion_pools:
@@ -2989,17 +3451,56 @@ async def dismiss_suggestion(
 # ---------------------------------------------------------------------------
 
 
+async def _dashboard_owner_delivery_card(pool: Any, action_id: UUID) -> OwnerDeliveryCard | None:
+    """Present a pending action on the dashboard with fresh single-use tokens.
+
+    Dark until ``public.owner_delivery_rollout`` is on. Fails closed to ``None``: the
+    dossier then keeps its displayed-call decision path, which still closes the subject.
+    """
+    from butlers.modules.approvals.owner_delivery_bridge import present_on_dashboard
+
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            if not await owner_delivery.rollout_enabled(conn):
+                return None
+            locked = await conn.fetchrow(
+                "SELECT * FROM pending_actions WHERE id = $1 FOR UPDATE", action_id
+            )
+            if locked is None:
+                return None
+            presentation = await present_on_dashboard(conn, locked)
+    except Exception as exc:  # token material never reaches logs
+        logger.warning("owner-delivery dashboard presentation unavailable (%s)", type(exc).__name__)
+        return None
+    if presentation is None or not {"approve", "reject"} <= presentation.tokens.keys():
+        return None
+    return OwnerDeliveryCard(
+        subject_id=str(presentation.subject_id),
+        generation=presentation.generation,
+        approve_token=presentation.tokens["approve"],
+        reject_token=presentation.tokens["reject"],
+    )
+
+
 @router.get("/{action_id}")
 async def get_approval_detail(
     action_id: str,
+    http_request: Request,
     review_source: str | None = None,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    present: bool = True,
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalDetail]:
-    """Full dossier for one approval — GET /api/approvals/{id}."""
+    """Full dossier for one approval — GET /api/approvals/{id}.
+
+    ``present=false`` is a status-only read: it never presents a pending action on the
+    dashboard, so it mints no tokens, creates no presentation and records no delivery.
+    ``owner_delivery`` is then null. Only a caller that never renders the card sends it.
+    """
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     calendar_expected_args: dict[str, Any] | None = None
     if review_source is not None and review_source.startswith("calendar:"):
@@ -3053,16 +3554,24 @@ async def get_approval_detail(
             if row is not None:
                 target_contact = await _resolve_target_contact(db_mgr, pa)
                 referenced_entities = await _resolve_referenced_entities(db_mgr, pa.tool_args)
-                return ApiResponse(
-                    data=_pending_action_to_detail(
-                        pa,
-                        butler_name,
-                        target_contact,
-                        referenced_entities,
-                        denial_reason=denial_reason,
-                        delivery=_delivery_truth(row, pa),
-                    )
+                detail = _pending_action_to_detail(
+                    pa,
+                    butler_name,
+                    target_contact,
+                    referenced_entities,
+                    denial_reason=denial_reason,
+                    delivery=_delivery_truth(row, pa),
                 )
+                # Only the owner's own dashboard session is a dashboard presentation;
+                # a connector read (apr1 verification) or a review source never is.
+                if (
+                    review_source is None
+                    and present
+                    and pa.status.value == "pending"
+                    and not getattr(http_request.state, "approval_callback_authenticated", False)
+                ):
+                    detail.owner_delivery = await _dashboard_owner_delivery_card(pool, pa.id)
+                return ApiResponse(data=detail)
         except Exception as exc:
             if calendar_expected_args is not None:
                 if isinstance(exc, HTTPException):
@@ -3079,8 +3588,9 @@ async def get_approval_detail(
 async def approve_approval(
     action_id: str,
     http_request: Request,
-    request: ApprovalApproveRequest = Body(default=ApprovalApproveRequest()),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    request: Annotated[ApprovalApproveRequest, _optional_body(ApprovalApproveRequest)],
+    *,
+    db_mgr: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
     callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
 ) -> ApiResponse[ApprovalAction]:
@@ -3090,8 +3600,8 @@ async def approve_approval(
     """
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     callback_authenticated = bool(
         getattr(http_request.state, "approval_callback_authenticated", False)
@@ -3119,7 +3629,109 @@ async def approve_approval(
         target_pool=target_pool,
         db_mgr=db_mgr,
         mcp_mgr=mcp_mgr,
+        check_presented_digests=callback_authenticated,
+        displayed_call=request.displayed_call,
+        require_displayed_call=not callback_authenticated,
     )
+
+
+# Shared with the Telegram connector, which matches it to answer the tap honestly.
+APPROVAL_CALL_CHANGED_DETAIL = "The stored call changed since shown; nothing was executed."
+
+
+async def _require_presented_call_unchanged(
+    conn: Any, action_id: UUID, stored_tool_args: Any
+) -> None:
+    """Refuse a card tap whose stored call differs from any call a card showed.
+
+    Every presented card records the digest of the call it rendered
+    (``approval_delivery_presentations.args_digest``).  A connector-authenticated
+    tap carries only the action id, so it cannot say which card it came from;
+    tapping while any card for a different call is outstanding would execute
+    something that card did not show, so the tap executes nothing (security.md
+    § Approval Gates).  Dashboard approvals do not use this check: they bind to
+    the call the dashboard displayed.  Actions never presented with a digest are
+    unaffected.
+    """
+    presented = await conn.fetch(
+        """
+        SELECT DISTINCT p.args_digest
+          FROM approval_delivery_presentations AS p
+          JOIN approval_delivery_intents AS i ON i.id = p.intent_id
+         WHERE i.action_id = $1 AND p.args_digest IS NOT NULL
+        """,
+        action_id,
+    )
+    if not isinstance(presented, list | tuple):
+        raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
+    raw = json.loads(stored_tool_args) if isinstance(stored_tool_args, str) else stored_tool_args
+    current = args_digest(raw if isinstance(raw, dict) else None)
+    if any(row["args_digest"] != current for row in presented):
+        raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
+
+
+#: Binds no owner, so every token refuses ``wrong_owner`` when the owner is unresolved.
+_NO_OWNER = UUID(int=0)
+
+
+class _OwnerDeliveryDecisionRefused(Exception):
+    """The owning decision refused after the subject CAS; the transaction rolls back."""
+
+    def __init__(self, result: dict[str, Any]) -> None:
+        super().__init__("owner-delivery decision refused")
+        self.result = dict(result) if "error" in result else {"error": "Decision refused"}
+
+
+def _raise_owner_delivery_refusal(result: dict[str, Any]) -> None:
+    if result.get("error") == "owner_delivery_refused":
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "owner_delivery_refused", "reason": result.get("reason")},
+        )
+
+
+async def _redeem_owner_delivery(
+    conn: Any,
+    parsed_id: UUID,
+    stored_tool_args: Any,
+    *,
+    token: str,
+    expected_action: owner_delivery.Action,
+    surface: owner_delivery.Surface,
+    decide: owner_delivery.Decide,
+    audit_actor: str,
+    audit_action: str,
+    audit_note: str | None = None,
+) -> dict[str, Any]:
+    """Redeem one card token on the locked action; mark the result for the caller."""
+    raw = json.loads(stored_tool_args) if isinstance(stored_tool_args, str) else stored_tool_args
+    redemption = await owner_delivery.redeem(
+        conn,
+        token,
+        kind="approval",
+        source_ref=str(parsed_id),
+        expected_action=expected_action,
+        owner_entity=await owner_delivery.owner_entity_id(conn) or _NO_OWNER,
+        surface=surface,
+        current_action_digest=args_digest(raw if isinstance(raw, dict) else None),
+        decide=decide,
+    )
+    if redemption.outcome == "refused":
+        return {"error": "owner_delivery_refused", "reason": redemption.reason}
+    if redemption.outcome == "duplicate":
+        latest = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
+        if latest is None:
+            return {"error": f"Approval not found: {parsed_id}"}
+        return {**PendingAction.from_row(latest).to_dict(), "_owner_delivery": "duplicate"}
+    await audit_router.append(
+        conn,
+        _decision_audit_actor(audit_actor),
+        audit_action,
+        target=str(parsed_id),
+        note=audit_note,
+        result="success",
+    )
+    return {**redemption.result, "_owner_delivery": "won"}
 
 
 async def approve_owning_action(
@@ -3132,31 +3744,100 @@ async def approve_owning_action(
     db_mgr: DatabaseManager,
     mcp_mgr: MCPClientManager,
     expected_tool_args: dict[str, Any] | None = None,
+    expected_tool_name: str = "calendar_respond",
+    promotion_eligible: bool = True,
+    check_presented_digests: bool = False,
+    displayed_call: DisplayedApprovalCall | None = None,
+    require_displayed_call: bool = False,
+    create_rule: bool = False,
+    decision_memory_writer: DecisionMemoryWriter | None = None,
+    owner_delivery_token: str | None = None,
+    owner_delivery_surface: owner_delivery.Surface | None = None,
 ) -> ApiResponse[ApprovalAction]:
     """Shared verified decision/audit/dispatch on an already selected owner.
 
     Calendar supplies the actual canonical pending args read from this pool;
     callers cannot select an approval id or standing rule through that API.
+    ``owner_delivery_token`` (bu-dhloi1.13) redeems one single-use card token in the
+    same transaction as the decision: a refused, stale or replayed token decides and
+    dispatches nothing.
     """
     action_id = str(parsed_id)
+    if owner_delivery_token is not None and (edits or create_rule):
+        raise HTTPException(status_code=403, detail="Card tokens decide the call as shown.")
     # Use a single connection + transaction for the read, optional edits update,
     # approve, and audit so that an edits UPDATE / approve transition cannot
     # persist while the audit append fails. AuditTableNotAvailableError is
     # intentionally NOT caught here — it propagates to the app-level handler,
     # which returns 503 {"error": "audit_unavailable"} (dashboard-audit-log
     # spec), rolling this transaction back.
-    async with target_pool.acquire() as conn, conn.transaction():
+    action_row = None
+
+    async def decide(conn: Any) -> dict[str, Any]:
+        nonlocal action_row
+        # The row lock makes the presented-digest check below atomic with the
+        # status transition: the stored call cannot change in between.
         action_row = await conn.fetchrow(
-            "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1"
-            + (" FOR UPDATE" if expected_tool_args is not None else ""),
+            "SELECT tool_name, tool_args, goal_id FROM pending_actions WHERE id = $1 FOR UPDATE",
             parsed_id,
         )
+        if is_goal_effect(action_row) and edits:
+            # bu-m1u7zy.6: the owner decides a goal effect as parked; an edit would
+            # change the arguments the broker's effect digest commits to.
+            raise HTTPException(status_code=409, detail=GOAL_EFFECT_REQUIRES_BROKER)
+
+        # Before any redemption: a dashboard token binds the stored call, and this binds
+        # that call to what the owner actually saw. An open-only call has no display.
+        if require_displayed_call:
+            preview = (
+                dashboard_call_preview(action_row["tool_name"], action_row["tool_args"])
+                if action_row is not None
+                else None
+            )
+            if (
+                displayed_call is None
+                or preview is None
+                or displayed_call.model_dump() != preview["displayed_call"]
+            ):
+                raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
+
+        if owner_delivery_token is not None:
+            if action_row is None:
+                return {"error": f"Approval not found: {action_id}"}
+
+            async def _approve(locked: Any, verb: str) -> dict[str, Any]:
+                outcome = await approvals_ops.approve_action(
+                    locked,
+                    action_id=action_id,
+                    actor_id=actor_id,
+                    promotion_eligible=promotion_eligible,
+                    decision_memory_writer=None,
+                )
+                if verb != "approve" or "error" in outcome:
+                    raise _OwnerDeliveryDecisionRefused(outcome)
+                return outcome
+
+            return await _redeem_owner_delivery(
+                conn,
+                parsed_id,
+                action_row["tool_args"],
+                token=owner_delivery_token,
+                expected_action="approve",
+                surface=owner_delivery_surface or "dashboard",
+                decide=_approve,
+                audit_actor=actor_id,
+                audit_action="approval.approve",
+            )
+
+        if action_row is not None and check_presented_digests:
+            await _require_presented_call_unchanged(conn, parsed_id, action_row["tool_args"])
 
         if expected_tool_args is not None:
             if (
                 edits
                 or action_row is None
-                or action_row["tool_name"] != "calendar_respond"
+                or expected_tool_name not in {"calendar_respond", "calendar_create_event"}
+                or action_row["tool_name"] != expected_tool_name
                 or action_row["tool_args"] != expected_tool_args
             ):
                 raise HTTPException(status_code=409, detail="response_approval_binding_changed")
@@ -3164,11 +3845,14 @@ async def approve_owning_action(
         if edits and action_row is not None and action_row["tool_name"] == "calendar_respond":
             raise HTTPException(status_code=409, detail="response_command_is_immutable")
 
-        # Apply edits to tool args before approval (same connection, no partial update risk)
+        # Keep the locked original call until the owning decision accepts the edit.
+        original_tool_args: dict[str, Any] | None = None
         if edits and action_row is not None:
             raw_args = action_row["tool_args"]
-            tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-            tool_args.update(edits)
+            original_tool_args = (
+                json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+            )
+            tool_args = {**original_tool_args, **edits}
             # Bind the sanitized dict directly (no json.dumps, no ::jsonb
             # cast) — asyncpg's registered jsonb codec already serializes
             # once; pre-serializing double-encodes (bu-cymc4/bu-bstqu).
@@ -3183,8 +3867,22 @@ async def approve_owning_action(
             conn,
             action_id=action_id,
             actor_id=actor_id,
-            create_rule=False,
+            create_rule=create_rule,
+            promotion_eligible=promotion_eligible,
+            # A pool-backed writer uses a separate transaction. Defer it until
+            # this approval, optional standing rule and audit have committed.
+            decision_memory_writer=None,
         )
+        if "error" in result and original_tool_args is not None:
+            # A refused decision may still commit its legitimate expiry transition.
+            # Restore the exact prior call before releasing the same row lock;
+            # neither a refusal nor its retry may alter an already-approved call.
+            # Any restoration failure aborts this entire owning transaction.
+            await conn.execute(
+                "UPDATE pending_actions SET tool_args = $1 WHERE id = $2",
+                original_tool_args,
+                parsed_id,
+            )
         if "error" not in result:
             edits_note = json.dumps(edits) if edits else None
             await audit_router.append(
@@ -3196,7 +3894,32 @@ async def approve_owning_action(
                 result="success",
             )
 
+        return result
+
+    result: dict[str, Any]
+    async with target_pool.acquire() as conn:
+        if create_rule:
+            parameters = dict(
+                action_id=action_id,
+                edits=edits,
+                displayed_call=displayed_call.model_dump(mode="json") if displayed_call else None,
+            )
+            result = await run_rule_write(
+                conn, "approve_with_rule", parameters, decide, audit_owned=True
+            )
+        else:
+            try:
+                async with audit_transaction(conn):
+                    result = await decide(conn)
+            except _OwnerDeliveryDecisionRefused as refused:
+                # The authority refused after the subject CAS: all of it rolled back.
+                result = refused.result
+
+    owner_delivery_outcome = result.pop("_owner_delivery", None)
+    _raise_owner_delivery_refusal(result)
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         error_msg = result["error"]
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
@@ -3204,7 +3927,25 @@ async def approve_owning_action(
             raise HTTPException(status_code=409, detail=error_msg)
         raise HTTPException(status_code=400, detail=error_msg)
 
-    if action_row is not None:
+    created_rule = result.get("created_rule")
+    if not is_receipt(result) and decision_memory_writer is not None and created_rule is not None:
+        try:
+            await decision_memory_writer.record_standing_rule(
+                ApprovalRuleModel.from_dict(created_rule), active=True
+            )
+        except Exception:
+            # Memory is descriptive and fail-open; a committed approval/rule
+            # must not become a failed decision because its memory sink failed.
+            logger.exception("Post-commit standing-rule memory writeback failed")
+
+    # A goal effect is decided here but run only by the capability broker. A replayed
+    # card token answers with the current state and dispatches nothing.
+    if (
+        action_row is not None
+        and not is_receipt(result)
+        and not is_goal_effect(action_row)
+        and owner_delivery_outcome != "duplicate"
+    ):
         tool_name = action_row["tool_name"]
         raw_args = action_row["tool_args"]
         tool_args_for_dispatch = (
@@ -3233,6 +3974,8 @@ async def approve_owning_action(
     # 'approved' means approved-but-not-yet-dispatched (e.g. no reachable daemon);
     # it stays retry-able. Surface this so the FE never claims success falsely.
     action_resp.dispatched = action_resp.status == "executed"
+    if owner_delivery_outcome == "duplicate":
+        return ApiResponse(data=action_resp)
     # Emit stream event: approved → executed if dispatch succeeded, else just approved
     _emit_kind = "executed" if action_resp.status == "executed" else "approved"
     emit_approvals_event(
@@ -3249,15 +3992,16 @@ async def approve_owning_action(
 async def deny_approval(
     action_id: str,
     http_request: Request,
-    request: ApprovalDenyRequest = Body(default=ApprovalDenyRequest()),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    request: Annotated[ApprovalDenyRequest, _optional_body(ApprovalDenyRequest)],
+    *,
+    db_mgr: Db,
     callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
 ) -> ApiResponse[ApprovalAction]:
     """Deny (reject) a pending action — POST /api/approvals/{id}/deny {reason?: str}."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     callback_authenticated = bool(
         getattr(http_request.state, "approval_callback_authenticated", False)
@@ -3276,30 +4020,89 @@ async def deny_approval(
     if found is None:
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
+    return await deny_owning_action(
+        parsed_id=parsed_id,
+        actor_id=actor_id,
+        reason=request.reason,
+        action_butler=action_butler,
+        target_pool=target_pool,
+        db_mgr=db_mgr,
+    )
+
+
+async def deny_owning_action(
+    *,
+    parsed_id: UUID,
+    actor_id: str,
+    reason: str | None,
+    action_butler: str,
+    target_pool: Any,
+    db_mgr: DatabaseManager,
+    owner_delivery_token: str | None = None,
+    owner_delivery_surface: owner_delivery.Surface | None = None,
+) -> ApiResponse[ApprovalAction]:
+    """Shared reject/audit/memory path; a card token redeems in the same transaction."""
+    action_id = str(parsed_id)
     decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
+    result: dict[str, Any]
+
+    async def _reject(locked: Any, verb: str) -> dict[str, Any]:
+        outcome = await approvals_ops.reject_action(
+            locked, action_id=action_id, reason=reason, actor_id=actor_id
+        )
+        if verb != "reject" or "error" in outcome:
+            raise _OwnerDeliveryDecisionRefused(outcome)
+        return outcome
 
     # AuditTableNotAvailableError is intentionally NOT caught here — it
     # propagates to the app-level handler, which returns 503
     # {"error": "audit_unavailable"} (dashboard-audit-log spec), rolling the
     # deny transition back with it.
-    async with target_pool.acquire() as conn, conn.transaction():
-        result = await approvals_ops.reject_action(
-            conn,
-            action_id=action_id,
-            reason=request.reason,
-            actor_id=actor_id,
-        )
-        if "error" not in result:
-            await audit_router.append(
-                conn,
-                _decision_audit_actor(actor_id),
-                "approval.deny",
-                target=action_id,
-                note=request.reason,
-                result="success",
-            )
+    try:
+        async with target_pool.acquire() as conn, audit_transaction(conn):
+            if owner_delivery_token is not None:
+                locked_row = await conn.fetchrow(
+                    "SELECT tool_args FROM pending_actions WHERE id = $1 FOR UPDATE", parsed_id
+                )
+                if locked_row is None:
+                    result = {"error": f"Approval not found: {action_id}"}
+                else:
+                    result = await _redeem_owner_delivery(
+                        conn,
+                        parsed_id,
+                        locked_row["tool_args"],
+                        token=owner_delivery_token,
+                        expected_action="reject",
+                        surface=owner_delivery_surface or "dashboard",
+                        decide=_reject,
+                        audit_actor=actor_id,
+                        audit_action="approval.deny",
+                        audit_note=reason,
+                    )
+            else:
+                result = await approvals_ops.reject_action(
+                    conn,
+                    action_id=action_id,
+                    reason=reason,
+                    actor_id=actor_id,
+                )
+                if "error" not in result:
+                    await audit_router.append(
+                        conn,
+                        _decision_audit_actor(actor_id),
+                        "approval.deny",
+                        target=action_id,
+                        note=reason,
+                        result="success",
+                    )
+    except _OwnerDeliveryDecisionRefused as refused:
+        result = refused.result
 
+    owner_delivery_outcome = result.pop("_owner_delivery", None)
+    _raise_owner_delivery_refusal(result)
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         error_msg = result["error"]
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
@@ -3307,22 +4110,25 @@ async def deny_approval(
             raise HTTPException(status_code=409, detail=error_msg)
         raise HTTPException(status_code=400, detail=error_msg)
 
+    duplicate = owner_delivery_outcome == "duplicate"
     # The audit transaction above is the state boundary. Write memory only
     # after it commits, otherwise an audit failure could leave a false tally.
-    if decision_memory_writer is not None:
+    if decision_memory_writer is not None and not duplicate:
         await decision_memory_writer.record_terminal_decision(
             PendingAction.from_dict(result), "rejected"
         )
 
     result.setdefault("butler", action_butler)
     action = ApprovalAction(**{k: result[k] for k in ApprovalAction.model_fields if k in result})
+    if duplicate:
+        return ApiResponse(data=action)
     emit_approvals_event(
         "rejected",
         action_id,
         butler=action_butler,
         tool_name=action.tool_name,
         status="rejected",
-        reason=request.reason,
+        reason=reason,
     )
     return ApiResponse(data=action)
 
@@ -3331,17 +4137,20 @@ async def deny_approval(
 async def defer_approval(
     action_id: str,
     request: ApprovalDeferRequest = Body(...),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalAction]:
-    """Defer an approval by extending its expiry — POST /api/approvals/{id}/defer {hours: int}.
+    """Defer an approval and re-present it later — POST /api/approvals/{id}/defer {hours: int}.
 
-    ``hours`` must be in [1, 168].  The action's ``expires_at`` is extended by the
-    given number of hours and the action remains in ``pending`` state.
+    ``hours`` must be in [1, 168]. The card is sent again in that many hours, and
+    ``expires_at`` moves to that time plus the action's original decision window, so the
+    action stays ``pending`` and the new card can decide it. An action with no expiry keeps
+    none.
     """
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -3355,7 +4164,7 @@ async def defer_approval(
     transition_error: str | None = None
     updated: PendingAction | None = None
     updated_delivery: ApprovalDeliveryTruth | None = None
-    async with target_pool.acquire() as conn, conn.transaction():
+    async with target_pool.acquire() as conn, audit_transaction(conn):
         transition = await defer_pending_action(
             conn,
             action_id=parsed_id,
@@ -3420,7 +4229,8 @@ async def defer_approval(
 @router.post("/{action_id}/retry")
 async def retry_approval(
     action_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[ApprovalAction]:
     """Retry dispatch for an approved-but-un-run action — POST /api/approvals/{id}/retry.
@@ -3433,8 +4243,8 @@ async def retry_approval(
     """
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -3446,6 +4256,8 @@ async def retry_approval(
 
     if row is None:
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
+    if is_goal_effect(row):
+        raise HTTPException(status_code=409, detail=GOAL_EFFECT_REQUIRES_BROKER)
 
     status = row["status"]
     if status != "approved":
@@ -3492,20 +4304,21 @@ async def retry_approval(
 async def abandon_approval(
     action_id: str,
     request: ApprovalAbandonRequest,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalAction]:
     """Durably abandon one approved, unexecuted action from the dashboard only."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
 
-    async with target_pool.acquire() as conn, conn.transaction():
+    async with target_pool.acquire() as conn, audit_transaction(conn):
         result = await approvals_ops.abandon_approved_action(
             conn, action_id=action_id, reason=request.reason, actor_id="dashboard:rest-api"
         )

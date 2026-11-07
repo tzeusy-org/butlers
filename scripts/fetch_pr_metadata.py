@@ -7,20 +7,40 @@ import argparse
 import hashlib
 import json
 import subprocess
+import time
 from pathlib import Path
 
 REPOSITORY = "tzeusy-org/butlers"
+ATTEMPT_SECONDS = 30
+RETRY_SECONDS = 97
+BACKOFF_SECONDS = (2, 5)
 
 
 def fetch(number: int) -> tuple[str, str]:
     if type(number) is not int or number <= 0:
         raise ValueError("invalid_pr_identity")
-    result = subprocess.run(
-        ["gh", "api", f"repos/{REPOSITORY}/pulls/{number}"],
-        capture_output=True,
-        check=True,
-        timeout=30,
-    )
+    deadline = time.monotonic() + RETRY_SECONDS
+    for attempt in range(len(BACKOFF_SECONDS) + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired("gh api", RETRY_SECONDS)
+        try:
+            result = subprocess.run(
+                ["gh", "api", f"repos/{REPOSITORY}/pulls/{number}"],
+                capture_output=True,
+                check=True,
+                timeout=min(ATTEMPT_SECONDS, remaining),
+            )
+        except subprocess.SubprocessError:
+            if attempt == len(BACKOFF_SECONDS):
+                raise
+            delay = BACKOFF_SECONDS[attempt]
+            if deadline - time.monotonic() <= delay:
+                raise
+            time.sleep(delay)
+        else:
+            break
+    # A successful read is validated exactly once, outside the retry loop.
     value = json.loads(result.stdout)
     if (
         not isinstance(value, dict)
@@ -36,31 +56,57 @@ def fetch(number: int) -> tuple[str, str]:
     return value["title"], value.get("body") or ""
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--number", type=int, required=True)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    args = parser.parse_args(argv)
-    paths = [args.output_dir / "pr_title.txt", args.output_dir / "pr_body.txt"]
-    # A failed request must not leave a previous successful scan input behind.
+def _remove_outputs(paths: list[Path]) -> bool:
+    """Attempt every owned removal even when one fails; never echo local errors."""
+    complete = True
     for path in paths:
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            complete = False
+    return complete
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        # argparse's default diagnostics can echo invalid caller input.
+        raise ValueError("invalid_arguments")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _Parser(description=__doc__)
+    parser.add_argument("--number", required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
     try:
-        values = fetch(args.number)
+        args = parser.parse_args(argv)
+    except (ValueError, TypeError):
+        print("pr_metadata: unavailable_or_invalid")
+        return 1
+    paths = [
+        args.output_dir / "pr_title.txt",
+        args.output_dir / "pr_body.txt",
+        args.output_dir / "pr_metadata_receipt.json",
+    ]
+    # All three are one output unit. A failed cleanup must not start a read.
+    if not _remove_outputs(paths):
+        print("pr_metadata: unavailable_or_invalid")
+        return 1
+    try:
+        number = int(args.number)
+        values = fetch(number)
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        for path, text in zip(paths, values, strict=True):
+        for path, text in zip(paths[:2], values, strict=True):
             path.write_text(text)
         receipt = {
             "repository": REPOSITORY,
-            "number": args.number,
+            "number": number,
             "title_sha256": hashlib.sha256(values[0].encode()).hexdigest(),
             "body_sha256": hashlib.sha256(values[1].encode()).hexdigest(),
             "evidence_scope": "live metadata at fetch; trigger source identity is unchanged",
         }
-        (args.output_dir / "pr_metadata_receipt.json").write_text(json.dumps(receipt) + "\n")
+        paths[2].write_text(json.dumps(receipt) + "\n")
     except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
-        for path in paths:
-            path.unlink(missing_ok=True)
+        _remove_outputs(paths)
         print("pr_metadata: unavailable_or_invalid")
         return 1
     print("pr_metadata: validated")

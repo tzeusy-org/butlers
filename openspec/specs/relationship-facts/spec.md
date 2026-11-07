@@ -85,10 +85,23 @@ Alembic migration). Predicates MUST be grouped into families:
   `has-address`, `has-birthday`, `has-website`.
 - **Relational predicates** (`object_kind='entity'`): `knows`, `family-of`, `partner-of`,
   `parent-of`, `child-of`, `colleague-of`, `friend-of`, `co-attended`, `purchased-from`,
-  `subscribed-to`, `visited`, `works-at`, `member-of`, `manages-property` (set extensible).
-  `works-at` and `member-of` are person→organization edges. `manages-property` (subject person
-  manages an object place or organization) is an owner-approved catalog predicate seeded by
-  migration `rel_026` (`bu-60pwv6.35`).
+  `subscribed-to`, `visited`, `works-at`, `member-of`, `manages`, `managed-by`,
+  `manages-property`, `rental-agent`, `rental-location` (set extensible).
+  `works-at` and `member-of` are person→organization edges. Owner decision `bu-kgh8g`
+  (2026-06-17) approved `manages` (person manages a person or organization), `managed-by` (its
+  inverse: person is managed by a person), `rental-agent` (person acts as rental agent for an
+  organization or place) and `rental-location` (person rents from, or has a rental relationship
+  with, a place). `manages-property` (person manages a place or organization) was approved
+  separately (owner walkthrough 2026-09-30, item (b), `bu-60pwv6.35`). Migration `rel_026`
+  seeds all five.
+  `participant-of` and `invited-by` are NOT catalog predicates: a participation edge is written
+  as `member-of`, and an invitation or referral stays narrative (owner decision 2026-09-30,
+  `bu-60pwv6.35`; conformance: `bu-eba4tw`, because `rel_026` still seeds both).
+
+  The central writer's alias map collapses `sibling_of` to `family-of` and `married_to` to
+  `partner-of` (implemented by `bu-i0pgi`, commit `c0e99f067`, for
+  `relational-edges-single-home`, recorded here as the chosen option); neither is a separate
+  catalog predicate.
 - **Override predicates** (`object_kind='literal'`, JSON): `dunbar_tier_override` (per
   RFC 0013 weight-at-query decision and Phase 1 Amendment 6).
 
@@ -490,6 +503,24 @@ been rebound.
 - **WHEN** a daemon attempts a rebind and an optional reference table is undefined
 - **THEN** that absence MUST be classified separately from a failed write
 - **AND** it MUST NOT be counted as a successful rebind
+
+#### Scenario: A verified row survives a same-key merge collapse
+
+- **WHEN** a merge collapses two unknown-default rows with the same final key and only the source row is `verified`
+- **THEN** the source row MUST stay active on the survivor and the target row MUST be superseded
+- **AND** in every other case the target row MUST stay active and the source row MUST be superseded
+
+#### Scenario: A same-key merge collapse keeps both rows' evidence
+
+- **WHEN** a merge collapses two rows with the same final key
+- **THEN** the surviving row MUST receive the evidence of the superseded row
+- **AND** the superseded row MUST keep the evidence it was written with
+
+#### Scenario: A verified value survives a single-cardinality merge
+
+- **WHEN** a merge resolves different active values of a single-cardinality predicate with no effective time
+- **THEN** a `verified` row MUST beat an unverified one, whatever their confidence
+- **AND** evidence MUST NOT move between them, because they are different claims
 
 ### Requirement: Approved fact writes execute under server-recorded provenance
 

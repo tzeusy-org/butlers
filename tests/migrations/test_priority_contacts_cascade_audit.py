@@ -33,14 +33,13 @@ rows are left untouched. Audit history is immutable — rewriting or deleting
 landed audit rows to make them retroactively accurate would be a worse defect
 than the inaccurate note. ``core_205``'s docstring records the same decision.
 
-These tests replay the real migration chain (``core_101`` → ``core_129`` →
-``core_131`` → ``core_134`` → ``core_205``) against a live PostgreSQL instance,
-then exercise the real router against the resulting schema.
+These tests run the real core migration chain (``core_101`` → ``core_129`` →
+``core_131`` → ``core_134`` → ``core_205`` and on to head) against a live
+PostgreSQL instance, then exercise the real router against the resulting schema.
 """
 
 from __future__ import annotations
 
-import importlib.util
 from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -51,8 +50,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.routers.priority_contacts import _get_db_manager
+from butlers.api.deps import get_db
 from butlers.api.routers.priority_contacts import router as priority_contacts_router
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.integration
 
@@ -64,13 +64,8 @@ _TRIGGER_FN = "priority_contacts_cascade_audit"
 _RETIRE_MIGRATION = "core_205_priority_contacts_drop_cascade_audit"
 
 
-def _load_migration(name: str):
-    path = _VERSIONS_DIR / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+def _core_migration(name: str):
+    return load_migration(_VERSIONS_DIR / f"{name}.py", name)
 
 
 async def _run_upgrade_sqls(pool: asyncpg.Pool, mod) -> None:
@@ -87,73 +82,10 @@ async def _run_upgrade_sqls(pool: asyncpg.Pool, mod) -> None:
             pass  # idempotent re-runs OK
 
 
-async def _apply_core_129_schema(pool: asyncpg.Pool, drop_mod) -> None:
-    """Apply core_129's schema DDL directly to reach the butler-agnostic shape.
-
-    core_129's dedup/parity/existence steps go through ``op.get_bind()`` (not
-    capturable via the mock-op harness above) but are no-ops on an empty,
-    freshly-provisioned table.  Only its schema DDL matters here; the trigger
-    function body is imported from the migration to avoid duplication/drift.
-    """
-    sqls = [
-        "DROP INDEX IF EXISTS public.idx_priority_contacts_butler",
-        "ALTER TABLE public.priority_contacts DROP CONSTRAINT IF EXISTS priority_contacts_pkey",
-        "ALTER TABLE public.priority_contacts DROP COLUMN IF EXISTS butler",
-        "ALTER TABLE public.priority_contacts ADD PRIMARY KEY (contact_id)",
-        drop_mod._TRIGGER_FN_GLOBAL,
-    ]
-    for sql in sqls:
-        await pool.execute(sql)
-
-
-async def _provision_tables(pool: asyncpg.Pool) -> None:
-    """Replay the priority_contacts migration chain onto a fresh database."""
-    # public.contacts — the legacy registry core_101's FK points at. Created here
-    # only so the real core_101 DDL runs; core_134 drops it again below.
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.contacts (
-            id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name      TEXT,
-            entity_id UUID
-        )
-    """)
-
-    # public.entities — core_131 re-points priority_contacts at this table.
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.entities (
-            id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            canonical_name TEXT
-        )
-    """)
-
-    # public.audit_log — the table both the router and the (retired) trigger write to.
-    for name in (
-        "core_092_audit_log",
-        "core_122_audit_log_metadata_result_error",
-        "core_202_audit_log_failure_category",
-    ):
-        await _run_upgrade_sqls(pool, _load_migration(name))
-
-    # public.priority_contacts + cascade trigger (core_101 shape, with butler column).
-    await _run_upgrade_sqls(pool, _load_migration("core_101_priority_contacts"))
-
-    # Collapse to the butler-agnostic shape (core_129).
-    await _apply_core_129_schema(pool, _load_migration("core_129_priority_contacts_drop_butler"))
-
-    # Re-point onto public.entities and drop the cascading contacts FK (core_131),
-    # then drop public.contacts itself (core_134).
-    await _run_upgrade_sqls(pool, _load_migration("core_131_priority_contacts_add_entity_id"))
-    await _run_upgrade_sqls(pool, _load_migration("core_134_drop_public_contacts"))
-
-    # Retire the now-unreachable cascade-audit trigger (core_205).
-    await _run_upgrade_sqls(pool, _load_migration(_RETIRE_MIGRATION))
-
-
 @pytest.fixture
-async def cascade_pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as pool:
-        await _provision_tables(pool)
-        yield pool
+async def cascade_pool(db_pool: asyncpg.Pool) -> asyncpg.Pool:
+    """The real core chain at head: core_101 → core_129 → core_131 → core_134 → core_205."""
+    return db_pool
 
 
 class _StubDatabaseManager:
@@ -171,7 +103,7 @@ async def priority_contacts_client(cascade_pool: asyncpg.Pool) -> AsyncIterator[
     """The real priority-contacts router bound to the live migrated database."""
     app = FastAPI()
     app.include_router(priority_contacts_router)
-    app.dependency_overrides[_get_db_manager] = lambda: _StubDatabaseManager(cascade_pool)
+    app.dependency_overrides[get_db] = lambda: _StubDatabaseManager(cascade_pool)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
@@ -207,7 +139,7 @@ async def test_no_cascade_audit_trigger_remains(cascade_pool: asyncpg.Pool) -> N
 
     # Plant historical evidence using the actual retired trigger, then replay
     # the retirement. Empty audit history cannot prove immutable row survival.
-    retirement = _load_migration(_RETIRE_MIGRATION)
+    retirement = _core_migration(_RETIRE_MIGRATION)
     legacy_sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: legacy_sqls.append(sql)

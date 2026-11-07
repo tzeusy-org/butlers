@@ -5,43 +5,27 @@ Covers memory module chain and relationship butler migration chain integrity.
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
 
+from butlers.testing.migration import load_migration
+
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
-# Load the migrations module from src/butlers/migrations.py
+# Load the migrations module from src/butlers/migrations/__init__.py
 # ---------------------------------------------------------------------------
 _MIGRATIONS_PATH = (
-    Path(__file__).resolve().parent.parent.parent / "src" / "butlers" / "migrations.py"
+    Path(__file__).resolve().parent.parent.parent / "src" / "butlers" / "migrations" / "__init__.py"
 )
 
 ROSTER_DIR = Path(__file__).resolve().parent.parent.parent / "roster"
-_MISSING_MODULE = object()
-
-
-def _load_module(path: Path, name: str):
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    previous_module = sys.modules.get(name, _MISSING_MODULE)
-    sys.modules[name] = mod
-    try:
-        spec.loader.exec_module(mod)
-    finally:
-        if previous_module is _MISSING_MODULE:
-            sys.modules.pop(name, None)
-        else:
-            sys.modules[name] = previous_module
-    return mod
 
 
 def _load_migrations_module():
-    return _load_module(_MIGRATIONS_PATH, "butlers.migrations")
+    return load_migration(_MIGRATIONS_PATH, "butlers.migrations", register=True)
 
 
 _mod = _load_migrations_module()
@@ -88,6 +72,46 @@ class TestMigrationsModuleLoader:
 class TestMemoryChainRegistration:
     """Verify that the memory chain is registered and discoverable."""
 
+    @pytest.mark.parametrize("target_schema", [None, "", "public", "general", "chronicler_mem"])
+    @pytest.mark.parametrize("direction", ["upgrade", "downgrade"])
+    def test_private_acl_revision_respects_actual_runner_target(
+        self, target_schema: str | None, direction: str
+    ) -> None:
+        """Default/public runs emit no private grants; only explicit private opts in."""
+        from io import StringIO
+
+        from alembic.migration import MigrationContext
+        from alembic.operations import Operations
+        from alembic.runtime.environment import EnvironmentContext
+
+        config = _mod._build_alembic_config(
+            "postgresql://unused@127.0.0.1:1/unused", ["memory"], target_schema=target_schema
+        )
+        revision = load_migration(
+            MEMORY_MIGRATIONS_DIR / "015_grant_chronicler_private_memory.py",
+            "memory_private_acl_control",
+            register=True,
+        )
+        output = StringIO()
+        with EnvironmentContext(config, None) as environment:
+            context = MigrationContext.configure(
+                dialect_name="postgresql",
+                environment_context=environment,
+                opts={"as_sql": True, "output_buffer": output},
+            )
+            with Operations.context(context):
+                getattr(revision, direction)()
+
+        sql = output.getvalue()
+        if target_schema != "chronicler_mem":
+            assert sql == ""
+        elif direction == "upgrade":
+            assert "GRANT USAGE ON SCHEMA chronicler_mem TO butler_chronicler_rw" in sql
+            assert "IF current_schema() IS DISTINCT FROM 'chronicler_mem'" in sql
+        else:
+            assert "mem_015 has no lossless automatic private ACL downgrade" in sql
+            assert "GRANT" not in sql and "REVOKE" not in sql
+
     def test_memory_chain_registration_ordering_and_metadata(self) -> None:
         """memory not in shared; in get_all_chains; shared come first; chain dir + files correct; linear."""
         assert "memory" not in _SHARED_CHAINS
@@ -120,6 +144,11 @@ class TestMemoryChainRegistration:
             "012_rule_retirement.py",
             "013_content_authority.py",
             "014_knowledge_gaps.py",
+            "015_grant_chronicler_private_memory.py",
+            "016_fact_endorsement.py",
+            "017_goal_taint.py",
+            "018_drop_transition_timestamps.py",
+            "019_projection_replica_identity.py",
         ]
         assert has_butler_chain("memory") is False
         assert has_butler_chain("nonexistent_butler_xyz") is False
@@ -139,21 +168,18 @@ class TestMemoryChainRegistration:
             ("012_rule_retirement.py", "mem_012", "mem_011"),
             ("013_content_authority.py", "mem_013", "mem_012"),
             ("014_knowledge_gaps.py", "mem_014", "mem_013"),
+            ("015_grant_chronicler_private_memory.py", "mem_015", "mem_014"),
+            ("016_fact_endorsement.py", "mem_016", "mem_015"),
+            ("017_goal_taint.py", "mem_017", "mem_016"),
+            ("018_drop_transition_timestamps.py", "mem_018", "mem_017"),
+            ("019_projection_replica_identity.py", "mem_019", "mem_018"),
         ]
-
-        def _load_migration(filename: str):
-            filepath = MEMORY_MIGRATIONS_DIR / filename
-            spec = importlib.util.spec_from_file_location(filename.removesuffix(".py"), filepath)
-            assert spec is not None and spec.loader is not None
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            return mod
 
         revisions = []
         chain_map = {}
         for filename, expected_rev, expected_down_rev in _EXPECTED_CHAIN:
             assert (MEMORY_MIGRATIONS_DIR / filename).exists(), f"Missing migration: {filename}"
-            mod = _load_migration(filename)
+            mod = load_migration(MEMORY_MIGRATIONS_DIR / filename)
             assert mod.revision == expected_rev
             assert mod.down_revision == expected_down_rev
             assert mod.depends_on is None
@@ -161,10 +187,10 @@ class TestMemoryChainRegistration:
             revisions.append(mod.revision)
             chain_map[mod.revision] = mod.down_revision
 
-        root = _load_migration(_EXPECTED_CHAIN[0][0])
+        root = load_migration(MEMORY_MIGRATIONS_DIR / _EXPECTED_CHAIN[0][0])
         assert root.branch_labels == ("memory",)
         assert len(revisions) == len(set(revisions))
-        current = "mem_014"
+        current = "mem_019"
         path = [current]
         while chain_map.get(current) is not None:
             current = chain_map[current]
@@ -185,6 +211,11 @@ class TestMemoryChainRegistration:
             "mem_012",
             "mem_013",
             "mem_014",
+            "mem_015",
+            "mem_016",
+            "mem_017",
+            "mem_018",
+            "mem_019",
         ]
 
 
@@ -195,10 +226,6 @@ class TestRelationshipChainRegistration:
         ("001_relationship_tables.py", "rel_001", None),
         ("002_align_contacts_schema.py", "rel_002", "rel_001"),
     ]
-
-    @classmethod
-    def _load_migration(cls, filename: str):
-        return _load_module(RELATIONSHIP_MIGRATIONS_DIR / filename, filename.removesuffix(".py"))
 
     def test_relationship_chain_structure_and_metadata(self) -> None:
         """Directory resolves correctly; 002 file is canonical; revisions/labels correct; linear."""
@@ -214,7 +241,7 @@ class TestRelationshipChainRegistration:
         revisions = []
         chain_map = {}
         for filename, expected_revision, expected_down_revision in self._EXPECTED_CHAIN:
-            migration = self._load_migration(filename)
+            migration = load_migration(RELATIONSHIP_MIGRATIONS_DIR / filename)
             assert migration.revision == expected_revision
             assert migration.down_revision == expected_down_revision
             if expected_revision == "rel_001":

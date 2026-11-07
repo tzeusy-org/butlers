@@ -8,44 +8,16 @@ Real-Postgres coverage is in ``tests/integration/test_sender_authentication_roun
 from __future__ import annotations
 
 import uuid
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
 _INSERT = "INSERT INTO public.ingestion_events"
-
-
-class _FakePool:
-    def __init__(self) -> None:
-        self.inserts: list[tuple] = []
-        conn = MagicMock()
-        conn.fetchrow = AsyncMock(return_value=None)
-        conn.fetchval = AsyncMock(return_value=None)
-
-        async def execute(sql, *args):
-            if _INSERT in sql:
-                self.inserts.append((sql, args))
-
-        conn.execute = execute
-
-        @asynccontextmanager
-        async def transaction():
-            yield
-
-        conn.transaction = transaction
-        self._conn = conn
-        self.fetchrow = AsyncMock(return_value=None)
-        self.fetchval = AsyncMock(return_value=None)
-        self.fetch = AsyncMock(return_value=[])
-        self.execute = AsyncMock(return_value=None)
-
-    @asynccontextmanager
-    async def acquire(self):
-        yield self._conn
 
 
 def _envelope(channel: str, sender: str, raw: dict | None) -> dict:
@@ -76,12 +48,16 @@ def _headers(value: str) -> dict:
 async def _ingest(envelope: dict) -> tuple:
     from butlers.tools.switchboard.ingestion.ingest import ingest_v1
 
-    pool = _FakePool()
+    # No prior request (dedupe lookups miss); every write succeeds.
+    pool = fake_pool(fetchrow=None, fetchval=None, fetch=[], execute=None)
     with patch("butlers.fleet_events.publish_fleet_event", AsyncMock()):
         response = await ingest_v1(pool, envelope)
     assert response.status == "accepted"
-    assert len(pool.inserts) == 1
-    sql, args = pool.inserts[0]
+    inserts = [
+        call.args for call in pool.connection.execute.await_args_list if _INSERT in call.args[0]
+    ]
+    assert len(inserts) == 1
+    sql, *args = inserts[0]
     assert "sender_authentication" in sql
     return args
 

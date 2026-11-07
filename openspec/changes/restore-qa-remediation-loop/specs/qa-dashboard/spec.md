@@ -4,7 +4,7 @@
 The dashboard API SHALL expose case-shaped resources under `/api/qa/cases` for the dossier renderer. The resources join `qa_findings`, `healing_attempts`, and `qa_investigation_events` into a per-case shape; they do not replace `/api/qa/investigations` (which retains its existing semantics).
 
 ID: REQ-qa-dashboard-001
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: GET /api/qa/cases
@@ -17,6 +17,9 @@ Scope: v1-mandatory
 - **WHEN** `GET /api/qa/cases/:id` is called with an attempt UUID
 - **THEN** it returns the full dossier payload: the case summary, `state_track_stage`, derived `proposal_state` (`none`, `unpublished`, `published`, `ambiguous`, or `unavailable`), `proposal_diff_snapshot` (validated independently so a diff-only fallback remains visible), `investigation_notes` (or null when no notes have been emitted yet), a `pr` summary block (or null), the most recent 50 journal events, the attempt's `healing_session_id` (or null), its `session_ids[]` (empty when none), and `error_detail` (the sanitized bounded `healing_attempts.error_detail` text, or null — populated regardless of state, but only rendered by the UI's failure banner in the `failed` state)
 - **AND** when the attempt id does not exist, it returns the standard 404 envelope from RFC 0007
+- **AND** known PR identity is independent of nullable PR lifecycle: terminal attempt outcomes never imply a closed PR, and unavailable lifecycle metadata retains the PR summary/link and published classification
+- **AND** read-only dossier metadata may supersede a positive local PR state with explicit GitHub open/draft/closed/merged evidence; only a positively merged observation supplies the merge timestamp, never the attempt's closure time
+- **AND** missing, malformed or unavailable provider observations do not synthesize lifecycle; an unavailable checks observation does not discard valid PR lifecycle metadata, and case-list reads perform no provider lookup
 
 #### Scenario: GET /api/qa/cases/:id/journal
 - **WHEN** `GET /api/qa/cases/:id/journal` is called with optional `cursor` and `limit` (default 50, max 500)
@@ -38,7 +41,7 @@ Scope: v1-mandatory
 The QA summary SHALL expose an evidence-qualified, time-windowed incident funnel that distinguishes observations, admitted investigations, proposals, published PRs, merges, deployment and verified recovery; it SHALL not label merge time as repair time.
 
 ID: REQ-qa-dashboard-002
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; RFC 0038 D10, D17 and D18; restore-qa-remediation-loop/design.md; restore-qa-remediation-loop/goal-runtime-reconciliation.md
 Scope: v1-mandatory
 
 #### Scenario: Summary KPI block
@@ -57,6 +60,7 @@ Scope: v1-mandatory
 - **AND** the five cells consume merged_prs, verified_recoveries, recovery_rate, active_cases and failed_executions, with current/prior equally sized cohorts for comparisons and no reads of retired mttr/self_resolved fields
 - **AND** event-time stages name their boundary: observation captured_at, incident admitted_at, immutable proposal sealed_at, PR created_at, merged_at, deployment observed_at, recovery verified_at and session ended_at
 - **AND** usage joins trusted initial/follow-up session lineage, reports covered/expected session counts and separate input/output/cache counters by reported model, and leaves absent billing/model/linkage as unknown
+- **AND** usage covers QA engineering-executor sessions only; `qa_triage_v1` staffer-goal usage remains RFC 0038 goal-ledger accounting and is either reported as a separately labeled figure from that ledger or named as excluded coverage, never folded into executor usage or shown as zero
 
 #### Scenario: Recovery requires deployment and observation evidence
 - **WHEN** a PR is merged but deployment is unknown, a source is partial, or no successful relevant observation exists
@@ -79,7 +83,7 @@ Scope: v1-mandatory
 The dashboard SHALL have a top-level QA page at route `/qa` that presents the QA staffer's work as a per-case dossier in the Dispatch design language. The page narrates what the staff caught and what it fixed; it is not a pipeline dashboard.
 
 ID: REQ-qa-dashboard-003
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Overview page layout
@@ -167,14 +171,14 @@ Scope: v1-mandatory
 The dashboard SHALL have a drill-down page at `/qa/investigations/:attemptId` that renders the same case dossier as `/qa?case=:attemptId`. The two routes mount the same `CaseDossier` component with no UX divergence.
 
 ID: REQ-qa-dashboard-004
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Investigation detail layout matches Case Dossier
 - **WHEN** a user navigates to `/qa/investigations/:attemptId`
 - **THEN** the page renders the Case Dossier layout (header + two-column diagnosis/PR + patrol journal) as defined by the Case Dossier Layout requirement
 - **AND** the page includes a top eyebrow "QA Investigation · #<short_id>" and a back-link to `/qa`
-- **AND** only actions supported by the current authorized backend are shown in the dossier header; this change consumes the dead-Retry removal owned by bu-dss7he.1 and does not reintroduce its endpoint
+- **AND** Dismiss and remove-dismissal remain available in their eligible states; no Retry action, client helper or mutation hook is exposed
 
 #### Scenario: Investigation not found
 - **WHEN** the attempt ID does not exist or has no `qa_patrol_id`
@@ -184,7 +188,7 @@ Scope: v1-mandatory
 The QA dashboard SHALL render any single case (either as the right-pane on `/qa?case=` or as the full body of `/qa/investigations/:attemptId`) using a shared Case Dossier component composed of a header, a two-column diagnosis/PR body, and a full-width patrol journal.
 
 ID: REQ-qa-dashboard-005
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; RFC 0038 D11 and D18; restore-qa-remediation-loop/design.md; restore-qa-remediation-loop/goal-runtime-reconciliation.md
 Scope: v1-mandatory
 
 #### Scenario: Dossier header
@@ -197,13 +201,14 @@ Scope: v1-mandatory
 #### Scenario: Active dismissal display
 - **WHEN** the Case Dossier renders a case whose fingerprint has an active dismissal record (`qa_dismissals` row with `dismissed_until > now()`)
 - **THEN** the header renders a mono caption "dismissed until <dismissed_until>" beneath the sev/id/butler row
-- **AND** a "remove dismissal" pill action is rendered alongside other currently authorized actions
+- **AND** a "remove dismissal" pill action is rendered alongside the eligible Dismiss action, without a Retry control
 - **AND** clicking "remove dismissal" calls `DELETE /api/qa/dismissals/{fingerprint}` and triggers a re-fetch of the case so the caption and pill disappear
 
-#### Scenario: Terminal states offer Retry, never Dismiss
-- **WHEN** the Case Dossier renders a case whose `state_track_stage` is `landed`, `escalated`, or `failed`
-- **THEN** the dead Retry control remains removed under bu-dss7he.1, and the Dismiss pill is withheld; any future retry needs a separately approved admission contract
-- **AND** every other stage (`detect`, `diagnose`, `pr`) offers Dismiss (when a fingerprint is linked and no dismissal is active) and withholds Retry, since the investigation is still active
+#### Scenario: Terminal history has neither Retry nor Dismiss
+- **WHEN** the case's derived `stage` is terminal (`landed`, `escalated`, or `failed`)
+- **THEN** neither Retry nor Dismiss is rendered; terminal history is not a false-positive dismissal candidate
+- **AND** every other stage (`detect`, `diagnose`, `pr`) offers Dismiss when a fingerprint is linked and no dismissal is active
+- **AND** every stage withholds Retry, while existing dismissal removal and history remain available
 
 #### Scenario: Failure banner quotes the crash
 - **WHEN** the Case Dossier renders a case whose `state_track_stage` is `failed`
@@ -226,6 +231,7 @@ Scope: v1-mandatory
 - **WHEN** the Case Dossier renders the right column
 - **THEN** it renders a PR panel (when `pr` is non-null) containing:
   - State chip (drafted/open/merged/closed) with appropriate state color from the Dispatch palette
+  - A neutral `PR state unknown` chip when a known PR has nullable lifecycle; its Open PR link remains available, without a no-PR, closed, merged or success claim
   - Mono `pr #<number> · <state>`
   - Sans-500 14 px PR title
   - Mono caption with branch name, CI status, `+<additions> −<deletions>`
@@ -239,6 +245,7 @@ Scope: v1-mandatory
 - **WHEN** the Case Dossier renders a case whose attempt carries a `healing_session_id` and/or a non-empty `session_ids[]`
 - **THEN** it renders a "Session trace" section with a real navigation door (a react-router `<Link>` to `/sessions/:id`, not a dead onClick) for the investigation session (`healing_session_id`) and one door per failing session in `session_ids[]`
 - **AND** when `healing_session_id` is null AND `session_ids` is empty, the section is not rendered at all — no empty header and no broken link
+- **AND** a failing goal invocation, which has no `/sessions/:id` row after the RFC 0038 switch, renders as a labeled goal/invocation identifier that links only to an existing dashboard goal-ledger view and otherwise stays plain text, never a dead `/sessions/:id` door
 
 #### Scenario: Patrol journal section
 - **WHEN** the Case Dossier renders the full-width patrol journal section

@@ -9,13 +9,14 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.routers import ingestion_connectors as connectors
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
 
 @pytest.mark.parametrize(
-    "failed_source", [None, "registry", "hourly", "devices", "cadence", "empty"]
+    "failed_source", [None, "registry", "hourly", "devices", "cadence", "listening", "empty"]
 )
 async def test_canonical_summary_serialization_and_schema(failed_source):
     now = datetime.now(UTC)
@@ -63,6 +64,17 @@ async def test_canonical_summary_serialization_and_schema(failed_source):
         elif "FROM connectors.owntracks_points" in sql:
             source = "cadence"
             data = []
+        elif "FROM connector_heartbeat_log" in sql:
+            source = "listening"
+            data = [
+                dict(
+                    connector_type=connector_type,
+                    endpoint_identity=identity,
+                    recording_since=now - timedelta(days=60),
+                    heartbeat_buckets=[now.replace(minute=0, second=0, microsecond=0)],
+                )
+                for connector_type, identity in zip(args[1], args[2], strict=True)
+            ]
         elif "MAX(last_seen_at)" in sql:
             source = "devices"
             data = [
@@ -85,6 +97,15 @@ async def test_canonical_summary_serialization_and_schema(failed_source):
                     event_count=count,
                 )
                 for kind, count in [("ingested", 7), ("filtered", 11)]
+            ] + [
+                # A failed event an hour earlier: traffic for listening only.
+                dict(
+                    connector_type="owntracks",
+                    endpoint_identity="synthetic-online",
+                    hour_bucket=now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1),
+                    source="failed",
+                    event_count=1,
+                )
             ]
         if source == failed_source:
             raise OSError(f"synthetic {source} source unavailable")
@@ -96,7 +117,7 @@ async def test_canonical_summary_serialization_and_schema(failed_source):
     db.pool.return_value = pool
     app = FastAPI()
     app.include_router(connectors.router)
-    app.dependency_overrides[connectors._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -115,13 +136,17 @@ async def test_canonical_summary_serialization_and_schema(failed_source):
             "unclassified_count",
             "device_liveness_available",
             "hourly_events_available",
+            "hourly_bucket_starts",
+            "listening_available",
             "owntracks_cadence_available",
         }
+        assert len(data["hourly_bucket_starts"]) == 24
         assert data["connector_registry_available"] is True
         for source, field in [
             ("hourly", "hourly_events_available"),
             ("devices", "device_liveness_available"),
             ("cadence", "owntracks_cadence_available"),
+            ("listening", "listening_available"),
         ]:
             assert data[field] is (failed_source != source)
         if failed_source == "empty":
@@ -149,6 +174,7 @@ async def test_canonical_summary_serialization_and_schema(failed_source):
                 "today",
                 "hourly_events",
                 "hourly_filtered_events",
+                "hourly_listening",
                 "devices",
                 "checkpoints",
             }
@@ -163,14 +189,20 @@ async def test_canonical_summary_serialization_and_schema(failed_source):
             ) == ("offline", "healthy")
             assert entries["synthetic-unknown"]["liveness"] == "unclassified"
             assert data["unclassified_count"] == 1
+            # A failed count read reports no buckets and no total (bu-s11n0s.5.1).
+            hourly_failed = failed_source == "hourly"
             assert online["today"] == {
-                "messages_ingested": 0 if failed_source == "hourly" else 7,
+                "messages_ingested": None if hourly_failed else 7,
                 "messages_failed": 2,
             }
-            assert online["hourly_events"] == [0] * 23 + [0 if failed_source == "hourly" else 7]
-            assert online["hourly_filtered_events"] == [0] * 23 + [
-                0 if failed_source == "hourly" else 11
-            ]
+            assert online["hourly_events"] == ([] if hourly_failed else [0] * 23 + [7])
+            assert online["hourly_filtered_events"] == ([] if hourly_failed else [0] * 23 + [11])
+            # Failed traffic (slot 22) contradicts deafness, as on the detail route;
+            # unknown traffic (hourly read failed) leaves every non-live slot unknown.
+            assert online["hourly_listening"] == {
+                "listening": ["unknown"] * 24,
+                "hourly": ["unknown"] * 23 + ["live"],
+            }.get(failed_source, ["deaf"] * 22 + ["unknown", "live"])
             assert bool(online["operational_warnings"]) is (failed_source != "cadence")
             if failed_source == "devices":
                 assert online["devices"] is None

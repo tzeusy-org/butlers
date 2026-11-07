@@ -16,6 +16,7 @@ import pytest
 from fastmcp import FastMCP
 
 from butlers.config import load_config
+from butlers.core.goal_labels import CATEGORIES
 from butlers.core.tool_catalog import (
     ToolCatalogError,
     build_tool_catalog,
@@ -26,14 +27,17 @@ from butlers.daemon import ButlerDaemon
 from butlers.modules.base import ToolMeta
 from butlers.modules.registry import default_registry
 
+_THIS_FILE = Path(__file__).resolve()
+
 pytestmark = pytest.mark.contract
-_ROOT = Path(__file__).resolve().parents[2]
+_ROOT = _THIS_FILE.parents[2]
 _D4_FIELDS = (
     "owner_domain",
     "effect_class",
     "output_trust",
     "output_sensitivity",
     "resource_params",
+    "selection_bound",
     "safety_args",
     "approval_policy",
     "idempotency",
@@ -91,12 +95,13 @@ async def test_enabled_calendar_has_complete_post_approval_authorization(monkeyp
         response = catalog["calendar_respond"]
         assert {"calendar_respond", "calendar_response_fence_status"} <= set(catalog)
         assert response.classification_complete
-        assert response.group_name == "core"
+        assert response.group_name == "response"
         assert catalog["calendar_response_fence_status"].group_name == "direct"
         assert all(getattr(response, field, None) is not None for field in _D4_FIELDS)
         assert response.effect_class == "communicate"
         assert response.owner_domain == name
         assert response.approval_policy["configured_gate"] is True
+        assert response.approval_policy["mode"] == "always_per_event"
         assert not {"_command_id", "_command_digest"} & response.input_schema["properties"].keys()
         assert catalog["calendar_response_fence_status"].llm_presentable is False
         # The same actual owner also supports response-disabled registration:
@@ -131,7 +136,7 @@ async def test_enabled_calendar_has_complete_post_approval_authorization(monkeyp
 async def _complete_core_catalog(name):
     daemon = ButlerDaemon(_ROOT / "roster" / name, db=SimpleNamespace(pool=AsyncMock()))
     daemon.config = load_config(_ROOT / "roster" / name)
-    daemon.config.runtime_seed = replace(daemon.config.runtime_seed, core_groups=None)
+    daemon.config.runtime_seed = daemon.config.runtime_seed.model_copy(update={"core_groups": None})
     daemon.config.modules = {}
     daemon.mcp = FastMCP(f"authorization-core-{name}")
     daemon.spawner = MagicMock()
@@ -194,13 +199,85 @@ async def _provider_catalogs():
     assert not errors, errors
 
 
+def _catalog_runtime_databases(monkeypatch: pytest.MonkeyPatch):
+    """Establish actual owner Databases while keeping driver I/O in memory.
+
+    Runtime role validation, verification, codec setup and private derivation
+    stay real. Only asyncpg connection/pool creation is replaced; these fake
+    driver results are software setup, never PostgreSQL authorization evidence.
+    """
+    from butlers.db import Database
+
+    databases = []
+
+    def connection():
+        conn = AsyncMock()
+        conn.terminate = MagicMock()
+        conn.fetchval.return_value = True
+        return conn
+
+    async def connect(**kwargs):
+        return connection()
+
+    async def create_pool(**kwargs):
+        conn = connection()
+        await kwargs["init"](conn)
+        setup = kwargs.get("setup")
+        if setup is not None:
+            await setup(conn)
+        pool = AsyncMock()
+        pool.fetchval.return_value = None
+
+        class Acquisition:
+            async def get(self):
+                if setup is not None:
+                    await setup(conn)
+                return conn
+
+            def __await__(self):
+                return self.get().__await__()
+
+            async def __aenter__(self):
+                return await self.get()
+
+            async def __aexit__(self, *exc):
+                await pool.release(conn)
+
+        pool.acquire = MagicMock(side_effect=Acquisition)
+        databases.append(kwargs["init"].__self__)
+        return pool
+
+    monkeypatch.setattr("butlers.db.asyncpg.connect", AsyncMock(side_effect=connect))
+    monkeypatch.setattr("butlers.db.asyncpg.create_pool", AsyncMock(side_effect=create_pool))
+
+    def primary_database(schema):
+        db = Database(
+            db_name="butlers",
+            schema=schema,
+            role=f"butler_{schema}_rw",
+            host="localhost",
+            port=5432,
+            user="catalog-fixture",
+            password=None,
+            ssl=None,
+            min_pool_size=1,
+            max_pool_size=1,
+        )
+        return db
+
+    async def close_databases():
+        for db in reversed(databases):
+            await db.close()
+        databases.clear()
+
+    return primary_database, close_databases
+
+
 async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Execute native registration and wrapping, never provider or handler bodies."""
-    from pathlib import Path
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import MagicMock
 
     from butlers.config import load_config
     from butlers.core.tool_catalog import validate_authorization_catalog
@@ -208,33 +285,21 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
     from butlers.daemon import ButlerDaemon
     from butlers.modules.registry import default_registry
 
-    roster = Path(__file__).resolve().parents[2] / "roster"
+    roster = _THIS_FILE.parents[2] / "roster"
     registry = default_registry()
     await _provider_catalogs()
     for variant in ("general", "switchboard", "messenger", "relationship", "chronicler"):
         synthetic = await _complete_core_catalog(variant)
         validate_authorization_catalog(synthetic, store_writers=STORE_WRITERS)
-    # Native private-memory pool construction is part of registration; opening
-    # a database is outside this definition gate. Keep its actual config intact.
-    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    # Keep real owner/private-memory establishment, with no driver network I/O.
+    new_runtime_database, close_runtime_databases = _catalog_runtime_databases(monkeypatch)
     catalogs = {}
     for directory in sorted(roster.iterdir()):
         if not (directory / "butler.toml").exists():
             continue
         daemon = ButlerDaemon(
             directory,
-            db=SimpleNamespace(
-                pool=AsyncMock(),
-                schema=directory.name,
-                db_name="butlers",
-                host="localhost",
-                port=5432,
-                user="catalog-fixture",
-                password=None,
-                ssl=None,
-                min_pool_size=1,
-                max_pool_size=1,
-            ),
+            db=new_runtime_database(directory.name),
         )
         daemon.config = load_config(directory)
         daemon.mcp = FastMCP(f"authorization-{directory.name}")
@@ -243,6 +308,7 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
         daemon._module_configs = daemon._validate_module_configs()
         before_tasks = asyncio.all_tasks()
         try:
+            await daemon.db.connect()
             daemon._register_core_tools()
             await daemon._register_module_tools()
             await daemon._apply_approval_gates()
@@ -252,6 +318,7 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
                 assert descriptor.owner_domain == daemon.config.name
                 if descriptor.llm_presentable:
                     assert descriptor.authorization_complete, descriptor.canonical_name
+                    assert descriptor.approval_policy["mode"] in {"default", "always_per_event"}
             catalogs[directory.name] = catalog
             assert not daemon._tool_registration_failures
             assert all(status.status != "failed" for status in daemon._module_statuses.values())
@@ -261,6 +328,7 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
                 task.cancel()
             if registration_tasks:
                 await asyncio.gather(*registration_tasks, return_exceptions=True)
+            await close_runtime_databases()
     assert set(catalogs) == {p.name for p in roster.glob("*/butler.toml") for p in [p.parent]}
     for owner in ("messenger", "relationship"):
         response = catalogs[owner]["calendar_respond"]
@@ -270,7 +338,12 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
         assert not {"_command_id", "_command_digest"} & response.input_schema["properties"].keys()
         assert response.approval_policy["enabled"] is True
         assert response.approval_policy["configured_gate"] is True
+        assert response.approval_policy["mode"] == "always_per_event"
+        # A module-channel declaration carries categories like the inventory.
+        assert set(response.categories) == CATEGORIES
     union = {d.canonical_name: d for c in catalogs.values() for d in c.descriptors}
+    for descriptor in union.values():
+        assert descriptor.categories is not None, descriptor.canonical_name
     assert "drive_share_file" not in union
     assert "drive_write_file" in union
     assert union["drive_write_file"].effect_class == "communicate"
@@ -314,7 +387,6 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
 
 
 async def test_authorization_catalog_rejects_real_definition_mutations() -> None:
-    from dataclasses import replace
 
     from butlers.core.tool_catalog import (
         AUTHORIZATION_FIELDS,
@@ -354,12 +426,22 @@ async def test_authorization_catalog_rejects_real_definition_mutations() -> None
         ("idempotency", "sometimes"),
         ("owner_authority", "yes"),
         ("resource_params", ("absent_parameter",)),
+        ("selection_bound", {"absent_parameter": True}),
+        ("selection_bound", {}),
+        ("selection_bound", {"key": "yes"}),
         ("safety_args", ("_command_digest",)),
+        ("alias_resolvers", {"absent_parameter": "calendar"}),
+        ("alias_resolvers", {"key": "unknown_kind"}),
+        ("alias_resolvers", (("key", "calendar"),)),
         ("owner_domain", " "),
         ("approval_policy", "enabled"),
         ("recipient_params", RecipientParameters(default_owner_condition=True)),
         ("recipient_params", RecipientParameters(undeterminable_condition=" ")),
         ("recipient_params", RecipientParameters(argument_names=("key", "key"))),
+        ("categories", ("horoscope",)),
+        ("categories", ("health", "health")),
+        ("categories", ("routine", "health")),
+        ("categories", ["health"]),
     ):
         invalid = replace(reader, **{field_name: malformed})
         assert not invalid.grantable
@@ -416,16 +498,37 @@ async def test_authorization_catalog_rejects_real_definition_mutations() -> None
             validate_authorization_catalog(
                 replace(catalog, descriptors=(trusted,)), store_writers=writers
             )
-    with pytest.raises(ToolCatalogError, match="stamp producer"):
+    with pytest.raises(ToolCatalogError, match="audited stamp producer"):
         validate_authorization_catalog(
             changed(replace(reader, output_trust="stamped")), store_writers=STORE_WRITERS
         )
+    audited = replace(
+        reader,
+        canonical_name="note_list",
+        module_name="relationship",
+        output_trust="stamped",
+        unknown_output_source=False,
+        read_stores=("facts",),
+    )
+    only = lambda item: replace(catalog, descriptors=(item,))  # noqa: E731
+    validate_authorization_catalog(only(audited), store_writers=STORE_WRITERS)
+    # A declaration that outgrows its audit is refused until it is audited again.
+    with pytest.raises(ToolCatalogError, match="unaudited stores: public.entities"):
+        validate_authorization_catalog(
+            only(replace(audited, read_stores=("facts", "public.entities"))),
+            store_writers=STORE_WRITERS,
+        )
+    for unknown in (
+        replace(audited, unknown_output_source=True),
+        replace(audited, effect_class="record", write_stores=()),
+    ):
+        with pytest.raises(ToolCatalogError, match="read of known provenance"):
+            validate_authorization_catalog(only(unknown), store_writers=STORE_WRITERS)
 
 
 async def test_authorization_policy_freezes_and_changes_generation_only() -> None:
-    policy = {"enabled": True, "constraints": {"recipient": ["owner"]}}
+    policy = {"mode": "default", "enabled": True, "constraints": {"recipient": ["owner"]}}
     parties = ["query"]
-    from dataclasses import replace
 
     from butlers.core.tool_catalog import RecipientParameters
 
@@ -447,11 +550,13 @@ async def test_authorization_policy_freezes_and_changes_generation_only() -> Non
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("query",),
+        selection_bound={"query": False},
         safety_args=(),
         approval_policy=policy,
         idempotency="none",
         owner_authority=False,
         recipient_params=RecipientParameters(argument_names=parties),
+        categories=tuple(sorted(CATEGORIES)),
     )
 
     async def build():
@@ -531,7 +636,6 @@ asyncio.run(main())
 
 
 async def test_module_declarations_cannot_override_actual_owner_or_policy(monkeypatch) -> None:
-    from dataclasses import replace
 
     from butlers.modules.calendar import CalendarModule
 
@@ -570,4 +674,198 @@ async def test_module_declarations_cannot_override_actual_owner_or_policy(monkey
 
     monkeypatch.setattr(CalendarModule, "tool_metadata", incorrect_policy)
     with pytest.raises(ToolCatalogError, match="calendar_respond.*approval_policy"):
+        await _roster_catalog("messenger")
+
+
+def test_every_calendar_id_param_declares_the_calendar_alias_resolver() -> None:
+    """bu-dhloi1.30: 'primary' and trimmed ids resolve before owner law, then pin."""
+    from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
+
+    calendar_params = {
+        (entry.canonical_name, param)
+        for entry in TOOL_PRESENTATION_INVENTORY
+        for param in entry.resource_params or ()
+        if param in {"calendar_id", "calendar_ids"}
+    }
+    declared = {
+        (entry.canonical_name, param)
+        for entry in TOOL_PRESENTATION_INVENTORY
+        for param, kind in (entry.alias_resolvers or {}).items()
+        if kind == "calendar"
+    }
+    assert calendar_params and declared == calendar_params
+
+
+def test_no_person_identifier_is_declared_alias_free() -> None:
+    """bu-dhloi1.34: a merge makes every entity or contact id an alias of a survivor.
+
+    An entity id narrows only through the broker's merge-aware resolver. A merged-away
+    contact leaves no survivor pointer to resolve, so a contact id cannot narrow.
+    """
+    from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
+
+    for entry in TOOL_PRESENTATION_INVENTORY:
+        resolvers = dict(entry.alias_resolvers or {})
+        for param in entry.alias_free_params or ():
+            assert "entity" not in param and "contact" not in param, entry.canonical_name
+        for param, kind in resolvers.items():
+            assert (kind == "entity") == ("entity" in param), entry.canonical_name
+            assert "contact" not in param, entry.canonical_name
+    declared = {
+        param
+        for entry in TOOL_PRESENTATION_INVENTORY
+        for param, kind in (entry.alias_resolvers or {}).items()
+        if kind == "entity"
+    }
+    assert declared == {
+        "counterparty_entity_id",
+        "entity_id",
+        "entity_ids",
+        "from_entity_id",
+        "object_entity_id",
+        "participant_entity_id",
+        "source_entity_id",
+        "target_entity_id",
+        "to_entity_id",
+    }
+
+
+def test_relationship_entity_tools_narrow_like_their_memory_twins() -> None:
+    from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
+
+    resolvers = {
+        entry.canonical_name: dict(entry.alias_resolvers or {})
+        for entry in TOOL_PRESENTATION_INVENTORY
+    }
+    for name in ("entity_get", "entity_neighbors", "entity_update"):
+        assert resolvers[name] == resolvers[f"memory_{name}"] == {"entity_id": "entity"}
+
+
+def test_inventory_marks_every_resource_param_selection_bound_or_not() -> None:
+    """REQ-capability-authorization-002/-018: each resource param carries an explicit mark."""
+    from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
+
+    unmarked = [
+        (entry.canonical_name, entry.resource_params, entry.selection_bound)
+        for entry in TOOL_PRESENTATION_INVENTORY
+        if not isinstance(entry.selection_bound, dict)
+        or set(entry.selection_bound) != set(entry.resource_params or ())
+        or any(not isinstance(flag, bool) for flag in entry.selection_bound.values())
+    ]
+    assert not unmarked, unmarked
+
+    # Selection-bound is true only where a spec requires the scope be exactly what the owner
+    # picked (REQ-capability-authorization-018; RFC 0038 D7). A bound param makes its capability
+    # neither listed nor callable without an owner-surface selection record, and obligation,
+    # third-party, caused and message-admitted goals never carry one, so no current param
+    # qualifies. Adding the first one is a deliberate edit to this pin.
+    bound = {
+        (entry.module_name, param)
+        for entry in TOOL_PRESENTATION_INVENTORY
+        for param, flag in entry.selection_bound.items()
+        if flag
+    }
+    assert bound == set()
+
+
+async def test_finance_fixed_warning_read_is_registered_sensitive_and_never_owner_authority():
+    catalog = await _roster_catalog("finance")
+    descriptor = catalog["subscription_warning_still_relevant"]
+    assert descriptor.owner_domain == "finance"
+    assert descriptor.effect_class == "read" and descriptor.owner_authority is False
+    assert descriptor.output_sensitivity == "sensitive"
+    assert descriptor.read_stores == ("subscriptions",) and descriptor.write_stores == ()
+    assert descriptor.llm_presentable is False
+
+
+async def test_declared_approval_modes_survive_real_roster_publication(monkeypatch) -> None:
+    """D4/D13 mode is declared by the tool, independent of configured gate facts."""
+    from butlers.core.catalog_publication import decode_publication, publication
+
+    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    catalog = await _roster_catalog("messenger")
+    restored = decode_publication(publication(catalog, "messenger"), "messenger")
+    assert restored.generation_digest == catalog.generation_digest
+    for snapshot in (catalog, restored):
+        response = snapshot["calendar_respond"]
+        assert response.approval_policy["mode"] == "always_per_event"
+        assert response.approval_policy["enabled"] is True
+        assert response.approval_policy["configured_gate"] is True
+        assert response.grantable
+        # A configured gate is not an always-mode declaration.
+        assert snapshot["state_get"].approval_policy["mode"] == "default"
+        assert snapshot["calendar_response_fence_status"].approval_policy["mode"] == "default"
+        for field in ("enabled", "configured_gate"):
+            policy = {**response.approval_policy, field: False}
+            unready = replace(response, approval_policy=policy)
+            assert unready.authorization_complete
+            assert not unready.grantable
+            ungated = replace(
+                snapshot,
+                descriptors=tuple(
+                    unready if d.canonical_name == response.canonical_name else d
+                    for d in snapshot.descriptors
+                ),
+            )
+            with pytest.raises(ToolCatalogError, match="always_per_event.*calendar_respond"):
+                validate_authorization_catalog(ungated, store_writers=STORE_WRITERS)
+        with pytest.raises(TypeError):
+            response.approval_policy["mode"] = "default"
+
+
+async def test_alias_resolvers_survive_real_roster_publication(monkeypatch) -> None:
+    """bu-dhloi1.30: the broker reads the resolver kind from the published catalog."""
+    from butlers.core.catalog_publication import decode_publication, publication
+
+    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    catalog = await _roster_catalog("general")
+    restored = decode_publication(publication(catalog, "general"), "general")
+    for snapshot in (catalog, restored):
+        events = snapshot["calendar_list_events"]
+        assert dict(events.alias_resolvers) == {"calendar_id": "calendar"}
+        assert dict(snapshot["state_get"].alias_resolvers) == {}
+    with pytest.raises(TypeError):
+        restored["calendar_list_events"].alias_resolvers["calendar_id"] = "entity"
+
+
+@pytest.mark.parametrize("mode", [None, "", "sometimes", True, 1, [], {}])
+async def test_final_catalog_refuses_missing_or_invalid_approval_mode(mode) -> None:
+    catalog = await _complete_core_catalog("general")
+    reader = catalog["state_get"]
+    assert reader.authorization_complete and reader.grantable
+    policy = {} if mode is None else {"mode": mode}
+    broken = replace(reader, approval_policy=policy)
+    assert not broken.authorization_complete
+    assert not broken.grantable
+    replaced = replace(
+        catalog,
+        descriptors=tuple(
+            broken if d.canonical_name == "state_get" else d for d in catalog.descriptors
+        ),
+    )
+    with pytest.raises(ToolCatalogError, match="state_get.*approval_policy"):
+        validate_authorization_catalog(replaced, store_writers=STORE_WRITERS)
+
+
+@pytest.mark.parametrize(
+    "policy", [{}, {"mode": "sometimes"}, {"mode": "always_per_event", "enabled": False}]
+)
+async def test_finalizer_refuses_invalid_or_gate_overriding_declaration(
+    monkeypatch, policy
+) -> None:
+    from butlers.modules.calendar import CalendarModule
+
+    original = CalendarModule.tool_metadata
+
+    def invalid_declaration(module):
+        metadata = original(module)
+        if "calendar_respond" in metadata:
+            metadata["calendar_respond"] = replace(
+                metadata["calendar_respond"], approval_policy=policy
+            )
+        return metadata
+
+    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    monkeypatch.setattr(CalendarModule, "tool_metadata", invalid_declaration)
+    with pytest.raises(ToolCatalogError, match="approval_policy.*calendar_respond"):
         await _roster_catalog("messenger")

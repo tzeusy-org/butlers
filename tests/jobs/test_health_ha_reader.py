@@ -12,12 +12,13 @@ Verifies that:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from butlers.jobs.health_ha_reader import build_ha_environment_reader
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.records import records
 
 pytestmark = pytest.mark.unit
 
@@ -27,28 +28,9 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def _make_pool(*, snapshot_rows: list[dict] | None = None) -> MagicMock:
-    """Build a mock pool that returns snapshot_rows for ha_entity_snapshot queries."""
-    pool = MagicMock()
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.fetchval = AsyncMock(return_value=0)
-    pool.execute = AsyncMock()
-
-    def _fetch_side_effect(sql: str, *args: Any, **kwargs: Any) -> list[Any]:
-        if "ha_entity_snapshot" in sql:
-            if snapshot_rows is not None:
-                return [_make_row(r) for r in snapshot_rows]
-            return []
-        return []
-
-    pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
-    return pool
-
-
-def _make_row(data: dict) -> MagicMock:
-    row = MagicMock()
-    row.__getitem__ = lambda self, key: data[key]
-    return row
+def _snapshot_pool(entity_ids: list[str]) -> FakePool:
+    """A health pool whose one ``ha_entity_snapshot`` read lists *entity_ids*."""
+    return fake_pool(fetch=records({"entity_id": entity_id} for entity_id in entity_ids))
 
 
 def _make_ha_ctx(ha_url: str | None, ha_token: str | None) -> MagicMock:
@@ -91,7 +73,7 @@ def _mock_hjc_class(
 
 async def test_build_ha_environment_reader_no_credentials_returns_none():
     """Returns None when HA URL is absent — no credentials configured."""
-    pool = _make_pool()
+    pool = fake_pool()  # credentials come from the patched HomeJobContext; no reads
 
     with patch(
         "butlers.jobs.health_ha_reader.HomeJobContext",
@@ -104,7 +86,7 @@ async def test_build_ha_environment_reader_no_credentials_returns_none():
 
 async def test_build_ha_environment_reader_no_token_returns_none():
     """Returns None when token is absent even if URL is set."""
-    pool = _make_pool()
+    pool = fake_pool()  # credentials come from the patched HomeJobContext; no reads
 
     with patch(
         "butlers.jobs.health_ha_reader.HomeJobContext",
@@ -117,7 +99,7 @@ async def test_build_ha_environment_reader_no_token_returns_none():
 
 async def test_build_ha_environment_reader_with_credentials_returns_callable():
     """Returns an async callable when both URL and token are present."""
-    pool = _make_pool()
+    pool = fake_pool()  # credentials come from the patched HomeJobContext; no reads
 
     with patch(
         "butlers.jobs.health_ha_reader.HomeJobContext",
@@ -136,7 +118,7 @@ async def test_build_ha_environment_reader_with_credentials_returns_callable():
 
 async def test_reader_returns_empty_when_no_env_entities():
     """Reader returns [] when ha_entity_snapshot has no environmental sensors."""
-    pool = _make_pool(snapshot_rows=[{"entity_id": "switch.living_room_light"}])
+    pool = _snapshot_pool(["switch.living_room_light"])
 
     with patch(
         "butlers.jobs.health_ha_reader.HomeJobContext",
@@ -151,8 +133,9 @@ async def test_reader_returns_empty_when_no_env_entities():
 
 async def test_reader_returns_empty_when_snapshot_table_missing():
     """Reader returns [] when ha_entity_snapshot query raises (table not yet created)."""
-    pool = MagicMock()
-    pool.fetch = AsyncMock(side_effect=Exception("relation 'ha_entity_snapshot' does not exist"))
+    pool = fake_pool(
+        fetch=AsyncMock(side_effect=Exception("relation 'ha_entity_snapshot' does not exist"))
+    )
 
     with patch(
         "butlers.jobs.health_ha_reader.HomeJobContext",
@@ -184,12 +167,7 @@ async def test_reader_normalizes_all_supported_environment_entity_aliases():
         "switch.bedroom_fan",
         "binary_sensor.motion_detected",
     ]
-    pool = _make_pool(
-        snapshot_rows=[
-            *({"entity_id": entity_id} for entity_id, _, _ in aliases),
-            *({"entity_id": entity_id} for entity_id in rejected_entity_ids),
-        ]
-    )
+    pool = _snapshot_pool([*(entity_id for entity_id, _, _ in aliases), *rejected_entity_ids])
     history_response = [
         [
             {
@@ -258,9 +236,7 @@ async def test_reader_classifies_all_supported_comfort_thresholds():
         ("air_quality", "60.0", True),
         ("air_quality", "40.0", False),
     ]
-    pool = _make_pool(
-        snapshot_rows=[{"entity_id": entity_id} for entity_id in entity_for_metric.values()]
-    )
+    pool = _snapshot_pool(list(entity_for_metric.values()))
     history_response = [
         [
             {
@@ -295,7 +271,7 @@ async def test_reader_classifies_all_supported_comfort_thresholds():
 
 async def test_reader_returns_empty_on_ha_api_error():
     """Reader returns [] when HA REST API call fails — no exception raised."""
-    pool = _make_pool(snapshot_rows=[{"entity_id": "sensor.bedroom_temperature"}])
+    pool = _snapshot_pool(["sensor.bedroom_temperature"])
 
     # cm_instance.__aenter__ raising simulates a connection error
     mock_cls = _mock_hjc_class(ha_url="http://ha.local:8123", ha_token="tok_abc")
@@ -311,7 +287,7 @@ async def test_reader_returns_empty_on_ha_api_error():
 
 async def test_reader_returns_empty_on_ha_non_200():
     """Reader returns [] when HA history API returns a non-200 status."""
-    pool = _make_pool(snapshot_rows=[{"entity_id": "sensor.bedroom_temperature"}])
+    pool = _snapshot_pool(["sensor.bedroom_temperature"])
 
     mock_response = MagicMock()
     mock_response.status_code = 503

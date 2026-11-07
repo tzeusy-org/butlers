@@ -29,21 +29,14 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.ingestion_connectors import _get_db_manager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_row(data: dict) -> MagicMock:
-    """Build a mock asyncpg record."""
-    row = MagicMock()
-    row.__getitem__ = lambda self, k: data[k]
-    row.get = lambda k, default=None: data.get(k, default)
-    return row
 
 
 def _registry_row(
@@ -58,10 +51,10 @@ def _registry_row(
     parent_endpoint_identity: str | None = None,
     checkpoint_cursor: str | None = None,
     checkpoint_updated_at: dt.datetime | None = None,
-) -> MagicMock:
+) -> Record:
     if first_seen_at is None:
         first_seen_at = dt.datetime(2024, 1, 1, 0, 0, 0, tzinfo=dt.UTC)
-    return _make_row(
+    return Record(
         {
             "connector_type": connector_type,
             "endpoint_identity": endpoint_identity,
@@ -89,8 +82,8 @@ def _hourly_row(
     hour_bucket: dt.datetime,
     event_count: int,
     source: str = "ingested",
-) -> MagicMock:
-    return _make_row(
+) -> Record:
+    return Record(
         {
             "connector_type": connector_type,
             "endpoint_identity": endpoint_identity,
@@ -113,7 +106,7 @@ def _make_pool_with_fetch_sequence(fetch_calls: list[list]) -> AsyncMock:
 def _wire_db(app: FastAPI, pool: AsyncMock) -> None:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +161,20 @@ async def test_hourly_events_correct_bucket_placement(app: FastAPI) -> None:
             event_count=7,
         ),
     ]
-    pool = _make_pool_with_fetch_sequence([registry_rows, hourly_rows])
+    # Heartbeats in every closed hour except 5-7; recording began before the window.
+    listening_rows = [
+        Record(
+            {
+                "connector_type": "gmail",
+                "endpoint_identity": "user@example.com",
+                "recording_since": window_start - dt.timedelta(days=3),
+                "heartbeat_buckets": [
+                    window_start + dt.timedelta(hours=i) for i in range(23) if i not in (5, 6, 7)
+                ],
+            }
+        )
+    ]
+    pool = _make_pool_with_fetch_sequence([registry_rows, hourly_rows, [], listening_rows])
     _wire_db(app, pool)
 
     from butlers.api.routers import ingestion_pipeline as _pip_mod
@@ -182,12 +188,26 @@ async def test_hourly_events_correct_bucket_placement(app: FastAPI) -> None:
             resp = await client.get("/api/ingestion/connectors/summaries")
 
     assert resp.status_code == 200
-    hourly = resp.json()["data"]["connectors"][0]["hourly_events"]
+    connector = resp.json()["data"]["connectors"][0]
+    hourly = connector["hourly_events"]
     assert len(hourly) == 24
     assert hourly[0] == 5  # oldest bucket
     assert hourly[23] == 7  # newest bucket
     # All middle buckets should be zero
     assert all(v == 0 for v in hourly[1:23])
+    # Every series is keyed by the response's declared bucket starts: 24
+    # consecutive UTC hours ending at the current one (bu-s11n0s.5.1).
+    starts = [dt.datetime.fromisoformat(s) for s in resp.json()["data"]["hourly_bucket_starts"]]
+    assert starts == [window_start + dt.timedelta(hours=i) for i in range(24)]
+    # Listening shares the hourly_events window, slot for slot.
+    listening = connector["hourly_listening"]
+    assert listening[5:8] == ["deaf"] * 3
+    assert listening[23] == "unknown"  # open hour: its heartbeat may still come
+    assert listening.count("live") == 20
+    assert resp.json()["data"]["listening_available"] is True
+    listening_sql, *listening_args = pool.fetch.await_args_list[3].args
+    assert "connector_heartbeat_log" in listening_sql
+    assert listening_args[0] == window_start
 
 
 async def test_hourly_events_per_connector_isolation(app: FastAPI) -> None:
@@ -271,35 +291,6 @@ async def test_hourly_events_are_db_backed(app: FastAPI) -> None:
     assert sum(hourly) == 99
 
 
-async def test_hourly_events_fallback_to_zeros_on_query_failure(app: FastAPI) -> None:
-    """If the hourly timeseries fetch fails, connectors get all-zeros; response still 200."""
-    registry_rows = [_registry_row(connector_type="gmail", endpoint_identity="user@example.com")]
-
-    pool = AsyncMock()
-    # First call (registry) succeeds; second call (hourly) raises
-    pool.fetch = AsyncMock(side_effect=[registry_rows, Exception("DB error")])
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.execute = AsyncMock(return_value=None)
-    _wire_db(app, pool)
-
-    from butlers.api.routers import ingestion_pipeline as _pip_mod
-
-    _pip_mod._pipeline_cache.clear()
-
-    with patch.dict("os.environ", {"PROMETHEUS_URL": ""}, clear=False):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/ingestion/connectors/summaries")
-
-    assert resp.status_code == 200
-    connectors = resp.json()["data"]["connectors"]
-    assert len(connectors) == 1
-    hourly = connectors[0]["hourly_events"]
-    assert len(hourly) == 24
-    assert all(v == 0 for v in hourly)
-
-
 async def test_today_messages_ingested_reflects_24h_sum_not_lifetime_counter(
     app: FastAPI,
 ) -> None:
@@ -316,7 +307,7 @@ async def test_today_messages_ingested_reflects_24h_sum_not_lifetime_counter(
     window_start = now - dt.timedelta(hours=23)
 
     registry_rows = [
-        _make_row(
+        Record(
             {
                 "connector_type": "owntracks",
                 "endpoint_identity": "phone",
@@ -592,7 +583,9 @@ async def test_hourly_events_available_false_on_query_failure(app: FastAPI) -> N
     registry_rows = [_registry_row(connector_type="gmail", endpoint_identity="user@example.com")]
 
     pool = AsyncMock()
-    pool.fetch = AsyncMock(side_effect=[registry_rows, Exception("DB error"), []])
+    pool.fetch = AsyncMock(
+        side_effect=[registry_rows, Exception("DB error"), [], Exception("heartbeat log down")]
+    )
     pool.fetchrow = AsyncMock(return_value=None)
     pool.execute = AsyncMock(return_value=None)
     _wire_db(app, pool)
@@ -611,8 +604,15 @@ async def test_hourly_events_available_false_on_query_failure(app: FastAPI) -> N
     data = resp.json()["data"]
     assert data["hourly_events_available"] is False
     connector = data["connectors"][0]
-    assert connector["hourly_events"] == [0] * 24
-    assert connector["hourly_filtered_events"] == [0] * 24
+    # A failed count read reports no buckets and no 24h total (bu-s11n0s.5.1),
+    # never 24 fabricated zeros a client could draw as a quiet day.
+    assert connector["hourly_events"] == []
+    assert connector["hourly_filtered_events"] == []
+    assert connector["today"]["messages_ingested"] is None
+    assert len(data["hourly_bucket_starts"]) == 24
+    # A failed heartbeat read never renders as deaf hours.
+    assert data["listening_available"] is False
+    assert connector["hourly_listening"] == ["unknown"] * 24
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,16 @@ owner-attention episode per active fleet or `patrol_overdue` condition. See
 [Runtime Attention](runtime-attention.md#fleet-and-qa-condition-attention).
 `patrol_stopped_by_policy` is an intentional hold and never pages.
 
+The controller callback and semantic readiness select the startup QA contract
+through `core.qa.patrol_provenance.qa_patrol_contract`. It returns the first
+exact-name `qa` config's existing contract object, including `None` for a
+missing or disabled contract; a later duplicate is not a fallback. Readiness
+first rejects duplicate roster names or ports. The lookup does no I/O and does
+not consult registry activity, rebuild the digest, or enable live reconfiguration.
+A configured but registry-stale QA retains its contract for overdue observation.
+Without a contract, readiness denies the QA check and the controller skips only
+patrol assurance; fleet reconciliation and attention retain their existing flow.
+
 ## Conditions
 
 | Source | Identity | Opens when | Resolves when |
@@ -66,12 +76,15 @@ The migration does not backfill any of this. Right after upgrading, the
 
 ## Fleet-condition handoff
 
-`BUTLERS_FLEET_CONDITION_HANDOFF` defaults to `0` in every Compose service.
-In the Helm chart, `values.yaml` keeps `"0"` and `values.dev.yaml` sets `"1"`
-in `commonEnv`, which reaches the Dashboard API and the daemon workloads. Per
-environment: dev on (once the chart is rolled out, an owner/ops step), prod off
-until owner decision bu-s6tb7h. Set it to `1` in both the Dashboard API and the daemon process to switch on
-the handoff:
+`BUTLERS_FLEET_CONDITION_HANDOFF` defaults to `1` alongside
+`BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER` in the shared/dev Helm `commonEnv`
+and every routing-capable base/hotreload Compose service, following the
+owner's 2026-11-04 `receiver-routing-cutover` choice A (`bu-wh5gr1.8`). Compose
+retains explicit overrides, including `0` for rollback. These source defaults
+perform no deployment or restart and waive no readiness or legacy-retirement
+proof; see [Receiver-derived routing](receiver-derived-routing-cutover.md#legacy-retirement-remains-gated).
+An authorized rollout must set matching modes in the Dashboard API and daemon
+processes. With the handoff at `1`:
 
 - QA's `infra_state` source stops emitting per-butler `ButlerHeartbeatStale`
   findings. Instead it records one `FleetControlCondition` finding whose
@@ -136,3 +149,35 @@ The Dashboard log line `Shadow fleet observation: complete=... expected=...`
 shows whether the last cycle could resolve anything. A logged
 `Fleet condition controller: ... failed` error means that check wrote nothing
 on that cycle. The other check still ran.
+
+## Readiness regression evidence and limits
+
+`tests/integration/test_infra_state_views_migration.py` exercises the production
+`FleetReadiness` queries against dedicated, fully migrated core + Switchboard
+clones. Its two scenarios cover qualifying patrol provenance and transaction
+visibility, receiver/policy faults, observer/cache expiry, and read-only cached
+requests. The receiver rows are seeded test evidence; only the external route
+preflight and named job-health companion are synthetic inputs. This does not
+certify live receiver probes, supervision, deployment, or external monitoring.
+Each scenario closes its pool in `finally`; projection fault injection restores
+the table name in its own clone and never changes the module-shared database.
+No applied migration or runtime data changes when these test additions roll back.
+
+The mounted exact-route test in `tests/api/test_fleet_readiness.py` holds the
+public exception to `GET /ready`: anonymous HEAD and POST use owner auth,
+`/ready/` is 404 without redirect, unavailable/expired snapshots return only
+fixed Boolean categories, and cached reads cannot open the database or preflight.
+Native outcomes and deliberate query-filter inverses require actual PostgreSQL
+execution; collection and synthetic unit passes cannot supply that evidence.
+
+Deployment completion is a separate prerequisite, `bu-fvw4ap.5`, consuming Q4's
+single endpoint. The supported Helm wrapper `scripts/k8s/record-deploy.sh` and
+retained `butlers deploy` consumer use `deployments await-ready`'s sustained gate:
+two distinct post-window observer cycles, two increasing current-digest qualifying
+patrol completions, and true readiness beyond the longest TTL. A false sample
+resets the window; the derived deadline and fixed rollback categories fail closed.
+The dev Compose script and container/chart process-health probes remain `/health`
+and do not prove semantic deployment completion. See the deployment runbooks and
+`tests/core/test_deploy_readiness.py`, `tests/cli/test_cli_deploy.py`, and
+`tests/scripts/test_k8s_record_deploy_script.py` for the allocated consumer seams.
+Neither Q5's merge alone nor these database tests prove an actual deployment.

@@ -30,7 +30,8 @@ import type {
   ModelCatalogCreate,
   ModelCatalogUpdate,
   ModelPriorityDelta,
-  ButlerModelOverrideUpsert,
+  ButlerModelOverridesWrite,
+  ButlerModelOverrideReason,
   TokenLimitsRequest,
   ResetUsageRequest,
 } from "@/api/types.ts";
@@ -149,7 +150,7 @@ export function useButlerModelOverrides(butlerName: string) {
 export function useUpsertButlerModelOverrides(butlerName: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: ButlerModelOverrideUpsert[]) =>
+    mutationFn: (body: ButlerModelOverridesWrite) =>
       upsertButlerModelOverrides(butlerName, body),
     onSuccess: () => {
       queryClient.invalidateQueries({
@@ -163,8 +164,8 @@ export function useUpsertButlerModelOverrides(butlerName: string) {
 export function useDeleteButlerModelOverride(butlerName: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (overrideId: string) =>
-      deleteButlerModelOverride(butlerName, overrideId),
+    mutationFn: ({ overrideId, ...body }: ButlerModelOverrideReason & { overrideId: string }) =>
+      deleteButlerModelOverride(butlerName, overrideId, body),
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ["butler-model-overrides", butlerName],

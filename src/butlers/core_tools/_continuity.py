@@ -3,11 +3,11 @@
 Backs the general task-continuity ledger (bu-2jtfw.13): a recurring task
 opted into ``continuity=true`` calls ``carry_forward`` to record what its run
 concluded, and the scheduler's dispatch seam
-(:func:`butlers.core.scheduler._continuity_block_for_task`) injects that
+(:func:`butlers.core.scheduler.prompt._continuity_block_for_task`) injects that
 record into the next opted-in run's prompt.
 
 ``continuity=true`` is restricted to PROMPT-mode schedules (see
-``ScheduleConfig`` validation): it exists to carry narrative conclusions
+``ScheduleSpec`` validation): it exists to carry narrative conclusions
 forward for LLM-authored digests and reviews. Every staffer butler
 (concierge, messenger, switchboard, qa) currently declares only job-mode
 schedules -- deterministic Python handlers, not narrative prompts -- so

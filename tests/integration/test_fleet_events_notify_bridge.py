@@ -34,6 +34,8 @@ from butlers.api.fleet_events_bridge import run_fleet_events_listener
 from butlers.fleet_events import publish_fleet_event
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
+_THIS_FILE = Path(__file__).resolve()
+
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -53,11 +55,17 @@ def shared_db_url(postgres_container) -> str:
     database (RFC 0006). The Chronicler chain is migrated so its child-process
     fixture adapter writes a real projection row before it publishes.
     """
-    return create_migrated_test_db(
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    url = create_migrated_test_db(
         postgres_container,
         migration_db_name(),
         chains=["chronicler"],
+        schemas={"chronicler": "chronicler"},
+        revisions={"chronicler": "chronicler_029"},
     )
+    prepare_chronicler_current_head_sync(url)
+    return url
 
 
 @pytest.fixture(autouse=True)
@@ -137,7 +145,7 @@ async def _run_external_producer(producer: str, shared_db_url: str) -> int:
 
     environment = dict(os.environ)
     environment["BUTLERS_FLEET_EVENTS_TEST_DATABASE_URL"] = shared_db_url
-    repository_root = Path(__file__).resolve().parents[2]
+    repository_root = _THIS_FILE.parents[2]
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
@@ -339,7 +347,7 @@ async def test_calendar_and_chronicler_child_processes_reach_websocket(
             inspection_connection = await asyncpg.connect(shared_db_url)
             try:
                 durable_rows = await inspection_connection.fetchval(
-                    "SELECT count(*) FROM point_events WHERE source_ref = $1",
+                    "SELECT count(*) FROM chronicler.point_events WHERE source_ref = $1",
                     f"fleet-event-transport-proof:{chronicler_process_id}",
                 )
             finally:

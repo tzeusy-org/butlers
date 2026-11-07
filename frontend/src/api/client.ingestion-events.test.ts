@@ -24,8 +24,8 @@ function mockEventsResponse(events: unknown[] = []) {
   mockFetch.mockResolvedValueOnce({
     ok: true,
     status: 200,
-    json: async () => ({ data: events, meta: { next_cursor: null, has_more: false } }),
-    text: async () => JSON.stringify({ data: events, meta: { next_cursor: null, has_more: false } }),
+    json: async () => ({ items: events, next_cursor: null, limit: 50 }),
+    text: async () => JSON.stringify({ items: events, next_cursor: null, limit: 50 }),
     headers: { get: () => "application/json" },
   });
 }

@@ -87,13 +87,6 @@ attachment_type_distribution_total = get_or_create_counter(
     labelnames=["connector_type", "endpoint_identity", "media_type"],
 )
 
-# Health butler wellness ingest metrics
-health_wellness_ingest_total = get_or_create_counter(
-    "health_wellness_ingest_total",
-    "Total wellness ingest events by predicate and outcome",
-    labelnames=["predicate", "outcome"],
-)
-
 # Dunbar group-aware interaction gating (RFC 0013)
 interaction_gated_total = get_or_create_counter(
     "butlers_interaction_gated_total",

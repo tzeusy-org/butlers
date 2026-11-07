@@ -11,9 +11,10 @@ Kept in its own module (not in the pure ``gap_interview`` engine) so the engine
 stays I/O-free and telegram-agnostic — when the decision loop (RFC 0021) takes
 over the transport, this file is what gets swapped, nothing in the engine.
 
-Self-contained on purpose: it resolves the owner's telegram chat id from
-``public.entity_info`` and the bot token from ``butler_secrets`` (both readable
-from the chronicler pool's ``public`` search path) and POSTs ``sendMessage``
+It resolves the owner's telegram chat id from ``public.entity_info`` and the
+bot token through the daemon-selected CredentialStore (local, then explicitly
+configured fallback pools). A local pool alone cannot establish shared credential
+access. Tier 1 tokens never fall back to environment variables. It POSTs ``sendMessage``
 directly, rather than threading inline-keyboard support through the shared
 ``notify()`` → ``deliver`` → messenger → telegram chain. Owner-directed sends
 auto-approve on the owner's own verified channel, so no approval gate is
@@ -40,12 +41,18 @@ logger = logging.getLogger(__name__)
 _TELEGRAM_CHAT_INFO_TYPE = "telegram_chat_id"
 _TELEGRAM_TOKEN_SECRET = "BUTLER_TELEGRAM_TOKEN"
 
-# Button labels shown to the owner, paired with the answer they encode.
-_BUTTONS: tuple[tuple[str, GapInterviewAnswer], ...] = (
-    ("✅ Work day", GapInterviewAnswer.CONFIRM),
-    ("✏️ Not work", GapInterviewAnswer.CORRECT),
-    ("🚫 Dismiss", GapInterviewAnswer.DISMISS),
-)
+# Button label for each answer. A decision's ``options`` pick which are shown.
+_BUTTON_LABELS: dict[GapInterviewAnswer, str] = {
+    GapInterviewAnswer.CONFIRM: "✅ Work day",
+    GapInterviewAnswer.CORRECT: "✏️ Not work",
+    GapInterviewAnswer.DISMISS: "🚫 Dismiss",
+    GapInterviewAnswer.WORK: "💼 Work",
+    GapInterviewAnswer.SOCIAL: "🧑‍🤝‍🧑 Social",
+    GapInterviewAnswer.PLAY: "🎮 Play",
+    GapInterviewAnswer.EAT: "🍽️ Eat",
+    GapInterviewAnswer.REST: "🛋️ Rest",
+}
+_BUTTONS_PER_ROW = 3
 
 
 class TelegramInlineButtonTransport(GapInterviewTransport):
@@ -56,24 +63,22 @@ class TelegramInlineButtonTransport(GapInterviewTransport):
         self._api_base = api_base.rstrip("/")
         self._chat_id = chat_id
 
-    def _reply_markup(self, interview_id: str) -> dict[str, Any]:
-        return {
-            "inline_keyboard": [
-                [
-                    {
-                        "text": label,
-                        "callback_data": build_callback_data(interview_id, answer),
-                    }
-                    for label, answer in _BUTTONS
-                ]
-            ]
-        }
+    def _reply_markup(self, interview: GapInterview) -> dict[str, Any]:
+        buttons = [
+            {
+                "text": _BUTTON_LABELS[GapInterviewAnswer(option)],
+                "callback_data": build_callback_data(interview.interview_id, option),
+            }
+            for option in interview.decision.options
+        ]
+        rows = [buttons[i : i + _BUTTONS_PER_ROW] for i in range(0, len(buttons), _BUTTONS_PER_ROW)]
+        return {"inline_keyboard": rows}
 
     async def deliver_interview(self, interview: GapInterview) -> TransportResult:
         payload = {
             "chat_id": self._chat_id,
             "text": interview.decision.question,
-            "reply_markup": self._reply_markup(interview.interview_id),
+            "reply_markup": self._reply_markup(interview),
         }
         try:
             resp = await self._http.post(f"{self._api_base}/sendMessage", json=payload)
@@ -111,19 +116,20 @@ async def resolve_owner_chat_id(pool: Any) -> str | None:
     return chat_id.strip() if isinstance(chat_id, str) and chat_id.strip() else None
 
 
-async def resolve_bot_token(pool: Any) -> str | None:
-    """Bot token from ``butler_secrets`` via the chronicler pool's public reach."""
+async def resolve_bot_token(pool: Any, *, credential_store: Any | None = None) -> str | None:
+    """Resolve the Tier 1 token through the selected store, with DB-only local compatibility."""
     from butlers.credential_store import CredentialStore
 
     try:
-        return await CredentialStore(pool).resolve(_TELEGRAM_TOKEN_SECRET, env_fallback=True)
+        store = credential_store if credential_store is not None else CredentialStore(pool)
+        return await store.resolve(_TELEGRAM_TOKEN_SECRET)
     except Exception:  # noqa: BLE001 — missing secret ⇒ cannot send, treated as no token
-        logger.warning("gap interview: could not resolve %s", _TELEGRAM_TOKEN_SECRET, exc_info=True)
+        logger.warning("gap interview: bot token store unavailable; skipping send")
         return None
 
 
 async def build_telegram_transport(
-    pool: Any, *, http_client: Any
+    pool: Any, *, http_client: Any, credential_store: Any | None = None
 ) -> TelegramInlineButtonTransport | None:
     """Assemble a telegram transport, or ``None`` when it cannot be delivered.
 
@@ -135,7 +141,7 @@ async def build_telegram_transport(
     if not chat_id:
         logger.info("gap interview: no owner telegram chat configured; skipping send")
         return None
-    token = await resolve_bot_token(pool)
+    token = await resolve_bot_token(pool, credential_store=credential_store)
     if not token:
         return None
     api_base = f"https://api.telegram.org/bot{token}"

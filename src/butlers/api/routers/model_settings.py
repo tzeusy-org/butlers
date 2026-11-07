@@ -23,15 +23,16 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, StrictStr, field_validator
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field, StrictBool, StrictStr, field_validator
 
 import butlers.api.routers.audit as audit
-from butlers.api.audit_emit import authenticated_principal
+from butlers.api.audit_emit import IgnoresCallerAssertedActor, authenticated_principal
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_pricing
+from butlers.api.deps import Db, get_pricing
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.owner_control import require_dashboard_owner_control
+from butlers.core.audit_transaction import audit_transaction
 from butlers.core.model_capabilities import CapabilityDescriptorError, parse_capability_descriptor
 from butlers.core.model_routing import (
     RoutingScore,
@@ -61,11 +62,6 @@ _VERIFY_ALL_CONCURRENCY = 8
 # concurrent request is rejected immediately instead of waiting behind a
 # long-running verification sweep.
 _verify_all_in_flight = False
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +242,26 @@ class ButlerModelOverrideUpsert(BaseModel):
     enabled: bool = True
     priority: int | None = None
     complexity_tier: str | None = None
+
+
+class ButlerModelOverrideReason(IgnoresCallerAssertedActor):
+    """One request-level reason, never caller-asserted audit attribution."""
+
+    reason: StrictStr = Field(min_length=1, max_length=2000)
+    # Presentation evidence only, explicitly labelled as client-reported in audit.
+    price_preview_unavailable: StrictBool = False
+
+    @field_validator("reason")
+    @classmethod
+    def nonblank_reason(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("A reason is required")
+        return value
+
+
+class ButlerModelOverridesWrite(ButlerModelOverrideReason):
+    overrides: list[ButlerModelOverrideUpsert]
 
 
 class ResolveModelResponse(BaseModel):
@@ -519,11 +535,11 @@ def _shared_pool(db: DatabaseManager):
     """Return the shared credential pool, raising 503 if unavailable."""
     try:
         return db.credential_shared_pool()
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Shared database pool is not available",
-        )
+        ) from exc
 
 
 _ATTENTION_REASON_COPY = {
@@ -575,7 +591,8 @@ def _attention_episode(row: Any) -> ModelAttentionEpisode:
 
 @catalog_router.get("", response_model=ApiResponse[list[ModelCatalogEntry]])
 async def list_catalog_entries(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ModelCatalogEntry]]:
     """Return all catalog entries ordered by complexity_tier, priority, alias.
 
@@ -659,7 +676,8 @@ async def list_catalog_entries(
 @catalog_router.get("/attention", response_model=ApiResponse[ModelAttentionObservation])
 async def observe_model_attention(
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelAttentionObservation]:
     """Return the latest sanitized episode for each model in one batch.
 
@@ -685,7 +703,8 @@ async def observe_model_attention(
 @catalog_router.get("/allowance", response_model=ApiResponse[AllowanceObservation])
 async def observe_model_allowance(
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[AllowanceObservation]:
     """Return every provider allowance account with the catalog entries on it.
 
@@ -743,7 +762,8 @@ async def observe_model_allowance(
 async def reissue_model_attention(
     episode_id: UUID,
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelAttentionReissueResult]:
     """Create or return the one pending successor for an uncertain episode."""
     pool = _shared_pool(db)
@@ -782,14 +802,15 @@ async def reissue_model_attention(
 @catalog_router.post("", response_model=ApiResponse[ModelCatalogEntry], status_code=201)
 async def create_catalog_entry(
     body: ModelCatalogCreate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelCatalogEntry]:
     """Create a new catalog entry. Returns 409 on duplicate alias."""
     _validate_complexity_tier(body.complexity_tier)
     capabilities = _validate_capabilities(body.capabilities)
     pool = _shared_pool(db)
 
-    async with pool.acquire() as connection, connection.transaction():
+    async with pool.acquire() as connection, audit_transaction(connection):
         try:
             row = await connection.fetchrow(
                 """
@@ -814,14 +835,14 @@ async def create_catalog_entry(
                 capabilities,
                 body.allowance_account,
             )
-        except asyncpg.UniqueViolationError:
+        except asyncpg.UniqueViolationError as exc:
             raise HTTPException(
                 status_code=409,
                 detail=f"Catalog entry with alias '{body.alias}' already exists",
-            )
+            ) from exc
         except Exception as exc:
             logger.error("Failed to create catalog entry: %s", exc)
-            raise HTTPException(status_code=500, detail="Failed to create catalog entry")
+            raise HTTPException(status_code=500, detail="Failed to create catalog entry") from exc
 
         if row is None:
             raise HTTPException(status_code=500, detail="Insert returned no row")
@@ -847,7 +868,8 @@ async def create_catalog_entry(
 async def update_catalog_entry(
     entry_id: UUID,
     body: ModelCatalogUpdate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelCatalogEntry]:
     """Update a catalog entry by ID. Only provided fields are changed."""
     if body.complexity_tier is not None:
@@ -891,14 +913,14 @@ async def update_catalog_entry(
 
     try:
         row = await pool.fetchrow(sql, *params)
-    except asyncpg.UniqueViolationError:
+    except asyncpg.UniqueViolationError as exc:
         raise HTTPException(
             status_code=409,
             detail=f"Catalog entry with alias '{updates.get('alias')}' already exists",
-        )
+        ) from exc
     except Exception as exc:
         logger.error("Failed to update catalog entry %s: %s", entry_id, exc)
-        raise HTTPException(status_code=500, detail="Failed to update catalog entry")
+        raise HTTPException(status_code=500, detail="Failed to update catalog entry") from exc
 
     if row is None:
         raise HTTPException(status_code=404, detail=f"Catalog entry not found: {entry_id}")
@@ -924,7 +946,8 @@ async def update_catalog_entry(
 @catalog_router.get("/{entry_id}/delete-impact", response_model=ApiResponse[ModelDeleteImpact])
 async def get_catalog_delete_impact(
     entry_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelDeleteImpact]:
     """Return the current server-owned count of overrides a delete would cascade."""
     pool = _shared_pool(db)
@@ -949,11 +972,12 @@ async def get_catalog_delete_impact(
 @catalog_router.delete("/{entry_id}", response_model=ApiResponse[dict])
 async def delete_catalog_entry(
     entry_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Delete a catalog entry by ID. Cascades to butler_model_overrides."""
     pool = _shared_pool(db)
-    async with pool.acquire() as connection, connection.transaction():
+    async with pool.acquire() as connection, audit_transaction(connection):
         deleted = await connection.fetchrow(
             """
             WITH target AS (
@@ -998,7 +1022,8 @@ async def delete_catalog_entry(
 async def update_model_priority(
     entry_id: UUID,
     body: ModelPriorityDelta,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelCatalogEntry]:
     """Adjust a model's priority by ``delta``.
 
@@ -1169,7 +1194,8 @@ async def run_verify_all_models(
 @catalog_router.post("/verify-all", response_model=ApiResponse[VerifyAllResult])
 async def verify_all_models(
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[VerifyAllResult]:
     """Request a signed Switchboard runtime probe for every enabled model in parallel.
 
@@ -1216,7 +1242,8 @@ async def get_model_failures(
         description="Lookback window. Accepts '24h', '7d', '30d', or an ISO-8601 timestamp.",
     ),
     limit: int = Query(50, ge=1, le=500, description="Max records to return"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[FailureEntry]:
     """Return recent failure entries for a model catalog entry.
 
@@ -1247,11 +1274,11 @@ async def get_model_failures(
     else:
         try:
             since_ts = datetime.fromisoformat(since)
-        except ValueError:
+        except ValueError as exc:
             raise HTTPException(
                 status_code=422,
                 detail=f"Invalid 'since' value '{since}'. Use '24h', '7d', '30d', or ISO-8601.",
-            )
+            ) from exc
 
     try:
         rows = await pool.fetch(
@@ -1313,7 +1340,8 @@ async def get_model_attempts(
         description="Lookback window. Accepts '24h', '7d', '30d', or an ISO-8601 timestamp.",
     ),
     limit: int = Query(50, ge=1, le=500, description="Max records to return"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[DispatchAttemptEntry]:
     """Return failover attempt provenance for a model catalog entry.
 
@@ -1348,11 +1376,11 @@ async def get_model_attempts(
     else:
         try:
             since_ts = datetime.fromisoformat(since)
-        except ValueError:
+        except ValueError as exc:
             raise HTTPException(
                 status_code=422,
                 detail=f"Invalid 'since' value '{since}'. Use '24h', '7d', '30d', or ISO-8601.",
-            )
+            ) from exc
 
     try:
         rows = await pool.fetch(
@@ -1418,7 +1446,8 @@ async def get_model_attempts(
 async def upsert_token_limits(
     entry_id: UUID,
     body: TokenLimitsRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TokenLimitsResponse]:
     """Set or update 24h/30d token limits for a catalog entry.
 
@@ -1484,7 +1513,8 @@ async def upsert_token_limits(
 async def reset_token_usage(
     entry_id: UUID,
     body: ResetUsageRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Reset the 24h, 30d, or both usage windows for a catalog entry.
 
@@ -1542,7 +1572,8 @@ async def reset_token_usage(
 @catalog_router.get("/{entry_id}/usage", response_model=ApiResponse[TokenUsageResponse])
 async def get_token_usage(
     entry_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TokenUsageResponse]:
     """Return detailed token usage for a single catalog entry.
 
@@ -1641,7 +1672,8 @@ async def get_token_usage(
 )
 async def list_butler_model_overrides(
     name: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ButlerModelOverride]]:
     """Return all model overrides for a butler, joined with catalog alias."""
     pool = _shared_pool(db)
@@ -1671,18 +1703,17 @@ async def list_butler_model_overrides(
 )
 async def upsert_butler_model_overrides(
     name: str,
-    body: list[ButlerModelOverrideUpsert],
-    db: DatabaseManager = Depends(_get_db_manager),
+    body: ButlerModelOverridesWrite,
+    request: Request,
+    *,
+    db: Db,
 ) -> ApiResponse[list[ButlerModelOverride]]:
     """Batch upsert model overrides for a butler.
 
     Each item is upserted by (butler_name, catalog_entry_id).
     Returns the full list of updated override rows.
     """
-    if not body:
-        raise HTTPException(status_code=422, detail="Request body must contain at least one item")
-
-    for item in body:
+    for item in body.overrides:
         if item.complexity_tier is not None:
             _validate_complexity_tier(item.complexity_tier)
 
@@ -1690,8 +1721,8 @@ async def upsert_butler_model_overrides(
 
     upserted_ids: list[UUID] = []
     async with pool.acquire() as conn:
-        async with conn.transaction():
-            for item in body:
+        async with audit_transaction(conn):
+            for item in body.overrides:
                 row = await conn.fetchrow(
                     """
                     INSERT INTO public.butler_model_overrides
@@ -1711,6 +1742,22 @@ async def upsert_butler_model_overrides(
                 )
                 if row is not None:
                     upserted_ids.append(row["id"])
+
+            await audit.append(
+                conn,
+                authenticated_principal(),
+                "model.override.upsert",
+                target=f"butler:{name}",
+                note=body.reason,
+                metadata={
+                    "catalog_entry_ids": [str(item.catalog_entry_id) for item in body.overrides],
+                    "client_price_preview_unavailable": body.price_preview_unavailable,
+                },
+                result="success",
+            )
+
+    # Only a committed owning receipt suppresses the middleware's secondary row.
+    request.state.model_override_audit_committed = True
 
     if not upserted_ids:
         return ApiResponse[list[ButlerModelOverride]](data=[])
@@ -1741,21 +1788,35 @@ async def upsert_butler_model_overrides(
 async def delete_butler_model_override(
     name: str,
     override_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    body: ButlerModelOverrideReason,
+    request: Request,
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Remove a single butler model override by ID."""
     pool = _shared_pool(db)
-    result = await pool.execute(
-        "DELETE FROM public.butler_model_overrides WHERE id = $1 AND butler_name = $2",
-        override_id,
-        name,
-    )
-    deleted = int(result.split()[-1]) if result else 0
-    if deleted == 0:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Override not found: {override_id} for butler '{name}'",
+    async with pool.acquire() as conn, audit_transaction(conn):
+        result = await conn.execute(
+            "DELETE FROM public.butler_model_overrides WHERE id = $1 AND butler_name = $2",
+            override_id,
+            name,
         )
+        deleted = int(result.split()[-1]) if result else 0
+        if deleted == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Override not found: {override_id} for butler '{name}'",
+            )
+        await audit.append(
+            conn,
+            authenticated_principal(),
+            "model.override.delete",
+            target=f"butler:{name}/model-override:{override_id}",
+            note=body.reason,
+            metadata={"client_price_preview_unavailable": body.price_preview_unavailable},
+            result="success",
+        )
+    request.state.model_override_audit_committed = True
     return ApiResponse[dict](data={"deleted": True, "id": str(override_id)})
 
 
@@ -1771,7 +1832,8 @@ async def delete_butler_model_override(
 async def resolve_model_preview(
     name: str,
     complexity: str = Query(default="workhorse", description="Complexity tier to resolve"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ResolveModelResponse]:
     """Preview which model would be selected for a butler + complexity tier.
 
@@ -1899,7 +1961,8 @@ _TEST_UNAVAILABLE_DETAIL = {
 async def test_catalog_entry(
     entry_id: UUID,
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelTestResult]:
     """Probe one catalog entry through the signed runtime-probe control plane.
 
@@ -2038,7 +2101,8 @@ async def get_dispatch_attempts(
         description="Only valid with 'outcome'. Sort direction for ts ('asc' or 'desc').",
     ),
     limit: int = Query(100, ge=1, le=500, description="Max records to return"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[DispatchAttemptEntry]:
     """Return failover attempt provenance rows.
 

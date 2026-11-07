@@ -13,9 +13,17 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
+import os
+import platform
 import shutil
+import time
 import uuid
+import warnings
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
@@ -29,7 +37,6 @@ from butlers.core.model_routing import (
     price_mtd_from_ledger,
     record_token_usage,
 )
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 
@@ -219,27 +226,25 @@ async def test_quota_unit_behaviors() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core migrations applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    """Return an asyncpg pool with quota tables cleared between tests.
+async def quota_pool(db) -> asyncpg.Pool:
+    """Core pool with quota tables and the seeded catalog emptied.
 
     Also ensures historical monthly partitions exist for the token_usage_ledger
     (needed by tests that insert rows with recorded_at 30+ days in the past).
     """
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    pool = await db("core")
+    await _create_past_ledger_partitions(pool)
+    await pool.execute(
+        "TRUNCATE public.token_usage_ledger, public.token_limits, public.model_catalog CASCADE"
+    )
+    return pool
+
+
+async def _create_past_ledger_partitions(pool: asyncpg.Pool) -> None:
     # Ensure partitions exist for the past 2 months so tests that insert
     # historical rows (e.g. 31 days ago) don't fail with "no partition found".
-    await p.execute("""
+    await pool.execute("""
         DO $$
         DECLARE
             i           INT;
@@ -266,11 +271,6 @@ async def pool(migrated_db_url: str) -> asyncpg.Pool:
         END
         $$
     """)
-    await p.execute(
-        "TRUNCATE public.token_usage_ledger, public.token_limits, public.model_catalog CASCADE"
-    )
-    yield p
-    await p.close()
 
 
 async def _insert_catalog_entry(
@@ -347,10 +347,10 @@ async def _insert_ledger_row(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_quota_no_limits_row_fast_path(pool: asyncpg.Pool) -> None:
+async def test_quota_no_limits_row_fast_path(quota_pool: asyncpg.Pool) -> None:
     """No token_limits row → fast path, allowed=True, zero usage."""
-    entry_id = await _insert_catalog_entry(pool, alias="no-limits-entry")
-    result = await check_token_quota(pool, entry_id)
+    entry_id = await _insert_catalog_entry(quota_pool, alias="no-limits-entry")
+    result = await check_token_quota(quota_pool, entry_id)
     assert result.allowed is True
     assert result.usage_24h == 0 and result.limit_24h is None
     assert result.usage_30d == 0 and result.limit_30d is None
@@ -359,34 +359,34 @@ async def test_quota_no_limits_row_fast_path(pool: asyncpg.Pool) -> None:
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_quota_within_limits_and_exceeded(pool: asyncpg.Pool) -> None:
+async def test_quota_within_limits_and_exceeded(quota_pool: asyncpg.Pool) -> None:
     """Within both limits → allowed=True. Exceeding 24h or 30d → allowed=False."""
     # Within limits
-    eid = await _insert_catalog_entry(pool, alias="within-limits")
-    await _insert_limits(pool, catalog_entry_id=eid, limit_24h=1000, limit_30d=10000)
-    await _insert_ledger_row(pool, catalog_entry_id=eid, input_tokens=100, output_tokens=50)
-    r = await check_token_quota(pool, eid)
+    eid = await _insert_catalog_entry(quota_pool, alias="within-limits")
+    await _insert_limits(quota_pool, catalog_entry_id=eid, limit_24h=1000, limit_30d=10000)
+    await _insert_ledger_row(quota_pool, catalog_entry_id=eid, input_tokens=100, output_tokens=50)
+    r = await check_token_quota(quota_pool, eid)
     assert r.allowed is True and r.usage_24h == 150 and r.limit_24h == 1000
 
     # 24h exceeded
-    eid2 = await _insert_catalog_entry(pool, alias="24h-exceeded")
-    await _insert_limits(pool, catalog_entry_id=eid2, limit_24h=100, limit_30d=10000)
-    await _insert_ledger_row(pool, catalog_entry_id=eid2, input_tokens=60, output_tokens=50)
-    r2 = await check_token_quota(pool, eid2)
+    eid2 = await _insert_catalog_entry(quota_pool, alias="24h-exceeded")
+    await _insert_limits(quota_pool, catalog_entry_id=eid2, limit_24h=100, limit_30d=10000)
+    await _insert_ledger_row(quota_pool, catalog_entry_id=eid2, input_tokens=60, output_tokens=50)
+    r2 = await check_token_quota(quota_pool, eid2)
     assert r2.allowed is False and r2.usage_24h == 110
 
     # 30d exceeded (24h unlimited)
-    eid3 = await _insert_catalog_entry(pool, alias="30d-exceeded")
-    await _insert_limits(pool, catalog_entry_id=eid3, limit_24h=None, limit_30d=100)
-    await _insert_ledger_row(pool, catalog_entry_id=eid3, input_tokens=60, output_tokens=50)
-    r3 = await check_token_quota(pool, eid3)
+    eid3 = await _insert_catalog_entry(quota_pool, alias="30d-exceeded")
+    await _insert_limits(quota_pool, catalog_entry_id=eid3, limit_24h=None, limit_30d=100)
+    await _insert_ledger_row(quota_pool, catalog_entry_id=eid3, input_tokens=60, output_tokens=50)
+    r3 = await check_token_quota(quota_pool, eid3)
     assert r3.allowed is False and r3.usage_30d == 110 and r3.limit_24h is None
 
     # Exactly at limit is blocked
-    eid4 = await _insert_catalog_entry(pool, alias="exact-limit")
-    await _insert_limits(pool, catalog_entry_id=eid4, limit_24h=100)
-    await _insert_ledger_row(pool, catalog_entry_id=eid4, input_tokens=60, output_tokens=40)
-    r4 = await check_token_quota(pool, eid4)
+    eid4 = await _insert_catalog_entry(quota_pool, alias="exact-limit")
+    await _insert_limits(quota_pool, catalog_entry_id=eid4, limit_24h=100)
+    await _insert_ledger_row(quota_pool, catalog_entry_id=eid4, input_tokens=60, output_tokens=40)
+    r4 = await check_token_quota(quota_pool, eid4)
     assert r4.allowed is False and r4.usage_24h == 100
 
 
@@ -394,47 +394,267 @@ async def test_quota_within_limits_and_exceeded(pool: asyncpg.Pool) -> None:
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.pg_clock
-async def test_quota_reset_and_window_exclusion(pool: asyncpg.Pool) -> None:
+async def test_quota_reset_and_window_exclusion(quota_pool: asyncpg.Pool) -> None:
     """reset_at excludes old usage; usage older than 30d excluded from 30d window."""
     # reset_24h_at: old row excluded, recent row counted
-    eid = await _insert_catalog_entry(pool, alias="reset-24h")
+    eid = await _insert_catalog_entry(quota_pool, alias="reset-24h")
     reset_time = datetime.now(UTC) - timedelta(hours=1)
-    await _insert_limits(pool, catalog_entry_id=eid, limit_24h=100, reset_24h_at=reset_time)
+    await _insert_limits(quota_pool, catalog_entry_id=eid, limit_24h=100, reset_24h_at=reset_time)
     await _insert_ledger_row(
-        pool,
+        quota_pool,
         catalog_entry_id=eid,
         input_tokens=80,
         recorded_at=datetime.now(UTC) - timedelta(hours=12),  # before reset
     )
-    await _insert_ledger_row(pool, catalog_entry_id=eid, input_tokens=20)  # after reset
-    r = await check_token_quota(pool, eid)
+    await _insert_ledger_row(quota_pool, catalog_entry_id=eid, input_tokens=20)  # after reset
+    r = await check_token_quota(quota_pool, eid)
     assert r.usage_24h == 20 and r.allowed is True
 
     # Old usage outside 30d excluded
-    eid2 = await _insert_catalog_entry(pool, alias="old-30d")
-    await _insert_limits(pool, catalog_entry_id=eid2, limit_30d=500)
+    eid2 = await _insert_catalog_entry(quota_pool, alias="old-30d")
+    await _insert_limits(quota_pool, catalog_entry_id=eid2, limit_30d=500)
     await _insert_ledger_row(
-        pool,
+        quota_pool,
         catalog_entry_id=eid2,
         input_tokens=400,
         recorded_at=datetime.now(UTC) - timedelta(days=31),
     )
-    await _insert_ledger_row(pool, catalog_entry_id=eid2, input_tokens=50)
-    r2 = await check_token_quota(pool, eid2)
+    await _insert_ledger_row(quota_pool, catalog_entry_id=eid2, input_tokens=50)
+    r2 = await check_token_quota(quota_pool, eid2)
     assert r2.usage_30d == 50 and r2.allowed is True
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_record_token_usage_and_reflected_in_quota(pool: asyncpg.Pool) -> None:
+async def test_monthly_ceiling_measured_synthetic_cost(quota_pool: asyncpg.Pool) -> None:
+    """Retain real per-call samples, with status controls, before considering a cache.
+
+    Only disposable synthetic data is reported. The informational warning is an
+    intentional receipt: xdist forwards warnings from passing workers, whereas
+    their stdout and arbitrary JUnit properties do not survive the CI carrier.
+    No elapsed-time assertion is a performance threshold or a production claim.
+    """
+    from butlers.core import model_routing
+    from butlers.core.pricing import estimate_session_cost, load_pricing
+
+    started = time.perf_counter()
+    await quota_pool.execute("DELETE FROM public.spend_ceiling")
+    model_ids = (
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-4-6",
+        "claude-opus-4-6",
+    )
+    for index, model_id in enumerate(model_ids):
+        await quota_pool.execute(
+            """INSERT INTO public.model_catalog
+               (alias, runtime_type, model_id, complexity_tier, enabled, priority)
+               VALUES ($1, 'claude', $2, 'workhorse', true, 0)""",
+            f"synthetic-ceiling-{index}",
+            model_id,
+        )
+    pricing = load_pricing()
+    ceiling_usd = 100_000.0
+    expected_usd = 0.0
+
+    async def checked_sample(*, configured: bool = True, allowed: bool = True) -> float:
+        before = time.perf_counter_ns()
+        status = await check_monthly_ceiling(quota_pool)
+        elapsed_ms = (time.perf_counter_ns() - before) / 1_000_000
+        # A swallowed SQL/pricing error must never masquerade as a fast sample.
+        assert status.ceiling_usd == (ceiling_usd if configured else None)
+        assert status.mtd_usd == pytest.approx(expected_usd)
+        assert status.allowed is allowed
+        assert status.unpriced_models == () and status.unmeasurable_attempts == 0
+        return round(elapsed_ms, 6)
+
+    receipt = {
+        "kind": "informational-synthetic-monthly-ceiling-v1",
+        "python": platform.python_version(),
+        "asyncpg": asyncpg.__version__,
+        "platform": platform.system(),
+        "cpu_count": os.cpu_count(),
+        "source": {
+            key: os.environ.get(key)
+            for key in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")
+        },
+        "pricing_sha256": hashlib.sha256(
+            await asyncio.to_thread(Path("pricing.toml").read_bytes)
+        ).hexdigest(),
+        "pool": {"min_size": quota_pool.get_min_size(), "max_size": quota_pool.get_max_size()},
+        "method": {
+            "clock": "perf_counter_ns; milliseconds",
+            "full_call": "await check_monthly_ceiling(pool), including pool/query/pricing",
+            "first": "first call after seed/ANALYZE; existing pool; no OS/PG cache flush",
+            "steady_warmups": 3,
+            "serial_samples": 20,
+            "concurrent_samples": 12,
+            "concurrency": 3,
+            "components": "five isolated pool acquire/query/pricing samples; not additive",
+            "synthetic_tokens": {
+                "input": 1000,
+                "output": 200,
+                "cached_input": 250,
+                "cache_creation": 50,
+            },
+            "historical_tokens": "twice current tokens; excluded from expected MTD",
+            "models": model_ids,
+        },
+        "profiles": [],
+    }
+    # These catalogs describe only this disposable test database, never a live estate.
+    receipt["database"] = dict(
+        await quota_pool.fetchrow("""
+        SELECT version() AS version, current_setting('TimeZone') AS timezone,
+               current_setting('shared_buffers') AS shared_buffers,
+               current_setting('jit') AS jit, r.rolsuper AS superuser,
+               r.rolbypassrls AS bypassrls, r.rolcreaterole AS createrole,
+               inet_server_addr() IS NOT NULL AS tcp,
+               COALESCE((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false)
+                   AS tls
+        FROM pg_roles r WHERE r.rolname = current_user
+    """)
+    )
+    receipt["relations"] = [
+        dict(row)
+        for row in await quota_pool.fetch("""
+        SELECT c.relname, c.relkind::text AS relkind, c.relrowsecurity, c.relforcerowsecurity
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relname IN ('model_catalog', 'token_usage_ledger', 'spend_ceiling')
+        ORDER BY c.relname
+    """)
+    ]
+    receipt["indexes"] = [
+        dict(row)
+        for row in await quota_pool.fetch("""
+        SELECT tablename, indexname, indexdef FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND tablename IN ('model_catalog', 'token_usage_ledger', 'spend_ceiling')
+        ORDER BY tablename, indexname
+    """)
+    ]
+    receipt["partitions"] = [
+        row["relname"]
+        for row in await quota_pool.fetch("""
+        SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+        WHERE i.inhparent = 'public.token_usage_ledger'::regclass ORDER BY c.relname
+    """)
+    ]
+    receipt["migration_heads"] = [
+        row["version_num"]
+        for row in await quota_pool.fetch("SELECT version_num FROM public.alembic_version")
+    ]
+    receipt["no_ceiling_ms"] = [await checked_sample(configured=False) for _ in range(10)]
+    await quota_pool.execute(
+        "INSERT INTO public.spend_ceiling (id, monthly_usd) VALUES (1, $1)", ceiling_usd
+    )
+    receipt["owner_setup_ms"] = round((time.perf_counter() - started) * 1000, 6)
+
+    try:
+        for row_count in (0, 1_000, 10_000, 100_000):
+            before_seed = time.perf_counter()
+            await quota_pool.execute("TRUNCATE public.token_usage_ledger")
+            await quota_pool.execute(
+                """
+                INSERT INTO public.token_usage_ledger
+                    (catalog_entry_id, butler_name, input_tokens, output_tokens,
+                     cached_input_tokens, cache_creation_tokens, recorded_at)
+                SELECT mc.id, 'synthetic-ceiling', 1000 * period.multiplier,
+                       200 * period.multiplier, 250 * period.multiplier,
+                       50 * period.multiplier, period.recorded_at
+                FROM generate_series(0, $1::integer - 1) AS s(number)
+                JOIN public.model_catalog mc
+                  ON mc.alias = 'synthetic-ceiling-' || (s.number % 3)::text
+                CROSS JOIN (VALUES
+                    (date_trunc('month', now() AT TIME ZONE 'UTC'), 1),
+                    (date_trunc('month', now() AT TIME ZONE 'UTC') - interval '1 month', 2)
+                ) AS period(recorded_at, multiplier)
+            """,
+                row_count,
+            )
+            await quota_pool.execute("ANALYZE public.token_usage_ledger")
+            await quota_pool.execute("ANALYZE public.model_catalog")
+            expected_usd = 0.0
+            for index, model_id in enumerate(model_ids):
+                count = (row_count + 2 - index) // 3
+                cost = estimate_session_cost(
+                    pricing,
+                    model_id,
+                    count * 1000,
+                    count * 200,
+                    cached_input_tokens=count * 250,
+                    cache_creation_tokens=count * 50,
+                )
+                assert cost is not None
+                expected_usd += cost
+            assert await quota_pool.fetchval("SELECT count(*) FROM public.token_usage_ledger") == (
+                row_count * 2
+            )
+            profile = {
+                "current_rows": row_count,
+                "previous_month_rows": row_count,
+                "expected_mtd_usd": expected_usd,
+                "seed_analyze_ms": round((time.perf_counter() - before_seed) * 1000, 6),
+                "first_ms": await checked_sample(),
+            }
+            profile["warmup_ms"] = [await checked_sample() for _ in range(3)]
+            profile["serial_ms"] = [await checked_sample() for _ in range(20)]
+            concurrent = []
+            wave_ms = []
+            for _ in range(4):
+                before = time.perf_counter_ns()
+                concurrent.extend(await asyncio.gather(*(checked_sample() for _ in range(3))))
+                wave_ms.append(round((time.perf_counter_ns() - before) / 1e6, 6))
+            profile["concurrent_ms"] = concurrent
+            profile["concurrent_wave_ms"] = wave_ms
+            components = {
+                key: [] for key in ("acquire", "ceiling_query", "ledger_query", "pricing")
+            }
+            for _ in range(5):
+                before = time.perf_counter_ns()
+                async with quota_pool.acquire():
+                    components["acquire"].append((time.perf_counter_ns() - before) / 1e6)
+                for name, sql in (
+                    ("ceiling_query", model_routing._CEILING_SELECT_SQL),
+                    ("ledger_query", model_routing._MTD_USAGE_BY_MODEL_SQL),
+                ):
+                    before = time.perf_counter_ns()
+                    rows = await quota_pool.fetch(sql)
+                    components[name].append((time.perf_counter_ns() - before) / 1e6)
+                before = time.perf_counter_ns()
+                spend = model_routing.price_ledger_usage_rows(rows)
+                components["pricing"].append((time.perf_counter_ns() - before) / 1e6)
+                assert spend.cost_usd == pytest.approx(expected_usd)
+            profile["components_ms"] = {
+                key: [round(value, 6) for value in values] for key, values in components.items()
+            }
+            receipt["profiles"].append(profile)
+        # Real positive MTD must refuse, rather than timing a no-limit/fail-open result.
+        assert expected_usd > 1.0
+        ceiling_usd = 1.0
+        await quota_pool.execute("UPDATE public.spend_ceiling SET monthly_usd = $1", ceiling_usd)
+        receipt["reached_ms"] = await checked_sample(allowed=False)
+    finally:
+        await quota_pool.execute("DELETE FROM public.spend_ceiling")
+    warnings.warn(
+        "MONTHLY_CEILING_SYNTHETIC_MEASUREMENT=" + json.dumps(receipt, separators=(",", ":")),
+        UserWarning,
+        stacklevel=1,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_record_token_usage_and_reflected_in_quota(quota_pool: asyncpg.Pool) -> None:
     """record_token_usage inserts row with correct fields; NULL session_id accepted;
     subsequent quota check reflects recorded tokens."""
-    entry_id = await _insert_catalog_entry(pool, alias="record-test")
+    entry_id = await _insert_catalog_entry(quota_pool, alias="record-test")
     session_id = uuid.uuid4()
 
     await record_token_usage(
-        pool,
+        quota_pool,
         catalog_entry_id=entry_id,
         butler_name="test-butler",
         session_id=session_id,
@@ -443,7 +663,7 @@ async def test_record_token_usage_and_reflected_in_quota(pool: asyncpg.Pool) -> 
         purpose="route",
     )
 
-    row = await pool.fetchrow(
+    row = await quota_pool.fetchrow(
         """
         SELECT catalog_entry_id, butler_name, session_id, input_tokens, output_tokens, purpose
         FROM public.token_usage_ledger WHERE catalog_entry_id = $1
@@ -459,16 +679,16 @@ async def test_record_token_usage_and_reflected_in_quota(pool: asyncpg.Pool) -> 
     # NULL session_id accepted; purpose defaults to NULL when the caller omits it
     # (bu-qvnce.12 — pre-migration/unknown-purpose rows must stay honestly NULL,
     # not silently defaulted to a fabricated category).
-    entry2_id = await _insert_catalog_entry(pool, alias="record-null-session")
+    entry2_id = await _insert_catalog_entry(quota_pool, alias="record-null-session")
     await record_token_usage(
-        pool,
+        quota_pool,
         catalog_entry_id=entry2_id,
         butler_name="__discretion__",
         session_id=None,
         input_tokens=10,
         output_tokens=20,
     )
-    row2 = await pool.fetchrow(
+    row2 = await quota_pool.fetchrow(
         "SELECT session_id, butler_name, purpose FROM public.token_usage_ledger WHERE catalog_entry_id = $1",
         entry2_id,
     )
@@ -476,7 +696,7 @@ async def test_record_token_usage_and_reflected_in_quota(pool: asyncpg.Pool) -> 
     assert row2["purpose"] is None
 
     # Quota check reflects recorded usage
-    await _insert_limits(pool, catalog_entry_id=entry_id, limit_24h=1000, limit_30d=5000)
-    result = await check_token_quota(pool, entry_id)
+    await _insert_limits(quota_pool, catalog_entry_id=entry_id, limit_24h=1000, limit_30d=5000)
+    result = await check_token_quota(quota_pool, entry_id)
     assert result.usage_24h == 579  # 123 + 456
     assert result.allowed is True

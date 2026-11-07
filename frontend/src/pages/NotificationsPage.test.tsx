@@ -20,6 +20,7 @@ import { MemoryRouter, useLocation } from "react-router";
 import { fireEvent } from "@testing-library/react";
 
 import NotificationsPage, { STATUS_OPTIONS } from "@/pages/NotificationsPage";
+vi.mock("@/components/notifications/confirm-requests", () => ({ ConfirmRequests: () => null }));
 import {
   useAcknowledgeAllFailed,
   useEscalateNotification,

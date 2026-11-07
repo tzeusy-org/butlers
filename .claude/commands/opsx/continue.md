@@ -36,12 +36,22 @@ Continue working on a change by creating the next artifact.
 
 3. **Act based on status**:
 
+   Recheck `about/heart-and-soul/development.md` against the change's actual scope, but honor
+   the schema already resolved by OpenSpec. Do not switch an existing change because the project
+   default changed. Read any existing design and affected canonical specs. New `single-butler` and
+   `living-specs` changes have no local specs; preserve their generated schema/created metadata and
+   `skip_specs: true`. For a newly created no-delta change, stop if the marker or generated
+   schema/created metadata is missing or malformed; do not continue as though specs were skipped. Do not
+   add the marker to a legacy or retained delta program. Preserve every approval, review and verification gate.
+
+
    ---
 
    **If all artifacts are complete (`isComplete: true`)**:
    - Congratulate the user
    - Show final status including the schema used
-   - Suggest: "All artifacts created! You can now implement this change with `/opsx:apply` or archive it with `/opsx:archive`."
+   - Suggest: "All artifacts created! Use `/opsx:apply` to implement the approved change. After the whole program is verified implemented and shipped, `/opsx:archive` deletes its completed directory."
+   - Artifact readiness alone never authorizes completion cleanup.
    - STOP
 
    ---
@@ -94,18 +104,25 @@ The artifact types and their purpose depend on the schema. Use the `instruction`
 Common artifact patterns:
 
 **spec-driven schema** (proposal → specs → design → tasks):
-- **proposal.md**: Ask user about the change if not clear. Fill in Why, What Changes, Capabilities, Impact.
-  - The Capabilities section is critical - each capability listed will need a spec file.
-- **specs/<capability>/spec.md**: Create one spec per capability listed in the proposal's Capabilities section (use the capability name, not the change name).
-- **design.md**: Document technical decisions, architecture, and implementation approach.
-- **tasks.md**: Break down implementation into checkboxed tasks.
+- Preserve local deltas and the resolved schema for retained multi-PR programs.
+- Include each required capability delta and existing design.
+
+**single-butler schema** (proposal → tasks; eligible single-butler work, design optional):
+- Record evidence for all three boundary exclusions in the proposal.
+- Do not create local specs; update affected canonical requirements in the same source change.
+- Preserve generated schema/created metadata and `skip_specs: true` for a new no-delta change.
+
+**living-specs schema** (proposal → design → tasks; design required, no local deltas):
+- Identify affected canonical contracts and design decisions.
+- Update affected canonical requirements directly in the source change when required behavior changes.
+- Preserve generated schema/created metadata and `skip_specs: true` for a new no-delta change.
 
 For other schemas, follow the `instruction` field from the CLI output.
 
 **Guardrails**
 - Create ONE artifact per invocation
 - Always read dependency artifacts before creating a new one
-- Never skip artifacts or create out of order
+- Never skip required artifacts or create out of order; eligible design omission uses the `single-butler` schema, not a placeholder design or a bypass of another required artifact
 - If context is unclear, ask the user before creating
 - Verify the artifact file exists after writing before marking progress
 - Use the schema's artifact sequence, don't assume specific artifact names

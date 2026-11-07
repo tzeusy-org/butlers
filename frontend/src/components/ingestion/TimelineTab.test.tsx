@@ -134,7 +134,7 @@ function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEve
 function makeInfiniteEventsResult(events: IngestionEventSummary[]) {
   return {
     data: {
-      pages: [{ data: events, meta: { next_cursor: null, has_more: false } }],
+      pages: [{ items: events, next_cursor: null, limit: 50 }],
       pageParams: [null],
     },
     isLoading: false,
@@ -2305,8 +2305,9 @@ describe("TimelineTab — reports live-feed down-ness via onFreshnessChange", ()
       data: {
         pages: [
           {
-            data: [makeEvent({ id: "aabbccdd-0000-0000-0000-0000000000e1", received_at: "2026-01-01T10:00:00Z" })],
-            meta: { next_cursor: null, has_more: false },
+            items: [makeEvent({ id: "aabbccdd-0000-0000-0000-0000000000e1", received_at: "2026-01-01T10:00:00Z" })],
+            next_cursor: null,
+            limit: 50,
           },
         ],
         pageParams: [null],

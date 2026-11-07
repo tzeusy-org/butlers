@@ -43,7 +43,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useTimezone } from "@/components/ui/timezone-context";
-import { Panel, KpiCell } from "@/components/butler-detail/atoms";
+import { Panel, KpiCell } from "@/components/ui/atoms";
 import { useChroniclesKpi } from "@/hooks/use-chronicles-kpi";
 import {
   useChroniclesEpisodesInfinite,

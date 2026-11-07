@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from butlers.api.deps import get_db_optional
 from butlers.api.routers import oauth as oauth_module
 from butlers.api.routers.oauth import (
     _build_error_redirect_url,
@@ -114,10 +115,14 @@ def _make_app(app, *, client_id="test-client-id", client_secret="test-secret"):
 
     pool = MagicMock()
     pool.acquire = _acquire
-    pool.fetchval = AsyncMock(return_value=None)
+    pool.fetchval = AsyncMock(
+        side_effect=lambda sql, *args: (
+            1 if sql.startswith("INSERT INTO public.audit_log ") else None
+        )
+    )
     db_manager = MagicMock()
     db_manager.credential_shared_pool.return_value = pool
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    app.dependency_overrides[get_db_optional] = lambda: db_manager
     return app, pool
 
 
@@ -793,7 +798,7 @@ async def test_oauth_status_snapshot(app):
     pool.fetchval = AsyncMock(return_value=None)
     db_manager = MagicMock()
     db_manager.credential_shared_pool.return_value = pool
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    app.dependency_overrides[get_db_optional] = lambda: db_manager
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -808,7 +813,7 @@ async def test_oauth_status_snapshot(app):
 
 async def test_google_accounts_list_snapshot_503_without_pool(app):
     """Snapshot: GET /api/oauth/google/accounts → 503 when no DB."""
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: None
+    app.dependency_overrides[get_db_optional] = lambda: None
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -818,7 +823,7 @@ async def test_google_accounts_list_snapshot_503_without_pool(app):
 
 async def test_google_account_get_snapshot_404(app):
     """Snapshot: GET /api/oauth/google/accounts/{email} with no DB → 503."""
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: None
+    app.dependency_overrides[get_db_optional] = lambda: None
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -828,7 +833,7 @@ async def test_google_account_get_snapshot_404(app):
 
 async def test_google_account_disconnect_snapshot_503_without_pool(app):
     """Snapshot: DELETE /api/oauth/google/accounts/{id} → 503 when no DB."""
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: None
+    app.dependency_overrides[get_db_optional] = lambda: None
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -838,7 +843,7 @@ async def test_google_account_disconnect_snapshot_503_without_pool(app):
 
 async def test_google_app_credentials_put_snapshot_503_without_db(app):
     """Snapshot: PUT /api/oauth/google/credentials → 503 when no DB."""
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: None
+    app.dependency_overrides[get_db_optional] = lambda: None
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -851,7 +856,7 @@ async def test_google_app_credentials_put_snapshot_503_without_db(app):
 
 async def test_google_credentials_delete_snapshot_503_without_db(app):
     """Snapshot: DELETE /api/oauth/google/credentials → 503 when no DB."""
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: None
+    app.dependency_overrides[get_db_optional] = lambda: None
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

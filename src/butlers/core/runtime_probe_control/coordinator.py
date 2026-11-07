@@ -139,6 +139,7 @@ async def build_probe_adapter(
     model_id: str,
     *,
     codex_auth_authority: Any = None,
+    credential_store: Any = None,
 ) -> Any:
     """Build the adapter a daemon invocation of this entry would build.
 
@@ -148,17 +149,23 @@ async def build_probe_adapter(
     lazily because the runtime adapters pull in the whole spawner surface,
     which the control plane's parsing layers must not depend on.
     """
-    from butlers.core.runtimes.base import get_adapter
+    from butlers.core.runtimes.registry import build_runtime_adapter, takes_provider_config
     from butlers.core.spawner import resolve_provider_config
 
-    adapter_cls = get_adapter(runtime_type)
-    if runtime_type == "codex":
-        return adapter_cls(credential_store=codex_auth_authority)
-    provider_config = await resolve_provider_config(pool, model_id)
-    try:
-        return adapter_cls(provider_config=provider_config)
-    except TypeError:
-        return adapter_cls()
+    provider_config = (
+        await resolve_provider_config(pool, model_id)
+        if takes_provider_config(runtime_type)
+        else None
+    )
+    # Non-Codex runtimes load their own keys (e.g. ``cli-auth/claude``) from the
+    # store, as the spawner's adapters do; without it a Claude probe runs keyless.
+    store_kwargs = {"credential_store": credential_store} if credential_store is not None else {}
+    return build_runtime_adapter(
+        runtime_type,
+        codex_authority=codex_auth_authority,
+        provider_config=provider_config,
+        **store_kwargs,
+    )
 
 
 class RuntimeProbeCoordinator:
@@ -173,6 +180,7 @@ class RuntimeProbeCoordinator:
         persistence: Any = None,
         adapter_factory: Callable[..., Any] = build_probe_adapter,
         codex_auth_authority: Any = None,
+        credential_store: Any = None,
     ) -> None:
         self._pool = pool
         self._verifier = verifier
@@ -182,6 +190,7 @@ class RuntimeProbeCoordinator:
         )
         self._adapter_factory = adapter_factory
         self._codex_authority = codex_auth_authority
+        self._credential_store = credential_store
         self._timeout_s: float = PROBE_TIMEOUT_S
         self._in_flight: set[UUID] = set()
         self._global_in_flight = 0
@@ -238,9 +247,9 @@ class RuntimeProbeCoordinator:
 
             runtime_type = row["runtime_type"]
             model_id = row["model_id"]
-            if runtime_type == "codex" and not getattr(
-                self._codex_authority, "has_system_global_authority", False
-            ):
+            from butlers.core.runtimes.registry import lacks_required_authority
+
+            if lacks_required_authority(runtime_type, self._codex_authority):
                 # Absent authority is missing infrastructure, not a broken
                 # model; persisting a failure here would drop Codex out of
                 # routing because a mount was late.
@@ -271,6 +280,7 @@ class RuntimeProbeCoordinator:
                 runtime_type,
                 model_id,
                 codex_auth_authority=self._codex_authority,
+                credential_store=self._credential_store,
             )
         except Exception:
             logger.exception("runtime-probe control could not build a runtime adapter")

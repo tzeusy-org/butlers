@@ -68,6 +68,41 @@ def _row_to_deadline_dict(row: asyncpg.Record) -> dict[str, Any]:
     return d
 
 
+def supersession_fields(job_args: Any) -> dict[str, Any]:
+    """Return why a deadline was retired by another one, read from its ``job_args``.
+
+    ``paperwork_deadline_set`` marks a deadline it replaces with ``superseded_by`` (the
+    replacing task's id) and ``superseded_at``. Only those two markers leave
+    ``job_args``, and only well formed: ``superseded_by`` must be a UUID and
+    ``superseded_at`` a timezone-aware ISO timestamp, so the rest of the (tainted)
+    ``job_args`` never reaches a listing. A missing or malformed id means not superseded.
+    """
+    fields: dict[str, Any] = {"superseded_by": None, "superseded_at": None}
+    args = _jsonb_decode(job_args)
+    if not isinstance(args, dict) or not isinstance(args.get("superseded_by"), str):
+        return fields
+    try:
+        fields["superseded_by"] = str(uuid.UUID(args["superseded_by"]))
+    except ValueError:
+        return fields
+    at = args.get("superseded_at")
+    if isinstance(at, str):
+        try:
+            parsed = datetime.fromisoformat(at)
+        except ValueError:
+            parsed = None
+        if parsed is not None and parsed.tzinfo is not None:
+            fields["superseded_at"] = parsed
+    return fields
+
+
+def _row_to_listed_deadline(row: asyncpg.Record) -> dict[str, Any]:
+    """A deadline-list entry: the row with ``job_args`` replaced by its supersession."""
+    d = _row_to_deadline_dict(row)
+    d.update(supersession_fields(d.pop("job_args", None)))
+    return d
+
+
 async def deadline_create(
     pool: asyncpg.Pool,
     *,
@@ -166,8 +201,8 @@ async def deadline_create(
             deadline_status,
             _jsonb_encode(depends_on or []),
         )
-    except asyncpg.UniqueViolationError:
-        raise ValueError(f"Deadline name {name!r} already exists")
+    except asyncpg.UniqueViolationError as exc:
+        raise ValueError(f"Deadline name {name!r} already exists") from exc
 
     logger.info("Created deadline task: %s (%s)", name, task_id)
     return task_id
@@ -209,8 +244,8 @@ async def deadline_update(
     if isinstance(task_id, str):
         try:
             task_id = uuid.UUID(task_id)
-        except ValueError:
-            raise ValueError(f"Invalid task_id: {task_id!r} is not a valid UUID")
+        except ValueError as exc:
+            raise ValueError(f"Invalid task_id: {task_id!r} is not a valid UUID") from exc
 
     existing = await pool.fetchrow(
         "SELECT id, task_type, source FROM scheduled_tasks WHERE id = $1",
@@ -313,7 +348,10 @@ async def deadline_list(
         status: Optional status to filter by (e.g., 'pending', 'alerted').
 
     Returns:
-        List of deadline task dicts.
+        List of deadline task dicts. ``job_args`` is not returned; each entry instead
+        carries ``superseded_by`` and ``superseded_at`` (see ``supersession_fields``),
+        both ``None`` unless another document's deadline retired this one, so a
+        superseded deadline is told apart from one the owner disabled.
     """
     _VALID_STATUSES = {"pending", "alerted", "escalated", "completed", "expired"}
     if status is not None and status not in _VALID_STATUSES:
@@ -324,7 +362,7 @@ async def deadline_list(
             SELECT id, name, prompt, dispatch_mode, source, enabled,
                    task_type, target_date, lead_time_days,
                    alert_thresholds, deadline_status, fired_thresholds, depends_on,
-                   next_run_at, last_run_at, created_at, updated_at
+                   next_run_at, last_run_at, created_at, updated_at, job_args
             FROM scheduled_tasks
             WHERE task_type = 'deadline'
               AND deadline_status = $1
@@ -338,13 +376,13 @@ async def deadline_list(
             SELECT id, name, prompt, dispatch_mode, source, enabled,
                    task_type, target_date, lead_time_days,
                    alert_thresholds, deadline_status, fired_thresholds, depends_on,
-                   next_run_at, last_run_at, created_at, updated_at
+                   next_run_at, last_run_at, created_at, updated_at, job_args
             FROM scheduled_tasks
             WHERE task_type = 'deadline'
             ORDER BY target_date ASC NULLS LAST, name ASC
             """
         )
-    return [_row_to_deadline_dict(row) for row in rows]
+    return [_row_to_listed_deadline(row) for row in rows]
 
 
 async def deadline_delete(
@@ -365,8 +403,8 @@ async def deadline_delete(
     if isinstance(task_id, str):
         try:
             task_id = uuid.UUID(task_id)
-        except ValueError:
-            raise ValueError(f"Invalid task_id: {task_id!r} is not a valid UUID")
+        except ValueError as exc:
+            raise ValueError(f"Invalid task_id: {task_id!r} is not a valid UUID") from exc
 
     existing = await pool.fetchrow(
         "SELECT id, task_type, source FROM scheduled_tasks WHERE id = $1",

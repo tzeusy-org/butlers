@@ -22,7 +22,11 @@ import hashlib
 from datetime import UTC, datetime
 from typing import Any
 
+from butlers.connector_catalog import connector_descriptor
+from butlers.connectors.email_spans import email_untrusted_spans
 from butlers.ingestion_bearer_scrub import scrub_message_text
+
+_DESCRIPTOR = connector_descriptor("live_listener")
 
 
 def endpoint_identity(device_name: str) -> str:
@@ -67,7 +71,7 @@ def mint_idempotency_key(endpoint_id: str, unix_ms: int, transcript: str) -> str
     # scrubbed transcript: a hash of the raw one lets a reader brute-force a spoken code.
     try:
         hashed = scrub_message_text(
-            transcript, source={"provider": "live-listener"}, sender={"identity": "ambient"}
+            transcript, source={"provider": _DESCRIPTOR.provider}, sender={"identity": "ambient"}
         )
     except Exception:
         hashed = "[content withheld: bearer scrub failed]"
@@ -113,8 +117,8 @@ def build_voice_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": "voice",
-            "provider": "live-listener",
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": ep_id,
         },
         "event": {
@@ -135,6 +139,15 @@ def build_voice_envelope(
                 "discretion_reason": discretion_reason,
             },
             "normalized_text": transcript,
+            **(
+                {"untrusted_spans": spans}
+                if (
+                    spans := email_untrusted_spans(
+                        transcript, subject="", has_attached_message=False
+                    )
+                )
+                else {}
+            ),
         },
         "control": {
             "idempotency_key": idempotency_key,

@@ -28,7 +28,7 @@ const ButlerMemoryTab = lazy(
 
 // Travel butler tabs (lazy)
 const ButlerTravelTripsTab = lazy(
-  () => import("@/components/butler-detail/ButlerTravelTripsTab.tsx"),
+  () => import("@/components/travel/ButlerTravelTripsTab.tsx"),
 );
 
 // Education butler tabs (lazy)
@@ -38,7 +38,7 @@ const ButlerEducationReviewsTab = lazy(
 
 // Finance butler tabs (lazy)
 const ButlerFinanceFinancesTab = lazy(
-  () => import("@/components/butler-detail/ButlerFinanceFinancesTab.tsx"),
+  () => import("@/components/finance/ButlerFinanceFinancesTab.tsx"),
 );
 
 const ButlerRoutingLogTab = lazy(
@@ -60,12 +60,12 @@ const ButlerRelationshipContactsTab = lazy(
 
 // Home butler tabs (lazy)
 const ButlerHomeDevicesTab = lazy(
-  () => import("@/components/butler-detail/ButlerHomeDevicesTab.tsx"),
+  () => import("@/components/home/ButlerHomeDevicesTab.tsx"),
 );
 
 // Lifestyle butler tabs (lazy)
 const ButlerLifestyleTasteTab = lazy(
-  () => import("@/components/butler-detail/ButlerLifestyleTasteTab.tsx"),
+  () => import("@/components/lifestyle/ButlerLifestyleTasteTab.tsx"),
 );
 
 // Approvals tab (lazy)
@@ -85,10 +85,13 @@ const ButlerQaInvestigationsTab = lazy(
 
 // General butler tabs (lazy)
 const ButlerGeneralCollectionsTab = lazy(
-  () => import("@/components/butler-detail/ButlerGeneralCollectionsTab.tsx"),
+  () => import("@/components/general/ButlerGeneralCollectionsTab.tsx"),
 );
 const ButlerGeneralEntitiesTab = lazy(
-  () => import("@/components/butler-detail/ButlerGeneralEntitiesTab.tsx"),
+  () => import("@/components/general/ButlerGeneralEntitiesTab.tsx"),
+);
+const ButlerGeneralProjectsTab = lazy(
+  () => import("@/components/general/ButlerGeneralProjectsTab.tsx"),
 );
 
 // Spend tab (lazy) — bu-iuol4.19
@@ -181,6 +184,7 @@ export default function ButlerDetailPage() {
 
   const showCollectionsTab = name === "general";
   const showEntitiesTab = name === "general";
+  const showProjectsTab = name === "general";
   const showHealthTab = name === "health";
   const showReviewsTab = name === "education";
   const showTimelinesTab = name === "chronicler";
@@ -261,6 +265,9 @@ export default function ButlerDetailPage() {
             {showEntitiesTab && (
               <DetailTabTrigger value="entities">Entities</DetailTabTrigger>
             )}
+            {showProjectsTab && (
+              <DetailTabTrigger value="projects">Projects</DetailTabTrigger>
+            )}
             {showHealthTab && <DetailTabTrigger value="health">Measurements</DetailTabTrigger>}
             {isSwitchboard && (
               <>
@@ -319,6 +326,14 @@ export default function ButlerDetailPage() {
             <TabsContent value="entities">
               <Suspense fallback={<TabFallback label="entities" />}>
                 <ButlerGeneralEntitiesTab />
+              </Suspense>
+            </TabsContent>
+          )}
+
+          {showProjectsTab && (
+            <TabsContent value="projects">
+              <Suspense fallback={<TabFallback label="projects" />}>
+                <ButlerGeneralProjectsTab />
               </Suspense>
             </TabsContent>
           )}

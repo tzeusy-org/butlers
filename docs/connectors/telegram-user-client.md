@@ -73,6 +73,17 @@ Telegram user-client credentials are resolved **exclusively from owner entity_in
 | `telegram_api_hash` | Owner entity_info (type: `telegram_api_hash`) |
 | `telegram_user_session` | Owner entity_info (type: `telegram_user_session`) |
 
+Owner-outbound point events (`connectors.owner_outbound_events`, shared with the WhatsApp
+user-client) also need the system secret `OWNER_OUTBOUND_DEDUP_KEY` in the shared credential
+store (`butler_secrets`, no environment fallback). It keys the HMAC over `chat_id:message_id`
+that forms the dedup key, so stored rows cannot be matched back to a chat by enumerating
+sequential message ids. If the key is missing, the connector logs one startup warning and
+records no point events; it never falls back to an unkeyed hash. The key is resolved once at
+connector startup, so provisioning it (or recovering from a credential-store probe failure,
+which logs a distinct `probe failed` warning) takes effect only after a connector restart. Rotating the key only lets a
+replayed message be recorded once more. Rows written before the key existed hold a legacy
+unkeyed SHA-256 key; they cannot be rehashed, so removing them is an owner-gated data scrub.
+
 ### Obtaining Credentials
 
 1. Visit https://my.telegram.org and log in with your phone number.
@@ -161,8 +172,6 @@ services:
     command: telegram-user-client-connector
     environment:
       SWITCHBOARD_MCP_URL: http://switchboard:41100/sse
-      CONNECTOR_PROVIDER: telegram
-      CONNECTOR_CHANNEL: telegram_user_client
       CONNECTOR_MAX_INFLIGHT: "8"
       CONNECTOR_HEALTH_PORT: "40080"
       CONNECTOR_BACKFILL_WINDOW_H: "24"
@@ -356,3 +365,7 @@ grep -i "session.*expired\|FloodWait\|AuthKey" /var/log/butlers/telegram-user-cl
 - [Telegram Bot Connector](telegram-bot.md) -- Bot API connector (separate from user client)
 - [Heartbeat Protocol](heartbeat.md) -- Liveness reporting
 - [Metrics](metrics.md) -- Prometheus instrumentation
+
+Static provider `telegram` and channel `telegram_user_client` come from the
+canonical descriptor. Identity environment variables are unnecessary; credentials,
+endpoint discovery and operational settings retain their existing authority.

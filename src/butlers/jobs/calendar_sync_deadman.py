@@ -26,7 +26,7 @@ Why the dashboard-api process, not a butler daemon
 has its own sources + cursors, fanned out and merged for the FE's grid-level
 plaque). The dashboard-api's ``DatabaseManager`` already reads across every
 calendar-enabled schema for the sibling ``GET /api/calendar/workspace`` read
-(:func:`butlers.api.read_models.calendar_workspace_v1.query_calendar_sources`,
+(:func:`butlers.api.read_models.calendar_workspace.query_calendar_sources`,
 reused here unchanged) -- a single butler's own pool cannot. This also mirrors
 ``butlers.jobs.deploy_drift``'s identical rationale for running here rather
 than in a butler's scheduled-task loop.
@@ -85,11 +85,11 @@ from typing import Any
 import asyncpg
 
 from butlers.api.db import DatabaseManager
-from butlers.api.read_models.calendar_workspace_v1 import (
+from butlers.api.read_models.calendar_workspace import (
     CalendarSourceRow,
     query_calendar_sources,
 )
-from butlers.api.routers import audit as audit_router
+from butlers.core import audit as audit_router
 from butlers.core.healing.tracking import create_or_join_attempt, update_attempt_status
 from butlers.core.infra_conditions import (
     ConditionTransition,
@@ -97,6 +97,7 @@ from butlers.core.infra_conditions import (
     compute_fingerprint,
     reconcile_snapshot,
 )
+from butlers.core.job_health import mark_tick_incomplete, record_tick
 from butlers.modules.calendar import (
     DEFAULT_SYNC_INTERVAL_MINUTES,
     PROJECTION_STALENESS_MULTIPLIER,
@@ -300,6 +301,7 @@ async def _escalate_calendar_l1(
             result="escalated",
         )
     except Exception:
+        mark_tick_incomplete()
         logger.exception("calendar sync deadman: QA escalation failed")
         return {
             "fingerprint": transition.fingerprint,
@@ -422,6 +424,8 @@ async def run_calendar_sync_deadman_check(db: DatabaseManager) -> dict[str, Any]
     episode open forever.
     """
     report = await compute_calendar_sync_report(db)
+    if not report.snapshot_complete:
+        mark_tick_incomplete()
     if not report.is_available:
         logger.warning("calendar sync deadman: check degraded: %s", report.check_error)
         return {"available": False, "stale": False}
@@ -429,6 +433,7 @@ async def run_calendar_sync_deadman_check(db: DatabaseManager) -> dict[str, Any]
     try:
         pool = db.pool("switchboard")
     except KeyError:
+        mark_tick_incomplete()
         logger.warning("calendar sync deadman: switchboard pool unavailable for reconciliation")
         return {
             "available": True,
@@ -459,8 +464,10 @@ async def run_calendar_sync_deadman_loop(
         await asyncio.sleep(interval_s)
         try:
             summary = await run_calendar_sync_deadman_check(db)
+            await record_tick(failed=not summary.get("available", False))
             logger.info("calendar_sync_deadman_check: %s", summary)
         except asyncio.CancelledError:
             raise
         except Exception:
+            await record_tick(failed=True)
             logger.exception("calendar_sync_deadman_check: tick failed")

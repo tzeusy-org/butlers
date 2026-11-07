@@ -38,11 +38,12 @@ Design constraints
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import re
 import uuid
 
+from fastapi.routing import APIRoute
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -63,9 +64,36 @@ _MAX_BODY_BYTES: int = 16_384  # 16 KiB — generous but bounded
 # Path prefixes that are NOT interesting to audit (health probes, static files).
 _SKIP_PREFIXES: tuple[str, ...] = ("/health", "/api/health")
 
-# This route carries private household identity values.  Its handler emits an
-# explicit field-by-field audit row inside the mapping transaction.
-_EXACT_SKIP_ROUTES: frozenset[tuple[str, str]] = frozenset({("POST", "/api/home/person-mappings")})
+# These routes carry private household identity values.  Each handler emits an
+# explicit field-by-field audit row inside its own write transaction.
+_EXACT_SKIP_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("POST", "/api/home/person-mappings"),
+        ("PUT", "/api/home/settings/presence/owner-entities"),
+    }
+)
+
+# The owner place registry editor carries coordinates and Wi-Fi SSIDs.  Its handlers write
+# one explicit allowlisted audit row per write, so the generic middleware never reads these
+# bodies: matched by path before the body is touched, for every method and outcome.
+_PRIVATE_SUBTREES: tuple[str, ...] = ("/api/home/places",)
+
+
+# Capture intake (RFC0037): a server-owned, exact method+route no-body policy chosen
+# before any body read. The route records only a fixed category and opaque capture id
+# in ``request.state.capture_audit``; this middleware still writes the normal audit
+# row (actor, fixed operation, outcome) on success, error, timeout and cancellation.
+# No caller header, body flag or model argument can select or bypass this policy.
+def _capture_operation(method: str, path: str) -> tuple[str, str] | None:
+    from butlers.api.routers.captures import AUDIT_OPERATIONS, POST_DOORS
+
+    exact = path.rstrip("/")
+    door = POST_DOORS.get(exact) if method == "POST" else None
+    return (AUDIT_OPERATIONS[door], exact) if door is not None else None
+
+
+def _in_private_subtree(path: str) -> bool:
+    return any(path == root or path.startswith(f"{root}/") for root in _PRIVATE_SUBTREES)
 
 
 def _infer_butler(path: str) -> str:
@@ -128,8 +156,14 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
         if request.method not in _MUTATING_METHODS:
             return await call_next(request)
 
-        if (request.method, request.url.path) in _EXACT_SKIP_ROUTES:
+        if (request.method, request.url.path) in _EXACT_SKIP_ROUTES or _in_private_subtree(
+            request.url.path
+        ):
             return await call_next(request)
+
+        capture = _capture_operation(request.method, request.url.path)
+        if capture is not None:
+            return await self._dispatch_capture(request, call_next, *capture)
 
         path = request.url.path
 
@@ -137,49 +171,42 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
         if not path.startswith("/api/") or any(path.startswith(p) for p in _SKIP_PREFIXES):
             return await call_next(request)
 
-        # Choose bodies carry bearer material even when invalid JSON or truncated.
-        # Match privacy only; routing and callback credential scope stay unchanged.
         parsed_body: dict | None = None
-        if request.method == "POST" and re.fullmatch(
-            r"/api/decisions/prompts/[^/]+/choose/?", path
-        ):
-            parsed_body = {"redacted": "decision_callback"}
-        else:
-            # Collect the request body (bounded) without consuming it for downstream.
-            raw_body: bytes = b""
-            body_truncated = False
-            try:
-                raw_body = await request.body()
-                if len(raw_body) > _MAX_BODY_BYTES:
-                    raw_body = raw_body[:_MAX_BODY_BYTES]
-                    body_truncated = True
-            except Exception:
-                logger.debug("DashboardAuditMiddleware: could not read request body", exc_info=True)
+        # Collect the request body (bounded) without consuming it for downstream.
+        raw_body: bytes = b""
+        body_truncated = False
+        try:
+            raw_body = await request.body()
+            if len(raw_body) > _MAX_BODY_BYTES:
+                raw_body = raw_body[:_MAX_BODY_BYTES]
+                body_truncated = True
+        except Exception:
+            logger.debug("DashboardAuditMiddleware: could not read request body", exc_info=True)
 
-            # Parse body as JSON for redaction; fall back to raw string on parse error.
-            # Both dict and list bodies are handled; list items are recursively redacted.
-            if raw_body:
-                try:
-                    parsed = json.loads(raw_body)
-                    if isinstance(parsed, dict):
-                        parsed_body = redact_body(parsed)
-                        if body_truncated:
-                            parsed_body["__body_truncated__"] = True
-                    elif isinstance(parsed, list):
-                        redacted_list = [
-                            redact_body(item) if isinstance(item, dict) else item for item in parsed
-                        ]
-                        parsed_body = {"__list__": redacted_list}
-                        if body_truncated:
-                            parsed_body["__body_truncated__"] = True
-                    else:
-                        parsed_body = {"__value__": parsed}
-                        if body_truncated:
-                            parsed_body["__body_truncated__"] = True
-                except json.JSONDecodeError:
-                    parsed_body = {"__raw__": raw_body.decode(errors="replace")}
+        # Parse body as JSON for redaction; fall back to raw string on parse error.
+        # Both dict and list bodies are handled; list items are recursively redacted.
+        if raw_body:
+            try:
+                parsed = json.loads(raw_body)
+                if isinstance(parsed, dict):
+                    parsed_body = redact_body(parsed)
                     if body_truncated:
                         parsed_body["__body_truncated__"] = True
+                elif isinstance(parsed, list):
+                    redacted_list = [
+                        redact_body(item) if isinstance(item, dict) else item for item in parsed
+                    ]
+                    parsed_body = {"__list__": redacted_list}
+                    if body_truncated:
+                        parsed_body["__body_truncated__"] = True
+                else:
+                    parsed_body = {"__value__": parsed}
+                    if body_truncated:
+                        parsed_body["__body_truncated__"] = True
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                parsed_body = {"__raw__": raw_body.decode(errors="replace")}
+                if body_truncated:
+                    parsed_body["__body_truncated__"] = True
 
         # Trace ID: re-use one from scope if available, otherwise generate.
         trace_id: str | None = request.scope.get("trace_id") or str(uuid.uuid4())
@@ -187,6 +214,10 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
         # Call downstream handler and capture status code.
         response: Response = await call_next(request)
         status_code = response.status_code
+        # No request schema authorizes retaining bodies sent to an unknown route.
+        # This also protects stale bearer payloads after a feature is retired.
+        if not isinstance(request.scope.get("route"), APIRoute):
+            parsed_body = {"redacted": "unmatched_route"}
         result = "success" if status_code < 400 else "error"
 
         # Expose the trace_id on the response so clients can correlate failures
@@ -194,12 +225,21 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
         # is present even when the audit emit fails.
         response.headers["X-Trace-Id"] = trace_id
 
+        # The override owner wrote its one mandatory receipt in the mutation TX.
+        # Failed/uncommitted requests retain the existing error telemetry path.
+        if getattr(request.state, "model_override_audit_committed", False):
+            return response
+
         # Infer butler and collect path params for replay-ability.
         butler = _infer_butler(path)
         path_params = _collect_path_params(path)
 
         # Build a human-readable operation string.
         operation = f"{request.method} {path}"
+        # The metric attribute must stay bounded: matched route template, never the raw path.
+        route = request.scope.get("route")
+        template = route.path_format if isinstance(route, APIRoute) else "unmatched"
+        metric_action = f"{request.method} {template}"
 
         # Emit — fire and forget (emit_dashboard_audit swallows all errors).
         try:
@@ -221,6 +261,7 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
             result=result,
             error=f"HTTP {status_code}" if result == "error" else None,
             request=request,
+            metric_action=metric_action,
         )
 
         # Invalidate the briefing cache when the audit row has result='error'
@@ -232,3 +273,55 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
             get_cache().invalidate_all()
 
         return response
+
+    async def _dispatch_capture(
+        self, request: Request, call_next, operation: str, path: str
+    ) -> Response:
+        """Content-blind audit for capture intake: never reads or retains the body."""
+        trace_id: str = request.scope.get("trace_id") or str(uuid.uuid4())
+        try:
+            response: Response = await call_next(request)
+        except asyncio.CancelledError:
+            # Audit, then propagate: a cancelled request is never a successful admission.
+            await asyncio.shield(self._emit_capture(request, operation, path, None, trace_id))
+            raise
+        except Exception:
+            await self._emit_capture(request, operation, path, 500, trace_id)
+            raise
+        response.headers["X-Trace-Id"] = trace_id
+        await self._emit_capture(request, operation, path, response.status_code, trace_id)
+        return response
+
+    async def _emit_capture(
+        self,
+        request: Request,
+        operation: str,
+        path: str,
+        status_code: int | None,
+        trace_id: str,
+    ) -> None:
+        recorded = getattr(request.state, "capture_audit", None) or {}
+        category = recorded.get("category", "not_routed")
+        if status_code is None:
+            category = "cancelled"
+        capture_id = recorded.get("capture_id")
+        result = "success" if status_code is not None and status_code < 400 else "error"
+        try:
+            db_manager = get_db_manager()
+        except RuntimeError:
+            return
+        await emit_dashboard_audit(
+            db_manager,
+            butler="general",
+            operation=operation,
+            method=request.method,
+            path=path,
+            path_params={"capture_id": capture_id} if capture_id else None,
+            body=None,
+            response_status=status_code,
+            trace_id=trace_id,
+            result=result,
+            error=f"capture:{category}" if result == "error" else None,
+            request=request,
+            outcome={"category": category},
+        )

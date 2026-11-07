@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 import asyncpg
 import pytest
 
+from butlers.api.deps import get_db
 from butlers.chronicler.adapters.occupation import (
     EPISODE_TYPE_OCCUPATION,
 )
@@ -50,29 +51,18 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
-_TZ = ZoneInfo("Asia/Singapore")
-_LOCAL_DATE = "2026-07-02"
-
-
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["chronicler"],
-    )
-
 
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=5, init=register_jsonb_codec
-    )
-    await p.execute("TRUNCATE TABLE routines CASCADE")
-    await p.execute("TRUNCATE TABLE episodes, point_events, overrides CASCADE")
-    await seed_source_registry(p, sources=INITIAL_SOURCES)
-    yield p
-    await p.close()
+async def chronicler_pool(db, fresh_db) -> asyncpg.Pool:
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    pool = await open_prepared_chronicler_pool(db, fresh_db, "chronicler", max_size=5)
+    await seed_source_registry(pool, sources=INITIAL_SOURCES)
+    return pool
+
+
+_TZ = ZoneInfo("Asia/Singapore")
+_LOCAL_DATE = "2026-07-02"
 
 
 async def _make_occupation_episode(pool, *, routine_id) -> Episode:
@@ -109,12 +99,12 @@ async def _make_routine(pool, *, confidence: float = 0.5, support: int = 10):
 # ── confirm ─────────────────────────────────────────────────────────────────
 
 
-async def test_confirm_writes_override_note_and_reinforces_routine(pool) -> None:
-    routine = await _make_routine(pool, confidence=0.5, support=10)
-    episode = await _make_occupation_episode(pool, routine_id=routine.id)
+async def test_confirm_writes_override_note_and_reinforces_routine(chronicler_pool) -> None:
+    routine = await _make_routine(chronicler_pool, confidence=0.5, support=10)
+    episode = await _make_occupation_episode(chronicler_pool, routine_id=routine.id)
 
     result = await apply_gap_interview_answer(
-        pool,
+        chronicler_pool,
         answer=GapInterviewAnswer.CONFIRM,
         local_date=_LOCAL_DATE,
         occupation_episode_id=episode.id,
@@ -126,7 +116,7 @@ async def test_confirm_writes_override_note_and_reinforces_routine(pool) -> None
 
     # First real override row lands, targets the occupation episode, carries a note.
     overrides = await list_overrides_for(
-        pool, target_kind=OverrideTarget.EPISODE, target_id=episode.id
+        chronicler_pool, target_kind=OverrideTarget.EPISODE, target_id=episode.id
     )
     assert len(overrides) == 1
     assert overrides[0].note is not None
@@ -136,25 +126,25 @@ async def test_confirm_writes_override_note_and_reinforces_routine(pool) -> None
     assert overrides[0].corrected_tombstone_at is None
 
     # Routine reinforced: confidence up, support incremented.
-    refreshed = await get_routine(pool, routine.id)
+    refreshed = await get_routine(chronicler_pool, routine.id)
     assert refreshed.confidence == pytest.approx(0.60)
     assert refreshed.support_count == 11
 
     # The episode is still live (not tombstoned) in the corrected view.
-    ep = await get_episode(pool, episode.id)
+    ep = await get_episode(chronicler_pool, episode.id)
     assert ep is not None
 
 
 # ── correct ─────────────────────────────────────────────────────────────────
 
 
-async def test_correct_tombstones_block_and_decays_routine(pool) -> None:
-    routine = await _make_routine(pool, confidence=0.5, support=10)
-    episode = await _make_occupation_episode(pool, routine_id=routine.id)
+async def test_correct_tombstones_block_and_decays_routine(chronicler_pool) -> None:
+    routine = await _make_routine(chronicler_pool, confidence=0.5, support=10)
+    episode = await _make_occupation_episode(chronicler_pool, routine_id=routine.id)
     now = datetime(2026, 7, 3, 1, 0, tzinfo=UTC)
 
     result = await apply_gap_interview_answer(
-        pool,
+        chronicler_pool,
         answer=GapInterviewAnswer.CORRECT,
         local_date=_LOCAL_DATE,
         occupation_episode_id=episode.id,
@@ -164,33 +154,33 @@ async def test_correct_tombstones_block_and_decays_routine(pool) -> None:
     assert result["routine_updated"] is True
 
     overrides = await list_overrides_for(
-        pool, target_kind=OverrideTarget.EPISODE, target_id=episode.id
+        chronicler_pool, target_kind=OverrideTarget.EPISODE, target_id=episode.id
     )
     assert len(overrides) == 1
     # Correcting a wrong inference tombstones the block via the override.
     assert overrides[0].corrected_tombstone_at == now
 
-    refreshed = await get_routine(pool, routine.id)
+    refreshed = await get_routine(chronicler_pool, routine.id)
     assert refreshed.confidence == pytest.approx(0.35)
     assert refreshed.support_count == 10  # decay does not touch support
 
     # Tombstoned block drops out of the corrected view.
-    ep = await get_episode(pool, episode.id)
+    ep = await get_episode(chronicler_pool, episode.id)
     assert ep is None
 
 
-async def test_correct_defaults_now_and_still_tombstones(pool) -> None:
+async def test_correct_defaults_now_and_still_tombstones(chronicler_pool) -> None:
     """A ``correct`` with no explicit ``now`` must still tombstone the block.
 
     Guards the silent-correction-failure foot-gun: if ``now`` defaulted to
     ``None`` the override would be written without ``corrected_tombstone_at`` and
     the "correction" would report ``applied`` while changing nothing.
     """
-    routine = await _make_routine(pool, confidence=0.5, support=10)
-    episode = await _make_occupation_episode(pool, routine_id=routine.id)
+    routine = await _make_routine(chronicler_pool, confidence=0.5, support=10)
+    episode = await _make_occupation_episode(chronicler_pool, routine_id=routine.id)
 
     result = await apply_gap_interview_answer(
-        pool,
+        chronicler_pool,
         answer=GapInterviewAnswer.CORRECT,
         local_date=_LOCAL_DATE,
         occupation_episode_id=episode.id,
@@ -200,23 +190,23 @@ async def test_correct_defaults_now_and_still_tombstones(pool) -> None:
     assert result["status"] == "applied"
 
     overrides = await list_overrides_for(
-        pool, target_kind=OverrideTarget.EPISODE, target_id=episode.id
+        chronicler_pool, target_kind=OverrideTarget.EPISODE, target_id=episode.id
     )
     assert len(overrides) == 1
     assert overrides[0].corrected_tombstone_at is not None
     # And the block really drops out of the corrected view.
-    assert await get_episode(pool, episode.id) is None
+    assert await get_episode(chronicler_pool, episode.id) is None
 
 
 # ── dismiss ─────────────────────────────────────────────────────────────────
 
 
-async def test_dismiss_writes_note_only_leaves_routine(pool) -> None:
-    routine = await _make_routine(pool, confidence=0.5, support=10)
-    episode = await _make_occupation_episode(pool, routine_id=routine.id)
+async def test_dismiss_writes_note_only_leaves_routine(chronicler_pool) -> None:
+    routine = await _make_routine(chronicler_pool, confidence=0.5, support=10)
+    episode = await _make_occupation_episode(chronicler_pool, routine_id=routine.id)
 
     result = await apply_gap_interview_answer(
-        pool,
+        chronicler_pool,
         answer=GapInterviewAnswer.DISMISS,
         local_date=_LOCAL_DATE,
         occupation_episode_id=episode.id,
@@ -225,12 +215,12 @@ async def test_dismiss_writes_note_only_leaves_routine(pool) -> None:
     assert result["routine_updated"] is False
 
     overrides = await list_overrides_for(
-        pool, target_kind=OverrideTarget.EPISODE, target_id=episode.id
+        chronicler_pool, target_kind=OverrideTarget.EPISODE, target_id=episode.id
     )
     assert len(overrides) == 1
     assert overrides[0].corrected_tombstone_at is None
 
-    refreshed = await get_routine(pool, routine.id)
+    refreshed = await get_routine(chronicler_pool, routine.id)
     assert refreshed.confidence == pytest.approx(0.50)  # unchanged
     assert refreshed.support_count == 10
 
@@ -238,10 +228,10 @@ async def test_dismiss_writes_note_only_leaves_routine(pool) -> None:
 # ── unaccounted-only (no occupation block to target) ────────────────────────
 
 
-async def test_confirm_without_occupation_reinforces_routine_no_override(pool) -> None:
-    routine = await _make_routine(pool, confidence=0.5, support=10)
+async def test_confirm_without_occupation_reinforces_routine_no_override(chronicler_pool) -> None:
+    routine = await _make_routine(chronicler_pool, confidence=0.5, support=10)
     result = await apply_gap_interview_answer(
-        pool,
+        chronicler_pool,
         answer=GapInterviewAnswer.CONFIRM,
         local_date=_LOCAL_DATE,
         occupation_episode_id=None,
@@ -249,60 +239,47 @@ async def test_confirm_without_occupation_reinforces_routine_no_override(pool) -
     )
     assert result["override_id"] is None
     assert result["routine_updated"] is True
-    refreshed = await get_routine(pool, routine.id)
+    refreshed = await get_routine(chronicler_pool, routine.id)
     assert refreshed.confidence == pytest.approx(0.60)
 
 
 # ── confidence clamp under the [0,1] CHECK constraint ───────────────────────
 
 
-async def test_reinforce_confidence_clamped_at_one(pool) -> None:
-    routine = await _make_routine(pool, confidence=0.95, support=10)
+async def test_reinforce_confidence_clamped_at_one(chronicler_pool) -> None:
+    routine = await _make_routine(chronicler_pool, confidence=0.95, support=10)
     updated = await adjust_routine_confidence(
-        pool, routine.id, confidence_delta=0.10, support_delta=1
+        chronicler_pool, routine.id, confidence_delta=0.10, support_delta=1
     )
     assert updated is not None
     assert updated.confidence == pytest.approx(1.0)  # clamped, no CHECK violation
 
 
-async def test_decay_confidence_clamped_at_zero(pool) -> None:
-    routine = await _make_routine(pool, confidence=0.05, support=10)
-    updated = await adjust_routine_confidence(pool, routine.id, confidence_delta=-0.5)
+async def test_decay_confidence_clamped_at_zero(chronicler_pool) -> None:
+    routine = await _make_routine(chronicler_pool, confidence=0.05, support=10)
+    updated = await adjust_routine_confidence(chronicler_pool, routine.id, confidence_delta=-0.5)
     assert updated is not None
     assert updated.confidence == pytest.approx(0.0)  # clamped, no CHECK violation
 
 
-async def test_adjust_missing_routine_returns_none(pool) -> None:
+async def test_adjust_missing_routine_returns_none(chronicler_pool) -> None:
     from uuid import uuid4
 
-    updated = await adjust_routine_confidence(pool, uuid4(), confidence_delta=0.1)
+    updated = await adjust_routine_confidence(chronicler_pool, uuid4(), confidence_delta=0.1)
     assert updated is None
 
 
 # ── MCP tool round-trip (state dedupe + resolve), needs the core `state` table ──
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url_full(postgres_container) -> str:
-    """core + chronicler chains, so the KV ``state`` table exists for dedupe."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name() + "_full",
-        chains=["core", "chronicler"],
-    )
-
-
 @pytest.fixture
-async def full_pool(migrated_db_url_full: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url_full, min_size=1, max_size=5, init=register_jsonb_codec
-    )
-    await p.execute("TRUNCATE TABLE routines CASCADE")
-    await p.execute("TRUNCATE TABLE episodes, point_events, overrides CASCADE")
-    await p.execute("TRUNCATE TABLE state")
-    await seed_source_registry(p, sources=INITIAL_SOURCES)
-    yield p
-    await p.close()
+async def full_pool(db, fresh_db):
+    """core + chronicler chains, so the KV ``state`` table exists for dedupe."""
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    pool = await open_prepared_chronicler_pool(db, fresh_db, "core", "chronicler", max_size=5)
+    await seed_source_registry(pool, sources=INITIAL_SOURCES)
+    return pool
 
 
 def _chronicler_tools(pool):
@@ -395,6 +372,40 @@ async def test_resolve_tool_roundtrip(full_pool) -> None:
     assert again["status"] == "already_answered"
 
 
+async def test_lane_answer_roundtrip_counts_one_owner_block(full_pool) -> None:
+    """A lane tap writes one counted owner block; a re-tap writes nothing (bu-r3fmja)."""
+    from butlers.chronicler.aggregations import lane_for_activity
+    from butlers.chronicler.storage import list_episodes
+    from butlers.core.state import state_set
+
+    start = datetime(2026, 7, 2, 7, 55, tzinfo=_TZ).astimezone(UTC)
+    end = datetime(2026, 7, 2, 10, 40, tzinfo=_TZ).astimezone(UTC)
+    await state_set(
+        full_pool,
+        f"gap_interview:pending:{_LOCAL_DATE}",
+        {
+            "interview_id": _LOCAL_DATE,
+            "local_date": _LOCAL_DATE,
+            "occupation_episode_id": None,
+            "routine_id": None,
+            "block_start_at": start.isoformat(),
+            "block_end_at": end.isoformat(),
+            "options": ["work", "social", "play", "eat", "rest", "dismiss"],
+            "answered": False,
+        },
+    )
+    resolve = (await _register(full_pool))["chronicler_resolve_gap_interview"]
+
+    applied = await resolve(interview_id=_LOCAL_DATE, answer="social")
+    again = await resolve(interview_id=_LOCAL_DATE, answer="social")
+
+    assert applied["status"] == "applied"
+    assert again["status"] == "already_answered"
+    (episode,) = await list_episodes(full_pool, source_name="chronicler.owner_answer")
+    assert (episode.start_at, episode.end_at) == (start, end)
+    assert lane_for_activity("activity", episode.source_name, episode.episode_type) == "social"
+
+
 async def test_concurrent_resolve_applies_once(full_pool) -> None:
     """Two concurrent taps for the same interview must apply exactly once.
 
@@ -455,9 +466,9 @@ def _build_chronicler_api(pool):
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
     app = create_app(api_key="")
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "chronicler" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "chronicler":
+            app.dependency_overrides[get_db] = lambda: db
             break
     else:  # pragma: no cover — defensive
         raise AssertionError("chronicler router not registered on the app")
@@ -510,3 +521,136 @@ async def test_resolve_endpoint_unknown_interview_is_graceful(full_pool) -> None
     body = resp.json()
     assert body["status"] == "error"
     assert body["error"] == "unknown_or_expired_interview"
+
+
+@pytest.fixture(scope="module")
+def gap_shared_credentials_db(postgres_container):
+    """A genuine separate shared database, initialized before any async test body."""
+    from urllib.parse import urlparse
+
+    from butlers.testing.migration import migration_bootstrap_db_url
+
+    name = migration_db_name()
+    url = create_migrated_test_db(postgres_container, name, chains=["core"])
+    bootstrap_url = urlparse(migration_bootstrap_db_url(postgres_container, name))
+    return url, bootstrap_url._replace(scheme="postgresql").geturl()
+
+
+@pytest.mark.parametrize("mode", ["shared", "local", "missing", "denied"])
+async def test_gap_tool_selected_store_respects_migrated_role_and_schema(
+    full_pool, gap_shared_credentials_db, monkeypatch, mode
+):
+    """No handmade credential tables, widened grants, RLS bypass or provider send."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from butlers.core.state import state_get
+    from butlers.credential_store import CredentialStore
+
+    shared_url, bootstrap_url = gap_shared_credentials_db
+    admin = await asyncpg.connect(shared_url)
+    selected_pool = None
+    owner_id = None
+    module = None
+    try:
+        await admin.execute(
+            "DELETE FROM public.butler_secrets WHERE secret_key=$1", "BUTLER_TELEGRAM_TOKEN"
+        )
+        await full_pool.execute(
+            "DELETE FROM public.butler_secrets WHERE secret_key=$1", "BUTLER_TELEGRAM_TOKEN"
+        )
+        if mode != "missing":
+            await admin.execute(
+                "INSERT INTO public.butler_secrets(secret_key, secret_value) VALUES ($1, $2)",
+                "BUTLER_TELEGRAM_TOKEN",
+                "synthetic-shared",
+            )
+        if mode == "local":
+            await CredentialStore(full_pool).store("BUTLER_TELEGRAM_TOKEN", "synthetic-local")
+
+        async def select_role(connection):
+            # Pool release resets SET ROLE. Bind it on EVERY acquisition, not
+            # merely once in init, or a denied read would silently use the login.
+            if mode == "denied":
+                # Existing bootstrap role has no credential-table authority. The
+                # control login is used only to SET ROLE, never for store reads.
+                await connection.execute("SET ROLE restore_drill_executor_audit_writer")
+            else:
+                await connection.execute("SET ROLE butler_chronicler_rw")
+
+        selected_pool = await asyncpg.create_pool(
+            bootstrap_url if mode == "denied" else shared_url,
+            min_size=1,
+            max_size=1,
+            init=register_jsonb_codec,
+            setup=select_role,
+        )
+        async with selected_pool.acquire() as connection:
+            assert await connection.fetchval("SELECT current_user") == (
+                "restore_drill_executor_audit_writer"
+                if mode == "denied"
+                else "butler_chronicler_rw"
+            )
+            assert await connection.fetchval(
+                "SELECT NOT rolsuper AND NOT rolbypassrls FROM pg_roles WHERE rolname=current_user"
+            )
+            assert await connection.fetchval(
+                "SELECT has_table_privilege(current_user, 'public.butler_secrets', 'SELECT')"
+            ) is (mode != "denied")
+            if mode == "denied":
+                with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                    await connection.fetchval(
+                        "SELECT secret_value FROM public.butler_secrets LIMIT 1"
+                    )
+
+        owner_id = await full_pool.fetchval(
+            "INSERT INTO public.entities(canonical_name, entity_type, roles) "
+            "VALUES ('Synthetic gap owner', 'person', ARRAY['owner']) RETURNING id"
+        )
+        await full_pool.execute(
+            "INSERT INTO public.entity_info(entity_id, type, value, is_primary) "
+            "VALUES ($1, 'telegram_chat_id', 'synthetic-owner-chat', true)",
+            owner_id,
+        )
+        store = CredentialStore(full_pool, fallback_pools=[selected_pool])
+        # Only an artificial value is injected; real host credentials are not read.
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "synthetic-environment-only")
+        http = MagicMock()
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"result": {"message_id": 17}}
+        http.post = AsyncMock(return_value=response)
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=http)
+        client.__aexit__ = AsyncMock(return_value=False)
+        monkeypatch.setattr("httpx.AsyncClient", MagicMock(return_value=client))
+        module, registered, mcp, db = _chronicler_tools(full_pool)
+        await module.on_startup({}, db, credential_store=store)
+        await module.register_tools(mcp, {}, db, "chronicler")
+        gap = registered["chronicler_gap_interview"]
+        result = await gap(date_label=_LOCAL_DATE, timezone="Asia/Singapore")
+        if mode in {"shared", "local"}:
+            assert result["status"] == "asked"
+            assert http.post.await_count == 1
+            expected = "synthetic-local" if mode == "local" else "synthetic-shared"
+            assert http.post.await_args.args[0].endswith(f"{expected}/sendMessage")
+            # Independent acquisition sees the durable daily marker.
+            assert await state_get(full_pool, f"gap_interview:asked:{_LOCAL_DATE}") is not None
+            assert (await gap(date_label=_LOCAL_DATE))["status"] == "already_asked"
+            assert http.post.await_count == 1
+        else:
+            assert result["status"] == "not_configured"
+            assert http.post.await_count == 0
+            assert await state_get(full_pool, f"gap_interview:asked:{_LOCAL_DATE}") is None
+    finally:
+        if module is not None:
+            await module.on_shutdown()
+        if selected_pool is not None:
+            await selected_pool.close()
+        await admin.execute(
+            "DELETE FROM public.butler_secrets WHERE secret_key=$1", "BUTLER_TELEGRAM_TOKEN"
+        )
+        await admin.close()
+        await full_pool.execute(
+            "DELETE FROM public.butler_secrets WHERE secret_key=$1", "BUTLER_TELEGRAM_TOKEN"
+        )
+        if owner_id is not None:
+            await full_pool.execute("DELETE FROM public.entities WHERE id=$1", owner_id)

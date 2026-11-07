@@ -40,6 +40,7 @@ from butlers.chronicler.adapters.reading import ReadingInferredAdapter
 from butlers.chronicler.adapters.sessions import CoreSessionsAdapter
 from butlers.chronicler.adapters.spotify import SpotifySessionAdapter
 from butlers.chronicler.adapters.steam import SteamPlayAdapter
+from butlers.chronicler.adapters.steam_status import SteamStatusAdapter
 
 __all__ = [
     "ActivityWatchWindowAdapter",
@@ -65,4 +66,5 @@ __all__ = [
     "ReadingInferredAdapter",
     "SpotifySessionAdapter",
     "SteamPlayAdapter",
+    "SteamStatusAdapter",
 ]

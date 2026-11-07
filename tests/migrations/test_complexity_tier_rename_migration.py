@@ -14,12 +14,13 @@ Covers:
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.integration
 
@@ -43,71 +44,9 @@ _NEW_CHECK = "('reasoning', 'workhorse', 'cheap', 'specialty', 'local', 'legacy'
 # ---------------------------------------------------------------------------
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_093", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-# ---------------------------------------------------------------------------
-# Helpers to materialise the three affected tables in a test DB
-# (no FK wiring — only what the migration itself touches)
-# ---------------------------------------------------------------------------
-
-
-async def _create_prerequisite_tables(pool: asyncpg.Pool) -> None:
-    """Create minimal versions of the three tables with old-vocabulary CHECK constraints."""
-    await pool.execute(f"""
-        CREATE TABLE public.model_catalog (
-            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            alias           TEXT NOT NULL UNIQUE,
-            runtime_type    TEXT NOT NULL DEFAULT 'codex',
-            model_id        TEXT NOT NULL DEFAULT 'dummy',
-            extra_args      JSONB NOT NULL DEFAULT '[]'::jsonb,
-            complexity_tier TEXT NOT NULL DEFAULT 'medium',
-            enabled         BOOLEAN NOT NULL DEFAULT true,
-            priority        INTEGER NOT NULL DEFAULT 0,
-            created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-            CONSTRAINT chk_model_catalog_complexity_tier
-                CHECK (complexity_tier IN {_OLD_CHECK})
-        )
-    """)
-
-    await pool.execute(f"""
-        CREATE TABLE public.butler_model_overrides (
-            id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            butler_name      TEXT NOT NULL,
-            catalog_entry_id UUID NOT NULL REFERENCES public.model_catalog(id) ON DELETE CASCADE,
-            enabled          BOOLEAN NOT NULL DEFAULT true,
-            priority         INTEGER,
-            complexity_tier  TEXT,
-            source           TEXT,
-            CONSTRAINT uq_butler_model_overrides_butler_entry
-                UNIQUE (butler_name, catalog_entry_id),
-            CONSTRAINT chk_butler_model_overrides_complexity_tier
-                CHECK (complexity_tier IS NULL OR complexity_tier IN {_OLD_CHECK})
-        )
-    """)
-
-    await pool.execute(f"""
-        CREATE TABLE public.model_round_robin_counters (
-            butler_name      TEXT NOT NULL,
-            complexity_tier  TEXT NOT NULL,
-            counter          BIGINT NOT NULL DEFAULT 0,
-            updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-            PRIMARY KEY (butler_name, complexity_tier),
-            CONSTRAINT chk_rr_complexity_tier
-                CHECK (complexity_tier IN {_OLD_CHECK})
-        )
-    """)
-
-
 async def _run_upgrade(pool: asyncpg.Pool) -> None:
     """Replay upgrade() SQL statements against the live pool."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_093")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -119,7 +58,7 @@ async def _run_upgrade(pool: asyncpg.Pool) -> None:
 
 async def _run_downgrade(pool: asyncpg.Pool) -> None:
     """Replay downgrade() SQL statements against the live pool."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_093")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -135,11 +74,9 @@ async def _run_downgrade(pool: asyncpg.Pool) -> None:
 
 
 @pytest.fixture
-async def migration_pool(provisioned_postgres_pool):
-    """Fresh DB with pre-migration schema already in place."""
-    async with provisioned_postgres_pool() as pool:
-        await _create_prerequisite_tables(pool)
-        yield pool
+async def migration_pool(db):
+    """core_093's predecessor: the real tables with their old-vocabulary CHECKs."""
+    return await db("core", revisions={"core": "core_092"})
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +107,7 @@ async def test_upgrade_remaps_model_catalog_tiers(migration_pool: asyncpg.Pool) 
         "discretion": "specialty",
         "self_healing": "specialty",
     }
-    for old_tier, expected_new in old_to_new.items():
+    for old_tier in old_to_new:
         await pool.execute(
             "INSERT INTO public.model_catalog (alias, runtime_type, model_id, complexity_tier)"
             " VALUES ($1, 'codex', 'test-model', $2)",
@@ -217,7 +154,7 @@ async def test_upgrade_remaps_butler_model_overrides_tiers(migration_pool: async
         "discretion": "specialty",
         "self_healing": "specialty",
     }
-    for old_tier_name, expected_new in old_to_new.items():
+    for old_tier_name in old_to_new:
         await pool.execute(
             "INSERT INTO public.butler_model_overrides"
             " (butler_name, catalog_entry_id, complexity_tier)"
@@ -388,7 +325,7 @@ async def test_downgrade_remaps_model_catalog_tiers(migration_pool: asyncpg.Pool
         "local": "trivial",
         "legacy": "trivial",
     }
-    for alias, new_tier in new_to_expected_old.items():
+    for alias, _new_tier in new_to_expected_old.items():
         # After upgrade, complexity_tier must use the NEW vocabulary (alias = new tier name).
         await pool.execute(
             "INSERT INTO public.model_catalog (alias, runtime_type, model_id, complexity_tier)"

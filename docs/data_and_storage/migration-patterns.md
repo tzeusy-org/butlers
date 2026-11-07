@@ -64,7 +64,7 @@ Individual butlers can have their own migration chains for butler-specific table
 
 ## Discovery and Resolution
 
-The `migrations.py` module (`src/butlers/migrations.py`) handles chain discovery:
+The `butlers.migrations` package (`src/butlers/migrations/__init__.py`) handles chain discovery:
 
 1. **`_discover_module_chains()`** -- Scans `src/butlers/modules/*/migrations/` for Python files.
 2. **`_discover_butler_chains()`** -- Scans `roster/*/migrations/` for Python files.
@@ -98,8 +98,8 @@ Alembic's `version_locations` setting is always configured with ALL known chain 
 The butler daemon startup sequence runs migrations in this order:
 
 1. Core migrations (`chain="core"`)
-2. Module migrations (for each enabled module that returns a non-None `migration_revisions()`)
-3. Butler-specific migrations (if `has_butler_chain(butler_name)` returns True)
+2. Butler-specific migrations (if `has_butler_chain(butler_name)` returns True)
+3. Declared module migration directories, in dependency order, excluding the already-run butler chain
 
 Each chain is upgraded to its head independently. Alembic tracks which revisions have been applied per-chain in the `alembic_version` table within the target schema.
 
@@ -118,7 +118,7 @@ To create a new module migration chain:
 1. Create `src/butlers/modules/<name>/migrations/` directory.
 2. Create `__init__.py` (empty).
 3. Create the first migration with `branch_labels = ("<name>",)` and `down_revision = None`.
-4. Return the branch label from the module's `migration_revisions()` method.
+4. CLI and daemon discover the non-empty directory through `get_module_migration_chains()`; no hook override is needed.
 
 ### Database-global protected public boundaries
 
@@ -167,6 +167,28 @@ protected boundary only when it is empty and has no active consumer; a nonempty
 outbox must refuse rollback with forward-remediation guidance. Avoid foreign
 keys/cascades to mutable source records when the evidence must survive source
 catalog or attempt deletion.
+
+`core_291` applies this rule to the shared ambient projection grant store. Its
+transaction advisory lock serializes the schema-version census with other
+291 upgrades and downgrades. A schema leaving 291 retains the entire table,
+rows, owner, RLS, policies and ACLs while another schema is still at 291 or
+later. An unknown core revision or missing current consumer refuses rollback
+with migration-history remediation. Exclude only the literal reserved `pg_`
+namespace prefix from the census: supported user schemas such as `pgpeer` and
+`pga` remain consumers. SQL `LIKE 'pg_%'` also matches those user schemas because
+its underscore is a wildcard. The last consumer takes an exclusive table
+lock before checking emptiness, so minting cannot race an empty-store drop.
+Any row, including a revoked grant, refuses rollback with roll-forward guidance;
+revoking grants does not erase their history or authorize deletion. Only a
+genuinely empty store without another migrated consumer can be removed. Reapply
+291 as the established ordinary migration owner to recreate an empty store with
+its existing creator ACLs. Full-chain peer-schema replay uses the original
+ordinary migration login: core196 proves the exact finalized read-only interface
+for that caller and skips its absence-only installer. A bootstrap superuser
+defeats that normal-caller proof and re-enters the installer, which correctly
+refuses pre-existing authority objects. Keep managed rollback/catalogue
+observation separate from full-chain replay; do not stamp past the installers or
+broaden the ordinary login to make a fixture pass.
 
 A string literal inside a stored function body is not reachable the way a schema
 object is. `ALTER ... RENAME` is expressible against an existing object, so a
@@ -293,15 +315,16 @@ bootstrap change and disposable-PG validation of first install, retained-table
 replay, repeated convergence and the same positive/negative role controls.
 It is a proposal, not an adopted owner change or a verified repair. No applied
 core_255 rewrite, new core allocation, broad grant, DROP or runtime owner privilege
-is authorized here. Function-owner convergence remains with `bu-q7vx1q.33`.
+is authorized here. Function-owner convergence landed separately (`bu-jjv2du`; see
+Managed amendment-owner convergence below).
 
 A bounded core_255-to-core_254 rollback intentionally retains complete amendment
 rows in all four states, while their referenced candidates remain. It removes
 candidate `premise` and `delivery_ref`, folds candidate `withdrawn` to `filtered`, and
 folds ledger `withdrawn` to `suppressed` and `amended` to `delivered`. Reupgrade cannot
 recover the removed candidate fields. The surviving table does not mean that older
-code can deliver corrections. Its existing candidate FK still cascades on deletion;
-this decision is not a promise of indefinite evidence retention.
+code can deliver corrections. From `core_312` the table has no candidate FK, so its rows
+also outlive candidate cleanup; the retention rule is in `docs/operations/data-retention.md`.
 
 Retaining a table also does not converge function ownership. A managed-bootstrap
 reupgrade can recreate the two definers under the bootstrap owner. An ordinary
@@ -311,9 +334,17 @@ them through schema ownership; the function is then unavailable (`42883`) until
 ordinary reupgrade recreates it under the ordinary owner. Record the actual
 database/schema authority and function absence or ownership at each step. Do not
 extrapolate this DROP authority to a migration login that lacks schema ownership.
-Broader caller/source validation, FK lifecycle, FORCE RLS and
-definer ownership hardening remain with `bu-q7vx1q.33`; this investigation adds no
-authority or waiver for those choices.
+The `bu-q7vx1q.33` items were merged into `bu-q7vx1q.32` and settled by `core_312`: caller
+validation (the definer inserts only for a resolved `owner_conditions` row with exactly that
+source, fingerprint and `resolved_at`), FK lifecycle (the candidate FK is dropped; orphaned
+rows settle to `orphaned`) and FORCE RLS (declined: the table owner is the migration role,
+so it would change nothing for runtime callers). The definer also pins TimeZone/DateStyle
+(session-independent dedup keys) and ignores the caller's summary. Function-owner
+convergence is not part of that scope, but `core_312` no longer hides it: its upgrade
+asserts that the replacement, the dropped key and the widened CHECK took effect and raises
+otherwise, so a database whose definer is bootstrap-owned fails `core_312` until the
+privileged bootstrap converges its owner (`bu-jjv2du`, below). This investigation adds no
+authority or waiver for that choice.
 
 The real-PG controls live in
 `tests/migrations/test_core_255_insight_premise_binding_migration.py`. They use the
@@ -344,7 +375,18 @@ owned-sequence ownership follows the table. These expected effects are measured 
 unchanged row values, logical definitions, FK, runtime effective privileges/grant options,
 policies and RLS flags. The trusted migration owner bypasses the current non-FORCE RLS as an
 owner; actual runtime `SET ROLE` acquisitions must retain their own row and write restrictions.
-Table ownership does not converge the separately installed function owners or caller authority.
+The same atomic block then converges the table's two core_255 SECURITY DEFINER functions,
+`public.enqueue_premise_amendments(text, text, timestamptz, text)` and
+`public.resolve_finance_bill_status(uuid)` (`bu-jjv2du`). The rule is the table's: an absent
+function or one the target already owns is a no-op, only the bootstrap owner is transferred
+(`ALTER FUNCTION ... OWNER TO`, which keeps the body, `proconfig` and EXECUTE grants; owner
+references in the ACL follow the new owner), and a third owner refuses in the read-only preflight
+and again in the block. They converge only while the table exists, because core_255 installs them
+with it. Without this, a bootstrap-owned definer runs as the superuser and blocks every ordinary
+`CREATE OR REPLACE`, and `core_312` fails loud. Run the bootstrap before migrating: dev's
+`bootstrap-dev` does it on every deploy; prod's operator runs `scripts/init-db.sql` before
+`deploy-prod` ([kubernetes-deployment.md](../operations/kubernetes-deployment.md)). Ownership is
+not caller authority: the definer still verifies its caller's claim (core_312).
 
 The existing real-PG node preserves its 43-row/45-role/six-variant/two-replay historical failure
 by neutralizing only the uniquely delimited owner block in a complete source-bound fixture. Its
@@ -386,8 +428,8 @@ their separate authority contract or equate the trusted migration owner with run
   once both minted `core_164` and merged green. Before publishing a migration, take the next number
   from every live branch (`git ls-remote --heads origin`, then `git ls-tree -r --name-only
   origin/<branch> -- alembic/versions/core/`), not just `origin/main`, and re-run
-  `tests/config/test_migration_chain_head.py` against the merge result. The
-  `migration-chain-main.yml` workflow re-runs that guard on every `main` push.
+  `tests/config/test_migration_chain_head.py` against the merge result. The merge queue runs that
+  guard on the exact merged tree before anything lands on `main`.
 - Head-pinned assertions derive the head: use `butlers.testing.migration.assert_at_chain_head()` or
   `butlers.migrations.get_chain_head(chain)`. An AST guard in `test_migration_chain_head.py` fails a
   literal revision compared with an `alembic_version` read; a deliberate pin carries
@@ -413,16 +455,34 @@ their separate authority contract or equate the trusted migration owner with run
   reads ids/count/provenance through a separate connection, and compares the final schema and
   vocabulary with a fresh dynamic-head database. Test downgrade/reupgrade separately at each
   bounded revision, preserving every row and all provenance outside the documented outcome fold.
+- A shared-DDL downgrade that counts schema-local consumers selects `alembic_version` namespaces
+  with `left(namespace.nspname, 3) <> 'pg_'`, never `NOT LIKE 'pg_%'`: LIKE's `_` is a wildcard, so
+  supported names such as `pgpeer` or `pga` would be omitted, undercounting retained consumers and
+  dropping shared objects they still use. The core246-305 consumer scans were corrected in place
+  (a forward revision cannot change an earlier downgrade); the real-PG pgpeer control in
+  `tests/migrations/test_dashboard_job_health_migration.py` executes every core scan and rejects the
+  old clause.
 - Table rewrites (rename old, create new) keep the old index names on the backup table; new index
   names must not collide.
 - `run_migrations` builds its Alembic config through
-  `src/butlers/migrations.py::_build_alembic_config`, which escapes `%` as `%%` in
+  `src/butlers/migrations/__init__.py::_build_alembic_config`, which escapes `%` as `%%` in
   `sqlalchemy.url`; percent-encoded libpq options
   otherwise raise `configparser` interpolation errors.
 - Compare `timestamptz` with a `DATE` UTC-explicitly: `ts >= (v_month::timestamp AT TIME ZONE
   'UTC')`. A bare `ts >= v_month` promotes through the session `TimeZone`.
-- The `test_core_chain_serializes_global_runtime_attention_*` tests contend on a global
-  cross-process lock and fail spuriously beside another run on the same Postgres.
+- Diagnose cross-process migration failures from the actual child exception. A
+  `pg_proc_proname_args_nsp_index` violation in `core_272` is a shared-function
+  first-create race, even when observed by a runtime-attention concurrency test.
+  Earlier transaction locks are released by intervening autocommit revisions.
+  `core_272` therefore acquires its own fixed, `pg_catalog`-qualified transaction
+  advisory lock on the migration connection for both upgrade and downgrade,
+  retaining it through function DDL, ACL changes and the outer commit or rollback.
+  Lock waits are bounded to five seconds, preserving any shorter existing
+  `lock_timeout` and restoring it after successful statements. SQL errors retain
+  their original class and the outer rollback clears the local timeout. The
+  dedicated real-Postgres concurrency owner observes actual waiting backends,
+  repeats first-create contention, removes only the serializer as a negative
+  control, and checks lifecycle ordering, rollback, bounded refusal and cleanup.
 - CLI migration entrypoints (`butlers db migrate`, compose's `migrations` service) apply the same
   module schema override as daemon startup: memory chains honour `[modules.memory].memory_schema`
   (e.g. chronicler's `chronicler_mem`), not the owning butler schema.
@@ -433,7 +493,77 @@ their separate authority contract or equate the trusted migration owner with run
   the next number, repoint `down_revision`, update chain-head literals in tests, and push with
   `--force-with-lease`. Renumber before review so the reviewed head is final.
 
+### SQL and database traps
+
+Moved verbatim from `AGENTS.md` (Database and migrations).
+
+- `tests/contracts/test_schema_reach.py` fences foreign-butler SQL literals across `src/` and
+  `roster/`. Its single reasoned allowlist must shrink when reads disappear; stale entries fail.
+  Unresolved dynamic relation slots require explicit justification, and the Chronicler router
+  retains its stricter zero-foreign-relation rule.
+
+- Public-table GRANTs are not an authority boundary: `scripts/init-db.sql` deliberately re-widens
+  them. Tables such as `public.cost_claims` rely on enabled and forced RLS keyed to the runtime role,
+  so migration tests must replay bootstrap and write under real `SET ROLE` identities.
+- In partitioned-index migrations a blocking `pg_advisory_lock()` waiter can hold a snapshot that
+  `CREATE INDEX CONCURRENTLY` waits on. Poll `pg_try_advisory_lock()` in autocommit with the waits
+  outside PostgreSQL (see `core_231`).
+- Core-chain migrations must tolerate core-only databases: guard cross-schema
+  `ALTER/UPDATE/GRANT` with `to_regclass(...)` or `information_schema` checks.
+- At runtime under `SET ROLE`, `to_regclass('other_schema.tbl')` raises
+  `InsufficientPrivilegeError` instead of returning NULL. Probe reachability first with
+  `SELECT COALESCE((SELECT has_schema_privilege(oid,'USAGE') FROM pg_namespace WHERE nspname='<s>'), false)`
+  (a subquery: Postgres does not guarantee `AND` short-circuits).
+- `src/butlers/db.py` parses `sslmode` from `DATABASE_URL` / `POSTGRES_SSLMODE` for both daemon and
+  API pools. With it unset, a STARTTLS `unexpected connection_lost()` retries once with
+  `ssl="disable"`.
+- asyncpg type traps: bind `datetime.date`/`datetime` objects, never ISO strings, even with a `::date`
+  cast (the codec encodes before the cast runs); pass explicit bound values rather than
+  `$2 ± interval '1 day'`, which asyncpg can infer as `interval`.
+- `ON CONFLICT (cols) DO UPDATE` against a partial unique index must repeat the index's `WHERE`
+  predicate.
+- Core revisions replay per schema against shared `public.*` data; see migration-patterns for the
+  cumulative-CHECK rule.
+- The asyncpg JSONB codec encodes write parameters: pass dicts/lists straight to `$N::jsonb`.
+  `json.dumps(...)` double-encodes into a JSONB string, and under
+  `COALESCE(col, '{}'::jsonb) || $N::jsonb` that corrupts the row into an array. Reads need no
+  `json.loads` either.
+- Never add a second advisory lock inside `dispatch_outcomes` producers: the `ON CONFLICT DO NOTHING`
+  insert already waits on the conflicting transaction.
+- Converge a stored-function literal by re-running its installer (the `finalize_interface`
+  pattern), never by backfilling rows.
+- Never string-match `"does not exist"` to detect a missing table: a missing column matches too.
+  Catch `asyncpg.exceptions.UndefinedTableError` for the silent path and log everything else.
+- JSONB `||` is right-biased: for creation-wins merges write `new || existing`, not the reverse.
+- Any raised exception aborts the whole Postgres transaction, so "catch and continue" inside one
+  needs a savepoint (a nested `connection.transaction()` in asyncpg). Absorb one error class only
+  (e.g. `InsufficientPrivilegeError` from a best-effort call beside the primary write), and prove the
+  commit by reading back from a separate pool acquisition. Do not wrap a gated call that is the
+  transaction's purpose (`_routing.py` durable dashboard acceptance).
+- A savepoint does not make DDL durable: a partition created inside a transaction is dropped by its
+  rollback. Call ensure-partition functions on the pool, outside the transaction (see
+  `roster/switchboard/tools/ingestion/ingest.py`), and test by forcing the rollback then checking
+  from a separate acquisition.
+
 ## Related Pages
 
 - [Schema Topology](schema-topology.md) -- Database layout and search path
 - [State Store](state-store.md) -- The `state` table created by core migrations
+
+### Ordinary owner-held goal ledger
+
+The dark RFC0038 ledger (`sw_047`) follows the existing `sw_035` enabled,
+non-FORCE RLS pattern. The trusted migration login owns the six tables and can
+use ordinary `row_security=off` backup; only the exact Switchboard runtime passes
+the command policies. Replay `init-db.sql` and test real runtime identities,
+including denied connector/Chronicler identities and owner memberships. Verify
+the existing complete backup and restore scripts retain every ledger row, owner,
+policy and constraint. No backup exclusion or new privileged owner is needed.
+Downgrade refuses durable goals/admission history. `core_273` likewise refuses
+to discard configured admission limits. These migrations do not activate callers.
+
+### Served identity evidence
+
+Serving evidence is additive core-owned data (`core_290`). Do not edit historical revisions or backfill serving from requested labels. Multiple schema replays must preserve the public table checks and exact data. Keep existing one aggregate partitioned ledger record; per-model usage belongs in a separate evidence table so every quota/ceiling read does not double count. A populated downgrade refuses instead of deleting serving receipts; prove refusal with planted sentinels and separate readback. Replaying bootstrap/runtime roles is required for SQL evidence; a mock and a role string are not grant/RLS proof.
+
+Managed reapplication creates `public.model_served_usage` as the actual established owner of `public.model_dispatch_attempts`, using that owner's existing per-creator default ACLs and then restoring the calling role. This preserves ordinary writer visibility after privileged empty downgrade/re-upgrade without adding a grant profile or principal. Discretion's pool fixtures must install the same `register_jsonb_codec` initializer as runtime pools: the atomic attempt/usage recorder binds structured JSONB evidence. An unconfigured-pool refusal is a fixture diagnostic, not permission to stringify evidence, weaken atomicity or change the runtime outcome.

@@ -14,6 +14,7 @@ Issue: bu-8njj0.4
 
 from __future__ import annotations
 
+import itertools
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -21,6 +22,9 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.records import Record, row
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -220,7 +224,9 @@ class TestLoadAvailableButlers:
 
     async def test_excludes_staffers_from_candidate_set(self) -> None:
         """_load_available_butlers only returns butler-typed agents."""
-        from butlers.tools.switchboard.routing.classify import _load_available_butlers
+        from butlers.tools.switchboard.registry.registry import (
+            load_available_butlers as _load_available_butlers,
+        )
 
         butler_row = _make_registry_row("general", agent_type="butler")
         staffer_row = _make_registry_row("messenger", agent_type="staffer")
@@ -238,7 +244,9 @@ class TestLoadAvailableButlers:
 
     async def test_empty_registry_auto_discover_filters_staffers(self) -> None:
         """After auto-discovery, _load_available_butlers still filters staffers."""
-        from butlers.tools.switchboard.routing.classify import _load_available_butlers
+        from butlers.tools.switchboard.registry.registry import (
+            load_available_butlers as _load_available_butlers,
+        )
 
         butler_row = _make_registry_row("health", agent_type="butler")
         staffer_row = _make_registry_row("switchboard", agent_type="staffer")
@@ -250,7 +258,7 @@ class TestLoadAvailableButlers:
         pool.execute = AsyncMock(return_value=None)
 
         with patch(
-            "butlers.tools.switchboard.routing.classify.discover_butlers",
+            "butlers.tools.switchboard.registry.registry.discover_butlers",
             new_callable=AsyncMock,
         ) as mock_discover:
             mock_discover.return_value = [{"name": "health"}, {"name": "switchboard"}]
@@ -263,17 +271,19 @@ class TestLoadAvailableButlers:
     async def test_receiver_cutover_uses_separated_candidates_despite_legacy_holds(
         self, monkeypatch
     ) -> None:
-        from butlers.tools.switchboard.routing.classify import _load_available_butlers
+        from butlers.tools.switchboard.registry.registry import (
+            load_available_butlers as _load_available_butlers,
+        )
 
         monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
         pool = AsyncMock()
         with (
             patch(
-                "butlers.tools.switchboard.routing.classify.list_control_plane_candidates",
+                "butlers.tools.switchboard.registry.registry.list_control_plane_candidates",
                 new=AsyncMock(return_value=[{"name": "health", "modules": ["health"]}]),
             ) as candidates,
             patch(
-                "butlers.tools.switchboard.routing.classify.list_butlers",
+                "butlers.tools.switchboard.registry.registry.list_butlers",
                 new_callable=AsyncMock,
             ) as legacy,
         ):
@@ -342,80 +352,57 @@ class TestRegisterButlerAgentType:
 class TestCorrectRouteStafferRejection:
     """Unit tests for correct_route staffer-target validation.
 
-    These tests mock the pool at a granular level to avoid needing a real DB.
-    They cover acceptance criteria: correct_route rejects staffer-typed targets
-    with a descriptive error (target_is_staffer).
+    The SQL is not the subject here (the rows are canned either way), so a kit
+    pool answers correct_route's reads in the order the code issues them:
+    ingestion event, inbox row, then the target's ``agent_type`` row. They cover
+    acceptance criteria: correct_route rejects staffer-typed targets with a
+    descriptive error (target_is_staffer).
     """
 
-    async def _make_pool(
-        self,
-        *,
-        ingestion_event: dict[str, Any] | None = None,
-        inbox_row: dict[str, Any] | None = None,
-        target_agent_type: str = "butler",
-    ) -> AsyncMock:
-        """Build a mock pool that returns the given rows per query.
+    def _correction_store(
+        self, request_id: uuid.UUID, *, target_agent_type: str | None = "butler"
+    ) -> FakePool:
+        """Reads for one misroute correction; ``None`` agent type means unregistered.
 
-        The pool distinguishes between the agent_type SELECT (SELECT agent_type FROM
-        butler_registry WHERE name = $1) used by the staffer type check and the full
-        butler_registry SELECT used by resolve_routing_target inside route().
-
-        The agent_type check query selects only 'agent_type'; the route() lookup
-        selects many columns.  We return the type-check row for the narrow query
-        and None for the broad route lookup so the route fails with "not found"
-        rather than a KeyError on missing columns.
+        Any later read (route()'s own registry lookup) finds nothing, so a
+        butler-typed target fails at dispatch rather than at the type check.
         """
-        pool = AsyncMock()
+        target = None if target_agent_type is None else row(agent_type=target_agent_type)
+        reads = [self._make_ingestion_event(request_id), self._make_inbox_row(request_id), target]
+        return fake_pool(
+            fetchrow=AsyncMock(side_effect=itertools.chain(reads, itertools.repeat(None))),
+            execute=None,
+        )
 
-        async def _fetchrow(query: str, *args: Any, **kwargs: Any) -> dict[str, Any] | None:
-            q = query.strip().lower()
-            if "public.ingestion_events" in q:
-                return ingestion_event
-            if "message_inbox" in q:
-                return inbox_row
-            # The staffer type check uses a narrow SELECT: "SELECT agent_type FROM ..."
-            # The route() resolve_routing_target uses a wide SELECT with endpoint_url.
-            # Distinguish by the presence of "endpoint_url" in the query.
-            if "butler_registry" in q and "endpoint_url" not in q:
-                return {"agent_type": target_agent_type}
-            # All other butler_registry queries (resolve_routing_target, etc.): not found
-            if "butler_registry" in q:
-                return None
-            return None
+    def _make_ingestion_event(self, request_id: uuid.UUID) -> Record:
+        return row(
+            id=request_id,
+            received_at=datetime.now(UTC),
+            source_channel="telegram_bot",
+            source_provider="telegram",
+            source_endpoint_identity="bot_test",
+            source_sender_identity="user_123",
+            source_thread_identity=None,
+            external_event_id=f"evt_{request_id}",
+            dedupe_key=f"dedupe_{request_id}",
+            ingestion_tier="full",
+            policy_tier="default",
+            triage_decision="route_to",
+            triage_target="assistant",
+        )
 
-        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
-        pool.execute = AsyncMock(return_value=None)
-        return pool
-
-    def _make_ingestion_event(self, request_id: uuid.UUID) -> dict[str, Any]:
-        return {
-            "id": request_id,
-            "received_at": datetime.now(UTC),
-            "source_channel": "telegram_bot",
-            "source_provider": "telegram",
-            "source_endpoint_identity": "bot_test",
-            "source_sender_identity": "user_123",
-            "source_thread_identity": None,
-            "external_event_id": f"evt_{request_id}",
-            "dedupe_key": f"dedupe_{request_id}",
-            "ingestion_tier": "full",
-            "policy_tier": "default",
-            "triage_decision": "route_to",
-            "triage_target": "assistant",
-        }
-
-    def _make_inbox_row(self, request_id: uuid.UUID) -> dict[str, Any]:
-        return {
-            "id": request_id,
-            "received_at": datetime.now(UTC),
-            "raw_payload": json.dumps({}),
-            "normalized_text": "Hello from wrong butler",
-            "lifecycle_state": "accepted",
-            "request_context": json.dumps(
+    def _make_inbox_row(self, request_id: uuid.UUID) -> Record:
+        return row(
+            id=request_id,
+            received_at=datetime.now(UTC),
+            raw_payload=json.dumps({}),
+            normalized_text="Hello from wrong butler",
+            lifecycle_state="accepted",
+            request_context=json.dumps(
                 {"triage_decision": "route_to", "triage_target": "assistant"}
             ),
-            "attachments": None,
-        }
+            attachments=None,
+        )
 
     async def test_staffer_target_returns_target_is_staffer_error(self) -> None:
         """correct_route returns target_is_staffer when target is a staffer."""
@@ -424,11 +411,7 @@ class TestCorrectRouteStafferRejection:
         request_id = uuid.uuid4()
         correction_id = uuid.uuid4()
 
-        pool = await self._make_pool(
-            ingestion_event=self._make_ingestion_event(request_id),
-            inbox_row=self._make_inbox_row(request_id),
-            target_agent_type="staffer",
-        )
+        pool = self._correction_store(request_id, target_agent_type="staffer")
 
         result = await correct_route(
             pool,
@@ -447,11 +430,7 @@ class TestCorrectRouteStafferRejection:
         request_id = uuid.uuid4()
         correction_id = uuid.uuid4()
 
-        pool = await self._make_pool(
-            ingestion_event=self._make_ingestion_event(request_id),
-            inbox_row=self._make_inbox_row(request_id),
-            target_agent_type="staffer",
-        )
+        pool = self._correction_store(request_id, target_agent_type="staffer")
 
         result = await correct_route(
             pool,
@@ -476,11 +455,7 @@ class TestCorrectRouteStafferRejection:
         request_id = uuid.uuid4()
         correction_id = uuid.uuid4()
 
-        pool = await self._make_pool(
-            ingestion_event=self._make_ingestion_event(request_id),
-            inbox_row=self._make_inbox_row(request_id),
-            target_agent_type="butler",
-        )
+        pool = self._correction_store(request_id, target_agent_type="butler")
 
         # Route to an unregistered butler — should fail with dispatch_failed,
         # not target_is_staffer.
@@ -510,19 +485,8 @@ class TestCorrectRouteStafferRejection:
         request_id = uuid.uuid4()
         correction_id = uuid.uuid4()
 
-        pool = AsyncMock()
-
-        async def _fetchrow(query: str, *args: Any, **kwargs: Any) -> dict[str, Any] | None:
-            q = query.strip().lower()
-            if "public.ingestion_events" in q:
-                return self._make_ingestion_event(request_id)
-            if "message_inbox" in q:
-                return self._make_inbox_row(request_id)
-            # agent_type query returns None → target not in registry
-            return None
-
-        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
-        pool.execute = AsyncMock(return_value=None)
+        # The agent_type lookup finds no row: the target is not in the registry.
+        pool = self._correction_store(request_id, target_agent_type=None)
 
         # Stub the registry enumeration so available_butlers is populated from a
         # known set of routable butler-typed agents.

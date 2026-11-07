@@ -34,13 +34,15 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.routers.ingestion_connectors import (
     _SWITCHBOARD_BUTLER,
     _build_dashboard_approval_push_runtime,
-    _get_db_manager,
 )
 from butlers.modules.approvals.notifications import ApprovalPushRuntime
 from butlers.testing.approval_parking_fake import record_pending_action
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.records import Record, row
 
 pytestmark = pytest.mark.unit
 
@@ -74,38 +76,9 @@ _FAKE_TOKEN = "supersecrettoken12345678abcdef"  # 30-char fake credential for ma
 def _make_existing_row(
     connector_type: str = _CONNECTOR_TYPE,
     endpoint_identity: str = _ENDPOINT_IDENTITY,
-) -> MagicMock:
-    """Build a mock asyncpg record for an existing connector."""
-    row = MagicMock()
-    row.__getitem__ = lambda self, k: {
-        "connector_type": connector_type,
-        "endpoint_identity": endpoint_identity,
-    }[k]
-    row.get = lambda k, d=None: {
-        "connector_type": connector_type,
-        "endpoint_identity": endpoint_identity,
-    }.get(k, d)
-    return row
-
-
-def _make_pool(
-    *,
-    fetchrow_result=None,
-    execute_result="INSERT 1",
-    fetchrow_side_effect=None,
-    execute_side_effect=None,
-):
-    """Build a mock asyncpg pool."""
-    pool = AsyncMock()
-    if fetchrow_side_effect is not None:
-        pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
-    else:
-        pool.fetchrow = AsyncMock(return_value=fetchrow_result)
-    if execute_side_effect is not None:
-        pool.execute = AsyncMock(side_effect=execute_side_effect)
-    else:
-        pool.execute = AsyncMock(return_value=execute_result)
-    return pool
+) -> Record:
+    """Build an asyncpg-shaped record for an existing connector."""
+    return row(connector_type=connector_type, endpoint_identity=endpoint_identity)
 
 
 def _wire_db(app, pool=None, *, pool_available=True):
@@ -113,11 +86,11 @@ def _wire_db(app, pool=None, *, pool_available=True):
     mock_db = MagicMock(spec=DatabaseManager)
     if pool_available:
         if pool is None:
-            pool = _make_pool()
+            pool = fake_pool(fetchrow=None, execute="INSERT 1")
         mock_db.pool.return_value = pool
     else:
         mock_db.pool.side_effect = KeyError("switchboard pool not available")
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_db, pool
 
 
@@ -128,7 +101,7 @@ def _wire_db(app, pool=None, *, pool_available=True):
 
 async def test_disconnect_202_pending_approval(app):
     """POST disconnect on an existing connector returns 202 with pending_approval status."""
-    pool = _make_pool(fetchrow_result=_make_existing_row())
+    pool = fake_pool(fetchrow=_make_existing_row(), execute="INSERT 1")
     _wire_db(app, pool)
 
     with patch(
@@ -154,7 +127,7 @@ async def test_disconnect_202_pending_approval(app):
 
 async def test_disconnect_emits_audit_entry(app):
     """POST disconnect emits an audit entry with action='connector.disconnect'."""
-    pool = _make_pool(fetchrow_result=_make_existing_row())
+    pool = fake_pool(fetchrow=_make_existing_row(), execute="INSERT 1")
     _wire_db(app, pool)
 
     with patch(
@@ -177,7 +150,7 @@ async def test_disconnect_emits_audit_entry(app):
 
 async def test_disconnect_404_not_found(app):
     """POST disconnect on a non-existent connector returns 404."""
-    pool = _make_pool(fetchrow_result=None)
+    pool = fake_pool(fetchrow=None, execute="INSERT 1")
     _wire_db(app, pool)
 
     async with httpx.AsyncClient(
@@ -206,7 +179,7 @@ async def test_disconnect_503_pool_unavailable(app):
 
 async def test_disconnect_503_registry_db_error(app):
     """POST disconnect returns 503 when the connector registry query fails."""
-    pool = _make_pool(fetchrow_side_effect=RuntimeError("db down"))
+    pool = fake_pool(fetchrow=AsyncMock(side_effect=RuntimeError("db down")), execute="INSERT 1")
     _wire_db(app, pool)
 
     async with httpx.AsyncClient(
@@ -221,9 +194,9 @@ async def test_disconnect_503_registry_db_error(app):
 
 async def test_disconnect_503_approvals_insert_error(app):
     """POST disconnect returns 503 when pending_actions insert fails."""
-    pool = _make_pool(
-        fetchrow_result=_make_existing_row(),
-        execute_side_effect=RuntimeError("approvals db down"),
+    pool = fake_pool(
+        fetchrow=_make_existing_row(),
+        execute=AsyncMock(side_effect=RuntimeError("approvals db down")),
     )
     _wire_db(app, pool)
 
@@ -244,7 +217,7 @@ async def test_disconnect_503_approvals_insert_error(app):
 
 async def test_rotate_token_409_when_no_safe_replay_command_exists(app):
     """Rotation cannot enter approvals without a durable credential reference."""
-    pool = _make_pool(fetchrow_result=_make_existing_row())
+    pool = fake_pool(fetchrow=_make_existing_row(), execute="INSERT 1")
     _wire_db(app, pool)
 
     with patch(
@@ -276,7 +249,7 @@ async def test_rotate_token_rejection_masks_credential_and_does_not_park(app):
     2. no pending_actions INSERT occurs
     3. audit.append() call args contain no token value
     """
-    pool = _make_pool(fetchrow_result=_make_existing_row())
+    pool = fake_pool(fetchrow=_make_existing_row(), execute="INSERT 1")
     _wire_db(app, pool)
 
     with patch(
@@ -314,7 +287,7 @@ async def test_rotate_token_rejection_masks_credential_and_does_not_park(app):
 
 async def test_rotate_token_emits_audit_without_credential(app):
     """rotate-token audit entry must not contain any credential value."""
-    pool = _make_pool(fetchrow_result=_make_existing_row())
+    pool = fake_pool(fetchrow=_make_existing_row(), execute="INSERT 1")
     _wire_db(app, pool)
 
     with patch(
@@ -339,7 +312,7 @@ async def test_rotate_token_emits_audit_without_credential(app):
 
 async def test_rotate_token_404_not_found(app):
     """POST rotate-token on a non-existent connector returns 404."""
-    pool = _make_pool(fetchrow_result=None)
+    pool = fake_pool(fetchrow=None, execute="INSERT 1")
     _wire_db(app, pool)
 
     async with httpx.AsyncClient(
@@ -354,7 +327,7 @@ async def test_rotate_token_404_not_found(app):
 
 async def test_rotate_token_rejects_before_pending_action_insert(app):
     """No unreplayable rotation row can be approved and later strand."""
-    pool = _make_pool(fetchrow_result=_make_existing_row())
+    pool = fake_pool(fetchrow=_make_existing_row(), execute="INSERT 1")
     _wire_db(app, pool)
 
     with patch(
@@ -424,7 +397,7 @@ async def test_reauth_no_retry_after_header(app):
 
 async def test_reauth_no_pending_action_created(app):
     """POST reauth must NOT create any pending_actions row — rejected before approval entry."""
-    pool = _make_pool(fetchrow_result=_make_existing_row())
+    pool = fake_pool(fetchrow=_make_existing_row(), execute="INSERT 1")
     _wire_db(app, pool)
 
     async with httpx.AsyncClient(
@@ -455,8 +428,8 @@ def test_build_dashboard_approval_push_runtime_returns_runtime_when_pools_availa
     """Switchboard pool + shared credential pool both resolve -> a live
     ApprovalPushRuntime is returned, wired for dispatch/recipient-resolution."""
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = _make_pool()
-    mock_db.credential_shared_pool.return_value = _make_pool()
+    mock_db.pool.return_value = fake_pool(fetchrow=None, execute="INSERT 1")
+    mock_db.credential_shared_pool.return_value = fake_pool(fetchrow=None, execute="INSERT 1")
 
     runtime = _build_dashboard_approval_push_runtime(mock_db)
 
@@ -482,7 +455,7 @@ def test_build_dashboard_approval_push_runtime_degrades_when_credential_pool_mis
     """Switchboard pool resolves but the shared credential pool doesn't ->
     degrades to None without raising."""
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = _make_pool()
+    mock_db.pool.return_value = fake_pool(fetchrow=None, execute="INSERT 1")
     mock_db.credential_shared_pool.side_effect = KeyError("shared credential pool not configured")
 
     assert _build_dashboard_approval_push_runtime(mock_db) is None

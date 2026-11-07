@@ -51,15 +51,13 @@ Server-derived — no caller input reaches the recorded actor:
   SQL literals) and its ``decided_by='owner'`` promotion writes.  These name
   the channel rather than a principal; they are not forgeable, but see the
   follow-up note at the end of this docstring.
-- Server-verified caller provenance: ``POST /api/approvals/{id}/approve`` and
-  ``/deny`` read ``X-Butlers-Decision-Actor``, but
+- Server-verified caller provenance: ``POST /api/approvals/{id}/approve``,
+  ``/deny`` and ``POST /api/owner-delivery/actions`` read
+  ``X-Butlers-Decision-Actor``, but
   ``approvals._decision_actor_id`` accepts ``owner@telegram`` **only** when the
   request also passed callback authentication (401 otherwise) and rejects any
   other value on an authenticated callback (403).  The header cannot be used to
   assert an identity the caller did not prove.
-  ``POST /api/decisions/prompts/{id}/choose`` (bu-ckkpz.3) requires the same
-  header to equal ``owner@telegram`` on a callback-authenticated request (403
-  otherwise) and records the hardcoded ``owner@telegram``, never the header.
 - Read-only surfaces, not attribution writes: ``GET /api/audit-log?actor=`` and
   ``GET /api/audit-log/{id}`` (filter / echo of stored rows),
   ``GET /api/butlers/{name}/prompt``, ``.../prompt/history``,
@@ -122,7 +120,7 @@ _ALLOWED_ACTOR_HEADERS: frozenset[tuple[str, str, str]] = frozenset(
     {
         ("POST", "/api/approvals/{action_id}/approve", "X-Butlers-Decision-Actor"),
         ("POST", "/api/approvals/{action_id}/deny", "X-Butlers-Decision-Actor"),
-        ("POST", "/api/decisions/prompts/{prompt_id}/choose", "X-Butlers-Decision-Actor"),
+        ("POST", "/api/owner-delivery/actions", "X-Butlers-Decision-Actor"),
     }
 )
 

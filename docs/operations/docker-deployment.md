@@ -23,9 +23,11 @@ Butlers runs as a set of containers defined in the repository-root
 shared PostgreSQL database** (external to Compose, reached over the network) in
 which every butler owns its own schema; the butler daemon, the dashboard API,
 and the external-connector services all connect to it. There are **no per-butler
-containers** and **no local containerized Postgres** -- a single `butlers-up`
-container runs every butler in the roster, and the database lives on a remote
-host configured via `.env.dev` / `.env.prod`.
+containers** and **no local containerized Postgres**. Production keeps every
+butler in one `butlers-up` process. The prepared dev stage separates Switchboard
+into `butlers-control` and excludes it from the domain process, reserving one
+plus four session slots. The database lives on a remote host configured via
+`.env.dev` / `.env.prod`.
 
 The application image (`butlers-app`) is built on `butlers-base` (Python 3.12 +
 Node.js 22 + the LLM runtime CLIs + `uv`).
@@ -50,7 +52,7 @@ Compose host, `butlers deploy` replaces direct Compose redeploy commands; see
 [Production Deploys](#production-deploys-butlers-deploy). Production uses the
 [Helm workflow](kubernetes-deployment.md#deploy).
 
-Ordinary dev deliberately uses only `docker-compose.yml`, so it does not need a
+Ordinary dev uses the base file plus `docker-compose.control-stage.yml`, so it does not need a
 restore-drill executor secret, endpoint, or root firewall wrapper. To start the
 privileged boundary in dev, pass `--with-restore-drill` after completing its
 operator bootstrap. Its selection is explicit: finding a configured secret does
@@ -58,9 +60,12 @@ not turn it on. `--prod` and `butlers deploy` always select the protected
 topology and fail closed when its prerequisites are missing.
 
 If an opted-in `butlers-dev` project is returned to ordinary dev, the launcher
-runs base-only `down --remove-orphans` before it starts the base stack. That
+runs the ordinary dev configuration's `down --remove-orphans` before startup. That
 removes the former relay and executor rather than leaving privileged services
-running as orphans. Keep passing `--with-restore-drill` on later dev launches
+running as orphans. For an ordinary unsplit Compose model, base-only `down --remove-orphans`
+performs that cleanup without evaluating protected configuration. The staged dev launcher
+includes the base and control-stage files instead; it still excludes the protected
+restore-drill fragment during ordinary cleanup. Keep passing `--with-restore-drill` on later dev launches
 when the protected services must remain enabled.
 
 ## Read-only protected-topology inspection
@@ -113,12 +118,17 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
 - **No database service.** PostgreSQL is external, reached via `POSTGRES_HOST` / `POSTGRES_PORT`,
   which `scripts/compose.sh` requires in `.env.dev` / `.env.prod`. One database holds every
   butler's schema plus the shared `public` schema, so there is no local data volume to manage.
-- **`butlers-up` runs every roster butler in one process** (`butlers up`); its published port is
-  the Switchboard `/health`. It keeps per-CLI runtime state in named volumes and runs under
-  Docker's default AppArmor profile: runtime sessions launch Codex with
-  `--dangerously-bypass-approvals-and-sandbox`, so no `butlers-up` path creates a user namespace
-  (only `dashboard-api`'s CLI-auth sandbox does). It mounts only the runtime-probe verifier keyring,
-  never the signing key.
+- **Dev runs Switchboard in `butlers-control` and domains in `butlers-up`.**
+  The launcher selects `docker-compose.control-stage.yml` (Compose >=2.24.4),
+  starts exactly one control/domain pair, and partitions the existing session
+  budget as 1+4. Control publishes the unchanged Switchboard service port and its `/health`;
+  domains use `butlers up --exclude switchboard`. The production launcher omits
+  the overlay and retains the original unsplit `butlers up` process with default capacity five,
+  whose published port is the Switchboard `/health`.
+  Each keeps per-CLI runtime state in named volumes and runs under Docker's default AppArmor
+  profile: runtime sessions launch Codex with `--dangerously-bypass-approvals-and-sandbox`, so
+  neither creates a user namespace (only `dashboard-api`'s CLI-auth sandbox does). Each mounts
+  only the runtime-probe verifier keyring, never the signing key.
 - **`dashboard-api` is the only signer.** It alone receives the runtime-probe *signing* key
   (secret, mode `0400`) plus the verifier keyring. Both mounts default to tracked, unprovisioned
   placeholders, so the stack boots on a machine that has provisioned neither --- with the control
@@ -136,7 +146,8 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
 - **`frontend-dev` installs with `npm ci`** (never `npm install`), so startup never rewrites the
   tracked `frontend/package-lock.json`; `tests/scripts/test_compose_frontend_dev_lockfile_guard.py`
   holds that invariant. It runs only under the `dev` profile that `scripts/compose.sh` activates.
-- **`migrations` is a one-shot** (`db migrate`) that every app service depends on via
+- **`migrations` is a one-shot** that prepares Chronicler's configured private memory schema, then
+  runs the ordinary `db migrate` command. Every app service depends on it via
   `service_completed_successfully`. See [Production Deploys](#production-deploys-butlers-deploy)
   for why redeploys run it with `run --rm`.
 - **One container per connector**, sharing the `x-connector-env` anchor.
@@ -144,8 +155,11 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
   (`wa_bridge_socket`), shared with the Messenger butler; `connector-live-listener` runs only under
   the `audio` profile.
 - **`oauth-gate` blocks startup** on missing OAuth tokens (`--skip-oauth-check` bypasses it).
-- **`--hotreload`** swaps in `butlers-up-hotreload` and `dashboard-api-hotreload`, which
-  volume-mount `src/` for live edits.
+- **`--hotreload`** swaps in `butlers-up-hotreload`, `dashboard-api-hotreload` and,
+  in dev only, `butlers-control-hotreload`. The launcher scales the corresponding
+  baked processes to zero; it never runs two reservations for the same role.
+  These services volume-mount `src/` for live edits. See [the stage contract,
+  session network and rollback](../architecture/key-absent-control.md).
 
 ## Host prerequisite: unprivileged user namespaces
 
@@ -258,8 +272,10 @@ uv run butlers deploy --dir /path/to/repo --timeout 180
 It runs, in order:
 
 1. **Build** — `docker build --build-arg GIT_SHA=$(git rev-parse HEAD) -t butlers-app:latest .`
-2. **Migrate** — runs the merged Compose input with `run --rm migrations`,
-   always a fresh container. A direct Compose lifecycle command only reruns the one-shot
+2. **Prepare and migrate** — runs the merged Compose input with `run --rm migrations`. That
+   one-shot first applies Chronicler's explicit private-schema prerequisite, then runs the ordinary
+   core/domain/module migration order, always in a fresh container. A direct Compose lifecycle
+   command only reruns the one-shot
    `migrations` service if its `service_completed_successfully` condition
    isn't already satisfied — once that container has exited 0 *once*, compose
    treats it as permanently satisfied even after the image is rebuilt with
@@ -275,8 +291,19 @@ It runs, in order:
    `COMPOSE_PROFILES=hotreload` cannot silently pull the bind-mounted
    hotreload services into a prod recreate.
 4. **Verify** — polls `GET /health` until `status: "ok"` or the `--timeout`
-   elapses.
-5. **Record** — writes one row to `public.deployments` (git SHA, migration
+   elapses. Process health only proves the container started.
+5. **Wait for sustained semantic readiness** — samples `GET /ready`
+   (`--ready-url`, default `http://localhost:41200/ready`) through the same gate as
+   `butlers deployments await-ready` (REQ-dashboard-api-064): two distinct complete
+   observer cycles, two distinct qualifying scheduled QA patrols, and `/ready` true
+   beyond the roster's longest liveness TTL, all after the wait began. The
+   `--readiness-timeout` defaults to two QA patrol cadences plus that TTL plus ten
+   minutes (35 minutes at current defaults); shorter values are refused before any
+   build. Timeout fails the deploy with a content-blind receipt and rollback
+   classification; it configures no external functional monitor. The gate reads the
+   Switchboard fleet facts under `butler_switchboard_rw`, so the deploy login needs
+   that role membership or the wait fails closed with `evidence_unavailable`.
+6. **Record** — writes one row to `public.deployments` (git SHA, migration
    head, `success` or `failed`) via `butlers.core.deployments`, on *every*
    outcome — a failed deploy is visible in the ledger, not silent.
 

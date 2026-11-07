@@ -14,6 +14,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import Client
 from fastmcp import FastMCP as RuntimeFastMCP
 from pydantic import BaseModel
 
@@ -482,6 +483,7 @@ class TestLifecycle:
             enable_shared_catalog=True,
             source_schema="private_memory",
             retry_failed=True,
+            memory_schema=None,
         )
 
     async def test_consolidation_hook_excludes_private_memory_from_failed_recovery(
@@ -951,6 +953,56 @@ class TestRegisterTools:
         )
         assert set(array_variant["items"]["enum"]) == {"episode", "fact", "rule"}
 
+    async def test_unknown_filters_are_tool_errors_before_policy_or_embeddings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """REQ-module-memory-015: registered tools refuse typos before any read."""
+        from butlers.modules.memory import search as memory_search
+
+        for tool, query_arg in (("memory_search", "query"), ("memory_recall", "topic")):
+            mod = MemoryModule()
+            runtime_mcp = RuntimeFastMCP("test-memory-filters")
+            pool = AsyncMock()
+            pool.fetch.return_value = []
+            accessor = AsyncMock(return_value=SimpleNamespace(catalog_read_sensitivity="normal"))
+            fake_db = SimpleNamespace(
+                pool=pool,
+                schema="test-butler",
+                runtime_config_accessor=SimpleNamespace(get=accessor),
+            )
+            engine = make_embedding_engine_mock(mod._config.embedding_model)
+            factory = MagicMock(return_value=engine)
+            monkeypatch.setattr(mod, "_get_embedding_engine", factory)
+            await mod.register_tools(
+                mcp=runtime_mcp, config=None, db=fake_db, butler_name="test-butler"
+            )
+
+            async with Client(runtime_mcp) as client:
+                refused = await client.call_tool(
+                    tool,
+                    {query_arg: "work", "filters": {"entity_idd": "typo"}},
+                    raise_on_error=False,
+                )
+                assert refused.is_error
+                message = "\n".join(block.text for block in refused.content if block.type == "text")
+                assert "entity_idd" in message
+                for allowed in memory_search._KNOWN_FILTER_KEYS:
+                    assert allowed in message
+                accessor.assert_not_awaited()
+                for method in (pool.fetch, pool.fetchrow, pool.fetchval, pool.execute):
+                    method.assert_not_awaited()
+                factory.assert_not_called()
+                engine.embed.assert_not_called()
+
+                accepted = await client.call_tool(
+                    tool, {query_arg: "work", "filters": {"predicate": "works_at"}}
+                )
+                assert not accepted.is_error
+                accessor.assert_awaited_once_with()
+                factory.assert_called_once_with()
+                engine.embed.assert_called_once_with("work")
+                pool.fetch.assert_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Tool delegation — verify closures call underlying impls correctly
@@ -1163,6 +1215,7 @@ class TestToolDelegation:
             min_confidence=0.2,
             filters=None,
             read_policy=held_policy,
+            memory_schema="chronicler_mem",
         )
         mod._catalog_read_policy.assert_awaited_once_with()
         private_memory_pool.fetchval.assert_not_awaited()
@@ -1189,6 +1242,7 @@ class TestToolDelegation:
             filters=None,
             request_context=None,
             read_policy=held_policy,
+            memory_schema="chronicler_mem",
         )
         mod._catalog_read_policy.assert_awaited_once_with()
         private_memory_pool.fetchval.assert_not_awaited()
@@ -1211,6 +1265,7 @@ class TestToolDelegation:
             "fact",
             "550e8400-e29b-41d4-a716-446655440000",
             read_policy=held_policy,
+            memory_schema=None,
         )
 
     @pytest.mark.parametrize(
@@ -1675,3 +1730,159 @@ class TestRegistryDiscovery:
 
         registry = default_registry()
         assert "memory" in registry.available_modules
+
+
+@pytest.fixture
+def runtime_role_boundary(monkeypatch):
+    """Exercise real Database ownership without a network or invented SQL results."""
+    from butlers.db import Database
+
+    connection = AsyncMock()
+    connection.terminate = MagicMock()
+    connection.fetchval.return_value = True
+    connect = AsyncMock(return_value=connection)
+    pools = []
+
+    async def create_pool(**kwargs):
+        pool = AsyncMock()
+        pool.fetchval.return_value = None
+        pools.append((pool, kwargs))
+        return pool
+
+    monkeypatch.setattr("butlers.db.asyncpg.connect", connect)
+    monkeypatch.setattr("butlers.db.asyncpg.create_pool", AsyncMock(side_effect=create_pool))
+    return Database, connection, connect, pools
+
+
+class TestOwnedRuntimePools:
+    async def test_actual_private_startup_retains_primary_role(
+        self, runtime_role_boundary, monkeypatch
+    ):
+        Database, connection, _, pools = runtime_role_boundary
+        primary = Database("butlers", schema="chronicler", role="butler_chronicler_rw")
+        await primary.connect()
+        module = MemoryModule()
+        monkeypatch.setattr(module, "_register_default_maintenance_schedules", AsyncMock())
+        try:
+            await module.on_startup(MemoryModuleConfig(memory_schema="chronicler_mem"), primary)
+            assert module._memory_db.role == "butler_chronicler_rw"
+            assert pools[1][1]["server_settings"] == {"search_path": "chronicler_mem,public"}
+            connection.reset_mock()
+            await pools[1][1]["setup"](connection)
+            await pools[1][1]["setup"](connection)
+            assert connection.execute.await_count == 2
+            connection.execute.assert_awaited_with('SET ROLE "butler_chronicler_rw"')
+            assert connection.fetchval.await_count == 2
+            connection.fetchval.assert_awaited_with(
+                "SELECT has_schema_privilege($1, 'USAGE')", "chronicler_mem"
+            )
+            # Same-owner lazy domain pool uses the held role, never a guessed sibling role.
+            await module._get_or_create_chronicler_pool()
+            assert pools[-1][1]["setup"].__self__.role == primary.role
+        finally:
+            await module.on_shutdown()
+            await primary.close()
+
+    @pytest.mark.parametrize("owner", ["chronicler", "relationship"])
+    async def test_same_owner_lazy_pool_and_sibling_refusal(self, runtime_role_boundary, owner):
+        Database, connection, connect, pools = runtime_role_boundary
+        primary = Database("butlers", schema=owner, role=f"butler_{owner}_rw")
+        await primary.connect()
+        module = MemoryModule()
+        module._db = primary
+        own = getattr(module, f"_get_or_create_{owner}_pool")
+        sibling = getattr(
+            module,
+            "_get_or_create_relationship_pool"
+            if owner == "chronicler"
+            else "_get_or_create_chronicler_pool",
+        )
+        try:
+            await own()
+            connection.reset_mock()
+            await pools[-1][1]["setup"](connection)
+            connection.execute.assert_awaited_once_with(f'SET ROLE "butler_{owner}_rw"')
+            count = connect.await_count
+            with pytest.raises(RuntimeError, match="owned schema"):
+                await sibling()
+            assert connect.await_count == count
+        finally:
+            await module.on_shutdown()
+            await primary.close()
+
+    @pytest.mark.parametrize("failure", ["unverified", "missing-role", "wrong-role", "unrelated"])
+    async def test_private_pool_refuses_unproven_owner_before_io(
+        self, runtime_role_boundary, failure
+    ):
+        Database, _, connect, _ = runtime_role_boundary
+        primary = Database("butlers", schema="chronicler", role="butler_chronicler_rw")
+        if failure != "unverified":
+            await primary.connect()
+        if failure == "missing-role":
+            primary.role = None
+        elif failure == "wrong-role":
+            primary.role = "butler_relationship_rw"
+        module = MemoryModule()
+        module._db = primary
+        module._config = MemoryModuleConfig(
+            memory_schema="other_private" if failure == "unrelated" else "chronicler_mem"
+        )
+        count = connect.await_count
+        try:
+            with pytest.raises(RuntimeError):
+                await module._ensure_memory_schema_pool()
+            assert connect.await_count == count
+            assert module._memory_db is None
+        finally:
+            await module.on_shutdown()
+            await primary.close()
+
+    async def test_private_acl_and_owner_revocation_fail_each_acquire(self, runtime_role_boundary):
+        Database, connection, _, pools = runtime_role_boundary
+        primary = Database("butlers", schema="chronicler", role="butler_chronicler_rw")
+        await primary.connect()
+        module = MemoryModule()
+        module._db = primary
+        module._config = MemoryModuleConfig(memory_schema="chronicler_mem")
+        try:
+            await module._ensure_memory_schema_pool()
+            setup = pools[-1][1]["setup"]
+            connection.fetchval.return_value = False
+            with pytest.raises(RuntimeError, match="acquisition failed"):
+                await setup(connection)
+            connection.fetchval.return_value = True
+            primary._verified_role = None
+            with pytest.raises(RuntimeError):
+                await setup(connection)
+            primary._verified_role = primary.role
+            # A delivered schema without USAGE must also refuse initial pool publication.
+            await module._memory_db.close()
+            module._memory_db = None
+            connection.fetchval.side_effect = [True, False]
+            count = len(pools)
+            with pytest.raises(RuntimeError, match="acquisition failed"):
+                await module._ensure_memory_schema_pool()
+            assert len(pools) == count
+            assert module._memory_db is None
+        finally:
+            await module.on_shutdown()
+            await primary.close()
+
+    async def test_private_verification_cancel_closes_owned_connection(self, runtime_role_boundary):
+        Database, connection, _, pools = runtime_role_boundary
+        primary = Database("butlers", schema="chronicler", role="butler_chronicler_rw")
+        await primary.connect()
+        module = MemoryModule()
+        module._db = primary
+        module._config = MemoryModuleConfig(memory_schema="chronicler_mem")
+        connection.fetchval.side_effect = [True, asyncio.CancelledError()]
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await module._ensure_memory_schema_pool()
+            connection.terminate.assert_called_once()
+            assert len(pools) == 1
+            assert module._memory_db is None
+            primary.pool.close.assert_not_awaited()
+        finally:
+            await module.on_shutdown()
+            await primary.close()

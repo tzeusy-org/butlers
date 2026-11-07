@@ -21,8 +21,6 @@ from __future__ import annotations
 import shutil
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -34,9 +32,11 @@ pytestmark = [
 ]
 
 # ---------------------------------------------------------------------------
-# SQL helpers — minimal schemas for pattern recognition tests
+# SQL helpers
 # ---------------------------------------------------------------------------
 
+# Transactions only, for the subjects that deliberately run without the
+# bills/subscriptions/merchant_mappings tables (pool_no_bills, no-mappings tests).
 CREATE_TRANSACTIONS_SQL = """
 CREATE TABLE IF NOT EXISTS transactions (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -59,53 +59,6 @@ CREATE TABLE IF NOT EXISTS transactions (
 )
 """
 
-CREATE_SUBSCRIPTIONS_SQL = """
-CREATE TABLE IF NOT EXISTS subscriptions (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    service           TEXT NOT NULL,
-    amount            NUMERIC(14, 2) NOT NULL,
-    currency          CHAR(3) NOT NULL,
-    frequency         TEXT NOT NULL
-                          CHECK (frequency IN (
-                              'weekly', 'monthly', 'quarterly', 'yearly', 'custom'
-                          )),
-    next_renewal      DATE NOT NULL,
-    status            TEXT NOT NULL
-                          CHECK (status IN ('active', 'cancelled', 'paused')),
-    auto_renew        BOOLEAN NOT NULL DEFAULT true,
-    payment_method    TEXT,
-    account_id        UUID,
-    source_message_id TEXT,
-    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-# The pre-finance_008 (finance_006) shape of recurring_groups. The fixture below
-# applies the finance_008 reconcile SQL to this to produce the live, code-usable
-# schema — exercising the actual migration statements end-to-end (bead bu-xqncx).
-CREATE_RECURRING_GROUPS_FINANCE_006_SQL = """
-CREATE TABLE IF NOT EXISTS recurring_groups (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    merchant          TEXT NOT NULL,
-    normalized_name   TEXT,
-    expected_amount   NUMERIC(14, 2),
-    amount_variance   NUMERIC(14, 2),
-    frequency         TEXT,
-    status            TEXT NOT NULL DEFAULT 'active',
-    is_subscription   BOOLEAN NOT NULL DEFAULT false,
-    next_expected_date DATE,
-    last_seen_at      TIMESTAMPTZ,
-    confidence        NUMERIC(4, 3) NOT NULL DEFAULT 0.5,
-    transaction_count INTEGER NOT NULL DEFAULT 0,
-    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT recurring_groups_status_check CHECK (status IN ('active', 'inactive', 'paused'))
-)
-"""
-
 
 async def _insert_transaction(
     pool,
@@ -119,6 +72,7 @@ async def _insert_transaction(
     deleted_at: datetime | None = None,
     metadata: dict | None = None,
 ) -> None:
+    await _ensure_category(pool, category)
     await pool.execute(
         """
         INSERT INTO transactions
@@ -165,76 +119,41 @@ async def _insert_subscription(
 # ---------------------------------------------------------------------------
 # Shared fixture
 # ---------------------------------------------------------------------------
+async def _ensure_category(pool, name: str) -> None:
+    """The real schema keys transactions.category to categories(name).
 
-
-def _load_finance_008_upgrade_sql() -> tuple[str, ...]:
-    """Load the finance_008 migration's UPGRADE_SQL (module name starts with a digit)."""
-    import importlib.util
-    from pathlib import Path
-
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "migrations"
-        / "008_recurring_groups_schema_reconcile.py"
-    )
-    spec = importlib.util.spec_from_file_location("finance_008_migration", path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod.UPGRADE_SQL
-
-
-async def _apply_core_expected_signal_migrations(pool) -> None:
-    import importlib.util
-
-    root = Path(__file__).resolve().parents[3]
-    for filename in (
-        "core_210_expected_signals.py",
-        "core_211_expected_signal_endpoint_identity.py",
-    ):
-        path = root / "alembic/versions/core" / filename
-        spec = importlib.util.spec_from_file_location(path.stem, path)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        statements: list[str] = []
-        mocked_op = MagicMock()
-        mocked_op.execute.side_effect = statements.append
-        with patch.object(module, "op", mocked_op):
-            module.upgrade()
-        for statement in statements:
-            await pool.execute(statement)
+    Pools that deliberately lack the categories table (the no-bills/no-mappings
+    subjects) take free-form categories, so they are left alone.
+    """
+    if await pool.fetchval("SELECT to_regclass('categories') IS NOT NULL"):
+        await pool.execute(
+            "INSERT INTO categories (name, display_name) VALUES ($1, $1) ON CONFLICT DO NOTHING",
+            name,
+        )
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with finance pattern recognition tables.
+async def finance_pool(db):
+    """A core+finance clone plus a stand-in for the QA connector-state view.
 
-    ``recurring_groups`` is created in its finance_006 shape, then reconciled by
-    applying the real finance_008 migration SQL — so these tests exercise the
-    deployed schema rather than an ad-hoc copy (bead bu-xqncx).
+    ``v_qa_connector_state`` is not created by the Alembic chains, so the
+    expected-signal liveness read gets a test-owned backing table.
     """
-    async with provisioned_postgres_pool() as p:
-        await p.execute(CREATE_TRANSACTIONS_SQL)
-        await p.execute(CREATE_SUBSCRIPTIONS_SQL)
-        await p.execute(CREATE_RECURRING_GROUPS_FINANCE_006_SQL)
-        for stmt in _load_finance_008_upgrade_sql():
-            await p.execute(stmt)
-        await _apply_core_expected_signal_migrations(p)
-        await p.execute(
-            """
-            CREATE TABLE public._finance_test_liveness (
-                connector_type text NOT NULL,
-                endpoint_identity text NOT NULL,
-                state text NOT NULL,
-                last_heartbeat_at timestamptz
-            );
-            CREATE VIEW public.v_qa_connector_state AS
-            SELECT connector_type, endpoint_identity, state, last_heartbeat_at
-            FROM public._finance_test_liveness
-            """
-        )
-        yield p
+    p = await db("core", "finance")
+    await p.execute(
+        """
+        CREATE TABLE public._finance_test_liveness (
+            connector_type text NOT NULL,
+            endpoint_identity text NOT NULL,
+            state text NOT NULL,
+            last_heartbeat_at timestamptz
+        );
+        CREATE VIEW public.v_qa_connector_state AS
+        SELECT connector_type, endpoint_identity, state, last_heartbeat_at
+        FROM public._finance_test_liveness
+        """
+    )
+    return p
 
 
 # ---------------------------------------------------------------------------
@@ -245,20 +164,20 @@ async def pool(provisioned_postgres_pool):
 class TestDetectRecurringMonthly:
     """detect_recurring correctly identifies monthly charges."""
 
-    async def test_monthly_pattern_detected(self, pool):
+    async def test_monthly_pattern_detected(self, finance_pool):
         """Merchant charged ~30 days apart appears as recurring with 'monthly' frequency."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         base = datetime(2025, 1, 15, 12, 0, tzinfo=UTC)
         for i in range(4):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="Netflix",
                 amount="15.99",
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         assert result["status"] == "ok"
         assert result["total_detected"] == 1
@@ -270,7 +189,7 @@ class TestDetectRecurringMonthly:
 
     @pytest.mark.parametrize("reverse_liveness", [False, True])
     async def test_dead_gmail_endpoint_is_not_replaced_by_healthy_sibling(
-        self, pool, reverse_liveness: bool
+        self, finance_pool, reverse_liveness: bool
     ):
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
@@ -283,7 +202,7 @@ class TestDetectRecurringMonthly:
         base = datetime.now(UTC) - timedelta(days=120)
         for i in range(4):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="Endpoint Bound Merchant",
                 posted_at=base + timedelta(days=30 * i),
                 metadata=source,
@@ -295,26 +214,26 @@ class TestDetectRecurringMonthly:
         if reverse_liveness:
             liveness.reverse()
         for connector_type, endpoint_identity, state in liveness:
-            await pool.execute(
+            await finance_pool.execute(
                 "INSERT INTO public._finance_test_liveness VALUES ($1, $2, $3, now())",
                 connector_type,
                 endpoint_identity,
                 state,
             )
 
-        result = await detect_recurring(pool)
+        result = await detect_recurring(finance_pool)
 
         pattern = result["patterns"][0]
         assert pattern["measurability"] == "unmeasurable"
         assert pattern["unmeasurable_reason"] == "producer_stale_or_offline"
-        signal = await pool.fetchrow(
+        signal = await finance_pool.fetchrow(
             "SELECT producer_endpoint_identity, measurability FROM public.expected_signals "
             "WHERE signal_key LIKE 'finance:recurrence:%'"
         )
         assert signal["producer_endpoint_identity"] == "gmail:user:dead@example.invalid"
         assert signal["measurability"] == "unmeasurable"
 
-    async def test_mixed_or_unproven_group_is_persisted_unmeasurable(self, pool):
+    async def test_mixed_or_unproven_group_is_persisted_unmeasurable(self, finance_pool):
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         base = datetime.now(UTC) - timedelta(days=120)
@@ -326,19 +245,19 @@ class TestDetectRecurringMonthly:
         }
         for index in range(4):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="Mixed Merchant",
                 posted_at=base + timedelta(days=30 * index),
                 metadata=attested if index != 2 else {},
             )
 
-        result = await detect_recurring(pool)
+        result = await detect_recurring(finance_pool)
 
         assert result["patterns"][0]["measurability"] == "unmeasurable"
         assert result["patterns"][0]["unmeasurable_reason"] == "producer_unknown"
 
     @pytest.mark.parametrize("producer", ["owner", "connector:gmail"])
-    async def test_attested_single_source_persists_runtime_state(self, pool, producer: str):
+    async def test_attested_single_source_persists_runtime_state(self, finance_pool, producer: str):
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         endpoint = "gmail:user:owner@example.invalid" if producer.startswith("connector:") else None
@@ -349,40 +268,40 @@ class TestDetectRecurringMonthly:
             }
         }
         if endpoint is not None:
-            await pool.execute(
+            await finance_pool.execute(
                 "INSERT INTO public._finance_test_liveness VALUES ('gmail', $1, 'healthy', now())",
                 endpoint,
             )
         base = datetime.now(UTC) - timedelta(days=120)
         for index in range(4):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="Attested Merchant",
                 posted_at=base + timedelta(days=30 * index),
                 metadata=metadata,
             )
 
-        result = await detect_recurring(pool)
+        result = await detect_recurring(finance_pool)
 
         assert result["patterns"][0]["measurability"] in {"present", "absent"}
         assert result["patterns"][0]["unmeasurable_reason"] is None
 
-    async def test_monthly_pattern_stored_in_recurring_groups(self, pool):
+    async def test_monthly_pattern_stored_in_recurring_groups(self, finance_pool):
         """Detected monthly pattern is stored in finance.recurring_groups."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         base = datetime(2025, 2, 1, 0, 0, tzinfo=UTC)
         for i in range(3):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="Spotify",
                 amount="9.99",
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        await detect_recurring(pool, min_occurrences=3)
+        await detect_recurring(finance_pool, min_occurrences=3)
 
-        row = await pool.fetchrow(
+        row = await finance_pool.fetchrow(
             "SELECT * FROM recurring_groups WHERE merchant = $1",
             "Spotify",
         )
@@ -391,49 +310,55 @@ class TestDetectRecurringMonthly:
         assert row["is_active"] is True
         assert float(row["avg_amount"]) == pytest.approx(9.99, abs=0.01)
 
-    async def test_monthly_pattern_upsert_on_second_call(self, pool):
+    async def test_monthly_pattern_upsert_on_second_call(self, finance_pool):
         """Calling detect_recurring twice upserts (no duplicate rows)."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         base = datetime(2025, 3, 1, 0, 0, tzinfo=UTC)
         for i in range(3):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="Adobe",
                 amount="54.99",
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        await detect_recurring(pool, min_occurrences=3)
-        await detect_recurring(pool, min_occurrences=3)
+        await detect_recurring(finance_pool, min_occurrences=3)
+        await detect_recurring(finance_pool, min_occurrences=3)
 
-        count = await pool.fetchval(
+        count = await finance_pool.fetchval(
             "SELECT COUNT(*) FROM recurring_groups WHERE merchant = $1",
             "Adobe",
         )
         assert count == 1
 
-    async def test_upsert_updates_existing_row(self, pool):
+    async def test_upsert_updates_existing_row(self, finance_pool):
         """Second call with a changed amount UPDATEs the existing row in place."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         base = datetime(2025, 5, 1, 0, 0, tzinfo=UTC)
         for i in range(3):
             await _insert_transaction(
-                pool, merchant="Hulu", amount="11.99", posted_at=base + timedelta(days=30 * i)
+                finance_pool,
+                merchant="Hulu",
+                amount="11.99",
+                posted_at=base + timedelta(days=30 * i),
             )
-        await detect_recurring(pool, min_occurrences=3)
-        first = await pool.fetchrow(
+        await detect_recurring(finance_pool, min_occurrences=3)
+        first = await finance_pool.fetchrow(
             "SELECT id, avg_amount FROM recurring_groups WHERE merchant = $1", "Hulu"
         )
 
         # Add more charges at a higher amount; variance stays within tolerance.
         for i in range(3, 6):
             await _insert_transaction(
-                pool, merchant="Hulu", amount="12.99", posted_at=base + timedelta(days=30 * i)
+                finance_pool,
+                merchant="Hulu",
+                amount="12.99",
+                posted_at=base + timedelta(days=30 * i),
             )
-        await detect_recurring(pool, min_occurrences=3)
-        second = await pool.fetchrow(
+        await detect_recurring(finance_pool, min_occurrences=3)
+        second = await finance_pool.fetchrow(
             "SELECT id, avg_amount FROM recurring_groups WHERE merchant = $1", "Hulu"
         )
 
@@ -441,7 +366,7 @@ class TestDetectRecurringMonthly:
         assert second["id"] == first["id"]
         assert float(second["avg_amount"]) > float(first["avg_amount"])
 
-    async def test_medium_confidence_monthly(self, pool):
+    async def test_medium_confidence_monthly(self, finance_pool):
         """3–5 occurrences with <10% variance yields medium confidence."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
@@ -450,19 +375,19 @@ class TestDetectRecurringMonthly:
         amounts = ["10.00", "10.20", "9.90"]
         for i, amt in enumerate(amounts):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="MediumSvc",
                 amount=amt,
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         patterns = {p["merchant"]: p for p in result["patterns"]}
         assert "MediumSvc" in patterns
         assert patterns["MediumSvc"]["confidence"] == "medium"
 
-    async def test_high_confidence_monthly(self, pool):
+    async def test_high_confidence_monthly(self, finance_pool):
         """6+ occurrences with <5% variance yields high confidence."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
@@ -471,13 +396,13 @@ class TestDetectRecurringMonthly:
         amounts = ["20.00", "20.10", "19.95", "20.05", "20.00", "19.98"]
         for i, amt in enumerate(amounts):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="HighSvc",
                 amount=amt,
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         patterns = {p["merchant"]: p for p in result["patterns"]}
         assert "HighSvc" in patterns
@@ -493,41 +418,41 @@ class TestDetectRecurringMonthly:
 class TestDetectRecurringQuarterly:
     """detect_recurring correctly identifies quarterly charges (~90-day intervals)."""
 
-    async def test_quarterly_pattern_detected(self, pool):
+    async def test_quarterly_pattern_detected(self, finance_pool):
         """Merchant charged every ~90 days is classified as quarterly."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         base = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)
         for i in range(4):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="QuarterlyMagazine",
                 amount="30.00",
                 posted_at=base + timedelta(days=91 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         patterns = {p["merchant"]: p for p in result["patterns"]}
         assert "QuarterlyMagazine" in patterns
         assert patterns["QuarterlyMagazine"]["estimated_frequency"] == "quarterly"
 
-    async def test_quarterly_stored_correctly(self, pool):
+    async def test_quarterly_stored_correctly(self, finance_pool):
         """Quarterly pattern is stored in recurring_groups with correct frequency."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         base = datetime(2024, 3, 1, 0, 0, tzinfo=UTC)
         for i in range(3):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="SeasonalSvc",
                 amount="49.99",
                 posted_at=base + timedelta(days=90 * i),
             )
 
-        await detect_recurring(pool, min_occurrences=3)
+        await detect_recurring(finance_pool, min_occurrences=3)
 
-        row = await pool.fetchrow(
+        row = await finance_pool.fetchrow(
             "SELECT estimated_frequency FROM recurring_groups WHERE merchant = $1",
             "SeasonalSvc",
         )
@@ -543,41 +468,41 @@ class TestDetectRecurringQuarterly:
 class TestDetectRecurringYearly:
     """detect_recurring correctly identifies yearly charges (~365-day intervals)."""
 
-    async def test_yearly_pattern_detected(self, pool):
+    async def test_yearly_pattern_detected(self, finance_pool):
         """Merchant charged every ~365 days is classified as yearly."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         base = datetime(2022, 6, 1, 0, 0, tzinfo=UTC)
         for i in range(3):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="AnnualSoftware",
                 amount="99.00",
                 posted_at=base + timedelta(days=365 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         patterns = {p["merchant"]: p for p in result["patterns"]}
         assert "AnnualSoftware" in patterns
         assert patterns["AnnualSoftware"]["estimated_frequency"] == "yearly"
 
-    async def test_yearly_stored_correctly(self, pool):
+    async def test_yearly_stored_correctly(self, finance_pool):
         """Yearly pattern stored in recurring_groups with correct frequency."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         base = datetime(2022, 1, 1, 0, 0, tzinfo=UTC)
         for i in range(3):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="DomainRenewal",
                 amount="12.00",
                 posted_at=base + timedelta(days=365 * i),
             )
 
-        await detect_recurring(pool, min_occurrences=3)
+        await detect_recurring(finance_pool, min_occurrences=3)
 
-        row = await pool.fetchrow(
+        row = await finance_pool.fetchrow(
             "SELECT estimated_frequency FROM recurring_groups WHERE merchant = $1",
             "DomainRenewal",
         )
@@ -593,7 +518,7 @@ class TestDetectRecurringYearly:
 class TestDetectRecurringEdgeCases:
     """Edge cases: irregular intervals, high variance, deleted transactions."""
 
-    async def test_irregular_intervals_rejected(self, pool):
+    async def test_irregular_intervals_rejected(self, finance_pool):
         """Charges with highly irregular intervals are not classified as recurring."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
@@ -602,18 +527,18 @@ class TestDetectRecurringEdgeCases:
         offsets = [0, 5, 65, 68]
         for offset in offsets:
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="IrregularCharger",
                 amount="50.00",
                 posted_at=base + timedelta(days=offset),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         pattern_names = [p["merchant"] for p in result["patterns"]]
         assert "IrregularCharger" not in pattern_names
 
-    async def test_high_amount_variance_rejected(self, pool):
+    async def test_high_amount_variance_rejected(self, finance_pool):
         """Charges with amount variance > 10% are excluded from results."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
@@ -622,36 +547,36 @@ class TestDetectRecurringEdgeCases:
         amounts = ["10.00", "20.00", "30.00"]
         for i, amt in enumerate(amounts):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="VariablePricer",
                 amount=amt,
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         pattern_names = [p["merchant"] for p in result["patterns"]]
         assert "VariablePricer" not in pattern_names
 
-    async def test_min_occurrences_filters_below_threshold(self, pool):
+    async def test_min_occurrences_filters_below_threshold(self, finance_pool):
         """Merchants with fewer charges than min_occurrences are excluded."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         base = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
         for i in range(2):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="RareSvc",
                 amount="5.00",
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         pattern_names = [p["merchant"] for p in result["patterns"]]
         assert "RareSvc" not in pattern_names
 
-    async def test_deleted_transactions_excluded(self, pool):
+    async def test_deleted_transactions_excluded(self, finance_pool):
         """Soft-deleted transactions (deleted_at IS NOT NULL) are excluded."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
@@ -661,72 +586,72 @@ class TestDetectRecurringEdgeCases:
         # Insert 3 charges but mark them as deleted
         for i in range(3):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="DeletedSvc",
                 amount="9.99",
                 posted_at=base + timedelta(days=30 * i),
                 deleted_at=deleted_at,
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         pattern_names = [p["merchant"] for p in result["patterns"]]
         assert "DeletedSvc" not in pattern_names
 
-    async def test_insufficient_data_when_no_transactions(self, pool):
+    async def test_insufficient_data_when_no_transactions(self, finance_pool):
         """Returns status=insufficient_data when no transactions exist."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         assert result["status"] == "insufficient_data"
         assert result["total_detected"] == 0
         assert result["patterns"] == []
 
-    async def test_credit_transactions_ignored(self, pool):
+    async def test_credit_transactions_ignored(self, finance_pool):
         """Credit transactions (direction='credit') are not considered for recurring."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         base = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
         for i in range(3):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="Refunder",
                 amount="10.00",
                 direction="credit",  # This is income / refund
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         pattern_names = [p["merchant"] for p in result["patterns"]]
         assert "Refunder" not in pattern_names
 
-    async def test_multiple_merchants_detected_simultaneously(self, pool):
+    async def test_multiple_merchants_detected_simultaneously(self, finance_pool):
         """Multiple recurring merchants are all detected in a single call."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         base = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
         for i in range(3):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="SvcAlpha",
                 amount="10.00",
                 posted_at=base + timedelta(days=30 * i),
             )
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="SvcBeta",
                 amount="20.00",
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
         pattern_names = {p["merchant"] for p in result["patterns"]}
         assert "SvcAlpha" in pattern_names
         assert "SvcBeta" in pattern_names
 
-    async def test_having_clause_pre_filters_merchants(self, pool):
+    async def test_having_clause_pre_filters_merchants(self, finance_pool):
         """SQL HAVING clause pre-filters merchants below threshold (not fetched)."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
@@ -736,7 +661,7 @@ class TestDetectRecurringEdgeCases:
         for merchant_idx in range(100):
             for i in range(2):
                 await _insert_transaction(
-                    pool,
+                    finance_pool,
                     merchant=f"BelowThreshold_{merchant_idx}",
                     amount="10.00",
                     posted_at=base + timedelta(days=30 * i),
@@ -745,19 +670,19 @@ class TestDetectRecurringEdgeCases:
         # Insert 2 qualifying merchants with 3 charges each
         for i in range(3):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="QualifyingA",
                 amount="15.99",
                 posted_at=base + timedelta(days=30 * i),
             )
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="QualifyingB",
                 amount="12.99",
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         # Only the 2 qualifying merchants should be returned
         pattern_names = {p["merchant"] for p in result["patterns"]}
@@ -776,127 +701,131 @@ class TestDetectRecurringEdgeCases:
 class TestDetectRecurringSubscriptionCrossReference:
     """already_tracked and price_change_detected flags behave correctly."""
 
-    async def test_already_tracked_when_subscription_matches(self, pool):
+    async def test_already_tracked_when_subscription_matches(self, finance_pool):
         """already_tracked is True when merchant matches an active subscription."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
-        await _insert_subscription(pool, service="Netflix", amount="15.99")
+        await _insert_subscription(finance_pool, service="Netflix", amount="15.99")
 
         base = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
         for i in range(3):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="Netflix",
                 amount="15.99",
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         patterns = {p["merchant"]: p for p in result["patterns"]}
         assert "Netflix" in patterns
         assert patterns["Netflix"]["already_tracked"] is True
 
-    async def test_not_tracked_when_no_subscription(self, pool):
+    async def test_not_tracked_when_no_subscription(self, finance_pool):
         """already_tracked is False for a merchant without a subscription record."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         base = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
         for i in range(3):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="UnknownSvc",
                 amount="5.00",
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         patterns = {p["merchant"]: p for p in result["patterns"]}
         assert "UnknownSvc" in patterns
         assert patterns["UnknownSvc"]["already_tracked"] is False
 
-    async def test_price_change_detected_when_amount_differs_more_than_5_percent(self, pool):
+    async def test_price_change_detected_when_amount_differs_more_than_5_percent(
+        self, finance_pool
+    ):
         """price_change_detected is True when avg_amount differs >5% from subscription."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         # Subscription records $9.99 but charges are now $11.99 (~20% increase)
-        await _insert_subscription(pool, service="Spotify", amount="9.99")
+        await _insert_subscription(finance_pool, service="Spotify", amount="9.99")
 
         base = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
         for i in range(3):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="Spotify",
                 amount="11.99",
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         patterns = {p["merchant"]: p for p in result["patterns"]}
         assert "Spotify" in patterns
         assert patterns["Spotify"]["already_tracked"] is True
         assert patterns["Spotify"]["price_change_detected"] is True
 
-    async def test_price_change_not_detected_when_within_5_percent(self, pool):
+    async def test_price_change_not_detected_when_within_5_percent(self, finance_pool):
         """price_change_detected is False when amount difference is within 5%."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         # Subscription records $10.00, charges are $10.30 (~3% — within threshold)
-        await _insert_subscription(pool, service="MusicSvc", amount="10.00")
+        await _insert_subscription(finance_pool, service="MusicSvc", amount="10.00")
 
         base = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
         for i in range(3):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="MusicSvc",
                 amount="10.30",
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         patterns = {p["merchant"]: p for p in result["patterns"]}
         assert "MusicSvc" in patterns
         assert patterns["MusicSvc"]["already_tracked"] is True
         assert patterns["MusicSvc"]["price_change_detected"] is False
 
-    async def test_cancelled_subscription_does_not_mark_tracked(self, pool):
+    async def test_cancelled_subscription_does_not_mark_tracked(self, finance_pool):
         """Cancelled subscriptions are not used for already_tracked matching."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
-        await _insert_subscription(pool, service="OldSvc", amount="7.99", status="cancelled")
+        await _insert_subscription(
+            finance_pool, service="OldSvc", amount="7.99", status="cancelled"
+        )
 
         base = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
         for i in range(3):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="OldSvc",
                 amount="7.99",
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         patterns = {p["merchant"]: p for p in result["patterns"]}
         assert "OldSvc" in patterns
         assert patterns["OldSvc"]["already_tracked"] is False
 
-    async def test_result_includes_last_seen_and_next_expected_dates(self, pool):
+    async def test_result_includes_last_seen_and_next_expected_dates(self, finance_pool):
         """Pattern result contains last_seen_date and next_expected_date fields."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         base = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
         for i in range(3):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="DateSvc",
                 amount="5.00",
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=3)
+        result = await detect_recurring(finance_pool, min_occurrences=3)
 
         patterns = {p["merchant"]: p for p in result["patterns"]}
         assert "DateSvc" in patterns
@@ -907,7 +836,7 @@ class TestDetectRecurringSubscriptionCrossReference:
         date.fromisoformat(p["last_seen_date"])
         date.fromisoformat(p["next_expected_date"])
 
-    async def test_custom_min_occurrences_threshold(self, pool):
+    async def test_custom_min_occurrences_threshold(self, finance_pool):
         """min_occurrences=5 filters out merchants with fewer than 5 charges."""
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
@@ -915,7 +844,7 @@ class TestDetectRecurringSubscriptionCrossReference:
         # Only 4 charges — below min_occurrences=5
         for i in range(4):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="FewCharges",
                 amount="10.00",
                 posted_at=base + timedelta(days=30 * i),
@@ -923,13 +852,13 @@ class TestDetectRecurringSubscriptionCrossReference:
         # 6 charges — above threshold
         for i in range(6):
             await _insert_transaction(
-                pool,
+                finance_pool,
                 merchant="ManyCharges",
                 amount="10.00",
                 posted_at=base + timedelta(days=30 * i),
             )
 
-        result = await detect_recurring(pool, min_occurrences=5)
+        result = await detect_recurring(finance_pool, min_occurrences=5)
 
         pattern_names = {p["merchant"] for p in result["patterns"]}
         assert "FewCharges" not in pattern_names
@@ -939,62 +868,6 @@ class TestDetectRecurringSubscriptionCrossReference:
 # ---------------------------------------------------------------------------
 # Additional fixtures for predict_bills tests (bills/merchant_mappings tables)
 # ---------------------------------------------------------------------------
-
-CREATE_BILLS_SQL = """
-CREATE TABLE IF NOT EXISTS bills (
-    id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    payee                  TEXT NOT NULL,
-    amount                 NUMERIC(14, 2) NOT NULL,
-    currency               CHAR(3) NOT NULL,
-    due_date               DATE NOT NULL,
-    frequency              TEXT NOT NULL CHECK (frequency IN (
-                               'one_time', 'weekly', 'monthly', 'quarterly', 'yearly', 'custom'
-                           )),
-    status                 TEXT NOT NULL CHECK (status IN ('pending', 'paid', 'overdue')),
-    payment_method         TEXT,
-    account_id             UUID,
-    source_message_id      TEXT,
-    statement_period_start DATE,
-    statement_period_end   DATE,
-    paid_at                TIMESTAMPTZ,
-    metadata               JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_MERCHANT_MAPPINGS_SQL = """
-CREATE TABLE IF NOT EXISTS merchant_mappings (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    raw_pattern         TEXT NOT NULL,
-    normalized_merchant TEXT NOT NULL,
-    category            TEXT NOT NULL,
-    confidence          FLOAT NOT NULL DEFAULT 0.5,
-    learned_from_count  INT NOT NULL DEFAULT 0,
-    source              TEXT NOT NULL DEFAULT 'learn',
-    is_active           BOOLEAN NOT NULL DEFAULT true,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT uq_merchant_mappings_pattern_active UNIQUE (raw_pattern)
-)
-"""
-
-CREATE_RECURRING_GROUPS_SQL = """
-CREATE TABLE IF NOT EXISTS recurring_groups (
-    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    merchant             TEXT NOT NULL UNIQUE,
-    estimated_frequency  TEXT CHECK (estimated_frequency IS NULL OR estimated_frequency IN (
-                             'weekly', 'monthly', 'quarterly', 'yearly', 'custom'
-                         )),
-    avg_amount           NUMERIC(14, 2) NOT NULL,
-    currency             CHAR(3) DEFAULT 'USD',
-    last_seen_date       DATE,
-    next_expected_date   DATE,
-    is_active            BOOLEAN NOT NULL DEFAULT true,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
 
 
 def _dt(d: date) -> datetime:
@@ -1012,6 +885,7 @@ async def _insert_txn(
     category: str = "bills",
 ) -> None:
     """Helper to insert a transaction row (predict_bills tests)."""
+    await _ensure_category(pool_arg, category)
     await pool_arg.execute(
         """
         INSERT INTO transactions
@@ -1028,15 +902,9 @@ async def _insert_txn(
 
 
 @pytest.fixture
-async def pool_full(provisioned_postgres_pool):
+async def pool_full(db):
     """Pool with all finance tables (for predict_bills tests)."""
-    async with provisioned_postgres_pool() as p:
-        await p.execute(CREATE_TRANSACTIONS_SQL)
-        await p.execute(CREATE_BILLS_SQL)
-        await p.execute(CREATE_SUBSCRIPTIONS_SQL)
-        await p.execute(CREATE_MERCHANT_MAPPINGS_SQL)
-        await p.execute(CREATE_RECURRING_GROUPS_SQL)
-        yield p
+    return await db("core", "finance")
 
 
 @pytest.fixture
@@ -1525,25 +1393,6 @@ class TestPredictBills:
 # recall_merchant_mappings (tasks 2.1–2.3)
 # ---------------------------------------------------------------------------
 
-# SQL for a minimal transactions table with a category column (reuse CREATE_TRANSACTIONS_SQL
-# defined at the top of this module).
-
-CREATE_MERCHANT_MAPPINGS_CLEAN_SQL = """
-CREATE TABLE IF NOT EXISTS merchant_mappings (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    raw_pattern         TEXT NOT NULL,
-    normalized_merchant TEXT NOT NULL,
-    category            TEXT NOT NULL,
-    confidence          FLOAT NOT NULL DEFAULT 0.5,
-    learned_from_count  INT NOT NULL DEFAULT 1,
-    source              TEXT NOT NULL DEFAULT 'learned',
-    is_active           BOOLEAN NOT NULL DEFAULT true,
-    metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
 
 async def _insert_categorized_txn(
     pool_arg,
@@ -1554,6 +1403,7 @@ async def _insert_categorized_txn(
     currency: str = "USD",
 ) -> None:
     """Insert a debit transaction with an explicit category."""
+    await _ensure_category(pool_arg, category)
     await pool_arg.execute(
         """
         INSERT INTO transactions
@@ -1568,12 +1418,9 @@ async def _insert_categorized_txn(
 
 
 @pytest.fixture
-async def pool_merchant(provisioned_postgres_pool):
-    """Pool with transactions and (empty) merchant_mappings tables."""
-    async with provisioned_postgres_pool() as p:
-        await p.execute(CREATE_TRANSACTIONS_SQL)
-        await p.execute(CREATE_MERCHANT_MAPPINGS_CLEAN_SQL)
-        yield p
+async def pool_merchant(db):
+    """Real core+finance schema: transactions and (empty) merchant_mappings."""
+    return await db("core", "finance")
 
 
 class TestLearnMerchantCategories:
@@ -1697,6 +1544,7 @@ class TestLearnMerchantCategories:
         from butlers.tools.finance.pattern_recognition import learn_merchant_categories
 
         # Insert a credit transaction for "CreditStore"
+        await _ensure_category(pool_merchant, "refund")
         await pool_merchant.execute(
             """
             INSERT INTO transactions
@@ -2084,9 +1932,9 @@ class TestUpdateTransactionCategoryFeedback:
 class TestRecurringGroupsSchemaReconcile:
     """finance_008 reconciles recurring_groups to the schema the code uses."""
 
-    async def test_reconciled_columns_present(self, pool):
+    async def test_reconciled_columns_present(self, finance_pool):
         """All code-expected columns exist after the migration is applied."""
-        rows = await pool.fetch(
+        rows = await finance_pool.fetch(
             """
             SELECT column_name FROM information_schema.columns
             WHERE table_name = 'recurring_groups' AND table_schema = current_schema()
@@ -2107,9 +1955,9 @@ class TestRecurringGroupsSchemaReconcile:
         }
         assert expected.issubset(cols), f"missing: {expected - cols}"
 
-    async def test_dead_finance_006_columns_dropped(self, pool):
+    async def test_dead_finance_006_columns_dropped(self, finance_pool):
         """The finance_006-only columns are removed by the reconcile migration."""
-        rows = await pool.fetch(
+        rows = await finance_pool.fetch(
             """
             SELECT column_name FROM information_schema.columns
             WHERE table_name = 'recurring_groups' AND table_schema = current_schema()
@@ -2128,9 +1976,9 @@ class TestRecurringGroupsSchemaReconcile:
         }
         assert not (cols & dead), f"dead columns still present: {cols & dead}"
 
-    async def test_merchant_unique_constraint_present(self, pool):
+    async def test_merchant_unique_constraint_present(self, finance_pool):
         """A UNIQUE index on merchant backs the ON CONFLICT (merchant) upsert."""
-        idx = await pool.fetchval(
+        idx = await finance_pool.fetchval(
             """
             SELECT indexdef FROM pg_indexes
             WHERE tablename = 'recurring_groups'

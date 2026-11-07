@@ -24,9 +24,9 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.routers.ingestion_connectors import (
     _ARCHIVE_CANDIDATE_MIN_OFFLINE,
-    _get_db_manager,
     _is_archive_candidate,
     _online_identities_by_type,
 )
@@ -191,7 +191,7 @@ def _wire(app: FastAPI, registry_rows: list) -> None:
     pool.fetchrow = AsyncMock(return_value=None)
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
 
 async def test_summaries_flags_candidate_and_not_the_live_sibling(app: FastAPI) -> None:

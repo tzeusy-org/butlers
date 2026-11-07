@@ -23,7 +23,9 @@ from butlers.chronicler.adapters.spotify import (
     SOURCE_NAME,
     SpotifySessionAdapter,
 )
-from butlers.chronicler.models import Episode, Precision, Privacy
+from butlers.chronicler.models import Episode, Layer, Precision, Privacy
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import Record
 
 _NOW = datetime(2026, 3, 26, 10, 0, 0, tzinfo=UTC)
 _ENDPOINT = "spotify_user_client:spotify:user123"
@@ -35,7 +37,7 @@ _SPOTIFY_USER_ID = "user123"
 # ---------------------------------------------------------------------------
 
 
-def _make_row(
+def _play_row(
     started_at: datetime = _NOW,
     ended_at: datetime | None = None,
     idempotency_key: str = "spotify:ep:session:1711447200000",
@@ -67,11 +69,9 @@ def _pool_returning(*rows: dict) -> AsyncMock:
     """Build a mock asyncpg pool that returns the given row dicts for fetch()."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)  # table-exists check
-    conn.fetch = AsyncMock(
-        return_value=[MagicMock(**r, **{"__getitem__": lambda s, k: r[k]}) for r in rows]
-    )
+    conn.fetch = AsyncMock(return_value=[Record(r) for r in rows])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -81,21 +81,8 @@ def _pool_table_missing() -> AsyncMock:
     conn.fetchval = AsyncMock(return_value=False)
     conn.fetch = AsyncMock(return_value=[])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
-
-
-class _AsyncCtx:
-    """Async context manager that yields ``obj``."""
-
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
 
 
 def _chronicler_pool() -> AsyncMock:
@@ -105,7 +92,7 @@ def _chronicler_pool() -> AsyncMock:
     conn.fetchrow = AsyncMock(return_value=None)
 
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -160,7 +147,7 @@ def test_no_llm_imports_in_spotify_adapter() -> None:
 
 @pytest.mark.asyncio
 async def test_project_single_row_produces_one_episode() -> None:
-    row = _make_row()
+    row = _play_row()
     adapter = SpotifySessionAdapter()
 
     upserted: list[Episode] = []
@@ -182,7 +169,7 @@ async def test_project_single_row_produces_one_episode() -> None:
 
 @pytest.mark.asyncio
 async def test_episode_fields_from_row() -> None:
-    row = _make_row(
+    row = _play_row(
         started_at=_NOW,
         ended_at=_NOW + timedelta(minutes=45),
         context_name="Deep Focus",
@@ -202,6 +189,7 @@ async def test_episode_fields_from_row() -> None:
         await adapter.project(pool, chronicler_pool=cp, since=None)
 
     ep = upserted[0]
+    assert ep.layer == Layer.EVIDENCE
     assert ep.source_name == SOURCE_NAME
     assert ep.episode_type == EPISODE_TYPE_LISTENING
     assert ep.start_at == _NOW
@@ -216,7 +204,7 @@ async def test_episode_fields_from_row() -> None:
 
 @pytest.mark.asyncio
 async def test_episode_title_falls_back_to_context_uri_fragment() -> None:
-    row = _make_row(context_name=None, context_uri="spotify:playlist:myplaylist")
+    row = _play_row(context_name=None, context_uri="spotify:playlist:myplaylist")
     adapter = SpotifySessionAdapter()
     upserted: list[Episode] = []
 
@@ -236,7 +224,7 @@ async def test_episode_title_falls_back_to_context_uri_fragment() -> None:
 @pytest.mark.asyncio
 async def test_episode_title_falls_back_to_track_names_when_no_context() -> None:
     """When neither context_name nor context_uri is set, prefer track_names."""
-    row = _make_row(context_name=None, context_uri=None)
+    row = _play_row(context_name=None, context_uri=None)
     adapter = SpotifySessionAdapter()
     upserted: list[Episode] = []
 
@@ -259,7 +247,7 @@ async def test_episode_title_falls_back_to_track_names_when_no_context() -> None
 @pytest.mark.asyncio
 async def test_episode_title_falls_back_to_endpoint_when_no_context_or_tracks() -> None:
     """When context AND track_names are missing, surface endpoint identity."""
-    row = _make_row(context_name=None, context_uri=None, track_names=[])
+    row = _play_row(context_name=None, context_uri=None, track_names=[])
     adapter = SpotifySessionAdapter()
     upserted: list[Episode] = []
 
@@ -280,7 +268,7 @@ async def test_episode_title_falls_back_to_endpoint_when_no_context_or_tracks() 
 async def test_episode_title_lists_first_two_tracks_with_remainder_count() -> None:
     """When track_names has >2 entries, the title enumerates the first two
     inline and appends a "+N more" suffix to keep tooltips compact."""
-    row = _make_row(
+    row = _play_row(
         context_name=None,
         context_uri=None,
         track_names=["Song A", "Song B", "Song C", "Song D"],
@@ -310,7 +298,7 @@ async def test_episode_title_lists_first_two_tracks_with_remainder_count() -> No
 @pytest.mark.asyncio
 async def test_source_ref_uses_idempotency_key() -> None:
     ikey = "spotify:ep:session:1711447200000"
-    row = _make_row(idempotency_key=ikey)
+    row = _play_row(idempotency_key=ikey)
     adapter = SpotifySessionAdapter()
     upserted: list[Episode] = []
 
@@ -359,7 +347,7 @@ async def test_undefined_table_exception_returns_skipped_result() -> None:
         )
     )
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
 
     adapter = SpotifySessionAdapter()
     cp = _chronicler_pool()
@@ -384,8 +372,8 @@ async def test_watermark_advances_to_latest_recorded_at() -> None:
     t1 = _NOW
     t2 = _NOW + timedelta(hours=1)
     rows = [
-        {**_make_row(started_at=t1, idempotency_key="k1"), "recorded_at": t1},
-        {**_make_row(started_at=t1, idempotency_key="k2"), "recorded_at": t2},
+        {**_play_row(started_at=t1, idempotency_key="k1"), "recorded_at": t1},
+        {**_play_row(started_at=t1, idempotency_key="k2"), "recorded_at": t2},
     ]
     adapter = SpotifySessionAdapter()
 

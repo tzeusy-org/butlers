@@ -20,12 +20,18 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from butlers.audio_authorship import AudioAuthorship, sha256_hex
+from butlers.connectors import telegram_bot, telegram_voice
+from butlers.connectors.live_listener.transcription import (
+    TranscriptionClient,
+    TranscriptionResult,
+)
 from butlers.connectors.telegram_bot import (
     TelegramBotConnector,
     TelegramBotConnectorConfig,
     _classify_source_api_error,
 )
-from butlers.tools.switchboard.routing.contracts import IngestAttachment
+from butlers.tools.switchboard.contracts import IngestAttachment, parse_ingest_envelope
 
 _ENDPOINT = "telegram:bot:123456789"
 
@@ -487,3 +493,529 @@ def test_telegram_health_reports_auth_failure_as_error_and_api_failure_as_degrad
     connector._record_source_api_failure(_telegram_http_error(401, "Unauthorized"))
 
     assert connector._get_health_state() == ("error", "HTTP 401: Unauthorized")
+
+
+async def test_static_identity_env_cannot_relabel_real_bot_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Operator identity settings cannot relabel the actual ingest producer."""
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    config = TelegramBotConnectorConfig.from_env()
+    config.endpoint_identity = _ENDPOINT
+    runtime = TelegramBotConnector(config, cursor_pool=MagicMock())
+    update = {
+        "update_id": 123,
+        "message": {
+            "message_id": 1,
+            "from": {"id": 987},
+            "chat": {"id": 100},
+            "text": "Hello Bot!",
+        },
+    }
+    first = await runtime._normalize_to_ingest_v1(update)
+    replay = await runtime._normalize_to_ingest_v1(update)
+    assert first is not None and replay is not None
+    assert first["source"] == {
+        "channel": "telegram_bot",
+        "provider": "telegram",
+        "endpoint_identity": _ENDPOINT,
+    }
+    assert first["event"]["external_event_id"] == "123"
+    assert first["control"]["idempotency_key"] == replay["control"]["idempotency_key"]
+    assert first["event"]["external_conversation_id"] == "telegram:100"
+
+
+# ---------------------------------------------------------------------------
+# Owner voice-note transcription (bu-r0dsz; telegram-voice-transcription spec)
+# Audio and transcripts below are synthetic markers, never real owner content.
+# ---------------------------------------------------------------------------
+
+_AUDIO = b"SYNTHETIC-OGG-AUDIO-MARKER"
+_PCM = b"SYNTHETIC-PCM-MARKER"
+_TRANSCRIPT = "synthetic transcript words"
+
+
+class _FakeTranscriptionClient(TranscriptionClient):
+    """Records calls; optional gate holds each call open to observe overlap."""
+
+    def __init__(
+        self,
+        result: TranscriptionResult | None = None,
+        *,
+        healthy: bool = True,
+        gate: Any = None,
+    ) -> None:
+        super().__init__(mic_name="test")
+        self._result = result
+        self._healthy = healthy
+        self._gate = gate
+        self.calls: list[bytes] = []
+        self.active = 0
+        self.max_active = 0
+
+    async def connect(self) -> None:  # pragma: no cover - lifecycle not exercised here
+        pass
+
+    async def disconnect(self) -> None:  # pragma: no cover
+        pass
+
+    async def transcribe(self, audio: bytes) -> TranscriptionResult | None:
+        self.calls.append(audio)
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            if self._gate is not None:
+                await self._gate.wait()
+            return self._result
+        finally:
+            self.active -= 1
+
+
+def _ok_result() -> TranscriptionResult:
+    return TranscriptionResult(text=_TRANSCRIPT, confidence=0.91, language="en", duration_s=3.0)
+
+
+def _voice_update(
+    update_id: int = 700, *, duration: int = 5, file_size: int | None = 4096, **extra: Any
+) -> dict[str, Any]:
+    voice: dict[str, Any] = {"file_id": "voice_id", "file_unique_id": "v1", "duration": duration}
+    if file_size is not None:
+        voice["file_size"] = file_size
+    message = {"message_id": update_id, "from": {"id": 987}, "chat": {"id": 100}, "voice": voice}
+    return {"update_id": update_id, "message": {**message, **extra}}
+
+
+class _TelegramFiles:
+    """httpx MockTransport for getFile + file download; counts every Telegram request."""
+
+    def __init__(self, body: bytes = _AUDIO, *, fail: bool = False) -> None:
+        self.body = body
+        self.fail = fail
+        self.requests: list[str] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request.url.path)
+        if self.fail:
+            return httpx.Response(502, request=request)
+        if request.url.path.endswith("/getFile"):
+            return httpx.Response(200, json={"ok": True, "result": {"file_path": "voice/f.oga"}})
+        return httpx.Response(200, content=self.body)
+
+
+def _voice_connector(
+    monkeypatch: pytest.MonkeyPatch,
+    client: _FakeTranscriptionClient,
+    *,
+    enabled: bool = True,
+    owner: bool = True,
+    files: _TelegramFiles | None = None,
+    pcm: bytes | None = _PCM,
+    audio_key: str | None = None,
+    protocol: str = "wyoming",
+) -> tuple[TelegramBotConnector, _TelegramFiles, AsyncMock]:
+    config = TelegramBotConnectorConfig(
+        switchboard_mcp_url="http://localhost:41100/sse",
+        endpoint_identity=_ENDPOINT,
+        telegram_token="test-token",
+        voice_transcription_enabled=enabled,
+        voice_transcription_url="tcp://stt.test:10300",
+        voice_transcription_protocol=protocol,
+        audio_authorship_key=audio_key,
+    )
+    runtime = TelegramBotConnector(
+        config, db_pool=MagicMock(), cursor_pool=MagicMock(), transcription_client=client
+    )
+    files = files or _TelegramFiles()
+    runtime._http_client = httpx.AsyncClient(transport=httpx.MockTransport(files))
+    monkeypatch.setattr(
+        telegram_bot,
+        "resolve_owner_channel_via_definer",
+        AsyncMock(return_value=(MagicMock(), True) if owner else None),
+    )
+    transcode = AsyncMock(return_value=pcm)
+    monkeypatch.setattr(telegram_bot, "transcode_to_pcm", transcode)
+    return runtime, files, transcode
+
+
+async def test_voice_transcription_disabled_keeps_descriptor_and_makes_no_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeTranscriptionClient(_ok_result())
+    runtime, files, transcode = _voice_connector(monkeypatch, client, enabled=False)
+
+    env = await runtime._normalize_to_ingest_v1(_voice_update())
+
+    assert env is not None
+    assert env["payload"]["normalized_text"] == "[Voice message]"
+    assert env["payload"]["transcription"]["status"] == "disabled"
+    assert files.requests == [] and client.calls == []
+    transcode.assert_not_awaited()
+    telegram_bot.resolve_owner_channel_via_definer.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+async def test_owner_voice_note_transcript_becomes_normalized_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeTranscriptionClient(_ok_result())
+    runtime, files, transcode = _voice_connector(monkeypatch, client)
+
+    env = await runtime._normalize_to_ingest_v1(_voice_update())
+
+    assert env is not None
+    assert env["payload"]["normalized_text"] == _TRANSCRIPT
+    assert env["payload"]["transcription"] == {
+        "source_media": "voice",
+        "status": "transcribed",
+        "confidence": 0.91,
+        "language": "en",
+        "stt_backend": "wyoming",
+    }
+    assert env["payload"]["raw"]["message"]["voice"]["file_id"] == "voice_id"
+    assert "attachments" not in env["payload"] and "untrusted_spans" not in env["payload"]
+    transcode.assert_awaited_once()
+    assert transcode.await_args.args == (_AUDIO,)
+    assert client.calls == [_PCM]
+    # The real Switchboard contract accepts the new optional field.
+    assert parse_ingest_envelope(env).payload.transcription.status == "transcribed"
+
+
+@pytest.mark.parametrize(
+    ("owner", "extra", "status"),
+    [
+        (False, {}, "not_owner"),
+        (True, {"forward_origin": {"type": "hidden_user", "sender_user_name": "x"}}, "forwarded"),
+    ],
+)
+async def test_ineligible_voice_note_is_never_downloaded(
+    monkeypatch: pytest.MonkeyPatch, owner: bool, extra: dict[str, Any], status: str
+) -> None:
+    client = _FakeTranscriptionClient(_ok_result())
+    runtime, files, _ = _voice_connector(monkeypatch, client, owner=owner)
+
+    env = await runtime._normalize_to_ingest_v1(_voice_update(**extra))
+
+    assert env is not None
+    assert env["payload"]["normalized_text"] == "[Voice message]"
+    assert env["payload"]["transcription"]["status"] == status
+    assert env["payload"]["transcription"]["stt_backend"] is None
+    assert files.requests == [] and client.calls == []
+
+
+@pytest.mark.parametrize(
+    ("update_kwargs", "body", "requests"),
+    [
+        ({"file_size": telegram_voice.MAX_VOICE_BYTES + 1}, _AUDIO, 0),
+        ({"duration": 121}, _AUDIO, 0),
+        ({"file_size": None}, b"x" * (telegram_voice.MAX_VOICE_BYTES + 1), 2),
+    ],
+    ids=["oversize-metadata", "overlong", "post-download-backstop"],
+)
+async def test_voice_bounds_reject_oversize_and_overlong_notes(
+    monkeypatch: pytest.MonkeyPatch, update_kwargs: dict[str, Any], body: bytes, requests: int
+) -> None:
+    client = _FakeTranscriptionClient(_ok_result())
+    runtime, files, transcode = _voice_connector(monkeypatch, client, files=_TelegramFiles(body))
+
+    env = await runtime._normalize_to_ingest_v1(_voice_update(**update_kwargs))
+
+    assert env is not None
+    assert env["payload"]["normalized_text"] == "[Voice message]"
+    expected = "overlong" if "duration" in update_kwargs else "oversize"
+    assert env["payload"]["transcription"]["status"] == expected
+    assert len(files.requests) == requests
+    transcode.assert_not_awaited()
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    ("fail_download", "pcm", "result", "healthy", "status"),
+    [
+        (True, _PCM, None, True, "download_failed"),
+        (False, None, None, True, "transcode_failed"),
+        (False, _PCM, None, False, "stt_unavailable"),
+        (False, _PCM, None, True, "empty_or_low_confidence"),
+        (False, _PCM, TranscriptionResult("  ", 0.9, "en", 1.0), True, "empty_or_low_confidence"),
+    ],
+)
+async def test_voice_failures_fall_back_to_descriptor_with_named_status(
+    monkeypatch: pytest.MonkeyPatch,
+    fail_download: bool,
+    pcm: bytes | None,
+    result: TranscriptionResult | None,
+    healthy: bool,
+    status: str,
+) -> None:
+    client = _FakeTranscriptionClient(result, healthy=healthy)
+    files = _TelegramFiles(fail=fail_download)
+    runtime, files, _ = _voice_connector(monkeypatch, client, files=files, pcm=pcm)
+
+    env = await runtime._normalize_to_ingest_v1(_voice_update())
+
+    assert env is not None
+    assert env["payload"]["normalized_text"] == "[Voice message]"
+    outcome = env["payload"]["transcription"]
+    assert outcome["status"] == status
+    assert outcome["confidence"] is None and outcome["language"] is None
+    if fail_download:
+        assert len(files.requests) == 2  # one bounded retry of getFile
+
+
+async def test_voice_audio_and_transcript_never_reach_logs_or_envelope_extras(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("DEBUG")
+    ok_runtime, _, _ = _voice_connector(monkeypatch, _FakeTranscriptionClient(_ok_result()))
+    ok = await ok_runtime._normalize_to_ingest_v1(_voice_update(701))
+    failing = _FakeTranscriptionClient(None, healthy=False)
+    bad_runtime, _, _ = _voice_connector(monkeypatch, failing, files=_TelegramFiles(fail=True))
+    bad = await bad_runtime._normalize_to_ingest_v1(_voice_update(702))
+
+    assert ok is not None and bad is not None
+    logged = "".join(r.getMessage() for r in caplog.records)
+    for marker in (_AUDIO.decode(), _PCM.decode(), _TRANSCRIPT):
+        assert marker not in logged
+    # The connector's own warnings never echo the token-bearing file URL.
+    ours = "".join(r.getMessage() for r in caplog.records if r.name.startswith("butlers."))
+    assert "test-token" not in ours
+    for env in (ok, bad):
+        assert _AUDIO.decode() not in repr(env) and _PCM.decode() not in repr(env)
+        assert "attachments" not in env["payload"]
+
+
+async def test_ffmpeg_transcode_is_bounded_sandboxed_and_killed_on_overrun(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real pipes, with a Python stand-in for ffmpeg (CI images need not ship ffmpeg)."""
+    import asyncio
+    import signal
+    import sys
+
+    real_exec = asyncio.create_subprocess_exec
+    ceiling = telegram_voice.pcm_byte_ceiling(1)
+    behaviours = {
+        # Echo stdin back as the "PCM" so the round trip proves stdin was fed.
+        "ok": "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())",
+        "hang": "import time; time.sleep(30)",
+        # More than the stdout reader buffers plus the pipe holds, so the writer blocks.
+        "flood": f"import sys; sys.stdout.buffer.write(b'x' * {ceiling * 8})",
+    }
+    seen: dict[str, Any] = {}
+
+    async def fake_exec(*args: str, **kwargs: Any) -> asyncio.subprocess.Process:
+        seen["args"], seen["kwargs"] = args, kwargs
+        proc = await real_exec(sys.executable, "-c", behaviours[seen["mode"]], **kwargs)
+        seen["proc"] = proc
+        if seen["mode"] == "flood":
+            # Let the stdout reader fill past its high-water mark and pause before the first
+            # read, as a loaded host does by chance: a paused reader never sees EOF, so the
+            # overflow path must still drain it for the kill to reap (bu-3x3ttq).
+            stdout_pipe = proc._transport.get_pipe_transport(1)  # type: ignore[attr-defined]
+            for _ in range(1000):
+                if not stdout_pipe.is_reading():
+                    break
+                await asyncio.sleep(0.01)
+            assert not stdout_pipe.is_reading()
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    seen["mode"] = "ok"
+    assert await telegram_voice.transcode_to_pcm(_AUDIO, timeout_s=10, max_duration_s=1) == _AUDIO
+    args = seen["args"]
+    assert args == telegram_voice.ffmpeg_pcm_args(1)
+    assert args[0] == "ffmpeg" and args[-1] == "pipe:1"
+    # Input sandbox: only the pipe protocol, declared before the stdin input.
+    whitelist = args.index("-protocol_whitelist")
+    assert args[whitelist + 1] == "pipe" and whitelist < args.index("-i")
+    assert args[args.index("-i") + 1] == "pipe:0"
+    # Decoded length bounded by the configured duration ceiling.
+    assert args[args.index("-t") + 1] == "1"
+    assert "shell" not in seen["kwargs"]
+    assert seen["kwargs"]["stderr"] == asyncio.subprocess.DEVNULL
+
+    seen["mode"] = "hang"
+    assert await telegram_voice.transcode_to_pcm(_AUDIO, timeout_s=0.5, max_duration_s=1) is None
+    assert seen["proc"].returncode == -signal.SIGKILL  # killed and reaped
+
+    seen["mode"] = "flood"
+    assert await telegram_voice.transcode_to_pcm(_AUDIO, timeout_s=10, max_duration_s=1) is None
+    assert seen["proc"].returncode == -signal.SIGKILL
+
+
+async def test_unexpected_pipeline_error_keeps_descriptor_with_stage_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeTranscriptionClient(_ok_result())
+    runtime, _files, transcode = _voice_connector(monkeypatch, client)
+    transcode.side_effect = RuntimeError("SECRET-TRANSCRIPT-MARKER")
+
+    env = await runtime._normalize_to_ingest_v1(_voice_update())
+
+    assert env is not None
+    assert env["payload"]["normalized_text"] == "[Voice message]"
+    assert env["payload"]["transcription"]["status"] == "transcode_failed"
+    assert client.calls == []
+
+
+async def test_concurrent_voice_notes_serialize_on_shared_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    gate = asyncio.Event()
+    client = _FakeTranscriptionClient(_ok_result(), gate=gate)
+    runtime, _, _ = _voice_connector(monkeypatch, client)
+
+    tasks = [
+        asyncio.create_task(runtime._normalize_to_ingest_v1(_voice_update(800 + i)))
+        for i in range(3)
+    ]
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert client.max_active == 1
+    gate.set()
+    envs = await asyncio.gather(*tasks)
+
+    assert client.max_active == 1 and len(client.calls) == 3
+    assert all(env and env["payload"]["normalized_text"] == _TRANSCRIPT for env in envs)
+
+
+# Owner-audio authorship binding (bu-dhloi1.20; REQ-audio-authorship-001..003). The key below is
+# a synthetic test value, never a real credential.
+_AUDIO_KEY = "synthetic-audio-authorship-key-0123456789"
+
+
+async def test_owner_voice_transcript_carries_a_bound_authorship_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _, _ = _voice_connector(
+        monkeypatch, _FakeTranscriptionClient(_ok_result()), audio_key=_AUDIO_KEY
+    )
+
+    env = await runtime._normalize_to_ingest_v1(_voice_update())
+
+    assert env is not None
+    binding = env["payload"]["audio_authorship"]
+    record = AudioAuthorship.verified(binding, _AUDIO_KEY.encode())
+    assert record == AudioAuthorship(
+        channel="telegram_bot",
+        endpoint_identity=_ENDPOINT,
+        idempotency_key=env["control"]["idempotency_key"],
+        external_event_id="700",
+        sender_identity="987",
+        source_media="telegram_voice",
+        media_ref="v1",
+        media_sha256=sha256_hex(_AUDIO),
+        transform="wyoming-asr.v1",
+        transcript_sha256=sha256_hex(_TRANSCRIPT),
+    )
+    # Outcome metadata, dedupe identity and reply target are unchanged by the binding.
+    assert env["payload"]["transcription"]["status"] == "transcribed"
+    assert env["control"]["idempotency_key"] == "tg:100:700"
+    assert env["event"]["reply_target_ref"] == "100:700"
+    assert parse_ingest_envelope(env).payload.audio_authorship is not None
+    # Neither the key, the audio nor the transcript text is in the envelope binding.
+    for marker in (_AUDIO_KEY, _AUDIO.decode(), _TRANSCRIPT):
+        assert marker not in repr(binding)
+    assert _AUDIO_KEY not in repr(runtime._config)
+    # The binding is not portable to other words or another key.
+    key = _AUDIO_KEY.encode()
+    assert AudioAuthorship.verified({**binding, "transcript_sha256": "0" * 64}, key) is None
+    assert AudioAuthorship.verified(binding, b"x" * 64) is None
+
+
+@pytest.mark.parametrize(
+    ("audio_key", "client", "update_extra", "owner"),
+    [
+        (None, _FakeTranscriptionClient(_ok_result()), {}, True),
+        (_AUDIO_KEY, _FakeTranscriptionClient(None, healthy=False), {}, True),
+        (_AUDIO_KEY, _FakeTranscriptionClient(None), {}, True),
+        (_AUDIO_KEY, _FakeTranscriptionClient(_ok_result()), {}, False),
+        (
+            _AUDIO_KEY,
+            _FakeTranscriptionClient(_ok_result()),
+            {"forward_origin": {"type": "hidden_user", "sender_user_name": "x"}},
+            True,
+        ),
+        (
+            _AUDIO_KEY,
+            _FakeTranscriptionClient(_ok_result()),
+            {"via_bot": {"id": 42, "is_bot": True, "username": "somebot"}},
+            True,
+        ),
+    ],
+    ids=["no-key", "stt-unavailable", "empty", "not-owner", "forwarded", "via-bot"],
+)
+async def test_voice_without_owner_success_and_key_carries_no_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    audio_key: str | None,
+    client: _FakeTranscriptionClient,
+    update_extra: dict[str, Any],
+    owner: bool,
+) -> None:
+    runtime, _, _ = _voice_connector(monkeypatch, client, audio_key=audio_key, owner=owner)
+
+    env = await runtime._normalize_to_ingest_v1(_voice_update(**update_extra))
+
+    assert env is not None
+    assert "audio_authorship" not in env["payload"]
+    # Without a binding, the no-key and inline-bot rows keep an unbound transcript (admission
+    # fences it as data); failure, non-owner and forwarded rows keep the descriptor.
+    unbound = audio_key is None or "via_bot" in update_extra
+    expected = _TRANSCRIPT if unbound else "[Voice message]"
+    assert env["payload"]["normalized_text"] == expected
+
+
+async def test_unqualified_protocol_binding_names_its_declared_transform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _, _ = _voice_connector(
+        monkeypatch, _FakeTranscriptionClient(_ok_result()), audio_key=_AUDIO_KEY, protocol="http"
+    )
+
+    env = await runtime._normalize_to_ingest_v1(_voice_update())
+
+    assert env is not None
+    record = AudioAuthorship.verified(env["payload"]["audio_authorship"], _AUDIO_KEY.encode())
+    # Admission decides qualification; the producer never relabels a generic endpoint as ASR.
+    assert record is not None and record.transform == "http-stt.v1"
+
+
+async def test_owner_audio_file_media_eligibility_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeTranscriptionClient(_ok_result())
+    runtime, files, transcode = _voice_connector(monkeypatch, client, audio_key=_AUDIO_KEY)
+    update = {
+        "update_id": 710,
+        "message": {
+            "message_id": 710,
+            "from": {"id": 987},
+            "chat": {"id": 100},
+            "audio": {"file_id": "audio_id", "file_unique_id": "a1", "duration": 5},
+        },
+    }
+
+    env = await runtime._normalize_to_ingest_v1(update)
+
+    # The dark transport transcribes voice notes only; an audio file keeps its descriptor.
+    assert env is not None
+    assert env["payload"]["normalized_text"] == "[Audio]"
+    assert "transcription" not in env["payload"] and "audio_authorship" not in env["payload"]
+    assert files.requests == [] and client.calls == []
+    transcode.assert_not_awaited()
+
+
+def test_voice_transcription_env_defaults_off_and_requires_url_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    config = TelegramBotConnectorConfig.from_env()
+    assert config.voice_transcription_enabled is False
+    assert config.voice_max_duration_s == 120
+
+    monkeypatch.setenv("CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_ENABLED", "true")
+    with pytest.raises(ValueError, match="CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_URL"):
+        TelegramBotConnectorConfig.from_env()

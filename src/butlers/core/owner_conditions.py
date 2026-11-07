@@ -70,7 +70,8 @@ resolution) — every function below is a thin facade binding
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from datetime import timedelta
 from typing import Any
 
 import asyncpg
@@ -124,6 +125,8 @@ async def reconcile_snapshot(
     post_write: Callable[[asyncpg.Connection, list[ConditionTransition]], Awaitable[None]]
     | None = None,
     transaction_connection: asyncpg.Connection | None = None,
+    escalation_advance: Mapping[str, tuple[str, timedelta]] | None = None,
+    preserve_metadata_keys: Sequence[str] = (),
 ) -> list[ConditionTransition]:
     """Atomically reconcile one producer check-in against the owner condition ledger.
 
@@ -142,6 +145,10 @@ async def reconcile_snapshot(
     ``public.entity_graph_edges`` atomically with the ledger write.
     ``transaction_connection`` forwards an internal caller's active transaction
     to the same engine; otherwise the existing pool-owned transaction is used.
+
+    ``escalation_advance`` and ``preserve_metadata_keys`` are the engine's opt-ins
+    for a producer-specific re-escalation ladder and for keeping named metadata
+    keys across a confirmation; omitted, the shared behavior is unchanged.
     """
 
     async def _chained_post_write(
@@ -166,6 +173,8 @@ async def reconcile_snapshot(
         snapshot_complete=snapshot_complete,
         initial_grace_seconds=initial_grace_seconds,
         post_write=_chained_post_write,
+        escalation_advance=escalation_advance,
+        preserve_metadata_keys=preserve_metadata_keys,
         **connection_kwargs,
     )
 
@@ -190,12 +199,16 @@ async def resolve_condition(
     producer boundary. The two rules are complements: no producer value is
     ever overwritten here, and no producer can occupy the names this writes.
     """
+    # bu-q7vx1q.32: an explicit resolution amends the delivered insights whose premise
+    # it was, in the same transaction, exactly as the snapshot path does. The enqueue
+    # runs in a savepoint, so a failed enqueue never rolls back the resolution.
     return await _resolve_condition(
         pool,
         table=_TABLE,
         source=source,
         fingerprint=fingerprint,
         resolution_metadata=resolution_metadata,
+        post_write=enqueue_premise_amendments,
     )
 
 
@@ -215,6 +228,8 @@ async def list_conditions(
     *,
     source: str | None = None,
     state: str | None = None,
+    metadata_equals: Mapping[str, str] | None = None,
+    metadata_missing: Sequence[str] = (),
     offset: int = 0,
     limit: int = 50,
 ) -> tuple[int, list[dict[str, Any]]]:
@@ -222,10 +237,19 @@ async def list_conditions(
 
     Returns ``(total, rows)`` where ``total`` is the unfiltered-by-page count
     matching the given filters (for pagination), and ``rows`` is the current
-    page ordered by ``first_detected_at DESC``.
+    page ordered by ``first_detected_at DESC``. ``metadata_equals`` /
+    ``metadata_missing`` narrow on top-level metadata keys in SQL (see the
+    shared engine).
     """
     return await _list_conditions(
-        pool, table=_TABLE, source=source, state=state, offset=offset, limit=limit
+        pool,
+        table=_TABLE,
+        source=source,
+        state=state,
+        metadata_equals=metadata_equals,
+        metadata_missing=metadata_missing,
+        offset=offset,
+        limit=limit,
     )
 
 

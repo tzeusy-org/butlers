@@ -47,18 +47,20 @@ def test_relationship_job_schedules_have_registered_handlers() -> None:
             missing.append(job_name)
 
     assert not missing, f"Relationship deterministic jobs not registered: {missing}"
-    (push,) = [s for s in schedules if s["name"] == "upcoming-dates-check"]
-    assert push["cron"] == "0 8 * * *"
-    for contract in (
-        "upcoming_dates(days_ahead=7)",
-        "currently active",
-        "read fails",
-        "no reminder or all-clear",
-        "empty",
-        "exit silently",
-        'notify(channel="telegram"',
+    # bu-idc5mx.4: the two reminder schedules are deterministic jobs with no prompt.
+    by_name = {s["name"]: s for s in schedules}
+    for name, cron, job_name in (
+        ("upcoming-dates-check", "0 8 * * *", "upcoming_dates_check"),
+        ("relationship-maintenance", "0 9 * * 1", "relationship_maintenance"),
     ):
-        assert contract in push["prompt"]
+        schedule = by_name[name]
+        assert (schedule["cron"], schedule.get("dispatch_mode"), schedule.get("job_name")) == (
+            cron,
+            "job",
+            job_name,
+        )
+        assert "prompt" not in schedule
+        assert callable(relationship_jobs.get(job_name))
 
 
 @pytest.mark.asyncio
@@ -133,3 +135,36 @@ async def test_meeting_debrief_handler_injects_the_insight_proposer(
 
     assert result == {"prompted": 0}
     assert calls == {"pool": "pool", "proposer": propose_insight_candidate}
+
+
+@pytest.mark.asyncio
+async def test_owner_address_geocoding_is_an_hourly_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    """bu-r3fmja.3: a deterministic hourly job-mode schedule whose handler runs the job."""
+    from butlers.scheduled_jobs import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+
+    (schedule,) = [
+        s
+        for s in _load_relationship_schedules()
+        if s.get("job_name") == "relationship_geocode_owner_addresses"
+    ]
+    assert schedule["name"] == "relationship_geocode_owner_addresses"
+    assert schedule["dispatch_mode"] == "job"
+    minute, hour, *rest = schedule["cron"].split()
+    assert minute.isdigit() and hour == "*" and rest == ["*", "*", "*"]
+    assert "prompt" not in schedule
+
+    calls: dict[str, Any] = {}
+
+    async def fake_run(pool: Any) -> dict[str, Any]:
+        calls["pool"] = pool
+        return {"status": "ok"}
+
+    monkeypatch.setattr(
+        "butlers.tools.relationship.owner_address_geocoding.run_owner_address_geocoding", fake_run
+    )
+    handler = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY["relationship"][
+        "relationship_geocode_owner_addresses"
+    ]
+
+    assert await handler("pool", None) == {"status": "ok"}
+    assert calls == {"pool": "pool"}

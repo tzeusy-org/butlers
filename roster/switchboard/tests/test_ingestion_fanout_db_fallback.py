@@ -23,11 +23,15 @@ from __future__ import annotations
 
 import importlib
 import os
-import sys
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from butlers.testing.db_manager import db_manager
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.records import row as make_record
 
 pytestmark = pytest.mark.unit
 
@@ -39,7 +43,6 @@ pytestmark = pytest.mark.unit
 
 
 def _load_router(module_name: str = "_sw_router_db_fallback"):
-    sys.modules.pop("switchboard_api_models", None)
     router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
     spec = importlib.util.spec_from_file_location(module_name, router_path)
     mod = importlib.util.module_from_spec(spec)
@@ -48,41 +51,23 @@ def _load_router(module_name: str = "_sw_router_db_fallback"):
 
 
 # ---------------------------------------------------------------------------
-# Fake DatabaseManager with controllable fan_out results
+# DatabaseManager with controllable fan_out results
 # ---------------------------------------------------------------------------
 
 
-class _FakeFanoutDB:
-    """DatabaseManager stub with a configurable fan_out response."""
+def _fanout_db(fan_out_result: dict):
+    """A manager over *fan_out_result*'s butlers whose fan-out returns it verbatim.
 
-    def __init__(self, fan_out_result: dict | None = None) -> None:
-        self._fan_out_result: dict = fan_out_result or {}
-        self._fan_out_calls: list[str] = []
-        self._fan_out_args: list[tuple] = []
-
-    @property
-    def butler_names(self) -> list[str]:
-        return list(self._fan_out_result.keys())
-
-    def pool(self, name: str):
-        raise RuntimeError("_FakeFanoutDB.pool() should not be called in DB-fallback tests")
-
-    async def fan_out_with_status(
-        self, query: str, args: tuple = (), butler_names=None
-    ) -> tuple[dict, list[str]]:
-        self._fan_out_calls.append(query)
-        self._fan_out_args.append(args)
-        return self._fan_out_result, []
+    The butlers' pools refuse every query: the DB fallback must only fan out.
+    """
+    manager = db_manager({name: fake_pool() for name in fan_out_result})
+    manager.fan_out_with_status = AsyncMock(return_value=(fan_out_result, []))
+    return manager
 
 
-class _FakeRow(dict):
-    """asyncpg.Record-like dict with attribute access."""
-
-    def __getattr__(self, name: str):
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name)
+def _fan_out(manager) -> AsyncMock:
+    """The fan-out mock :func:`_fanout_db` installed."""
+    return cast(AsyncMock, manager.fan_out_with_status)
 
 
 # ---------------------------------------------------------------------------
@@ -94,20 +79,20 @@ async def test_db_fallback_used_when_no_prometheus_url():
     """When PROMETHEUS_URL is not set, fan_out is called (DB fallback)."""
     os.environ.pop("PROMETHEUS_URL", None)
 
-    db = _FakeFanoutDB(fan_out_result={})
+    db = _fanout_db({})
     mod = _load_router("_sw_fanout_nourl_db")
     await mod.get_ingestion_fanout(period="24h", db=db)
 
-    assert len(db._fan_out_calls) == 1, "fan_out must be called for DB fallback"
-    assert "public.ingestion_events" in db._fan_out_calls[0]
-    assert "sessions" in db._fan_out_calls[0]
+    assert _fan_out(db).await_count == 1, "fan_out must be called for DB fallback"
+    assert "public.ingestion_events" in _fan_out(db).await_args_list[-1].args[0]
+    assert "sessions" in _fan_out(db).await_args_list[-1].args[0]
 
 
 async def test_db_fallback_empty_when_no_sessions():
     """DB fallback returns empty list when fan_out returns no rows."""
     os.environ.pop("PROMETHEUS_URL", None)
 
-    db = _FakeFanoutDB(fan_out_result={})
+    db = _fanout_db({})
     mod = _load_router("_sw_fanout_empty")
     result = await mod.get_ingestion_fanout(period="24h", db=db)
 
@@ -120,7 +105,7 @@ async def test_db_fallback_single_butler_single_connector():
 
     fan_out_result = {
         "health": [
-            _FakeRow(
+            make_record(
                 connector_type="gmail",
                 endpoint_identity="user@example.com",
                 message_count=5,
@@ -128,7 +113,7 @@ async def test_db_fallback_single_butler_single_connector():
         ]
     }
 
-    db = _FakeFanoutDB(fan_out_result=fan_out_result)
+    db = _fanout_db(fan_out_result)
     mod = _load_router("_sw_fanout_single")
     result = await mod.get_ingestion_fanout(period="24h", db=db)
 
@@ -146,19 +131,19 @@ async def test_db_fallback_multiple_butlers():
 
     fan_out_result = {
         "health": [
-            _FakeRow(
+            make_record(
                 connector_type="gmail",
                 endpoint_identity="user@example.com",
                 message_count=3,
             ),
         ],
         "relationship": [
-            _FakeRow(
+            make_record(
                 connector_type="telegram_bot",
                 endpoint_identity="bot_123",
                 message_count=10,
             ),
-            _FakeRow(
+            make_record(
                 connector_type="gmail",
                 endpoint_identity="user@example.com",
                 message_count=7,
@@ -166,7 +151,7 @@ async def test_db_fallback_multiple_butlers():
         ],
     }
 
-    db = _FakeFanoutDB(fan_out_result=fan_out_result)
+    db = _fanout_db(fan_out_result)
     mod = _load_router("_sw_fanout_multi")
     result = await mod.get_ingestion_fanout(period="24h", db=db)
 
@@ -189,19 +174,19 @@ async def test_db_fallback_sorted_by_connector_then_count_desc():
 
     fan_out_result = {
         "butler_b": [
-            _FakeRow(
+            make_record(
                 connector_type="telegram_bot",
                 endpoint_identity="bot_a",
                 message_count=5,
             ),
         ],
         "butler_a": [
-            _FakeRow(
+            make_record(
                 connector_type="gmail",
                 endpoint_identity="user@example.com",
                 message_count=20,
             ),
-            _FakeRow(
+            make_record(
                 connector_type="telegram_bot",
                 endpoint_identity="bot_a",
                 message_count=15,
@@ -209,7 +194,7 @@ async def test_db_fallback_sorted_by_connector_then_count_desc():
         ],
     }
 
-    db = _FakeFanoutDB(fan_out_result=fan_out_result)
+    db = _fanout_db(fan_out_result)
     mod = _load_router("_sw_fanout_sorted")
     result = await mod.get_ingestion_fanout(period="24h", db=db)
 
@@ -234,18 +219,18 @@ async def test_db_fallback_prometheus_error_triggers_db():
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
             fan_out_result = {
                 "atlas": [
-                    _FakeRow(
+                    make_record(
                         connector_type="gmail",
                         endpoint_identity="inbox@org.com",
                         message_count=8,
                     ),
                 ],
             }
-            db = _FakeFanoutDB(fan_out_result=fan_out_result)
+            db = _fanout_db(fan_out_result)
             mod = _load_router("_sw_fanout_prom_err")
             result = await mod.get_ingestion_fanout(period="24h", db=db)
 
-    assert len(db._fan_out_calls) == 1, "fan_out must be called after Prometheus error"
+    assert _fan_out(db).await_count == 1, "fan_out must be called after Prometheus error"
     assert len(result.data) == 1
     row = result.data[0]
     assert row.connector_type == "gmail"
@@ -258,13 +243,8 @@ async def test_db_fallback_exception_returns_empty():
     """When fan_out raises, DB fallback catches the error and returns empty list."""
     os.environ.pop("PROMETHEUS_URL", None)
 
-    class _FailFanoutDB(_FakeFanoutDB):
-        async def fan_out_with_status(
-            self, query: str, args: tuple = (), butler_names=None
-        ) -> tuple[dict, list[str]]:
-            raise RuntimeError("DB connection failed")
-
-    db = _FailFanoutDB()
+    db = _fanout_db({})
+    _fan_out(db).side_effect = RuntimeError("DB connection failed")
     mod = _load_router("_sw_fanout_exc")
     result = await mod.get_ingestion_fanout(period="24h", db=db)
 
@@ -275,16 +255,18 @@ async def test_db_fallback_query_contains_hours_interval():
     """DB fallback SQL passes the period's hours count as a query argument."""
     os.environ.pop("PROMETHEUS_URL", None)
 
-    db = _FakeFanoutDB(fan_out_result={})
+    db = _fanout_db({})
     mod = _load_router("_sw_fanout_interval")
     await mod.get_ingestion_fanout(period="7d", db=db)
 
-    assert len(db._fan_out_calls) == 1
-    sql = db._fan_out_calls[0]
+    assert _fan_out(db).await_count == 1
+    sql = _fan_out(db).await_args_list[-1].args[0]
     # Parameterized query: interval is passed via $1 arg, not interpolated
     assert "$1" in sql, f"Expected parameterized '$1' in SQL, got: {sql}"
     # 7d = 168 hours — must be passed as the first arg
-    assert db._fan_out_args[0] == (168,), f"Expected args=(168,), got: {db._fan_out_args[0]}"
+    assert _fan_out(db).await_args_list[-1].kwargs["args"] == (168,), (
+        f"Expected args=(168,), got: {_fan_out(db).await_args_list[-1].kwargs['args']}"
+    )
 
 
 async def test_db_fallback_skips_zero_count_rows():
@@ -293,14 +275,14 @@ async def test_db_fallback_skips_zero_count_rows():
 
     fan_out_result = {
         "health": [
-            _FakeRow(
+            make_record(
                 connector_type="gmail",
                 endpoint_identity="user@example.com",
                 message_count=0,
             ),
         ],
         "relationship": [
-            _FakeRow(
+            make_record(
                 connector_type="telegram_bot",
                 endpoint_identity="bot_x",
                 message_count=3,
@@ -308,7 +290,7 @@ async def test_db_fallback_skips_zero_count_rows():
         ],
     }
 
-    db = _FakeFanoutDB(fan_out_result=fan_out_result)
+    db = _fanout_db(fan_out_result)
     mod = _load_router("_sw_fanout_zero")
     result = await mod.get_ingestion_fanout(period="24h", db=db)
 

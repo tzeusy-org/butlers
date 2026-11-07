@@ -7,21 +7,21 @@ quiet-hours gate:
     instead of vanishing without a trace
   - context-bus dnd/sleeping signals are consulted deterministically,
     alongside (not instead of) the existing hour-based quiet-hours policy
-  - priority="high" always fails open — bypasses both quiet hours and the
-    context bus, consistent with existing notify() semantics
+  - a model-assigned priority="high" cannot bypass owner attention policy
   - a successfully delivered notification is recorded as outcome="delivered"
 
-These tests boot a real ``ButlerDaemon`` with every I/O boundary mocked
-(same harness pattern as ``tests/daemon/test_notify_entity_id.py``) so the
-actual registered ``notify`` MCP tool closure is exercised end-to-end,
-rather than re-testing the pure helpers in isolation (see
-``tests/core/test_attention_ledger.py`` for those).
+These tests boot a real ``ButlerDaemon`` on a migrated database (bu-rvgzmf.2) and
+call its registered ``notify`` tool, so the policy row, the deferred queue and the
+ledger are real rows (see ``tests/core/test_attention_ledger.py`` for the pure
+helpers). The Switchboard client, identity resolution and context bus stay faked.
+Every test writes ledger, deferred or policy rows, so each gets a fresh boot.
 """
 
 from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -36,211 +36,120 @@ from butlers.core.tool_call_capture import (
     reset_current_runtime_session_id,
     set_current_runtime_session_id,
 )
-from butlers.daemon import ButlerDaemon
+from butlers.testing.daemon import write_butler_config
+from butlers.testing.db import open_pool
 
-pytestmark = pytest.mark.unit
-
-
-@contextmanager
-def _registered_approval_hooks(pool: Any):
-    """Install the real approvals runtime for exactly one test pool."""
-    import butlers.core.approvals_hooks as approval_hooks
-    from butlers.modules.approvals.email_guard import (
-        check_email_recipient,
-        check_recipient,
-    )
-    from butlers.modules.approvals.park import park_pending_action
-
-    runtime = approval_hooks.register_approval_hooks(
-        pool,
-        email_guard=check_email_recipient,
-        recipient_guard=check_recipient,
-        park_pending_action=park_pending_action,
-    )
-    try:
-        yield
-    finally:
-        approval_hooks.unregister_approval_hooks(pool, runtime)
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
-@pytest.fixture
-def butler_dir(tmp_path: Path) -> Path:
-    """Create a minimal butler directory for testing."""
-    butler_path = tmp_path / "test-butler"
-    butler_path.mkdir()
-    (butler_path / "butler.toml").write_text(
-        """
-[butler]
-name = "test-butler"
-port = 9100
-description = "Test butler"
+async def _butler(
+    booted_daemon,
+    tmp_path: Path,
+    *,
+    quiet_hours: bool = False,
+    approvals: bool = False,
+    name: str = "general",
+):
+    """Boot *name* with the owner's quiet window set: 22:00-07:00 UTC, or none.
 
-[butler.db]
-name = "butlers"
-schema = "test_butler"
-
-[[butler.schedule]]
-name = "daily-check"
-cron = "0 9 * * *"
-prompt = "Do the daily check"
-"""
-    )
-    (butler_path / "MANIFESTO.md").write_text("# Test Butler")
-    (butler_path / "CLAUDE.md").write_text("Test butler instructions.")
-    return butler_path
-
-
-def _make_runtime_config_row(butler_name: str = "test-butler") -> dict:
-    return {
-        "butler_name": butler_name,
-        "core_groups": None,
-        "catalog_read_sensitivity": "normal",
-        "max_concurrent": 3,
-        "max_queued": 10,
-        "seeded_at": None,
-        "updated_at": None,
-    }
-
-
-def _make_fetchrow_side_effect(*, approvals_policy_row: dict | None):
-    """Build an async side_effect for pool.fetchrow.
-
-    - ``runtime_config`` queries → a valid runtime_config row (daemon boot).
-    - ``contact_info`` + ``is_primary`` queries → is_primary=True (email guard).
-    - ``approvals_policy`` queries → *approvals_policy_row* (the owner-default gate).
-    - ``delivery_preferences`` queries → None (per-butler defer path not configured;
-      this test suite targets the owner-level approvals_policy + context-bus gate).
-    - everything else → None.
+    ``approvals`` enables the Approvals module, whose startup registers the real
+    recipient guards and park implementation on the butler's pool.
     """
-
-    async def _fetchrow(query: str, *args, **kwargs):
-        if "runtime_config" in query:
-            return _make_runtime_config_row()
-        if "contact_info" in query and "is_primary" in query:
-            return {"is_primary": True}
-        if "approvals_policy" in query:
-            return approvals_policy_row
-        return None
-
-    return _fetchrow
-
-
-def _patch_infra(mock_pool: Any) -> dict[str, Any]:
-    """Patch infrastructure dependencies for daemon tests (mirrors test_notify_entity_id.py)."""
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
-
-    mock_credential_store = AsyncMock()
-    mock_credential_store.resolve = AsyncMock(return_value=None)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
+    chains = ("core", "approvals") if approvals else ("core", name) if name == "switchboard" else ()
+    booted = await booted_daemon(
+        write_butler_config(
+            tmp_path,
+            name,
+            schema=name,
+            extra_toml="[modules.approvals]\n" if approvals else "",
+            # A Switchboard validates its roster's ports on startup.
+            port=41100 if name == "switchboard" else 0,
         ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "configure_logging": patch("butlers.core.logging.configure_logging"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "create_audit_pool": patch.object(
-            ButlerDaemon, "_create_audit_pool", new_callable=AsyncMock, return_value=None
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "build_credential_store": patch.object(
-            ButlerDaemon,
-            "_build_credential_store",
-            new_callable=AsyncMock,
-            return_value=mock_credential_store,
-        ),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-    }
-
-
-async def _start_daemon_with_notify(
-    butler_dir: Path, patches: dict[str, Any]
-) -> tuple[ButlerDaemon, Any]:
-    notify_fn = None
-    mock_mcp = MagicMock()
-
-    def tool_decorator(*_decorator_args, **_decorator_kwargs):
-        def decorator(fn):
-            nonlocal notify_fn
-            if fn.__name__ == "notify":
-                notify_fn = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["configure_logging"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-        patches["build_credential_store"],
-        patches["get_adapter"],
-        patches["shutil_which"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-        return daemon, notify_fn
-
-
-def _make_mock_pool(*, approvals_policy_row: dict | None) -> AsyncMock:
-    mock_conn = AsyncMock()
-    mock_conn.execute = AsyncMock(return_value=None)
-    mock_conn.fetchrow = AsyncMock(return_value=None)
-    mock_conn.fetchval = AsyncMock(return_value=None)
-    mock_conn.fetch = AsyncMock(return_value=[])
-
-    mock_pool = AsyncMock()
-    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-    mock_pool.fetchval = AsyncMock(return_value=str(uuid.uuid4()))
-    mock_pool.execute = AsyncMock(return_value=None)
-    mock_pool.fetchrow = AsyncMock(
-        side_effect=_make_fetchrow_side_effect(approvals_policy_row=approvals_policy_row)
+        *chains,
     )
-    mock_pool.fetch = AsyncMock(return_value=[])
-    return mock_pool
+    hours = (22, 7) if quiet_hours else (None, None)
+    admin = await open_pool(booted.admin_url)
+    try:
+        await admin.execute(
+            "UPDATE public.approvals_policy"
+            " SET quiet_start_hour = $1, quiet_end_hour = $2, timezone = 'UTC' WHERE id = 1",
+            *hours,
+        )
+    finally:
+        await admin.close()
+    return booted
+
+
+async def _notify_fn(booted) -> Callable[..., Awaitable[dict[str, Any]]]:
+    """The daemon's registered notify tool, called in process.
+
+    In process because these tests pass ``priority`` (excluded from the MCP schema)
+    and set the session and origin context variables the tool reads.
+    """
+    tool = await booted.daemon.mcp.get_tool("notify")
+    return tool.fn
+
+
+def _use_client(monkeypatch: pytest.MonkeyPatch, daemon: Any, client: Any) -> Any:
+    monkeypatch.setattr(daemon, "switchboard_client", client)
+    return client
+
+
+class _FetchvalInterceptor:
+    """The daemon's pool, except fetchval queries containing *needle* go to *handler*."""
+
+    def __init__(self, pool: Any, needle: str, handler: Callable[..., Awaitable[Any]]) -> None:
+        self._pool = pool
+        self._needle = needle
+        self._handler = handler
+
+    async def fetchval(self, query: str, *args: Any, **kwargs: Any) -> Any:
+        if self._needle in query:
+            return await self._handler(query, *args)
+        return await self._pool.fetchval(query, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._pool, name)
+
+
+def _intercept_fetchval(
+    monkeypatch: pytest.MonkeyPatch,
+    daemon: Any,
+    needle: str,
+    handler: Callable[..., Awaitable[Any]],
+) -> None:
+    """Answer the daemon's fetchval queries containing *needle* with *handler*.
+
+    asyncpg pools have read-only methods, so the daemon gets a delegating pool.
+    """
+    monkeypatch.setattr(daemon.db, "pool", _FetchvalInterceptor(daemon.db.pool, needle, handler))
+
+
+async def _ledger_rows(booted) -> list[Any]:
+    return await booted.daemon.db.pool.fetch(
+        "SELECT origin_butler, source, outcome, reason, notification_ref, metadata::text"
+        " AS metadata FROM public.attention_ledger ORDER BY occurred_at, id"
+    )
+
+
+async def _ledger_row_of(booted, outcome: str) -> Any:
+    """Return the first attention_ledger row whose outcome matches."""
+    return next((row for row in await _ledger_rows(booted) if row["outcome"] == outcome), None)
+
+
+async def _deferred_rows(booted) -> list[Any]:
+    return await booted.daemon.db.pool.fetch(
+        "SELECT butler_name, channel, message, priority, envelope, deliver_at"
+        " FROM deferred_notifications ORDER BY deferred_at, id"
+    )
+
+
+async def _approval_rows(booted) -> int:
+    """Rows the Approvals module persisted (pending actions plus standing rules)."""
+    pool = booted.daemon.db.pool
+    actions = await pool.fetchval("SELECT count(*) FROM pending_actions")
+    rules = await pool.fetchval("SELECT count(*) FROM approval_rules")
+    return actions + rules
 
 
 def _make_mock_client() -> Any:
@@ -255,7 +164,7 @@ def _make_mock_client() -> Any:
 
 
 @contextmanager
-def _configured_owner_default_recipient(daemon: ButlerDaemon):
+def _configured_owner_default_recipient(daemon: Any) -> Iterator[None]:
     """Model a configured owner channel for default-recipient notify tests."""
     owner_contact = MagicMock(roles=["owner"])
     with (
@@ -270,36 +179,6 @@ def _configured_owner_default_recipient(daemon: ButlerDaemon):
         ),
     ):
         yield
-
-
-def _ledger_insert_calls(mock_pool: AsyncMock) -> list[tuple[Any, ...]]:
-    """Return fetchval call args whose query targets public.attention_ledger."""
-    return [
-        call.args
-        for call in mock_pool.fetchval.await_args_list
-        if call.args and "attention_ledger" in call.args[0]
-    ]
-
-
-def _deferred_notification_insert_calls(mock_pool: AsyncMock) -> list[tuple[Any, ...]]:
-    """Return fetchval call args whose query persists deferred notifications."""
-    return [
-        call.args
-        for call in mock_pool.fetchval.await_args_list
-        if call.args and "INSERT INTO deferred_notifications" in call.args[0]
-    ]
-
-
-_IN_WINDOW_QUIET_POLICY = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "UTC"}
-_NO_QUIET_POLICY = {"quiet_start_hour": None, "quiet_end_hour": None, "timezone": "UTC"}
-
-
-def _ledger_row_of(mock_pool: AsyncMock, outcome: str) -> tuple[Any, ...] | None:
-    """Return the first attention_ledger INSERT arg tuple whose outcome matches."""
-    for args in _ledger_insert_calls(mock_pool):
-        if len(args) > 8 and args[8] == outcome:
-            return args
-    return None
 
 
 @pytest.fixture
@@ -353,12 +232,12 @@ def _client_raising(exc: BaseException) -> Any:
 @pytest.mark.usefixtures("_fixed_policy_quiet_clock")
 class TestQuietHoursLedgerRecording:
     async def test_quiet_hours_defers_full_envelope_and_records_ledger(
-        self, butler_dir: Path
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        daemon.switchboard_client = _make_mock_client()
+        booted = await _butler(booted_daemon, tmp_path, quiet_hours=True)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
 
         # The original call keeps recipient=None so the approvals-policy gate
         # applies after owner-default resolution.
@@ -376,19 +255,16 @@ class TestQuietHoursLedgerRecording:
         assert result["status"] == "deferred"
         assert result["notification_id"]
         assert result["reason"] == "policy_quiet_hours"
-        daemon.switchboard_client.call_tool.assert_not_awaited()
+        client.call_tool.assert_not_awaited()
 
-        deferred_calls = _deferred_notification_insert_calls(mock_pool)
-        assert len(deferred_calls) == 1
-        (_, deferred_butler, deferred_channel, deferred_message, _priority, envelope, *_rest) = (
-            deferred_calls[0]
-        )
-        assert deferred_butler == "test-butler"
-        assert deferred_channel == "telegram"
-        assert deferred_message == "Weekly report"
-        assert envelope == {
+        deferred = await _deferred_rows(booted)
+        assert len(deferred) == 1
+        assert deferred[0]["butler_name"] == "general"
+        assert deferred[0]["channel"] == "telegram"
+        assert deferred[0]["message"] == "Weekly report"
+        assert deferred[0]["envelope"] == {
             "schema_version": "notify.v1",
-            "origin_butler": "test-butler",
+            "origin_butler": "general",
             "delivery": {
                 "intent": "send",
                 "channel": "telegram",
@@ -403,42 +279,25 @@ class TestQuietHoursLedgerRecording:
             },
         }
 
-        ledger_calls = _ledger_insert_calls(mock_pool)
-        assert len(ledger_calls) == 1
-        # INSERT columns: origin_butler, source, channel, intent, priority_label,
-        # priority_score, dedup_key, outcome, reason, notification_ref, metadata
-        (
-            _,
-            origin_butler,
-            source,
-            _channel,
-            _intent,
-            _plabel,
-            _pscore,
-            _dk,
-            outcome,
-            reason,
-            _ref,
-            _meta,
-        ) = ledger_calls[0]
-        assert origin_butler == "test-butler"
-        assert source == "notify"
-        assert outcome == "deferred"
-        assert reason == "policy_quiet_hours"
+        ledger = await _ledger_rows(booted)
+        assert len(ledger) == 1
+        assert ledger[0]["origin_butler"] == "general"
+        assert ledger[0]["source"] == "notify"
+        assert ledger[0]["outcome"] == "deferred"
+        assert ledger[0]["reason"] == "policy_quiet_hours"
 
-    async def test_explicit_recipient_skips_owner_default_quiet_hours_parking(
-        self, butler_dir: Path
+    async def test_explicit_recipient_obeys_owner_quiet_hours_parking(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An explicit owner recipient must deliver despite an active owner quiet window."""
-        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        daemon.switchboard_client = _make_mock_client()
+        """An explicit owner recipient follows the same owner quiet window."""
+        booted = await _butler(booted_daemon, tmp_path, quiet_hours=True, approvals=True)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
         owner_contact = MagicMock(roles=["owner"])
         owner_resolver = AsyncMock(return_value=owner_contact)
 
         with (
-            _registered_approval_hooks(mock_pool),
             patch(
                 "butlers.identity.resolve_contact_by_channel",
                 new=owner_resolver,
@@ -456,28 +315,27 @@ class TestQuietHoursLedgerRecording:
                 _evidence=[],
             )
 
-        assert result["status"] == "ok"
-        owner_resolver.assert_awaited_once_with(mock_pool, "telegram", "explicit-owner-chat")
-        assert _deferred_notification_insert_calls(mock_pool) == []
-        daemon.switchboard_client.call_tool.assert_awaited_once()
-        notify_request = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"]
-        assert notify_request["delivery"]["recipient"] == "explicit-owner-chat"
+        assert result["status"] == "deferred"
+        owner_resolver.assert_awaited_once_with(daemon.db.pool, "telegram", "explicit-owner-chat")
+        deferred = await _deferred_rows(booted)
+        assert len(deferred) == 1
+        client.call_tool.assert_not_awaited()
+        assert deferred[0]["envelope"]["delivery"]["recipient"] == "explicit-owner-chat"
 
-    async def test_entity_target_skips_owner_default_quiet_hours_parking(
-        self, butler_dir: Path
+    async def test_entity_target_obeys_owner_quiet_hours_parking(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An explicit entity target must not be treated as an implicit owner default."""
-        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        daemon.switchboard_client = _make_mock_client()
+        """An explicit entity target cannot escape the owner quiet window."""
+        booted = await _butler(booted_daemon, tmp_path, quiet_hours=True, approvals=True)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
         entity_id = uuid.UUID("00000000-0000-0000-0000-000000000042")
         entity_resolver = AsyncMock(return_value="entity-owner-chat")
         owner_contact = MagicMock(roles=["owner"])
         owner_resolver = AsyncMock(return_value=owner_contact)
 
         with (
-            _registered_approval_hooks(mock_pool),
             patch.object(
                 daemon,
                 "_resolve_entity_channel_identifier",
@@ -500,26 +358,25 @@ class TestQuietHoursLedgerRecording:
                 _evidence=[],
             )
 
-        assert result["status"] == "ok"
+        assert result["status"] == "deferred"
         entity_resolver.assert_awaited_once_with(
             entity_id=entity_id,
             channel="telegram",
             msg_context=None,
         )
-        owner_resolver.assert_awaited_once_with(mock_pool, "telegram", "entity-owner-chat")
-        assert _deferred_notification_insert_calls(mock_pool) == []
-        daemon.switchboard_client.call_tool.assert_awaited_once()
-        notify_request = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"]
-        assert notify_request["delivery"]["recipient"] == "entity-owner-chat"
+        owner_resolver.assert_awaited_once_with(daemon.db.pool, "telegram", "entity-owner-chat")
+        deferred = await _deferred_rows(booted)
+        assert len(deferred) == 1
+        client.call_tool.assert_not_awaited()
+        assert deferred[0]["envelope"]["delivery"]["recipient"] == "entity-owner-chat"
 
     async def test_reply_intent_skips_owner_default_quiet_hours_parking(
-        self, butler_dir: Path
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A reply is not an eligible owner-default notification for parking."""
-        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        daemon.switchboard_client = _make_mock_client()
+        booted = await _butler(booted_daemon, tmp_path, quiet_hours=True)
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, booted.daemon, _make_mock_client())
 
         result = await notify_fn(
             channel="telegram",
@@ -535,24 +392,22 @@ class TestQuietHoursLedgerRecording:
         )
 
         assert result["status"] == "ok"
-        assert _deferred_notification_insert_calls(mock_pool) == []
-        daemon.switchboard_client.call_tool.assert_awaited_once()
-        notify_request = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"]
+        assert await _deferred_rows(booted) == []
+        client.call_tool.assert_awaited_once()
+        notify_request = client.call_tool.await_args.args[1]["notify_request"]
         assert notify_request["delivery"]["intent"] == "reply"
         assert notify_request["delivery"]["recipient"] == "reply-target-chat"
 
     async def test_non_owner_without_dossier_retries_without_persistence_or_ledger(
-        self, butler_dir: Path
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A dossier error wins before quiet-hours or any approval side effect."""
-        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        daemon.switchboard_client = _make_mock_client()
+        booted = await _butler(booted_daemon, tmp_path, quiet_hours=True, approvals=True)
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, booted.daemon, _make_mock_client())
         match_rules = AsyncMock(side_effect=AssertionError("rules must not be queried"))
 
         with (
-            _registered_approval_hooks(mock_pool),
             patch(
                 "butlers.identity.resolve_contact_by_channel",
                 new=AsyncMock(return_value=MagicMock(roles=["contact"])),
@@ -576,22 +431,17 @@ class TestQuietHoursLedgerRecording:
             "retryable": True,
         }
         match_rules.assert_not_awaited()
-        daemon.switchboard_client.call_tool.assert_not_awaited()
-        assert _ledger_insert_calls(mock_pool) == []
-        approval_persistence = [
-            call
-            for call in mock_pool.execute.await_args_list
-            if "approval_rules" in call.args[0] or "pending_actions" in call.args[0]
-        ]
-        assert approval_persistence == []
+        client.call_tool.assert_not_awaited()
+        assert await _ledger_rows(booted) == []
+        assert await _approval_rows(booted) == 0
 
     async def test_context_bus_dnd_defers_until_signal_expiry_when_no_quiet_hours(
-        self, butler_dir: Path
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        daemon.switchboard_client = _make_mock_client()
+        booted = await _butler(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
 
         dnd_signal = ContextEntry(
             signal_type="dnd",
@@ -613,31 +463,25 @@ class TestQuietHoursLedgerRecording:
         assert result["context_signal"] == "dnd"
         assert result["reason"] == "context_bus:dnd"
         assert result["deliver_at"] == dnd_signal.expires_at.isoformat()
-        daemon.switchboard_client.call_tool.assert_not_awaited()
+        client.call_tool.assert_not_awaited()
 
-        deferred_calls = [
-            call.args
-            for call in mock_pool.fetchval.await_args_list
-            if call.args and "INSERT INTO deferred_notifications" in call.args[0]
-        ]
-        assert len(deferred_calls) == 1
-        assert deferred_calls[0][5]["schema_version"] == "notify.v1"
-        assert deferred_calls[0][6] == dnd_signal.expires_at
+        deferred = await _deferred_rows(booted)
+        assert len(deferred) == 1
+        assert deferred[0]["envelope"]["schema_version"] == "notify.v1"
+        assert deferred[0]["deliver_at"] == dnd_signal.expires_at
 
-        ledger_calls = _ledger_insert_calls(mock_pool)
-        assert len(ledger_calls) == 1
-        outcome = ledger_calls[0][8]
-        reason = ledger_calls[0][9]
-        assert outcome == "deferred"
-        assert reason == "context_bus:dnd"
+        ledger = await _ledger_rows(booted)
+        assert len(ledger) == 1
+        assert ledger[0]["outcome"] == "deferred"
+        assert ledger[0]["reason"] == "context_bus:dnd"
 
     async def test_policy_and_context_holds_use_the_later_delivery_anchor(
-        self, butler_dir: Path
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        daemon.switchboard_client = _make_mock_client()
+        booted = await _butler(booted_daemon, tmp_path, quiet_hours=True)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
         dnd_signal = ContextEntry(
             signal_type="dnd",
             value=None,
@@ -658,22 +502,20 @@ class TestQuietHoursLedgerRecording:
         assert result["status"] == "deferred"
         assert result["deliver_at"] == dnd_signal.expires_at.isoformat()
         assert result["reason"] == "policy_quiet_hours+context_bus:dnd"
-        daemon.switchboard_client.call_tool.assert_not_awaited()
+        client.call_tool.assert_not_awaited()
 
     async def test_deferred_persistence_failure_returns_retryable_error_without_delivery(
-        self, butler_dir: Path
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
+        booted = await _butler(booted_daemon, tmp_path, quiet_hours=True)
+        daemon = booted.daemon
 
-        async def _fetchval(query: str, *_args: Any, **_kwargs: Any) -> str:
-            if "INSERT INTO deferred_notifications" in query:
-                raise RuntimeError("database unavailable")
-            return str(uuid.uuid4())
+        async def _unavailable(_query: str, *_args: Any) -> Any:
+            raise RuntimeError("database unavailable")
 
-        mock_pool.fetchval = AsyncMock(side_effect=_fetchval)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        daemon.switchboard_client = _make_mock_client()
+        _intercept_fetchval(monkeypatch, daemon, "INSERT INTO deferred_notifications", _unavailable)
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
 
         with (
             _configured_owner_default_recipient(daemon),
@@ -684,20 +526,20 @@ class TestQuietHoursLedgerRecording:
         assert result["status"] == "error"
         assert result["retryable"] is True
         assert result["error"]["code"] == "deferred_notification_persistence_failed"
-        daemon.switchboard_client.call_tool.assert_not_awaited()
-        ledger_calls = _ledger_insert_calls(mock_pool)
-        assert len(ledger_calls) == 1
-        assert ledger_calls[0][8] == "failed"
-        assert ledger_calls[0][9] == "deferred_persistence_error:RuntimeError"
+        client.call_tool.assert_not_awaited()
+        ledger = await _ledger_rows(booted)
+        assert len(ledger) == 1
+        assert ledger[0]["outcome"] == "failed"
+        assert ledger[0]["reason"] == "deferred_persistence_error:RuntimeError"
 
     async def test_ledger_failure_after_queue_preserves_deferred_result(
-        self, butler_dir: Path
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Queue durability wins over best-effort ledger observability."""
-        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        daemon.switchboard_client = _make_mock_client()
+        booted = await _butler(booted_daemon, tmp_path, quiet_hours=True)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
         ledger_failure = AsyncMock(side_effect=RuntimeError("ledger unavailable"))
 
         with (
@@ -709,23 +551,16 @@ class TestQuietHoursLedgerRecording:
 
         assert result["status"] == "deferred"
         ledger_failure.assert_awaited_once()
-        daemon.switchboard_client.call_tool.assert_not_awaited()
-        assert (
-            len(
-                [
-                    call
-                    for call in mock_pool.fetchval.await_args_list
-                    if "INSERT INTO deferred_notifications" in call.args[0]
-                ]
-            )
-            == 1
-        )
+        client.call_tool.assert_not_awaited()
+        assert len(await _deferred_rows(booted)) == 1
 
-    async def test_context_lookup_failure_fails_open(self, butler_dir: Path) -> None:
-        mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        daemon.switchboard_client = _make_mock_client()
+    async def test_context_lookup_failure_refuses_without_delivery(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        booted = await _butler(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
 
         with (
             _configured_owner_default_recipient(daemon),
@@ -736,16 +571,22 @@ class TestQuietHoursLedgerRecording:
         ):
             result = await notify_fn(channel="telegram", message="Weekly report")
 
-        assert result["status"] == "ok"
-        daemon.switchboard_client.call_tool.assert_awaited_once()
+        assert result["status"] == "error"
+        assert result["error"]["code"] == "attention_context_unavailable"
+        client.call_tool.assert_not_awaited()
 
-    async def test_high_priority_bypasses_quiet_hours_and_context_bus(
-        self, butler_dir: Path
+    @pytest.mark.parametrize("owner_started", [False, True])
+    async def test_model_priority_label_cannot_bypass_quiet_hours_and_context_bus(
+        self,
+        booted_daemon,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        owner_started: bool,
     ) -> None:
-        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        daemon.switchboard_client = _make_mock_client()
+        booted = await _butler(booted_daemon, tmp_path, quiet_hours=True)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
 
         dnd_signal = ContextEntry(
             signal_type="dnd",
@@ -755,31 +596,48 @@ class TestQuietHoursLedgerRecording:
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             confidence=1.0,
         )
+        from butlers.core.attention_urgency import AttentionOrigin, _current_origin
+
+        # Owner content authority is not a creation flag or persisted clause.
+        origin_token = _current_origin.set(
+            AttentionOrigin(entity_id=uuid.uuid4()) if owner_started else None
+        )
         with (
             _configured_owner_default_recipient(daemon),
             patch(
                 "butlers.context_bus.get_active_context", new=AsyncMock(return_value=[dnd_signal])
             ),
         ):
-            result = await notify_fn(channel="telegram", message="Urgent!", priority="high")
+            try:
+                result = await notify_fn(channel="telegram", message="Urgent!", priority="high")
+            finally:
+                _current_origin.reset(origin_token)
 
-        assert result["status"] == "ok"
-        daemon.switchboard_client.call_tool.assert_awaited_once()
+        assert result["status"] == "deferred"
+        client.call_tool.assert_not_awaited()
 
-        ledger_calls = _ledger_insert_calls(mock_pool)
-        outcomes = [c[8] for c in ledger_calls]
+        outcomes = [row["outcome"] for row in await _ledger_rows(booted)]
         assert "suppressed" not in outcomes
-        assert "delivered" in outcomes
+        assert "deferred" in outcomes
+
+        event = json.loads((await _ledger_row_of(booted, "deferred"))["metadata"])
+        assert event["attention_cause"] == "routine"
+        assert event["downgrade"] == "unverified_urgency"
+        assert "Urgent!" not in json.dumps(event)
 
     # Spec: REQ-core-fleet-events-007, REQ-core-fleet-events-008
     @pytest.mark.parametrize("publish_failure", [False, True])
     async def test_successful_delivery_records_delivered_ledger_row(
-        self, butler_dir: Path, publish_failure: bool
+        self,
+        booted_daemon,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        publish_failure: bool,
     ) -> None:
-        mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        daemon.switchboard_client = _make_mock_client()
+        booted = await _butler(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        _use_client(monkeypatch, daemon, _make_mock_client())
 
         publish = AsyncMock(
             side_effect=RuntimeError("publication unavailable") if publish_failure else None
@@ -793,44 +651,15 @@ class TestQuietHoursLedgerRecording:
 
         assert result["status"] == "ok"
         publish.assert_awaited_once_with(
-            mock_pool,
+            daemon.db.pool,
             "notification",
-            {"butler": "test-butler", "channel": "telegram", "intent": "send"},
+            {"butler": "general", "channel": "telegram", "intent": "send"},
         )
 
-        ledger_calls = _ledger_insert_calls(mock_pool)
-        assert len(ledger_calls) == 1
-        outcome = ledger_calls[0][8]
-        notification_ref = ledger_calls[0][10]
-        assert outcome == "delivered"
-        assert notification_ref == "notif-123"
-
-
-@pytest.fixture
-def switchboard_butler_dir(tmp_path: Path) -> Path:
-    """A butler dir named 'switchboard' so notify() takes the self-delivery branch."""
-    butler_path = tmp_path / "switchboard"
-    butler_path.mkdir()
-    (butler_path / "butler.toml").write_text(
-        """
-[butler]
-name = "switchboard"
-port = 9110
-description = "Switchboard butler"
-
-[butler.db]
-name = "butlers"
-schema = "switchboard"
-
-[[butler.schedule]]
-name = "daily-check"
-cron = "0 9 * * *"
-prompt = "Do the daily check"
-"""
-    )
-    (butler_path / "MANIFESTO.md").write_text("# Switchboard Butler")
-    (butler_path / "CLAUDE.md").write_text("Switchboard butler instructions.")
-    return butler_path
+        ledger = await _ledger_rows(booted)
+        assert len(ledger) == 1
+        assert ledger[0]["outcome"] == "delivered"
+        assert ledger[0]["notification_ref"] == "notif-123"
 
 
 class TestNotifyFailurePathsRecordFailedLedgerRow:
@@ -851,19 +680,23 @@ class TestNotifyFailurePathsRecordFailedLedgerRow:
     error shape (unchanged for callers).
     """
 
-    async def _run_proxied(self, butler_dir: Path, client: Any) -> tuple[dict[str, Any], AsyncMock]:
-        mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        daemon.switchboard_client = client
+    async def _run_proxied(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, client: Any
+    ) -> tuple[dict[str, Any], Any]:
+        booted = await _butler(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        _use_client(monkeypatch, daemon, client)
         with (
             _configured_owner_default_recipient(daemon),
             patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
         ):
             result = await notify_fn(channel="telegram", message="Report")
-        return result, mock_pool
+        return result, booted
 
-    async def test_proxied_inner_failed_records_failed_ledger_row(self, butler_dir: Path) -> None:
+    async def test_proxied_inner_failed_records_failed_ledger_row(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         client = _client_returning(
             _make_result(
                 is_error=False,
@@ -875,72 +708,80 @@ class TestNotifyFailurePathsRecordFailedLedgerRow:
                 },
             )
         )
-        result, mock_pool = await self._run_proxied(butler_dir, client)
+        result, booted = await self._run_proxied(booted_daemon, tmp_path, monkeypatch, client)
 
         # Return shape unchanged for callers.
         assert result["status"] == "error"
         assert result["error"] == "messenger rejected"
 
-        row = _ledger_row_of(mock_pool, "failed")
+        row = await _ledger_row_of(booted, "failed")
         assert row is not None, "expected a failed attention-ledger row"
-        assert row[2] == "notify"  # source
-        assert row[9] == "delivery_error:messenger rejected"  # reason
-        assert row[10] == "notif-fail-1"  # notification_ref
+        assert row["source"] == "notify"
+        assert row["reason"] == "delivery_error:messenger rejected"
+        assert row["notification_ref"] == "notif-fail-1"
 
-    async def test_proxied_mcp_error_records_failed_ledger_row(self, butler_dir: Path) -> None:
+    async def test_proxied_mcp_error_records_failed_ledger_row(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         client = _client_returning(_make_result(is_error=True, content_text="mcp boom"))
-        result, mock_pool = await self._run_proxied(butler_dir, client)
+        result, booted = await self._run_proxied(booted_daemon, tmp_path, monkeypatch, client)
 
         assert result["status"] == "error"
         assert result["error"] == "mcp boom"
 
-        row = _ledger_row_of(mock_pool, "failed")
+        row = await _ledger_row_of(booted, "failed")
         assert row is not None
-        assert row[9] == "delivery_error:mcp boom"
+        assert row["reason"] == "delivery_error:mcp boom"
 
-    async def test_proxied_timeout_records_failed_ledger_row(self, butler_dir: Path) -> None:
-        result, mock_pool = await self._run_proxied(butler_dir, _client_raising(TimeoutError()))
-
-        assert result["status"] == "error"
-        assert result["retryable"] is True
-
-        row = _ledger_row_of(mock_pool, "failed")
-        assert row is not None
-        assert "timeout" in row[9]  # reason
-
-    async def test_proxied_unreachable_records_failed_ledger_row(self, butler_dir: Path) -> None:
-        result, mock_pool = await self._run_proxied(
-            butler_dir, _client_raising(ConnectionError("down"))
+    async def test_proxied_timeout_records_failed_ledger_row(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, booted = await self._run_proxied(
+            booted_daemon, tmp_path, monkeypatch, _client_raising(TimeoutError())
         )
 
         assert result["status"] == "error"
         assert result["retryable"] is True
 
-        row = _ledger_row_of(mock_pool, "failed")
+        row = await _ledger_row_of(booted, "failed")
         assert row is not None
-        assert "unreachable" in row[9]
+        assert "timeout" in row["reason"]
+
+    async def test_proxied_unreachable_records_failed_ledger_row(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, booted = await self._run_proxied(
+            booted_daemon, tmp_path, monkeypatch, _client_raising(ConnectionError("down"))
+        )
+
+        assert result["status"] == "error"
+        assert result["retryable"] is True
+
+        row = await _ledger_row_of(booted, "failed")
+        assert row is not None
+        assert "unreachable" in row["reason"]
 
     async def test_proxied_unexpected_exception_records_failed_ledger_row(
-        self, butler_dir: Path
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        result, mock_pool = await self._run_proxied(
-            butler_dir, _client_raising(ValueError("weird"))
+        result, booted = await self._run_proxied(
+            booted_daemon, tmp_path, monkeypatch, _client_raising(ValueError("weird"))
         )
 
         assert result["status"] == "error"
         assert result["retryable"] is False
 
-        row = _ledger_row_of(mock_pool, "failed")
+        row = await _ledger_row_of(booted, "failed")
         assert row is not None
-        assert row[9] == "unexpected_error:ValueError"
+        assert row["reason"] == "unexpected_error:ValueError"
 
     async def test_switchboard_self_delivery_failed_records_failed_ledger_row(
-        self, switchboard_butler_dir: Path
+        self, booted_daemon, tmp_path: Path
     ) -> None:
-        mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(switchboard_butler_dir, patches)
-        daemon.switchboard_client = None  # forces the switchboard self-delivery branch
+        booted = await _butler(booted_daemon, tmp_path, name="switchboard")
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        assert daemon.switchboard_client is None  # the switchboard self-delivery branch
 
         deliver_mock = AsyncMock(
             return_value={
@@ -962,19 +803,19 @@ class TestNotifyFailurePathsRecordFailedLedgerRow:
         assert result["status"] == "error"
         assert result["error"] == "no route"
 
-        row = _ledger_row_of(mock_pool, "failed")
+        row = await _ledger_row_of(booted, "failed")
         assert row is not None
-        assert row[1] == "switchboard"  # origin_butler
-        assert row[9] == "delivery_error:no route"
-        assert row[10] == "sb-fail-1"
+        assert row["origin_butler"] == "switchboard"
+        assert row["reason"] == "delivery_error:no route"
+        assert row["notification_ref"] == "sb-fail-1"
 
     async def test_switchboard_self_delivery_exception_records_failed_ledger_row(
-        self, switchboard_butler_dir: Path
+        self, booted_daemon, tmp_path: Path
     ) -> None:
-        mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(switchboard_butler_dir, patches)
-        daemon.switchboard_client = None
+        booted = await _butler(booted_daemon, tmp_path, name="switchboard")
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        assert daemon.switchboard_client is None
 
         deliver_mock = AsyncMock(side_effect=RuntimeError("kaboom"))
         with (
@@ -990,10 +831,10 @@ class TestNotifyFailurePathsRecordFailedLedgerRow:
         assert result["status"] == "error"
         assert "Direct delivery failed" in result["error"]
 
-        row = _ledger_row_of(mock_pool, "failed")
+        row = await _ledger_row_of(booted, "failed")
         assert row is not None
-        assert row[1] == "switchboard"
-        assert row[9] == "unexpected_error:RuntimeError"
+        assert row["origin_butler"] == "switchboard"
+        assert row["reason"] == "unexpected_error:RuntimeError"
 
 
 class TestRuntimeSessionCorrelation:
@@ -1005,11 +846,13 @@ class TestRuntimeSessionCorrelation:
     stamp is what makes that inference unnecessary.
     """
 
-    async def test_delivered_row_carries_the_runtime_session_id(self, butler_dir: Path) -> None:
-        mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        daemon.switchboard_client = _make_mock_client()
+    async def test_delivered_row_carries_the_runtime_session_id(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        booted = await _butler(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        _use_client(monkeypatch, daemon, _make_mock_client())
 
         token = set_current_runtime_session_id("sess-runtime-1")
         try:
@@ -1023,24 +866,26 @@ class TestRuntimeSessionCorrelation:
 
         assert result["status"] == "ok"
 
-        ledger_calls = _ledger_insert_calls(mock_pool)
-        assert ledger_calls, "no attention_ledger insert was made; the assertion below is vacuous"
-        metadata = json.loads(ledger_calls[0][11])
+        ledger = await _ledger_rows(booted)
+        assert ledger, "no attention_ledger row was written; the assertion below is vacuous"
+        metadata = json.loads(ledger[0]["metadata"])
         assert metadata[ATTENTION_LEDGER_SESSION_KEY] == "sess-runtime-1"
 
-    async def test_failed_row_carries_the_runtime_session_id(self, butler_dir: Path) -> None:
+    async def test_failed_row_carries_the_runtime_session_id(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A failure has to be as correlatable as a success.
 
         Otherwise a caller finds no row for its session and cannot tell "the
         notice failed" from "the session never sent one".
         """
-        mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        booted = await _butler(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
 
         failing_client = AsyncMock()
         failing_client.call_tool = AsyncMock(side_effect=ConnectionError("switchboard gone"))
-        daemon.switchboard_client = failing_client
+        _use_client(monkeypatch, daemon, failing_client)
 
         token = set_current_runtime_session_id("sess-runtime-2")
         try:
@@ -1054,17 +899,19 @@ class TestRuntimeSessionCorrelation:
 
         assert result["status"] == "error"
 
-        rows = [c for c in _ledger_insert_calls(mock_pool) if c[8] == "failed"]
+        rows = [row for row in await _ledger_rows(booted) if row["outcome"] == "failed"]
         assert rows, "no failed attention_ledger row was written; the assertion below is vacuous"
-        metadata = json.loads(rows[0][11])
+        metadata = json.loads(rows[0]["metadata"])
         assert metadata[ATTENTION_LEDGER_SESSION_KEY] == "sess-runtime-2"
 
-    async def test_no_runtime_session_leaves_the_row_unstamped(self, butler_dir: Path) -> None:
+    async def test_no_runtime_session_leaves_the_row_unstamped(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A notify() outside a spawned session has no session to name."""
-        mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
-        patches = _patch_infra(mock_pool)
-        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
-        daemon.switchboard_client = _make_mock_client()
+        booted = await _butler(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        _use_client(monkeypatch, daemon, _make_mock_client())
 
         token = set_current_runtime_session_id(None)
         try:
@@ -1078,8 +925,55 @@ class TestRuntimeSessionCorrelation:
 
         assert result["status"] == "ok"
 
-        ledger_calls = _ledger_insert_calls(mock_pool)
-        assert ledger_calls, "no attention_ledger insert was made; the assertion below is vacuous"
-        metadata_json = ledger_calls[0][11]
+        ledger = await _ledger_rows(booted)
+        assert ledger, "no attention_ledger row was written; the assertion below is vacuous"
+        metadata_json = ledger[0]["metadata"]
         metadata = json.loads(metadata_json) if metadata_json else {}
         assert ATTENTION_LEDGER_SESSION_KEY not in metadata
+
+
+@pytest.mark.parametrize("revoked", [False, True])
+async def test_verified_cause_is_rechecked_before_actual_notify_dispatch(
+    booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, revoked: bool
+) -> None:
+    """Consumer proof only: real current SQL/provenance is owned by PG cases."""
+    from butlers.core.attention_urgency import AttentionOrigin, _current_origin
+
+    booted = await _butler(booted_daemon, tmp_path, quiet_hours=True)
+    daemon = booted.daemon
+    client = _use_client(monkeypatch, daemon, _make_mock_client())
+    cause_ref = str(uuid.uuid4())
+    reads = 0
+
+    async def evaluate(_query: str, *_args: Any) -> Any:
+        nonlocal reads
+        reads += 1
+        return (
+            {"cause": "routine"}
+            if revoked and reads > 2
+            else {
+                "cause": "owner_clause",
+                "ref": cause_ref,
+            }
+        )
+
+    _intercept_fetchval(monkeypatch, daemon, "dashboard_attention.evaluate", evaluate)
+    notify_fn = await _notify_fn(booted)
+    token = _current_origin.set(AttentionOrigin(entity_id=uuid.uuid4()))
+    try:
+        with _configured_owner_default_recipient(daemon):
+            result = await notify_fn(channel="telegram", message="PRIVATE_CAUSE_BODY_CANARY")
+    finally:
+        _current_origin.reset(token)
+    if revoked:
+        assert result["error"]["code"] == "attention_cause_changed"
+        client.call_tool.assert_not_awaited()
+        event = await _ledger_row_of(booted, "failed")
+    else:
+        assert result["status"] == "ok"
+        client.call_tool.assert_awaited_once()
+        event = await _ledger_row_of(booted, "delivered")
+    assert reads >= 3
+    metadata = json.loads(event["metadata"])
+    assert metadata["attention_cause"] == "owner_clause" and metadata["cause_ref"] == cause_ref
+    assert "PRIVATE_CAUSE_BODY_CANARY" not in json.dumps(metadata)

@@ -40,7 +40,6 @@ from butlers.jobs._roster.relationship_jobs import (  # type: ignore[import]
     _EPISODIC_PREDICATES,
     run_episodic_predicate_curation,
 )
-from butlers.testing.schema_standins import PENDING_ACTIONS
 
 # ---------------------------------------------------------------------------
 # Skip if Docker unavailable
@@ -52,73 +51,11 @@ pytestmark = [
     pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available"),
 ]
 
-# ---------------------------------------------------------------------------
-# Schema creation helpers
-# ---------------------------------------------------------------------------
-
-_CREATE_ENTITIES_SQL = """
-CREATE TABLE IF NOT EXISTS public.entities (
-    id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    canonical_name TEXT        NOT NULL DEFAULT '',
-    name           TEXT        NOT NULL DEFAULT '',
-    entity_type    TEXT        NOT NULL DEFAULT 'person',
-    aliases        TEXT[]      NOT NULL DEFAULT '{}',
-    metadata       JSONB       DEFAULT '{}'::jsonb,
-    roles          TEXT[]      NOT NULL DEFAULT '{}',
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-_CREATE_PENDING_ACTIONS_SQL = PENDING_ACTIONS.ddl()
-
-_CREATE_FACTS_SQL = """
-CREATE TABLE IF NOT EXISTS facts (
-    content_authority TEXT, authority_entity_id UUID,
-    id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    subject          TEXT        NOT NULL DEFAULT '',
-    predicate        TEXT        NOT NULL,
-    content          TEXT        NOT NULL DEFAULT '',
-    validity         TEXT        NOT NULL DEFAULT 'active',
-    scope            TEXT        NOT NULL DEFAULT 'relationship',
-    entity_id        UUID,
-    object_entity_id UUID,
-    confidence       FLOAT       NOT NULL DEFAULT 1.0,
-    permanence       TEXT        NOT NULL DEFAULT 'standard',
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    metadata         JSONB       DEFAULT '{}'::jsonb
-)
-"""
-
-_CREATE_STATE_SQL = """
-CREATE TABLE IF NOT EXISTS state (
-    key        TEXT        NOT NULL PRIMARY KEY,
-    value      JSONB       NOT NULL DEFAULT '{}',
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    version    INTEGER     NOT NULL DEFAULT 1
-)
-"""
-
-
-async def _setup_schema(pool: asyncpg.Pool) -> None:
-    """Create the minimal schema needed by run_episodic_predicate_curation tests."""
-    await pool.execute(_CREATE_ENTITIES_SQL)
-    await pool.execute(_CREATE_PENDING_ACTIONS_SQL)
-    await pool.execute(_CREATE_FACTS_SQL)
-    await pool.execute(_CREATE_STATE_SQL)
-
-
-# ---------------------------------------------------------------------------
-# DB fixtures
-# ---------------------------------------------------------------------------
-
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Fresh isolated DB with episodic curation schema."""
-    async with provisioned_postgres_pool() as p:
-        await _setup_schema(p)
-        yield p
+async def rel_pool(db):
+    """Real core + memory + approvals chains (entities, facts, state, pending_actions)."""
+    return await db("core", "memory", "approvals")
 
 
 # ---------------------------------------------------------------------------
@@ -127,21 +64,21 @@ async def pool(provisioned_postgres_pool):
 
 
 async def _make_entity(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
     *,
     name: str = "Test Person",
     roles: list[str] | None = None,
 ) -> uuid.UUID:
-    return await pool.fetchval(
-        "INSERT INTO public.entities (canonical_name, name, entity_type, roles) "
-        "VALUES ($1, $1, 'person', $2) RETURNING id",
+    return await rel_pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type, roles) "
+        "VALUES ($1, 'person', $2) RETURNING id",
         name,
         roles or [],
     )
 
 
 async def _insert_fact(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
     *,
     predicate: str,
     content: str = "Some content",
@@ -152,11 +89,11 @@ async def _insert_fact(
     confidence: float = 1.0,
 ) -> uuid.UUID:
     """Insert a row into the facts table; return the fact id."""
-    return await pool.fetchval(
+    return await rel_pool.fetchval(
         """
         INSERT INTO facts
-            (predicate, content, permanence, validity, scope, entity_id, confidence)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+            (subject, predicate, content, permanence, validity, scope, entity_id, confidence)
+        VALUES ('', $1, $2, $3, $4, $5, $6, $7)
         RETURNING id
         """,
         predicate,
@@ -169,17 +106,19 @@ async def _insert_fact(
     )
 
 
-async def _count_pending_actions(pool: asyncpg.Pool, tool_name: str = "memory_reclassify") -> int:
-    return await pool.fetchval(
+async def _count_pending_actions(
+    rel_pool: asyncpg.Pool, tool_name: str = "memory_reclassify"
+) -> int:
+    return await rel_pool.fetchval(
         "SELECT COUNT(*) FROM pending_actions WHERE tool_name = $1 AND status = 'pending'",
         tool_name,
     )
 
 
 async def _get_pending_action(
-    pool: asyncpg.Pool, fact_id: uuid.UUID, tool_name: str = "memory_reclassify"
+    rel_pool: asyncpg.Pool, fact_id: uuid.UUID, tool_name: str = "memory_reclassify"
 ):
-    return await pool.fetchrow(
+    return await rel_pool.fetchrow(
         """
         SELECT id, tool_name, tool_args, agent_summary, why, evidence, expires_at
           FROM pending_actions
@@ -193,8 +132,8 @@ async def _get_pending_action(
     )
 
 
-async def _get_checkpoint(pool: asyncpg.Pool) -> str | None:
-    row = await pool.fetchrow(
+async def _get_checkpoint(rel_pool: asyncpg.Pool) -> str | None:
+    row = await rel_pool.fetchrow(
         "SELECT value FROM state WHERE key = $1",
         _EPISODIC_CURATION_STATE_KEY,
     )
@@ -273,98 +212,100 @@ def test_episodic_durable_permanences():
 # ---------------------------------------------------------------------------
 
 
-async def test_noop_empty_db(pool):
+async def test_noop_empty_db(rel_pool):
     """No facts → no pending_actions created, checkpoint is written."""
     with patch(
         "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
         new_callable=AsyncMock,
     ) as mock_propose:
-        stats = await run_episodic_predicate_curation(pool)
+        stats = await run_episodic_predicate_curation(rel_pool)
 
     assert stats["facts_scanned"] == 0
     assert stats["episodic_found"] == 0
     assert stats["flagged_new"] == 0
     assert stats["errors"] == 0
     mock_propose.assert_not_called()
-    assert await _count_pending_actions(pool) == 0
+    assert await _count_pending_actions(rel_pool) == 0
     # Checkpoint should still be written
-    ckpt = await _get_checkpoint(pool)
+    ckpt = await _get_checkpoint(rel_pool)
     assert ckpt is not None
 
 
-async def test_noop_non_episodic_predicates_at_stable(pool):
+async def test_noop_non_episodic_predicates_at_stable(rel_pool):
     """Non-episodic predicates at stable permanence are NOT flagged."""
-    entity_id = await _make_entity(pool, name="Alice")
+    entity_id = await _make_entity(rel_pool, name="Alice")
     # CRM predicates that legitimately live at stable
     for pred in ("contact_note", "gift", "life_event", "contact_task", "loan"):
-        await _insert_fact(pool, predicate=pred, permanence="stable", entity_id=entity_id)
+        await _insert_fact(rel_pool, predicate=pred, permanence="stable", entity_id=entity_id)
     # Temporal interaction records that live at stable by design
     for pred in ("interaction_call", "interaction_meeting", "interaction_email"):
-        await _insert_fact(pool, predicate=pred, permanence="stable", entity_id=entity_id)
+        await _insert_fact(rel_pool, predicate=pred, permanence="stable", entity_id=entity_id)
 
     with patch(
         "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
         new_callable=AsyncMock,
     ):
-        stats = await run_episodic_predicate_curation(pool)
+        stats = await run_episodic_predicate_curation(rel_pool)
 
     assert stats["facts_scanned"] == 0
     assert stats["episodic_found"] == 0
     assert stats["flagged_new"] == 0
-    assert await _count_pending_actions(pool) == 0
+    assert await _count_pending_actions(rel_pool) == 0
 
 
-async def test_noop_episodic_predicate_at_volatile(pool):
+async def test_noop_episodic_predicate_at_volatile(rel_pool):
     """Episodic predicate at correct permanence ('volatile') is NOT flagged."""
-    entity_id = await _make_entity(pool, name="Bob")
+    entity_id = await _make_entity(rel_pool, name="Bob")
     await _insert_fact(
-        pool, predicate="interaction_note", permanence="volatile", entity_id=entity_id
+        rel_pool, predicate="interaction_note", permanence="volatile", entity_id=entity_id
     )
     await _insert_fact(
-        pool, predicate="current_activity", permanence="ephemeral", entity_id=entity_id
+        rel_pool, predicate="current_activity", permanence="ephemeral", entity_id=entity_id
     )
 
     with patch(
         "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
         new_callable=AsyncMock,
     ):
-        stats = await run_episodic_predicate_curation(pool)
+        stats = await run_episodic_predicate_curation(rel_pool)
 
     assert stats["facts_scanned"] == 0
     assert stats["episodic_found"] == 0
-    assert await _count_pending_actions(pool) == 0
+    assert await _count_pending_actions(rel_pool) == 0
 
 
-async def test_noop_episodic_predicate_at_standard(pool):
+async def test_noop_episodic_predicate_at_standard(rel_pool):
     """Episodic predicate at 'standard' permanence is NOT flagged.
     Standard is the default and decays faster than stable — only stable
     and permanent are truly durable and trigger the curation alert."""
-    entity_id = await _make_entity(pool, name="Charlie")
-    await _insert_fact(pool, predicate="meeting_note", permanence="standard", entity_id=entity_id)
+    entity_id = await _make_entity(rel_pool, name="Charlie")
+    await _insert_fact(
+        rel_pool, predicate="meeting_note", permanence="standard", entity_id=entity_id
+    )
 
     with patch(
         "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
         new_callable=AsyncMock,
     ):
-        stats = await run_episodic_predicate_curation(pool)
+        stats = await run_episodic_predicate_curation(rel_pool)
 
     assert stats["facts_scanned"] == 0
     assert stats["episodic_found"] == 0
-    assert await _count_pending_actions(pool) == 0
+    assert await _count_pending_actions(rel_pool) == 0
 
 
-async def test_noop_episodic_predicate_retracted(pool):
+async def test_noop_episodic_predicate_retracted(rel_pool):
     """Retracted or superseded episodic facts are NOT flagged."""
-    entity_id = await _make_entity(pool, name="Dave")
+    entity_id = await _make_entity(rel_pool, name="Dave")
     await _insert_fact(
-        pool,
+        rel_pool,
         predicate="interaction_note",
         permanence="stable",
         validity="retracted",
         entity_id=entity_id,
     )
     await _insert_fact(
-        pool,
+        rel_pool,
         predicate="current_mood",
         permanence="stable",
         validity="superseded",
@@ -375,10 +316,10 @@ async def test_noop_episodic_predicate_retracted(pool):
         "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
         new_callable=AsyncMock,
     ):
-        stats = await run_episodic_predicate_curation(pool)
+        stats = await run_episodic_predicate_curation(rel_pool)
 
     assert stats["facts_scanned"] == 0
-    assert await _count_pending_actions(pool) == 0
+    assert await _count_pending_actions(rel_pool) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -386,11 +327,11 @@ async def test_noop_episodic_predicate_retracted(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_episodic_fact_at_stable_flagged(pool):
+async def test_episodic_fact_at_stable_flagged(rel_pool):
     """An episodic predicate stored at permanence='stable' is flagged."""
-    entity_id = await _make_entity(pool, name="Eve")
+    entity_id = await _make_entity(rel_pool, name="Eve")
     fact_id = await _insert_fact(
-        pool,
+        rel_pool,
         predicate="interaction_note",
         content="Had a great chat about their new project.",
         permanence="stable",
@@ -402,7 +343,7 @@ async def test_episodic_fact_at_stable_flagged(pool):
         new_callable=AsyncMock,
         return_value={"status": "accepted"},
     ) as mock_propose:
-        stats = await run_episodic_predicate_curation(pool)
+        stats = await run_episodic_predicate_curation(rel_pool)
 
     assert stats["facts_scanned"] == 1
     assert stats["episodic_found"] == 1
@@ -412,7 +353,7 @@ async def test_episodic_fact_at_stable_flagged(pool):
     mock_propose.assert_called_once()
 
     # Verify pending_action row
-    pa = await _get_pending_action(pool, fact_id)
+    pa = await _get_pending_action(rel_pool, fact_id)
     assert pa is not None
     assert pa["tool_name"] == "memory_reclassify"
     tool_args = pa["tool_args"]
@@ -426,11 +367,11 @@ async def test_episodic_fact_at_stable_flagged(pool):
     assert pa["expires_at"] is not None
 
 
-async def test_episodic_fact_at_permanent_flagged(pool):
+async def test_episodic_fact_at_permanent_flagged(rel_pool):
     """An episodic predicate stored at permanence='permanent' is flagged."""
-    entity_id = await _make_entity(pool, name="Frank")
+    entity_id = await _make_entity(rel_pool, name="Frank")
     fact_id = await _insert_fact(
-        pool,
+        rel_pool,
         predicate="current_activity",
         content="Working on a big presentation this week.",
         permanence="permanent",
@@ -442,10 +383,10 @@ async def test_episodic_fact_at_permanent_flagged(pool):
         new_callable=AsyncMock,
         return_value={"status": "accepted"},
     ):
-        stats = await run_episodic_predicate_curation(pool)
+        stats = await run_episodic_predicate_curation(rel_pool)
 
     assert stats["flagged_new"] == 1
-    pa = await _get_pending_action(pool, fact_id)
+    pa = await _get_pending_action(rel_pool, fact_id)
     assert pa is not None
     tool_args = pa["tool_args"]
     if isinstance(tool_args, str):
@@ -455,12 +396,12 @@ async def test_episodic_fact_at_permanent_flagged(pool):
     assert tool_args["permanence_target"] == "volatile"
 
 
-async def test_multiple_episodic_predicates_all_flagged(pool):
+async def test_multiple_episodic_predicates_all_flagged(rel_pool):
     """Multiple episodic predicates at durable permanence are each flagged."""
-    entity_id = await _make_entity(pool, name="Grace")
+    entity_id = await _make_entity(rel_pool, name="Grace")
     fact_ids = []
     for pred in ("interaction_note", "current_mood", "today_note", "meeting_note"):
-        fid = await _insert_fact(pool, predicate=pred, permanence="stable", entity_id=entity_id)
+        fid = await _insert_fact(rel_pool, predicate=pred, permanence="stable", entity_id=entity_id)
         fact_ids.append(fid)
 
     with patch(
@@ -468,34 +409,36 @@ async def test_multiple_episodic_predicates_all_flagged(pool):
         new_callable=AsyncMock,
         return_value={"status": "accepted"},
     ):
-        stats = await run_episodic_predicate_curation(pool)
+        stats = await run_episodic_predicate_curation(rel_pool)
 
     assert stats["facts_scanned"] == 4
     assert stats["flagged_new"] == 4
-    assert await _count_pending_actions(pool) == 4
+    assert await _count_pending_actions(rel_pool) == 4
 
 
-async def test_mixed_predicates_only_episodic_flagged(pool):
+async def test_mixed_predicates_only_episodic_flagged(rel_pool):
     """Mix of episodic and durable CRM facts — only episodic ones are flagged."""
-    entity_id = await _make_entity(pool, name="Henry")
+    entity_id = await _make_entity(rel_pool, name="Henry")
     episodic_id = await _insert_fact(
-        pool, predicate="current_activity", permanence="stable", entity_id=entity_id
+        rel_pool, predicate="current_activity", permanence="stable", entity_id=entity_id
     )
     # Durable CRM facts that should not be flagged
-    await _insert_fact(pool, predicate="contact_note", permanence="stable", entity_id=entity_id)
-    await _insert_fact(pool, predicate="gift", permanence="stable", entity_id=entity_id)
-    await _insert_fact(pool, predicate="interaction_call", permanence="stable", entity_id=entity_id)
+    await _insert_fact(rel_pool, predicate="contact_note", permanence="stable", entity_id=entity_id)
+    await _insert_fact(rel_pool, predicate="gift", permanence="stable", entity_id=entity_id)
+    await _insert_fact(
+        rel_pool, predicate="interaction_call", permanence="stable", entity_id=entity_id
+    )
 
     with patch(
         "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
         new_callable=AsyncMock,
         return_value={"status": "accepted"},
     ):
-        stats = await run_episodic_predicate_curation(pool)
+        stats = await run_episodic_predicate_curation(rel_pool)
 
     assert stats["facts_scanned"] == 1
     assert stats["flagged_new"] == 1
-    pa = await _get_pending_action(pool, episodic_id)
+    pa = await _get_pending_action(rel_pool, episodic_id)
     assert pa is not None
 
 
@@ -504,17 +447,19 @@ async def test_mixed_predicates_only_episodic_flagged(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_dedup_second_run_skips_already_pending(pool):
+async def test_dedup_second_run_skips_already_pending(rel_pool):
     """Second run with same fact already pending → skipped_already_pending."""
-    entity_id = await _make_entity(pool, name="Iris")
-    await _insert_fact(pool, predicate="interaction_note", permanence="stable", entity_id=entity_id)
+    entity_id = await _make_entity(rel_pool, name="Iris")
+    await _insert_fact(
+        rel_pool, predicate="interaction_note", permanence="stable", entity_id=entity_id
+    )
 
     with patch(
         "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
         new_callable=AsyncMock,
         return_value={"status": "accepted"},
     ):
-        stats1 = await run_episodic_predicate_curation(pool)
+        stats1 = await run_episodic_predicate_curation(rel_pool)
 
     assert stats1["flagged_new"] == 1
     assert stats1["skipped_already_pending"] == 0
@@ -525,13 +470,13 @@ async def test_dedup_second_run_skips_already_pending(pool):
         new_callable=AsyncMock,
         return_value={"status": "accepted"},
     ) as mock_propose2:
-        stats2 = await run_episodic_predicate_curation(pool)
+        stats2 = await run_episodic_predicate_curation(rel_pool)
 
     assert stats2["flagged_new"] == 0
     assert stats2["skipped_already_pending"] == 1
     mock_propose2.assert_not_called()
     # Still only one pending_action row
-    assert await _count_pending_actions(pool) == 1
+    assert await _count_pending_actions(rel_pool) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -539,12 +484,12 @@ async def test_dedup_second_run_skips_already_pending(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_owner_entity_fact_routes_through_pending_actions(pool):
+async def test_owner_entity_fact_routes_through_pending_actions(rel_pool):
     """Owner-entity episodic facts are NOT auto-mutated — they go through
     pending_actions just like any other fact."""
-    owner_entity_id = await _make_entity(pool, name="Owner", roles=["owner"])
+    owner_entity_id = await _make_entity(rel_pool, name="Owner", roles=["owner"])
     fact_id = await _insert_fact(
-        pool,
+        rel_pool,
         predicate="current_activity",
         content="Preparing for the board meeting.",
         permanence="stable",
@@ -556,11 +501,11 @@ async def test_owner_entity_fact_routes_through_pending_actions(pool):
         new_callable=AsyncMock,
         return_value={"status": "accepted"},
     ):
-        stats = await run_episodic_predicate_curation(pool)
+        stats = await run_episodic_predicate_curation(rel_pool)
 
     # Owner entity gets a pending_action — same path as any other entity
     assert stats["flagged_new"] == 1
-    pa = await _get_pending_action(pool, fact_id)
+    pa = await _get_pending_action(rel_pool, fact_id)
     assert pa is not None
     assert pa["tool_name"] == "memory_reclassify"
 
@@ -570,13 +515,13 @@ async def test_owner_entity_fact_routes_through_pending_actions(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_low_confidence_episodic_fact_is_flagged(pool):
+async def test_low_confidence_episodic_fact_is_flagged(rel_pool):
     """Low-confidence episodic facts are still flagged for reclassification.
     The confidence threshold is not a criterion for exclusion here — this job
     is about permanence, not confidence."""
-    entity_id = await _make_entity(pool, name="Jack")
+    entity_id = await _make_entity(rel_pool, name="Jack")
     fact_id = await _insert_fact(
-        pool,
+        rel_pool,
         predicate="meeting_note",
         content="Possibly discussed project timeline.",
         permanence="stable",
@@ -589,10 +534,10 @@ async def test_low_confidence_episodic_fact_is_flagged(pool):
         new_callable=AsyncMock,
         return_value={"status": "accepted"},
     ):
-        stats = await run_episodic_predicate_curation(pool)
+        stats = await run_episodic_predicate_curation(rel_pool)
 
     assert stats["flagged_new"] == 1
-    pa = await _get_pending_action(pool, fact_id)
+    pa = await _get_pending_action(rel_pool, fact_id)
     assert pa is not None
 
 
@@ -601,11 +546,11 @@ async def test_low_confidence_episodic_fact_is_flagged(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_pending_action_tool_args_structure(pool):
+async def test_pending_action_tool_args_structure(rel_pool):
     """Verify the pending_action row has the correct tool_args structure."""
-    entity_id = await _make_entity(pool, name="Karen")
+    entity_id = await _make_entity(rel_pool, name="Karen")
     fact_id = await _insert_fact(
-        pool,
+        rel_pool,
         predicate="event_note",
         content="Met at the conference on Tuesday.",
         permanence="stable",
@@ -617,9 +562,9 @@ async def test_pending_action_tool_args_structure(pool):
         new_callable=AsyncMock,
         return_value={"status": "accepted"},
     ):
-        await run_episodic_predicate_curation(pool)
+        await run_episodic_predicate_curation(rel_pool)
 
-    pa = await _get_pending_action(pool, fact_id)
+    pa = await _get_pending_action(rel_pool, fact_id)
     assert pa is not None
     assert pa["tool_name"] == "memory_reclassify"
 
@@ -645,11 +590,11 @@ async def test_pending_action_tool_args_structure(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_insight_candidate_proposed_with_correct_params(pool):
+async def test_insight_candidate_proposed_with_correct_params(rel_pool):
     """Verify propose_insight_candidate is called with expected parameters."""
-    entity_id = await _make_entity(pool, name="Leo")
+    entity_id = await _make_entity(rel_pool, name="Leo")
     fact_id = await _insert_fact(
-        pool,
+        rel_pool,
         predicate="coordination_note",
         content="Need to follow up next week.",
         permanence="stable",
@@ -661,7 +606,7 @@ async def test_insight_candidate_proposed_with_correct_params(pool):
         new_callable=AsyncMock,
         return_value={"status": "accepted"},
     ) as mock_propose:
-        await run_episodic_predicate_curation(pool)
+        await run_episodic_predicate_curation(rel_pool)
 
     mock_propose.assert_called_once()
     call_kwargs = mock_propose.call_args.kwargs if mock_propose.call_args.kwargs else {}
@@ -669,7 +614,8 @@ async def test_insight_candidate_proposed_with_correct_params(pool):
     call_args = mock_propose.call_args.args if mock_propose.call_args.args else ()
 
     # Either way, verify key params
-    all_args = {**dict(zip(["db_pool", "origin_butler"], call_args)), **call_kwargs}
+    # Only supplied positional args are mapped; remaining names come from kwargs.
+    all_args = {**dict(zip(["db_pool", "origin_butler"], call_args, strict=False)), **call_kwargs}
     assert all_args.get("origin_butler") == "relationship"
     assert all_args.get("category") == "episodic-predicate-in-durable"
     dedup_key = all_args.get("dedup_key", "")
@@ -681,43 +627,43 @@ async def test_insight_candidate_proposed_with_correct_params(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_checkpoint_written_after_run(pool):
+async def test_checkpoint_written_after_run(rel_pool):
     """Checkpoint is written to state after each run, regardless of findings."""
     with patch(
         "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
         new_callable=AsyncMock,
     ):
-        await run_episodic_predicate_curation(pool)
+        await run_episodic_predicate_curation(rel_pool)
 
-    ckpt = await _get_checkpoint(pool)
+    ckpt = await _get_checkpoint(rel_pool)
     assert ckpt is not None
     # Checkpoint should be a recent ISO timestamp
     parsed = datetime.fromisoformat(str(ckpt).strip('"'))
     assert parsed > datetime.now(UTC) - timedelta(minutes=5)
 
 
-async def test_checkpoint_updated_on_second_run(pool):
+async def test_checkpoint_updated_on_second_run(rel_pool):
     """Checkpoint is updated on each run."""
-    entity_id = await _make_entity(pool, name="Mia")
-    await _insert_fact(pool, predicate="today_note", permanence="stable", entity_id=entity_id)
+    entity_id = await _make_entity(rel_pool, name="Mia")
+    await _insert_fact(rel_pool, predicate="today_note", permanence="stable", entity_id=entity_id)
 
     with patch(
         "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
         new_callable=AsyncMock,
         return_value={"status": "accepted"},
     ):
-        await run_episodic_predicate_curation(pool)
-    ckpt1 = await _get_checkpoint(pool)
+        await run_episodic_predicate_curation(rel_pool)
+    ckpt1 = await _get_checkpoint(rel_pool)
 
     # Mark the fact as retracted so second run finds nothing
-    await pool.execute("UPDATE facts SET validity='retracted' WHERE predicate='today_note'")
+    await rel_pool.execute("UPDATE facts SET validity='retracted' WHERE predicate='today_note'")
 
     with patch(
         "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
         new_callable=AsyncMock,
     ):
-        await run_episodic_predicate_curation(pool)
-    ckpt2 = await _get_checkpoint(pool)
+        await run_episodic_predicate_curation(rel_pool)
+    ckpt2 = await _get_checkpoint(rel_pool)
 
     # Both checkpoints should be valid timestamps
     assert ckpt1 is not None

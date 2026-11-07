@@ -35,4 +35,4 @@ def test_setup_node_pins_one_exact_version():
     assert len(versions) == 1, f"setup-node versions differ: {versions}"
     [version] = versions
     assert re.fullmatch(r"\d+\.\d+\.\d+", version), f"node-version {version!r} is not exact"
-    assert len(versions[version]) == 5
+    assert len(versions[version]) == 4

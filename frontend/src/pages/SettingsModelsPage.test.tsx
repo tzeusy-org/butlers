@@ -180,11 +180,11 @@ function renderPage(): string {
   );
 }
 
-function mountPage() {
+function mountPage(url = "/") {
   const queryClient = new QueryClient();
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[url]}>
         <SettingsModelsPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -1783,5 +1783,29 @@ describe("SettingsModelsPage — delete confirmation dialog (bu-6jxcw)", () => {
       "model-1",
       expect.any(Object),
     );
+  });
+});
+
+describe("SettingsModelsPage deep link (Telegram runtime-attention door)", () => {
+  it("marks and scrolls to the row named by ?highlight=", () => {
+    const scroll = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scroll;
+    setHookState({
+      entries: [makeModel({ id: "model-1" }), makeModel({ id: "model-2", alias: "other" })],
+    });
+
+    const { container } = mountPage("/settings/models?highlight=model-2");
+
+    const marked = container.querySelectorAll('[data-highlighted="true"]');
+    expect(marked).toHaveLength(1);
+    expect(marked[0].getAttribute("aria-current")).toBe("true");
+    expect(marked[0].textContent).toContain("other");
+    expect(scroll).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks nothing without ?highlight=", () => {
+    setHookState({ entries: [makeModel()] });
+    const { container } = mountPage();
+    expect(container.querySelector("[data-highlighted]")).toBeNull();
   });
 });

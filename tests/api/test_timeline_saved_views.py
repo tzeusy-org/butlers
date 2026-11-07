@@ -20,7 +20,8 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.timeline_saved_views import _get_db_manager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -51,13 +52,6 @@ def _make_saved_view_row(
     }
 
 
-def _make_record(row: dict) -> MagicMock:
-    """Return a MagicMock that supports dict-style item access."""
-    m = MagicMock()
-    m.__getitem__.side_effect = row.__getitem__
-    return m
-
-
 # ---------------------------------------------------------------------------
 # App wiring helpers
 # ---------------------------------------------------------------------------
@@ -80,7 +74,7 @@ def _app_with_mock_db(
             shared_pool.fetchrow = AsyncMock(return_value=None)
             shared_pool.execute = AsyncMock(return_value="DELETE 0")
         mock_db.credential_shared_pool.return_value = shared_pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_db
 
 
@@ -107,7 +101,7 @@ async def test_list_saved_views_200_empty(app):
 async def test_list_saved_views_200_returns_entries(app):
     row = _make_saved_view_row(name="Errors Only", filter_spec={"statuses": ["error"]})
     pool = AsyncMock()
-    pool.fetch = AsyncMock(return_value=[_make_record(row)])
+    pool.fetch = AsyncMock(return_value=[Record(row)])
     _app_with_mock_db(app, shared_pool=pool)
 
     async with httpx.AsyncClient(
@@ -163,7 +157,7 @@ async def test_create_saved_view_201(app):
         filter_spec={"statuses": ["ingested"], "channels": ["telegram"]},
     )
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=_make_record(inserted_row))
+    pool.fetchrow = AsyncMock(return_value=Record(inserted_row))
     _app_with_mock_db(app, shared_pool=pool)
 
     async with httpx.AsyncClient(
@@ -189,7 +183,7 @@ async def test_create_saved_view_default_filter_spec(app):
     view_id = uuid4()
     inserted_row = _make_saved_view_row(view_id=view_id, name="My View", filter_spec={})
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=_make_record(inserted_row))
+    pool.fetchrow = AsyncMock(return_value=Record(inserted_row))
     _app_with_mock_db(app, shared_pool=pool)
 
     async with httpx.AsyncClient(
@@ -228,7 +222,7 @@ async def test_patch_saved_view_200_name_only(app):
         view_id=view_id, name="Renamed View", filter_spec={"statuses": ["error"]}
     )
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=_make_record(updated_row))
+    pool.fetchrow = AsyncMock(return_value=Record(updated_row))
     _app_with_mock_db(app, shared_pool=pool)
 
     async with httpx.AsyncClient(
@@ -249,7 +243,7 @@ async def test_patch_saved_view_200_filter_spec_only(app):
     new_spec = {"statuses": ["error", "replay_failed"], "search": "api"}
     updated_row = _make_saved_view_row(view_id=view_id, name="My View", filter_spec=new_spec)
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=_make_record(updated_row))
+    pool.fetchrow = AsyncMock(return_value=Record(updated_row))
     _app_with_mock_db(app, shared_pool=pool)
 
     async with httpx.AsyncClient(
@@ -346,7 +340,7 @@ async def test_filter_spec_complex_structure_preserved(app):
         view_id=view_id, name="Complex View", filter_spec=complex_spec
     )
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=_make_record(inserted_row))
+    pool.fetchrow = AsyncMock(return_value=Record(inserted_row))
     _app_with_mock_db(app, shared_pool=pool)
 
     async with httpx.AsyncClient(
@@ -377,7 +371,7 @@ async def test_create_passes_filter_spec_as_dict_to_db(app):
     spec = {"statuses": ["ingested"]}
     inserted_row = _make_saved_view_row(view_id=view_id, name="Test", filter_spec=spec)
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=_make_record(inserted_row))
+    pool.fetchrow = AsyncMock(return_value=Record(inserted_row))
     _app_with_mock_db(app, shared_pool=pool)
 
     async with httpx.AsyncClient(

@@ -77,6 +77,43 @@ remain active. The mapping uses the existing JSONB state store and requires no
 migration. Projected episodes contain only the canonical `payload.place`; raw
 network names remain in the private source evidence and state value.
 
+## How Chronicler cleans the trail
+
+The point and place-cluster projections share one plausibility policy
+(`src/butlers/chronicler/adapters/owntracks_trail.py`):
+
+- A fix that would need more than 1000 km/h from the endpoint's last accepted
+  fix (jumps under 1 km are never judged on speed) is an impossible jump. Its
+  `location` point event is still projected, but carries `payload.trail_outlier`.
+  It is excluded from movement, place and away episodes and from the dashboard
+  Map trail. Three consecutive fixes that agree with each other re-anchor the
+  trail, so one bad fix cannot hide a real one.
+- Tied effective device timestamps use the source UUID as the same stable
+  tie-break in the point, place and movement paths. This does not change the
+  existing timestamp-only cursor or recover fixes omitted at a batch split.
+- A first fix is provisional until a plausible companion confirms it. Three
+  mutually consistent candidates can reject an isolated bad seed even when
+  they arrive across batches. Only retained, explicitly identified projections
+  are revised; mature or unidentified legacy anchors are not retracted.
+  Candidate identities are bounded checkpoint state, not duplicate raw payloads.
+- A `movement_episode` needs at least two accepted fixes. Its point count
+  covers the whole episode across batches. A new movement that overlaps a
+  stored one for the same endpoint widens it rather than adding a second chunk.
+  Terminal coordinates come from the same fix as the widened end time;
+  a later legacy end without a valid coordinate pair stays unknown.
+  Migration `chronicler_027` applied the same rule once to episodes stored
+  before it: each overlapping group keeps its earliest episode, widened, and
+  tombstones the rest. Groups holding a user correction are left alone.
+- Place clusters are named, in order, from an `OWNTRACKS_PLACE_REFERENCES`
+  entry, from an OwnTracks region (`inregions`) seen on at least half the
+  cluster's fixes, or else stay explicitly `place_unknown`
+  (`payload.label_source`). No geocoding service is called.
+- With a `home` entry in `OWNTRACKS_PLACE_REFERENCES`, accepted fixes more
+  than 50 km from home form an evidence-layer `away_episode` ("Away from
+  home"), emitted once it spans at least 3 hours. It closes at the first fix
+  back within 50 km, and a gap of more than 36 hours splits it. It frames the
+  day and never counts as lived time.
+
 ## Privacy note
 
 OwnTracks location payloads contain precise coordinates and may include the
@@ -86,7 +123,29 @@ the original accepted location payload in
 including `SSID` and `inregions` when the phone sends them. Restrict database
 access accordingly and use SSID/region names that reveal no more than intended.
 
+The raw-fix retention horizon is declared in Chronicler at
+`GET`/`PUT /api/chronicler/location-retention`. It defaults to 30 days, and the
+owner may shorten it to as little as 1 day; the PUT is owner-only and versioned.
+Raw expiry is **not yet enforced**: the response reports `status: not_enforced`
+until deletion is gated on per-row projection coverage (bu-s11n0s.7). Until
+then, raw fixes are still retained indefinitely. `OWNTRACKS_RETENTION_DAYS`
+governs only the `public.ingestion_events` audit rows.
+
 ## Implementation Notes
+
+- The Chronicler `owntracks.points` adapter tracks ingestion progress by arrival order, not
+  device time: it pages `(recorded_at, id)` and keeps `{version, recorded_at, id}` under the
+  carryover key `"_ingest_cursor"` (`src/butlers/chronicler/adapters/owntracks.py`), so an
+  offline-queued fix uploaded after a newer one is still projected (bu-e6lrho). Rows that arrived
+  within the last 60 s wait for the next run, which keeps the cursor behind slow-committing
+  inserts. Episodes still use device `ts`, and the relational `watermark` still reports the
+  newest device `ts`. A legacy ts-only checkpoint cuts over at the earliest-arrived row with
+  `ts > watermark` (re-reading only rows that arrived since, idempotently), not a history rescan.
+  A late fix (device `ts` at or before its endpoint's open-episode `end_at`) always gets its point
+  event but never replaces that carryover, and it writes no episode when it lies within the movement
+  gap of an open or stored movement episode; only a late span more than the gap away from every
+  episode becomes its own episode.
+  Index: `connectors.idx_owntracks_points_recorded_at_id` (core_309).
 
 - The Chronicler `owntracks.ssid_presence` adapter keeps its cursor as `{watermark, uuid}` under the
   checkpoint-carryover key `"_source_cursor"`
@@ -94,3 +153,13 @@ access accordingly and use SSID/region names that reveal no more than intended.
   UUIDs, `watermark_id` is BIGINT) and pages by `(ts, id)`.
   A malformed or mismatched cursor triggers a bounded replay. One `run()` transaction under a
   source-keyed advisory lock holds every write and the checkpoint.
+
+- The point/place trail adapters serialize each source from checkpoint read
+  through outcome under a transaction-scoped advisory lock. Marker-only
+  revisions and bounded bootstrap/carryover state commit with the success
+  watermark; database errors and cancellation cannot acknowledge partial state.
+  Revisions keep existing point identities, privacy, retention and tombstones.
+  Missing evidence is not recreated. Pending retained candidates are reread by
+  exact UUID only. The accepted anchor UUID distinguishes tied-time replay from
+  a continuation at that mature anchor; unavailable seed evidence leaves it trusted
+  with an explicit warning rather than fabricating a historical correction.

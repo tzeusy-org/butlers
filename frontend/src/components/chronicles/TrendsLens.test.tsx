@@ -100,6 +100,36 @@ describe("TrendsLens — states", () => {
     expect(html).toContain("Trailing 30 days")
   })
 
+  it("reports pending repair instead of claiming the window is empty", () => {
+    const html = renderToStaticMarkup(
+      <TrendsLens
+        data={makeResponse({
+          lanes: [
+            {
+              lane: "work",
+              days: [
+                {
+                  local_date: "2026-04-25",
+                  status: "pending_repair",
+                  seconds: 0,
+                  baseline_seconds: null,
+                  delta_seconds: null,
+                  unavailable: false,
+                },
+              ],
+              streak_days: 0,
+            },
+          ],
+          anomalies: [],
+        })}
+        window="week"
+        onWindowChange={noop}
+      />,
+    )
+    expect(html).toContain("trends-pending-repair")
+    expect(html).not.toContain("trends-empty")
+  })
+
   it("renders an empty state when no lane has activity", () => {
     const html = renderToStaticMarkup(
       <TrendsLens

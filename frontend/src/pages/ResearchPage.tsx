@@ -8,7 +8,7 @@ export default function ResearchPage() {
       title="Research"
       description="Notes, articles, and references you've gathered. In sync with your Health butler."
     >
-      <ResearchTracker />
+      <ResearchTracker draftPersistence />
     </Page>
   );
 }

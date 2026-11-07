@@ -41,20 +41,19 @@ The `public.model_catalog` table is the global registry of available models. Eac
 the chosen catalog entry id and its `session_timeout_s`, and are edited via the dashboard's **Models
 tab** / `GET/PATCH /api/model-settings` (`src/butlers/api/routers/model_settings.py`).
 
-`{schema}.runtime_config` holds `core_groups`, `max_concurrent`, and `max_queued` (cold: require a
-daemon restart to take effect) alongside `catalog_read_sensitivity` and `tool_exposure_policy` (hot: a PATCH takes effect for the next
-planned session with no restart). All five fields are seeded from `[butler.runtime_seed]` in
-`butler.toml` on first boot and edited via `GET/PATCH /api/butlers/{name}/runtime-config`
-(`src/butlers/api/routers/runtime_config.py`), which reports each field's tier in the response's
-`field_tiers` map.
+`{schema}.runtime_config` stores `core_groups`, `max_concurrent`, and `max_queued`
+(cold: require a daemon restart), alongside call-time `catalog_read_sensitivity` and the stored
+`tool_exposure_policy`. These operational fields are seeded from `[butler.runtime_seed]` on first boot
+and edited via `GET/PATCH /api/butlers/{name}/runtime-config`, which reports field tiers. The API marks
+`tool_exposure_policy` hot and accepts `eager_filtered` (default) or `auto` without a restart.
 
-Cold fields are read through the 30s TTL cache in `RuntimeConfigAccessor`
-(`src/butlers/core/runtime_config.py`). `tool_exposure_policy` is closed to `eager_filtered` (default,
-conservative) or `auto`, and every per-attempt caller MUST resolve it through
-`RuntimeConfigAccessor.get_tool_exposure_policy()`, which always reads the DB directly instead of the
-TTL cache --- the dashboard API and the butler daemon can be separate processes, so a cached read
-cannot guarantee the first session planned after a committed PATCH sees the new policy. Do not look
-for model settings on the runtime-config surface, and do not add operational limits to the catalog.
+`RuntimeConfigAccessor.get_tool_exposure_policy()` reads the DB directly instead of the general
+30-second TTL cache, but there is currently no runtime source consumer of that accessor. A stored
+`auto` value, API tier, or dashboard copy does not establish per-attempt planning, host filtering, or
+native tool search. That unlanded work belongs to the RFC 0038 broker (`bu-r980fk`) and adapters
+(`bu-kiuh8v`). Whether to keep or delete this policy at that cutover remains explicitly undecided in
+the `bu-li92cu` collision lineage. Do not look for model settings on the runtime-config surface or add
+operational limits to the model catalog.
 
 ### Verification evidence is not routing evidence
 
@@ -220,6 +219,26 @@ The quota system prevents runaway costs by limiting token consumption per model 
 
 The ledger also carries a token digest for five tracked layers of the composed system prompt (`base_prompt_tokens`, `timezone_instruction_tokens`, `context_preamble_tokens`, `routing_instructions_tokens`, `memory_context_tokens`, from `spawner_context.compose_prompt_digest()`) and `resume_outcome` (whether a conversational turn resumed a provider-native session: `resumed`, `resume_failed_retried_cold`, `resume_failed_terminal`, or `NULL` when resume was never attempted). The separately governed blind-spot preamble is outside this ledger schema. Both fields are additive and nullable — a caller with no composed prompt of its own (the discretion dispatcher lane) omits them and the columns stay honestly `NULL` rather than a fabricated `0`.
 
+## The model-call kernel
+
+`butlers.core.model_call.call_model(pool, spec, attempt_fn, adapter_for=..., sink=...)` is the
+one attempt loop for single-call (session-less) model invocations. It owns tier resolution and
+spend routing rules, the monthly spend ceiling (before the first attempt and before every
+relaunch), per-entry quota skips, failover classification, same-tier failover, attempt rows and the
+failover metrics. Each invoked attempt (success, runtime failure or owner cancellation) commits one
+attempt row together with its token evidence (`unmeasurable` when the adapter reported no complete
+counts) and its served-identity record, under a fresh `attempt_key`. `adapter_for` returns an
+invocation-owned worker (`create_worker()`), and the kernel snapshots that worker's evidence before
+any persistence await, so concurrent calls never borrow each other's serving metadata. The caller supplies only `attempt_fn`, which invokes a resolved
+adapter for one candidate. `CallSpec.max_relaunches` bounds runtime-failure relaunches (RFC 0038
+D14 callers pass `1`); a failure whose exception carries captured `tool_calls` is never relaunched.
+Every call is also capped at `MAX_ATTEMPTS` (5) invocations and quota skips. Adapters come from
+`butlers.core.runtimes.registry.AdapterRegistry`, the only place that special-cases the Codex
+runtime's construction.
+
+The connector `DiscretionDispatcher` runs on the kernel. The Spawner's session loop and the
+Switchboard's structured classifier keep their own loops for now.
+
 ## Resolution Flow in the Spawner
 
 `resolve_model_with_effective_tier(pool, butler_name, complexity)` is the catalog entry point used by the spawner. It returns a 6-tuple:
@@ -293,6 +312,7 @@ The `classify_failover_eligibility()` function (in `failover_classifier.py`) dec
 
 **Suppressed (default-closed):**
 - Any captured MCP tool call — world may have been touched
+- A marker-matched `RuntimeError` whose adapter reported `is_pre_tool_call=False` — tools ran natively, and the message may embed the transcript (runtime config markers included: a genuine config error never carries `False`)
 - Guardrail terminations (`degenerate_tool_loop`, `tool_call_budget_exceeded`, `token_budget_exceeded`)
 - Unknown error classes — cannot confirm no side effect occurred
 - Business / validation errors (`ValueError`, `TypeError`)
@@ -329,7 +349,15 @@ and tracked per account in `public.provider_allowance_states` (`account_key`, `s
   then records `reset_source='default_window'`. A default-window guess never shortens a parsed reset.
 - **Spawner**: the rejected attempt is written with outcome `allowance_exhausted`, which the breaker
   ignores (it counts only `runtime_failure`/`success`), then the failover loop continues on the next
-  admissible candidate, which is necessarily on another account.
+  admissible candidate, which is necessarily on another account. A usage limit hit after tool work
+  is suppressed rather than failed over, but still records `allowance_exhausted` and exhausts the
+  account when the adapter's structured terminal error (`process_info.terminal_error_text`) or
+  stderr carries the marker; transcript-bearing text (exception message, `error_detail`) never does.
+  The same trust rule gates the eligible path: a pre-work marker seen only in transcript-bearing
+  text fails over as a transient `rate_limit_before_work` and leaves the account available.
+  A trusted usage limit on a provider-resume attempt is never treated as a stale handle: it skips
+  the same-candidate cold retry (`resume_failure`) and takes this account-exhausting failover path,
+  labelled `resume_outcome=resume_failed_terminal`.
 - **Scheduler**: a due prompt-mode cron task or deadline threshold whose every fit candidate is on an
   exhausted account is not dispatched. A cron task moves `next_run_at` to the earliest reset and
   records `last_result.outcome='skipped_allowance'`; a deadline threshold stays unfired. Job-mode
@@ -337,9 +365,17 @@ and tracked per account in `public.provider_allowance_states` (`account_key`, `s
 - **Not owner quota**: `token_limits` is an owner-set budget on one entry; allowance is the
   provider's own cap and never writes quota rows.
 
-Not yet built: the Models-tab/System-verdict countdown and
-`GET /api/settings/models/allowance`, an owner-turn reserve for background work, and a canary probe
-at the default horizon when the reset is unknown (see change `provider-allowance-windows`).
+Read surfaces: `GET /api/settings/models/allowance` (owner-only, read-only) feeds the Models-tab
+Allowance strip and the `/system` verdict countdown.
+
+Not yet built: a probe at the default horizon when the reset is unknown (`bu-q7vx1q.53`). The
+owner-turn reserve for background work moved to the spend-lane owner reserve (`bu-jv1moa.1`).
+
+After the RFC 0038 switch (change `provider-allowance-windows`): the goal runner applies the same
+exclusion to each invocation's model, its one D14 relaunch and escalation, and writes the
+`allowance_exhausted` attempt, without admitting a new goal or resetting the goal budget. The
+scheduler check runs before the daemon submits a prompt-mode obligation admission, so a deferred
+occurrence has no goal and no budget reservation.
 
 ### Attempt Provenance
 
@@ -349,7 +385,8 @@ Every attempt in the failover sequence writes a row to `public.model_dispatch_at
 |---|---|
 | `quota_skip` | Candidate skipped before invocation due to quota exhaustion |
 | `runtime_failure` | Adapter raised a failover-eligible error |
-| `resume_failure` | Provider-native resume failed safely; the same candidate is retried cold without affecting its breaker |
+| `resume_failure` | Provider-native resume failed safely (not a usage limit); the same candidate is retried cold without affecting its breaker |
+| `allowance_exhausted` | Provider plan usage limit; the account is exhausted until reset and the breaker ignores it |
 | `suppressed` | Failover decision was ineligible (side effects or unknown error) |
 | `exhausted` | All same-tier candidates tried, none succeeded |
 | `success` | This attempt produced the final successful result |
@@ -440,3 +477,10 @@ psql -h localhost -U butlers -d butlers -c \
 - [LLM CLI Spawner](spawner.md) --- where model resolution integrates into the spawn pipeline, including same-tier failover flow
 - [Session Lifecycle](session-lifecycle.md) --- how resolution metadata is recorded on sessions
 - [Scheduler Execution](scheduler-execution.md) --- how scheduled tasks specify complexity tiers
+
+
+## Served identity evidence
+
+Serving evidence belongs beside the immutable requested-route resolution receipt. A catalog join proves which route was invoked, not which internal provider model served. Breaker/routing scores remain route reliability. Separate normalized serving metadata and provider_breakdown rows disclose actual response, CLI-reported, request-fallback and unknown provenance; no serving mismatch reroutes. Exit-zero typed terminal errors cease being success, but no-side-effect/default-closed retry gates stay. Existing aggregate ledger quota/ceiling totals remain computed requested-route estimates; serving/CLI cost comparisons are separate, scope-qualified and never additive. Claude cumulative estimated costs cannot be charged as attempt costs without a validated same-lineage predecessor. Pinned Codex lacks model/version/cost; Gemini reported model keys have fallback-ambiguous provenance. Actual /opt/cli-versions.txt expected image versions are distinct from emitted versions. Missing values, missing prices and unavailable sources are unknown, not requested-as-served or zero.
+
+Normalized input_tokens means uncached input. Cache-read and cache-creation counts are independent and may exceed uncached input. Only a pinned provider-inclusive prompt counter is compared with its explicitly included cache component before checked subtraction. Unproved cache overlap stays unknown; report and price proven buckets once.

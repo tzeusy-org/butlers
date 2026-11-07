@@ -16,9 +16,8 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.ingestion_connectors import (
-    _get_db_manager as _connectors_get_db_manager,
-)
+from butlers.api.deps import get_db as _connectors_get_db_manager
+from butlers.api.deps import get_db_optional
 
 pytestmark = pytest.mark.unit
 
@@ -248,7 +247,7 @@ async def test_pipeline_stats_backlog_counts_healthy(app):
     pool = _make_shared_pool(rows=rows)
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    app.dependency_overrides[_pip_mod._get_db_manager_optional] = lambda: mock_db
+    app.dependency_overrides[get_db_optional] = lambda: mock_db
 
     with patch.dict("os.environ", {"PROMETHEUS_URL": ""}, clear=False):
         async with httpx.AsyncClient(
@@ -277,7 +276,7 @@ async def test_pipeline_stats_backlog_counts_query_error(app):
     pool.fetch = AsyncMock(side_effect=RuntimeError("connection lost"))
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    app.dependency_overrides[_pip_mod._get_db_manager_optional] = lambda: mock_db
+    app.dependency_overrides[get_db_optional] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -521,6 +520,70 @@ async def test_pipeline_stats_spark24h_empty_matrix_reads_as_zero(app):
     assert body["aggregates_available"] is True
     assert body["ingested"] == 0
     assert body["spark24h"] == [0] * 24
+
+
+@pytest.mark.parametrize(
+    ("window", "ingested", "rate", "empty_matrix", "available"),
+    [
+        pytest.param("1h", 1.0, 0.0, True, False, id="one-hour-event"),
+        pytest.param("24h", 1.0, 0.0, True, False, id="one-day-event"),
+        pytest.param("1h", 0.0, 0.00001, True, False, id="one-hour-positive-rate"),
+        pytest.param("24h", 0.0, 0.00001, True, False, id="one-day-positive-rate"),
+        pytest.param("7d", 0.0, 0.00001, True, False, id="one-week-positive-rate"),
+        pytest.param("7d", 7.0, 0.0, True, True, id="older-events-are-coherent"),
+        pytest.param("1h", 0.999, 0.0, True, True, id="one-hour-extrapolation-below-one"),
+        pytest.param("24h", 0.999, 0.0, True, True, id="one-day-extrapolation-below-one"),
+        pytest.param("24h", 1.0, 0.00001, False, True, id="sampled-zero-is-not-absence"),
+    ],
+)
+async def test_pipeline_spark_observation_coherence(
+    app, monkeypatch, caplog, window, ingested, rate, empty_matrix, available
+):
+    """Use raw Prometheus replies through HTTP, preserving the empty/sampled distinction."""
+    from butlers.api.routers import ingestion_pipeline
+
+    async def instant_query(_url, query):
+        if "ingestion_events_ingested_total" in query:
+            value = rate if "rate(" in query else ingested
+        elif "ingestion_events_filtered_total" in query:
+            value = 3
+        elif "ingestion_events_errored_total" in query:
+            value = 2
+        else:
+            return []
+        return [{"metric": {}, "value": [1700000000, str(value)]}]
+
+    matrix = [] if empty_matrix else [{"metric": {}, "values": [[1700000000, "0"]]}]
+    monkeypatch.setenv("PROMETHEUS_URL", "http://prometheus.invalid")
+    monkeypatch.setattr(ingestion_pipeline, "async_query", instant_query)
+    monkeypatch.setattr(ingestion_pipeline, "async_query_range", AsyncMock(return_value=matrix))
+    ingestion_pipeline._pipeline_cache.clear()
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/ingestion/pipeline", params={"window": window})
+    finally:
+        ingestion_pipeline._pipeline_cache.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["window"] == window
+    assert body["aggregates_available"] is available
+    assert body["spark24h"] == [0] * 24
+    assert body["ingested"] == (int(ingested) if available else 0)
+    assert body["rate1h"] == (round(rate, 4) if available else 0.0)
+    assert body["filtered"] == (3 if available else 0)
+    assert body["errored"] == (2 if available else 0)
+    assert body["filtered24h"] == (3 if available else 0)
+    assert body["routed_by_butler"] == {}
+    assert body["routed_pct"] == 0.0
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == ingestion_pipeline.__name__ and record.levelname == "WARNING"
+    ]
+    assert len(warnings) == (0 if available else 1)
 
 
 async def test_pipeline_stats_unparseable_scalar_degrades(app):
@@ -1172,7 +1235,7 @@ async def test_pipeline_bearer_scrub_projection(
     pool = _make_shared_pool(rows=[_backlog_row("failed", 7, is_written_off=False)])
     db = MagicMock(spec=DatabaseManager)
     db.credential_shared_pool.return_value = pool
-    app.dependency_overrides[pipeline._get_db_manager_optional] = lambda: db
+    app.dependency_overrides[get_db_optional] = lambda: db
     queries = []
 
     async def query(url, promql):
@@ -1194,7 +1257,11 @@ async def test_pipeline_bearer_scrub_projection(
             return_value=None if case == "unconfigured" else "http://metrics.invalid",
         ),
         patch.object(pipeline, "async_query", side_effect=query),
-        patch.object(pipeline, "async_query_range", return_value=[]),
+        patch.object(
+            pipeline,
+            "async_query_range",
+            return_value=[{"metric": {}, "values": [[0, "10"]]}] if funnel_available else [],
+        ),
     ):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1231,7 +1298,7 @@ async def test_pipeline_bearer_scrub_cache_windows_concurrent_retry(app):
     pool = _make_shared_pool(rows=[])
     db = MagicMock(spec=DatabaseManager)
     db.credential_shared_pool.return_value = pool
-    app.dependency_overrides[pipeline._get_db_manager_optional] = lambda: db
+    app.dependency_overrides[get_db_optional] = lambda: db
 
     async def query(url, promql):
         await asyncio.sleep(0)

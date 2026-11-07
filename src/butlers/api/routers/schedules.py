@@ -13,37 +13,40 @@ only the butler itself mutates its own database.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import secrets
+from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastmcp.client.client import CallToolResult
+from pydantic import AwareDatetime, BaseModel, ConfigDict, model_validator
 
 from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
+from butlers.api.deps import ButlerUnreachableError, Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import ApiResponse, ErrorDetail, ErrorResponse
 from butlers.api.models.schedule import (
+    DeadlineRecord,
     Schedule,
     ScheduleCreate,
     ScheduleToggleRequest,
     ScheduleToggleResult,
     ScheduleUpdate,
 )
+from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.routers.audit import append as audit_append
 from butlers.api.routers.audit import log_audit_entry
 from butlers.api.routers.model_settings import _validate_complexity_tier
 from butlers.core.model_routing import coerce_complexity_tier
+from butlers.core.temporal.deadlines_db import supersession_fields
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/butlers", tags=["butlers", "schedules"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +121,7 @@ def _row_to_schedule(row) -> Schedule:
         if str(raw_mode).strip().lower() in {_DISPATCH_MODE_PROMPT, _DISPATCH_MODE_JOB}
         else _DISPATCH_MODE_PROMPT
     )
+    job_args = _normalize_job_args(_row_value(row, "job_args"))
     return Schedule(
         id=row["id"],
         name=row["name"],
@@ -125,7 +129,8 @@ def _row_to_schedule(row) -> Schedule:
         dispatch_mode=dispatch_mode,
         prompt=_row_value(row, "prompt"),
         job_name=_row_value(row, "job_name"),
-        job_args=_normalize_job_args(_row_value(row, "job_args")),
+        job_args=job_args,
+        **supersession_fields(job_args),
         complexity=_coerce_complexity(_row_value(row, "complexity")),
         timezone=_row_value(row, "timezone"),
         start_at=_row_value(row, "start_at"),
@@ -147,6 +152,8 @@ async def _call_mcp_tool(
     butler_name: str,
     tool_name: str,
     arguments: dict,
+    *,
+    meta: dict | None = None,
 ) -> dict:
     """Call an MCP tool on a butler, returning the parsed result.
 
@@ -154,28 +161,54 @@ async def _call_mcp_tool(
     """
     try:
         client = await mgr.get_client(butler_name)
-        result = await client.call_tool(tool_name, arguments)
+        result = (
+            await client.call_tool(tool_name, arguments, meta=meta)
+            if meta is not None
+            else await client.call_tool(tool_name, arguments)
+        )
     except ButlerUnreachableError as exc:
+        if meta is not None:
+            raise HTTPException(
+                503, "Owner creation unavailable; retry the same operation"
+            ) from None
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{butler_name}' is unreachable: {exc}",
         ) from exc
     except Exception as exc:
+        if meta is not None:
+            raise HTTPException(
+                503, "Owner creation unavailable; retry the same operation"
+            ) from None
         raise HTTPException(
             status_code=503,
             detail=f"MCP call to '{butler_name}' failed: {exc}",
         ) from exc
 
-    # FastMCP call_tool returns a list of content blocks; extract text
-    if result and hasattr(result, "__iter__"):
-        for block in result:
+    unavailable = "Owner creation unavailable; retry the same operation"
+    if isinstance(result, CallToolResult):
+        if result.is_error:
+            raise HTTPException(503, unavailable if meta is not None else "MCP tool call failed")
+        blocks = result.content
+    else:
+        # Legacy clients return the content list directly.
+        blocks = result
+    if isinstance(blocks, list):
+        for block in blocks:
             text = getattr(block, "text", None)
             if text:
                 try:
-                    return json.loads(text)
+                    payload = json.loads(text)
                 except (json.JSONDecodeError, TypeError):
+                    if meta is not None:
+                        raise HTTPException(503, unavailable) from None
                     return {"result": text}
-    return {"result": str(result)}
+                if meta is not None and not isinstance(payload, dict):
+                    raise HTTPException(503, unavailable)
+                return payload
+    if meta is not None:
+        raise HTTPException(503, unavailable)
+    return {"result": str(blocks)}
 
 
 async def _log_legacy_schedule_mutation(
@@ -229,20 +262,64 @@ async def _log_legacy_schedule_mutation(
 )
 async def list_schedules(
     name: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[Schedule]]:
     """Return all scheduled tasks for a single butler."""
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     rows = await pool.fetch(f"SELECT {_SCHEDULE_COLUMNS} FROM scheduled_tasks ORDER BY created_at")
     schedules = [_row_to_schedule(row) for row in rows]
     return ApiResponse[list[Schedule]](data=schedules)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/butlers/{name}/deadlines/{deadline_id} — owner single-record reader
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{name}/deadlines/{deadline_id}",
+    response_model=ApiResponse[DeadlineRecord],
+    responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+async def get_deadline(
+    name: str,
+    deadline_id: UUID,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> ApiResponse[DeadlineRecord]:
+    """Return one deadline task's identity and status, owner only.
+
+    Project links resolve deadlines through this reader.  An unknown butler or
+    a task that is not a deadline reads as not found; the prompt and alert
+    configuration are never returned.
+    """
+    if name not in db.butler_names:
+        raise HTTPException(status_code=404, detail="Deadline not found")
+    try:
+        pool = db.pool(name)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Butler '{name}' database is not available",
+        ) from exc
+    row = await pool.fetchrow(
+        "SELECT id, name, display_title, target_date, deadline_status, enabled "
+        "FROM scheduled_tasks WHERE id = $1 AND task_type = 'deadline' "
+        "AND target_date IS NOT NULL",
+        deadline_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Deadline not found")
+    return ApiResponse[DeadlineRecord](data=DeadlineRecord(butler=name, **dict(row)))
 
 
 # ---------------------------------------------------------------------------
@@ -258,8 +335,10 @@ async def list_schedules(
 async def create_schedule(
     name: str,
     body: ScheduleCreate,
+    request: Request,
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Create a new scheduled task via MCP tool call to the butler."""
     arguments: dict = {"name": body.name, "cron": body.cron}
@@ -287,7 +366,61 @@ async def create_schedule(
         arguments["complexity"] = body.complexity
 
     try:
-        result = await _call_mcp_tool(mgr, name, "schedule_create", arguments)
+        if body.interrupt_owner:
+            from butlers.api.owner_auth.service import AuthError
+            from butlers.core.owner_creation import META_KEY, argument_digest
+
+            authority = getattr(request.state, "owner_authority", None)
+            service = getattr(request.app.state, "owner_auth_service", None)
+            operations = request.headers.getlist("x-butlers-creation-operation")
+            try:
+                if service is None or authority is None or len(operations) != 1:
+                    raise AuthError("FORBIDDEN")
+                operation = str(UUID(operations[0]))
+                if operations[0] != operation:
+                    raise AuthError("INVALID_REQUEST")
+                nonce = secrets.token_urlsafe(32)
+                digest = argument_digest(arguments)
+                issued = await service.attention_call(
+                    "issue",
+                    authority,
+                    request.headers.get("x-csrf-token", ""),
+                    operation=operation,
+                    target=name,
+                    request_digest=digest,
+                    nonce_digest=hashlib.sha256(nonce.encode()).hexdigest(),
+                )
+                if issued.get("state") == "completed":
+                    # An unknown commit is resolved by its durable receipt,
+                    # never by recreating a deleted task or stamping an edit.
+                    result = {"id": issued["id"], "status": "created"}
+                elif issued == {"state": "issued"}:
+                    result = await _call_mcp_tool(
+                        mgr,
+                        name,
+                        "schedule_create",
+                        arguments,
+                        meta={
+                            META_KEY: {
+                                "nonce": nonce,
+                                "session_digest": authority.session_digest,
+                                "operation": operation,
+                                "request_digest": digest,
+                                "target": name,
+                            }
+                        },
+                    )
+                else:
+                    raise AuthError("AUTH_UNAVAILABLE")
+                if result.get("status") != "created" or not isinstance(result.get("id"), str):
+                    raise AuthError("AUTH_UNAVAILABLE")
+                result = {"id": str(UUID(result["id"])), "status": "created"}
+            except AuthError as exc:
+                raise HTTPException(exc.status_code, exc.message) from None
+            except (ValueError, TypeError):
+                raise HTTPException(400, "Invalid owner creation request") from None
+        else:
+            result = await _call_mcp_tool(mgr, name, "schedule_create", arguments)
         await _log_legacy_schedule_mutation(db, name, "schedule.create", response=result)
         return ApiResponse[dict](data=result)
     except HTTPException:
@@ -309,7 +442,8 @@ async def update_schedule(
     schedule_id: UUID,
     body: ScheduleUpdate,
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Update a scheduled task via MCP tool call to the butler."""
     if body.complexity is not None:
@@ -347,7 +481,8 @@ async def delete_schedule(
     name: str,
     schedule_id: UUID,
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Delete a scheduled task via MCP tool call to the butler."""
     try:
@@ -374,7 +509,8 @@ async def trigger_schedule(
     name: str,
     schedule_id: UUID,
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Trigger a scheduled task immediately (one-off dispatch) via MCP."""
     try:
@@ -422,7 +558,8 @@ async def toggle_schedule(
     schedule_id: UUID,
     body: ScheduleToggleRequest,
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ScheduleToggleResult] | JSONResponse:
     """Persist and report a requested schedule state via the canonical MCP action."""
     summary: dict[str, object] = {
@@ -480,4 +617,67 @@ def _schedule_toggle_error_response(
                 details={"schedule_id": str(schedule_id)},
             )
         ).model_dump(mode="json"),
+    )
+
+
+# Clause authoring is HTTP-only. A model's tool schema has no authoring path.
+class BreakThroughClauseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    entity_id: UUID | None = None
+    sender_domain: str | None = None
+    channel: Literal["telegram", "email", "whatsapp", "dashboard"] | None = None
+    security_kind: (
+        Literal[
+            "new_sign_in",
+            "password_changed",
+            "mfa_changed",
+            "recovery_changed",
+            "deletion_scheduled",
+        ]
+        | None
+    ) = None
+    scope: Literal["always", "quiet_hours_only"]
+    expires_at: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def validate_clause(self):
+        import re
+
+        if not any((self.entity_id, self.sender_domain, self.channel, self.security_kind)):
+            raise ValueError("At least one fixed matcher is required")
+        if self.sender_domain is not None and not re.fullmatch(
+            r"(?=.{1,253}\Z)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+            r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*",
+            self.sender_domain,
+        ):
+            raise ValueError("A canonical sender domain is required")
+        return self
+
+
+async def _clause_authoring(request: Request, action: str, values: dict) -> dict:
+    from butlers.api.owner_auth.service import AuthError
+
+    authority = getattr(request.state, "owner_authority", None)
+    service = getattr(request.app.state, "owner_auth_service", None)
+    if authority is None or service is None:
+        raise HTTPException(403, "Owner cookie authentication required")
+    try:
+        return await service.attention_call(
+            action, authority, request.headers.get("x-csrf-token", ""), **values
+        )
+    except AuthError as exc:
+        raise HTTPException(exc.status_code, exc.message) from None
+
+
+@router.post("/attention/break-through-clauses", response_model=ApiResponse[dict], status_code=201)
+async def create_break_through_clause(body: BreakThroughClauseCreate, request: Request):
+    return ApiResponse(
+        data=await _clause_authoring(request, "clause_create", body.model_dump(mode="json"))
+    )
+
+
+@router.delete("/attention/break-through-clauses/{clause_id}", response_model=ApiResponse[dict])
+async def revoke_break_through_clause(clause_id: UUID, request: Request):
+    return ApiResponse(
+        data=await _clause_authoring(request, "clause_revoke", {"id": str(clause_id)})
     )

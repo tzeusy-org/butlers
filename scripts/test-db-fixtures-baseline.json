@@ -1,0 +1,254 @@
+{
+  "roster/chronicler/tests/_inline_ddl.py": {
+    "create_table": 3,
+    "fixtures": 0
+  },
+  "roster/chronicler/tests/test_storage_integration.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "roster/finance/tests/test_pattern_recognition.py": {
+    "create_table": 2,
+    "fixtures": 0
+  },
+  "roster/relationship/tests/evidence_schema.py": {
+    "create_table": 3,
+    "fixtures": 0
+  },
+  "roster/relationship/tests/test_contact_info.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "roster/relationship/tests/test_whatsapp_reconciliation.py": {
+    "create_table": 2,
+    "fixtures": 0
+  },
+  "tests/api/test_calendar_workspace_linked_people_integration.py": {
+    "create_table": 2,
+    "fixtures": 0
+  },
+  "tests/api/test_data_ops_permissions_export_order.py": {
+    "create_table": 3,
+    "fixtures": 0
+  },
+  "tests/api/test_model_allowance_real_pg.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/api/test_optional_schema_lifecycle_db.py": {
+    "create_table": 9,
+    "fixtures": 0
+  },
+  "tests/api/test_owner_auth_store.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/bootstrap_prerequisite_helpers.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/chronicler/test_episode_entities_migration.py": {
+    "create_table": 4,
+    "fixtures": 0
+  },
+  "tests/config/test_init_db_admin_function_guard_lists.py": {
+    "create_table": 12,
+    "fixtures": 0
+  },
+  "tests/config/test_init_db_bootstrap.py": {
+    "create_table": 8,
+    "fixtures": 0
+  },
+  "tests/config/test_init_db_dnd_generation_guard_boundary.py": {
+    "create_table": 3,
+    "fixtures": 0
+  },
+  "tests/config/test_init_db_restore_drill_role_boundary.py": {
+    "create_table": 2,
+    "fixtures": 0
+  },
+  "tests/config/test_init_db_runtime_attention_interface_version.py": {
+    "create_table": 3,
+    "fixtures": 0
+  },
+  "tests/config/test_migrations.py": {
+    "create_table": 3,
+    "fixtures": 0
+  },
+  "tests/config/test_restore_drill_executor_acl_integration.py": {
+    "create_table": 3,
+    "fixtures": 0
+  },
+  "tests/config/test_schema_acl_isolation.py": {
+    "create_table": 7,
+    "fixtures": 0
+  },
+  "tests/contracts/test_chronicler_schema_drift.py": {
+    "create_table": 11,
+    "fixtures": 0
+  },
+  "tests/core/test_core_scheduler.py": {
+    "create_table": 2,
+    "fixtures": 0
+  },
+  "tests/core/test_db.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/core/test_model_routing_quota.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/core/test_temporal_intelligence.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/integration/test_chronicler_mem_schema_isolation.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/integration/test_chronicler_memory_role_acl.py": {
+    "create_table": 2,
+    "fixtures": 0
+  },
+  "tests/integration/test_fleet_events_notify_bridge.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/integration/test_queue_claim_contract.py": {
+    "create_table": 3,
+    "fixtures": 0
+  },
+  "tests/jobs/test_health_baselines.py": {
+    "create_table": 2,
+    "fixtures": 0
+  },
+  "tests/migrations/test_butler_reachability_conditions_migration.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/migrations/test_chronicler_calendar_read_surface_migration.py": {
+    "create_table": 2,
+    "fixtures": 0
+  },
+  "tests/migrations/test_chronicler_health_facts_grant_migration.py": {
+    "create_table": 3,
+    "fixtures": 0
+  },
+  "tests/migrations/test_core_255_insight_premise_binding_migration.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/migrations/test_core_265_conversation_identity_split_migration.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/migrations/test_drop_backup_tables.py": {
+    "create_table": 4,
+    "fixtures": 0
+  },
+  "tests/migrations/test_drop_dead_feature_tables.py": {
+    "create_table": 3,
+    "fixtures": 0
+  },
+  "tests/migrations/test_drop_mailbox_table_migration.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/migrations/test_drop_quick_facts_migration.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/migrations/test_drop_source_links_contacts_fk_migration.py": {
+    "create_table": 3,
+    "fixtures": 0
+  },
+  "tests/migrations/test_effective_prompt_receipt_migration.py": {
+    "create_table": 5,
+    "fixtures": 0
+  },
+  "tests/migrations/test_entity_v3_lifecycle_migration.py": {
+    "create_table": 6,
+    "fixtures": 0
+  },
+  "tests/migrations/test_expected_signals_migration.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/migrations/test_finance_warning_boot_read_migration.py": {
+    "create_table": 3,
+    "fixtures": 0
+  },
+  "tests/migrations/test_predicate_registry_migration.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/migrations/test_public_projection_source.py": {
+    "create_table": 3,
+    "fixtures": 0
+  },
+  "tests/migrations/test_qa_repo_org_rename_migration.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/migrations/test_relationship_expected_signal_endpoints.py": {
+    "create_table": 6,
+    "fixtures": 0
+  },
+  "tests/migrations/test_relationship_facts_migration.py": {
+    "create_table": 4,
+    "fixtures": 0
+  },
+  "tests/migrations/test_runtime_probe_control_receipts_migration.py": {
+    "create_table": 2,
+    "fixtures": 0
+  },
+  "tests/migrations/test_shared_pool_test_state_migration.py": {
+    "create_table": 2,
+    "fixtures": 0
+  },
+  "tests/migrations/test_v_overlay_contributions_migration.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/migrations/test_v_prep_contributions_migration.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/migrations/test_whatsapp_session_rotation_migration.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/modules/memory/test_consolidation_runs.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/modules/test_approvals_migrations.py": {
+    "create_table": 2,
+    "fixtures": 0
+  },
+  "tests/modules/test_approvals_models.py": {
+    "create_table": 4,
+    "fixtures": 0
+  },
+  "tests/scripts/test_pg_dump_backup.py": {
+    "create_table": 8,
+    "fixtures": 0
+  },
+  "tests/scripts/test_pg_restore_definer_ownership.py": {
+    "create_table": 4,
+    "fixtures": 0
+  },
+  "tests/scripts/test_reconcile_whatsapp_entities.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/scripts/test_restore_drill_evidence_backup.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
+  "tests/testing/test_migrated_db_templates.py": {
+    "create_table": 1,
+    "fixtures": 0
+  }
+}

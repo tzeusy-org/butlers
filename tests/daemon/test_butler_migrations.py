@@ -14,18 +14,18 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
 
-from butlers.daemon import ButlerDaemon
 from butlers.migrations import (
     _build_alembic_config,
     _discover_butler_chains,
     _discover_module_chains,
     _resolve_chain_dir,
     get_all_chains,
+    get_module_migration_chains,
     has_butler_chain,
     run_migrations,
 )
@@ -159,6 +159,26 @@ def test_discover_chains(tmp_path) -> None:
     for expected in ["approvals", "contacts", "memory"]:
         assert expected in _discover_module_chains()
 
+    # Real Health declarations include HA's mandatory approval dependency;
+    # its public module name resolves to the owning roster/home directory.
+    from butlers.config import load_config
+    from butlers.modules.registry import default_registry
+
+    root = Path(__file__).resolve().parents[2]
+    registry = default_registry()
+    for name in ("home", "health"):
+        config = load_config(root / "roster" / name)
+        modules = registry.load_from_config(config.modules)
+        chains = get_module_migration_chains(modules, name)
+        assert {"contacts", "approvals"}.issubset(config.modules)
+        if name == "home":
+            assert "home_assistant" not in chains  # own butler chain already runs
+        else:
+            assert chains["home_assistant"] == "home"
+        assert {"contacts", "approvals", "memory"}.issubset(chains.values())
+    brokers = registry.load_from_config({"insight_broker": {}, "owner_conditions_broker": {}})
+    assert get_module_migration_chains(brokers, "health") == {}
+
 
 # ---------------------------------------------------------------------------
 # _resolve_chain_dir
@@ -232,9 +252,7 @@ class StubModule(Module):
         self.shutdown_called = False
         self.tools_registered = False
 
-    @property
-    def name(self) -> str:
-        return "stub_mod"
+    name = "stub_mod"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -248,7 +266,7 @@ class StubModule(Module):
         self.tools_registered = True
 
     def migration_revisions(self) -> str | None:
-        return "stub_mod"
+        raise AssertionError("Startup and CLI must discover directories, not call this hook")
 
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
@@ -291,98 +309,89 @@ def _make_butler_toml(
     return tmp_path
 
 
-def _patch_infra():
-    mock_pool = AsyncMock()
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "has_butler_chain": patch("butlers.lifecycle.has_butler_chain"),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=MagicMock()),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "mock_pool": mock_pool,
-    }
-
-
 async def _run_daemon_with_migration_tracking(
     butler_dir: Path,
-    registry: ModuleRegistry,
+    module: Module,
     *,
-    has_chain: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[list[str], list[str | None]]:
-    """Start daemon and return (chain_order, schema_list) from migration calls."""
-    patches = _patch_infra()
+    """Run the daemon's own migration phases and return (chain_order, schema_list).
+
+    The subject is which chains the startup phases pick, not the boot, so the two
+    phases run directly on a DB-free host. The butler chain is the real roster's
+    (``relationship`` has one, ``test-butler`` none). The migration runner is the
+    one observation point: executing the chains is real-PG work covered by the
+    migration suites, and the synthetic module chain has no revision (bu-rvgzmf.2).
+    """
+    import butlers.lifecycle as lifecycle
+    from butlers.db import Database
+    from butlers.testing.fake_pool import fake_pool
+    from butlers.testing.tool_host import host_tools
+
     call_log: list[str] = []
     schema_log: list[str | None] = []
+    module_root = butler_dir / "module_chains"
+    migrations = module_root / "stub_mod" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "001_stub.py").write_text(
+        "# Directory presence, not a hook, selects this chain.\n"
+    )
 
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"] as mock_mig,
-        patches["has_butler_chain"] as mock_has_chain,
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patches["FastMCP"],
-        patches["Spawner"],
-        patches["get_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["recover_route_inbox"],
-    ):
-        mock_has_chain.return_value = has_chain
+    async def track_migration(db_url, chain="core", schema=None):
+        call_log.append(f"migrate:{chain}")
+        schema_log.append(schema)
 
-        async def track_migration(db_url, chain="core", schema=None):
-            call_log.append(f"migrate:{chain}")
-            schema_log.append(schema)
+    monkeypatch.setattr(lifecycle, "run_migrations", track_migration)
 
-        mock_mig.side_effect = track_migration
+    with patch("butlers.migrations.MODULES_DIR", module_root):
+        host = await host_tools(butler_dir, pool=fake_pool())
+        daemon = host.daemon
+        daemon.db = Database(db_name="butlers", schema=daemon.config.db_schema)
+        daemon._modules = [module]
+        state = lifecycle.StartupState()
+        await lifecycle._startup_core_migrations(daemon, state)
+        await lifecycle._startup_module_migrations(daemon, state)
 
-        daemon = ButlerDaemon(butler_dir, registry=registry)
-        await daemon.start()
+        daemon_calls, daemon_schemas = list(call_log), list(schema_log)
+        call_log.clear()
+        schema_log.clear()
+        from butlers.cli import _migrate_all
+
+        registry = ModuleRegistry()
+        registry.register(type(module))
+        with (
+            patch("butlers.modules.registry.default_registry", return_value=registry),
+            patch("butlers.migrations.run_migrations", side_effect=track_migration),
+            patch(
+                "butlers.db.db_params_from_env",
+                return_value={
+                    "user": "test",
+                    "password": "test",
+                    "host": "localhost",
+                    "port": 5432,
+                },
+            ),
+        ):
+            await _migrate_all({daemon.config.name: butler_dir}, dry_run=False)
+        assert call_log == daemon_calls
+        assert schema_log == daemon_schemas
 
     return call_log, schema_log
 
 
-async def test_butler_migration_ordering_and_schema_forwarding(tmp_path: Path) -> None:
-    """Migration ordering: with chain runs core→butler→module; without chain skips butler.
+async def test_butler_migration_ordering_and_schema_forwarding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REQ-core-modules-010: directory selection agrees across CLI and daemon.
+
+    Migration ordering: with chain runs core→butler→module; without chain skips butler.
     All chains receive the butler's configured schema."""
-    registry_with_mod = ModuleRegistry()
-    registry_with_mod.register(StubModule)
 
     # With chain + module: core→butler→module
     (tmp_path / "a").mkdir()
     butler_dir = _make_butler_toml(tmp_path / "a", "relationship", modules={"stub_mod": {}})
     call_log, _ = await _run_daemon_with_migration_tracking(
-        butler_dir, registry_with_mod, has_chain=True
+        butler_dir, StubModule(), monkeypatch=monkeypatch
     )
     assert call_log == ["migrate:core", "migrate:relationship", "migrate:stub_mod"]
 
@@ -390,7 +399,7 @@ async def test_butler_migration_ordering_and_schema_forwarding(tmp_path: Path) -
     (tmp_path / "b").mkdir()
     butler_dir2 = _make_butler_toml(tmp_path / "b", "test-butler", modules={"stub_mod": {}})
     call_log2, _ = await _run_daemon_with_migration_tracking(
-        butler_dir2, registry_with_mod, has_chain=False
+        butler_dir2, StubModule(), monkeypatch=monkeypatch
     )
     assert call_log2 == ["migrate:core", "migrate:stub_mod"]
 
@@ -400,7 +409,7 @@ async def test_butler_migration_ordering_and_schema_forwarding(tmp_path: Path) -
         tmp_path / "c", "relationship", modules={"stub_mod": {}}, db_schema="relationship"
     )
     _, schema_log = await _run_daemon_with_migration_tracking(
-        butler_dir3, registry_with_mod, has_chain=True
+        butler_dir3, StubModule(), monkeypatch=monkeypatch
     )
     assert schema_log == ["relationship", "relationship", "relationship"]
 
@@ -503,8 +512,10 @@ def test_bootstrap_checker_is_read_only_fail_closed_and_distinguishes_connection
         "privilege": "INSERT",
     } in profile
 
+    # The checks themselves, in order; the planner-bound wrapper around them is
+    # pinned in tests/config/test_bootstrap_admission_planner_bounds.py.
     accepted = Connection()
-    prerequisite.check_bootstrap_connection(accepted)
+    prerequisite._admit(accepted)
     assert len(accepted.calls) == 12
     assert all(query.lstrip().startswith(("SELECT", "WITH")) for query, _ in accepted.calls)
     assert not any("bootstrap_configuration WHERE" in query for query, _ in accepted.calls)
@@ -514,11 +525,11 @@ def test_bootstrap_checker_is_read_only_fail_closed_and_distinguishes_connection
             with pytest.raises(
                 prerequisite.BootstrapPrerequisiteError, match="missing or untrusted|unreadable"
             ):
-                prerequisite.check_bootstrap_connection(Connection(index, value))
+                prerequisite._admit(Connection(index, value))
     with pytest.raises(prerequisite.BootstrapPrerequisiteError, match="unreadable"):
-        prerequisite.check_bootstrap_connection(Connection(installed=None))
+        prerequisite._admit(Connection(installed=None))
     finalized = Connection(installed=True)
-    prerequisite.check_bootstrap_connection(finalized)
+    prerequisite._admit(finalized)
     assert all("pg_catalog.pg_roles" in finalized.calls[index][0] for index in (7, 9, 11))
     assert all(":migration_role" in finalized.calls[index][0] for index in (7, 9, 11))
     assert prerequisite._qualified_predicate(

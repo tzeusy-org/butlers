@@ -11,9 +11,8 @@ Health butler's existing MCP tools (no new schema):
 
 from __future__ import annotations
 
-import sys
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -21,6 +20,7 @@ import pytest
 
 import butlers.tools.health as health_tools
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -30,7 +30,7 @@ _NOW = datetime.now(tz=UTC)
 # Trigger router discovery so the dependency function is importable from
 # sys.modules (FastAPI dependency_overrides keys on object identity).
 _APP_SEED = create_app(api_key="")
-_health_get_db_manager = sys.modules["health_api_router"]._get_db_manager
+_health_get_db_manager = get_db
 
 
 def _make_app():
@@ -220,6 +220,31 @@ async def test_adherence_aggregates_counts(monkeypatch):
     assert body["expected_doses"] == 30
     # adherence_rate = 2/30 * 100 ≈ 6.7
     assert body["adherence_rate"] == pytest.approx(6.7, abs=0.1)
+
+
+async def test_adherence_caps_expected_doses_at_first_seen_not_edited_fact(monkeypatch):
+    """An edit supersedes the fact (fresh created_at); the cap uses first_seen_at."""
+    med_id = str(uuid.uuid4())
+    now = datetime.now(UTC)
+
+    async def fake_history(pool, medication_id, *, start_date, end_date):
+        return {
+            "medication": {
+                "id": med_id,
+                "frequency": "daily",
+                "created_at": now - timedelta(days=2),
+                "first_seen_at": now - timedelta(days=90),
+            },
+            "doses": [],
+            "adherence_rate": None,
+        }
+
+    monkeypatch.setattr(health_tools, "medication_history", fake_history)
+
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get(f"/api/health/medications/{med_id}/adherence")
+    assert resp.json()["expected_doses"] == 30
 
 
 async def test_adherence_twice_daily_frequency(monkeypatch):

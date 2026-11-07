@@ -83,6 +83,39 @@ FULL_SUITE: list[str] = configured_testpaths()
 # ---------------------------------------------------------------------------
 
 _PREFIX_MAP: list[tuple[str, list[str]]] = [
+    # Shared static connector projections serve runtime, API and stored-history readers.
+    (
+        "src/butlers/connector_catalog.py",
+        [
+            "tests/contracts/test_connector_catalog.py",
+            "tests/modules/test_conversation_history.py",
+            "tests/modules/test_module_pipeline.py",
+            "tests/api/test_ingestion_connectors_available.py",
+            "tests/api/test_channel_defaults.py",
+            "tests/api/test_oauth_probe_scope_payload.py",
+            "tests/connectors/",
+            "roster/switchboard/tests/",
+        ],
+    ),
+    (
+        "src/butlers/home_assistant_client.py",
+        [
+            "tests/connectors/test_home_assistant_client.py",
+            "tests/connectors/test_home_assistant_statistics.py",
+            "tests/connectors/test_home_assistant_transport_contract.py",
+            "tests/connectors/test_home_assistant_rest_fallback.py",
+            "tests/connectors/test_home_assistant_measurement_history.py",
+            "tests/modules/test_module_home_assistant.py",
+            "tests/modules/test_home_maintenance_tools.py",
+            "tests/jobs/test_home_shared_helpers.py",
+            "tests/jobs/test_home_energy_digest.py",
+            "tests/jobs/test_health_ha_reader.py",
+            "tests/api/test_home_dashboard.py",
+            "tests/api/test_home_assistant_settings.py",
+            "tests/integration/test_home_assistant_bearer_custody.py",
+            "tests/integration/test_home_assistant_sensor_activity_integration.py",
+        ],
+    ),
     # --- Core: runtimes map to adapter tests ---
     ("src/butlers/core/runtimes/", ["tests/adapters/"]),
     # --- Core: telemetry & metrics ---
@@ -105,6 +138,30 @@ _PREFIX_MAP: list[tuple[str, list[str]]] = [
     ("src/butlers/core/", ["tests/core/", "tests/daemon/"]),
     # --- API layer ---
     ("src/butlers/api/", ["tests/api/"]),
+    # Shared Spotify transport also serves module tools and the lifestyle roster.
+    (
+        "src/butlers/spotify_client.py",
+        [
+            "tests/connectors/test_spotify_client.py",
+            "tests/connectors/test_spotify_connector.py",
+            "tests/modules/test_module_spotify.py",
+            "roster/lifestyle/tests/test_lifestyle_spotify_integration.py",
+        ],
+    ),
+    # Shared UDS transport serves connector, module and dashboard callers.
+    (
+        "src/butlers/whatsapp_bridge_client.py",
+        [
+            "tests/connectors/test_whatsapp_bridge_client.py",
+            "tests/connectors/test_whatsapp_backfill_protocol.py",
+            "tests/connectors/test_whatsapp_user_client.py",
+            "tests/connectors/test_bridge_manager.py",
+            "tests/connectors/test_bridge_manager_loop_stall.py",
+            "tests/modules/test_module_whatsapp.py",
+            "tests/api/test_whatsapp_bridge_config.py",
+            "tests/integration/test_whatsapp_pipeline.py",
+        ],
+    ),
     # --- Connectors ---
     (
         "src/butlers/connectors/gmail",
@@ -130,7 +187,7 @@ _PREFIX_MAP: list[tuple[str, list[str]]] = [
     ),
     # --- Modules: mailbox ---
     # --- Modules: calendar ---
-    ("src/butlers/modules/calendar.py", ["tests/modules/"]),
+    ("src/butlers/modules/calendar/", ["tests/modules/"]),
     # --- Modules: catch-all ---
     ("src/butlers/modules/", ["tests/modules/"]),
     # --- Tools ---

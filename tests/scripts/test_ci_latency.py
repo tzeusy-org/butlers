@@ -102,6 +102,31 @@ def test_metrics_use_own_job_ready_time_for_both_dags():
         assert sample["guards_execution_s"] == (160 if inventory else 38)
 
 
+def test_a_fan_in_run_ends_its_required_completion_at_alls_green():
+    """After the mirrors were deleted, alls-green alone is the required context (bu-29wkwj.3)."""
+    row = run()
+    value = jobs(row)
+    for job in value["jobs"]:
+        if job["name"] == "check":
+            job["name"] = "alls-green"
+    value["jobs"] = [job for job in value["jobs"] if job["name"] != "frontend"]
+    value["total_count"] = len(value["jobs"])
+
+    sample = latency.sample(row, value)
+
+    assert sample["required_elapsed_s"] == 230
+
+
+def test_a_run_without_a_required_context_is_refused():
+    row = run()
+    value = jobs(row)
+    value["jobs"] = [job for job in value["jobs"] if job["name"] != "frontend"]
+    value["total_count"] = len(value["jobs"])
+
+    with pytest.raises(ValueError, match="missing required jobs"):
+        latency.sample(row, value)
+
+
 def test_objective_counts_only_clean_successes_and_explicit_cohort():
     """REQ-ci-latency-001: measured service budget with honest population admission."""
     rows = [run(i) for i in range(1, 21)]
@@ -162,7 +187,7 @@ def test_malformed_or_incomplete_metadata_cannot_pass():
         lambda value: value["workflow_runs"][0].update(event="push"),
     ):
 
-        def malformed(endpoint):
+        def malformed(endpoint, *, mutate=mutate):
             result = fetch(endpoint)
             mutate(result)
             return result
@@ -194,7 +219,6 @@ def test_bounded_read_and_error_report_are_closed(tmp_path):
     assert "report.md" in job["steps"][1]["run"]
     assert job["steps"][2]["if"] == "always()"
     assert job["steps"][2]["with"]["name"] == "ci-latency"
-    assert "ci_latency" not in (root / ".github/workflows/ci-shard-weights.yml").read_text()
     assert (
         latency.observe(
             repository="owner/repo",
@@ -317,7 +341,7 @@ def test_gh_transport_refuses_partial_duplicate_or_failed_payloads(monkeypatch):
         SimpleNamespace(returncode=0, stdout=b" " * (4 * 1024 * 1024 + 1)),
     ):
 
-        def execute(command, **kwargs):
+        def execute(command, *, result=result, **kwargs):
             assert command == ["gh", "api", "repos/owner/repo/actions/runs"]
             assert kwargs == {"capture_output": True, "timeout": 20}
             return result

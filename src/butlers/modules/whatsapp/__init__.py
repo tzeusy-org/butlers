@@ -26,8 +26,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from butlers.connectors.bridge_manager import DEFAULT_SHARED_BRIDGE_SOCKET
 from butlers.modules.base import Module
+from butlers.whatsapp_bridge_client import DEFAULT_SHARED_BRIDGE_SOCKET, BridgeClient
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +99,8 @@ class WhatsAppConfig(BaseModel):
 
 
 class WhatsAppModule(Module):
+    # The connector bridge has no preview-control contract. Do not advertise
+    # support by adding an ignored preview_url key to its /send request.
     """WhatsApp module providing send/reply MCP tools over the connector's bridge.
 
     Uses a two-layer gating model: ``send_tools`` controls tool registration,
@@ -111,24 +113,16 @@ class WhatsAppModule(Module):
     requests to that connector-owned Unix socket. It owns no database tables.
     """
 
+    supports_inert_link_delivery = False
+
     def __init__(self) -> None:
         self._config: WhatsAppConfig = WhatsAppConfig()
 
-    @property
-    def name(self) -> str:
-        return "whatsapp"
+    name = "whatsapp"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return WhatsAppConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        """No custom tables — bridge manages sessions, connector manages messages."""
-        return None
 
     async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register WhatsApp MCP tools.
@@ -192,10 +186,6 @@ class WhatsAppModule(Module):
                 self._config.send_enabled,
             )
 
-    async def on_shutdown(self) -> None:
-        """No-op: this module owns no bridge subprocess to tear down."""
-        return None
-
     # ------------------------------------------------------------------
     # Implementation helpers
     # ------------------------------------------------------------------
@@ -208,10 +198,9 @@ class WhatsAppModule(Module):
         BridgeSubprocessManager, so liveness is read from the connector's bridge
         over the shared socket rather than from a locally-owned process.
         """
-        from butlers.connectors.bridge_manager import _http_get_unix  # noqa: PLC0415
 
         try:
-            status = await _http_get_unix(self._config.bridge_socket, "/status")
+            status = await BridgeClient(self._config.bridge_socket).request_json("GET", "/status")
         except Exception:
             return (
                 f"WhatsApp bridge is not reachable at {self._config.bridge_socket}. "
@@ -236,11 +225,11 @@ class WhatsAppModule(Module):
         if error is not None:
             return {"error": error}
 
-        from butlers.connectors.bridge_manager import _http_post_unix_with_body  # noqa: PLC0415
-
         payload = {"recipient": recipient, "text": text}
         try:
-            result = await _http_post_unix_with_body(self._config.bridge_socket, "/send", payload)
+            result = await BridgeClient(self._config.bridge_socket).request_json(
+                "POST", "/send", payload
+            )
         except Exception as exc:
             logger.error("WhatsApp send failed: %s", type(exc).__name__)
             return {"error": "WhatsApp send failed — check bridge health and configuration"}
@@ -252,11 +241,11 @@ class WhatsAppModule(Module):
         if error is not None:
             return {"error": error}
 
-        from butlers.connectors.bridge_manager import _http_post_unix_with_body  # noqa: PLC0415
-
         payload = {"recipient": chat_jid, "text": text, "reply_to": message_id}
         try:
-            result = await _http_post_unix_with_body(self._config.bridge_socket, "/send", payload)
+            result = await BridgeClient(self._config.bridge_socket).request_json(
+                "POST", "/send", payload
+            )
         except Exception as exc:
             logger.error("WhatsApp reply failed: %s", type(exc).__name__)
             return {"error": "WhatsApp reply failed — check bridge health and configuration"}

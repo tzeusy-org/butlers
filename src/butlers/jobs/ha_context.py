@@ -23,6 +23,7 @@ import asyncpg
 import httpx
 
 from butlers.credential_store import resolve_owner_entity_info
+from butlers.home_assistant_client import rest_client
 
 
 class HomeJobContext:
@@ -71,13 +72,11 @@ class HomeJobContext:
         return cls(ha_url=ha_url, ha_token=ha_token)
 
     async def __aenter__(self) -> HomeJobContext:
-        headers: dict[str, str] = {}
-        if self.ha_token:
-            headers["Authorization"] = f"Bearer {self.ha_token}"
-        self.client = httpx.AsyncClient(
-            headers=headers,
+        self.client = rest_client(
+            self.ha_url,
+            self.ha_token,
             timeout=httpx.Timeout(30.0, connect=10.0),
-            verify=False,  # noqa: S501 — local HA instances often use self-signed certs
+            verify_ssl=False,
         )
         await self.client.__aenter__()
         return self

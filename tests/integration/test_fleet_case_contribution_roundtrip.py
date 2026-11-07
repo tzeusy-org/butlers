@@ -29,7 +29,9 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlparse
 
 import asyncpg
 import pytest
@@ -50,11 +52,8 @@ from butlers.core.fleet_cases import (
     run_lapse_sweep,
     write_case_link,
 )
-from butlers.testing.migration import (
-    create_migrated_test_db,
-    migration_bootstrap_db_url,
-    migration_db_name,
-)
+from butlers.testing.migration import migration_bootstrap_db_url
+from tests.polling import poll_until
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -64,29 +63,24 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def _db_name() -> str:
-    return migration_db_name()
+@pytest.fixture
+def db_url(fresh_db) -> str:
+    return fresh_db("core")
 
 
-@pytest.fixture(scope="module")
-def db_url(postgres_container, _db_name: str) -> str:
-    return create_migrated_test_db(postgres_container, _db_name, chains=["core"])
-
-
-@pytest.fixture(scope="module")
-def bootstrap_url(postgres_container, _db_name: str, db_url: str) -> str:
+@pytest.fixture
+def bootstrap_url(postgres_container, db_url: str) -> str:
     # fleet_cases/fleet_case_links FORCE RLS with no DELETE policy at all --
     # even butler_switchboard_rw cannot delete a row (only close it, see the
-    # forced-RLS notes in docs/data_and_storage/schema-topology.md). Cleanup
-    # needs the real superuser, which bypasses RLS unconditionally.
-    return migration_bootstrap_db_url(postgres_container, _db_name).replace(
+    # forced-RLS notes in docs/data_and_storage/schema-topology.md). Seeding
+    # backdated rows needs the real superuser, which bypasses RLS unconditionally.
+    return migration_bootstrap_db_url(postgres_container, urlparse(db_url).path[1:]).replace(
         "postgresql+psycopg2://", "postgresql://", 1
     )
 
 
 @pytest.fixture
-async def pool(db_url: str) -> asyncpg.Pool:
+async def lock_pool(db_url: str) -> AsyncIterator[asyncpg.Pool]:
     # Three connections: the external blocker plus the two overlapping
     # evaluate_case_attention() calls -- a larger pool proves serialization
     # comes from the DB's advisory lock, not pool exhaustion.
@@ -647,7 +641,7 @@ async def test_backfill_from_owner_conditions_creates_closed_cases_and_reruns_id
 # Spec: REQ-fleet-case-file-009
 # Direct real-PG advisory-lock concurrency; no registered eligibility/provider proof.
 async def test_evaluate_case_attention_concurrent_same_dedup_key_records_exactly_one_bypass(
-    pool: asyncpg.Pool,
+    lock_pool: asyncpg.Pool,
 ) -> None:
     """bu-zss8w: evaluate_case_attention()'s check-then-insert against
     public.attention_ledger used to be a TOCTOU race -- two truly concurrent
@@ -676,13 +670,13 @@ async def test_evaluate_case_attention_concurrent_same_dedup_key_records_exactly
     call_a: asyncio.Task | None = None
     call_b: asyncio.Task | None = None
     try:
-        async with pool.acquire() as blocker:
+        async with lock_pool.acquire() as blocker:
             async with blocker.transaction():
                 await blocker.execute("SELECT pg_advisory_xact_lock(hashtext($1))", dedup_key)
 
                 call_a = asyncio.create_task(
                     evaluate_case_attention(
-                        pool,
+                        lock_pool,
                         case_id=case_id,
                         correlation_key=correlation_key,
                         posture="urgent",
@@ -693,7 +687,7 @@ async def test_evaluate_case_attention_concurrent_same_dedup_key_records_exactly
                 )
                 call_b = asyncio.create_task(
                     evaluate_case_attention(
-                        pool,
+                        lock_pool,
                         case_id=case_id,
                         correlation_key=correlation_key,
                         posture="urgent",
@@ -704,17 +698,19 @@ async def test_evaluate_case_attention_concurrent_same_dedup_key_records_exactly
                 )
 
                 async with asyncio.timeout(5):
-                    while (
-                        await pool.fetchval(
-                            """
-                            SELECT count(*)
-                            FROM pg_locks
-                            WHERE locktype = 'advisory' AND NOT granted
-                            """
-                        )
-                        < 2
-                    ):
-                        await asyncio.sleep(0.01)
+
+                    async def _condition_met() -> bool:
+                        return (
+                            await lock_pool.fetchval(
+                                """
+                                SELECT count(*)
+                                FROM pg_locks
+                                WHERE locktype = 'advisory' AND NOT granted
+                                """
+                            )
+                        ) >= 2
+
+                    await poll_until(_condition_met, interval_s=0.01)
 
                 assert not call_a.done()
                 assert not call_b.done()
@@ -727,7 +723,7 @@ async def test_evaluate_case_attention_concurrent_same_dedup_key_records_exactly
         assert len(already_bypassed) == 1
         assert bypassed[0]["attention_ledger_id"] is not None
 
-        ledger_count = await pool.fetchval(
+        ledger_count = await lock_pool.fetchval(
             "SELECT count(*) FROM public.attention_ledger WHERE dedup_key = $1", dedup_key
         )
         assert ledger_count == 1
@@ -735,13 +731,15 @@ async def test_evaluate_case_attention_concurrent_same_dedup_key_records_exactly
         for task in (call_a, call_b):
             if task is not None and not task.done():
                 task.cancel()
-        await pool.execute("DELETE FROM public.attention_ledger WHERE dedup_key = $1", dedup_key)
+        await lock_pool.execute(
+            "DELETE FROM public.attention_ledger WHERE dedup_key = $1", dedup_key
+        )
 
 
 # Spec: REQ-fleet-case-file-009
 # Direct real-PG advisory-lock concurrency; no registered eligibility/provider proof.
 async def test_evaluate_case_attention_different_dedup_keys_do_not_contend(
-    pool: asyncpg.Pool,
+    lock_pool: asyncpg.Pool,
 ) -> None:
     """Different correlation_keys hash to different advisory-lock keys, so a
     held lock for one case must never delay a concurrent call for another."""
@@ -751,7 +749,7 @@ async def test_evaluate_case_attention_different_dedup_keys_do_not_contend(
     other_dedup_key = case_attention_dedup_key(other_key)
 
     try:
-        async with pool.acquire() as blocker:
+        async with lock_pool.acquire() as blocker:
             async with blocker.transaction():
                 await blocker.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
@@ -760,7 +758,7 @@ async def test_evaluate_case_attention_different_dedup_keys_do_not_contend(
 
                 async with asyncio.timeout(2):
                     result = await evaluate_case_attention(
-                        pool,
+                        lock_pool,
                         case_id="44444444-4444-4444-4444-444444444444",
                         correlation_key=other_key,
                         posture="urgent",
@@ -771,6 +769,6 @@ async def test_evaluate_case_attention_different_dedup_keys_do_not_contend(
 
         assert result["bypass"] is True
     finally:
-        await pool.execute(
+        await lock_pool.execute(
             "DELETE FROM public.attention_ledger WHERE dedup_key = $1", other_dedup_key
         )

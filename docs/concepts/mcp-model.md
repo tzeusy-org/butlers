@@ -181,6 +181,10 @@ conflicts with the inventory is refused rather than silently replaced.
 | `output_trust` | `trusted`, `untrusted` or `stamped`; all current declarations conservatively use `untrusted`. |
 | `output_sensitivity` | Whole-payload `ordinary` or `sensitive`; current declarations use `sensitive`. |
 | `resource_params` | Visible argument names selecting resources, excluding message content and display attributes. |
+| `selection_bound` | One explicit true or false per `resource_params` name. True only where a spec requires the scope be exactly what the owner picked (REQ-capability-authorization-018): such a capability is neither listed nor callable without an owner-surface selection record. Every current param is false; a missing, extra or non-boolean entry fails the catalog check. Declarative only: no runtime path reads it yet. |
+| `alias_free_params` | The subset of `resource_params` whose identifiers have no alias. The handler names a resource only by that identifier: a strict UUID, with no `primary`/`me`/`self` shortcut, no name-or-email alternative, and no fuzzy or int parsing. These params, with `alias_resolvers` params, can narrow an owner tighten-only term (bu-dhloi1.10). Undeclared means none. Declared today: none. A merge makes every entity or contact id an alias of its survivor (bu-dhloi1.34), so entity ids moved to `alias_resolvers` and contact ids cannot narrow. Home Assistant entity slugs, unaudited relationship `entity_*` tools and switchboard `contact_id`/`target_contact_id` stay aliasable. |
+| `categories` | Required sorted subset of the six RFC 0038 S1 sensitivity categories (`credentials`, `finance`, `health`, `location`, `relationship_notes`, `routine`) the output may carry. If it is missing, unknown or unsorted, the tool is ungrantable. The declaration cites its domain spec in `CATEGORY_SPECS`. Free-text and cross-domain outputs name all six. The narrower declarations are listed in `docs/architecture/capability-broker.md` (bu-dhloi1.27). |
+| `alias_resolvers` | Aliasable `resource_params` (never `alias_free_params`) mapped to a closed resolver kind (`calendar` or `entity`). The broker resolves them to canonical ids before owner law, so they can narrow an owner term too; an unresolved value fails closed. `calendar` also pins the canonical id into the call. `entity` matches only: owner law compares on the live merge survivor, and the call keeps the id it named (bu-dhloi1.30, bu-dhloi1.34, [capability broker](../architecture/capability-broker.md#resolved-aliases-bu-dhloi130)). Declared today: `calendar_id` on every calendar tool, `calendar_ids` on `calendar_find_free_slots`, and the audited entity UUID params on the core, calendar, memory and chronicler tools. Undeclared means none. |
 | `safety_args` | Existing sensitive visible arguments an approval must pin. |
 | `approval_policy` | Immutable snapshot of the existing actual configured gate, including disabled/absent state. |
 | `idempotency` | `none` or `key_required`; Calendar responses require their native request/command identity. |
@@ -229,3 +233,133 @@ model schema; `_write` is a sensitivity marker, not a visible parameter. Schema
 and description digests retain their definitions, while the generation digest
 also reflects authorization and policy identity. Repeated unchanged builds
 must agree and later mutations must not alter an already frozen generation.
+
+## Final-registry fleet publication (RFC 0038 D4)
+
+`core_275` adds the private, default-OFF definition repository. It stores only
+immutable tool descriptors, definition/authorization digests and boot/generation
+identities, never handlers, call arguments, credentials or model authority. This
+is shared public control-plane metadata, not direct access to a butler's private
+schema. Canonical FastMCP registration and `tools/list` remain complete.
+
+The daemon's final-startup hook publishes its actual post-approval `ToolCatalog`.
+Publication is authenticated by the acquired connection's non-owner,
+non-superuser, non-BYPASSRLS `butler_<domain>_rw` role. There is no caller-verified
+flag or model-facing publication tool. Enabled RLS restricts non-owner writes to
+that role's domain even after bootstrap regrants public DML. The existing database
+owner stably owns all five catalog tables, independent of the migration executor.
+RLS is non-FORCE so ordinary full `pg_dump` and restore retain every catalog row;
+no backup exclusion, security-definer or BYPASSRLS role is added. Runtime roles
+may neither own nor inherit/assume that trusted maintenance owner, and may not
+be superusers or bypass RLS. Publication checks the actual five table identities,
+stable database ownership, enabled/non-FORCE flags and absence of runtime membership
+in that owner; a missing table or changed posture refuses before publication. Immutable triggers remain mandatory. History is append-only;
+current registrations advance monotonically and cannot resurrect a retired or
+expired lease. A changed finalization republishes the real replacement.
+
+The governed fleet is chronicler, concierge, education, finance, general, health,
+home, lifestyle, messenger, qa, relationship, switchboard and travel. Calendar
+is explicitly excluded because it is a module, not a standalone roster daemon.
+An absent/extra member, missing publication or failed module is not a healthy
+empty fleet. Membership/exclusion changes require a corresponding explicit
+migration and reader contract change. Runtime publishers cannot edit membership
+or activation. The singleton control starts disabled; this change does not
+provision or activate a runtime profile.
+
+Each publisher has a 90-second server-clock lease renewed every 30 seconds.
+Freshness is a bounded lease, not an instantaneous process-liveness claim. A
+failed renewal stops renewal; retirement failure leaves the reader to refuse
+when the existing lease expires. Shutdown retires only that boot/revision under
+one retained five-second cleanup bound. A stale process cannot renew or retire a
+replacement. A lost commit reply is unavailable until exact instance/revision
+readback; it is not permission for a blind second publication. Old immutable
+history remains historical after replacement, restart or retirement. An identical
+complete restart retains the content digest and changes the generation identity.
+
+`PublishedCatalogProvider` is the concrete default of `GoalAdmission`. Its
+same-connection read requires the existing Switchboard transaction and verified
+role. One SQL/MVCC snapshot reads activation, exact membership and all current
+registrations, then reconstructs every immutable descriptor and recomputes
+schema, description, authorization and fleet digests. No network or second pool
+runs under the admission goal locks. There is no local-catalog, stale-cache or
+empty-fleet fallback. The reduced admission projection uses exact
+`<domain>__<canonical-name>` IDs and never converts conditional recipient prose
+into executable default-owner authority.
+
+The M2 broker adapter consumes `snapshot()`/`require_registration()` from this
+same reader: retain full immutable D4 fields, the shared fleet content digest,
+registration UUIDs and fleet generation digest; revalidate current registration
+before listing/calling. The reader does not perform grant/resource/recipient,
+approval, exposure, selection or per-call enforcement. Actual broker integration
+remains its own required delivery, without making M1 depend on M2.
+
+Migration rollback refuses to discard any publication history. With empty
+history, shared tables remain until the last recorded schema installation leaves
+275; installation tracking follows actual upgrades, not numeric revision order.
+Role/bootstrap/race/rollback/committed-readback and real admission integration
+require the named PostgreSQL contracts. Software doubles and collection do not
+prove those outcomes or activation readiness.
+
+A current catalog publisher replaces only its own expected current revision.
+A new boot may acquire the domain pointer once; an instance already present in
+immutable publication history cannot restart that acquisition after being
+superseded. An unconfirmed publication blocks another publish until the exact
+attempted revision is read back as current. Retirement and expiry do not permit
+an established instance to resurrect itself; restart uses a new boot identity.
+
+Catalog retirement keeps its original five-second cleanup deadline. The daemon
+retains its shutdown task across repeated cancellation, attempts the existing
+MCP/socket/scheduler/module/database cleanup after retirement failure, and then
+propagates the retirement error or caller cancellation. A failed retirement
+retains its owner slot; continuing resource cleanup does not claim retirement.
+
+
+## Pre-switch notification urgency
+
+The current registered `notify` schema has no `priority` argument. Legacy
+Python callers may still supply its old label for compatibility, but it cannot
+confer an exception. The adopted [D7 notification contract](../../openspec/changes/generalist-lead-focused-delegation/specs/core-notify/spec.md)
+requires owner-started and third-party model work to remain routine under
+quiet/sleep holds. Explicitly naming the owner's address or entity does not
+escape that gate. Recipient resolution, non-owner approval, dossiers and
+reply/react targeting retain their separate checks.
+
+The shared current evaluator admits only a verified current owner clause or
+an unchanged definition stamped by genuine owner opt-in at creation. The Home
+safety sentinel has a separate code-only deterministic producer after its
+source/watch/debounce checks; there is no tool argument selecting that producer.
+Accepted source identity and claimed scheduler occurrences travel in private
+invocation context, not message text, caller metadata or a diagnostic session
+locator. Broker candidate scores remain ranking inputs. `urgent_only`, a daily
+fallback deadline, unavailable storage and retries cannot manufacture a cause.
+Each selected candidate is checked again immediately before dispatch; mixed
+routine work cannot ride an authorized candidate's exception. This read cannot
+recall an already started external effect or prove future broker activation.
+
+Cause receipts contain a fixed classification plus an opaque reference; they
+never copy message content, bearer material or a sender address. A missing,
+expired, revoked, edited or unreadable cause remains routine. This is the
+pre-switch boundary; RFC0038 first-switch delivery remains separate work.
+
+## Informational confirm admission
+
+`notify(intent="confirm")` accepts 2-4 unique `{value,label}` options, an expiry
+of 30-86400 seconds (default 600), and an optional `on_timeout_value` matching an
+offered value. The answer is information and grants no approval authority.
+The Telegram path returns `confirm_runtime_unavailable` unless trusted host
+composition has explicitly installed its authenticated producer. A disabled
+path creates neither a prompt nor an approval presentation.
+
+An installed path retains notify permission, recipient posture, identifier and
+non-owner approval checks, including the complete options in any parked call.
+It submits only normalized content and diagnostic runtime-session correlation
+to the producer. The owning source must reload approved effect and recipient
+authority; caller content, request context and a session locator cannot supply
+goal or sink authority. Messenger applies attention policy when delivering the
+stored prompt. Prompt acceptance returns `status="ok"` and `confirm_id`; it does
+not claim an answer or domain application. An unknown acceptance response is
+`confirm_acceptance_unconfirmed` and must reconcile the same source-owned key.
+
+Email confirms render the question and numbered option labels as an ordinary
+send through the existing recipient, approval and attention checks. They have
+no callback capture, pending-confirm row or resolvable `confirm_id`.
