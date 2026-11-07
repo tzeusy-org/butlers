@@ -998,7 +998,13 @@ def test_key_absent_control_workload_and_session_network_contract():
         for name, service in services.items()
         if "control-session" in service.get("networks", [])
     }
-    assert members == {"butlers-control", "butlers-control-hotreload", "control-session-health"}
+    assert members == {
+        "butlers-control",
+        "butlers-control-hotreload",
+        "control-session-health",
+        "session-host",
+    }
+    assert services["session-host"]["profiles"] == ["session-host"]
     assert services["control-session-health"]["profiles"] == ["control-health"]
     assert (
         services["dashboard-api"]["environment"]["SWITCHBOARD_MCP_URL"]
