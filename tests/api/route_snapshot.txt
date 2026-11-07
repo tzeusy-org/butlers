@@ -21,7 +21,7 @@ OP DELETE /api/home/safety-watch/{entity_id}/{role} 9e7d26315276
 OP DELETE /api/ingestion/channel-defaults/{channel} c5e310558535
 OP DELETE /api/ingestion/priority-contacts/{contact_id} 19f368843287
 OP DELETE /api/issues/dismiss/{issue_key} 8ad811b12284
-OP DELETE /api/memory/entities/{entity_id} bbcfba3eab11
+OP DELETE /api/memory/entities/{entity_id} 261aafa9b8f6
 OP DELETE /api/oauth/google/accounts/{account_id} eb81d6e1fb24
 OP DELETE /api/oauth/google/credentials a75110f3c863
 OP DELETE /api/projections/{projection_id} c36ca2ec3ef8
