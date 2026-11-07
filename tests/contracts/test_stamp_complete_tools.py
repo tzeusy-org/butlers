@@ -23,8 +23,11 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
+from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.core.goal_lineage import VerifiedLineage, lineage_scope
 from butlers.core.stamp_account import (
     StampAccount,
@@ -58,6 +61,7 @@ from butlers.tools.relationship.loans import loan_settle
 from butlers.tools.relationship.notes import note_list, note_search
 from butlers.tools.relationship.relationship_lookup import relationship_lookup
 from butlers.tools.relationship.tasks import task_complete
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 
 def _db(test):
@@ -924,6 +928,7 @@ async def test_a_legacy_or_system_successor_reads_unclean_through_each_stamped_r
 
 
 _REFUSES_STALE = [p for p in _COPIES if p.id not in ("research_update", "loan_settle")]
+_COPY_BY_ID = {p.id: p.values for p in _COPIES}
 _SUBJECT_KEYED = [
     p for p in _COPIES if p.id in ("condition_update", "medication_update", "task_complete")
 ]
@@ -1030,6 +1035,38 @@ async def test_a_live_legacy_id_cannot_overwrite_its_successor(
     retried = await copy(stores, successor["id"])  # The named row is the one to edit.
     assert (await _stored(stores, retried["id"]))["validity"] == "active"
     assert (await _stored(stores, successor["id"]))["validity"] == "superseded"
+
+
+_HEALTH_ROUTES = [
+    pytest.param("medications", {"dosage": "20mg"}, *_COPY_BY_ID["medication_update"], id="meds"),
+    pytest.param("conditions", {"status": "managed"}, *_COPY_BY_ID["condition_update"], id="cond"),
+]
+
+
+def _health_client(pool) -> httpx.AsyncClient:
+    db = MagicMock(spec=DatabaseManager)
+    db.pool.return_value = pool
+    app = create_app(api_key="")
+    app.dependency_overrides[get_db] = lambda: db
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+
+
+@pytest.mark.parametrize(("collection", "body", "copy", "module", "seed"), _HEALTH_ROUTES)
+@_db
+async def test_the_health_routes_answer_a_real_refusal_with_409_and_a_stale_id_with_404(
+    stores, monkeypatch, collection, body, copy, module, seed
+):
+    """The routes and the tools composed, on real rows: no tool is patched."""
+    monkeypatch.setattr(module, "_get_embedding_engine", _engine)
+    legacy, successor = await _legacy_with_successor(stores, copy, seed, {"entity_id": _ENTITY})
+    retried = await copy(stores, successor["id"])
+    async with _health_client(stores) as client:
+        refused = await client.put(f"/api/health/{collection}/{legacy['id']}", json=body)
+        stale = await client.put(f"/api/health/{collection}/{successor['id']}", json=body)
+        current = await client.put(f"/api/health/{collection}/{retried['id']}", json=body)
+    assert refused.status_code == 409, refused.text
+    assert stale.status_code == 404, stale.text
+    assert current.status_code == 200, current.text
 
 
 @pytest.mark.parametrize("legacy", _LEGACY_KEYS)
