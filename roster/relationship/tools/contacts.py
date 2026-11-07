@@ -772,26 +772,51 @@ async def contact_archive(pool: asyncpg.Pool, contact_id: uuid.UUID) -> dict[str
     return _parse_contact(refreshed if refreshed is not None else row)
 
 
-# Tables that reference contacts: re-pointed source -> target. Optional per
-# schema variant; a missing table or column is skipped inside a savepoint so it
-# never aborts the merge transaction.
+# Tables that reference contacts: re-pointed source -> target. A missing table or
+# column is skipped inside a savepoint so it never aborts the merge transaction, so
+# a wrong name fails silently here; test_contact_merge_atomicity.py checks this list
+# against the schema at head.
 _CONTACT_CHILD_TABLES = (
-    ("notes", "contact_id"),
-    ("interactions", "contact_id"),
-    ("dates", "contact_id"),
+    ("important_dates", "contact_id"),
     ("relationships", "contact_a"),
     ("relationships", "contact_b"),
-    ("gifts", "contact_id"),
-    ("loans", "contact_id"),
     ("group_members", "contact_id"),
     ("contact_labels", "contact_id"),
-    ("contact_info", "contact_id"),
     ("addresses", "contact_id"),
-    ("facts", "contact_id"),
     ("tasks", "contact_id"),
     ("life_events", "contact_id"),
-    ("stay_in_touch", "contact_id"),
 )
+
+# Child tables unique on (key, contact_id): a source row the target already has is
+# dropped first, or re-pointing it would refuse the whole merge.
+_CONTACT_CHILD_UNIQUE_KEYS = {"group_members": "group_id", "contact_labels": "label_id"}
+
+# A date both contacts hold, by ``date_add``'s duplicate key: readers list every row, so
+# it must merge to one. The target first takes a year only the source knows. A source
+# row then goes only if its year adds nothing, so two known years stay as a real conflict.
+_FILL_SHARED_DATE_YEAR_SQL = """
+    UPDATE important_dates t
+    SET year = s.year
+    FROM (
+        SELECT label, month, day, min(year) AS year
+        FROM important_dates
+        WHERE contact_id = $2 AND year IS NOT NULL
+        GROUP BY label, month, day
+    ) s
+    WHERE t.contact_id = $1
+      AND t.year IS NULL
+      AND t.label = s.label AND t.month = s.month AND t.day = s.day
+"""
+_DROP_SHARED_DATES_SQL = """
+    DELETE FROM important_dates s
+    WHERE s.contact_id = $2
+      AND EXISTS (
+          SELECT 1 FROM important_dates t
+          WHERE t.contact_id = $1
+            AND t.label = s.label AND t.month = s.month AND t.day = s.day
+            AND (s.year IS NULL OR t.year = s.year)
+      )
+"""
 
 
 def _removed_entity_refusal(contact_id: uuid.UUID) -> str:
@@ -818,10 +843,10 @@ async def contact_merge(
 ) -> dict[str, Any]:
     """Merge source contact into target contact.
 
-    The target contact survives; the source is collapsed away. All related child
-    records (notes, interactions, reminders, etc.) are re-pointed to the target,
-    the source ``contact_entity_map`` row is removed, and the surviving entity's
-    profile is reconciled with the source profile.
+    The target contact survives; the source is collapsed away. The child records in
+    ``_CONTACT_CHILD_TABLES`` are re-pointed to the target, apart from a group, label
+    or date the target already holds, the source ``contact_entity_map`` row is removed,
+    and the surviving entity's profile is reconciled with the source profile.
 
     Every write happens in ONE transaction: the merge either commits whole or
     writes nothing. When the contacts have different linked entities, that
@@ -896,6 +921,18 @@ async def contact_merge(
                 except TargetEntityTombstonedError as exc:
                     raise ValueError(_removed_entity_refusal(target_id)) from exc
 
+            for table, key in _CONTACT_CHILD_UNIQUE_KEYS.items():
+                await _execute_if_present(
+                    cast(asyncpg.Connection, conn),
+                    f"DELETE FROM {table} s WHERE s.contact_id = $2 AND EXISTS ("  # noqa: S608
+                    f"SELECT 1 FROM {table} t WHERE t.contact_id = $1 AND t.{key} = s.{key})",
+                    target_id,
+                    source_id,
+                )
+            for statement in (_FILL_SHARED_DATE_YEAR_SQL, _DROP_SHARED_DATES_SQL):
+                await _execute_if_present(
+                    cast(asyncpg.Connection, conn), statement, target_id, source_id
+                )
             for table, fk_col in _CONTACT_CHILD_TABLES:
                 await _execute_if_present(
                     conn,
