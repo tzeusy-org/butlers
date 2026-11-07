@@ -209,3 +209,44 @@ async def test_a_promote_keeps_a_write_it_waited_on(db, key, value):
         await _wait_for_row_lock_wait(pool)
     await promote
     assert await _metadata(pool, entity) == {"note": "kept", key: written}
+
+
+async def test_update_contact_keeps_a_profile_key_written_after_its_read(db):
+    """``contact_merge``'s reconcile and an owner edit write ``profile`` keys the sync never reads."""
+    pool = await _database(db)
+    entity = await _person(pool)
+
+    async def write_company(target: UUID) -> None:
+        await pool.execute(
+            "UPDATE public.entities SET metadata = metadata || $2::jsonb WHERE id = $1",
+            target,
+            {"profile": {"company": "Acme"}},
+        )
+
+    racing = _WriteAfterRead(pool, write_company)
+    results = await _writer(racing).update_contact(entity, _contact(), match_strategy="source_link")
+    assert racing.wrote
+    assert results["first_name"] == "updated"
+    profile = (await _metadata(pool, entity))["profile"]
+    assert profile["company"] == "Acme"
+    assert profile["first_name"] == "Zhi"
+
+
+async def test_a_promote_without_roles_keeps_roles_written_after_its_read(db):
+    """With no roles in the request, the UPDATE leaves them as the row holds them then."""
+    pool = await _database(db)
+    await pool.execute(
+        "INSERT INTO public.entities (canonical_name, entity_type, roles) "
+        "VALUES ('Owner', 'person', ARRAY['owner'])"
+    )
+    entity = await _person(pool, {"unidentified": True})
+    async with pool.acquire() as writing, writing.transaction():
+        await writing.execute(
+            "UPDATE public.entities SET roles = ARRAY['family'] WHERE id = $1", entity
+        )
+        promote = asyncio.create_task(_promote(pool, entity))
+        await _wait_for_row_lock_wait(pool)
+    await promote
+    assert await pool.fetchval("SELECT roles FROM public.entities WHERE id = $1", entity) == [
+        "family"
+    ]

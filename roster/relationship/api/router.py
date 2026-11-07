@@ -1622,17 +1622,15 @@ async def promote_entity(
                 if row is None:
                     raise HTTPException(status_code=404, detail="Entity not found")
 
-                if body.roles is not None:
-                    new_roles = body.roles
-                else:
-                    new_roles = list(row["roles"]) if row["roles"] else []
-
                 updated = await conn.fetchrow(
                     """
                     UPDATE public.entities
                     SET canonical_name = $2,
                         entity_type    = $3,
-                        roles          = $4,
+                        -- No roles in the request leaves them as the row holds them at the
+                        -- UPDATE: the batch lock is FOR KEY SHARE, so a roles UPDATE can
+                        -- commit between the read above and this write.
+                        roles          = COALESCE($4::text[], roles),
                         -- Removed in place: the batch lock above is FOR KEY SHARE, so a
                         -- plain metadata UPDATE can commit after the read.
                         metadata       = COALESCE(metadata, '{}'::jsonb)
@@ -1645,7 +1643,7 @@ async def promote_entity(
                     body.entity_id,
                     body.canonical_name,
                     body.entity_type,
-                    new_roles,
+                    body.roles,
                 )
                 entity_id = updated["id"]
                 result_row = updated
