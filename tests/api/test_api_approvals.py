@@ -3805,3 +3805,49 @@ async def test_list_actions_without_goal_lineage_has_no_goal_block(app):
     ) as client:
         resp = await client.get("/api/approvals/actions")
     assert resp.json()["data"][0]["goal"] is None
+
+
+_PRESENT_CARD = {
+    "subject_id": str(uuid4()),
+    "generation": 1,
+    "approve_token": "od1:synthetic-approve",
+    "reject_token": "od1:synthetic-reject",
+}
+
+
+async def _detail(app, row, query: str = ""):
+    app, _ = _app_with_mock_db(app, fetchrow_return=row)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        return await client.get(f"/api/approvals/{row['id']}{query}")
+
+
+async def test_detail_present_false_is_a_status_read_that_presents_nothing(app):
+    """present=false never reaches the presentation seam: no token, presentation or delivery."""
+    from butlers.api.models.approval import OwnerDeliveryCard
+
+    row = _make_pending_row()
+    present = AsyncMock(return_value=OwnerDeliveryCard(**_PRESENT_CARD))
+    with patch("butlers.api.routers.approvals._dashboard_owner_delivery_card", present):
+        resp = await _detail(app, row, "?present=false")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["owner_delivery"] is None
+    assert (data["id"], data["status"]) == (str(row["id"]), "pending")
+    present.assert_not_awaited()
+
+
+async def test_detail_still_presents_by_default_after_a_status_read(app):
+    from butlers.api.models.approval import OwnerDeliveryCard
+
+    row = _make_pending_row()
+    present = AsyncMock(return_value=OwnerDeliveryCard(**_PRESENT_CARD))
+    with patch("butlers.api.routers.approvals._dashboard_owner_delivery_card", present):
+        status_read = await _detail(app, row, "?present=false")
+        normal = await _detail(app, row)
+
+    assert status_read.json()["data"]["owner_delivery"] is None
+    assert normal.json()["data"]["owner_delivery"]["approve_token"] == "od1:synthetic-approve"
+    present.assert_awaited_once()

@@ -3699,9 +3699,21 @@ export function retryUnroutableAttention(
   );
 }
 
-export function getApprovalDetail(actionId: string, reviewSource?: string): Promise<ApiResponse<ApprovalDetail>> {
+/**
+ * `statusOnly` sends `present=false`: the server then mints no owner-delivery card, so use it
+ * only for a read that never renders the card.
+ */
+export function getApprovalDetail(
+  actionId: string,
+  reviewSource?: string,
+  options: { statusOnly?: boolean } = {},
+): Promise<ApiResponse<ApprovalDetail>> {
+  const params = new URLSearchParams();
+  if (reviewSource !== undefined) params.set("review_source", reviewSource);
+  if (options.statusOnly) params.set("present", "false");
+  const query = params.toString();
   return apiFetch<ApiResponse<ApprovalDetail>>(
-    `/approvals/${encodeURIComponent(actionId)}${reviewSource !== undefined ? `?review_source=${encodeURIComponent(reviewSource)}` : ""}`,
+    `/approvals/${encodeURIComponent(actionId)}${query ? `?${query}` : ""}`,
   );
 }
 

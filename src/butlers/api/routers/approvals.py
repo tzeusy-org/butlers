@@ -3487,10 +3487,16 @@ async def get_approval_detail(
     action_id: str,
     http_request: Request,
     review_source: str | None = None,
+    present: bool = True,
     *,
     db_mgr: Db,
 ) -> ApiResponse[ApprovalDetail]:
-    """Full dossier for one approval — GET /api/approvals/{id}."""
+    """Full dossier for one approval — GET /api/approvals/{id}.
+
+    ``present=false`` is a status-only read: it never presents a pending action on the
+    dashboard, so it mints no tokens, creates no presentation and records no delivery.
+    ``owner_delivery`` is then null. Only a caller that never renders the card sends it.
+    """
     try:
         parsed_id = UUID(action_id)
     except ValueError as exc:
@@ -3560,6 +3566,7 @@ async def get_approval_detail(
                 # a connector read (apr1 verification) or a review source never is.
                 if (
                     review_source is None
+                    and present
                     and pa.status.value == "pending"
                     and not getattr(http_request.state, "approval_callback_authenticated", False)
                 ):

@@ -1926,7 +1926,8 @@ export default function ApprovalsPage() {
     isError: isStalledRouteVerificationError,
   } = useQuery({
     queryKey: [...Q.stalledRouteVerification(routeId ?? "", dataUpdatedAt), reviewSource],
-    queryFn: () => reviewSource === undefined ? getApprovalDetail(routeId ?? "") : getApprovalDetail(routeId ?? "", reviewSource),
+    // Status only: this verifier never renders the card, so it must not mint one.
+    queryFn: () => getApprovalDetail(routeId ?? "", reviewSource, { statusOnly: true }),
     // The same GET as the dossier's, so it waits for a visible tab too.
     enabled: shouldVerifyStalledRoute && documentVisible,
     // A direct stalled URL is an authorization boundary, not a prefetch hint:
