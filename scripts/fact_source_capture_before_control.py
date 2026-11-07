@@ -58,6 +58,7 @@ NODE = (
     "test_capacity_one_registered_owner_capture_and_concurrent_sources"
 )
 SUPERVISOR = Path(__file__).resolve().with_name("fact_source_capture_before_supervisor.py")
+SETTLEMENT_BASIS = "linux-subreaper-all-child-v1"
 PHASE_KEYS = {
     "schema",
     "binding",
@@ -77,6 +78,7 @@ PHASE_KEYS = {
     "durable_partial_reports",
     "memory_partial_reports",
     "process_cleanup",
+    "process_cleanup_basis",
     "sentinel_preserved",
     "pytest_exit",
     "terminal",
@@ -418,6 +420,8 @@ def safe_phase(data, name, binding):
             raise ValueError("phase-number")
     if data["lookup_reached"] not in ("UNKNOWN", "OBSERVED"):
         raise ValueError("lookup-category")
+    if data["process_cleanup_basis"] not in (SETTLEMENT_BASIS, "UNKNOWN"):
+        raise ValueError("cleanup-basis")
 
 
 def require_phase(data, name, binding):
@@ -440,6 +444,8 @@ def require_phase(data, name, binding):
         "sentinel_preserved",
         "terminal",
     ]
+    if data["process_cleanup_basis"] != SETTLEMENT_BASIS:
+        raise ValueError("cleanup-basis")
     if any(data[k] is not True for k in needed):
         raise ValueError("phase-incomplete")
     if type(data["durable_partial_reports"]) is not int or data["durable_partial_reports"] != 0:
@@ -627,6 +633,11 @@ def lifecycle_observation(events, supervisor_exit, timed_out, cancelled, protoco
         "outcome_records": min(8, len(outcomes)),
         "settled_records": min(8, len(settled)),
         "settled_complete": boolean(settled[0].get("complete")) if len(settled) == 1 else None,
+        "completion_basis": (
+            SETTLEMENT_BASIS
+            if len(settled) == 1 and settled[0].get("basis") == SETTLEMENT_BASIS
+            else "UNKNOWN"
+        ),
         "reason": literal(
             diagnostic.get("reason"),
             {
@@ -641,6 +652,79 @@ def lifecycle_observation(events, supervisor_exit, timed_out, cancelled, protoco
         "first_scan_refusal": first_scan_refusal_observation(diagnostic),
         "first_task_scan": task_scan_observation(diagnostic),
     }
+
+
+def kernel_settlement_complete(events, supervisor_exit):
+    """Accept only the versioned kernel-domain proof, never a census or root0."""
+    if type(supervisor_exit) is not int or supervisor_exit != 0:
+        return False
+    if [x.get("event") for x in events] != ["ready", "outcome", "diagnostic", "settled"]:
+        return False
+    grouped = {
+        kind: [x for x in events if x.get("event") == kind]
+        for kind in ("ready", "outcome", "diagnostic", "settled")
+    }
+    if any(len(values) != 1 for values in grouped.values()) or len(events) != 4:
+        return False
+    ready, outcome, diagnostic, settled = (grouped[k][0] for k in grouped)
+    if set(ready) != {"event", "pid", "start_ticks"} or any(
+        type(ready[k]) is not int or ready[k] <= (1 if k == "pid" else 0)
+        for k in ("pid", "start_ticks")
+    ):
+        return False
+    if set(outcome) != {"event", "code", "signal"}:
+        return False
+    code, signum = outcome["code"], outcome["signal"]
+    if not (
+        (type(code) is int and 0 <= code <= 255 and signum is None)
+        or (code is None and type(signum) is str and signum in signal.Signals.__members__)
+    ):
+        return False
+    if set(settled) != {
+        "event",
+        "complete",
+        "basis",
+        "all_child_echild",
+        "held_children",
+        "root_outcome",
+    }:
+        return False
+    if not (
+        settled["basis"] == SETTLEMENT_BASIS
+        and settled["complete"] is True
+        and settled["all_child_echild"] is True
+        and type(settled["held_children"]) is int
+        and settled["held_children"] == 0
+        and settled["root_outcome"] is True
+    ):
+        return False
+    if set(diagnostic) != {
+        "event",
+        "reason",
+        "counts",
+        "counts_saturated",
+        "first_scan_refusal",
+        "first_task_scan",
+        "owned_remaining",
+        "direct_remaining",
+        "kernel_children_closed",
+    }:
+        return False
+    counts = diagnostic.get("counts")
+    return (
+        diagnostic.get("reason") == "settled"
+        and diagnostic.get("kernel_children_closed") is True
+        and diagnostic.get("counts_saturated") is False
+        and diagnostic.get("first_scan_refusal") is None
+        and diagnostic.get("first_task_scan") is None
+        and type(counts) is dict
+        and set(counts) == set(REFUSAL_COUNTS)
+        and all(type(value) is int and value == 0 for value in counts.values())
+        and type(diagnostic.get("owned_remaining")) is int
+        and diagnostic["owned_remaining"] == 0
+        and type(diagnostic.get("direct_remaining")) is int
+        and diagnostic["direct_remaining"] == 0
+    )
 
 
 def run_owned(command, environment, seconds, *, cwd=None):
@@ -677,7 +761,12 @@ def run_owned(command, environment, seconds, *, cwd=None):
                 CANCELLED or now >= deadline or any(x.get("event") == "outcome" for x in events)
             ):
                 timed_out = now >= deadline
-                process.terminate()
+                # The versioned supervisor starts its own cleanup on root
+                # outcome. A redundant signal can hit interpreter finalization
+                # after complete proof was emitted. Only cancellation/timeout
+                # asks it to stop; every path still receives the cleanup bound.
+                if CANCELLED or timed_out:
+                    process.terminate()
                 stopped = True
                 cleanup_deadline = now + 10
             if stopped and now >= cleanup_deadline:
@@ -717,14 +806,7 @@ def run_owned(command, environment, seconds, *, cwd=None):
             process.kill()
             process.wait(timeout=5)
     outcomes = [x for x in events if x.get("event") == "outcome"]
-    settled = [x for x in events if x.get("event") == "settled"]
-    complete = (
-        not overflow
-        and not wire
-        and len(outcomes) == len(settled) == 1
-        and settled[0].get("complete") is True
-        and process.returncode == 0
-    )
+    complete = not overflow and not wire and kernel_settlement_complete(events, process.returncode)
     code = outcomes[0].get("code") if len(outcomes) == 1 else None
     return {
         "exit": code,
@@ -985,6 +1067,11 @@ def execute(root, output, progress=None):
                 data = json.loads(Path(config["output"]).read_text())
                 data.update(
                     process_cleanup=lifecycle["cleanup_complete"],
+                    process_cleanup_basis=(
+                        lifecycle["observation"].get("completion_basis", "UNKNOWN")
+                        if lifecycle["cleanup_complete"]
+                        else "UNKNOWN"
+                    ),
                     sentinel_preserved=sentinel.poll() is None,
                     pytest_exit=lifecycle["exit"],
                 )

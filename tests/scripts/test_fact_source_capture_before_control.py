@@ -44,6 +44,7 @@ def phase(name):
         "durable_partial_reports": 0,
         "memory_partial_reports": 0 if name == "before" else None,
         "process_cleanup": True,
+        "process_cleanup_basis": control.SETTLEMENT_BASIS,
         "sentinel_preserved": True,
         "pytest_exit": 1 if name == "before" else 0,
         "terminal": True,
@@ -78,6 +79,7 @@ def test_only_executing_old_red_and_paired_green_with_complete_cleanup_qualify()
         ("durable_partial_reports", 1),
         ("memory_partial_reports", 1),
         ("process_cleanup", False),
+        ("process_cleanup_basis", "UNKNOWN"),
         ("sentinel_preserved", False),
         ("terminal", False),
         ("pytest_exit", 0),
@@ -158,6 +160,443 @@ def test_disposable_workload_allows_only_the_exact_immutable_runtime_overlay(tmp
     (tmp_path / "injected.py").unlink()
     control.overlay(tmp_path, "after")
     assert control.workload_state(tmp_path, "after") == healthy
+
+
+def _owned_retirement_kernel_fixture():
+    return r'''"""Owned synthetic actors only; all process identities stay in RAM."""
+import ctypes
+import importlib.util
+import importlib.machinery
+import json
+import os
+import pathlib
+import selectors
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+HERE = pathlib.Path(__file__).resolve()
+OLD = NEW = pathlib.Path(os.environ['OWNED_SUPERVISOR'])
+
+CLOSED_EVENTS = []
+STAGE = 'root-start'
+COUNTS = None
+PRIMARY = None
+PRIMARY_ERROR = None
+ALLOWED_LINES = frozenset(json.loads(os.environ['KERNEL_ALLOWED_LINES']))
+STAGES = frozenset(('root-start','before-wait','after-wait','before-cardinality','after-cardinality','cleanup','kernel-finished','canary','wrapper-import','wrapper-bind','wrapper-main','wrapper-verdict'))
+def fault(error):
+    line = None
+    frame = error.__traceback__ if isinstance(error, BaseException) else None
+    count = 0
+    while frame is not None and count < 48:
+        if frame.tb_frame.f_code.co_filename == str(HERE) and type(frame.tb_lineno) is int and frame.tb_lineno in ALLOWED_LINES:
+            line = frame.tb_lineno
+        frame = frame.tb_next
+        count += 1
+    if frame is not None:
+        line = None
+    return {'class': type(error).__name__ if type(error).__name__ in {'AssertionError','TimeoutError','OSError','ValueError','KeyError'} else 'other',
+            'line': line, 'stage': STAGE if STAGE in STAGES else None}
+def diagnostic_canary():
+    private_local = 'PRIVATE_CANARY_LOCAL'
+    assert False, 'PRIVATE_CANARY_MESSAGE'
+def cardinality(values):
+    return '0' if len(values) == 0 else '1' if len(values) == 1 else 'many'
+
+def send(value):
+    if sys.argv[1] in ('run', 'run-before-stat'):
+        CLOSED_EVENTS.append(value)
+    os.write(1, (json.dumps(value, separators=(',', ':'))+'\n').encode())
+
+def owner(address, case):
+    channel = socket.socket(socket.AF_UNIX)
+    channel.settimeout(55)
+    channel.connect(address)
+    ready, leave = threading.Event(), threading.Event()
+    actor = {}
+    def worker():
+        code = ("import os,signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+                "p=os.fork();os.setsid() if p==0 else None;time.sleep(50)")
+        child = subprocess.Popen([sys.executable, '-c', code],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+        # Confirm the resistant intermediary forked before exposing the actor.
+        until = time.monotonic()+5
+        while not pathlib.Path(f'/proc/{child.pid}/task/{child.pid}/children').read_text().strip():
+            assert time.monotonic() < until
+            time.sleep(0.001)
+        actor.update(pid=os.getpid(), tid=threading.get_native_id(), child=child.pid)
+        ready.set()
+        if case == 'leader-thread':
+            channel.sendall(json.dumps(actor).encode()+b'\n')
+            while channel.recv(64):
+                pass
+        else:
+            leave.wait(50)
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert ready.wait(5)
+    if case == 'leader-thread':
+        ctypes.CDLL(None).pthread_exit(None)
+        raise AssertionError('leader did not exit')
+    channel.sendall(json.dumps(actor).encode()+b'\n')
+    while True:
+        command = channel.recv(64)
+        if command == b'exit-thread':
+            leave.set()
+            thread.join(5)
+            assert not thread.is_alive()
+            channel.sendall(b'thread-exited')
+        elif not command:
+            break
+    leave.set()
+    thread.join(5)
+
+
+def await_retirement(owner_probe, task_probe, owner_start, task_start, clock, pause):
+    assert type(owner_start) is int and owner_start > 0
+    assert type(task_start) is int and task_start > 0
+    until = clock() + 0.05
+    for _ in range(64):
+        owner = owner_probe()
+        assert isinstance(owner, tuple) and len(owner) == 2
+        assert type(owner[0]) is int and owner[0] == owner_start
+        assert type(owner[1]) is str and owner[1] in 'RSDTtPIWK' and owner[1] not in 'ZX'
+        task, category = task_probe()
+        if category == 'absent':
+            assert task is None
+            return
+        assert category == 'known' and isinstance(task, tuple) and len(task) == 2
+        assert type(task[0]) is int and task[0] == task_start
+        assert type(task[1]) is str and task[1] in 'RSDTtXZPIWK'
+        assert clock() < until
+        pause(0.001)
+    raise AssertionError('bounded retirement')
+
+def wrapper(case, address, parent, parent_start):
+    global STAGE
+    STAGE = 'wrapper-import'
+    module_path = OLD if case == 'original-gap' else NEW
+    loader = importlib.machinery.SourceFileLoader('owned_synthetic_supervisor', str(module_path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    STAGE = 'wrapper-bind'
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(address)
+    server.listen(1)
+    server.settimeout(5)
+    connection = None
+    actor = None
+    positioned = False
+    adopted = False
+    original_listdir, original_open, original_waitpid = os.listdir, open, os.waitpid
+    original_emit = module.emit
+    original_process, original_poll = module.process, module.select.poll
+    cached_tasks = None
+    foreign_scans = 0
+    omitted = 0
+    all_wait_pending = False
+    adopted_count = 0
+    def get_actor():
+        nonlocal actor, connection
+        if actor is None:
+            connection, _ = server.accept()
+            connection.settimeout(5)
+            actor = json.loads(connection.recv(512))
+            assert set(actor) == {'pid', 'tid', 'child'}
+            assert all(type(n) is int and n > 1 for n in actor.values())
+            send({'fixture': 'owned-actors', 'actor': actor})
+        return actor
+    def task_probe(a):
+        try:
+            with original_open(f"/proc/{a['pid']}/task/{a['tid']}/stat") as stream:
+                raw = stream.read(4096)
+            fields = raw[raw.rfind(')')+2:].split()
+            return (int(fields[19]), fields[0]), 'known'
+        except FileNotFoundError:
+            return None, 'absent'
+    def emitting(value):
+        nonlocal positioned, cached_tasks
+        if value.get('event') == 'ready':
+            a = get_actor()
+            cached_tasks = original_listdir(f"/proc/{a['pid']}/task")
+            assert str(a['tid']) in cached_tasks
+            if case == 'leader-thread':
+                until = time.monotonic()+0.05
+                while module.process(a['pid'])[1] != 'Z':
+                    assert time.monotonic() < until
+                    time.sleep(0.001)
+                assert task_probe(a)[1] == 'known'
+            else:
+                bound_owner, (bound_task, category) = module.process(a['pid']), task_probe(a)
+                assert bound_owner is not None and bound_owner[1] not in ('Z', 'X')
+                assert category == 'known' and bound_task is not None
+                connection.sendall(b'exit-thread')
+                assert connection.recv(64) == b'thread-exited'
+                await_retirement(lambda: module.process(a['pid']), lambda: task_probe(a),
+                                 bound_owner[0], bound_task[0], time.monotonic, time.sleep)
+            positioned = True
+            send({'fixture': 'positioned', 'thread_entry_absent': case != 'leader-thread'})
+        return original_emit(value)
+    def listing(path):
+        nonlocal foreign_scans
+        if actor is not None and path == f"/proc/{actor['pid']}/task":
+            foreign_scans += 1
+            # This is the exact real listing captured before the joined task
+            # retired, delayed until the legacy scanner consumes it. The new
+            # protocol never requests a foreign task list.
+            return list(cached_tasks)
+        return original_listdir(path)
+    def opening(path, *args, **kwargs):
+        nonlocal omitted
+        if (case == 'omitted-direct' and positioned
+                and str(path) == f'/proc/{os.getpid()}/task/{os.getpid()}/children'):
+            import io
+            with original_open(path, *args, **kwargs) as stream:
+                actual = stream.read(65536)
+            if actual.strip():
+                omitted += 1
+            # Discovery is allowed to omit. It must not become emptiness proof.
+            return io.StringIO('')
+        return original_open(path, *args, **kwargs)
+    def waiting(*args):
+        nonlocal adopted, adopted_count, all_wait_pending
+        result = original_waitpid(*args)
+        if actor is not None:
+            if result == (0, 0) and args[1] & 0x40000000:
+                all_wait_pending = True
+            if result[0] > 0 and result[0] != actor['pid']:
+                adopted_count += 1
+            if result[0] == actor['child']:
+                adopted = True
+        return result
+    def process_probe(pid):
+        if case == 'parent-loss' and positioned and pid == int(parent):
+            return None
+        return original_process(pid)
+    class ReaderPoll:
+        def __init__(self):
+            self.actual = original_poll()
+        def register(self, *args):
+            return self.actual.register(*args)
+        def poll(self, *args):
+            if case == 'reader-loss' and positioned:
+                return [(1, 16)]
+            return self.actual.poll(*args)
+    module.process = process_probe
+    module.select.poll = ReaderPoll
+    module.os.listdir = listing
+    module.open = opening
+    module.os.waitpid = waiting
+    module.emit = emitting
+    sys.argv = [str(module_path), parent, parent_start, sys.executable, str(HERE), 'owner', address, case]
+    code = 2
+    try:
+        STAGE = 'wrapper-main'
+        code = module.main()
+        STAGE = 'wrapper-verdict'
+        try:
+            original_waitpid(-1, os.WNOHANG | 0x40000000)
+            echild = False
+        except ChildProcessError:
+            echild = True
+        send({'fixture': 'kernel-closure', 'ECHILD': echild,
+              'adopted_descendant_reaped': adopted,
+              'descendant_absent': actor is not None and module.process(actor['child']) is None,
+              'positioned': positioned, 'foreign_task_scans': foreign_scans,
+              'omitted_discoveries': omitted, 'all_child_wait_pending': all_wait_pending,
+              'adopted_count': adopted_count})
+    finally:
+        module.os.listdir = original_listdir
+        module.open = original_open
+        module.os.waitpid = original_waitpid
+        module.emit = original_emit
+        module.process = original_process
+        module.select.poll = original_poll
+        if connection is not None:
+            connection.close()
+        server.close()
+    return code
+
+
+def start_ticks(pid):
+    value = pathlib.Path(f'/proc/{pid}/stat').read_text()
+    return int(value[value.rfind(')')+2:].split()[19])
+
+
+def run():
+    global STAGE, COUNTS, PRIMARY, PRIMARY_ERROR
+    assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
+    sentinel = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(60)'],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True)
+    rows = []
+    known = {}
+    active = None
+    try:
+        with tempfile.TemporaryDirectory(prefix='owned-task-gap-') as directory:
+            for case in ((sys.argv[2],) if len(sys.argv) > 2 else ('retired-task',)):
+                events = []
+                begin = time.monotonic()
+                active = subprocess.Popen([sys.executable, str(HERE), 'wrapper', case,
+                                           str(pathlib.Path(directory)/(case+'.sock')),
+                                           str(os.getpid()), str(start_ticks(os.getpid()))],
+                                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                          stderr=subprocess.DEVNULL, start_new_session=True)
+                known[active.pid] = start_ticks(active.pid)
+                selector = selectors.DefaultSelector()
+                selector.register(active.stdout, selectors.EVENT_READ)
+                wire = bytearray()
+                stopped = False
+                while selector.get_map() or active.poll() is None:
+                    assert time.monotonic()-begin < 60, 'owned child bound'
+                    for key, _ in selector.select(0.05):
+                        chunk = os.read(key.fileobj.fileno(), 4096)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            continue
+                        wire.extend(chunk)
+                        assert len(wire) <= 16384
+                        while b'\n' in wire:
+                            line, _, tail = wire.partition(b'\n')
+                            wire[:] = tail
+                            value = json.loads(line)
+                            if value.get('fixture') == 'owned-actors':
+                                for owned in (value['actor']['pid'], value['actor']['child']):
+                                    known[owned] = start_ticks(owned)
+                            else:
+                                events.append(value)
+                                if value.get('fixture') == 'wrapper-fault':
+                                    CLOSED_EVENTS.append(value)
+                            if value.get('fixture') == 'positioned' and not stopped:
+                                active.send_signal(signal.SIGTERM)
+                                stopped = True
+                STAGE = 'before-wait'
+                active.wait(timeout=5)
+                STAGE = 'after-wait'
+                selector.close()
+                active.stdout.close()
+                assert not wire
+                diagnostics = [x for x in events if x.get('event') == 'diagnostic']
+                settled = [x for x in events if x.get('event') == 'settled']
+                closures = [x for x in events if x.get('fixture') == 'kernel-closure']
+                STAGE = 'before-cardinality'
+                COUNTS = [cardinality(x) for x in (diagnostics, settled, closures)]
+                assert len(diagnostics) == len(settled) == len(closures) == 1
+                STAGE = 'after-cardinality'
+                d, s, closure = diagnostics[0], settled[0], closures[0]
+                send({'fixture': 'case-summary', 'case': case, 'stage': 'kernel-verdict', 'exit': active.returncode, 'diagnostic': d, 'settled': s, 'closure': closure})
+                assert closure['positioned']
+                assert sentinel.poll() is None
+                row = {'case': case, 'exit': active.returncode,
+                       'elapsed_s': time.monotonic()-begin,
+                       'first_scan_refusal': d.get('first_scan_refusal'),
+                       'first_task_scan': d.get('first_task_scan'),
+                       'counts': d['counts'], 'reason': d['reason'],
+                       'kernel_children_closed': d['kernel_children_closed'],
+                       'settled_complete': s['complete'],
+                       'adopted_descendant_reaped': closure['adopted_descendant_reaped'], 'real_ECHILD': closure['ECHILD'],
+                       'sentinel_preserved': True}
+                row.update(foreign_task_scans=closure['foreign_task_scans'],
+                           all_child_wait_pending=closure['all_child_wait_pending'],
+                           omitted_discoveries=closure['omitted_discoveries'],
+                           adopted_count=closure['adopted_count'],
+                           kernel_domain_basis=s.get('basis'))
+                if case in ('parent-loss', 'reader-loss'):
+                    assert active.returncode == 2 and s['complete'] is False
+                    assert closure['ECHILD'] and closure['adopted_descendant_reaped']
+                    assert d['reason'] == 'latched_refusal' and d['counts']['scan_refused'] > 0
+                elif case == 'omitted-direct':
+                    assert closure['all_child_wait_pending']
+                    assert closure['omitted_discoveries'] > 0
+                    assert closure['ECHILD'] is False
+                    assert active.returncode == 2 and s['complete'] is False, 'pending child must refuse'
+                    assert d['reason'] == 'settlement_deadline'
+                else:
+                    assert active.returncode == 0 and s['complete'], 'positive kernel settlement required'
+                    assert s['basis'] == 'linux-subreaper-all-child-v1'
+                    assert closure['ECHILD'] and closure['adopted_descendant_reaped']
+                    assert closure['adopted_count'] >= 2
+                    assert closure['descendant_absent'] and sentinel.poll() is None
+                    assert closure['foreign_task_scans'] == 0
+                    assert d['first_scan_refusal'] is None and d['reason'] == 'settled'
+                rows.append(row)
+                active = None
+        return {'cases': rows, 'real_P0_PG_UV_workload': False}
+    except BaseException as error:
+        PRIMARY = fault(error)
+        PRIMARY_ERROR = error
+        raise
+    finally:
+        STAGE = 'cleanup'
+        if active is not None and active.poll() is None:
+            active.kill()
+            active.wait(timeout=5)
+        sentinel.terminate()
+        sentinel.wait(timeout=5)
+        until = time.monotonic()+5
+        while True:
+            try:
+                while os.waitpid(-1, os.WNOHANG | 0x40000000)[0]:
+                    pass
+            except ChildProcessError:
+                break
+            assert time.monotonic() < until
+            direct = pathlib.Path(f"/proc/{os.getpid()}/task/{threading.get_native_id()}/children")
+            children = direct.read_text().split()
+            assert len(children) <= 256
+            for value in children:
+                pid = int(value)
+                # WNOWAIT proves held direct ownership; no consuming wait
+                # between that proof and this signal.
+                os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT | 0x40000000)
+                os.kill(pid, signal.SIGKILL)
+            time.sleep(0.01)
+        # This process owns no children after its bounded cleanup.
+        groups_absent = True
+        for group in (*known, sentinel.pid):
+            try:
+                os.killpg(group, 0)
+                groups_absent = False
+            except ProcessLookupError:
+                pass
+        send({'fixture': 'final-cleanup', 'all_owned_groups_absent': groups_absent,
+              'real_ECHILD': True, 'sentinel_reaped': sentinel.returncode is not None})
+        assert groups_absent
+
+if __name__ == '__main__':
+    if sys.argv[1] == 'owner':
+        owner(sys.argv[2], sys.argv[3])
+    elif sys.argv[1] == 'wrapper':
+        try:
+            code = wrapper(*sys.argv[2:])
+        except BaseException as error:
+            send({'fixture': 'wrapper-fault', 'fault': fault(error)})
+            code = 2
+        raise SystemExit(code)
+    else:
+        failure = None
+        cleanup_failure = None
+        result = None
+        try:
+            result = run()
+        except BaseException as error:
+            failure = fault(error)
+            cleanup_failure = failure if PRIMARY and error is not PRIMARY_ERROR else None
+        projection = {'schema': 'owned-kernel-closed.v1', 'stage': 'kernel-finished', 'exception_class': None if failure is None else failure['class'], 'first_fault': PRIMARY or failure, 'cleanup_fault': cleanup_failure, 'cardinality': COUNTS, 'events': CLOSED_EVENTS, 'result': result}
+        encoded = json.dumps(projection)
+        assert len(encoded.encode()) <= 16384
+        descriptor = os.open(os.environ['KERNEL_PROJECTION'], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'w') as stream:
+            stream.write(encoded)
+        raise SystemExit(2 if failure else 0)
+'''
 
 
 def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_sentinel(
@@ -274,16 +713,16 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
         }
         with monkeypatch.context() as context:
             context.setattr(supervisor, "process", lambda pid: (101, "S"))
-            context.setattr(supervisor.os, "listdir", lambda path: ["37"])
+            context.setattr(supervisor.os, "listdir", lambda path: [str(os.getpid())])
 
             def refused_open(*args, **kwargs):
                 raise FileNotFoundError(errno.ENOENT, "PRIVATE_ERROR", "PRIVATE_PATH")
 
             context.setattr(builtins, "open", refused_open)
-            children, truncated = supervisor.children(37, producer, site=2)
+            children, truncated = supervisor.direct_children(producer)
         assert children == set() and truncated is True
         assert producer["counts"]["scan_refused"] == 1
-        assert producer.get("first_scan_refusal") == {"s": 2, "k": 1, "o": 2, "b": 7}
+        assert producer.get("first_scan_refusal") == {"s": 1, "k": 1, "o": 2, "b": 7}
         events = [
             {"event": "outcome", "code": 0},
             {"event": "settled", "complete": False},
@@ -353,7 +792,25 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
                 ((None, "unknown"), (None, "denied")),
                 ((None, "invalid"), (None, "other")),
             ):
-                task = supervisor.task_scan_observation(before, after, stage)
+                first, first_category = before
+                last, last_category = after
+                task = {
+                    "phase": stage,
+                    "before_probe": first_category,
+                    "after_probe": last_category,
+                    "before_known": first is not None,
+                    "after_known": last is not None,
+                    "same_task_start": first[0] == last[0] if first and last else None,
+                    "before_dead": first[1] in ("Z", "X") if first else None,
+                    "after_dead": last[1] in ("Z", "X") if last else None,
+                    "classification": "task-entry-absent"
+                    if last_category == "absent"
+                    else "task-identity-changed"
+                    if first and last and first[0] != last[0]
+                    else "task-known"
+                    if last
+                    else "task-probe-unknown",
+                }
                 diagnostic = {
                     "counts": {"scan_refused": 1},
                     "first_scan_refusal": {"s": 2, "k": 1, "o": operation, "b": 7},
@@ -373,86 +830,11 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
                     bad["first_task_scan"][key] = value
                     assert control.task_scan_observation(bad) is None
         assert control.task_scan_observation({}) is None
-        assert projected["first_task_scan"] == producer["first_task_scan"]
+        assert projected["first_task_scan"] is None
 
-        # Complete rescan retains known descendants; every ambiguous case refuses.
-        import io
-        from unittest.mock import patch
-
-        for mode in (
-            "complete",
-            "empty-tasks",
-            "owner-reuse",
-            "task-reuse",
-            "denied",
-            "malformed",
-            "overflow",
-            "deadline",
-            "retired-reappears",
-        ):
-            calls = [0]
-
-            def task(pid, tid, mode=mode, calls=calls):
-                calls[0] += 1
-                return ((202 if mode != "task-reuse" or calls[0] == 1 else 203, "S"), "known")
-
-            def opening(*a, mode=mode):
-                if mode == "denied":
-                    raise PermissionError(13, "controlled")
-                return io.StringIO(
-                    "x" if mode == "malformed" else "1" * 65536 if mode == "overflow" else "41"
-                )
-
-            names = (
-                [] if mode == "empty-tasks" else ["99"] if mode == "retired-reappears" else ["37"]
-            )
-            clock = iter((0, 1)) if mode == "deadline" else None
-            with (
-                patch.object(
-                    supervisor,
-                    "process",
-                    lambda pid, mode=mode: (102 if mode == "owner-reuse" else 101, "S"),
-                ),
-                patch.object(supervisor, "task_identity", task),
-                patch.object(supervisor.os, "listdir", lambda path, names=names: names),
-                patch.object(supervisor, "open", opening, create=True),
-                patch.object(
-                    supervisor.time, "monotonic", lambda clock=clock: next(clock) if clock else 0
-                ),
-            ):
-                retained, incomplete = supervisor.retired_task_rescan(37, (101, "S"), "99", {43})
-            assert 43 in retained
-            assert incomplete is (mode != "complete")
-            if mode == "complete":
-                assert retained == {41, 43}
-
-        for mode in ("second-tasks", "second-children", "later-denied"):
-            opens = [0]
-            lists = [0]
-
-            def listing(path, mode=mode, lists=lists):
-                lists[0] += 1
-                return ["38"] if mode == "second-tasks" and lists[0] >= 3 else ["37"]
-
-            def reading(*args, mode=mode, opens=opens):
-                opens[0] += 1
-                if mode == "later-denied" and opens[0] == 2:
-                    raise PermissionError(13, "controlled")
-                return io.StringIO("42" if mode == "second-children" and opens[0] == 2 else "41")
-
-            with (
-                patch.object(supervisor, "process", lambda pid: (101, "S")),
-                patch.object(supervisor, "task_identity", lambda pid, tid: ((202, "S"), "known")),
-                patch.object(supervisor.os, "listdir", listing),
-                patch.object(supervisor, "open", reading, create=True),
-                patch.object(supervisor.time, "monotonic", lambda: 0),
-            ):
-                retained, incomplete = supervisor.retired_task_rescan(37, (101, "S"), "99", {43})
-            assert incomplete is True
-            assert {41, 43} <= retained
-            if mode == "second-children":
-                assert 42 in retained
-
+        # Recursive foreign-task census/rescan is retired. Direct ownership,
+        # bounded discovery and all-child wait survivors execute in the focused
+        # kernel-domain node and software protocol controls below.
         timeout_checker = tmp_path / "owned-timeout-checker.py"
         timeout_checker.write_text(
             "import importlib.util,pathlib,os,sys,subprocess,json\nspec=importlib.util.spec_from_file_location('_checker_control',os.environ['CONTROL_SOURCE']);control=importlib.util.module_from_spec(spec);spec.loader.exec_module(control)\ncontrol.SUPERVISOR=pathlib.Path(os.environ['INNER_SUPERVISOR'])\nsentinel=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)\nrow={'stage':'timeout-check','assertion_RED':False,'sentinel_preserved':False}\ntry:\n    code='import os,signal,time; p=os.fork(); os.setsid() if p==0 else None; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(30)'\n    result=control.run_owned([sys.executable,'-c',code],os.environ.copy(),0.2)\n    row.update(timed_out=result['timed_out'],cleanup_complete=result['cleanup_complete'],kernel_children_closed=result['observation']['kernel_children_closed'],settled_complete=result['observation']['settled_complete'])\n    row['sentinel_preserved']=sentinel.poll() is None\n    try:\n        assert result['timed_out'] is True\n        assert result['cleanup_complete'] is True\n        assert result['observation']['kernel_children_closed'] is True\n        assert result['observation']['settled_complete'] is True\n        assert sentinel.poll() is None\n    except AssertionError:\n        row['assertion_RED']=True\n        raise\nfinally:\n    sentinel.terminate();sentinel.wait(timeout=5)\n    row['sentinel_reaped']=sentinel.returncode is not None\n    fd=os.open(os.environ['TIMEOUT_CLOSED'],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)\n    with os.fdopen(fd,'w') as stream:json.dump(row,stream)\n"
@@ -495,9 +877,7 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
                 assert timeout_facts["assertion_RED"] is False
                 assert timeout_facts["cleanup_complete"] is True
         kernel_fixture = tmp_path / "owned-retirement-kernel.py"
-        kernel_fixture.write_text(
-            "\"\"\"Owned synthetic actors only; all process identities stay in RAM.\"\"\"\nimport ctypes\nimport importlib.util\nimport importlib.machinery\nimport json\nimport os\nimport pathlib\nimport selectors\nimport signal\nimport socket\nimport subprocess\nimport sys\nimport tempfile\nimport threading\nimport time\n\nHERE = pathlib.Path(__file__).resolve()\nOLD = NEW = pathlib.Path(os.environ['OWNED_SUPERVISOR'])\n\nCLOSED_EVENTS = []\nSTAGE = 'root-start'\nCOUNTS = None\nPRIMARY = None\nPRIMARY_ERROR = None\nALLOWED_LINES = frozenset(json.loads(os.environ['KERNEL_ALLOWED_LINES']))\nSTAGES = frozenset(('root-start','before-wait','after-wait','before-cardinality','after-cardinality','cleanup','kernel-finished','canary','wrapper-import','wrapper-bind','wrapper-main','wrapper-verdict'))\ndef fault(error):\n    line = None\n    frame = error.__traceback__ if isinstance(error, BaseException) else None\n    count = 0\n    while frame is not None and count < 48:\n        if frame.tb_frame.f_code.co_filename == str(HERE) and type(frame.tb_lineno) is int and frame.tb_lineno in ALLOWED_LINES:\n            line = frame.tb_lineno\n        frame = frame.tb_next\n        count += 1\n    if frame is not None:\n        line = None\n    return {'class': type(error).__name__ if type(error).__name__ in {'AssertionError','TimeoutError','OSError','ValueError','KeyError'} else 'other',\n            'line': line, 'stage': STAGE if STAGE in STAGES else None}\ndef diagnostic_canary():\n    private_local = 'PRIVATE_CANARY_LOCAL'\n    assert False, 'PRIVATE_CANARY_MESSAGE'\ndef cardinality(values):\n    return '0' if len(values) == 0 else '1' if len(values) == 1 else 'many'\n\ndef send(value):\n    if sys.argv[1] == 'run':\n        CLOSED_EVENTS.append(value)\n    os.write(1, (json.dumps(value, separators=(',', ':'))+'\\n').encode())\n\ndef owner(address):\n    channel = socket.socket(socket.AF_UNIX)\n    channel.settimeout(55)\n    channel.connect(address)\n    ready, leave = threading.Event(), threading.Event()\n    actor = {}\n    def worker():\n        child = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(50)'],\n                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,\n                                 stderr=subprocess.DEVNULL, start_new_session=True)\n        actor.update(pid=os.getpid(), tid=threading.get_native_id(), child=child.pid)\n        ready.set()\n        leave.wait(50)\n    thread = threading.Thread(target=worker)\n    thread.start()\n    assert ready.wait(5)\n    channel.sendall(json.dumps(actor).encode()+b'\\n')\n    while True:\n        command = channel.recv(64)\n        if command == b'exit-thread':\n            leave.set()\n            thread.join(5)\n            assert not thread.is_alive()\n            channel.sendall(b'thread-exited')\n        elif not command:\n            break\n    leave.set()\n    thread.join(5)\n\n\ndef await_retirement(owner_probe, task_probe, owner_start, task_start, clock, pause):\n    assert type(owner_start) is int and owner_start > 0\n    assert type(task_start) is int and task_start > 0\n    until = clock() + 0.05\n    for _ in range(64):\n        owner = owner_probe()\n        assert isinstance(owner, tuple) and len(owner) == 2\n        assert type(owner[0]) is int and owner[0] == owner_start\n        assert type(owner[1]) is str and owner[1] in 'RSDTtPIWK' and owner[1] not in 'ZX'\n        task, category = task_probe()\n        if category == 'absent':\n            assert task is None\n            return\n        assert category == 'known' and isinstance(task, tuple) and len(task) == 2\n        assert type(task[0]) is int and task[0] == task_start\n        assert type(task[1]) is str and task[1] in 'RSDTtXZPIWK'\n        assert clock() < until\n        pause(0.001)\n    raise AssertionError('bounded retirement')\n\ndef wrapper(case, address, parent, parent_start):\n    global STAGE\n    STAGE = 'wrapper-import'\n    module_path = OLD if case == 'original-gap' else NEW\n    loader = importlib.machinery.SourceFileLoader('owned_synthetic_supervisor', str(module_path))\n    spec = importlib.util.spec_from_loader(loader.name, loader)\n    module = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(module)\n    STAGE = 'wrapper-bind'\n    server = socket.socket(socket.AF_UNIX)\n    server.bind(address)\n    server.listen(1)\n    server.settimeout(5)\n    connection = None\n    actor = None\n    positioned = False\n    adopted = False\n    original_listdir, original_open, original_waitpid = os.listdir, open, os.waitpid\n    def get_actor():\n        nonlocal actor, connection\n        if actor is None:\n            connection, _ = server.accept()\n            connection.settimeout(5)\n            raw = connection.recv(512)\n            actor = json.loads(raw)\n            assert set(actor) == {'pid', 'tid', 'child'}\n            assert all(type(n) is int and n > 1 for n in actor.values())\n            # Private controller pipe only; never retained or printed by outer runner.\n            send({'fixture': 'owned-actors', 'actor': actor})\n        return actor\n    def listing(path):\n        a = get_actor()\n        result = original_listdir(path)\n        if path == f\"/proc/{a['pid']}/task\" and not positioned:\n            assert str(a['tid']) in result\n        return result\n    def opening(path, *args, **kwargs):\n        nonlocal positioned\n        if not str(path).endswith('/children'):\n            return original_open(path, *args, **kwargs)\n        a = get_actor()\n        target = f\"/proc/{a['pid']}/task/{a['tid']}/children\"\n        if str(path) == target and not positioned:\n            if case != 'candidate-live':\n                bound_owner = module.process(a['pid'])\n                bound_task, bound_category = module.task_identity(a['pid'], str(a['tid']))\n                assert bound_owner is not None and bound_owner[1] not in ('Z', 'X')\n                assert bound_category == 'known' and bound_task is not None and bound_task[1] not in ('Z', 'X')\n                connection.sendall(b'exit-thread')\n                assert connection.recv(64) == b'thread-exited'\n                await_retirement(lambda: module.process(a['pid']),\n                                 lambda: module.task_identity(a['pid'], str(a['tid'])),\n                                 bound_owner[0], bound_task[0], time.monotonic, time.sleep)\n                assert not os.path.exists(f\"/proc/{a['pid']}/task/{a['tid']}\")\n            positioned = True\n            send({'fixture': 'positioned', 'thread_entry_absent': case != 'candidate-live'})\n        return original_open(path, *args, **kwargs)\n    def waiting(*args):\n        nonlocal adopted\n        result = original_waitpid(*args)\n        if actor is not None and result[0] == actor['child']:\n            adopted = True\n        return result\n    if hasattr(module, 'retired_task_rescan'):\n        actual_rescan = module.retired_task_rescan\n        def recovery(*args):\n            result, incomplete = actual_rescan(*args)\n            send({'fixture': 'rescan', 'complete': not incomplete,\n                  'observed_descendant_retained': actor['child'] in result})\n            return result, incomplete\n        module.retired_task_rescan = recovery\n    module.os.listdir = listing\n    module.open = opening\n    module.os.waitpid = waiting\n    sys.argv = [str(module_path), parent, parent_start, sys.executable, str(HERE), 'owner', address]\n    code = 2\n    try:\n        STAGE = 'wrapper-main'\n        code = module.main()\n        STAGE = 'wrapper-verdict'\n        try:\n            original_waitpid(-1, os.WNOHANG)\n            echild = False\n        except ChildProcessError:\n            echild = True\n        send({'fixture': 'kernel-closure', 'ECHILD': echild,\n              'adopted_descendant_reaped': adopted,\n              'descendant_absent': actor is not None and module.process(actor['child']) is None,\n              'positioned': positioned})\n    finally:\n        if connection is not None:\n            connection.close()\n        server.close()\n    return code\n\n\ndef start_ticks(pid):\n    value = pathlib.Path(f'/proc/{pid}/stat').read_text()\n    return int(value[value.rfind(')')+2:].split()[19])\n\n\ndef run():\n    global STAGE, COUNTS, PRIMARY, PRIMARY_ERROR\n    assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0\n    sentinel = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(60)'],\n                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,\n                                stderr=subprocess.DEVNULL, start_new_session=True)\n    rows = []\n    known = {}\n    active = None\n    try:\n        with tempfile.TemporaryDirectory(prefix='owned-task-gap-') as directory:\n            for case in ('candidate-gap',):\n                events = []\n                begin = time.monotonic()\n                active = subprocess.Popen([sys.executable, str(HERE), 'wrapper', case,\n                                           str(pathlib.Path(directory)/(case+'.sock')),\n                                           str(os.getpid()), str(start_ticks(os.getpid()))],\n                                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,\n                                          stderr=subprocess.DEVNULL, start_new_session=True)\n                known[active.pid] = start_ticks(active.pid)\n                selector = selectors.DefaultSelector()\n                selector.register(active.stdout, selectors.EVENT_READ)\n                wire = bytearray()\n                stopped = False\n                while selector.get_map() or active.poll() is None:\n                    assert time.monotonic()-begin < 60, 'owned child bound'\n                    for key, _ in selector.select(0.05):\n                        chunk = os.read(key.fileobj.fileno(), 4096)\n                        if not chunk:\n                            selector.unregister(key.fileobj)\n                            continue\n                        wire.extend(chunk)\n                        assert len(wire) <= 16384\n                        while b'\\n' in wire:\n                            line, _, tail = wire.partition(b'\\n')\n                            wire[:] = tail\n                            value = json.loads(line)\n                            if value.get('fixture') == 'owned-actors':\n                                for owned in (value['actor']['pid'], value['actor']['child']):\n                                    known[owned] = start_ticks(owned)\n                            else:\n                                events.append(value)\n                                if value.get('fixture') == 'wrapper-fault':\n                                    CLOSED_EVENTS.append(value)\n                            if value.get('fixture') == 'positioned' and not stopped:\n                                active.send_signal(signal.SIGTERM)\n                                stopped = True\n                STAGE = 'before-wait'\n                active.wait(timeout=5)\n                STAGE = 'after-wait'\n                selector.close()\n                active.stdout.close()\n                assert not wire\n                diagnostics = [x for x in events if x.get('event') == 'diagnostic']\n                settled = [x for x in events if x.get('event') == 'settled']\n                closures = [x for x in events if x.get('fixture') == 'kernel-closure']\n                STAGE = 'before-cardinality'\n                COUNTS = [cardinality(x) for x in (diagnostics, settled, closures)]\n                assert len(diagnostics) == len(settled) == len(closures) == 1\n                STAGE = 'after-cardinality'\n                d, s, closure = diagnostics[0], settled[0], closures[0]\n                send({'fixture': 'case-summary', 'case': case, 'stage': 'kernel-verdict', 'exit': active.returncode, 'diagnostic': d, 'settled': s, 'closure': closure})\n                assert closure['ECHILD'] and closure['adopted_descendant_reaped']\n                assert closure['descendant_absent'] and closure['positioned']\n                assert sentinel.poll() is None\n                row = {'case': case, 'exit': active.returncode,\n                       'elapsed_s': time.monotonic()-begin,\n                       'first_scan_refusal': d.get('first_scan_refusal'),\n                       'first_task_scan': d.get('first_task_scan'),\n                       'counts': d['counts'], 'reason': d['reason'],\n                       'kernel_children_closed': d['kernel_children_closed'],\n                       'settled_complete': s['complete'],\n                       'adopted_descendant_reaped': True, 'real_ECHILD': True,\n                       'sentinel_preserved': True}\n                if case == 'original-gap':\n                    assert row['first_scan_refusal'] == {'s': 2, 'k': 1, 'o': 2, 'b': 7}\n                    assert active.returncode == 2 and not s['complete']\n                    assert d['reason'] == 'latched_refusal'\n                    try:\n                        assert s['complete'], 'complete owned scan required'\n                    except AssertionError:\n                        row['omission_assertion_RED'] = True\n                else:\n                    assert active.returncode == 0 and s['complete']\n                    assert d['first_scan_refusal'] is None and d['reason'] == 'settled'\n                scans = [x for x in events if x.get('fixture') == 'rescan']\n                if case == 'candidate-gap':\n                    assert scans and all(x['complete'] and x['observed_descendant_retained'] for x in scans)\n                    row['real_rescan_complete_and_descendant_retained'] = True\n                if case == 'candidate-live':\n                    assert not scans\n                rows.append(row)\n                active = None\n        return {'cases': rows, 'real_P0_PG_UV_workload': False}\n    except BaseException as error:\n        PRIMARY = fault(error)\n        PRIMARY_ERROR = error\n        raise\n    finally:\n        STAGE = 'cleanup'\n        if active is not None and active.poll() is None:\n            active.kill()\n            active.wait(timeout=5)\n        for pid, identity in known.items():\n            try:\n                if start_ticks(pid) == identity:\n                    os.kill(pid, signal.SIGKILL)\n            except (FileNotFoundError, ProcessLookupError):\n                pass\n        # Only this freshly created subreaper's direct children: all are owned\n        # synthetic actors, including adopted session-escaping descendants.\n        direct = pathlib.Path(f\"/proc/{os.getpid()}/task/{threading.get_native_id()}/children\")\n        for value in direct.read_text().split():\n            pid = int(value)\n            if pid == sentinel.pid:\n                continue\n            try:\n                identity = start_ticks(pid)\n                if start_ticks(pid) == identity:\n                    os.kill(pid, signal.SIGKILL)\n            except (FileNotFoundError, ProcessLookupError):\n                pass\n        sentinel.terminate()\n        sentinel.wait(timeout=5)\n        until = time.monotonic()+5\n        while True:\n            try:\n                child, _ = os.waitpid(-1, os.WNOHANG)\n            except ChildProcessError:\n                break\n            if not child:\n                assert time.monotonic() < until\n                time.sleep(0.01)\n        # This process owns no children after its bounded cleanup.\n        groups_absent = True\n        for group in (*known, sentinel.pid):\n            try:\n                os.killpg(group, 0)\n                groups_absent = False\n            except ProcessLookupError:\n                pass\n        send({'fixture': 'final-cleanup', 'all_owned_groups_absent': groups_absent,\n              'real_ECHILD': True, 'sentinel_reaped': sentinel.returncode is not None})\n        assert groups_absent\n\nif __name__ == '__main__':\n    if sys.argv[1] == 'owner':\n        owner(sys.argv[2])\n    elif sys.argv[1] == 'wrapper':\n        try:\n            code = wrapper(*sys.argv[2:])\n        except BaseException as error:\n            send({'fixture': 'wrapper-fault', 'fault': fault(error)})\n            code = 2\n        raise SystemExit(code)\n    else:\n        failure = None\n        cleanup_failure = None\n        result = None\n        try:\n            result = run()\n        except BaseException as error:\n            failure = fault(error)\n            cleanup_failure = failure if PRIMARY and error is not PRIMARY_ERROR else None\n        projection = {'schema': 'owned-kernel-closed.v1', 'stage': 'kernel-finished', 'exception_class': None if failure is None else failure['class'], 'first_fault': PRIMARY or failure, 'cleanup_fault': cleanup_failure, 'cardinality': COUNTS, 'events': CLOSED_EVENTS, 'result': result}\n        encoded = json.dumps(projection)\n        assert len(encoded.encode()) <= 16384\n        descriptor = os.open(os.environ['KERNEL_PROJECTION'], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)\n        with os.fdopen(descriptor, 'w') as stream:\n            stream.write(encoded)\n        raise SystemExit(2 if failure else 0)\n"
-        )
+        kernel_fixture.write_text(_owned_retirement_kernel_fixture())
         import ast
         import hashlib
         import stat
@@ -670,7 +1050,8 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
         assert kernel_events[-1]["all_owned_groups_absent"] is True
         assert kernel_events[-1]["real_ECHILD"] is True
         kernel_case = kernel_closed["result"]["cases"][0]
-        assert kernel_case["real_rescan_complete_and_descendant_retained"] is True
+        assert kernel_case["kernel_domain_basis"] == control.SETTLEMENT_BASIS
+        assert kernel_case["foreign_task_scans"] == 0
         assert kernel_case["settled_complete"] is True
         assert kernel_case["sentinel_preserved"] is True
 
@@ -1035,7 +1416,7 @@ def test_terminal_cancellation_revokes_witness_after_owned_cleanup(tmp_path, mon
                 "cleanup_complete": True,
                 "timed_out": False,
                 "cancelled": False,
-                "observation": {},
+                "observation": {"completion_basis": control.SETTLEMENT_BASIS},
             }
 
         def witness(*args):
@@ -1603,3 +1984,324 @@ target=root/'src' if mode!='own-source-refused' else root/'outside'
     )
     assert all(value is None for key, value in malformed.items() if key != "lifecycle")
     assert all(value is None for value in malformed["lifecycle"].values())
+
+
+def _kernel_domain_case(tmp_path, label, supervisor, case):
+    """One finite owned controller; private actor identities never leave its RAM."""
+    import ast
+
+    fixture = tmp_path / (label + "-kernel.py")
+    fixture.write_text(_owned_retirement_kernel_fixture())
+    allowed = sorted(
+        {
+            node.lineno
+            for node in ast.walk(ast.parse(fixture.read_text()))
+            if isinstance(node, (ast.Assert, ast.Call, ast.Raise))
+        }
+    )
+    projection = tmp_path / (label + "-closed.json")
+    result = control.run_owned(
+        [sys.executable, str(fixture), "run", case],
+        {
+            **os.environ,
+            "OWNED_SUPERVISOR": str(supervisor),
+            "KERNEL_PROJECTION": str(projection),
+            "KERNEL_ALLOWED_LINES": json.dumps(allowed),
+        },
+        10,
+    )
+    assert result["cleanup_complete"] is True, result["observation"]
+    assert result["timed_out"] is result["cancelled"] is False
+    closed = json.loads(projection.read_text())
+    assert closed["events"][-1]["all_owned_groups_absent"] is True, closed
+    assert closed["events"][-1]["real_ECHILD"] is True
+    assert closed["events"][-1]["sentinel_reaped"] is True
+    return result, closed
+
+
+def test_kernel_domain_settlement_survives_retirement_and_rejects_omitted_children(tmp_path):
+    """All-child kernel closure, rather than a complete live census, is required."""
+    for case in ("retired-task", "leader-thread"):
+        result, closed = _kernel_domain_case(tmp_path, case, control.SUPERVISOR, case)
+        assert result["exit"] == 0 and closed["exception_class"] is None, closed
+        row = closed["result"]["cases"][0]
+        assert row["settled_complete"] is True and row["exit"] == 0
+        assert row["kernel_domain_basis"] == control.SETTLEMENT_BASIS
+        assert row["foreign_task_scans"] == 0
+        assert row["real_ECHILD"] and row["adopted_descendant_reaped"]
+        assert row["adopted_count"] >= 2 and row["sentinel_preserved"]
+    for case in ("parent-loss", "reader-loss"):
+        result, closed = _kernel_domain_case(tmp_path, case, control.SUPERVISOR, case)
+        assert result["exit"] == 0 and closed["exception_class"] is None, closed
+        row = closed["result"]["cases"][0]
+        assert row["settled_complete"] is False and row["exit"] == 2
+        assert row["real_ECHILD"] and row["adopted_descendant_reaped"]
+        assert row["reason"] == "latched_refusal" and row["counts"]["scan_refused"] > 0
+        assert row["sentinel_preserved"] is True
+    original = control.SUPERVISOR.read_text()
+    # Inverting pending wait0 into ECHILD must fail the very same omitted-child
+    # assertion. It is not enough for a complete-looking record to be emitted.
+    pending = "if pid == 0:\n                return False"
+    assert original.count(pending) == 1
+    inverse = tmp_path / "wait0-is-echild.py"
+    inverse.write_text(original.replace(pending, "if pid == 0:\n                return True"))
+    for label, source in (
+        ("omitted", control.SUPERVISOR),
+        ("wait0-inverse", inverse),
+        ("restored", control.SUPERVISOR),
+    ):
+        result, closed = _kernel_domain_case(tmp_path, label, source, "omitted-direct")
+        if label == "wait0-inverse":
+            assert result["exit"] == 2
+            assert closed["first_fault"]["class"] == "AssertionError"
+            summaries = [x for x in closed["events"] if x.get("fixture") == "case-summary"]
+            assert len(summaries) == 1
+            assert summaries[0]["settled"]["complete"] is True
+            assert summaries[0]["closure"]["ECHILD"] is False
+            assert summaries[0]["closure"]["all_child_wait_pending"] is True
+        else:
+            assert result["exit"] == 0 and closed["exception_class"] is None, closed
+            row = closed["result"]["cases"][0]
+            assert row["exit"] == 2 and row["settled_complete"] is False
+            assert row["reason"] == "settlement_deadline"
+            assert row["omitted_discoveries"] > 0 and row["all_child_wait_pending"]
+            assert row["real_ECHILD"] is False and row["sentinel_preserved"]
+
+
+def test_kernel_domain_protocol_refuses_unknown_ownership_and_malformed_proof(
+    monkeypatch, tmp_path
+):
+    """Hard errors, bounded discovery and wait/proof schemas remain fail-closed."""
+    import errno
+    import importlib.util
+    import io
+    from types import SimpleNamespace
+
+    spec = importlib.util.spec_from_file_location("_kernel_domain_software", control.SUPERVISOR)
+    supervisor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(supervisor)
+    assert supervisor.SETTLEMENT_BASIS == control.SETTLEMENT_BASIS
+    calls = []
+    for answer in (
+        (0, 0),
+        (37, 0),
+        None,
+        (True, 0),
+        (37, True),
+        (0, 1),
+        (-1, 0),
+        (1, 0),
+        [0, 0],
+        (37,),
+        (37, 0x7F),
+        (37, -1),
+        (37, 1 << 20),
+    ):
+
+        def wait(pid, flags, answer=answer):
+            calls.append((pid, flags))
+            if answer is None:
+                raise ChildProcessError()
+            return answer
+
+        with monkeypatch.context() as context:
+            context.setattr(supervisor.os, "waitpid", wait)
+            if answer in ((0, 0), (37, 0), None) and type(answer) is not list:
+                # bool values compare equal to integers, but must still refuse.
+                valid = answer is None or all(type(x) is int for x in answer)
+            else:
+                valid = False
+            if valid:
+                assert supervisor.all_child_wait() == answer
+            else:
+                with pytest.raises(ValueError):
+                    supervisor.all_child_wait()
+        assert calls[-1] == (-1, supervisor.ALL_CHILDREN | os.WNOHANG)
+    for error in (OSError(errno.EINVAL, "unsupported"), PermissionError(errno.EPERM, "denied")):
+        with monkeypatch.context() as context:
+            context.setattr(
+                supervisor.os, "waitpid", lambda *args, error=error: (_ for _ in ()).throw(error)
+            )
+            with pytest.raises(OSError):
+                supervisor.all_child_wait()
+    for unsupported in ("waitpid", "waitid"):
+        executed = []
+        with monkeypatch.context() as context:
+            context.setattr(sys, "argv", ["supervisor", str(os.getppid()), "101", "unused"])
+            context.setattr(supervisor, "process", lambda pid: (101, "S"))
+            context.setattr(supervisor.os, "listdir", lambda path: [str(os.getpid())])
+            context.setattr(supervisor.signal, "signal", lambda *args: None)
+
+            def unsupported_wait(*args, unsupported=unsupported):
+                if unsupported == "waitpid":
+                    raise OSError(errno.EINVAL, "unsupported all-child wait")
+                raise ChildProcessError()
+
+            context.setattr(supervisor.os, "waitpid", unsupported_wait)
+            context.setattr(
+                supervisor.os,
+                "waitid",
+                lambda *args: (_ for _ in ()).throw(
+                    OSError(errno.EINVAL, "unsupported all-child wait")
+                ),
+            )
+            context.setattr(
+                supervisor.subprocess,
+                "Popen",
+                lambda *args, executed=executed, **kwargs: executed.append(True),
+            )
+            with pytest.raises(OSError):
+                supervisor.main()
+        assert executed == []
+    for info in (
+        None,
+        SimpleNamespace(si_pid=37, si_code=os.CLD_EXITED, si_status=0),
+        SimpleNamespace(si_pid=True, si_code=os.CLD_EXITED, si_status=0),
+        SimpleNamespace(si_pid=38, si_code=os.CLD_EXITED, si_status=0),
+        SimpleNamespace(si_pid=37, si_code=True, si_status=0),
+    ):
+        with monkeypatch.context() as context:
+
+            def waiting(*args, info=info):
+                calls.append(args)
+                return info
+
+            context.setattr(supervisor.os, "waitid", waiting)
+            if info is None or (
+                type(info.si_pid) is int and info.si_pid == 37 and type(info.si_code) is int
+            ):
+                supervisor.held_direct_child(37)
+            else:
+                with pytest.raises(ValueError):
+                    supervisor.held_direct_child(37)
+        assert calls[-1] == (
+            os.P_PID,
+            37,
+            os.WEXITED | os.WNOHANG | os.WNOWAIT | supervisor.ALL_CHILDREN,
+        )
+    for error in (ChildProcessError(), PermissionError(errno.EPERM, "denied")):
+        with monkeypatch.context() as context:
+            context.setattr(
+                supervisor.os, "waitid", lambda *args, error=error: (_ for _ in ()).throw(error)
+            )
+            with pytest.raises(OSError):
+                supervisor.held_direct_child(37)
+    for mode in ("positive", "omitted", "permission", "invalid", "overflow", "unknown", "threads"):
+        diagnostic = {
+            "counts": dict.fromkeys(supervisor.REFUSAL_KEYS, 0),
+            "counts_saturated": False,
+            "first_scan_refusal": None,
+            "first_task_scan": None,
+        }
+        with monkeypatch.context() as context:
+            context.setattr(
+                supervisor,
+                "process",
+                lambda pid, mode=mode: None if mode == "unknown" else (101, "R"),
+            )
+            context.setattr(
+                supervisor.os,
+                "listdir",
+                lambda path, mode=mode: ["37", "38"] if mode == "threads" else [str(os.getpid())],
+            )
+
+            def opening(*args, mode=mode):
+                if mode == "permission":
+                    raise PermissionError(errno.EPERM, "denied")
+                return io.StringIO(
+                    ""
+                    if mode == "omitted"
+                    else "bad"
+                    if mode == "invalid"
+                    else "1" * 65536
+                    if mode == "overflow"
+                    else "37"
+                )
+
+            context.setattr(supervisor, "open", opening, raising=False)
+            found, refused = supervisor.direct_children(diagnostic)
+        assert refused is (mode not in ("positive", "omitted"))
+        assert found == ({37} if mode == "positive" else set())
+        if refused:
+            assert sum(diagnostic["counts"].values()) > 0
+    events = [
+        {"event": "ready", "pid": 37, "start_ticks": 101},
+        {"event": "outcome", "code": 0, "signal": None},
+        {
+            "event": "diagnostic",
+            "reason": "settled",
+            "counts": dict.fromkeys(control.REFUSAL_COUNTS, 0),
+            "counts_saturated": False,
+            "first_scan_refusal": None,
+            "first_task_scan": None,
+            "owned_remaining": 0,
+            "direct_remaining": 0,
+            "kernel_children_closed": True,
+        },
+        {
+            "event": "settled",
+            "complete": True,
+            "basis": control.SETTLEMENT_BASIS,
+            "all_child_echild": True,
+            "held_children": 0,
+            "root_outcome": True,
+        },
+    ]
+    assert control.kernel_settlement_complete(events, 0)
+    for index in range(4):
+        assert not control.kernel_settlement_complete(events[:index] + events[index + 1 :], 0)
+        assert not control.kernel_settlement_complete(events + [events[index]], 0)
+    for key, value in (
+        ("basis", "old-census"),
+        ("all_child_echild", False),
+        ("held_children", 1),
+        ("held_children", False),
+        ("root_outcome", False),
+        ("complete", 1),
+    ):
+        bad = copy.deepcopy(events)
+        bad[3][key] = value
+        assert not control.kernel_settlement_complete(bad, 0)
+    bad = copy.deepcopy(events)
+    bad[2]["counts"]["scan_refused"] = 1
+    assert not control.kernel_settlement_complete(bad, 0)
+    assert not control.kernel_settlement_complete(events, 2)
+    assert not control.kernel_settlement_complete(events, False)
+    assert not control.kernel_settlement_complete(list(reversed(events)), 0)
+    bad = copy.deepcopy(events)
+    bad[2]["unrecognized"] = "private"
+    assert not control.kernel_settlement_complete(bad, 0)
+    before, after = phase("before"), phase("after")
+    for value in (None, "UNKNOWN", "old-census"):
+        before["process_cleanup_basis"] = value
+        with pytest.raises(ValueError):
+            control.require_witness(before, after, {"nonce": "a" * 64})
+
+    # Root outcome starts autonomous supervisor cleanup. Sending TERM again can
+    # race CPython finalization after it has restored the default disposition.
+    terminal = tmp_path / "terminal-outcome-supervisor.py"
+    terminal.write_text(_terminal_outcome_supervisor())
+    with monkeypatch.context() as context:
+        context.setattr(control, "SUPERVISOR", terminal)
+        lifecycle = control.run_owned([sys.executable, "unused"], os.environ.copy(), 2)
+    assert lifecycle["exit"] == 0 and lifecycle["cleanup_complete"] is True
+    assert lifecycle["observation"]["supervisor_exit"] == 0
+    assert lifecycle["timed_out"] is lifecycle["cancelled"] is False
+
+
+def _terminal_outcome_supervisor():
+    """Closed producer-only seam; it never executes the native workload."""
+    return (
+        "import json,signal,time\n"
+        "def emit(value): print(json.dumps(value),flush=True)\n"
+        "signal.signal(signal.SIGTERM,signal.SIG_DFL)\n"
+        "emit({'event':'ready','pid':37,'start_ticks':101})\n"
+        "emit({'event':'outcome','code':0,'signal':None})\n"
+        "time.sleep(0.15)\n"
+        "emit({'event':'diagnostic','reason':'settled','counts':"
+        + repr(dict.fromkeys(control.REFUSAL_COUNTS, 0))
+        + ",'counts_saturated':False,'first_scan_refusal':None,'first_task_scan':None,"
+        "'owned_remaining':0,'direct_remaining':0,'kernel_children_closed':True})\n"
+        "emit({'event':'settled','complete':True,'basis':'linux-subreaper-all-child-v1',"
+        "'all_child_echild':True,'held_children':0,'root_outcome':True})\n"
+    )

@@ -41,13 +41,38 @@ and the mandatory full protected source tree remain separate.
 The producer invokes the existing owned `install_ci_uv.py` within its own confined domain,
 with a private path-output sink. Ordinary workflow installer consumers remain unchanged by this control; installation is part
 of the control rather than a new workflow installer step.
-The executor-local `scripts/fact_source_capture_before_supervisor.py` owns every execution
-domain. It derives from the supervisor in PR5082
-(`2e970c17a1708014f78394f14f184a483e9d9c3c`), with local task observations and the
-bounded stable-rescan acceptance described below. That existing rescan changes which scans
-can be accepted; the complete local supervisor requires review with this control. It is not
-previously approved public substrate. The retired shared action is not restored. The aggregate 2480-second
-budget starts before checkout and includes the preserved 640-second UV installer and
+The executor-local `scripts/fact_source_capture_before_supervisor.py` owns each execution
+in a dedicated Linux child-subreaper domain established before its sole workload exec.
+It uses default SIGCHLD zombie retention, one waiter and validated Linux all-child waits
+(`__WALL`); unsupported flags refuse before exec. It never calls `Popen.poll` or `wait`
+as a competing reaper. The retired shared action remains absent.
+
+The versioned process-settlement basis is `linux-subreaper-all-child-v1`. Live reads of
+only the supervisor's own direct-child relation discover signal targets; they do not
+prove that a census is complete or empty. A non-consuming all-child `waitid(WNOWAIT)`
+proves each signal target is a direct/adopted child held unreaped by this sole waiter.
+No consuming wait occurs between selection and signalling, so a numeric target cannot
+be recycled into the unrelated sentinel. Zombie leaders remain held while their worker
+threads live. Bounded TERM/KILL, adoption and reap waves run within the existing 20ms
+grace and 1.5-second settlement deadline. Wait0 means children remain pending.
+
+Only the exact root outcome followed by genuine all-child ECHILD and no held child,
+hard failure, overflow or expired settlement bound qualifies process cleanup. The producer
+requires exactly one ordered ready/outcome/diagnostic/settled sequence, successful supervisor,
+zero refusal counts and the versioned positive kernel proof. Each accepted phase receipt
+includes `process_cleanup_basis`; missing, old or malformed proof refuses. Proper process
+cleanup after a cancellation can be observed, but cancellation or a phase/aggregate deadline
+still cannot produce a witness. Parent or control-reader loss remains a fatal refusal.
+
+This proof assumes a trusted closed rooted workload: no external daemon launch, external
+ptrace/reparenting interference or ancestry escape. It is process settlement, not hostile-code
+containment or Docker/database teardown. Only the unchanged genuine fixtures establish those
+resource-cleanup facts. A discovery omission may delay signalling, but an unreaped live child
+keeps all-child wait pending; if closure is not earned by the existing bound, cleanup refuses.
+Encountered permission, malformed ownership/identity, hard I/O, unsupported wait and overflow
+failures remain latched. No previous failed receipt is promoted or reused as a witness.
+
+The aggregate 2480-second budget starts before checkout and includes the preserved 640-second UV installer and
 640-second environment reserve, two 480-second node envelopes including cleanup, and 120
 seconds each for setup and evidence. The 45-minute job is provisional, not measured p95.
 Every phase receives remaining time and retains cleanup reserve; expiration/cancellation
@@ -115,14 +140,21 @@ A task entry observed absent is diagnostic only: it never clears a refusal latch
 incomplete scan. The bounded synthetic thread-disappearance control proves one mechanism that
 can produce a refused tuple, not the historical hosted cause or any PG BEFORE/AFTER witness.
 
-A selected task's disappearance is never an empty successful scan. Only child-open ENOENT
-for a previously known live task, positively absent afterward under the same live owner,
-may attempt two complete fresh task/children censuses within the existing TERM_GRACE.
-Both censuses must have identical task start identities and child sets; every observed
-descendant is retained. Any denial, malformed data, reuse, overflow, deadline or instability
-refuses and latches normally. No prior refusal is cleared. Final completion still requires
-owned-descendant settlement, genuine kernel ECHILD and empty direct/adopted ownership.
-This synthetic mechanism proof does not establish a PG CALL or historical hosted cause.
+The former branch-only recovery accepted two equal live foreign-task censuses after
+known task retirement. Linux does not guarantee complete children lists under concurrent
+exit, so this predicate and its recursive scanner are retired. The historical known-before
+positive and absent-before refusal remain scoped mechanism evidence. Their executing
+survivor is the kernel-domain control: real listed-thread retirement before the first legacy
+probe, resistant detached descendants through a live intermediary, zombie-leader/live-worker
+settlement, adoption/reaping, sentinel survival and genuine final all-child ECHILD. The
+same positioned controller makes the old source fail the positive-settlement assertion.
+Deliberately omitted direct discovery must remain pending and refuse at deadline; an inverse
+wait0-as-ECHILD mutant must fail that assertion, followed by the restored refusal control.
+These software/kernel controls do not establish the hosted incident cause or a PG witness.
+
+The original control42350015004/1 remains FAILED/UNKNOWN: helper0, three latched scan refusals,
+absent selected task before/after and settledfalse, despite observed final kernel closure.
+The new protocol neither erases that refusal nor declares it a complete live census.
 
 An optional `uv_install` field on an installer-stage refusal contains only bounded exit
 integers, strict booleans or null and a six-field closed lifecycle projection from the

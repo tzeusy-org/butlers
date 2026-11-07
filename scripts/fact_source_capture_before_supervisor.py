@@ -79,186 +79,87 @@ def process(pid):
         return None
 
 
-def task_identity(pid, task):
-    """Observe only one already-selected owned task; never export its identity."""
-    try:
-        with open(f"/proc/{pid}/task/{task}/stat") as stream:
-            value = stream.read(4096)
-        fields = value[value.rfind(")") + 2 :].split()
-        return (int(fields[19]), fields[0]), "known"
-    except OSError as error:
-        return None, {
-            errno.ENOENT: "absent",
-            errno.ESRCH: "absent",
-            errno.EACCES: "denied",
-            errno.EPERM: "denied",
-        }.get(error.errno, "other")
-    except (ValueError, IndexError):
-        return None, "invalid"
+# Linux __WALL includes clone children as well as conventional SIGCHLD children.
+# Its availability is tested with both wait APIs before creating the workload.
+ALL_CHILDREN = 0x40000000
+WAIT_FLAGS = os.WNOHANG | ALL_CHILDREN
+SETTLEMENT_BASIS = "linux-subreaper-all-child-v1"
 
 
-def task_scan_observation(before, after, phase):
-    """Closed diagnostic only; no permission to accept an incomplete scan."""
-    first, first_category = before
-    last, last_category = after
-    return {
-        "phase": phase,
-        "before_probe": first_category,
-        "after_probe": last_category,
-        "before_known": first is not None,
-        "after_known": last is not None,
-        "same_task_start": first[0] == last[0] if first and last else None,
-        "before_dead": first[1] in ("Z", "X") if first else None,
-        "after_dead": last[1] in ("Z", "X") if last else None,
-        "classification": (
-            "task-entry-absent"
-            if last_category == "absent"
-            else "task-identity-changed"
-            if first and last and first[0] != last[0]
-            else "task-known"
-            if last
-            else "task-probe-unknown"
-        ),
-    }
-
-
-def retired_task_rescan(pid, identity, retired_task, observed):
-    """Two bounded complete stable censuses; retirement alone proves nothing."""
-    retained = set(observed)
-    deadline = time.monotonic() + TERM_GRACE
-    previous = None
-    try:
-        for _ in range(2):
-            if time.monotonic() >= deadline or process(pid) != identity:
-                return retained, True
-            tasks = os.listdir(f"/proc/{pid}/task")
-            if (
-                not tasks
-                or len(tasks) > MAX_PROCESSES
-                or retired_task in tasks
-                or any(not task.isdecimal() for task in tasks)
-            ):
-                return retained, True
-            starts = {}
-            found = set()
-            for task in tasks:
-                if time.monotonic() >= deadline:
-                    return retained, True
-                before, category = task_identity(pid, task)
-                if category != "known" or before[1] in ("Z", "X"):
-                    return retained, True
-                with open(f"/proc/{pid}/task/{task}/children") as stream:
-                    raw = stream.read(65536)
-                if len(raw) == 65536:
-                    return retained, True
-                for value in raw.split():
-                    child = int(value)
-                    if child <= 1 or len(found | retained) >= MAX_PROCESSES:
-                        return retained, True
-                    found.add(child)
-                    retained.add(child)
-                after, category = task_identity(pid, task)
-                if category != "known" or after != before:
-                    return retained, True
-                starts[task] = before
-            final_tasks = os.listdir(f"/proc/{pid}/task")
-            if set(final_tasks) != set(tasks) or process(pid) != identity:
-                return retained, True
-            if any(task_identity(pid, task) != (start, "known") for task, start in starts.items()):
-                return retained, True
-            snapshot = (starts, found)
-            if previous is not None and snapshot != previous:
-                return retained, True
-            previous = snapshot
-        return retained, time.monotonic() >= deadline
-    except (OSError, ValueError, IndexError):
-        return retained, True
-
-
-def children(pid, diagnostics=None, site=0):
+def direct_children(diagnostics):
+    """Bounded positive discovery only; a live list never proves emptiness."""
+    pid = os.getpid()
     identity = process(pid)
-    truncated = False
-    operation = 1  # task list
-    selected_task = None
-    task_before = (None, "unknown")
-    task_phase = "task-list"
+    operation = 1
     try:
-        # The supervisor is single-threaded. Other owned processes may not be.
-        result = set()
+        if not identity:
+            raise ValueError("supervisor identity")
         tasks = os.listdir(f"/proc/{pid}/task")
-        truncated = len(tasks) > MAX_PROCESSES
-        if truncated:
+        if tasks != [str(pid)]:
             count_refusal(diagnostics, "task_overflow")
-        for task in tasks[:MAX_PROCESSES]:
-            if task.isdecimal():
-                selected_task = task
-                task_before = task_identity(pid, task)
-                task_phase = "child-open"
-                operation = 2  # child-file open/context
-                stream = open(f"/proc/{pid}/task/{task}/children")
-                task_phase = "child-context-enter"
-                with stream:
-                    task_phase = "child-read"
-                    operation = 3  # child-file read
-                    raw = stream.read(65536)
-                    truncated = truncated or len(raw) == 65536
-                    if len(raw) == 65536:
-                        count_refusal(diagnostics, "children_overflow")
-                    task_phase = "child-parse"
-                    for n in raw.split():
-                        if len(result) >= MAX_PROCESSES:
-                            count_refusal(diagnostics, "children_overflow")
-                            return result, True
-                        operation = 4  # child PID conversion
-                        result.add(int(n))
-                    task_phase = "child-context-exit"
-                    operation = 2  # child-file context exit
-        return result, truncated
+            return set(), True
+        operation = 2
+        with open(f"/proc/{pid}/task/{pid}/children") as stream:
+            operation = 3
+            raw = stream.read(65536)
+        if len(raw) == 65536:
+            count_refusal(diagnostics, "children_overflow")
+            return set(), True
+        result = set()
+        for value in raw.split():
+            operation = 4
+            if not value.isdecimal() or int(value) <= 1 or int(value) == pid:
+                raise ValueError("direct child")
+            if len(result) >= MAX_PROCESSES or int(value) in result:
+                count_refusal(diagnostics, "children_overflow")
+                return result, True
+            result.add(int(value))
+        return result, False
     except (OSError, ValueError) as error:
-        current = process(pid)
-        # A task can disappear after listing while its same-identity owner
-        # becomes a zombie. Only ENOENT plus a known departed identity closes
-        # this scan; final settlement still requires kernel ECHILD below.
-        if (
-            isinstance(error, OSError)
-            and error.errno == errno.ENOENT
-            and identity
-            and current
-            and current[0] == identity[0]
-            and current[1] in ("Z", "X")
-        ):
-            # Departure cannot erase overflow already observed in this scan.
-            return set(), truncated
-        task_after = (
-            task_identity(pid, selected_task) if selected_task is not None else (None, "unknown")
-        )
-        if (
-            isinstance(error, OSError)
-            and error.errno == errno.ENOENT
-            and task_phase == "child-open"
-            and not truncated
-            and identity
-            and current == identity
-            and current[1] not in ("Z", "X")
-            and task_before[1] == "known"
-            and task_before[0][1] not in ("Z", "X")
-            and task_after == (None, "absent")
-        ):
-            recovered, incomplete = retired_task_rescan(pid, identity, selected_task, result)
-            if not incomplete:
-                return recovered, False
-            # A failed rescan retains every observed descendant but still latches refusal.
-            result = recovered
-        # Permission, malformed data, unknown/reused identity and live actors
-        # remain unobserved/truncated; never turn them into a positive scan.
         count_refusal(diagnostics, "scan_refused")
-        task_scan = (
-            task_scan_observation(task_before, task_identity(pid, selected_task), task_phase)
-            if selected_task is not None
-            else None
+        first_scan_refusal(diagnostics, 1, operation, error, identity, process(pid))
+        return set(), True
+
+
+def all_child_wait():
+    """One validated consuming all-child wait; None is genuine ECHILD only."""
+    try:
+        result = os.waitpid(-1, WAIT_FLAGS)
+    except ChildProcessError:
+        return None
+    if (
+        type(result) is not tuple
+        or len(result) != 2
+        or any(type(value) is not int for value in result)
+        or result[0] < 0
+        or not 0 <= result[1] <= 65535
+        or (result[0] == 0 and result[1] != 0)
+        or (
+            result[0] != 0
+            and (result[0] <= 1 or not (os.WIFEXITED(result[1]) or os.WIFSIGNALED(result[1])))
         )
-        first_scan_refusal(diagnostics, site, operation, error, identity, current, task_scan)
-        return result, True
+    ):
+        raise ValueError("all child wait")
+    return result
+
+
+def held_direct_child(pid):
+    """Prove waitable ownership without consuming it or relying on a PID stat.
+
+    With default SIGCHLD, no autoreap and this sole waiter, the direct child
+    remains kernel-held until our next consuming wait. There is no wait between
+    this observation and signalling. None means a living owned child, not ECHILD.
+    """
+    info = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT | ALL_CHILDREN)
+    if info is not None and (
+        type(getattr(info, "si_pid", None)) is not int
+        or info.si_pid != pid
+        or type(getattr(info, "si_code", None)) is not int
+        or info.si_code not in (os.CLD_EXITED, os.CLD_KILLED, os.CLD_DUMPED)
+        or type(getattr(info, "si_status", None)) is not int
+        or not 0 <= info.si_status <= 255
+    ):
+        raise ValueError("direct ownership")
 
 
 def main():
@@ -273,10 +174,21 @@ def main():
         or parent_identity[0] != parent_start
         or parent_start <= 0
         or parent_identity[1] in ("Z", "X")
+        or os.listdir(f"/proc/{os.getpid()}/task") != [str(os.getpid())]
     ):
         return 2
+    # Explicitly reset inherited ignore/no-zombie disposition. Python installs
+    # sigaction without SA_NOCLDWAIT. Never call Popen.poll/wait: we are sole waiter.
+    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+    if all_child_wait() is not None:
+        return 2
+    try:
+        os.waitid(os.P_ALL, 0, os.WEXITED | WAIT_FLAGS | os.WNOWAIT)
+    except ChildProcessError:
+        pass
+    else:
+        return 2
     libc = ctypes.CDLL(None, use_errno=True)
-    # PR_SET_CHILD_SUBREAPER. No capabilities or host-wide state changes.
     if libc.prctl(36, 1, 0, 0, 0) != 0:
         return 2
     cancelling = []
@@ -287,13 +199,9 @@ def main():
 
     signal.signal(signal.SIGTERM, cancel)
     signal.signal(signal.SIGINT, cancel)
-    # A Node IPC socket, when present, goes directly to the SDK child. Neither
-    # this supervisor nor stdout/stderr consumes or forwards provider output.
     ipc = os.environ.get("NODE_CHANNEL_FD")
     if ipc not in (None, "3"):
         return 2
-    # Reader loss must be observed even when a resistant child emits nothing.
-    # Poll only descriptor health; never read or export provider/control data.
     control = select.poll()
     control.register(1, select.POLLERR | select.POLLHUP | select.POLLNVAL)
     child = subprocess.Popen(
@@ -306,48 +214,40 @@ def main():
     )
     if ipc == "3":
         os.close(3)
-    owned = {}
+    held = {child.pid}
     diagnostics = {
         "counts": dict.fromkeys(REFUSAL_KEYS, 0),
         "counts_saturated": False,
         "first_scan_refusal": None,
         "first_task_scan": None,
     }
-
-    def diagnostic(reason, direct, no_children):
-        # Closed categories and saturated numeric counts only. This explains
-        # an existing refusal; it never supplies missing ownership evidence.
-        emit(
-            {
-                "event": "diagnostic",
-                "reason": reason,
-                **diagnostics,
-                "owned_remaining": min(MAX_PROCESSES, len(owned)),
-                "direct_remaining": min(MAX_PROCESSES, len(direct)),
-                "kernel_children_closed": no_children,
-            }
-        )
-
-    overflow = False
+    fatal = False
     outcome = None
     stopping_at = None
-    root = process(child.pid)
-    if root:
-        owned[child.pid] = root[0]
-    if not emit({"event": "ready", "pid": child.pid, "start_ticks": root[0] if root else 0}):
-        cancel(signal.SIGTERM, None)
-    while True:
-        # Reap only children of this exact supervisor. Reparenting happens in
-        # the kernel before an intermediate parent's departure can lose them.
-        while True:
+
+    def refuse(key="scan_refused"):
+        nonlocal fatal
+        fatal = True
+        count_refusal(diagnostics, key)
+
+    def reap():
+        nonlocal outcome
+        for _ in range(MAX_PROCESSES):
             try:
-                pid, status = os.waitpid(-1, os.WNOHANG)
-            except ChildProcessError:
-                pid = 0
-            if not pid:
-                break
-            owned.pop(pid, None)
-            if pid == child.pid and outcome is None:
+                result = all_child_wait()
+            except (OSError, ValueError):
+                refuse()
+                return False
+            if result is None:
+                return True
+            pid, status = result
+            if pid == 0:
+                return False
+            held.discard(pid)
+            if pid == child.pid:
+                if outcome is not None:
+                    refuse()
+                    return False
                 code = os.waitstatus_to_exitcode(status)
                 outcome = {
                     "event": "outcome",
@@ -355,98 +255,97 @@ def main():
                     "signal": signal.Signals(-code).name if code < 0 else None,
                 }
                 if not emit(outcome):
+                    refuse()
                     cancel(signal.SIGTERM, None)
-        for pid, start in list(owned.items()):
-            current = process(pid)
-            if not current or current[0] != start or current[1] in ("Z", "X"):
-                owned.pop(pid, None)
-        direct, truncated = children(os.getpid(), diagnostics, site=1)
-        overflow = overflow or truncated
-        todo = list(direct)
-        seen = set()
-        while todo:
-            pid = todo.pop()
-            if pid in seen:
-                continue
-            seen.add(pid)
-            current = process(pid)
-            if current and current[1] not in ("Z", "X"):
-                if len(owned) < MAX_PROCESSES or pid in owned:
-                    owned[pid] = current[0]
-                else:
-                    overflow = True
-                    count_refusal(diagnostics, "owned_overflow")
-                descendants, truncated = children(pid, diagnostics, site=2)
-                overflow = overflow or truncated
-                room = max(0, MAX_PROCESSES - len(todo))
-                remaining = descendants - seen
-                overflow = overflow or len(remaining) > room
-                if len(remaining) > room:
-                    count_refusal(diagnostics, "pending_overflow")
-                todo.extend(list(remaining)[:room])
-            if len(seen) >= MAX_PROCESSES:
-                overflow = overflow or bool(todo)
-                if todo:
-                    count_refusal(diagnostics, "walk_overflow")
-                break
-        for pid, start in list(owned.items()):
-            current = process(pid)
-            if not current or current[0] != start or current[1] in ("Z", "X"):
-                owned.pop(pid, None)
+        refuse("walk_overflow")
+        return False
+
+    root = process(child.pid)
+    if not root or root[0] <= 0:
+        refuse()
+    if not emit({"event": "ready", "pid": child.pid, "start_ticks": root[0] if root else 0}):
+        refuse()
+        cancel(signal.SIGTERM, None)
+    while True:
+        no_children = reap()
         parent_now = process(parent_pid)
-        if (
-            not parent_identity
-            or not parent_now
-            or parent_now[0] != parent_identity[0]
-            or parent_now[1] in ("Z", "X")
-        ):
+        if not parent_now or parent_now[0] != parent_identity[0] or parent_now[1] in ("Z", "X"):
+            refuse()
             cancel(signal.SIGTERM, None)
         if control.poll(0):
+            refuse()
             cancel(signal.SIGTERM, None)
-        if cancelling and stopping_at is None:
+        if stopping_at is None and (outcome is not None or cancelling or fatal):
             stopping_at = time.monotonic()
         if stopping_at is not None:
+            # The terminal proof is independent of a live discovery list. Any
+            # surviving descendant still has a direct ancestry path to this
+            # pre-exec subreaper; exiting parents adopt before becoming reapable.
             elapsed = time.monotonic() - stopping_at
-            signum = (
-                signal.SIGKILL
-                if elapsed >= TERM_GRACE
-                else (cancelling[0] if cancelling else signal.SIGTERM)
-            )
-            for pid, start in list(owned.items()):
-                current = process(pid)
-                if current and current[0] == start:
-                    try:
-                        os.kill(pid, signum)
-                    except ProcessLookupError:
-                        pass
-            # ECHILD plus an empty adopted-child relation closes the ownership
-            # boundary. An empty polling result alone never claims completion.
-            no_children = False
-            try:
-                pid, status = os.waitpid(-1, os.WNOHANG)
-                if pid:
-                    owned.pop(pid, None)
-                    if pid == child.pid and outcome is None:
-                        code = os.waitstatus_to_exitcode(status)
-                        outcome = {
-                            "event": "outcome",
-                            "code": code if code >= 0 else None,
-                            "signal": signal.Signals(-code).name if code < 0 else None,
-                        }
-                        if not emit(outcome):
-                            cancel(signal.SIGTERM, None)
-            except ChildProcessError:
-                no_children = True
-            direct, truncated = children(os.getpid(), diagnostics, site=3)
-            overflow = overflow or truncated
-            if outcome is not None and no_children and not direct and not owned:
-                diagnostic("latched_refusal" if overflow else "settled", direct, no_children)
-                emit({"event": "settled", "complete": not overflow})
-                return 0 if not overflow else 2
+            if no_children and outcome is not None and not held:
+                complete = not fatal and elapsed < SETTLEMENT_BOUND
+                reason = "settled" if complete else "latched_refusal"
+                if not emit(
+                    {
+                        "event": "diagnostic",
+                        "reason": reason,
+                        **diagnostics,
+                        "owned_remaining": len(held),
+                        "direct_remaining": 0,
+                        "kernel_children_closed": True,
+                    }
+                ):
+                    return 2
+                if not emit(
+                    {
+                        "event": "settled",
+                        "complete": complete,
+                        "basis": SETTLEMENT_BASIS,
+                        "all_child_echild": True,
+                        "held_children": len(held),
+                        "root_outcome": True,
+                    }
+                ):
+                    return 2
+                return 0 if complete else 2
             if elapsed >= SETTLEMENT_BOUND:
-                diagnostic("settlement_deadline", direct, no_children)
-                emit({"event": "settled", "complete": False})
+                emit(
+                    {
+                        "event": "diagnostic",
+                        "reason": "settlement_deadline",
+                        **diagnostics,
+                        "owned_remaining": len(held),
+                        "direct_remaining": len(held),
+                        "kernel_children_closed": no_children,
+                    }
+                )
+                emit(
+                    {
+                        "event": "settled",
+                        "complete": False,
+                        "basis": SETTLEMENT_BASIS,
+                        "all_child_echild": no_children,
+                        "held_children": len(held),
+                        "root_outcome": outcome is not None,
+                    }
+                )
                 return 2
+            direct, incomplete = direct_children(diagnostics)
+            fatal = fatal or incomplete
+            if len(held | direct) > MAX_PROCESSES:
+                refuse("owned_overflow")
+            # No consuming wait occurs in this selection/signalling wave.
+            # waitid(WNOWAIT) rejects nonchildren and holds zombie leaders until
+            # the kernel allows their entire thread group to become reapable.
+            signum = signal.SIGKILL if elapsed >= TERM_GRACE else signal.SIGTERM
+            for pid in sorted(direct | held)[:MAX_PROCESSES]:
+                try:
+                    held_direct_child(pid)
+                    if len(held) < MAX_PROCESSES or pid in held:
+                        held.add(pid)
+                    os.kill(pid, signum)
+                except (OSError, ValueError, OverflowError):
+                    refuse()
         time.sleep(0.01)
 
 
