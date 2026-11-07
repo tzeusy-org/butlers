@@ -12,7 +12,7 @@ import logging
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -135,11 +135,9 @@ async def test_a_tick_that_ignores_its_cancel_does_not_hold_shutdown(
         return 0
 
     await _running(daemon, tick, started)
-    with (
-        patch.object(lifecycle, "_TICK_CANCEL_GRACE_S", 0.1),
-        caplog.at_level(logging.ERROR, logger=lifecycle.logger.name),
-    ):
-        async with asyncio.timeout(5):
+    # Waits out the real grace period: the suite does not patch the lifecycle module.
+    with caplog.at_level(logging.ERROR, logger=lifecycle.logger.name):
+        async with asyncio.timeout(lifecycle._TICK_CANCEL_GRACE_S + 10):
             await lifecycle._shutdown_resources(daemon)
 
     assert events == ["client closed"]
