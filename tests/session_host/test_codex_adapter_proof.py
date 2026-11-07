@@ -178,26 +178,32 @@ def test_any_extra_tool_fails_the_matching_check(tool, expected):
     assert expected in failed(observation)
 
 
+# Each row names the reason its own rule emits. Several rules can fail the same
+# check, so asserting only the check would let a removed rule hide behind another.
 @pytest.mark.parametrize(
-    ("change", "expected"),
+    ("change", "expected", "reason"),
     [
-        ("exit", "broker_only_mcp"),
-        ("no-argv", "broker_only_mcp"),
-        ("bypass-argv", "builtin_shell_disabled"),
-        ("wrong-provider-auth", "broker_only_mcp"),
-        ("decoy", "local_mcp_disabled"),
-        ("unexpected-path", "broker_only_mcp"),
-        ("broker-call-missing", "broker_only_mcp"),
-        ("broker-bearer", "broker_only_mcp"),
-        ("command-event", "builtin_shell_disabled"),
-        ("file-event", "builtin_filesystem_disabled"),
-        ("shell-ran", "builtin_shell_disabled"),
-        ("patch-ran", "builtin_filesystem_disabled"),
-        ("search-ran", "builtin_web_disabled"),
-        ("pong-missing", "broker_only_mcp"),
+        ("exit", "broker_only_mcp", "runtime did not complete"),
+        ("no-argv", "broker_only_mcp", "no executed argv"),
+        ("bypass-argv", "builtin_shell_disabled", "bypass argument executed"),
+        ("wrong-provider-auth", "broker_only_mcp", "staged credential"),
+        ("decoy", "local_mcp_disabled", "decoy contacted"),
+        ("unexpected-path", "broker_only_mcp", "other paths"),
+        ("broker-call-missing", "broker_only_mcp", "tools/call never arrived"),
+        ("broker-bearer", "broker_only_mcp", "without the staged bearer"),
+        ("command-event", "builtin_shell_disabled", "command_execution event"),
+        ("file-event", "builtin_filesystem_disabled", "file_change event"),
+        ("search-event", "builtin_web_disabled", "web_search event"),
+        ("shell-ran", "builtin_shell_disabled", "exec_command output="),
+        ("patch-ran", "builtin_filesystem_disabled", "apply_patch output="),
+        ("view-ran", "builtin_filesystem_disabled", "view_image output="),
+        ("search-ran", "builtin_web_disabled", "web_search output="),
+        ("decoy-read", "local_mcp_disabled", "decoy resource read"),
+        ("pong-missing", "broker_only_mcp", "did not return to the provider"),
+        ("broker-tool-missing", "broker_only_mcp", "missing=['function:mcp__broker.goal_ping']"),
     ],
 )
-def test_each_observed_violation_fails(change, expected):
+def test_each_observed_violation_fails(change, expected, reason):
     observation = clean_observation()
     outputs = {item["call_id"]: item for item in observation["bodies"][1]["input"]}
     if change == "exit":
@@ -226,9 +232,48 @@ def test_each_observed_violation_fails(change, expected):
         outputs[codex_proof.CALL_IDS["apply_patch"]]["output"] = "Success."
     elif change == "search-ran":
         outputs[codex_proof.CALL_IDS["web_search"]]["output"] = "results"
+    elif change == "search-event":
+        observation["events"].append({"item_type": "web_search"})
+    elif change == "view-ran":
+        outputs[codex_proof.CALL_IDS["view_image"]]["output"] = "image bytes"
+    elif change == "decoy-read":
+        outputs[codex_proof.CALL_IDS["read_mcp_resource"]]["output"] = "decoy contents"
     elif change == "pong-missing":
         outputs[codex_proof.CALL_IDS["mcp__broker.goal_ping"]]["output"] = "requires approval"
-    assert expected in failed(observation)
+    elif change == "broker-tool-missing":
+        for body in observation["bodies"]:
+            body["tools"] = [tool for tool in body["tools"] if tool["type"] != "namespace"]
+    reasons = codex_proof.evaluate(observation)[expected]
+    assert any(reason in item for item in reasons), reasons
+
+
+def test_report_maps_each_measured_failure_to_fail(tmp_path):
+    settings = CodexSettings(codex_proof.MODEL)
+    profile = Profile(
+        runtime="codex", model=settings.model, image=image(tmp_path), command=settings.command
+    )
+    failures = {check: [] for check in codex_proof.CHECKED}
+    failures["provider_code_disabled"] = ["synthetic failure"]
+    checks = json.loads(codex_proof.report(profile.subject, failures, b"x"))["checks"]
+    assert checks["provider_code_disabled"] == "fail"
+    assert {checks[c] for c in codex_proof.CHECKED if c != "provider_code_disabled"} == {"pass"}
+
+
+@pytest.mark.parametrize(
+    "change", [{"runtime": "opencode"}, {"model": "gpt-other"}, {"runtime": "Codex"}]
+)
+def test_codex_material_refuses_another_runtime_or_model(tmp_path, change):
+    root = tmp_path / "stage"
+    root.mkdir(mode=0o700)
+    root.chmod(0o700)
+    req = replace(request(), **{"runtime": "codex", "model": codex_proof.MODEL, **change})
+    material = InvocationMaterial.stage(root, req)
+    try:
+        with pytest.raises(Refused, match="^invalid_codex_material$"):
+            material.prepare_codex(CodexSettings(codex_proof.MODEL))
+        assert set(material.content_hashes) == {"model-credential", "prompt", "mcp.json"}
+    finally:
+        material.discard()
 
 
 def test_session_host_argv_has_no_bypass_flag():
@@ -237,14 +282,56 @@ def test_session_host_argv_has_no_bypass_flag():
     assert "--strict-config" in command
 
 
-@pytest.mark.parametrize("flag", BYPASS_FLAGS)
+BYPASS_FORMS = (
+    *((flag,) for flag in BYPASS_FLAGS),
+    ("--permission-mode=bypassPermissions",),
+    ("--permission-mode", "bypassPermissions"),
+    ("--dangerously-skip-permissions=true",),
+    ("--Dangerously-Skip-Permissions",),
+    ("--allow-dangerously-skip-permissions",),
+    ("-s", "danger-full-access"),
+    ("--sandbox", "danger-full-access"),
+    ("-c", 'sandbox_mode="danger-full-access"'),
+    ("--sandbox", "false"),
+    ("--sandbox=False",),
+    ("--sandbox", "off"),
+    ("--yolo",),
+    ("--YOLO=true",),
+    ("--approval-mode=yolo",),
+    ("--approval-mode", "YOLO"),
+)
+# Same flags with a restricting value, which a parse-based check must still admit.
+SAFE_FORMS = (
+    ("--permission-mode", "default"),
+    ("--sandbox", "read-only"),
+    ("--sandbox=true",),
+    ("--approval-mode=default",),
+    ("-s", "read-only"),
+)
+
+
+@pytest.mark.parametrize("arguments", BYPASS_FORMS)
 @pytest.mark.parametrize("runtime", ["claude", "gemini", "synthetic-only"])
-def test_no_runtime_profile_may_carry_a_bypass_argument(tmp_path, runtime, flag):
+def test_no_runtime_profile_may_carry_a_bypass_argument(tmp_path, runtime, arguments):
     files = image(tmp_path)
     good = ("/runtime/codex", "--safe")
     assert Profile(runtime=runtime, model="m", image=files, command=good).command == good
     with pytest.raises(Refused, match="^invalid_runtime_profile$"):
-        Profile(runtime=runtime, model="m", image=files, command=(*good, flag))
+        Profile(runtime=runtime, model="m", image=files, command=(*good, *arguments))
+
+
+@pytest.mark.parametrize("arguments", SAFE_FORMS)
+def test_restricting_values_of_bypass_capable_flags_are_admitted(tmp_path, arguments):
+    command = ("/runtime/codex", *arguments, "--safe")
+    profile = Profile(runtime="claude", model="m", image=image(tmp_path), command=command)
+    assert profile.command == command
+
+
+@pytest.mark.parametrize("runtime", ["Codex", "CODEX", "OpenCode"])
+def test_case_variant_runtime_cannot_skip_the_closed_preset(tmp_path, runtime):
+    files = image(tmp_path)
+    with pytest.raises(Refused, match="^invalid_runtime_profile$"):
+        Profile(runtime=runtime, model="m", image=files, command=("/runtime/codex", "--safe"))
 
 
 def test_codex_profile_refuses_any_command_but_the_closed_preset(tmp_path):

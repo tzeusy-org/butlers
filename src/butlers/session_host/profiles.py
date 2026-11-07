@@ -19,17 +19,38 @@ from .contracts import Refused
 from .opencode import OpenCodeSettings
 
 # RFC 0038 D3: no session-host command may carry a permission or sandbox bypass.
-_BYPASS_ARGUMENTS = frozenset(
-    {
-        "bypassPermissions",
-        "--dangerously-skip-permissions",
-        "--allow-dangerously-skip-permissions",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "--dangerously-bypass-hook-trust",
-        "--sandbox=false",
-        "--yolo",
-    }
-)
+# Matching is case-insensitive and reads `--flag=value` and `--flag value` alike.
+# Fragments match anywhere in an argument, so `-s danger-full-access` and
+# `-c sandbox_mode="danger-full-access"` both refuse. Profile argv is a trusted
+# fixed tuple and the prompt travels on stdin, so a false refusal can only come
+# from a profile author, never from a request.
+#
+# Not covered: short switches whose meaning differs between runtimes, such as
+# Gemini's `-y` (yolo). Refusing every `-y` would be wrong for other CLIs, so a
+# Gemini profile needs its own closed preset before it can be admitted.
+_BYPASS_FRAGMENTS = ("dangerously", "bypasspermissions", "danger-full-access")
+_BYPASS_SWITCHES = frozenset({"--yolo"})
+_BYPASS_VALUES = {
+    "--sandbox": frozenset({"false", "0", "no", "off", "none"}),
+    "--approval-mode": frozenset({"yolo"}),
+    "--permission-mode": frozenset({"bypasspermissions"}),
+}
+
+
+def carries_bypass(command: tuple[str, ...] | list[str]) -> bool:
+    lowered = [argument.lower() for argument in command]
+    for index, argument in enumerate(lowered):
+        if any(fragment in argument for fragment in _BYPASS_FRAGMENTS):
+            return True
+        flag, joined, value = argument.partition("=")
+        if flag in _BYPASS_SWITCHES:
+            return True
+        if not joined and index + 1 < len(lowered):
+            value = lowered[index + 1]
+        if value in _BYPASS_VALUES.get(flag, ()):
+            return True
+    return False
+
 
 _CHECKS = frozenset(
     {
@@ -109,12 +130,14 @@ class Profile:
                 type(entry) is not ImageFile or not _digest(entry.sha256) for entry in self.image
             )
             or type(self.command) is not tuple
+            # "Codex" would skip the closed codex preset and take any argv.
+            or self.runtime != self.runtime.lower()
         ):
             raise Refused("invalid_runtime_profile")
         # Reuse the actual backend's inert profile validation. It opens nothing
         # and starts nothing; immutable inputs are rechecked/snapshotted at use.
         _domain(self.image, self.command, self.runtime, self.model)
-        if not _BYPASS_ARGUMENTS.isdisjoint(self.command):
+        if carries_bypass(self.command):
             raise Refused("invalid_runtime_profile")
 
     @property
