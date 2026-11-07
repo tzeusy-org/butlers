@@ -238,6 +238,12 @@ union. `memory_entity_merge` is a compatibility dispatch to that single authorit
 - **AND** an operation that waited MUST see the marker and move nothing onto the entity
 - **AND** a memory entity delete that cannot finish MUST write no marker and MUST be retryable
 
+#### Scenario: The enrichment reap cannot remove an entity that gained a reference
+
+- **WHEN** the email enrichment reap finds a clean placeholder while a writer or merge is adding a reference to it
+- **THEN** it MUST hold the entity row `FOR UPDATE` while it repeats its no-references check in a new statement
+- **AND** it MUST skip a row another transaction holds, for its next run, rather than wait
+
 #### Scenario: A memory supersede cannot deadlock a forget or delete
 
 - **WHEN** a memory property fact write or a Dunbar tier pin replaces a fact on an entity that a forget or delete holds or is about to hold
