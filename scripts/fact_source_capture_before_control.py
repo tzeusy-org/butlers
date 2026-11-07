@@ -14,6 +14,7 @@ import resource
 import secrets
 import selectors
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -384,6 +385,151 @@ def workload_state(root, phase):
         "lock_sha256": hashlib.sha256((root / "uv.lock").read_bytes()).hexdigest(),
         "differences": expected,
     }
+
+
+# Diagnostic annexes never participate in phase or witness eligibility.
+AFTER_DIAGNOSTIC_SCHEMA = "fact-capture-call-diagnostic.v1"
+DIAGNOSTIC_CATEGORIES = {
+    "none",
+    "unknown",
+    "other",
+    "timeout",
+    "value-error",
+    "assertion-error",
+    "key-error",
+    "type-error",
+    "runtime-error",
+    "identity-query",
+    "http-timeout",
+    "http-error",
+    "db-error",
+    "cancelled",
+}
+DIAGNOSTIC_OPERATIONS = {
+    "none",
+    "unknown",
+    "capture-snapshot",
+    "capture-owner-lookup",
+    "capture-lock-read",
+    "capture-source-check",
+    "capture-report-build",
+    "capture-report-write",
+    "capture-cache",
+    "resolver-routing",
+    "resolver-endpoint",
+    "resolver-client-context",
+    "resolver-tool-call",
+    "resolver-result-decode",
+    "resolver-wrap",
+    "resolver-suppress",
+}
+
+
+def unknown_after_diagnostic(binding):
+    return {
+        "schema": AFTER_DIAGNOSTIC_SCHEMA,
+        "binding": binding,
+        "phase": "after",
+        "available": False,
+        "truncated": False,
+        "call_error": {"category": "unknown", "operation": "unknown"},
+        "resolver_errors": [],
+    }
+
+
+def safe_after_diagnostic(data, binding):
+    """Reconstruct a bounded closed annex; it cannot qualify a phase."""
+    unknown = unknown_after_diagnostic(binding)
+    if type(data) is not dict or set(data) != set(unknown):
+        return unknown
+    if (
+        data["schema"] != AFTER_DIAGNOSTIC_SCHEMA
+        or data["binding"] != binding
+        or data["phase"] != "after"
+        or type(data["available"]) is not bool
+        or type(data["truncated"]) is not bool
+    ):
+        return unknown
+
+    def pair(value):
+        return (
+            type(value) is dict
+            and set(value) == {"category", "operation"}
+            and type(value["category"]) is str
+            and value["category"] in DIAGNOSTIC_CATEGORIES
+            and type(value["operation"]) is str
+            and value["operation"] in DIAGNOSTIC_OPERATIONS
+        )
+
+    call = data["call_error"]
+    records = data["resolver_errors"]
+    if not pair(call) or type(records) is not list or len(records) > 8:
+        return unknown
+    if (
+        (call["category"] == "none") != (call["operation"] == "none")
+        or (data["available"] and call["category"] == "unknown")
+        or (data["available"] and call["operation"] == "unknown" and not data["truncated"])
+    ):
+        return unknown
+    total, seen, clean = 0, set(), []
+    for row in records:
+        if type(row) is not dict or set(row) != {"category", "operation", "count"}:
+            return unknown
+        value = {key: row[key] for key in ("category", "operation")}
+        if not pair(value) or type(row["count"]) is not int or not 1 <= row["count"] <= 24:
+            return unknown
+        key = (row["category"], row["operation"])
+        if key in seen or row["category"] in ("none", "unknown") or row["operation"] == "none":
+            return unknown
+        if (row["operation"] != "unknown" and not row["operation"].startswith("resolver-")) or (
+            row["operation"] == "unknown" and not data["truncated"]
+        ):
+            return unknown
+        seen.add(key)
+        total += row["count"]
+        clean.append({**value, "count": row["count"]})
+    if total > 24 or (not data["available"] and (call != unknown["call_error"] or records)):
+        return unknown
+    result = {
+        **unknown,
+        "available": data["available"],
+        "truncated": data["truncated"],
+        "call_error": dict(call),
+        "resolver_errors": clean,
+    }
+    try:
+        if len(json.dumps(result, sort_keys=True, separators=(",", ":")).encode()) > 8192:
+            return unknown
+    except (TypeError, ValueError, RecursionError):
+        return unknown
+    return result
+
+
+def read_after_diagnostic(path, binding):
+    """Private regular-file input only; no raw bytes pass into public evidence."""
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate-diagnostic-key")
+            result[key] = value
+        return result
+
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 8192:
+                return unknown_after_diagnostic(binding)
+            raw = os.read(fd, 8193)
+        finally:
+            os.close(fd)
+        if len(raw) > 8192:
+            return unknown_after_diagnostic(binding)
+        return safe_after_diagnostic(json.loads(raw, object_pairs_hook=unique), binding)
+    except (OSError, ValueError, TypeError, RecursionError):
+        return unknown_after_diagnostic(binding)
 
 
 def safe_phase(data, name, binding):
@@ -1112,6 +1258,13 @@ def execute(root, output, progress=None):
                 # Retain a closed nonpass prefix without leaking arbitrary plugin values.
                 safe_phase(data, name, binding)
                 atomic(output / (name + ".json"), data)
+                if name == "after":
+                    atomic(
+                        output / "after-diagnostic.json",
+                        read_after_diagnostic(
+                            Path(config["output"]).with_name("after-diagnostic.json"), binding
+                        ),
+                    )
                 require_phase(data, name, binding)
                 receipts[name] = data
                 if workload_state(workload, name) != state:

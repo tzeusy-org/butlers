@@ -45,6 +45,23 @@ that observed RED, paired candidate GREEN and complete cleanup. Its schema stays
 from complete shard, smoke, coverage or release evidence. Existing candidate AFTER evidence
 and the mandatory full protected source tree remain separate.
 
+The separate AFTER-only `after-diagnostic.json` annex is nonqualifying. Its fixed category
+and public symbolic operation describe the CALL failure plus bounded observed resolver error
+events, including errors caught before `resolve_identity` returns `None`. Observed events do
+not establish causality. Collection uses only exact candidate-hash/code identities and the
+three bound capture Tasks/issuer; foreign code, tasks and issuers remain opaque. At most 24
+unique observations and eight aggregate records are retained in RAM; overflow or unmapped
+sites are explicitly truncated. Normal coroutine protocol events are excluded. No dynamic
+class/module names, messages, arguments, `failure_class`, SQLSTATE, locals, identifiers or
+raw tracebacks leave the private process. Missing binding or a preexisting tracer is unavailable.
+
+The producer reads at most 8192 bytes from a private regular nonsymlink file, validates exact
+keys/types/enums/counts/binding and reconstructs the annex before retaining a failed AFTER
+refusal. Invalid/missing input becomes closed UNKNOWN. Existing phase keys and acceptance
+predicates are unchanged: an annex never repairs failed AFTER or qualifies a witness. It adds
+no await, timer, query, cancellation, retry or timeout extension. Existing artifact upload
+includes the annex; actual native failure diagnosis and full paired success remain distinct.
+
 The producer invokes the existing owned `install_ci_uv.py` within its own confined domain,
 with a private path-output sink. Ordinary workflow installer consumers remain unchanged by this control; installation is part
 of the control rather than a new workflow installer step.

@@ -2620,3 +2620,384 @@ def test_capture_settlement_observes_exact_tasks_without_cancelling_workload(tmp
 
     for case in cases:
         asyncio.run(exercise(case))
+
+
+def test_after_diagnostic_observes_bound_suppressed_errors_without_changing_acceptance(
+    tmp_path, monkeypatch
+):
+    """Pinned executable code and actual trace/projector, with closed software collaborators."""
+    import asyncio
+    from contextlib import asynccontextmanager
+    from types import ModuleType, SimpleNamespace
+
+    source = subprocess.check_output(
+        ["git", "show", control.CANDIDATE + ":" + control.RUNTIME],
+        cwd=Path(__file__).resolve().parents[2],
+    )
+    runtime = tmp_path / control.RUNTIME
+    runtime.parent.mkdir(parents=True)
+    runtime.write_bytes(source)
+    module = ModuleType("_closed_after_diagnostic_runtime")
+    module.__file__ = str(runtime)
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    exec(compile(source, str(runtime), "exec", dont_inherit=True), module.__dict__)
+    routing = ModuleType("butlers.tools.switchboard.registry.registry")
+    route_failure = ValueError
+    clone_probe = None
+    in_clone = False
+
+    async def unavailable_route(*args):
+        nonlocal in_clone
+        if clone_probe is not None and not in_clone:
+            in_clone = True
+            try:
+                await clone_probe()
+            finally:
+                in_clone = False
+        raise route_failure("PRIVATE_CAUSE credential=PRIVATE_VALUE")
+
+    routing.resolve_routing_target = unavailable_route
+    monkeypatch.setitem(sys.modules, routing.__name__, routing)
+    cases = ("healthy", "suppressed", "snapshot-error", "private-class", "preexisting")
+    selected = os.environ.get("FACT_CAPTURE_DIAGNOSTIC_CASE")
+    assert selected is None or selected in cases
+    if selected:
+        cases = (selected,)
+    observed = {}
+
+    async def exercise(case):
+        nonlocal route_failure, clone_probe
+        route_failure = (
+            type("PRIVATE_CLASS", (Exception,), {}) if case == "private-class" else ValueError
+        )
+        inboxes, owned = [uuid.uuid4() for _ in range(3)], []
+        stored = module.FactWriteContext("owner").to_record()
+        context = {"source_channel": "email", "source_sender_identity": "PRIVATE_ID"}
+        if case == "healthy":
+            context["_fact_source_report"] = stored
+        row = {
+            "request_context": context,
+            "raw_payload": {},
+            "normalized_text": "PRIVATE_TEXT",
+            "lifecycle_state": "accepted",
+        }
+
+        class Pool:
+            @asynccontextmanager
+            async def acquire(self, **kwargs):
+                yield self
+
+            @asynccontextmanager
+            async def transaction(self):
+                yield
+
+            async def fetchrow(self, query, *args):
+                if case == "snapshot-error":
+                    raise KeyError("PRIVATE_SQL_KEY")
+                return dict(row)
+
+        issuer = module.FactSourceContextRegistry(Pool())
+        binding = {"nonce": "a" * 64}
+        monkeypatch.setattr(
+            observer, "CONFIG", {"phase": "after", "root": str(tmp_path), "binding": binding}
+        )
+        observer.prepare_diagnostic(runtime, type(issuer))
+        # A structurally equal foreign code object executes under the actual
+        # bound capture Task. It must not acquire local operation attribution.
+        from types import FunctionType
+
+        original = type(issuer).resolve_identity.__code__
+        clone = original.replace(co_filename=str(tmp_path / "PRIVATE_FOREIGN.py"))
+        assert clone == original and clone is not original
+        assert observer.diagnostic_sites(original)
+        assert observer.diagnostic_sites(clone) == ()
+        same_filename_clone = original.replace()
+        assert same_filename_clone == original and same_filename_clone is not original
+        assert observer.diagnostic_sites(same_filename_clone) == ()
+        cloned_resolve = FunctionType(clone, module.__dict__)
+
+        foreign_issuer = module.FactSourceContextRegistry(Pool())
+
+        async def foreign_source_probe():
+            await cloned_resolve(issuer, None, "email", "PRIVATE_ID", raise_on_error=False)
+            await foreign_issuer.resolve_identity(None, "email", "PRIVATE_ID")
+
+        clone_probe = foreign_source_probe if case == "suppressed" else None
+        assert observer.DIAGNOSTIC is not None, "actual pinned code must bind"
+        namespace = {"asyncio": asyncio, "owned": owned}
+        target = control.NODE.split("::")[1]
+        exec(
+            compile(
+                f"async def {target}(issuer,inboxes):\n"
+                " tasks=[asyncio.create_task(issuer.capture_accepted_report(i,inboxes[0])) for i in inboxes]\n"
+                " owned.extend(tasks)\n"
+                " await asyncio.gather(*tasks)\n",
+                str(tmp_path / control.NODE.split("::")[0]),
+                "exec",
+            ),
+            namespace,
+        )
+        previous = sys.gettrace()
+        ambient = (lambda frame, event, arg: None) if case == "preexisting" else None
+        sys.settrace(ambient)
+        hook = observer.pytest_runtest_call(SimpleNamespace(nodeid=control.NODE))
+        failure = None
+        try:
+            next(hook)
+            try:
+                await namespace[target](issuer, inboxes)
+            except Exception as error:
+                failure = error
+            if case == "suppressed":
+                # A real foreign Task in the same verified code also stays opaque.
+                count = len(observer.DIAGNOSTIC["seen"])
+                foreign_task = asyncio.create_task(
+                    issuer.resolve_identity(None, "email", "PRIVATE")
+                )
+                await foreign_task
+                assert foreign_task.done() and len(observer.DIAGNOSTIC["seen"]) == count
+            with pytest.raises(StopIteration):
+                next(hook)
+            assert sys.gettrace() is ambient
+            observer.observe_call_error(failure)
+            result = observer.after_diagnostic()
+            observed[case] = result
+            assert "PRIVATE" not in json.dumps(result)
+            assert len(owned) == 3 and all(task.done() for task in owned)
+            assert all(task.cancelling() == 0 for task in owned)
+            if case == "preexisting":
+                assert result == control.unknown_after_diagnostic(binding)
+                return
+            assert result["available"] is True and result["truncated"] is False
+            if case == "healthy":
+                assert failure is None
+                assert result["call_error"] == {"category": "none", "operation": "none"}
+                assert result["resolver_errors"] == []
+            elif case == "snapshot-error":
+                assert type(failure) is KeyError
+                assert observer.exception_facts(failure, tmp_path)[0]["exception"] == "other"
+                assert result["call_error"] == {
+                    "category": "key-error",
+                    "operation": "capture-snapshot",
+                }
+                assert result["resolver_errors"] == []
+            else:
+                assert type(failure) is ValueError
+                assert observer.exception_facts(failure, tmp_path)[0]["exception"] == "other"
+                assert result["call_error"] == {
+                    "category": "value-error",
+                    "operation": "capture-source-check",
+                }
+                assert any(
+                    r["operation"] == "resolver-routing"
+                    and r["category"] == ("other" if case == "private-class" else "value-error")
+                    for r in result["resolver_errors"]
+                ), "suppressed owning errors must be observed"
+                assert any(r["category"] == "identity-query" for r in result["resolver_errors"])
+                if case == "suppressed":
+                    assert (
+                        sum(
+                            r["count"]
+                            for r in result["resolver_errors"]
+                            if r["operation"] == "resolver-suppress"
+                        )
+                        == 3
+                    ), "foreign cloned code must not gain local operation attribution"
+                    saved = observer.CAPTURE_TASKS
+                    observer.CAPTURE_TASKS = None
+                    assert observer.after_diagnostic() == control.unknown_after_diagnostic(binding)
+                    observer.CAPTURE_TASKS = dict(saved)
+                    observer.CAPTURE_TASKS.pop(inboxes[0])
+                    assert observer.after_diagnostic() == control.unknown_after_diagnostic(binding)
+                    observer.CAPTURE_TASKS = saved
+        finally:
+            hook.close()
+            sys.settrace(previous)
+            await asyncio.gather(*owned, return_exceptions=True)
+            assert all(task.done() for task in owned)
+
+    for case in cases:
+        asyncio.run(exercise(case))
+    if selected:
+        return
+    actual = observed["suppressed"]
+    binding = actual["binding"]
+    assert control.safe_after_diagnostic(actual, binding) == actual
+    # Neither a rich annex nor its absence can turn the existing failed AFTER into GREEN.
+    failed = phase("after")
+    failed["phases"]["call"], failed["exception"], failed["pytest_exit"] = "failed", "other", 1
+    with pytest.raises(ValueError):
+        control.require_phase(failed, "after", binding)
+    for bad in (
+        {**actual, "extra": "PRIVATE"},
+        {k: v for k, v in actual.items() if k != "call_error"},
+        {**actual, "available": 1},
+        {**actual, "truncated": 0},
+        {**actual, "phase": "before"},
+        {**actual, "binding": {}},
+        {**actual, "call_error": {"category": "PRIVATE", "operation": "unknown"}},
+        {
+            **actual,
+            "resolver_errors": [{"category": "other", "operation": "resolver-wrap", "count": True}],
+        },
+        {
+            **actual,
+            "resolver_errors": [{"category": "other", "operation": "resolver-wrap", "count": 25}],
+        },
+        {**actual, "resolver_errors": actual["resolver_errors"] * 9},
+        {**actual, "available": False},
+        {**actual, "call_error": {"category": "none", "operation": "capture-report-write"}},
+        {**actual, "call_error": {"category": "value-error", "operation": "none"}},
+        {**actual, "call_error": {"category": "unknown", "operation": "unknown"}},
+        {
+            **actual,
+            "call_error": {"category": "value-error", "operation": "unknown"},
+            "truncated": False,
+        },
+        {
+            **actual,
+            "resolver_errors": [{"category": "other", "operation": "unknown", "count": 1}],
+            "truncated": False,
+        },
+        {
+            **actual,
+            "resolver_errors": [
+                {"category": "other", "operation": "capture-report-write", "count": 1}
+            ],
+        },
+    ):
+        assert control.safe_after_diagnostic(bad, binding) == control.unknown_after_diagnostic(
+            binding
+        )
+    sink = tmp_path / "annex.json"
+    control.atomic(sink, actual)
+    assert control.read_after_diagnostic(sink, binding) == actual
+    for text in ("PRIVATE", "{" + '"schema":1,' * 2 + '"binding":{}}', " " * 8193):
+        sink.write_text(text)
+        assert control.read_after_diagnostic(sink, binding) == control.unknown_after_diagnostic(
+            binding
+        )
+    sink.unlink()
+    sink.symlink_to(runtime)
+    assert control.read_after_diagnostic(sink, binding) == control.unknown_after_diagnostic(binding)
+    assert control.read_after_diagnostic(
+        tmp_path / "missing", binding
+    ) == control.unknown_after_diagnostic(binding)
+
+    observer.prepare_diagnostic(runtime, module.FactSourceContextRegistry)
+    code = module.FactSourceContextRegistry.resolve_identities.__code__
+    frame = SimpleNamespace(f_code=code, f_lineno=182)
+    # Protocol events and repeated resumption do not grow retained identities.
+    for kind in (StopIteration, StopAsyncIteration, GeneratorExit):
+        observer.record_resolver_error(frame, kind("PRIVATE"))
+    error = ValueError("PRIVATE")
+    for _ in range(100):
+        observer.record_resolver_error(frame, error)
+    assert len(observer.DIAGNOSTIC["seen"]) == 1
+    for _ in range(30):
+        observer.record_resolver_error(frame, ValueError("PRIVATE"))
+    assert len(observer.DIAGNOSTIC["seen"]) == 24
+    assert sum(r["count"] for r in observer.DIAGNOSTIC["records"]) == 24
+    assert observer.DIAGNOSTIC["truncated"] is True
+    observer.prepare_diagnostic(runtime, module.FactSourceContextRegistry)
+    for line in (182, 185, 188, 189, 193, 212):
+        for kind in (ValueError, KeyError):
+            observer.record_resolver_error(
+                SimpleNamespace(f_code=code, f_lineno=line), kind("PRIVATE")
+            )
+    assert len(observer.DIAGNOSTIC["records"]) == 8 and observer.DIAGNOSTIC["truncated"]
+    assert len(observer.DIAGNOSTIC["seen"]) <= 24
+    observer.prepare_diagnostic(runtime, module.FactSourceContextRegistry)
+    observer.record_resolver_error(
+        SimpleNamespace(f_code=code, f_lineno=999), ValueError("PRIVATE")
+    )
+    assert observer.DIAGNOSTIC["records"][0]["operation"] == "unknown"
+    assert observer.DIAGNOSTIC["truncated"] is True
+    assert "PRIVATE" not in json.dumps(observer.DIAGNOSTIC["records"])
+    # A byte-identical source compiled at a foreign path does not match code identity.
+    foreign = ModuleType("_foreign_diagnostic_runtime")
+    monkeypatch.setitem(sys.modules, foreign.__name__, foreign)
+    exec(compile(source, str(tmp_path / "foreign.py"), "exec", dont_inherit=True), foreign.__dict__)
+    observer.prepare_diagnostic(runtime, foreign.FactSourceContextRegistry)
+    assert observer.DIAGNOSTIC is None
+    # Exercise the actual producer failed-AFTER path, including export before refusal.
+    # Closed native-dependency stand-ins do no install/exec/PG/network work.
+    import signal
+
+    parent = tmp_path / "producer"
+    root = parent / "controller"
+    (root / "scripts").mkdir(parents=True)
+    (root / "scripts/fact_source_capture_before_observer.py").write_text("# closed control\n")
+
+    class Sentinel:
+        def poll(self):
+            return None
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout):
+            return 0
+
+    def own(command, environment, seconds, **kwargs):
+        code = 0
+        if command[-1] == "--phase-child":
+            cfg = json.loads(Path(environment["FACT_CAPTURE_CONTROL_CONFIG"]).read_text())
+            data = phase(cfg["phase"])
+            data["binding"] = cfg["binding"]
+            if cfg["phase"] == "after":
+                data["phases"]["call"], data["exception"], data["pytest_exit"] = (
+                    "failed",
+                    "other",
+                    1,
+                )
+                control.atomic(
+                    Path(cfg["output"]).with_name("after-diagnostic.json"),
+                    {
+                        **actual,
+                        "binding": cfg["binding"],
+                    },
+                )
+            control.atomic(Path(cfg["output"]), data)
+            code = data["pytest_exit"]
+        return {
+            "exit": code,
+            "cleanup_complete": True,
+            "timed_out": False,
+            "cancelled": False,
+            "observation": {"completion_basis": control.SETTLEMENT_BASIS},
+        }
+
+    signals = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        with monkeypatch.context() as context:
+            context.setattr(control, "CANCELLED", [])
+            context.setattr(control, "AGGREGATE_DEADLINE", None)
+            context.setattr(control, "__file__", str(root / "scripts/control.py"))
+            context.setattr(control, "provider_binding", lambda root: dict(binding))
+            context.setattr(control, "git", lambda *args, **kwargs: "")
+            context.setattr(control, "workload_state", lambda *args: {"runtime_sha256": "b" * 64})
+            context.setattr(control, "overlay", lambda *args: None)
+            context.setattr(control, "prepare_uv", lambda *args, **kwargs: {})
+            context.setattr(control, "run_owned", own)
+            context.setattr(
+                control.subprocess,
+                "run",
+                lambda *args, **kwargs: subprocess.CompletedProcess([], 0),
+            )
+            context.setattr(control.subprocess, "Popen", lambda *args, **kwargs: Sentinel())
+            context.setattr(sys, "argv", ["control"])
+            context.setenv("RUNNER_TEMP", str(parent))
+            context.setenv("FACT_CAPTURE_CONTROL_STARTED", str(control.time.monotonic()))
+            assert control.main() == 2
+        evidence = parent / "fact-capture-before-evidence"
+        annex = json.loads((evidence / "after-diagnostic.json").read_text())
+        assert annex["available"] and annex["call_error"] == actual["call_error"]
+        assert annex["resolver_errors"] == actual["resolver_errors"]
+        assert json.loads((evidence / "after.json").read_text())["phases"]["call"] == "failed"
+        assert json.loads((evidence / "control-refusal.json").read_text())["stage"] == "after"
+        assert not (evidence / "summary.json").exists()
+        assert "PRIVATE" not in json.dumps(annex)
+    finally:
+        for sig, previous in signals.items():
+            signal.signal(sig, previous)
