@@ -2430,3 +2430,193 @@ def test_supervisor_cancellation_propagates_without_erasing_process_cleanup(tmp_
                 }
             )
     (tmp_path / "supervisor-cancellation-results.json").write_text(json.dumps(rows, indent=2))
+
+
+def test_capture_settlement_observes_exact_tasks_without_cancelling_workload(tmp_path, monkeypatch):
+    """Real gather cancellation can return before siblings finish passive unwinding."""
+    import asyncio
+    import hashlib
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    import asyncpg
+
+    from butlers.core import fact_authority
+
+    runtime = Path(fact_authority.__file__).resolve()
+    root = runtime.parents[3]
+    cases = ("healthy", "delayed", "persistent", "missing", "incomplete", "wrong-owner", "foreign")
+    selected = os.environ.get("FACT_CAPTURE_SETTLEMENT_CASE")
+    assert selected is None or selected in cases
+    if selected:
+        cases = (selected,)
+
+    async def exercise(case):
+        release = asyncio.Event()
+        if case in ("healthy", "incomplete", "wrong-owner", "foreign"):
+            release.set()
+        captures = []
+        pool_reads = []
+        inboxes = [uuid.uuid4() for _ in range(3)]
+
+        class ProbePool(asyncpg.Pool):
+            def __init__(self):
+                pass
+
+            def get_max_size(self):
+                return 1
+
+            async def fetchval(self, query):
+                assert query == "SELECT current_user"
+                return "butler_switchboard_rw"
+
+            @asynccontextmanager
+            async def acquire(self, **kwargs):
+                task = asyncio.current_task()
+                if task.get_coro().cr_code is capture_code:
+                    captures.append(task)
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        # One child finishes first; gather propagates its cancellation
+                        # while the other two are still in real asynchronous cleanup.
+                        if task is not captures[0]:
+                            await release.wait()
+                    raise AssertionError("capture must exit through cancellation")
+
+                class Connection:
+                    def is_in_transaction(self):
+                        return False
+
+                    async def fetchval(self, query):
+                        assert query == "SELECT 1"
+                        pool_reads.append(query)
+                        if case == "delayed":
+                            await release.wait()
+                            await asyncio.sleep(0)
+                        return 1
+
+                yield Connection()
+
+        pool = ProbePool()
+        issuer = fact_authority.FactSourceContextRegistry(pool)
+        capture_code = type(issuer).capture_accepted_report.__code__
+        namespace = {"asyncio": asyncio}
+        target = control.NODE.split("::")[1]
+        exec(
+            compile(
+                f"async def {target}(issuer,inboxes):\n"
+                " async with asyncio.timeout(0.01):\n"
+                "  await asyncio.gather(*(issuer.capture_accepted_report(i,None) for i in inboxes))\n",
+                str(root / control.NODE.split("::")[0]),
+                "exec",
+            ),
+            namespace,
+        )
+        monkeypatch.setattr(
+            observer,
+            "CONFIG",
+            {
+                "root": str(root),
+                "phase": "before",
+                "runtime_sha256": hashlib.sha256(runtime.read_bytes()).hexdigest(),
+            },
+        )
+        state = phase("before")
+        state.update(
+            capture_tasks_settled=False, durable_partial_reports=None, memory_partial_reports=None
+        )
+        monkeypatch.setattr(observer, "STATE", state)
+        request = SimpleNamespace(node=SimpleNamespace(nodeid=control.NODE))
+
+        class Reports:
+            async def fetch(self, query, *args):
+                assert "WHERE id = ANY($1::uuid[])" in query
+                assert len(args) == 1 and set(args[0]) == set(inboxes)
+                return [{"id": key, "report": None} for key in inboxes]
+
+        fixture = observer.observe_registered_context.__wrapped__(
+            request,
+            SimpleNamespace(_registered_endpoint="http://127.0.0.1:1", sw=Reports()),
+            pool,
+        )
+        await anext(fixture)
+        previous_trace = sys.gettrace()
+        sys.settrace(None)
+        hook = observer.pytest_runtest_call(SimpleNamespace(nodeid=control.NODE))
+        foreign = None
+        release_task = None
+        try:
+            next(hook)
+            with pytest.raises(TimeoutError):
+                await namespace[target](issuer, inboxes)
+            with pytest.raises(StopIteration):
+                next(hook)
+            assert sys.gettrace() is None
+            assert len(captures) == 3 and len(set(captures)) == 3
+            assert observer.REFERENCES == (issuer, inboxes)
+            if case in ("delayed", "persistent", "missing"):
+                assert sum(not task.done() for task in captures) == 2
+            if case == "missing":
+                monkeypatch.setattr(observer, "REFERENCES", None)
+            if case == "incomplete":
+                observer.CAPTURE_TASKS.pop(inboxes[0])
+                state["capture_tasks_settled"] = True  # stale software state must fail closed
+            if case == "wrong-owner":
+                _, task = observer.CAPTURE_TASKS[inboxes[0]]
+                observer.CAPTURE_TASKS[inboxes[0]] = (object(), task)
+            if case == "foreign":
+
+                async def unrelated():
+                    await asyncio.Event().wait()
+
+                unrelated.__qualname__ = "FactSourceContextRegistry.capture_accepted_report"
+                foreign = asyncio.create_task(unrelated())
+                await asyncio.sleep(0)
+            if case == "delayed":
+
+                async def finish_unwinding():
+                    await asyncio.sleep(0)
+                    release.set()
+
+                release_task = asyncio.create_task(finish_unwinding())
+            cancellations = [task.cancelling() for task in captures]
+            with pytest.raises(StopAsyncIteration):
+                await anext(fixture)
+            assert pool_reads == ["SELECT 1"]
+            assert [task.cancelling() for task in captures] == cancellations, (
+                "observer cancelled workload"
+            )
+            if case in ("healthy", "delayed", "foreign"):
+                assert all(task.done() for task in captures)
+                assert state["capture_tasks_settled"] is True, (
+                    "settled exact-owned tasks must be positively observed"
+                )
+            else:
+                assert state["capture_tasks_settled"] is False
+                if case in ("persistent", "missing"):
+                    assert any(not task.done() for task in captures), (
+                        "negative must reach actual pending work"
+                    )
+                else:
+                    assert all(task.done() for task in captures), (
+                        "completion cannot replace incomplete ownership observations"
+                    )
+            if foreign is not None:
+                assert not foreign.done(), "observer touched a foreign same-name task"
+        finally:
+            hook.close()
+            sys.settrace(previous_trace)
+            # Control-owned cleanup only; the observer must never perform this action.
+            release.set()
+            await asyncio.gather(*captures, return_exceptions=True)
+            assert all(task.done() for task in captures)
+            if release_task is not None:
+                await release_task
+            if foreign is not None:
+                foreign.cancel()
+                await asyncio.gather(foreign, return_exceptions=True)
+            await fixture.aclose()
+
+    for case in cases:
+        asyncio.run(exercise(case))

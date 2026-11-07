@@ -26,9 +26,16 @@ reports. Its narrow temporary tracer is restored on every outcome and leaves any
 tracer intact. Missing references, incomplete rows or an unavailable observation remain UNKNOWN;
 identifiers and frame locals never enter receipts.
 
-Before fixture teardown the observer checks cancelled capture settlement, pool reacquisition,
-transaction release and `SELECT 1`, zero partial durable and in-memory reports. Complete actual
-fixture/process teardown and an unrelated sentinel must survive. Observation never replaces
+Before fixture teardown the observer requires positive observations of all three distinct
+capture Tasks, bound to the exact issuer, inboxes and runtime coroutine code by the same
+narrow tracer. Task references stay in RAM; coroutine resumption deduplicates the same identity,
+and missing/conflicting observations remain UNKNOWN. It passively waits at most five seconds
+for these known tasks, then checks actual completion. It never cancels them, consumes their
+results or scans unrelated tasks; a pending same-name foreign coroutine is irrelevant. This
+fits inside the unchanged ten-second observation envelope alongside the existing five-second
+pool acquisition limit. It also checks pool reacquisition, transaction release and `SELECT 1`,
+zero partial durable and in-memory reports. Complete actual fixture/process teardown and an
+unrelated sentinel must survive. Observation never replaces
 or mocks the pool, migration, resolver, transaction or test body. After complete cleanup the
 candidate runtime is restored exactly and the same node executes once in a fresh process.
 It must pass setup/CALL/teardown. No source retry is allowed.

@@ -17,6 +17,7 @@ from fact_source_capture_before_control import NODE, RUNTIME, atomic
 STATE = None
 CONFIG = None
 REFERENCES = None
+CAPTURE_TASKS = None
 
 
 def test_frame_references(frame, root):
@@ -40,16 +41,18 @@ def test_frame_references(frame, root):
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_call(item):
     """Observe exact test-frame references for both outcomes without changing its calls."""
-    global REFERENCES
+    global REFERENCES, CAPTURE_TASKS
     REFERENCES = None
+    CAPTURE_TASKS = None
     # Preserve any existing tracer; unavailable observation remains UNKNOWN.
     if item.nodeid != NODE or sys.gettrace() is not None:
         yield
         return
     root = Path(CONFIG["root"])
+    CAPTURE_TASKS = {}
 
     def trace(frame, event, arg):
-        global REFERENCES
+        global REFERENCES, CAPTURE_TASKS
         code = frame.f_code
         if (
             Path(code.co_filename) == root / NODE.split("::")[0]
@@ -60,6 +63,31 @@ def pytest_runtest_call(item):
                 if refs is not None:
                     REFERENCES = refs
             return trace
+        if (
+            event == "call"
+            and Path(code.co_filename) == root / RUNTIME
+            and code.co_name == "capture_accepted_report"
+            and REFERENCES is not None
+            and CAPTURE_TASKS is not None
+        ):
+            issuer, inboxes = REFERENCES
+            inbox = frame.f_locals.get("inbox_id")
+            if frame.f_locals.get("self") is issuer and inbox in inboxes:
+                # Observe identities only. Do not wrap the method, task factory,
+                # cancellation or any owning pool/transaction behavior.
+                try:
+                    task = asyncio.current_task()
+                    expected = type(issuer).capture_accepted_report.__code__
+                    if code is expected and task.get_coro().cr_code is expected:
+                        previous = CAPTURE_TASKS.get(inbox)
+                        if previous is not None and (
+                            previous[0] is not issuer or previous[1] is not task
+                        ):
+                            CAPTURE_TASKS = None
+                        else:
+                            CAPTURE_TASKS[inbox] = (issuer, task)
+                except (AttributeError, RuntimeError, TypeError):
+                    CAPTURE_TASKS = None
         return None
 
     sys.settrace(trace)
@@ -67,6 +95,27 @@ def pytest_runtest_call(item):
         yield
     finally:
         sys.settrace(None)
+
+
+def observed_capture_tasks(issuer, inboxes):
+    """Require all three distinct, exact-owned task observations; absence proves nothing."""
+    if type(CAPTURE_TASKS) is not dict or set(CAPTURE_TASKS) != set(inboxes):
+        return None
+    expected = type(issuer).capture_accepted_report.__code__
+    tasks = []
+    for inbox in inboxes:
+        owner, task = CAPTURE_TASKS[inbox]
+        if (
+            owner is not issuer
+            or not isinstance(task, asyncio.Task)
+            or task.get_loop() is not asyncio.get_running_loop()
+            or task.get_coro().cr_code is not expected
+        ):
+            return None
+        tasks.append(task)
+    if len(set(tasks)) != 3:
+        return None
+    return tasks
 
 
 def exception_facts(error, root):
@@ -105,8 +154,9 @@ def exception_facts(error, root):
 
 
 def pytest_configure(config):
-    global CONFIG, STATE, REFERENCES
+    global CONFIG, STATE, REFERENCES, CAPTURE_TASKS
     REFERENCES = None
+    CAPTURE_TASKS = None
     value = json.loads(Path(os.environ["FACT_CAPTURE_CONTROL_CONFIG"]).read_text())
     CONFIG = value
     STATE = {
@@ -192,20 +242,33 @@ async def observe_registered_context(request, authority_env, single_slot_pool):
     finally:
         # Run before the actual module/session fixtures close their pools/MCP.
         async with asyncio.timeout(10):
-            STATE["capture_tasks_settled"] = not any(
-                task is not asyncio.current_task()
-                and not task.done()
-                and getattr(task.get_coro(), "__qualname__", "")
-                == "FactSourceContextRegistry.capture_accepted_report"
-                for task in asyncio.all_tasks()
-            )
+            STATE["capture_tasks_settled"] = False
+            refs = REFERENCES
+            if refs is not None:
+                issuer, inboxes = refs
+                if (
+                    type(issuer) is fact_authority.FactSourceContextRegistry
+                    and type(inboxes) is list
+                    and len(inboxes) == 3
+                    and all(type(value) is uuid.UUID for value in inboxes)
+                    and len(set(inboxes)) == 3
+                ):
+                    tasks = observed_capture_tasks(issuer, inboxes)
+                    if tasks is not None:
+                        # asyncio.wait never cancels these tasks, including on
+                        # timeout. Reserve the existing other five seconds for
+                        # pool/report observations inside the same ten-second cap.
+                        _, pending = await asyncio.wait(tasks, timeout=5)
+                        STATE["capture_tasks_settled"] = not pending and all(
+                            task.done() for task in tasks
+                        )
             async with single_slot_pool.acquire(timeout=5) as connection:
                 STATE["pool_reacquired"] = (
                     not connection.is_in_transaction()
                     and await connection.fetchval("SELECT 1") == 1
                 )
-            if REFERENCES is not None:
-                issuer, inboxes = REFERENCES
+            if refs is not None:
+                issuer, inboxes = refs
                 if (
                     type(issuer) is fact_authority.FactSourceContextRegistry
                     and type(inboxes) is list
