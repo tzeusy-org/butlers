@@ -2392,6 +2392,38 @@ async def test_delete_entity_does_not_soft_delete_after_failed_fact_retirement(a
     assert not any("UPDATE public.entities" in query for query, _ in atlas.execute_calls)
 
 
+async def test_delete_entity_unlinks_its_contact_before_marking_it_deleted(app) -> None:
+    """The bridge row goes in the delete's transaction, ahead of the deleted marker."""
+    entity_id = uuid.uuid4()
+    atlas = _EntityMemoryPool(entity=_make_entity_row(entity_id))
+    app.dependency_overrides[get_db] = lambda: _memory_db({"atlas": atlas})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.delete(f"/api/memory/entities/{entity_id}")
+
+    assert resp.status_code == 204
+    queries = [query for query, _ in atlas.execute_calls]
+    unlink = next(i for i, q in enumerate(queries) if "relationship.contact_entity_map" in q)
+    marker = next(i for i, q in enumerate(queries) if "UPDATE public.entities" in q)
+    assert unlink < marker
+
+
+async def test_delete_entity_that_cannot_retire_facts_keeps_the_contact_link(app) -> None:
+    entity_id = uuid.uuid4()
+    atlas = _EntityMemoryPool(entity=_make_entity_row(entity_id), fact_count=1)
+    app.dependency_overrides[get_db] = lambda: _memory_db({"atlas": atlas})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.delete(f"/api/memory/entities/{entity_id}")
+
+    assert resp.status_code == 409
+    assert not any("contact_entity_map" in query for query, _ in atlas.execute_calls)
+
+
 class _InspectPool:
     """Fake pool for the inspect endpoint.
 

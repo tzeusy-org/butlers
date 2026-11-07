@@ -908,6 +908,36 @@ async def _retract_facts_on_conn(
     }
 
 
+async def _unlink_contacts_on_conn(conn: Any, entity_uuid: uuid.UUID) -> int:
+    """Remove the ``relationship.contact_entity_map`` rows of *entity_uuid*.
+
+    The one unlink path for a forget and a memory entity delete (bu-dhloi1.124): a
+    contact is bound to exactly one entity, so once that entity is removed the link
+    is severed and the contact reads as not found. The caller owns the transaction
+    and already holds the entity row ``FOR UPDATE``, the lock order both routes use.
+
+    The dashboard delete runs on whichever butler pool is first, so the table is
+    reached schema-qualified; a connection whose own search_path already resolves it
+    (the Relationship pool, or a single-schema topology) uses that. A deployment
+    without the table has nothing to sever.
+
+    Returns the number of bridge rows removed.
+    """
+    if await conn.fetchval("SELECT to_regclass('relationship.contact_entity_map')") is not None:
+        result = await conn.execute(
+            "DELETE FROM relationship.contact_entity_map WHERE entity_id = $1",
+            entity_uuid,
+        )
+    elif await conn.fetchval("SELECT to_regclass('contact_entity_map')") is not None:
+        result = await conn.execute(
+            "DELETE FROM contact_entity_map WHERE entity_id = $1",
+            entity_uuid,
+        )
+    else:
+        return 0
+    return _parse_rowcount(result)
+
+
 def _parse_rowcount(status: Any) -> int:
     """Parse an asyncpg ``UPDATE <n>`` command tag into ``<n>``.
 

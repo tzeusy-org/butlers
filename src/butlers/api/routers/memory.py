@@ -2734,9 +2734,13 @@ async def delete_entity(
     Owner entities cannot be deleted (returns 403).  When active or fading facts
     exist, returns 409 with the count unless ``retire_facts=true`` is passed, in
     which case all active/fading facts are retired (validity → 'retracted') first.
+    The entity's contact bridge row is removed in the same transaction, as a forget
+    does, so the contact reads as not found.
     """
     import uuid as _uuid
     from datetime import datetime
+
+    from butlers.modules.memory.tools.entities import _unlink_contacts_on_conn
 
     pool = cast(asyncpg.Pool, _any_pool(db))
     eid = _uuid.UUID(entity_id)
@@ -2768,6 +2772,10 @@ async def delete_entity(
                 status_code=503,
                 detail="Entity deletion incomplete: fact retirement timed out; retry the delete.",
             ) from exc
+
+        # Same unlink as a forget, in this transaction under the entity lock: the
+        # contact then reads as not found instead of sitting on a deleted entity.
+        await _unlink_contacts_on_conn(conn, eid)
 
         deleted_at = datetime.now(UTC).isoformat()
         await conn.execute(
