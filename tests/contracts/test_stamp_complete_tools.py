@@ -967,7 +967,7 @@ async def test_a_superseded_id_is_refused_and_the_current_fact_stays(
     current = await _store_current(stores, seed)
     assert (await _stored(stores, stale["id"]))["validity"] == "superseded"
     for writer in ("routed_owner", "system"):
-        with _writing_as(writer), pytest.raises(ValueError, match="not found"):
+        with _writing_as(writer), pytest.raises(ValueError, match=str(current["id"])):
             await copy(stores, stale["id"])
     assert (await _stored(stores, current["id"]))["validity"] == "active"
     assert await _live_rows(stores, seed) == 1
@@ -979,9 +979,25 @@ async def test_a_retracted_id_is_refused(stores, monkeypatch, copy, module, seed
     monkeypatch.setattr(module, "_get_embedding_engine", _engine)
     source = await _seed_authority(stores, seed, "system")
     await stores.execute("UPDATE facts SET validity = 'retracted' WHERE id = $1", source["id"])
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(ValueError, match="is retracted, with no current version"):
         await copy(stores, source["id"])
     assert await _live_rows(stores, seed) == 0
+
+
+@pytest.mark.parametrize(("copy", "module", "seed"), _REFUSES_STALE)
+@_db
+async def test_an_unknown_id_or_another_kind_of_fact_stays_not_found(
+    stores, monkeypatch, copy, module, seed
+):
+    monkeypatch.setattr(module, "_get_embedding_engine", _engine)
+    with pytest.raises(ValueError, match="not found"):
+        await copy(stores, uuid.uuid4())
+    other = await storage.store_fact(
+        stores, "other:row", "another_predicate", "text", _engine(), scope=seed[2]
+    )
+    await stores.execute("UPDATE facts SET validity = 'superseded' WHERE id = $1", other["id"])
+    with pytest.raises(ValueError, match="not found"):
+        await copy(stores, other["id"])
 
 
 @pytest.mark.parametrize(("copy", "module", "seed"), _SUBJECT_KEYED)
@@ -1066,6 +1082,7 @@ async def test_the_health_routes_answer_a_real_refusal_with_409_and_a_stale_id_w
         current = await client.put(f"/api/health/{collection}/{retried['id']}", json=body)
     assert refused.status_code == 409, refused.text
     assert stale.status_code == 404, stale.text
+    assert str(retried["id"]) in stale.json()["detail"]
     assert current.status_code == 200, current.text
 
 

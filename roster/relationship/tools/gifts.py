@@ -205,7 +205,7 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
     if status not in _GIFT_STATUS_ORDER:
         raise ValueError(f"Invalid status '{status}'. Must be one of {_GIFT_STATUS_ORDER}")
 
-    from butlers.modules.memory.storage import store_fact
+    from butlers.modules.memory.storage import stale_fact_error, store_fact
 
     row = await pool.fetchrow(
         "SELECT id, subject, content, metadata, entity_id, content_authority,"
@@ -215,7 +215,7 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
         gift_id,
     )
     if row is None:
-        raise ValueError(f"Gift {gift_id} not found")
+        raise await stale_fact_error(pool, "Gift", gift_id, predicate="gift", scope="relationship")
 
     meta = row["metadata"] or {}
     if isinstance(meta, str):

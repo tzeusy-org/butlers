@@ -165,7 +165,11 @@ async def condition_update(
     Implemented as a superseding store_fact (property fact semantics). An id that is no
     longer current is refused, so a stale read cannot replace a newer fact.
     """
-    from butlers.modules.memory.storage import store_fact, subject_keyed_guard
+    from butlers.modules.memory.storage import (
+        stale_fact_error,
+        store_fact,
+        subject_keyed_guard,
+    )
 
     cond_uuid = uuid.UUID(condition_id) if isinstance(condition_id, str) else condition_id
     allowed = {"name", "status", "diagnosed_at", "notes"}
@@ -190,7 +194,9 @@ async def condition_update(
         cond_uuid,
     )
     if row is None:
-        raise ValueError(f"Condition {condition_id} not found")
+        raise await stale_fact_error(
+            pool, "Condition", cond_uuid, predicate="condition", scope="health"
+        )
 
     row = _row_to_dict(row)
     existing_meta = row.get("metadata", {})

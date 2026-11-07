@@ -191,7 +191,11 @@ async def task_list(
 
 async def task_complete(pool: asyncpg.Pool, task_id: uuid.UUID) -> dict[str, Any]:
     """Mark a task as completed. An id that is no longer current is refused."""
-    from butlers.modules.memory.storage import store_fact, subject_keyed_guard
+    from butlers.modules.memory.storage import (
+        stale_fact_error,
+        store_fact,
+        subject_keyed_guard,
+    )
 
     row = await pool.fetchrow(
         "SELECT id, subject, content, metadata, entity_id, valid_at, content_authority,"
@@ -201,7 +205,9 @@ async def task_complete(pool: asyncpg.Pool, task_id: uuid.UUID) -> dict[str, Any
         task_id,
     )
     if row is None:
-        raise ValueError(f"Task {task_id} not found")
+        raise await stale_fact_error(
+            pool, "Task", task_id, predicate="contact_task", scope="relationship"
+        )
 
     meta = row["metadata"] or {}
     if isinstance(meta, str):

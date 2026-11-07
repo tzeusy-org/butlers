@@ -106,7 +106,8 @@ superseded after the read.
 A live legacy row with `entity_id` or `valid_at` set is not found by that subject-only store.
 Its first edit writes a successor beside it, and it stays active. Any later edit through its
 id is refused, and the error names the current row, so the edit can go there instead. Today
-the owner sees both rows until the legacy one is deleted. `medication_log_dose` is not
+the owner sees both rows until the legacy one is deleted. A refused superseded id also names
+the current row, so a session holding an old id can retry against it. `medication_log_dose` is not
 refused, because a dose replaces nothing.
 
 Steering memory is gated on that stamp:
