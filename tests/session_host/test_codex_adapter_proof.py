@@ -295,6 +295,7 @@ BYPASS_FORMS = (
     ("--sandbox", "false"),
     ("--sandbox=False",),
     ("--sandbox", "off"),
+    ("--sandbox=none",),
     ("--yolo",),
     ("--YOLO=true",),
     ("--approval-mode=yolo",),
