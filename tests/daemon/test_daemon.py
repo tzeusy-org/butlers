@@ -1199,6 +1199,89 @@ async def test_switchboard_heartbeat_reconnects_on_stale_ping_error(butler_dir: 
     disconnect.assert_awaited_once_with(daemon)
 
 
+async def _raise_stray() -> None:
+    """A ``CancelledError`` with no ``.cancel()`` on the running task."""
+    future = asyncio.get_running_loop().create_future()
+    future.cancel()
+    await future
+
+
+@pytest.mark.parametrize("stage", ["ping", "disconnect", "connect"])
+async def test_a_stray_cancel_does_not_end_the_switchboard_heartbeat(
+    butler_dir: Path, stage: str
+) -> None:
+    """The loop returns on ``CancelledError``, and nothing restarts it (bu-dhloi1.131)."""
+    daemon = ButlerDaemon(butler_dir)
+    pings = 0
+    survived = asyncio.Event()
+
+    class _Client:
+        async def ping(self) -> None:
+            nonlocal pings
+            pings += 1
+            if pings == 1:
+                if stage == "ping":
+                    await _raise_stray()
+                raise RuntimeError("dead")
+            survived.set()
+
+    client = _Client()
+    daemon.switchboard_client = client
+
+    disconnects = 0
+
+    async def disconnect(_: Any) -> None:
+        nonlocal disconnects
+        disconnects += 1
+        if stage == "disconnect":
+            await _raise_stray()
+
+    async def connect(_: Any) -> None:
+        if stage == "connect":
+            await _raise_stray()
+
+    with (
+        patch("butlers.switchboard_wiring._SWITCHBOARD_HEARTBEAT_INTERVAL_S", 0),
+        patch("butlers.switchboard_wiring.disconnect_switchboard", new=disconnect),
+        patch("butlers.switchboard_wiring.connect_switchboard", new=connect),
+    ):
+        task = asyncio.create_task(daemon._switchboard_heartbeat_loop())
+        await asyncio.wait_for(survived.wait(), timeout=2.0)
+        assert not task.done()
+        task.cancel()
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert not task.cancelled()
+    # Whichever step strayed, the dead connection was evicted rather than pinged forever.
+    assert disconnects == 1
+
+
+async def test_a_real_cancel_during_ping_still_ends_the_switchboard_heartbeat(
+    butler_dir: Path,
+) -> None:
+    daemon = ButlerDaemon(butler_dir)
+    pinging = asyncio.Event()
+    disconnect = AsyncMock()
+
+    class _Client:
+        async def ping(self) -> None:
+            pinging.set()
+            await asyncio.Event().wait()
+
+    daemon.switchboard_client = _Client()
+
+    with (
+        patch("butlers.switchboard_wiring._SWITCHBOARD_HEARTBEAT_INTERVAL_S", 0),
+        patch("butlers.switchboard_wiring.disconnect_switchboard", new=disconnect),
+    ):
+        task = asyncio.create_task(daemon._switchboard_heartbeat_loop())
+        await asyncio.wait_for(pinging.wait(), timeout=1.0)
+        task.cancel()
+        await asyncio.wait_for(task, timeout=2.0)
+
+    disconnect.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # notify() tool
 # ---------------------------------------------------------------------------
