@@ -9,14 +9,17 @@ selection has separate owning controls and is not inferred from these tests.
 from __future__ import annotations
 
 import asyncio
+import signal
 import uuid
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 
 import asyncpg
 import pytest
+from fastmcp import Client, FastMCP
 
 from butlers.core import fact_authority
 from butlers.core.fact_authority import FactSourceContextRegistry
+from butlers.daemon import ButlerDaemon
 from butlers.db import register_jsonb_codec
 from tests.integration import test_relationship_fact_content_authority as authority_cases
 
@@ -252,3 +255,39 @@ async def test_initial_driver_deadlines_release_real_pool_without_partial_author
             == report.to_record()
         )
         assert await single_slot_pool.fetchval("SELECT current_user") == "butler_switchboard_rw"
+
+
+async def test_embedded_mcp_lifetimes_preserve_process_signal_ownership():
+    """Closing one embedded server must not drain unrelated future MCP streams."""
+    handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+
+    @asynccontextmanager
+    async def endpoint():
+        mcp = FastMCP("synthetic-embedded-lifecycle")
+
+        @mcp.tool()
+        def ping() -> str:
+            return "ready"
+
+        app = ButlerDaemon._build_mcp_http_app(mcp, butler_name="relationship")
+        async with authority_cases._tcp(app) as url:
+            yield url
+
+    async def ping(url):
+        async with asyncio.timeout(5), Client(url + "/mcp", timeout=5) as client:
+            result = await client.call_tool("ping", {})
+            assert result.data == "ready"
+
+    async with endpoint() as first:
+        await ping(first)
+        # Position the ownership assertion after a real MCP positive. SSE's
+        # process-wide watcher must not bind to an embedded server's lifetime.
+        assert {sig: signal.getsignal(sig) for sig in handlers} == handlers
+        async with endpoint() as nested:
+            await ping(nested)
+            assert {sig: signal.getsignal(sig) for sig in handlers} == handlers
+        await ping(first)
+    async with endpoint() as subsequent:
+        await ping(subsequent)
+        assert {sig: signal.getsignal(sig) for sig in handlers} == handlers
+    assert {sig: signal.getsignal(sig) for sig in handlers} == handlers
