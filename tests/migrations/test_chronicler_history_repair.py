@@ -3411,6 +3411,122 @@ memory_schema = "chronicler_mem"
         engine.dispose()
 
 
+def test_preparation_on_an_installed_private_schema_never_replays_core_into_public(
+    postgres_container, tmp_path, monkeypatch
+):
+    """bu-dhloi1.157: chronicler_mem holding memory revisions and no core row skips core.
+
+    Replaying core through chronicler_mem re-runs every public-writing core migration;
+    core_169 UPDATEs string-typed public.audit_log metadata and core_279's append-only
+    trigger refuses it (42501).
+    """
+    from urllib.parse import unquote, urlparse
+
+    from click.testing import CliRunner
+
+    from butlers import migrations
+    from butlers.cli import cli
+
+    url = create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "chronicler"],
+        schemas={"core": "chronicler", "chronicler": "chronicler"},
+        revisions={"chronicler": "chronicler_029"},
+    )
+    parsed = urlparse(url)
+    monkeypatch.setattr(
+        "butlers.db.db_params_from_env",
+        lambda: {
+            "user": unquote(parsed.username or ""),
+            "password": unquote(parsed.password or ""),
+            "host": parsed.hostname,
+            "port": parsed.port,
+        },
+    )
+    butlers_dir = tmp_path / "roster"
+    config_dir = butlers_dir / "chronicler"
+    config_dir.mkdir(parents=True)
+    (config_dir / "butler.toml").write_text(
+        f"""[butler]
+name = "chronicler"
+port = 41111
+description = "Installed private schema fixture"
+
+[butler.db]
+name = "{parsed.path.lstrip("/")}"
+schema = "chronicler"
+
+[modules.memory]
+groups = ["core", "entity"]
+memory_schema = "chronicler_mem"
+""",
+        encoding="utf-8",
+    )
+
+    calls: list[tuple[str, str | None]] = []
+    real_run_migrations = migrations.run_migrations
+
+    async def track_migration(db_url, chain="all", schema=None):
+        calls.append((chain, schema))
+        return await real_run_migrations(db_url, chain=chain, schema=schema)
+
+    monkeypatch.setattr(migrations, "run_migrations", track_migration)
+    runner = CliRunner()
+    args = ["db", "prepare-chronicler-memory", "--dir", str(butlers_dir)]
+
+    fresh = runner.invoke(cli, args)
+    assert fresh.exit_code == 0, fresh.output
+    assert calls == [("core", "chronicler_mem"), ("memory", "chronicler_mem")]
+
+    # The legacy shape on dev: memory revisions recorded, no core row, and a poisoned audit row.
+    engine = create_engine(url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM chronicler_mem.alembic_version WHERE version_num LIKE 'core\\_%'")
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO public.audit_log (actor, action, metadata) "
+                    "VALUES ('bu-dhloi1.157', 'string-typed-metadata', '\"{}\"'::jsonb)"
+                )
+            )
+        with engine.connect() as conn:
+            versions_before = {
+                row[0]
+                for row in conn.execute(
+                    text("SELECT version_num FROM chronicler_mem.alembic_version")
+                ).all()
+            }
+        assert versions_before
+        assert not any(version.startswith("core_") for version in versions_before)
+
+        calls.clear()
+        installed = runner.invoke(cli, args)
+        assert installed.exit_code == 0, installed.output
+        assert calls == [("memory", "chronicler_mem")]
+
+        with engine.connect() as conn:
+            versions_after = {
+                row[0]
+                for row in conn.execute(
+                    text("SELECT version_num FROM chronicler_mem.alembic_version")
+                ).all()
+            }
+            string_rows = conn.execute(
+                text(
+                    "SELECT count(*) FROM public.audit_log "
+                    "WHERE action = 'string-typed-metadata' "
+                    "AND jsonb_typeof(metadata) = 'string'"
+                )
+            ).scalar_one()
+        assert versions_after == versions_before
+        assert string_rows == 1
+    finally:
+        engine.dispose()
+
+
 def test_source_change_disposes_exact_D_through_D28_and_preserves_D29_survivors(
     postgres_container,
 ):
