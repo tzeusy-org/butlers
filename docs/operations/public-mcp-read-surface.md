@@ -12,13 +12,45 @@
 
 ---
 
-## Status: target procedure, not yet built
+## Status: primary foundation; subscriber and public runtime pending
 
-[Observed, 2026-11-04] Nothing on the Butlers side exists yet: there is no
-`butlers public-mcp reconcile` or `butlers public-mcp owner-sql` command, no
-`scripts/k8s/public-mcp-owner-step.sh` in the dev deploy, no `deploy/helm/butlers-public-mcp`
-chart, and `scripts/init-db.sql` carries no projection grants.
-The homelab side is applied on dev only.
+The source now provides the canonical full-v1
+`src/butlers/knowledge_read/projection.toml`, its closed immutable model, catalog validation,
+and explicit `butlers public-mcp reconcile --database butlers`. No command runs automatically
+at daemon startup, during migrations, or in Compose. This foundation implements only the primary
+part of `bu-y66o00.4` and part of `bu-y66o00.3`; neither issue is complete.
+
+With all five CNPG-managed roles and `butlers_public` already present, the privileged
+`init-db.sql` bootstrap supplies `mcp_surface.controls` and `manifest_state`, owned by the
+configured migration principal, and its primary database CREATE privilege. Absent those exact
+prerequisites, projection additions are skipped. Existing foreign owners, unsupported shapes and
+unrecognized ACLs refuse; runtime/PUBLIC metadata grants are revoked on rerun, with Relationship
+retaining USAGE and SELECT on controls only. Managed role attributes are untouched by these additions.
+
+Run reconcile explicitly as that ordinary migration principal **after all source chains**
+(core, domain, memory) have completed. It validates every source before publication DDL, takes a
+transaction-scoped advisory lock with a five-second lock timeout, and limits each statement to
+60 seconds. It converges only `butlers_public_v1` and `mcp_surface.manifest_state` in one
+transaction. Readback checks action flags, exact table membership, explicit finite `prattrs`
+column lists and closed row filters; all-table and schema wildcards refuse. A matching digest
+alone never qualifies as a no-op. Failure rolls back publication and digest together. No slot,
+subscription, subscriber connection or grant/owner step is performed by reconcile.
+
+The manifest is the single exposure decision: 46 entries declare 469 columns, including
+controls/state. Registry validation cannot add a predicate; future columns stay private until
+an explicit edit. Finance/Health JSONB arrives through the existing credential-filtered scalar
+materializations, never as JSONB columns. Graph keys derive from the same fact predicate lists.
+The packaged resource is read without a mutable external manifest override.
+
+**Still pending:** publisher grant synchronization, subscriber/owner-sql, request/canary/digest
+serving semantics, actual named read-consumer and manifested subscriber comparisons, public
+server/chart, deployed privileges/network and live owner steps. The deployed API and migrations
+currently share a configured database login and the API does not SET ROLE. SQL ACLs cannot
+establish controls-only API writes while that effective identity also owns manifest state;
+this remains an explicit required runtime identity boundary. Synthetic bootstrap/catalog tests
+prove their source scope only. No deployment or actual owner step is established by this change.
+
+The remaining sections retain the full target procedure and its pending ownership below.
 
 Every step below carries one of two tags:
 
@@ -181,8 +213,8 @@ SELECT schemaname, tablename FROM pg_publication_tables
 TABLE mcp_surface.manifest_state;                    -- one digest row
 ```
 
-[Unknown] Whether reconcile also runs, and creates a publication, under Compose and in test
-fixtures. RFC 0039 does not say; `bu-y66o00.4` decides it.
+The current foundation is explicit-only: Compose and ordinary migration fixtures do not
+automatically reconcile. Future initContainer integration remains part of `bu-y66o00.4`.
 
 ### 3c. Owner step (owner act 10)
 

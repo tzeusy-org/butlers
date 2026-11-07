@@ -437,3 +437,24 @@ class TestListCommandStatus:
         assert result3.exit_code == 0
         assert "running" in result3.output.lower()
         assert "stopped" in result3.output.lower()
+
+
+def test_public_mcp_reconcile_is_explicit(runner, monkeypatch):
+    """Help is connection-free; explicit reconcile calls only the primary entrypoint."""
+    from butlers.migrations import public_mcp as projection
+
+    calls = []
+
+    def params():
+        calls.append("params")
+        return dict(host="localhost", port=5432, user="migration", password="synthetic")
+
+    monkeypatch.setattr("butlers.db.db_params_from_env", params)
+    monkeypatch.setattr(projection, "reconcile", lambda url: calls.append(url) or True)
+    result = runner.invoke(cli, ["public-mcp", "--help"])
+    assert result.exit_code == 0
+    assert "reconcile" in result.output
+    assert calls == []
+    result = runner.invoke(cli, ["public-mcp", "reconcile", "--database", "primary_test"])
+    assert result.exit_code == 0 and "reconciled" in result.output
+    assert calls == ["params", "postgresql://migration:synthetic@localhost:5432/primary_test"]

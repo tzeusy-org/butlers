@@ -1502,3 +1502,183 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
         "butler_chronicler_rw must NOT be able to SELECT education.state_store "
         "(not an approved RFC 0014 evidence surface — broad grants violate RFC 0014 §D1)"
     )
+
+
+def test_public_mcp_primary_bootstrap_is_guarded_private_and_repeatable(postgres_container):
+    """Real script: absent owner prerequisites skip, then precise metadata ACLs survive rerun."""
+    from butlers.testing.migration import (
+        create_migration_db,
+        migration_bootstrap_db_url,
+        migration_db_name,
+    )
+
+    name = migration_db_name()
+    url = create_migration_db(postgres_container, name)
+    migration = create_engine(url)
+    admin = create_engine(migration_bootstrap_db_url(postgres_container, name))
+    cluster = create_engine(postgres_container.get_connection_url(), isolation_level="AUTOCOMMIT")
+    script = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
+    host, port, user, password = _admin_params(postgres_container)
+    roles = (
+        "butlers_projection_publisher",
+        "mcp_projection_owner",
+        "mcp_public_ro",
+        "mcp_proposals_reader",
+        "mcp_subscription_owner",
+    )
+
+    def bootstrap(check=True):
+        return _run_psql_file(
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database=name,
+            file_path=script,
+            connecting_user=principal,
+            no_psqlrc=True,
+            check=check,
+        )
+
+    try:
+        with migration.connect() as conn:
+            principal = conn.execute(text("SELECT current_user")).scalar_one()
+            assert (
+                conn.execute(text("SELECT to_regclass('mcp_surface.controls')")).scalar_one()
+                is None
+            )
+        with admin.begin() as conn:
+            conn.exec_driver_sql(
+                f'ALTER DATABASE "{name}" OWNER TO {conn.dialect.identifier_preparer.quote(user)}'
+            )
+        with migration.connect() as conn:
+            assert not conn.execute(
+                text("SELECT has_database_privilege(current_user,current_database(),'CREATE')")
+            ).scalar_one()
+        # Supply only the CNPG-managed role prerequisites first; no projection DB => still skip.
+        with cluster.connect() as conn:
+            for role in roles[:-1]:
+                if not conn.execute(
+                    text("SELECT 1 FROM pg_roles WHERE rolname=:r"), {"r": role}
+                ).scalar():
+                    conn.exec_driver_sql(f'CREATE ROLE "{role}" NOLOGIN NOREPLICATION')
+            before = conn.execute(
+                text(
+                    "SELECT rolname,rolcanlogin,rolreplication,rolinherit FROM pg_roles WHERE rolname=ANY(:roles) ORDER BY rolname"
+                ),
+                {"roles": list(roles)},
+            ).all()
+        assert bootstrap().returncode == 0
+        with admin.connect() as conn:
+            assert (
+                conn.execute(text("SELECT to_regclass('mcp_surface.controls')")).scalar_one()
+                is None
+            )
+        with cluster.connect() as conn:
+            conn.exec_driver_sql("CREATE DATABASE butlers_public")
+        # A projection DB with one missing managed identity still supplies no metadata.
+        assert bootstrap().returncode == 0
+        with admin.connect() as conn:
+            assert (
+                conn.execute(text("SELECT to_regclass('mcp_surface.controls')")).scalar_one()
+                is None
+            )
+        with cluster.connect() as conn:
+            conn.exec_driver_sql("CREATE ROLE mcp_subscription_owner NOLOGIN NOREPLICATION")
+            before = conn.execute(
+                text(
+                    "SELECT rolname,rolcanlogin,rolreplication,rolinherit FROM pg_roles WHERE rolname=ANY(:roles) ORDER BY rolname"
+                ),
+                {"roles": list(roles)},
+            ).all()
+        assert bootstrap().returncode == 0
+        with migration.begin() as conn:
+            assert conn.execute(
+                text("SELECT has_database_privilege(current_user,current_database(),'CREATE')")
+            ).scalar_one()
+            conn.execute(
+                text("UPDATE mcp_surface.controls SET state='disabled' WHERE domain='finance'")
+            )
+        with admin.begin() as conn:
+            conn.exec_driver_sql("GRANT USAGE ON SCHEMA mcp_surface TO butler_finance_rw")
+            conn.exec_driver_sql("GRANT ALL ON mcp_surface.manifest_state TO butler_finance_rw")
+            conn.exec_driver_sql(
+                "GRANT UPDATE(digest) ON mcp_surface.manifest_state TO butler_finance_rw"
+            )
+        assert bootstrap().returncode == 0
+        with admin.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT state FROM mcp_surface.controls WHERE domain='finance'")
+                ).scalar_one()
+                == "disabled"
+            )
+            assert conn.execute(text("SELECT count(*) FROM mcp_surface.controls")).scalar_one() == 8
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='mcp_surface'"
+                    )
+                ).scalar_one()
+                == principal
+            )
+            assert conn.execute(
+                text(
+                    "SELECT bool_and(pg_get_userbyid(relowner)=:p) FROM pg_class WHERE relnamespace='mcp_surface'::regnamespace"
+                ),
+                {"p": principal},
+            ).scalar_one()
+            assert conn.execute(
+                text(
+                    "SELECT has_schema_privilege('butler_relationship_rw','mcp_surface','USAGE') AND has_table_privilege('butler_relationship_rw','mcp_surface.controls','SELECT')"
+                )
+            ).scalar_one()
+            for role in _NORMAL_RUNTIME_ROLES:
+                assert not conn.execute(
+                    text(
+                        "SELECT has_table_privilege(:r,'mcp_surface.manifest_state','SELECT,INSERT,UPDATE,DELETE')"
+                    ),
+                    {"r": role},
+                ).scalar_one()
+                assert not conn.execute(
+                    text(
+                        "SELECT has_table_privilege(:r,'mcp_surface.controls','INSERT,UPDATE,DELETE')"
+                    ),
+                    {"r": role},
+                ).scalar_one()
+            assert not conn.execute(
+                text(
+                    "SELECT has_column_privilege('butler_finance_rw','mcp_surface.manifest_state','digest','UPDATE')"
+                )
+            ).scalar_one()
+            assert not conn.execute(
+                text(
+                    "SELECT EXISTS(SELECT 1 FROM pg_namespace n,LATERAL aclexplode(n.nspacl) a WHERE n.nspname='mcp_surface' AND a.grantee=0)"
+                )
+            ).scalar_one()
+        with cluster.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT rolname,rolcanlogin,rolreplication,rolinherit FROM pg_roles WHERE rolname=ANY(:roles) ORDER BY rolname"
+                    ),
+                    {"roles": list(roles)},
+                ).all()
+                == before
+            )
+        # Unknown authority cannot be quietly normalized by an ordinary rerun.
+        with admin.begin() as conn:
+            conn.exec_driver_sql("GRANT SELECT ON mcp_surface.manifest_state TO mcp_public_ro")
+        refused = bootstrap(check=False)
+        assert refused.returncode != 0 and "unsupported ACL" in refused.stderr
+        with admin.begin() as conn:
+            conn.exec_driver_sql("REVOKE SELECT ON mcp_surface.manifest_state FROM mcp_public_ro")
+            conn.exec_driver_sql(
+                f"ALTER TABLE mcp_surface.controls OWNER TO {conn.dialect.identifier_preparer.quote(user)}"
+            )
+        refused = bootstrap(check=False)
+        assert refused.returncode != 0 and "unsupported owner/shape" in refused.stderr
+    finally:
+        migration.dispose()
+        admin.dispose()
+        cluster.dispose()
