@@ -78,7 +78,9 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
   gets a `ValueError` naming it, and nothing moves; a route to merge such a contact is an open owner
   decision (bu-dhloi1.124). It re-points the contact's `important_dates`, `relationships`,
   `group_members`, `contact_labels`, `addresses`, `tasks` and `life_events`, dropping a group or
-  label row the target already has. Only the rebind settlement
+  label row the target already has. A date both contacts hold under one label, month and day merges
+  to one row keeping any known year; two different known years stay as two rows. Only the rebind
+  settlement
   runs after commit. The rebind ledger recovers a missed settlement, because each daemon's idle sweep
   settles pending receipts and retries failed ones. `contact_merge` logs a failed receipt only for
   Relationship's own schema, the one it settles itself; every other schema is still `pending` when

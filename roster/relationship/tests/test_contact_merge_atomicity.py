@@ -396,6 +396,51 @@ async def test_a_contacts_important_dates_follow_the_merge(rel_pool):
 
 
 @pytest.mark.parametrize(
+    ("target_year", "source_year", "merged_years"),
+    [
+        (1990, 1990, [1990]),
+        (None, None, [None]),
+        (None, 1990, [1990]),
+        (1990, None, [1990]),
+        (1990, 1991, [1990, 1991]),
+    ],
+    ids=["same-year", "no-years", "target-lacks-year", "source-lacks-year", "years-conflict"],
+)
+async def test_a_date_both_contacts_hold_merges_to_one_row_keeping_any_known_year(
+    rel_pool, target_year, source_year, merged_years
+):
+    """Readers list every row, so a shared birthday would reach the owner twice."""
+    _source_entity, _target_entity, _fact_id, source, target = await _pair(rel_pool)
+    await rel_pool.execute(
+        "INSERT INTO important_dates (contact_id, label, month, day, year) "
+        "VALUES ($1, 'birthday', 3, 9, $2::int)",
+        target,
+        target_year,
+    )
+    await rel_pool.execute(
+        "INSERT INTO important_dates (contact_id, label, month, day, year) VALUES "
+        "($1, 'birthday', 3, 9, $2::int), ($1, 'anniversary', 3, 9, NULL), "
+        "($1, 'birthday', 3, 10, NULL), ($1, 'birthday', 4, 9, NULL)",
+        source,
+        source_year,
+    )
+
+    await contacts_mod.contact_merge(rel_pool, source, target)
+
+    rows = await rel_pool.fetch(
+        "SELECT contact_id, label, month, day, year FROM important_dates "
+        "WHERE contact_id = ANY($1::uuid[]) ORDER BY label, month, day, year",
+        [source, target],
+    )
+    assert [tuple(row) for row in rows] == [
+        (target, "anniversary", 3, 9, None),
+        *[(target, "birthday", 3, 9, year) for year in merged_years],
+        (target, "birthday", 3, 10, None),
+        (target, "birthday", 4, 9, None),
+    ]
+
+
+@pytest.mark.parametrize(
     ("add_parent", "add_members", "read_members"),
     [
         (
