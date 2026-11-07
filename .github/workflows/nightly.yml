@@ -548,6 +548,7 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/junit.xml
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/hang-evidence/
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/durations.json
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/condensation-refusal-*.json
           retention-days: 14
