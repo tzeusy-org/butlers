@@ -214,8 +214,8 @@ class TestMergeLeavesTemporalSingleValuesForPeriodPolicy:
 
 
 class TestMergeKeepsSingleValuedReadersWorking:
-    async def test_notify_reads_one_preferred_channel_after_a_merge(self, rel_pool):
-        """The notify reader takes ``LIMIT 1`` with no order, so two rows would pick arbitrarily."""
+    async def test_a_merge_leaves_one_active_preferred_channel(self, rel_pool):
+        """Notify's reader takes ``LIMIT 1`` with no order, so it relies on one row (not called)."""
         merge_entities, MergeEntitiesRequest = _merge_handle(rel_pool)
         await _insert_entity(rel_pool, name="Owner", roles=["owner"])
         target_id = await _insert_entity(rel_pool, name="Alice (canonical)", roles=[])
