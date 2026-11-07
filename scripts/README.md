@@ -241,6 +241,9 @@ changes infrastructure or historical data.
 
 | Script | Caller | Purpose |
 | --- | --- | --- |
+| [`fact_source_capture_before_control.py`](fact_source_capture_before_control.py) | `.github/workflows/fact-source-capture-before-control.yml` | Runs the fixed fact-source capture BEFORE/AFTER control and validates its closed receipts. |
+| [`fact_source_capture_before_observer.py`](fact_source_capture_before_observer.py) | `fact_source_capture_before_control.py` (pytest plugin) | Records bounded lifecycle observations for the fixed control carrier. |
+| [`fact_source_capture_before_supervisor.py`](fact_source_capture_before_supervisor.py) | `fact_source_capture_before_control.py::run_owned` | Supervises bounded control children and verifies owned-process cleanup. |
 | [`check-no-em-dashes.py`](check-no-em-dashes.py) | `ci.yml`, `make check-em-dashes`, `pre_push.py`, frontend copy lint | Ratchets prohibited em dashes in doctrine and roster prose; frontend copy is enforced separately by ESLint. |
 | [`check_duplicate_toplevel_names.py`](check_duplicate_toplevel_names.py) | `ci.yml`, `make check-duplicate-names`, `pre_push.py` | Finds module-level Python definitions that would silently shadow each other after a merge. |
 | [`check_host_policy_selectors.py`](check_host_policy_selectors.py) | `ci.yml`, `make check-host-policy-selectors`, `make check-guards` | Checks the reviewed static name-selector inventory for unclassified growth, unexplained loss and evidenced host-policy growth; does not certify runtime authority or configurability. |

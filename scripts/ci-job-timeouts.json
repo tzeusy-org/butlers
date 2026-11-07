@@ -424,6 +424,20 @@
       "review_browser_hard_retry_interval_s": 0,
       "additional_provisional_cold_dependency_allowance_s": 0,
       "installed_timeout_minutes": 20
+    },
+    {
+      "workflow": ".github/workflows/fact-source-capture-before-control.yml",
+      "job": "fact-capture-before-control",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 45,
+      "installed_timeout_minutes": 45,
+      "retry_extra_s": 0,
+      "state": "provisional finite control; no hosted observation or calibration yet",
+      "sample_source": "bu-g0fmdv separate immutable old-runtime PG control source",
+      "review_uv_nominal_envelope_s": 640,
+      "review_setup_placement": "start one2480s aggregate before checkout; owned UV640/environment640/two480s phases including cleanup/setup120/evidence120;45min job provisional"
     }
   ],
   "tests": [
