@@ -39,6 +39,136 @@ def _applied(db_url: str, schema: str | None) -> set[str]:
         engine.dispose()
 
 
+@pytest.mark.parametrize("domain", ["finance", "health"])
+def test_domain_projection_defers_only_initial_historical_core(fresh_db, domain) -> None:
+    """Old-core domains stay usable; explicit prerequisite arrival completes their rows."""
+    previous = "finance_019" if domain == "finance" else "health_006"
+    schemas = {chain: domain for chain in ("core", domain, "memory")}
+    url = fresh_db(
+        "core",
+        domain,
+        "memory",
+        schemas=schemas,
+        revisions={"core": "core_319", domain: previous},
+    )
+    engine = create_engine(url)
+    installer = f"{domain}.mcp_install_{domain}_projection"
+    signatures = (
+        "mcp_json_tokens(text)",
+        "mcp_json_credential(text[])",
+        "mcp_json_path_key(text)",
+        "mcp_json_leaves(jsonb,text,text[])",
+        "mcp_write_json_fields(text,text,text,text[],boolean,jsonb)",
+        "mcp_sync_json_fields()",
+        "mcp_install_json_projection(text,text,text,text[],boolean)",
+    )
+    try:
+        with engine.begin() as conn:
+            fact = conn.execute(
+                text(
+                    f"INSERT INTO {domain}.facts(subject,predicate,content,metadata) "
+                    "VALUES('historical source','medication','accepted',"
+                    '\'{"name":"Deferred","notes":"backfill me"}\') RETURNING id'
+                )
+            ).scalar_one()
+            assert conn.execute(
+                text("SELECT to_regprocedure('public.mcp_sync_json_fields()') IS NULL")
+            ).scalar_one()
+        asyncio.run(run_migrations(url, chain=domain, schema=domain))
+        assert _applied(url, domain) == {
+            "core_319",
+            get_chain_head(domain),
+            get_chain_head("memory"),
+        }, "The domain must not secretly upgrade its historical core"
+        with engine.connect() as conn:
+            assert (
+                conn.execute(text(f"SELECT count(*) FROM {domain}.json_fields_public")).scalar_one()
+                == 0
+            )
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT count(*) FROM pg_trigger WHERE tgrelid=to_regclass(:source) "
+                        "AND tgname IN ('trg_mcp_json_fields','trg_mcp_health_fact')"
+                    ),
+                    {"source": f"{domain}.facts"},
+                ).scalar_one()
+                == 0
+            )
+        # Initial compatibility is explicitly deferred, never complete memory success.
+        with pytest.raises(DBAPIError, match="projection shared core prerequisite missing"):
+            asyncio.run(run_migrations(url, chain="memory", schema=domain))
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    f"UPDATE {domain}.alembic_version SET version_num='core_unknown' "
+                    "WHERE version_num='core_319'"
+                )
+            )
+        try:
+            with pytest.raises(DBAPIError, match="projection shared core prerequisite missing"):
+                with engine.begin() as conn:
+                    conn.execute(text(f"SELECT {installer}(false)"))
+        finally:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        f"UPDATE {domain}.alembic_version SET version_num='core_319' "
+                        "WHERE version_num='core_unknown'"
+                    )
+                )
+        # This is the caller's explicit core upgrade, outside the domain/finalizer.
+        asyncio.run(run_migrations(url, chain="core", schema=domain))
+        asyncio.run(run_migrations(url, chain="memory", schema=domain))
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        f"SELECT value_text FROM {domain}.json_fields_public "
+                        "WHERE row_id=:id AND path='metadata.notes'"
+                    ),
+                    {"id": str(fact)},
+                ).scalar_one()
+                == "backfill me"
+            )
+            if domain == "health":
+                assert (
+                    conn.execute(
+                        text("SELECT name FROM health.medications_public WHERE id=:id"),
+                        {"id": fact},
+                    ).scalar_one()
+                    == "Deferred"
+                )
+        for missing in ((signatures[-1],), signatures):
+            renamed = []
+            try:
+                pending = []
+                with engine.begin() as conn:
+                    for signature in missing:
+                        name, arguments = signature.split("(", 1)
+                        conn.execute(
+                            text(f"ALTER FUNCTION public.{signature} RENAME TO unavailable_{name}")
+                        )
+                        pending.append((name, arguments))
+                renamed = pending
+                message = "catalog incomplete" if len(missing) == 1 else "core prerequisite missing"
+                for require_facts in ("false", "true"):
+                    with pytest.raises(DBAPIError, match=message):
+                        with engine.begin() as conn:
+                            conn.execute(text(f"SELECT {installer}({require_facts})"))
+            finally:
+                with engine.begin() as conn:
+                    for name, arguments in reversed(renamed):
+                        conn.execute(
+                            text(
+                                f"ALTER FUNCTION public.unavailable_{name}({arguments} RENAME TO {name}"
+                            )
+                        )
+            asyncio.run(run_migrations(url, chain="memory", schema=domain))
+    finally:
+        engine.dispose()
+
+
 def _one_behind_head(chain: str) -> str:
     head = migrations._chain_script_directory(chain).get_revision(get_chain_head(chain))
     assert isinstance(head.down_revision, str)

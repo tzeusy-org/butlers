@@ -307,6 +307,30 @@ _DYNAMIC_RELATION_RE = re.compile(
 # Dynamic entries are exact normalized relation slots, not whole-file waivers.
 SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
+        "roster/finance/migrations/020_public_projection.py",
+        "<dynamic:{quoted}.transactions>",
+    ): "dynamic-local: Finance020 derives quoted from current_schema(); overlay DDL/backfill touches only its owning transactions table, including retained flat callers.",
+    (
+        "roster/finance/migrations/020_public_projection.py",
+        "<dynamic:{quoted}.json_fields_public>",
+    ): "dynamic-local: Finance020 derives quoted from current_schema(); this is the owning domain scalar materialization, never a foreign-schema selector.",
+    (
+        "roster/finance/migrations/020_public_projection.py",
+        "<dynamic:{quote(schema)}.json_fields_public>",
+    ): "dynamic-local: Finance020 downgrade quotes its current_schema() namespace and drops only its own scalar materialization.",
+    (
+        "roster/finance/migrations/020_public_projection.py",
+        "<dynamic:{quote(schema)}.transactions>",
+    ): "dynamic-local: Finance020 downgrade removes only overlay columns from its own current_schema() transactions table.",
+    (
+        "roster/health/migrations/007_public_projection.py",
+        "<dynamic:{quote(schema)}.{table}>",
+    ): "dynamic-local: Health007 downgrade quotes current_schema() and iterates the closed typed/scalar public-table tuple it owns; no discovered or foreign table.",
+    (
+        "src/butlers/migrations/__init__.py",
+        "<dynamic:{quoted}.alembic_version>",
+    ): "dynamic-local: post-memory finalization restricts normalized_schema to None/public/finance/health and quotes that owning namespace; fixed domain revision patterns detect missing installers, not foreign data access.",
+    (
         "src/butlers/core/confirm_admission.py",
         "switchboard.effects",
     ): "sanctioned:RFC-0038: Switchboard-owned confirm admission verifies the exact dispatched effect digest and immutable recipient/deadline; no originating-butler schema access (bu-ow5a4)",

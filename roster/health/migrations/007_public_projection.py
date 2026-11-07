@@ -150,10 +150,57 @@ def upgrade() -> None:
     body = r"""
         DECLARE
             source_schema text := $literal$;
+            required_helpers text[] := ARRAY[
+                'public.mcp_json_tokens(text)',
+                'public.mcp_json_credential(text[])',
+                'public.mcp_json_path_key(text)',
+                'public.mcp_json_leaves(jsonb,text,text[])',
+                'public.mcp_write_json_fields(text,text,text,text[],boolean,jsonb)',
+                'public.mcp_sync_json_fields()',
+                'public.mcp_install_json_projection(text,text,text,text[],boolean)'
+            ];
+            present_helpers integer;
+            version_schema text;
+            core_revision text;
+            historical_core boolean := false;
+            current_core boolean := false;
+            unknown_core boolean := false;
             item record;
             source_oid oid;
             installed record;
         BEGIN
+            -- Historical authority callers deliberately combine an older core
+            -- with today's independent domain chain. Only an entirely absent
+            -- shared boundary may defer initial installation in that case.
+            -- A completed memory callback must never report that as complete.
+            SELECT count(*) INTO present_helpers FROM unnest(required_helpers) AS h(signature)
+                WHERE to_regprocedure(signature) IS NOT NULL;
+            IF present_helpers <> cardinality(required_helpers) THEN
+                IF present_helpers <> 0 THEN
+                    RAISE EXCEPTION 'projection shared helper catalog incomplete';
+                END IF;
+                FOREACH version_schema IN ARRAY ARRAY[source_schema,'public'] LOOP
+                    IF to_regclass(format('%I.alembic_version',version_schema)) IS NULL THEN
+                        CONTINUE;
+                    END IF;
+                    FOR core_revision IN EXECUTE format(
+                        'SELECT version_num FROM %I.alembic_version',version_schema) LOOP
+                        IF core_revision ~ '^core_[0-9]+$' THEN
+                            historical_core := historical_core OR
+                                substring(core_revision FROM 6)::numeric < 320;
+                            current_core := current_core OR
+                                substring(core_revision FROM 6)::numeric >= 320;
+                        ELSIF starts_with(core_revision,'core_') THEN
+                            unknown_core := true;
+                        END IF;
+                    END LOOP;
+                END LOOP;
+                IF historical_core AND NOT current_core AND NOT unknown_core
+                    AND NOT require_facts THEN
+                    RETURN;
+                END IF;
+                RAISE EXCEPTION 'projection shared core prerequisite missing';
+            END IF;
             FOR item IN SELECT * FROM (VALUES
                 ('calendar_event_instances','id',ARRAY['metadata']::text[]),
                 ('calendar_events','id',ARRAY['metadata']::text[]),

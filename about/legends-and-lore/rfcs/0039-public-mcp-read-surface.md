@@ -524,6 +524,12 @@ same kind uses the same pattern:
   new display columns. Downgrades preserve other schema consumers and never
   cascade through another domain. This does not install a publication or reconcile
   a manifest; those remain the separate manifest package's responsibility.
+  Independent historical callers with a recorded pre-core320 core and no shared
+  helpers may install the domain tables/overlays while deferring its projection.
+  Partial shared catalogs refuse; missing helpers with an unknown or recorded
+  current core also refuse. Post-memory completion refuses until the
+  caller explicitly upgrades core; ordinary finalization then installs/backfills
+  the deferred boundary. No domain migration upgrades core implicitly.
 - **Graph publish key and withheld counts.** [Observed] Every fact with an
   object entity projects one row into `public.entity_graph_edges`, from every
   memory schema (`src/butlers/modules/memory/storage.py:2066-2080`), from
