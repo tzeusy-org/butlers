@@ -81,9 +81,8 @@ def _owned_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 
     Patching only these keeps any other key as the row holds it at the UPDATE: a
     merge's ``merged_into``, or a flag that a promote removed after the sync's read.
-    ``profile`` and ``sources`` are still whole sub-documents from that read, so a
-    stale patch overwrites what was written there after it: profile keys from
-    ``contact_merge``'s reconcile or an owner edit can be lost.
+    ``profile`` and ``sources`` are whole sub-documents from that read, which suits a new
+    row (``create_contact``); ``update_contact`` patches their leaves instead.
     """
     return {key: metadata[key] for key in _SYNC_METADATA_KEYS if key in metadata}
 
@@ -629,13 +628,40 @@ class ContactBackfillWriter:
             _deep_set(existing_meta, "profile.avatar_url", updates["avatar_url"])
         self._stamp_provenance(existing_meta, contact)
 
-        # Pass the dict directly: the registered JSONB codec encodes it once.
+        # Patch only the leaves this sync wrote, merged into the sub-documents as the row
+        # holds them at the UPDATE. Writing ``profile`` and ``sources`` whole from the read
+        # would drop a profile key that ``contact_merge``'s reconcile or an owner edit
+        # committed after it. Pass dicts directly: the registered JSONB codec encodes once.
+        profile_patch = {
+            key: updates[key]
+            for key in ("first_name", "last_name", "nickname", "company", "job_title", "avatar_url")
+            if key in updates
+        }
+        provenance = existing_meta["sources"]["contacts"][self._provider]
+        params: list[Any] = [local_id]
+        merged = []
+        if profile_patch:
+            params.append(profile_patch)
+            merged.append(
+                "'profile', COALESCE(metadata -> 'profile', '{}'::jsonb) || "
+                f"${len(params)}::jsonb"
+            )
+        params.extend([self._provider, provenance])
+        provider_param, provenance_param = f"${len(params) - 1}", f"${len(params)}"
+        merged.append(
+            "'sources', COALESCE(metadata -> 'sources', '{}'::jsonb) || jsonb_build_object("
+            "'contacts', COALESCE(metadata -> 'sources' -> 'contacts', '{}'::jsonb) || "
+            f"jsonb_build_object({provider_param}::text, "
+            f"COALESCE(metadata -> 'sources' -> 'contacts' -> {provider_param}::text, "
+            f"'{{}}'::jsonb) || {provenance_param}::jsonb))"
+        )
         set_clauses: list[str] = [
-            "metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb",
+            "metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object("
+            + ", ".join(merged)
+            + ")",
             "updated_at = now()",
         ]
-        params: list[Any] = [local_id, _owned_metadata(existing_meta)]
-        idx = 3
+        idx = len(params) + 1
 
         if "canonical_name" in updates:
             set_clauses.append(f"canonical_name = ${idx}")
