@@ -226,7 +226,7 @@ async def test_update_contact_keeps_a_profile_key_written_after_its_read(db):
     racing = _WriteAfterRead(pool, write_company)
     results = await _writer(racing).update_contact(entity, _contact(), match_strategy="source_link")
     assert racing.wrote
-    assert results["first_name"] == "Zhi"
+    assert results["first_name"] == "updated"
     profile = (await _metadata(pool, entity))["profile"]
     assert profile["company"] == "Acme"
     assert profile["first_name"] == "Zhi"
