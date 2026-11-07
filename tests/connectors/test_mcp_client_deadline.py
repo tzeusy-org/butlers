@@ -196,6 +196,37 @@ async def test_a_timeout_is_not_retried_and_the_next_call_reconnects(monkeypatch
     assert fresh.calls == 1
 
 
+async def test_a_timeout_never_surfaces_as_a_bare_timeout_error(monkeypatch) -> None:
+    """Connector holds catch ``ConnectionError``; a bare ``TimeoutError`` would pass them by."""
+
+    class _HangingClose(_Fake):
+        async def __aexit__(self, *exc: object) -> None:
+            await asyncio.Event().wait()
+
+    hung, fresh = _HangingClose(hangs=1), _Fake()
+    client = _client(monkeypatch, hung, fresh)
+
+    with pytest.raises(ConnectionError) as excinfo:
+        async with asyncio.timeout(5):
+            await client.call_tool("ingest", {})
+
+    assert isinstance(excinfo.value, ToolCallTimeoutError)
+    assert not isinstance(excinfo.value, TimeoutError)
+    # The overrun close still cleared the slot, so the next call reconnects.
+    assert await client.call_tool("ingest", {}) == {"status": "accepted"}
+    assert fresh.calls == 1
+
+
+async def test_a_connect_timeout_never_surfaces_as_a_bare_timeout_error(monkeypatch) -> None:
+    client = _client(monkeypatch, _Fake(enter_hangs=True))
+
+    with pytest.raises(ConnectionError) as excinfo:
+        async with asyncio.timeout(5):
+            await client.call_tool("ingest", {})
+
+    assert not isinstance(excinfo.value, TimeoutError)
+
+
 async def test_a_timeout_does_not_close_a_client_already_replaced(monkeypatch) -> None:
     hung, replacement = _Fake(hangs=1), _Fake()
     client = _client(monkeypatch, hung, replacement, call=0.2)

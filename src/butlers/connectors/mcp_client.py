@@ -11,6 +11,7 @@ to avoid duplicating connection management across connectors.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import random
@@ -241,8 +242,12 @@ class CachedMCPClient:
         """Drop ``client`` so the next call reconnects, unless it was already replaced."""
         async with self._lock:
             if self._client is client:
-                async with asyncio.timeout(self._connect_timeout_s):
-                    await self._disconnect()
+                # Closing a stalled session can overrun too. That must not replace the
+                # caller's ToolCallTimeoutError with a bare TimeoutError, which connectors
+                # do not treat as transport. _disconnect clears the slot either way.
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(self._connect_timeout_s):
+                        await self._disconnect()
 
     async def call_tool(self, tool_name: str, args: dict[str, Any]) -> Any:
         """Call an MCP tool with single-retry reconnect on failure.
