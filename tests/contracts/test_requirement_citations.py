@@ -176,6 +176,48 @@ def test_repository_test_citations_use_capability_qualified_ids() -> None:
     assert not shorthand, "\n".join(shorthand)
 
 
+def test_repository_assertion_checks_frontend_and_python_citations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(globals(), "ROOT", tmp_path)
+    valid = _req("widgets", "010")
+    unknown = _req("widgets", "999")
+    _write_spec(tmp_path / "openspec/specs/widgets/spec.md", "Requirements", valid)
+    frontend = tmp_path / "frontend/src/widgets.test.tsx"
+    python = tmp_path / "tests/test_widgets.py"
+    for path in (frontend, python):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"// {valid}\n", encoding="utf-8")
+
+    # Non-test source, hidden/vendor copies and nested worktrees are not test roots.
+    ignored = (
+        "frontend/src/widgets.tsx",
+        "frontend/src/.hidden/ignored.test.ts",
+        "frontend/src/node_modules/ignored.test.ts",
+        "frontend/src/vendor/ignored.test.ts",
+        "frontend/src/worktrees/ignored.test.ts",
+        "frontend/src/nested-checkout/ignored.test.ts",
+    )
+    for relative in ignored:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"// {unknown}\n", encoding="utf-8")
+    (tmp_path / "frontend/src/nested-checkout/.git").write_text("gitdir: elsewhere\n")
+
+    test_requirement_citations_in_repository_tests_resolve()
+    frontend.write_text(f"// {unknown}\n", encoding="utf-8")
+    with pytest.raises(AssertionError, match=unknown):
+        test_requirement_citations_in_repository_tests_resolve()
+    frontend.write_text(f"// {valid}\n", encoding="utf-8")
+    test_requirement_citations_in_repository_tests_resolve()
+
+    python.write_text(f"# {unknown}\n", encoding="utf-8")
+    with pytest.raises(AssertionError, match=unknown):
+        test_requirement_citations_in_repository_tests_resolve()
+    python.write_text(f"# {valid}\n", encoding="utf-8")
+    test_requirement_citations_in_repository_tests_resolve()
+
+
 def test_canonical_definition_wins_over_retained_copy(tmp_path: Path) -> None:
     req_id = _req("widgets", "001")
     _write_spec(
@@ -273,19 +315,27 @@ def collect_citations(root: Path) -> list[Citation]:
 
 
 def repository_test_files(root: Path) -> list[Path]:
-    """Match pytest's test roots while excluding nested worktrees and vendored trees."""
+    """Scan Python test roots and frontend tests without hidden/vendor/worktree copies."""
     found: set[Path] = set()
-    for base in (root / "tests", root / "roster"):
+    excluded = {"node_modules", "vendor", "vendored", "worktrees", "__pycache__"}
+    for base in (root / "tests", root / "roster", root / "frontend/src"):
         if not base.is_dir():
             continue
+        frontend = base == root / "frontend/src"
         for directory, subdirectories, filenames in os.walk(base):
-            subdirectories[:] = [name for name in subdirectories if not name.startswith(".")]
-            if "tests" not in Path(directory).relative_to(root).parts:
+            if ".git" in subdirectories or ".git" in filenames:
+                subdirectories[:] = []
+                continue
+            subdirectories[:] = [
+                name for name in subdirectories if not name.startswith(".") and name not in excluded
+            ]
+            if not frontend and "tests" not in Path(directory).relative_to(root).parts:
                 continue
             found.update(
                 Path(directory) / name
                 for name in filenames
-                if name.endswith(".py") and not name.startswith(".")
+                if not name.startswith(".")
+                and (".test." in name if frontend else name.endswith(".py"))
             )
     return sorted(found)
 

@@ -50,7 +50,8 @@ Continue working on a change by creating the next artifact.
    **If all artifacts are complete (`isComplete: true`)**:
    - Congratulate the user
    - Show final status including the schema used
-   - Suggest: "All artifacts created! You can now implement this change with `/opsx:apply` or archive it with `/opsx:archive`."
+   - Suggest: "All artifacts created! Use `/opsx:apply` to implement the approved change. After the whole program is verified implemented and shipped, `/opsx:archive` deletes its completed directory."
+   - Artifact readiness alone never authorizes completion cleanup.
    - STOP
 
    ---

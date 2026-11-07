@@ -23,15 +23,16 @@ Start a new change using the experimental artifact-driven approach.
 2. **Choose an explicit schema for a new change**
 
    Read `about/heart-and-soul/development.md` and classify the actual scope and whether this is part
-   of a retained multi-PR delta program.
+   of a new multi-PR program or continues an existing legacy program.
 
    - A new eligible single-butler change with no cross-butler contract, shared schema, or security
      boundary uses `single-butler` (proposal → tasks; design may be added).
-   - A new standalone change that requires a design and has no local delta specs uses
+   - A new standalone change that requires a design uses
      `living-specs` (proposal → design → tasks).
-   - A retained multi-PR delta program keeps `spec-driven` and its existing local specs. Do not
-     retag it or add `skip_specs`.
-   - An explicitly requested compatible schema may be used after the same scope check.
+   - New multi-PR programs may use `spec-driven` with local deltas. New standalone work uses
+     a no-delta schema; selecting local deltas is not an additional standalone option.
+   - Preserve every existing legacy program with its resolved schema, metadata, content and
+     deltas unchanged until verified completion. Do not retag it or add `skip_specs`.
 
    The project default stays `spec-driven` for existing changes and other legacy CLI use. New
    `/opsx:new` changes choose a schema explicitly rather than relying on that default.

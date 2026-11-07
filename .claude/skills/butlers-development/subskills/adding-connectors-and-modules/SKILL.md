@@ -123,8 +123,10 @@ Use `/opsx:ff` to fast-forward artifact creation:
 ```
 
 Create artifacts for the actual workflow. A new eligible single-butler change without
-local delta specs can use `single-butler`; when the integration requires a design but does not
-need local deltas, use `living-specs`. Retained multi-PR delta programs keep `spec-driven` and
+local delta specs can use `single-butler`; new standalone integrations that require a
+design use `living-specs`. New multi-PR programs may use `spec-driven`
+local deltas; all existing legacy programs retain their resolved schemas unchanged.
+Retained delta programs keep
 their existing local requirements. A cross-butler contract, shared schema or security boundary
 requires a design. Keep canonical requirements in `openspec/specs/` and update an affected
 requirement in the source change when observable behavior changes. Read existing designs and

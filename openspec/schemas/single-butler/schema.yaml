@@ -10,8 +10,9 @@ artifacts:
       Read about/heart-and-soul/development.md before using this workflow. It is only for a
       single-butler change that alters no cross-butler contract, schema shared across butlers, or
       security boundary. Record evidence for all three exclusions in Workflow Eligibility. If any
-      applies and the change has no local deltas, use living-specs and include design.md; if this is
-      a retained delta program, preserve spec-driven.
+      applies to new standalone work, use living-specs and include design.md without local deltas.
+      New multi-PR programs may use spec-driven deltas. Preserve all existing legacy programs
+      under their resolved schemas with metadata, content and deltas unchanged.
 
       This schema has no change-local specs artifact. Keep .openspec.yaml's generated schema and
       created fields and add skip_specs: true. Do not create an empty specs/ directory. Verify this

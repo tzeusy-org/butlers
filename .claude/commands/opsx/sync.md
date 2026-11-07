@@ -127,10 +127,14 @@ Updated main specs:
 - Created new spec file
 - Added requirement: "Another Feature"
 
-Main specs are now updated. The change remains active - archive when implementation is complete.
+Main specs are now updated. Preserve the active change until the whole program is verified
+implemented and shipped. Then `/opsx:archive` deletes the completed directory; Git retains history.
 ```
 
 **Guardrails**
+- Fold delivered requirements through a reviewed semantic diff before completed-program deletion
+- Sync does not prove implementation or shipment; preserve all incomplete/unshipped programs
+- Check overlapping active deltas and preserve unrelated requirement/scenario bodies, IDs and source references
 - Read both delta and main specs before making changes
 - Preserve existing content not mentioned in delta
 - If something is unclear, ask for clarification

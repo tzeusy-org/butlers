@@ -39,7 +39,7 @@ I'll walk you through a complete change cycle—from idea to implementation—us
 3. Create a change (the container for our work)
 4. Build proposal → tasks, proposal → design → tasks, or the retained spec-driven artifact graph
 5. Implement the tasks
-6. Archive the completed change
+6. Verify delivery and delete only the completed change directory
 
 **Time:** ~15-20 minutes
 
@@ -157,16 +157,17 @@ Now let's create a change to hold our work.
 ```
 ## Creating a Change
 
-OpenSpec keeps canonical requirements in `openspec/specs/`. New single-butler work with no local deltas uses proposal and tasks; `living-specs` adds a required design. Both preserve the generated schema/created metadata and use `skip_specs: true`. Retained multi-PR delta programs stay spec-driven and keep their local deltas. Existing designs are kept and read. The rule lives in `about/heart-and-soul/development.md`.
+OpenSpec keeps canonical requirements in `openspec/specs/`. New single-butler work with no local deltas uses proposal and tasks; `living-specs` adds a required design. Both preserve the generated schema/created metadata and use `skip_specs: true`. New multi-PR programs may use spec-driven local deltas. All existing legacy programs keep their resolved schemas, metadata, content and deltas unchanged until verified completion. Existing designs are kept and read. The rule lives in `about/heart-and-soul/development.md`.
 
 Let me create one for our task.
 ```
 
 **DO:** Create the change with a derived kebab-case name:
-Classify the actual scope and whether this is a retained multi-PR delta program. Use
+Classify the actual scope and whether this is new standalone work, a new multi-PR program, or continuation of an existing legacy program. Use
 `--schema single-butler` for eligible new single-butler work without local deltas; use
-`--schema living-specs` when design is required but no local deltas are needed; keep
-`--schema spec-driven` for retained delta programs. New no-delta changes preserve their generated
+`--schema living-specs` for new standalone work when design is required; new multi-PR
+programs may use `--schema spec-driven` local deltas. Preserve every existing legacy
+program under its resolved schema unchanged until verified completion. New no-delta changes preserve their generated
 schema/created metadata and add `skip_specs: true`. Verify those fields and the marker before
 continuing; if they are missing or malformed, correct the new change first. Existing
 spec/review/verification and owner-approval gates remain; schema readiness alone does not authorize work.
@@ -395,33 +396,49 @@ All tasks done:
 - [x] Task 2
 - [x] ...
 
-The change is implemented! One more step—let's archive it.
+Implementation tasks are complete. Verify the code and whole-program delivery before cleanup.
 ```
 
 ---
 
-## Phase 10: Archive
+## Phase 10: Verify Delivery and Clean Up
 
 **EXPLAIN:**
 ```
-## Archiving
+## Completion Cleanup
 
-When a change is complete, we archive it. This moves it from `openspec/changes/` to `openspec/changes/archive/YYYY-MM-DD-<name>/`.
-
-Archived changes become your project's decision history—you can always find them later to understand why something was built a certain way.
+`/opsx:archive` keeps its familiar name, but verified completed change directories
+are deleted. Git history preserves the proposal, design, tasks and metadata.
+Artifact readiness and checked tasks do not prove implementation or shipment.
+Existing archives and unfinished programs remain intact.
 ```
 
 **DO:**
+Follow `/opsx:verify <name>` and the `/opsx:archive <name>` instructions. Confirm the
+whole program is implemented and shipped, required source PRs have merged, and
+implementation review, executing verification and required runtime evidence are
+complete. For retained deltas, fold delivered intent into canonical requirements
+through `/opsx:sync` and review the semantic diff; for no-delta work, verify its
+delivered canonical updates. Run populated `openspec validate --all --strict`.
+Only after these checks, validate the exact active tracked path and delete it with:
+
 ```bash
-openspec archive "<name>"
+git rm -r -- openspec/changes/<name>
 ```
+
+Publish cleanup through the normal PR workflow before closing Beads work. If the
+program has not shipped, stop this phase and preserve the directory; do not use
+`openspec archive` or move it into a dated archive.
 
 **SHOW:**
 ```
-Archived to: `openspec/changes/archive/YYYY-MM-DD-<name>/`
-
-The change is now part of your project's history. The code is in your codebase, the decision record is preserved.
+Deleted after verified delivery: openspec/changes/<name>/
+History: preserved in Git
+Evidence: <merged source PRs, verification and reviewed canonical diff>
 ```
+
+If completion is unverified, show the remaining work and report the directory as
+preserved. Never remove an unfinished multi-PR program or an existing archive.
 
 ---
 
@@ -439,7 +456,7 @@ You just completed a full OpenSpec cycle:
 5. **Design** - Decided HOW
 6. **Tasks** - Broke it into steps
 7. **Apply** - Implemented the work
-8. **Archive** - Preserved the record
+8. **Completion cleanup** - Verified shipment, deleted the completed directory; Git retains history
 
 This same rhythm works for any size change—a small fix or a major feature.
 
@@ -455,7 +472,7 @@ This same rhythm works for any size change—a small fix or a major feature.
 | `/opsx:continue` | Continue working on an existing change |
 | `/opsx:apply` | Implement tasks from a change |
 | `/opsx:verify` | Verify implementation matches artifacts |
-| `/opsx:archive` | Archive a completed change |
+| `/opsx:archive` | Verify delivery and delete a completed change directory |
 
 ---
 
@@ -499,7 +516,7 @@ If the user says they just want to see the commands or skip the tutorial:
 | `/opsx:continue <name>` | Continue an existing change |
 | `/opsx:apply <name>` | Implement tasks |
 | `/opsx:verify <name>` | Verify implementation |
-| `/opsx:archive <name>` | Archive when done |
+| `/opsx:archive <name>` | Clean up only after verified delivery |
 
 Try `/opsx:new` to start your first change, or `/opsx:ff` if you want to move fast.
 ```
@@ -510,7 +527,7 @@ Exit gracefully.
 
 ## Guardrails
 
-- **Follow the EXPLAIN → DO → SHOW → PAUSE pattern** at key transitions (after explore, after proposal draft, after tasks, after archive)
+- **Follow the EXPLAIN → DO → SHOW → PAUSE pattern** at key transitions (after explore, after proposal draft, after tasks, after completion cleanup)
 - **Keep narration light** during implementation—teach without lecturing
 - **Don't skip phases** even if the change is small—the goal is teaching the workflow
 - **Pause for acknowledgment** at marked points, but don't over-pause

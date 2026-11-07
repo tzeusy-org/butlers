@@ -6,8 +6,10 @@
 
 [Capability specs](../../openspec/specs/) are the maintained requirements.
 [Active changes](../../openspec/changes/) preserve the proposal, design, tasks,
-and—only for retained or deliberately selected delta programs—local specs.
-[Archived changes](../../openspec/changes/archive/) preserve delivery history.
+and local specs for legacy delta programs or new multi-PR programs.
+[Existing archived changes](../../openspec/changes/archive/) remain historical
+material. Newly completed programs are deleted after verified delivery; Git
+history preserves their artifacts.
 A proposal is not implementation authority, and an archive is not proof that a
 required canonical update was delivered.
 
@@ -19,7 +21,7 @@ required canonical update was delivered.
 | `openspec/changes/<change>/design.md` | How will the change work, including boundaries, tradeoffs and migration? |
 | `openspec/changes/<change>/tasks.md` | Which implementation and verification steps remain? |
 | `openspec/changes/<change>/.openspec.yaml` | Which schema governs this change, and whether its new no-delta workflow skips local specs? |
-| `openspec/changes/archive/<dated-change>/` | What was proposed and delivered in that change? |
+| `openspec/changes/archive/<dated-change>/` | Which historical artifacts were archived by the former workflow? |
 
 ## Choose a workflow
 
@@ -28,7 +30,7 @@ proposal → specs → design → tasks graph for legacy changes and retained
 multi-PR delta programs. Do not change the schema or metadata of an existing
 change just because a new workflow is available.
 
-For a **new standalone change without change-local deltas**, select a local
+For a **new standalone change**, select a local
 schema explicitly:
 
 - `single-butler`: proposal → tasks for eligible single-butler scope; a design
@@ -43,12 +45,11 @@ CLI-generated `schema` and `created` values in `.openspec.yaml`, add
 is not for existing changes, retained local-delta programs, or incomplete
 specification work.
 
-A retained multi-PR program keeps `spec-driven`, its current metadata, and all
-local deltas until that program is delivered. Any change that needs change-local deltas uses `spec-driven`, whether it is
-new or part of a retained program. Use `living-specs` when a design is required
-and no local deltas are needed. Use `single-butler` for eligible new
-single-butler work with no local deltas. Read the governing doctrine and
-existing designs before selecting.
+New multi-PR programs may use `spec-driven` with local deltas. This exception
+does not extend to new standalone work. Preserve all existing legacy programs
+with their resolved schemas, metadata, content and deltas unchanged until
+verified completion, including legacy standalone programs. Read the governing
+doctrine and existing designs before selecting.
 
 ## Contributor workflow
 
@@ -69,12 +70,16 @@ no-delta schema does not relax design, test, review, security or owner gates.
 5. Before syncing retained deltas, compare same-named MODIFIED requirements in
 other active changes. Apply the delivered delta to the baseline and inspect the
 actual requirement-body diff. Rebuild any overlapping delta against that
-refreshed baseline so a later archive cannot undo it. Follow the
+refreshed baseline so a later sync cannot undo it. Follow the
 [repository archive cautions](../../.claude/skills/doctrine/subskills/spec-and-spine/references/openspec-gotchas.md#two-open-changes-overwrite-each-other).
 6. Validate all canonical and active OpenSpec artifacts. Sync only changes
 that have local delta specs. For a no-delta change, verify its canonical update
-instead of inventing a sync step. Archive the completed change and confirm its
-requirements and evidence before closing the Beads work.
+instead of inventing a sync step. Verify the entire program is implemented and
+shipped, with required source PRs merged and review/verification evidence complete.
+Then use `/opsx:archive` (or `/opsx:bulk-archive`) to delete only its verified
+completed directory through the normal PR workflow before closing the Beads
+work. Git history preserves it. Keep unfinished or unshipped programs and all
+existing archives intact; artifact readiness alone does not authorize deletion.
 
 ## Verification
 
@@ -88,7 +93,7 @@ make check-guards
 
 Strict validation checks the native OpenSpec artifacts. The trace guard applies
 to active local deltas, while the citation contract test checks qualified IDs
-in test files against canonical requirements first and complete retained
+in `tests/`, `roster/*/tests/` and `frontend/src/**/*.test.*` against canonical requirements first and complete retained
 ADDED/MODIFIED requirements second. It excludes archive history, REMOVED blocks,
 mentions and incomplete changes. Review the semantic spec diff as well;
 validator success does not establish approval, implementation, or runtime

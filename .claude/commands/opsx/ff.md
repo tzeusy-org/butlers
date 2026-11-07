@@ -22,14 +22,16 @@ Fast-forward through artifact creation - generate everything needed to start imp
 
 2. **Choose an explicit schema and create the change directory**
    Classify the actual scope under `about/heart-and-soul/development.md` and determine whether the
-   change is part of a retained multi-PR delta program.
+   change is part of a new multi-PR program or continues an existing legacy program.
 
    - New eligible single-butler work with no cross-butler contract, shared schema, or security
      boundary uses `single-butler` (proposal → tasks; design may be added).
-   - New standalone work requiring a design but no change-local deltas uses `living-specs`
+   - New standalone work requiring a design uses `living-specs`
      (proposal → design → tasks).
-   - Retained multi-PR delta programs stay on `spec-driven` with all current deltas and metadata.
-     Do not retag them or add `skip_specs`.
+   - New multi-PR programs may use `spec-driven` with local deltas. New standalone work uses
+     a no-delta schema.
+   - Preserve every existing legacy program with its resolved schema, metadata, content and
+     deltas unchanged until verified completion. Do not retag it or add `skip_specs`.
 
    Create it with the selected schema explicitly:
    ```bash

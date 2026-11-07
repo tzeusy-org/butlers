@@ -1,171 +1,88 @@
 ---
 name: "OPSX: Archive"
-description: Archive a completed change in the experimental workflow
+description: Verify completion and delete a completed change directory
 category: Workflow
 tags: [workflow, archive, experimental]
 ---
 
-Archive a completed change in the experimental workflow.
+The familiar `/opsx:archive` command now verifies completion and deletes the completed
+change directory. Git history preserves its proposal, design, tasks and metadata.
+Existing `openspec/changes/archive/` entries remain untouched.
 
-**Input**: Optionally specify a change name after `/opsx:archive` (e.g., `/opsx:archive add-auth`). If omitted, check if it can be inferred from conversation context. If vague or ambiguous you MUST prompt for available changes.
+**Input**: A change name, for example `/opsx:archive add-auth`. If omitted and the
+intended change is ambiguous, run `openspec list --json` and ask the user to select
+an active change. Never select an existing archive for deletion.
 
 **Steps**
 
-1. **If no change name provided, prompt for selection**
+1. **Read the complete delivery program**
 
-   Run `openspec list --json` to get available changes. Use the **AskUserQuestion tool** to let the user select.
+   Recheck `about/heart-and-soul/development.md`, the proposal, tasks, existing design
+   and resolved schema. Run `openspec status --change "<name>" --json` to inspect
+   artifacts. An eligible `single-butler` change has proposal and tasks with optional
+   design; `living-specs` requires design. Cross-butler contracts, shared schemas
+   and security boundaries cannot omit design.
 
-   Show only active changes (not already archived).
-   Include the schema used for each change if available.
+   For a new no-delta change, verify its generated `schema` and `created` metadata
+   and boolean `skip_specs: true`. Stop if they are missing or malformed. Never
+   add that marker or retag a legacy change or retained delta program.
 
-   **IMPORTANT**: Do NOT guess or auto-select a change. Always let the user choose.
+2. **Establish implemented and shipped completion**
 
-2. **Check artifact completion status**
+   Read the tasks and delivery evidence, including the source PRs, implementation
+   review, executing verification and any required runtime evidence. Confirm all
+   required delivery PRs have actually merged and the whole program has shipped.
+   Run `/opsx:verify <name>` against the actual implementation and resolve any
+   completion gaps. Artifact readiness and checked boxes alone do not prove delivery.
 
-   Recheck `about/heart-and-soul/development.md` and honor the resolved schema. An eligible
-   `single-butler` change has proposal and tasks with optional design; `living-specs` requires design.
-   Cross-butler contracts, shared schemas and security boundaries cannot omit design. Preserve
-   existing designs, canonical-spec updates, delivery evidence and review gates.
+   If artifacts, tasks, implementation, review or shipment are incomplete, stop and
+   preserve the entire directory. A partially shipped multi-PR program remains
+   active. User confirmation cannot turn incomplete work into completed work.
 
+3. **Verify the maintained requirements**
 
-   Run `openspec status --change "<name>" --json` to check artifact completion.
+   If local deltas exist, compare every delivered ADDED/MODIFIED/REMOVED/RENAMED
+   requirement with the current canonical spec. Inspect overlapping active deltas
+   and fold the delivered intent through `/opsx:sync`, with a reviewed semantic diff
+   that preserves unrelated requirements, scenario bodies, IDs and source references.
+   Recheck the actual canonical result before deletion; never skip a required sync.
+   Do not fold or delete any unshipped sibling program.
 
-   Parse the JSON to understand:
-   - `schemaName`: The workflow being used
-   - `artifacts`: List of artifacts with their status (`done` or other)
+   For a new `single-butler` or `living-specs` change, verify its required canonical
+   updates were delivered. Do not invent local deltas or infer this path for a legacy
+   program. Preserve existing designs, approval, implementation review and evidence.
 
-   **If any artifacts are not `done`:**
-   - Display warning listing incomplete artifacts
-   - Prompt user for confirmation to continue
-   - Proceed if user confirms
+   Run `openspec validate --all --strict` on the resulting tree. Read its populated
+   terminal result. Strict validation checks structure and scenario shape; review
+   supplies the semantic preservation check and delivery evidence supplies completion.
 
-3. **Check task completion status**
+4. **Delete only the verified completed change**
 
-   Read the tasks file (typically `tasks.md`) to check for incomplete tasks.
-
-   Count tasks marked with `- [ ]` (incomplete) vs `- [x]` (complete).
-
-   **If incomplete tasks found:**
-   - Display warning showing count of incomplete tasks
-   - Prompt user for confirmation to continue
-   - Proceed if user confirms
-
-   **If no tasks file exists:** Proceed without task-related warning.
-
-4. **Assess delta spec sync state**
-
-   Check for delta specs at `openspec/changes/<name>/specs/`. If none exist, proceed without sync prompt.
-
-   **If delta specs exist:**
-   - Compare each delta spec with its corresponding main spec at `openspec/specs/<capability>/spec.md`
-   - Determine what changes would be applied (adds, modifications, removals, renames)
-   - Show a combined summary before prompting
-
-   **Prompt options:**
-   - If changes needed: "Sync now (recommended)", "Archive without syncing"
-   - If already synced: "Archive now", "Sync anyway", "Cancel"
-
-   If user chooses sync, execute `/opsx:sync` logic. Proceed to archive regardless of choice.
-
-   **If no delta specs exist:**
-   - For a new `single-butler` or `living-specs` change, verify its generated metadata still has the
-     resolved schema and `skip_specs: true`; do not create placeholder deltas. If the marker or
-     generated schema/created metadata is missing or malformed, stop; do not archive the change as a
-     valid no-delta workflow.
-   - Check that any required canonical-spec update is present in the delivered source change.
-   - Report that no delta-spec sync was needed. Do not infer this path for a retained delta program.
-
-5. **Perform the archive**
-
-   Create the archive directory if it doesn't exist:
-   ```bash
-   mkdir -p openspec/changes/archive
-   ```
-
-   Generate target name using current date: `YYYY-MM-DD-<change-name>`
-
-   **Check if target already exists:**
-   - If yes: Fail with error, suggest renaming existing archive or using different date
-   - If no: Move the change directory to archive
+   Confirm the selected path is exactly `openspec/changes/<name>`, an active tracked
+   change directory, and not `archive` or a path inside it. Record the completion,
+   semantic-diff and verification evidence in the delivery PR/Beads handoff before
+   removing the directory:
 
    ```bash
-   mv openspec/changes/<name> openspec/changes/archive/YYYY-MM-DD-<name>
+   git rm -r -- openspec/changes/<name>
    ```
 
-6. **Display summary**
+   Do not invoke `openspec archive`, create a dated archive, or move the directory.
+   Review the deletion diff to ensure it contains only the verified completed change.
+   Publish the cleanup through the normal PR workflow before closing its Beads work.
 
-   Show archive completion summary including:
-   - Change name
-   - Schema that was used
-   - Archive location
-   - Spec sync status (synced / sync skipped / no delta specs)
-   - Note about any warnings (incomplete artifacts/tasks)
+5. **Report the result**
 
-**Output On Success**
+   ```
+   ## Completion Cleanup
 
-```
-## Archive Complete
+   Change: <change-name>
+   Schema: <schema-name>
+   Deleted: openspec/changes/<name>/ (history retained in Git)
+   Delivery: <merged source PRs and verification evidence>
+   Specs: <reviewed canonical sync, or verified same-change canonical update>
+   Validation: <populated strict result and semantic-diff review>
+   ```
 
-**Change:** <change-name>
-**Schema:** <schema-name>
-**Archived to:** openspec/changes/archive/YYYY-MM-DD-<name>/
-**Specs:** ✓ Synced to main specs
-
-All artifacts complete. All tasks complete.
-```
-
-**Output On Success (No Delta Specs)**
-
-```
-## Archive Complete
-
-**Change:** <change-name>
-**Schema:** <schema-name>
-**Archived to:** openspec/changes/archive/YYYY-MM-DD-<name>/
-**Specs:** No delta specs
-
-All artifacts complete. All tasks complete.
-```
-
-**Output On Success With Warnings**
-
-```
-## Archive Complete (with warnings)
-
-**Change:** <change-name>
-**Schema:** <schema-name>
-**Archived to:** openspec/changes/archive/YYYY-MM-DD-<name>/
-**Specs:** Sync skipped (user chose to skip)
-
-**Warnings:**
-- Archived with 2 incomplete artifacts
-- Archived with 3 incomplete tasks
-- Delta spec sync was skipped (user chose to skip)
-
-Review the archive if this was not intentional.
-```
-
-**Output On Error (Archive Exists)**
-
-```
-## Archive Failed
-
-**Change:** <change-name>
-**Target:** openspec/changes/archive/YYYY-MM-DD-<name>/
-
-Target archive directory already exists.
-
-**Options:**
-1. Rename the existing archive
-2. Delete the existing archive if it's a duplicate
-3. Wait until a different date to archive
-```
-
-**Guardrails**
-- Always prompt for change selection if not provided
-- Use artifact graph (openspec status --json) for completion checking
-- Don't block archive on warnings - just inform and confirm
-- Preserve .openspec.yaml when moving to archive (it moves with the directory)
-- Show clear summary of what happened
-- If sync is requested, use /opsx:sync approach (agent-driven)
-- If delta specs exist, always run the sync assessment and show the combined summary before prompting
+   If completion cannot be verified, report the specific gap and that the active
+   directory was preserved. Existing archives and all unfinished programs stay intact.

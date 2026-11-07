@@ -45,17 +45,21 @@ binary (`npx openspec@1.9.0` fails `notarget`). Debug parser output with
 
 `openspec archive` writes the whole requirement. Two unarchived MODIFIED blocks for the same
 requirement, authored against different ancestors, race: the second archive deletes what the first
-added, and validate only compares scenario names. Before archiving, run:
+added, and validate only compares scenario names. The current workflow uses reviewed
+semantic sync and deletion after verified completion, not native archive. Before
+syncing a delivered delta, run:
 
 ```bash
 rg -l '^### Requirement: <Name>$' openspec/changes/*/specs/*/spec.md
 ```
 
-If two hit, archive one, rebuild the other from the refreshed baseline, and diff to prove nothing
-else moved. Re-run the grep after each archive. OpenSpec strict validation checks scenario names,
+If two hit, fold only delivered intent through reviewed semantic diffs. The owner
+of an unshipped sibling must rebuild its delta against the refreshed baseline in
+its own reviewed change; do not edit or delete that program during completion
+cleanup. Re-run the grep after each sync. OpenSpec strict validation checks scenario names,
 not requirement-body preservation or conflicts between stale restatements. The former local
 spec-overwrite body ratchet is retired, so compare each active delta against the current canonical
-requirement and review the exact union before archive. A broader restatement can still omit behavior
+requirement and review the exact union before completed-program deletion. A broader restatement can still omit behavior
 while preserving scenario names.
 
 - Direct baseline edits and `## REMOVED` blocks need explicit review; strict validation does not
@@ -63,26 +67,30 @@ while preserving scenario names.
 - A "MODIFIED ... has no baseline requirement to overwrite" note is not benign: it means no
   baseline and no sibling ADD, and archive will abort.
 
-## Archive
+## Completion cleanup and historical native archive
 
-- Spec-amendment work ends with sync plus archive: apply the deltas to `openspec/specs/`, tick
-  `tasks.md`, and move the change to `openspec/changes/archive/YYYY-MM-DD-<name>`. A merged but
-  unapplied change leaves the old MUSTs binding for the next reader.
-- `openspec archive` mutates the tree. Reproduce archive failures in a scratch copy of `openspec/`,
-  never in a worktree. A failed archive writes nothing, so one scratch copy can probe many specs.
-- Archive revalidates each rebuilt spec in full and stops at the first failure, so fixing one spec
-  can reveal the next.
-- `--skip-specs` archives without applying deltas. It exits 0 and proves nothing.
-- OpenSpec's incomplete-task gate counts `- [ ]` checkboxes only. A heading-style `tasks.md`
-  reports "No tasks" and can archive without noticing those headings; write countable checkbox
-  tasks. The former local countable-task guard is retired.
-- A change under `openspec/changes/archive/` is not evidence its requirements reached
-  `openspec/specs/`, because some archives were hand `git mv`s. Inspect the actual canonical diff
-  and commit when checking that an archive applied its requirements; the former archived-landing
-  guard is retired.
-- `openspec/changes/archive/**` is not a definition source for cited REQ IDs. The repository's
-  `tests/contracts/test_requirement_citations.py` checks test citations against canonical specs and
-  complete retained ADDED/MODIFIED blocks only.
+- `/opsx:archive` and `/opsx:bulk-archive` now verify whole-program implementation
+  and shipment, require reviewed canonical updates and populated strict validation,
+  and delete only completed change directories. Git history preserves their bodies.
+  Artifact readiness, task checkboxes and strict success alone do not prove delivery.
+- For a retained delta program, fold delivered requirements into `openspec/specs/`
+  through reviewed semantic diffs before deleting its completed source directory.
+  Keep every unfinished or unshipped program and all existing archives intact.
+- Historical native `openspec archive` moves directories and applies deltas. It is
+  not the repository's completion command. Reproduce any needed native behavior
+  investigation in a disposable scratch copy, never on a live program. Native
+  archive revalidates each rebuilt spec and can expose application defects that
+  delta-only validation misses; this does not establish semantic preservation.
+- Native `--skip-specs` can archive without applying deltas. Exit 0 proves no
+  canonical update or delivery. Its incomplete-task gate counts checkbox tasks
+  and can miss heading-only work; the former local countable-task guard is retired.
+- Existing `openspec/changes/archive/` entries do not prove requirements reached
+  canonical specs; some were hand moves. Inspect canonical diffs and delivery
+  evidence when using history. The former archived-landing guard is retired.
+- `openspec/changes/archive/**` is not a definition source for cited REQ IDs.
+  `tests/contracts/test_requirement_citations.py` scans Python and frontend tests
+  against canonical definitions first and complete retained ADDED/MODIFIED blocks
+  second. It rejects archived definitions, prose mentions and REMOVED blocks.
 
 ## Baselines and drift
 

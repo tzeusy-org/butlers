@@ -5,6 +5,25 @@ machine; note the npm package is scoped, so `npx openspec@1.9.0` does not
 resolve). Every claim below was reproduced in a scratch copy of `openspec/`;
 the exact error strings are quoted from real runs.
 
+## Current repository procedure
+
+New standalone work edits the canonical requirement in the implementing PR.
+Review the exact semantic diff and confirm the intended heading is the only
+behavioral difference; native strict validation does not compare requirement
+bodies. Check overlapping active deltas before editing. Preserve all existing
+legacy programs, metadata and local deltas; their owners rebuild stale blocks
+through separately reviewed changes. A new multi-PR program may carry deltas.
+
+Completion uses `/opsx:archive` only after whole-program implementation and
+shipment are verified and delivered deltas are folded through reviewed diffs.
+It deletes the completed directory; Git preserves history. Never move it into
+an archive or remove an unfinished program or existing archive.
+
+The remaining sections document the historical native-CLI workaround and its
+limits for interpreting retained artifacts or disposable scratch investigations.
+They do not instruct current contributors to create two standalone delta changes
+or execute native `openspec archive` on live change directories.
+
 ## The rule that causes the problem
 
 `findMissingCurrentScenarios` (`dist/core/parsers/requirement-blocks.js`,
@@ -43,7 +62,7 @@ The bad heading pinned an attention-ledger write into the spec. When the
 mechanism became a durable outbox episode, the heading became a lie that no
 delta could correct.
 
-## The procedure, when a heading is already wrong
+## Historical native-CLI procedure, when a heading was already wrong
 
 Two changes, archived in order. Both may exist in the tree at the same time
 and may ship in the same commit or PR; only the **archive order** is
@@ -94,9 +113,9 @@ and `...-step-2-restore`.
 - **If it is the last requirement in the spec**, step 1 deletes the capability's
   whole `spec.md`. Check before removing.
 
-## Do not hand-edit the baseline instead
+## Historical baseline restriction
 
-Editing `openspec/specs/**/spec.md` directly bypasses the change and its
-review, and it can collide with any open change at archive time. Both steps
-above go through `openspec archive`, which applies the reviewed requirement
-change to the canonical baseline.
+The old native-archive procedure required both reviewed delta steps to pass
+through `openspec archive`. That restriction is superseded for new standalone
+work by the current repository procedure above: edit living canonical specs in
+the implementing PR, review their semantic diff and preserve unshipped programs.

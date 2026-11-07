@@ -1,6 +1,6 @@
 ---
 name: "OPSX: Verify"
-description: Verify implementation matches change artifacts before archiving
+description: Verify implementation matches change artifacts before completion cleanup
 category: Workflow
 tags: [workflow, verify, experimental]
 ---
@@ -124,7 +124,7 @@ Verify that an implementation matches the change artifacts (specs, tasks, design
 
    **Issues by Priority**:
 
-   1. **CRITICAL** (Must fix before archive):
+   1. **CRITICAL** (Must fix before completion cleanup):
       - Incomplete tasks
       - Missing requirement implementations
       - Each with specific, actionable recommendation
@@ -140,9 +140,9 @@ Verify that an implementation matches the change artifacts (specs, tasks, design
       - Each with specific recommendation
 
    **Final Assessment**:
-   - If CRITICAL issues: "X critical issue(s) found. Fix before archiving."
-   - If only warnings: "No critical issues. Y warning(s) to consider. Ready for archive (with noted improvements)."
-   - If all clear: "All checks passed. Ready for archive."
+   - If CRITICAL issues: "X critical issue(s) found. Fix before completion cleanup."
+   - If only warnings: "No critical issues. Y warning(s) to consider. Implementation verification complete with noted improvements; verify shipment before completion cleanup."
+   - If all clear: "Implementation verification passed. Confirm whole-program shipment and reviewed canonical updates before `/opsx:archive` deletes the completed directory."
 
 **Verification Heuristics**
 
@@ -151,6 +151,11 @@ Verify that an implementation matches the change artifacts (specs, tasks, design
 - **Coherence**: Look for glaring inconsistencies, don't nitpick style
 - **False Positives**: When uncertain, prefer SUGGESTION over WARNING, WARNING over CRITICAL
 - **Actionability**: Every issue must have a specific recommendation with file/line references where applicable
+
+Verification here does not establish shipment. Completion cleanup also requires all
+required source PRs merged and required delivery/runtime evidence for the whole
+program. If checks were skipped, report them; incomplete evidence cannot authorize
+deletion. Preserve unfinished multi-PR programs and existing archives.
 
 **Graceful Degradation**
 

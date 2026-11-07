@@ -10,8 +10,9 @@ context: |
   optional there. Use living-specs when a design is required. Both keep the canonical specs as the
   living source of required behavior and create no change-local specs. Mark a new change using
   either schema with skip_specs: true in its generated .openspec.yaml, preserving schema and created.
-  Keep spec-driven for retained multi-PR delta programs and changes that intentionally author local
-  deltas. Do not retag existing changes or add skip_specs to legacy changes.
+  New multi-PR programs may use spec-driven for local deltas. Preserve every existing legacy
+  program with its resolved schema, metadata, content and deltas unchanged until verified completion.
+  Do not retag existing changes or add skip_specs to legacy changes.
   When observable required behavior changes, update the governing canonical spec in the same change.
   Read existing designs; artifact readiness is not owner approval, implementation review, or evidence.
 
@@ -19,9 +20,9 @@ rules:
   proposal:
     - >
       Classify the actual scope. A cross-butler contract, shared-across-butlers schema, or security
-      boundary requires a design. New standalone work without local delta specs uses single-butler
-      when eligible or living-specs when design is required. Retained multi-PR delta programs keep
-      spec-driven and their change-local requirements.
+      boundary requires a design. New standalone work uses single-butler when eligible or living-specs
+      when design is required, without local delta specs. New multi-PR programs may use spec-driven
+      local deltas. Preserve all existing legacy schemas, metadata, content and local requirements.
     - >
       For a new single-butler or living-specs change with no local specs, preserve the generated
       schema and created fields in .openspec.yaml and add skip_specs: true. Do not create a specs/
@@ -30,7 +31,7 @@ rules:
       metadata is not ready to continue; stop and correct that new change before proceeding.
   specs:
     - >
-      Retained or intentionally selected spec-driven deltas use exact capability paths and standard
+      Legacy spec-driven deltas and new multi-PR delta programs use exact capability paths and standard
       ADDED/MODIFIED/REMOVED/RENAMED blocks. Every ADDED or MODIFIED requirement block carries
       "ID: REQ-<capability>-<NNN>", "Source: <doctrine or RFC grounding>", and
       "Scope: v1-mandatory|v1-reserved|post-v1"; scripts/check_requirement_trace_lines.py enforces

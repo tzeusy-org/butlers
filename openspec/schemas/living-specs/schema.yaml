@@ -8,9 +8,10 @@ artifacts:
     template: proposal.md
     instruction: |
       Read about/heart-and-soul/development.md and the affected canonical specs. Use this workflow
-      when a design is required but this new standalone change does not need change-local deltas.
+      for new standalone work when a design is required; do not create change-local deltas.
       Record why the canonical contracts are sufficient and which files will be updated, if any.
-      Retained multi-PR delta programs stay on spec-driven.
+      New multi-PR programs may use spec-driven local deltas. Preserve every existing legacy
+      program under its resolved schema with metadata, content and deltas unchanged.
 
       This schema has no specs artifact. Preserve the generated schema and created fields in
       .openspec.yaml and add skip_specs: true. Do not create a placeholder specs/ directory. Verify
