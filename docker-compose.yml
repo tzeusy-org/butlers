@@ -1019,6 +1019,22 @@ services:
         = '{"status":"unavailable"}503'
     networks: [control-session]
 
+  # RFC 0038 D3 session host skeleton (bu-kiuh8v.1). Dark: off unless the
+  # `session-host` profile is named, no published or exposed port, no database,
+  # domain or connector credential, and no volume. It sits only on the internal
+  # control-session network, so it has no route out at all until the SNI egress
+  # proxy lands; no session-host entrypoint exists yet, so it idles. The
+  # environment composition is pinned by tests/scripts/test_session_host_env_guard.py.
+  session-host:
+    image: butlers-app:${BUTLERS_APP_TAG:-latest}
+    profiles: [session-host]
+    entrypoint: ["sleep", "infinity"]
+    command: []
+    environment:
+      HOME: /root
+    networks: [control-session]
+    restart: unless-stopped
+
 # ── Runtime-probe control keys ──────────────────────────────────────────
 # REQ-core-credentials-002.  A host path is configuration, not key material;
 # neither document is ever committed.  Both default to a tracked placeholder

@@ -39,7 +39,12 @@ _CONTROL_RULES = [
         "ports": [{"protocol": "TCP", "port": 41199}],
     },
 ]  # fmt: skip
-_RENDERS = [("dev", ()), ("prod", ()), ("dev", ("butlersControl.enabled=true",))]
+_RENDERS = [
+    ("dev", ()),
+    ("prod", ()),
+    ("dev", ("butlersControl.enabled=true",)),
+    ("dev", ("butlersControl.enabled=true", "sessionHost.enabled=true")),
+]
 
 
 @dataclass(frozen=True)
@@ -290,6 +295,17 @@ def test_control_session_reachability_is_unchanged():
     assert _admitting(docs, control, session_host, 41199, ns) == ["butlers-control-ingress"]
     assert _admitting(docs, control, other, 41199, ns) == []
     assert _admitting(docs, control, other, 41100, ns) == ["butlers-control-ingress"]
+
+
+def test_session_host_admits_no_ingress_from_anything():
+    docs = _docs("dev", "butlersControl.enabled=true", "sessionHost.enabled=true")
+    ns = _NAMESPACE["dev"]
+    pod = _pod_named(docs, "session-host")
+    for component in ("dashboard-api", "butlers-up", "butlers-control", "session-host"):
+        source = Source(ns, {"app.kubernetes.io/instance": "butlers",
+                             "app.kubernetes.io/component": component})  # fmt: skip
+        assert _admitting(docs, pod, source, 41100, ns) == [], component
+    assert _admitting(docs, pod, Source("<host>", ip=_NODE_SOURCE), 41100, ns) == []
 
 
 def test_no_new_allow_policy_selects_a_pod_with_a_narrower_reviewed_policy():

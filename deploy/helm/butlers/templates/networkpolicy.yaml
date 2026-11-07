@@ -50,7 +50,7 @@ spec:
     matchExpressions:
       - key: app.kubernetes.io/component
         operator: NotIn
-        values: [dashboard-api, frontend, connector-owntracks, butlers-control]
+        values: [dashboard-api, frontend, connector-owntracks, butlers-control{{ if .Values.sessionHost.enabled }}, session-host{{ end }}]
   policyTypes: [Ingress]
   ingress:
     - from:

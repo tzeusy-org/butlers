@@ -1,0 +1,40 @@
+{{- if .Values.sessionHost.enabled }}
+{{- if not .Values.butlersControl.enabled }}
+{{- fail "sessionHost.enabled requires butlersControl.enabled: the session host's only reachable peer is the control session listener" }}
+{{- end }}
+# RFC 0038 D3 session host skeleton (bu-kiuh8v.1). Dark and inert: no listener
+# exists yet, so it declares no port and no Service, and it carries no database,
+# domain or connector credential, secret or credential volume. The environment
+# composition is pinned by tests/scripts/test_session_host_env_guard.py.
+# Egress is NOT restricted here: trackerEgress selects every pod and allows all
+# destinations, and policies union. Closing egress (RFC 0038 D3) is bu-kiuh8v.4's
+# reachability work and needs that policy to carve the session host out.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: session-host
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  replicas: {{ if $.Values.suspend }}0{{ else }}1{{ end }}
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" . "component" "session-host") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "butlers.selector" (dict "root" . "component" "session-host") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: session-host
+          image: {{ include "butlers.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # No session-host entrypoint exists yet; idle until one lands.
+          command: ["sleep", "infinity"]
+          env:
+            - {name: HOME, value: /root}
+          resources:
+            {{- toYaml .Values.sessionHost.resources | nindent 12 }}
+{{- end }}

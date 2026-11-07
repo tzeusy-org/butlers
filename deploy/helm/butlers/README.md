@@ -44,8 +44,15 @@ five. No GOAL private key is provisioned or mounted in this stage.
 
 When the split stage is selected, `butlers-control-ingress` permits service callers within the namespace on 41100.
 Port 41199 permits only pods with this release's instance label and component
-`control-session-health` (operator/test caller) or `session-host` (reserved future
-identity). These labels are trusted deployment identities, not caller input.
+`control-session-health` (operator/test caller) or `session-host`. These labels are
+trusted deployment identities, not caller input.
+
+`sessionHost.enabled` (default false, requires `butlersControl.enabled`) renders the
+dark RFC 0038 D3 session-host skeleton: one idle `session-host` Deployment with no
+port, Service, secret, volume or credential, and excluded from the namespace ingress
+allow so it has no inbound path. Egress is not restricted yet (`trackerEgress` allows
+all destinations and policies union); that is the dev reachability work.
+`tests/scripts/test_session_host_env_guard.py` pins its environment composition.
 NetworkPolicy enforcement and the owner Telegram smoke still require actual dev
 verification; a successful render proves neither. See [stage operation and rollback](../../../docs/architecture/key-absent-control.md).
 
