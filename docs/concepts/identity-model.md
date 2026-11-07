@@ -189,9 +189,12 @@ the independent Relationship routing lookup and MCP call. It then locks and
 rechecks the accepted context/payload/text digest and lifecycle before freezing
 the report and actual entity lifetime witness. A concurrent stored report wins
 unchanged; a changed source refuses instead of using the earlier resolution.
-Capture-local five-second bounds cover each database phase and the resolver
-span, including pool acquisition. Resolver unavailability remains unresolved
-third-party attribution; cancellation propagates and unwinds owned resources.
+The initial snapshot shares one monotonic five-second content budget between
+pool acquisition and its query; the query receives only the remaining budget.
+Driver cancellation, release and reset keep their existing bounded cleanup policy,
+which may outlast the content deadline. The resolver and locked database phase
+retain their capture-local five-second bounds. Resolver unavailability remains
+unresolved third-party attribution; cancellation propagates through owned cleanup.
 No channel-mapping current-at-commit or external authentication guarantee follows
 from this ordering. A source capability is issued only after the report commits.
 

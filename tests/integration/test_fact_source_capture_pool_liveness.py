@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from contextlib import AsyncExitStack
 
 import asyncpg
 import pytest
 
+from butlers.core import fact_authority
 from butlers.core.fact_authority import FactSourceContextRegistry
 from butlers.db import register_jsonb_codec
 from tests.integration import test_relationship_fact_content_authority as authority_cases
@@ -167,3 +169,86 @@ async def test_concurrent_committed_report_wins_over_an_earlier_lookup(
     finally:
         capture.cancel()
         await asyncio.gather(capture, return_exceptions=True)
+
+
+@pytest.mark.parametrize("interruption", ["acquire-timeout", "query-timeout", "cancel-query"])
+async def test_initial_driver_deadlines_release_real_pool_without_partial_authority(
+    authority_env, single_slot_pool, monkeypatch, interruption
+):
+    """Actual asyncpg waits/driver query cancellation, not a substituted timeout result."""
+    issuer = FactSourceContextRegistry(single_slot_pool)
+    inbox = await owner_source(authority_env)
+    budget = 0.5
+    monkeypatch.setattr(fact_authority, "_CAPTURE_TIMEOUT_SECONDS", budget)
+    query_entered = asyncio.Event()
+    query_budgets = []
+    fetchrow = asyncpg.Connection.fetchrow
+
+    async def observe_fetchrow(connection, query, *args, **options):
+        if (
+            query
+            == "SELECT request_context,raw_payload,normalized_text,lifecycle_state "
+            "FROM switchboard.message_inbox WHERE id=$1"
+            and args == (inbox,)
+        ):
+            query_budgets.append(options.get("timeout"))
+            query_entered.set()
+        return await fetchrow(connection, query, *args, **options)
+
+    monkeypatch.setattr(asyncpg.Connection, "fetchrow", observe_fetchrow)
+    async with asyncio.timeout(10), AsyncExitStack() as stack:
+        if interruption == "acquire-timeout":
+            await stack.enter_async_context(single_slot_pool.acquire(timeout=5))
+        else:
+            locker = await stack.enter_async_context(authority_env.admin.acquire(timeout=5))
+            await stack.enter_async_context(locker.transaction())
+            # Block the actual unlocked snapshot SELECT in the disposable database.
+            await locker.execute(
+                "LOCK TABLE switchboard.message_inbox IN ACCESS EXCLUSIVE MODE", timeout=5
+            )
+        capture = asyncio.create_task(issuer.capture_accepted_report(inbox, authority_env.owner))
+        try:
+            if interruption == "cancel-query":
+                async with asyncio.timeout(2):
+                    await query_entered.wait()
+                capture.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await capture
+            else:
+                with pytest.raises(TimeoutError):
+                    await capture
+        finally:
+            capture.cancel()
+            await asyncio.gather(capture, return_exceptions=True)
+    if interruption == "acquire-timeout":
+        assert query_budgets == []
+    else:
+        assert len(query_budgets) == 1
+        assert query_budgets[0] is not None and 0 < query_budgets[0] < budget
+    assert inbox not in issuer._reports
+    assert inbox not in issuer._source_digests
+    async with asyncio.timeout(5):
+        assert await single_slot_pool.fetchval("SELECT 1") == 1
+        assert (
+            await single_slot_pool.fetchval(
+                "SELECT request_context->'_fact_source_report' "
+                "FROM switchboard.message_inbox WHERE id=$1",
+                inbox,
+            )
+            is None
+        )
+    # Retain the real registered resolver and driver for the healthy/reuse companion.
+    monkeypatch.setattr(fact_authority, "_CAPTURE_TIMEOUT_SECONDS", 5.0)
+    async with asyncio.timeout(15):
+        report = await issuer.capture_accepted_report(inbox, authority_env.owner)
+        assert report.authority == "owner"
+        assert issuer._reports[inbox] == report
+        assert (
+            await single_slot_pool.fetchval(
+                "SELECT request_context->'_fact_source_report' "
+                "FROM switchboard.message_inbox WHERE id=$1",
+                inbox,
+            )
+            == report.to_record()
+        )
+        assert await single_slot_pool.fetchval("SELECT current_user") == "butler_switchboard_rw"

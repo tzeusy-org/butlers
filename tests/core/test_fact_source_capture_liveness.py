@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -63,7 +63,7 @@ class SourcePool:
             self.row = original
             raise
 
-    async def fetchrow(self, query, *_args):
+    async def fetchrow(self, query, *_args, **_options):
         if "message_inbox" in query:
             return copy.deepcopy(self.row)
         if "public.entities" in query:
@@ -263,3 +263,126 @@ async def test_interrupted_freeze_rolls_back_without_admitting_partial_authority
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize(
+    "case", ["shared", "exhausted", "acquire-timeout", "query-timeout", "cancel-cleanup"]
+)
+async def test_initial_snapshot_shares_driver_budget_and_preserves_cleanup(monkeypatch, case):
+    """Software driver collaborators enforce budgets; parked cleanup is caller-owned."""
+    budget = 0.2
+    monkeypatch.setattr(fact_authority, "_CAPTURE_TIMEOUT_SECONDS", budget)
+    pool = SourcePool()
+    issuer = FactSourceContextRegistry(pool)
+    resolutions = []
+
+    async def resolve(*args, **kwargs):
+        resolutions.append(True)
+        return await pool.owning_resolution(*args, **kwargs)
+
+    issuer.resolve_identity = resolve
+    inbox = uuid.uuid4()
+    acquire = pool.acquire
+    fetchrow = pool.fetchrow
+    acquire_budgets, query_budgets, initial_queries = [], [], []
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    first = True
+
+    @asynccontextmanager
+    async def driver_acquire(**options):
+        nonlocal first
+        if not first:
+            async with acquire(**options) as connection:
+                yield connection
+            return
+        first = False
+        seconds = options.get("timeout")
+        assert seconds is not None and 0 < seconds <= budget
+        acquire_budgets.append(seconds)
+        entered.set()
+        if case == "cancel-cleanup":
+            try:
+                async with asyncio.timeout(seconds):
+                    await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                # Driver content timeout closes before its cancellation cleanup.
+                cleaning.set()
+                await release.wait()
+                raise
+        if case == "exhausted":
+            # Position a late completed acquisition at the deadline boundary.
+            # This collaborator deliberately returns late, not a driver proof.
+            await asyncio.sleep(budget * 1.25)
+            async with acquire() as connection:
+                yield connection
+            return
+        async with AsyncExitStack() as stack:
+            async with asyncio.timeout(seconds):
+                if case == "acquire-timeout":
+                    await asyncio.Event().wait()
+                await asyncio.sleep(budget / 4)
+                connection = await stack.enter_async_context(acquire(timeout=seconds))
+            yield connection
+
+    async def driver_fetchrow(query, *args, **options):
+        initial = "message_inbox" in query and "FOR UPDATE" not in query
+        if initial:
+            initial_queries.append(True)
+            seconds = options.get("timeout")
+            assert seconds is not None, "snapshot query needs a driver deadline"
+            assert 0 < seconds < acquire_budgets[0], "query must use the remaining budget"
+            query_budgets.append(seconds)
+            async with asyncio.timeout(seconds):
+                if case == "query-timeout":
+                    await asyncio.Event().wait()
+                return await fetchrow(query, *args, **options)
+        return await fetchrow(query, *args, **options)
+
+    pool.acquire = driver_acquire
+    pool.fetchrow = driver_fetchrow
+    if case == "shared":
+        async with asyncio.timeout(1):
+            report = await issuer.capture_accepted_report(inbox, pool.entity_id)
+        assert report.authority == "owner"
+        assert pool.row["request_context"]["_fact_source_report"] == report.to_record()
+        assert issuer._reports[inbox] == report
+        assert issuer._source_digests[inbox] == fact_authority.accepted_source_digest(pool.row)
+        assert len(query_budgets) == 1
+    elif case == "cancel-cleanup":
+        task = asyncio.create_task(issuer.capture_accepted_report(inbox, None))
+        try:
+            async with asyncio.timeout(1):
+                await entered.wait()
+                task.cancel()
+                await cleaning.wait()
+            await asyncio.sleep(budget * 2)
+            assert not task.done(), "capture timer interrupted parked driver cleanup"
+            assert query_budgets == []
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+    else:
+        async with asyncio.timeout(1):
+            with pytest.raises(TimeoutError):
+                await issuer.capture_accepted_report(inbox, pool.entity_id)
+        if case in {"exhausted", "acquire-timeout"}:
+            assert initial_queries == []
+        else:
+            assert len(query_budgets) == 1
+    if case != "shared":
+        assert resolutions == []
+        assert "_fact_source_report" not in pool.row["request_context"]
+        assert inbox not in issuer._reports
+        assert inbox not in issuer._source_digests
+    # Every negative has the same healthy commit/cache and reusable-slot companion.
+    pool.acquire, pool.fetchrow = acquire, fetchrow
+    async with asyncio.timeout(1), pool.acquire():
+        pass
+    async with asyncio.timeout(1):
+        report = await issuer.capture_accepted_report(inbox, pool.entity_id)
+    assert report.authority == "owner"
+    assert pool.row["request_context"]["_fact_source_report"] == report.to_record()
+    assert issuer._reports[inbox] == report

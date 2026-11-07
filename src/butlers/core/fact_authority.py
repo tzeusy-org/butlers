@@ -299,13 +299,22 @@ class FactSourceContextRegistry:
         This method is called only by the owning Pipeline after resolution, not
         exposed through MCP/HTTP. Recovery reuses the original private record.
         """
-        async with asyncio.timeout(_CAPTURE_TIMEOUT_SECONDS):
-            async with self.pool.acquire(timeout=_CAPTURE_TIMEOUT_SECONDS) as conn:
-                snapshot = await conn.fetchrow(
-                    "SELECT request_context,raw_payload,normalized_text,lifecycle_state "
-                    "FROM switchboard.message_inbox WHERE id=$1",
-                    inbox_id,
-                )
+        loop = asyncio.get_running_loop()
+        snapshot_deadline = loop.time() + _CAPTURE_TIMEOUT_SECONDS
+        remaining = snapshot_deadline - loop.time()
+        if remaining <= 0:
+            raise TimeoutError
+        # Driver content deadlines leave its cancellation/release cleanup intact.
+        async with self.pool.acquire(timeout=remaining) as conn:
+            remaining = snapshot_deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError
+            snapshot = await conn.fetchrow(
+                "SELECT request_context,raw_payload,normalized_text,lifecycle_state "
+                "FROM switchboard.message_inbox WHERE id=$1",
+                inbox_id,
+                timeout=remaining,
+            )
         if snapshot is None:
             raise ValueError("accepted source is unavailable")
         context = snapshot["request_context"] or {}
