@@ -533,6 +533,7 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/junit.xml
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/hang-evidence/
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/durations.json
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/condensation-refusal-*.json
           retention-days: 14
@@ -626,6 +627,7 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/junit.xml
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/hang-evidence/
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/durations.json
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/storage-*.json
           retention-days: 14

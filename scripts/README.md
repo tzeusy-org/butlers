@@ -276,6 +276,7 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | --- | --- | --- |
 | [`check_ci_coverage.py`](check_ci_coverage.py) | `nightly.yml` | Binds and validates the complete same-run coverage population before reporting. |
 | [`ci_group_count.py`](ci_group_count.py) | `ci_lanes.py` (pytest plugin) | Records each backend group's actual collection count and test durations. |
+| [`ci_hang_evidence.py`](ci_hang_evidence.py) | `ci_lanes.py` (pytest plugin) | Lets the lane runner dump every pytest process's stacks when a group hangs, and records each worker's last-started test. |
 | [`ci_lanes.py`](ci_lanes.py) | `ci.yml`, `nightly.yml` | Runs pytest-split backend groups, reconciles their counts against fresh collection, and merges measured durations. |
 | [`ci_latency.py`](ci_latency.py) | `ci-latency.yml` | Bounded, read-only Actions timestamp report; never a required merge gate. |
 | [`ci_sweep_stale_merge_groups.py`](ci_sweep_stale_merge_groups.py) | `merge-queue-sweep.yml` | Force-cancels merge-group CI runs whose queue ref is gone, so rebuilt groups don't starve live ones. |

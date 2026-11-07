@@ -227,6 +227,12 @@ and REQ-testing-053.
   `node --test` commands also have a 300-second bound; existing Vitest/Playwright defaults stay.
   A timeout is a named non-pass. Collection, worker startup and session finalization need the
   owning job watchdog, and an incomplete receipt is UNKNOWN.
+- A backend lane group has its own deadline in `scripts/ci_lanes.py`, below the job timeout. A
+  job timeout does not run the `if: always()` upload steps, so the deadline has to end the step
+  itself. At the deadline, or when available memory stays under 256 MB, the runner dumps every
+  pytest process's stacks twice, records the process table and each worker's last-started test
+  in `hang-evidence/` in the group's test-evidence artifact, kills the lane's processes and
+  fails.
 - Keep every workflow job in `scripts/ci-job-timeouts.json`, including explicitly provisional
   rare-job/setup values. Current p95 and the full two-week long-tail audit require actual named
   receipts; source caps alone are not calibration. Preserve faketime's provisional
