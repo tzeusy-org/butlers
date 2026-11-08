@@ -114,6 +114,26 @@ https://{{ .Values.publicUrl.host }}
 {{- if eq $v "true" -}}true{{- end -}}
 {{- end -}}
 
+{{/* Proxy env for one container of workload .component, only under egressProfiles and
+     only when its profile declares external hosts: HTTPS goes to the workload's own
+     gateway port; cluster and site names stay direct. Plain HTTP is never proxied (the
+     gateway refuses it), so HTTP_PROXY stays unset. */}}
+{{- define "butlers.egressProxyEnv" -}}
+{{- if include "butlers.egressProfilesEnabled" .root -}}
+{{- $p := get (.root.Files.Get "files/egress-profiles.json" | fromJson).workloads .component -}}
+{{- if and $p $p.gateway_port }}
+- name: HTTPS_PROXY
+  value: "http://egress-gateway:{{ int $p.gateway_port }}"
+- name: https_proxy
+  value: "http://egress-gateway:{{ int $p.gateway_port }}"
+- name: NO_PROXY
+  value: "localhost,127.0.0.1,.svc,.svc.cluster.local,.cluster.local,butlers-up,butlers-control,dashboard-api"
+- name: no_proxy
+  value: "localhost,127.0.0.1,.svc,.svc.cluster.local,.cluster.local,butlers-up,butlers-control,dashboard-api"
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{/* Every workload component this release renders, as a JSON list. Each must have a
      profile in deploy/egress-profiles.toml when egressProfiles.enabled; keep this in step
      with the templates (tests/scripts/test_chart_egress_profiles.py checks it). */}}

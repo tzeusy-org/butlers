@@ -100,16 +100,49 @@ egressProfiles:
 A namespace location may add `podLabels` to narrow it. A required site with no entry
 fails the render; an `optional` one is simply not admitted.
 
+## The shared gateway
+
+`src/butlers/egress/gateway.py`, rendered by `templates/egress-gateway.yaml` only with
+`egressProfiles.enabled`: a Deployment `egress-gateway` (`egressProfiles.gateway.replicas`,
+default 2, no service-account token), a Service with one port per profiled workload, and
+the profile rendering mounted from a ConfigMap (a checksum annotation rolls the pods on
+change).
+
+- **Identity is the port.** `<release>-egress-gateway-ingress` admits each workload's pods
+  to its own `gateway_port` only, and the gateway is excluded from
+  `<release>-namespace-ingress` so no wider rule unions onto it. No header can claim a
+  workload: the gateway ignores `Proxy-Authorization` and every other identity header.
+- **Per tunnel:** only `CONNECT host:port` for an exact declared pair, with any `Host`
+  header agreeing; IP literals refused; the gateway resolves the name itself and refuses
+  it if *any* answer is not globally routable unicast (private, loopback, link-local and
+  metadata, CGNAT/tailnet, multicast, reserved), then dials only an address it checked,
+  so a rebinding answer cannot redirect it; the client's ClientHello must carry SNI equal
+  to the CONNECT host (no SNI, a split ClientHello or non-TLS bytes are refused). Plain HTTP
+  proxying does not exist. Redirects are the client's next CONNECT, checked the same way.
+- **Its own egress** (`<release>-egress-egress-gateway`): DNS, and `0.0.0.0/0` except
+  `egressPolicy.privateCidrs`, `egressProfiles.gateway.deniedCidrs` and the tracker, on the
+  external ports profiles declare (today 443).
+- **Audit:** one JSON line per tunnel on logger `butlers.egress.audit`: workload, host,
+  port, verdict, closed reason, byte counts, duration. Never payload, headers or tokens.
+- **Outage:** an unreachable resolver or upstream answers `502` with
+  `X-Egress-Refusal: dns_failed` or `upstream_unreachable`; a refused request answers `403`
+  (or `405` for non-CONNECT) with its reason; a workload over 128 concurrent tunnels gets
+  `503 busy`. With no gateway pod, connections are refused. In every case the caller sees
+  an ordinary connection error and its own bounded retry and cursors apply; the gateway
+  never falls back to a direct or internal route.
+
+Workloads whose profile declares external hosts get `HTTPS_PROXY`/`https_proxy` set to
+`http://egress-gateway:<gateway_port>` and `NO_PROXY` for cluster names; `HTTP_PROXY` is
+never set. Workloads without external hosts get no proxy variables.
+
 ## Current limits
 
-- **The shared gateway is not deployed yet.** Workload policies point at
-  `egress-gateway` pods that no chart template renders, so enabling profiles today denies
-  every external host. The gateway (CONNECT proxy with per-port workload identity,
-  SNI/authority agreement, IP-literal, private-address and rebinding refusal, content-free
-  audit, two replicas) is the next `bu-dhloi1.15` package.
-- **Clients do not use the gateway yet.** Workloads need proxy configuration
-  (`HTTPS_PROXY` to their own gateway port, `NO_PROXY` for internal peers). httpx honours
-  it by default; the Home Assistant connector's aiohttp session and Telethon do not.
+- **Not every client honours the proxy variables.** httpx does by default; the Home
+  Assistant connector's aiohttp session does not (it needs no external host today), and
+  Telethon does not (its profile is held). LLM CLIs' proxy support is unverified.
+- **Connector outage behaviour is not yet proven** against a down gateway (cursor
+  retention and bounded backoff, acceptance 3), and no CI check yet compares profiles
+  with static base URLs in source (acceptance 4).
 - **The external host lists are a seed inventory.** Static base URLs were collected from
   source; the LLM CLIs' provider endpoints (claude, codex, gemini, opencode) are
   unverified and need conformance before activation.
@@ -122,7 +155,7 @@ fails the render; an `optional` one is simply not admitted.
 
 Not authorized by this source change. Each step needs its own authorization:
 
-1. Land the gateway and per-workload proxy wiring.
+1. Prove connector outage behaviour and land the static base-URL coverage check.
 2. Run per-workload conformance in the disposable `butlers-rehearsal` namespace: each
    workload reaches a declared service, and is refused an undeclared public host,
    private/link-local/metadata destinations, another workload's gateway port and an

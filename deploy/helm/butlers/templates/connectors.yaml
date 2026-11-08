@@ -65,6 +65,7 @@ spec:
             - {name: SWITCHBOARD_MCP_URL, value: "http://{{ include "butlers.switchboardHost" $ }}:41100/sse"}
             - {name: CONNECTOR_PROVIDER, value: {{ $c.provider | quote }}}
             - {name: CONNECTOR_CHANNEL, value: {{ $c.channel | quote }}}
+            {{- with (include "butlers.egressProxyEnv" (dict "root" $ "component" (printf "connector-%s" $name)) | trim) }}{{ . | nindent 12 }}{{- end }}
             {{- if $c.healthPort }}
             - {name: CONNECTOR_HEALTH_PORT, value: {{ $c.healthPort | quote }}}
             {{- end }}

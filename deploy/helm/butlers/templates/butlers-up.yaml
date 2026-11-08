@@ -41,6 +41,7 @@ spec:
             - {name: DASHBOARD_URL, value: "https://{{ $u.host }}/{{ $u.dashboardPrefix }}"}
             - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
             - {name: BUTLERS_MAX_GLOBAL_SESSIONS, value: "{{ include "butlers.domainSessionCapacity" . }}"}
+            {{- with (include "butlers.egressProxyEnv" (dict "root" . "component" "butlers-up") | trim) }}{{ . | nindent 12 }}{{- end }}
           readinessProbe:
             httpGet: {path: /health, port: daemon}
             periodSeconds: 5

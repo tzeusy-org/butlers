@@ -1,0 +1,157 @@
+{{- /*
+The shared egress gateway (RFC 0038 S7, bu-dhloi1.15), rendered only with
+egressProfiles.enabled. Each profiled workload with external hosts reaches it on its
+own gateway_port, and only that workload's pods are admitted to that port, so the
+port is the workload's identity. The gateway alone may dial public addresses, and
+only on the external ports some profile declares.
+*/ -}}
+{{- if include "butlers.egressProfilesEnabled" . }}
+{{- $doc := .Files.Get "files/egress-profiles.json" | fromJson }}
+{{- $g := .Values.egressProfiles.gateway }}
+{{- $routes := list }}
+{{- $externalPorts := list }}
+{{- range $name, $p := $doc.workloads }}
+{{- if and $p.gateway_port (not $p.held) }}
+{{- $routes = append $routes (dict "workload" $name "port" (int $p.gateway_port)) }}
+{{- range $p.external }}
+{{- $externalPorts = append $externalPorts (int .port) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $externalPorts = $externalPorts | uniq | sortAlpha }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-egress-profiles
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+data:
+  egress-profiles.json: |
+{{ .Files.Get "files/egress-profiles.json" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: egress-gateway
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  replicas: {{ if $.Values.suspend }}0{{ else }}{{ int $g.replicas }}{{ end }}
+  selector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" . "component" "egress-gateway") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "butlers.selector" (dict "root" . "component" "egress-gateway") | nindent 8 }}
+      annotations:
+        checksum/egress-profiles: {{ .Files.Get "files/egress-profiles.json" | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: gateway
+          image: {{ include "butlers.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.egress.gateway", "--profiles", "/etc/butlers-egress/egress-profiles.json"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          ports:
+            - {name: health, containerPort: 3100}
+            {{- range $routes }}
+            - {name: gw-{{ .port }}, containerPort: {{ .port }}}
+            {{- end }}
+          readinessProbe:
+            tcpSocket: {port: health}
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: health}
+            periodSeconds: 15
+            failureThreshold: 4
+          resources:
+            {{- toYaml $g.resources | nindent 12 }}
+          volumeMounts:
+            - {name: profiles, mountPath: /etc/butlers-egress, readOnly: true}
+      volumes:
+        - name: profiles
+          configMap:
+            name: {{ .Release.Name }}-egress-profiles
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: egress-gateway
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "butlers.selector" (dict "root" . "component" "egress-gateway") | nindent 4 }}
+  ports:
+    {{- range $routes }}
+    - {name: gw-{{ .port }}, port: {{ .port }}, targetPort: {{ .port }}}
+    {{- end }}
+---
+# Each workload reaches only its own gateway port. The gateway is excluded from
+# <release>-namespace-ingress so nothing unions a wider rule onto it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-egress-gateway-ingress
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" . "component" "egress-gateway") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    {{- range $routes }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "butlers.selector" (dict "root" $ "component" .workload) | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: {{ .port }}}
+    {{- end }}
+---
+# The gateway's own egress: DNS, and public addresses on declared external ports only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-egress-egress-gateway
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" . "component" "egress-gateway") | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range .Values.egressPolicy.privateCidrs }}
+              - {{ . }}
+              {{- end }}
+              {{- range $g.deniedCidrs }}
+              - {{ . }}
+              {{- end }}
+              {{- range .Values.trackerEgress.deniedCidrs }}
+              - {{ . }}
+              {{- end }}
+      ports:
+        {{- range $externalPorts }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+{{- end }}
