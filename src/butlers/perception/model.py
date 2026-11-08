@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import UUID, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -150,6 +150,7 @@ class EventRequest:
     """
 
     body: dict
+    _canonical: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         b = json.loads(canonical(self.body))
