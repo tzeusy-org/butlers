@@ -189,7 +189,11 @@ def _restart_peer_cluster(postgres: PostgresContainer, old_url) -> None:
                 environment={"PGCONNECT_TIMEOUT": "2"},
             )
             facts["socket_exit_code"] = peer.exit_code
-            if peer.exit_code == 0 and peer.output.strip() == b"1":
+            if (
+                peer.exit_code == 0
+                and isinstance(peer.output, bytes)
+                and peer.output.strip() == b"1"
+            ):
                 facts["stage"] = "fresh-tcp"
                 fresh_engine = create_engine(
                     fresh_url,
