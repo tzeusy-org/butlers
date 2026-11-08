@@ -1121,13 +1121,18 @@ def test_hiding_an_entity_hides_its_facts_edges_and_counts_until_it_returns(copi
             await actual.execute(
                 "DELETE FROM relationship.entity_facts WHERE src='hidden-entity-control'"
             )
-            for entity in (hidden, other):
-                if entity:
-                    await actual.execute(
-                        "DELETE FROM public.entity_graph_edges WHERE subject_entity_id=$1", entity
-                    )
-                    await actual.execute("DELETE FROM general.facts WHERE entity_id=$1", entity)
-                    await actual.execute("DELETE FROM public.entities WHERE id=$1", entity)
+            # Facts and edges point both ways between the two, so both go before either entity.
+            entities = [e for e in (hidden, other) if e]
+            await actual.execute(
+                "DELETE FROM public.entity_graph_edges "
+                "WHERE subject_entity_id=ANY($1) OR object_entity_id=ANY($1)",
+                entities,
+            )
+            await actual.execute(
+                "DELETE FROM general.facts WHERE entity_id=ANY($1) OR object_entity_id=ANY($1)",
+                entities,
+            )
+            await actual.execute("DELETE FROM public.entities WHERE id=ANY($1)", entities)
             await actual.close()
             _barrier(topology, projection)
 
