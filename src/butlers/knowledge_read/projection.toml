@@ -460,6 +460,17 @@ uri = "butlers://relationship/fact/{id}"
 row_filter = { "predicate" = ["child-of", "co-attended", "colleague-of", "family-of", "friend-of", "invited-by", "knows", "managed-by", "manages", "manages-property", "member-of", "parent-of", "participant-of", "partner-of", "purchased-from", "rental-agent", "rental-location", "subscribed-to", "visited", "works-at"], "validity" = ["active"] }
 
 [[table]]
+source = "relationship.external_fact_proposals"
+domain = "proposals"
+columns = ["proposal_id", "state", "decided_at"]
+types = { "proposal_id" = "uuid", "state" = "text", "decided_at" = "timestamp with time zone" }
+key = ["proposal_id"]
+replica_identity = ["proposal_id"]
+tools = ["fetch"]
+time_column = "decided_at"
+uri = "butlers://proposal/{proposal_id}"
+
+[[table]]
 source = "relationship.facts"
 domain = "relationship"
 columns = ["id", "subject", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]

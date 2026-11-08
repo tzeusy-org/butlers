@@ -77,7 +77,7 @@ _BREADTH = tuple(
         "payment_method",
     )
 )
-_DOMAINS = {"knowledge", "travel", "relationship", "time", "finance", "health", ""}
+_DOMAINS = {"knowledge", "travel", "relationship", "time", "finance", "health", "proposals", ""}
 _PRIVATE_TABLES = {
     "butler_secrets",
     "entity_info",
@@ -287,7 +287,12 @@ def load_manifest(data: bytes | None = None) -> Manifest:
             "health": "health",
             "mcp_surface": "",
         }
-        if schema_domains.get(schema) != domain:
+        expected_domain = (
+            "proposals"
+            if source == "relationship.external_fact_proposals"
+            else schema_domains.get(schema)
+        )
+        if expected_domain != domain:
             raise ManifestError(f"{source}: excluded schema/domain")
         expected_derived = {
             "public.entity_graph_edges": "edges",
@@ -316,6 +321,17 @@ def load_manifest(data: bytes | None = None) -> Manifest:
         key = _strings(item["key"], source + " key")
         if not set(key) <= set(cols):
             raise ManifestError(f"{source}: key omitted from columns")
+        if domain == "proposals" and (
+            cols != ("proposal_id", "state", "decided_at")
+            or types
+            != {"proposal_id": "uuid", "state": "text", "decided_at": "timestamp with time zone"}
+            or key != ("proposal_id",)
+            or item.get("replica_identity") != ["proposal_id"]
+            or item.get("row_filter")
+            or item.get("identifiers")
+            or item.get("json_identifiers")
+        ):
+            raise ManifestError(f"{source}: proposals expose only canonical status columns")
         if domain in {"finance", "health"} and len(key) != 1:
             raise ManifestError(f"{source}: finance/health key must be single column")
         identity = _strings(item.get("replica_identity"), source + " identity")

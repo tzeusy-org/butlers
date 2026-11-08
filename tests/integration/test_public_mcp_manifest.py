@@ -42,7 +42,8 @@ def manifest_primary(logical_postgres):  # noqa: F811
     name = migration_db_name()
     url = create_migration_db(logical_postgres, name)
     engine = create_engine(url)
-    admin = create_engine(migration_bootstrap_db_url(logical_postgres, name))
+    admin_url = migration_bootstrap_db_url(logical_postgres, name)
+    admin = create_engine(admin_url)
     with engine.connect() as conn:
         migration_role = conn.execute(text("SELECT current_user")).scalar_one()
         assert conn.execute(text("SELECT to_regclass('mcp_surface.controls')")).scalar_one() is None
@@ -58,7 +59,7 @@ def manifest_primary(logical_postgres):  # noqa: F811
                 text("SELECT 1 FROM pg_database WHERE datname='butlers_public'")
             ).scalar():
                 conn.exec_driver_sql("CREATE DATABASE butlers_public")
-        _bootstrap_migration_prerequisites(str(admin.url), migration_role)
+        _bootstrap_migration_prerequisites(admin_url, migration_role)
 
         async def install():
             for domain in (
@@ -147,14 +148,11 @@ def test_complete_manifest_reconcile_is_real_noop_and_primary_only(primary):
         )
     ).scalar_one()
     assert "private_after_manifest" not in actual
-    assert (
-        len(
-            primary.execute(
-                text("SELECT * FROM pg_publication_tables WHERE pubname='butlers_public_v1'")
-            ).all()
-        )
-        == 46
-    )
+    assert len(
+        primary.execute(
+            text("SELECT * FROM pg_publication_tables WHERE pubname='butlers_public_v1'")
+        ).all()
+    ) == len(manifest.tables)
 
 
 def test_publication_action_explicit_columns_filters_and_wildcards(primary):
@@ -416,3 +414,414 @@ def test_reconcile_serialization_is_bounded_and_rollback_releases_it(manifest_pr
         assert not publication_state(conn, manifest).exists
         assert reconcile_connection(conn, manifest)
         conn.rollback()
+
+
+def test_proposal_status_source_roundtrip_and_payload_free_catalog(manifest_primary):
+    """Real rel_041, not a fixture-only table or an implementation of task 5.2."""
+    import uuid
+
+    from sqlalchemy.exc import IntegrityError
+
+    from alembic import command
+    from butlers.migrations import _build_alembic_config
+
+    engine, _, _ = manifest_primary
+    manifest = load_manifest()
+    proposal = next(t for t in manifest.tables if t.domain == "proposals")
+    assert proposal.source == "relationship.external_fact_proposals"
+    with engine.connect() as conn, conn.begin():
+        validate_catalog(conn, manifest)
+        assert (
+            conn.execute(
+                text("SELECT state FROM mcp_surface.controls WHERE domain='proposals'")
+            ).scalar_one()
+            == "enabled"
+        )
+        row_id = uuid.uuid4()
+        row = conn.execute(
+            text("""INSERT INTO relationship.external_fact_proposals
+            (proposal_id,note,evidence_url) VALUES (:id,'private synthetic note','https://example.invalid/proof')
+            RETURNING proposal_id,state,decided_at,created_at"""),
+            {"id": row_id},
+        ).one()
+        assert row[0] == row_id and row[1] == "imported" and row[2] is None and row[3] is not None
+        terminal = (
+            "invalid",
+            "duplicate",
+            "conflict",
+            "rate_limited",
+            "applied",
+            "owner_rejected",
+            "expired",
+            "apply_failed",
+        )
+        for state in terminal:
+            conn.execute(
+                text("""UPDATE relationship.external_fact_proposals
+                SET state=:state,decided_at=now() WHERE proposal_id=:id"""),
+                {"state": state, "id": row_id},
+            )
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT decided_at FROM relationship.external_fact_proposals WHERE proposal_id=:id"
+                    ),
+                    {"id": row_id},
+                ).scalar_one()
+                is not None
+            )
+        # No intake/apply action is performed: this only proves the persisted lifecycle shape.
+        for statement, params in (
+            ("INSERT INTO relationship.external_fact_proposals DEFAULT VALUES", {}),
+            (
+                "INSERT INTO relationship.external_fact_proposals (proposal_id) VALUES (:id)",
+                {"id": row_id},
+            ),
+            (
+                "UPDATE relationship.external_fact_proposals SET state='received' WHERE proposal_id=:id",
+                {"id": row_id},
+            ),
+            (
+                "UPDATE relationship.external_fact_proposals SET decided_at=NULL WHERE proposal_id=:id",
+                {"id": row_id},
+            ),
+            (
+                "UPDATE relationship.external_fact_proposals SET state='parked' WHERE proposal_id=:id",
+                {"id": row_id},
+            ),
+            (
+                "UPDATE relationship.external_fact_proposals SET note=:note WHERE proposal_id=:id",
+                {"id": row_id, "note": "x" * 501},
+            ),
+        ):
+            with conn.begin_nested() as savepoint:
+                with pytest.raises(IntegrityError):
+                    conn.execute(text(statement), params)
+                savepoint.rollback()
+        before = conn.execute(
+            text(
+                "SELECT proposal_id,state,decided_at FROM relationship.external_fact_proposals WHERE proposal_id=:id"
+            ),
+            {"id": row_id},
+        ).one()
+        conn.execute(
+            text(
+                "UPDATE relationship.external_fact_proposals SET note=NULL,evidence_url=NULL WHERE proposal_id=:id"
+            ),
+            {"id": row_id},
+        )
+        assert (
+            conn.execute(
+                text(
+                    "SELECT proposal_id,state,decided_at FROM relationship.external_fact_proposals WHERE proposal_id=:id"
+                ),
+                {"id": row_id},
+            ).one()
+            == before
+        )
+        reconcile_connection(conn, manifest)
+        columns = conn.execute(
+            text(
+                "SELECT attnames FROM pg_publication_tables WHERE pubname='butlers_public_v1' AND schemaname='relationship' AND tablename='external_fact_proposals'"
+            )
+        ).scalar_one()
+        assert columns == ["proposal_id", "state", "decided_at"]
+        assert not {"note", "evidence_url", "created_at"} & set(columns)
+        conn.rollback()
+    # The real source chain downgrades only its additive source, and ordinary
+    # head installation recreates it. Credentials flow internally, never to output.
+    cfg = _build_alembic_config(
+        engine.url.render_as_string(hide_password=False),
+        chains=["relationship"],
+        target_schema="relationship",
+    )
+    try:
+        command.downgrade(cfg, "rel_040")
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT to_regclass('relationship.external_fact_proposals')")
+                ).scalar_one()
+                is None
+            )
+            assert (
+                conn.execute(text("SELECT to_regclass('relationship.entity_facts')")).scalar_one()
+                is not None
+            )
+            with pytest.raises(
+                ManifestError, match="external_fact_proposals.proposal_id: missing column"
+            ):
+                validate_catalog(conn, manifest)
+    finally:
+        command.upgrade(cfg, "relationship@head")
+    with engine.connect() as conn:
+        validate_catalog(conn, manifest)
+        assert (
+            conn.execute(
+                text(
+                    "SELECT version_num FROM relationship.alembic_version WHERE version_num='rel_041'"
+                )
+            ).scalar_one()
+            == "rel_041"
+        )
+
+
+def test_remaining_filtered_sources_iud_through_owning_writers(manifest_primary):
+    """The four R2 families under this canonical publication, with actual source APIs."""
+    import uuid
+
+    import asyncpg
+
+    from butlers.chronicler.public_projection import sweep_public_projection
+    from butlers.core.entity_graph_edges import (
+        delete_entity_graph_edge,
+        project_entity_graph_edge,
+        withhold_entity_graph_edge,
+    )
+
+    engine, _, _ = manifest_primary
+    manifest = load_manifest()
+    with engine.begin() as conn:
+        assert not publication_state(conn, manifest).exists
+        reconcile_connection(conn, manifest)
+    url = engine.url.set(drivername="postgresql").render_as_string(hide_password=False)
+
+    async def exercise():
+        pool = await asyncpg.create_pool(
+            url,
+            min_size=1,
+            max_size=1,
+            command_timeout=15,
+            server_settings={"search_path": "chronicler,public"},
+        )
+        episode = None
+        adapter_inserted = False
+        try:
+            expressions = dict(
+                await pool.fetch("""SELECT n.nspname||'.'||c.relname,
+                pg_get_expr(r.prqual,r.prrelid) FROM pg_publication_rel r
+                JOIN pg_class c ON c.oid=r.prrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+                JOIN pg_publication p ON p.oid=r.prpubid WHERE p.pubname='butlers_public_v1'""")
+            )
+            adapter_inserted = bool(
+                await pool.fetchval("""INSERT INTO chronicler.source_adapter_state
+                (source_name,chronicler_compatibility) VALUES ('google_health.measurements','supported')
+                ON CONFLICT DO NOTHING RETURNING true""")
+            )
+            # True source input -> real sweep -> override BEFORE/AFTER triggers.
+            episode = await pool.fetchval(
+                """INSERT INTO chronicler.episodes
+                (source_name,source_ref,episode_type,start_at,end_at,title,privacy,layer)
+                VALUES ('google_health.measurements',$1,'sleep_episode',now()-interval '1 hour',now(),
+                        'Synthetic manifest sleep','normal','activity') RETURNING id""",
+                str(uuid.uuid4()),
+            )
+            await sweep_public_projection(pool)
+
+            async def episode_state():
+                row = await pool.fetchrow(
+                    f"""SELECT effective_privacy,tombstoned,
+                    ({expressions["chronicler.episodes_public"]}) AS visible
+                    FROM chronicler.episodes_public WHERE id=$1""",
+                    episode,
+                )
+                assert row is not None
+                return tuple(row)
+
+            assert await episode_state() == ("normal", False, True)
+            await pool.execute(
+                """INSERT INTO chronicler.overrides
+                (target_kind,target_id,corrected_privacy,submitted_by)
+                VALUES ('episode',$1,'restricted','user')""",
+                episode,
+            )
+            assert await episode_state() == ("restricted", False, False)
+            await pool.execute(
+                """INSERT INTO chronicler.overrides
+                (target_kind,target_id,corrected_privacy,submitted_by)
+                VALUES ('episode',$1,'normal','user')""",
+                episode,
+            )
+            assert await episode_state() == ("restricted", False, False)
+            # Source policy permits only the owner to lower an earlier restriction.
+            await pool.execute(
+                """INSERT INTO chronicler.overrides
+                (target_kind,target_id,corrected_privacy,submitted_by)
+                VALUES ('episode',$1,'normal','owner')""",
+                episode,
+            )
+            assert await episode_state() == ("normal", False, True)
+            await pool.execute(
+                """INSERT INTO chronicler.overrides
+                (target_kind,target_id,corrected_tombstone_at,submitted_by)
+                VALUES ('episode',$1,now(),'user')""",
+                episode,
+            )
+            assert await episode_state() == ("normal", True, False)
+            await pool.execute("DELETE FROM chronicler.episodes WHERE id=$1", episode)
+            assert not await pool.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM chronicler.episodes_public WHERE id=$1)", episode
+            )
+            async with pool.acquire() as conn:
+                transaction = conn.transaction()
+                await transaction.start()
+                try:
+                    person = await conn.fetchval(
+                        "INSERT INTO public.entities(canonical_name,entity_type) VALUES ('Manifest graph subject','person') RETURNING id"
+                    )
+                    other = await conn.fetchval(
+                        "INSERT INTO public.entities(canonical_name,entity_type) VALUES ('Manifest graph object','person') RETURNING id"
+                    )
+                    row = await conn.fetchval(
+                        """INSERT INTO relationship.entity_facts
+                        (subject,predicate,object,object_kind,src)
+                        VALUES ($1,'works-at',$2,'entity','manifest-control') RETURNING id""",
+                        person,
+                        str(other),
+                    )
+
+                    async def fact_visible():
+                        return await conn.fetchval(
+                            f"SELECT EXISTS(SELECT 1 FROM relationship.entity_facts WHERE id=$1 AND ({expressions['relationship.entity_facts']}))",
+                            row,
+                        )
+
+                    assert await fact_visible()
+                    await conn.execute(
+                        "UPDATE relationship.entity_facts SET validity='retracted' WHERE id=$1", row
+                    )
+                    assert not await fact_visible()
+                    await conn.execute(
+                        "UPDATE relationship.entity_facts SET validity='active',predicate='has-email',object_kind='literal' WHERE id=$1",
+                        row,
+                    )
+                    assert not await fact_visible()
+                    await conn.execute(
+                        "UPDATE relationship.entity_facts SET predicate='works-at',object_kind='entity' WHERE id=$1",
+                        row,
+                    )
+                    assert await fact_visible()
+                    await conn.execute("DELETE FROM relationship.entity_facts WHERE id=$1", row)
+                    assert not await fact_visible()
+
+                    sources = []
+                    for predicate in ("knows", "works_at"):
+                        source = await conn.fetchval(
+                            """INSERT INTO general.facts
+                            (subject,predicate,content,sensitivity,validity)
+                            VALUES ($1,$2,'synthetic content','normal','active') RETURNING id""",
+                            str(person),
+                            predicate,
+                        )
+                        sources.append(source)
+                        await project_entity_graph_edge(
+                            conn,
+                            source_schema="general",
+                            source_table="facts",
+                            source_id=source,
+                            subject_entity_id=person,
+                            predicate=predicate,
+                            object_entity_id=other,
+                        )
+                        edge = await conn.fetchrow(
+                            f"""SELECT publish_key,({expressions["public.entity_graph_edges"]}) AS visible
+                            FROM public.entity_graph_edges WHERE source_schema='general' AND source_table='facts' AND source_id=$1""",
+                            source,
+                        )
+                        assert tuple(edge) == (f"general.facts:{predicate}", True)
+                        assert await conn.fetchval(
+                            f"SELECT EXISTS(SELECT 1 FROM general.facts WHERE id=$1 AND ({expressions['general.facts']}))",
+                            source,
+                        )
+                    for i, source in enumerate(sources, 1):
+                        await conn.execute(
+                            "UPDATE general.facts SET sensitivity='pii' WHERE id=$1", source
+                        )
+                        assert not await conn.fetchval(
+                            f"SELECT EXISTS(SELECT 1 FROM general.facts WHERE id=$1 AND ({expressions['general.facts']}))",
+                            source,
+                        )
+                        await withhold_entity_graph_edge(
+                            conn,
+                            source_schema="general",
+                            source_table="facts",
+                            source_id=source,
+                            subject_entity_id=person,
+                            sensitivity="pii",
+                        )
+                        # The real core319 count trigger is deferred. Flush it; do
+                        # not infer a missing row before the owning trigger runs.
+                        await conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
+                        edge = await conn.fetchrow(
+                            f"""SELECT predicate,object_entity_id,publish_key,
+                            ({expressions["public.entity_graph_edges"]}) AS visible
+                            FROM public.entity_graph_edges WHERE source_schema='general' AND source_table='facts' AND source_id=$1""",
+                            source,
+                        )
+                        assert tuple(edge) == (None, None, "", False)
+                        counts = await conn.fetchrow(
+                            f"""SELECT withheld,
+                            ({expressions["public.entity_graph_withheld_counts"]}) AS visible
+                            FROM public.entity_graph_withheld_counts WHERE entity_id=$1 AND source_key='general.facts'""",
+                            person,
+                        )
+                        assert tuple(counts) == (i, True)
+                    # A real excluded fact source also makes an actual count, but
+                    # the stored canonical filter withholds it (healthy inverse).
+                    hidden = await conn.fetchval(
+                        """INSERT INTO health.facts(subject,predicate,content,sensitivity,validity)
+                        VALUES ($1,'knows','synthetic health','pii','active') RETURNING id""",
+                        str(person),
+                    )
+                    await withhold_entity_graph_edge(
+                        conn,
+                        source_schema="health",
+                        source_table="facts",
+                        source_id=hidden,
+                        subject_entity_id=person,
+                        sensitivity="pii",
+                    )
+                    counts = await conn.fetchrow(
+                        f"""SELECT withheld,
+                        ({expressions["public.entity_graph_withheld_counts"]}) AS visible
+                        FROM public.entity_graph_withheld_counts WHERE entity_id=$1 AND source_key='health.facts'""",
+                        person,
+                    )
+                    assert tuple(counts) == (1, False)
+                    for i, source in enumerate(sources):
+                        await delete_entity_graph_edge(
+                            conn, source_schema="general", source_table="facts", source_id=source
+                        )
+                        assert not await conn.fetchval(
+                            "SELECT EXISTS(SELECT 1 FROM public.entity_graph_edges WHERE source_schema='general' AND source_table='facts' AND source_id=$1)",
+                            source,
+                        )
+                        count = await conn.fetchval(
+                            "SELECT withheld FROM public.entity_graph_withheld_counts WHERE entity_id=$1 AND source_key='general.facts'",
+                            person,
+                        )
+                        assert count == (1 if i == 0 else None)
+                finally:
+                    await transaction.rollback()
+        finally:
+            try:
+                if episode is not None:
+                    await pool.execute(
+                        "DELETE FROM chronicler.overrides WHERE target_kind='episode' AND target_id=$1",
+                        episode,
+                    )
+                    await pool.execute("DELETE FROM chronicler.episodes WHERE id=$1", episode)
+                    await sweep_public_projection(pool)
+                if adapter_inserted:
+                    await pool.execute(
+                        "DELETE FROM chronicler.source_adapter_state WHERE source_name='google_health.measurements'"
+                    )
+            finally:
+                await pool.close()
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("DROP PUBLICATION butlers_public_v1")
+            conn.exec_driver_sql("DELETE FROM mcp_surface.manifest_state")

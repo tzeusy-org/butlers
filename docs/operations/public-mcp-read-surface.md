@@ -36,7 +36,7 @@ column lists and closed row filters; all-table and schema wildcards refuse. A ma
 alone never qualifies as a no-op. Failure rolls back publication and digest together. No slot,
 subscription, subscriber connection or grant/owner step is performed by reconcile.
 
-The manifest is the single exposure decision: 46 entries declare 469 columns, including
+The manifest is the single exposure decision: 47 entries declare 472 columns, including
 controls/state. Registry validation cannot add a predicate; future columns stay private until
 an explicit edit. Finance/Health JSONB arrives through the existing credential-filtered scalar
 materializations, never as JSONB columns. Graph keys derive from the same fact predicate lists.
@@ -419,3 +419,11 @@ a complete file (RFC 0039 D9, residual risk).
   [Reviewed bootstrap](../data_and_storage/reviewed-bootstrap.md): the `butlers` release and
   `init-db.sql`.
 - OpenSpec change `openspec/changes/add-public-mcp-read-surface/` (`tasks.md` is the work map).
+
+The primary proposal-status prerequisite is Relationship revision `rel_041`. It
+stores caller-assigned proposal IDs, the D13 primary state and decision timestamp,
+and private retention-capable note/evidence fields. The manifest exposes only
+`proposal_id`, `state` and `decided_at` in the `proposals` domain. This migration
+receives or applies no proposals. Intake identity/payload fields, the importer,
+approval reconciliation and the 30-day text-clearing job remain task 5.2 work;
+creating this source does not deliver that pipeline or its authority guarantees.
