@@ -741,11 +741,14 @@ class ApprovalsModule(Module):
             origin_butler=self._butler_name,
         )
         if not execution.success:
-            return {
+            failed: dict[str, Any] = {
                 "error": (
                     execution.error or f"Approved action {action_id} did not complete execution"
                 )
             }
+            if execution.failure_code:
+                failed["failure_code"] = execution.failure_code
+            return failed
 
         final_row = await self._db.fetchrow(
             "SELECT * FROM pending_actions WHERE id = $1", parsed_id

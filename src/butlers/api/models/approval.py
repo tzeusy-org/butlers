@@ -91,6 +91,20 @@ class ApprovalDeliveryTruth(BaseModel):
     cohort: ApprovalDeliveryCohort | None = None
 
 
+class ApprovalExecutionFailure(BaseModel):
+    """A failed or provider-rejected approved send: a closed code and fixed prose only.
+
+    Never carries a message body, recipient or provider text (bu-dhloi1.184).
+    """
+
+    code: str
+    label: str
+    terminal: bool = Field(
+        default=False,
+        description="True when the provider proved it rejected the send (not retryable).",
+    )
+
+
 class ApprovalAction(BaseModel):
     """Approval action representation for dashboard API.
 
@@ -148,6 +162,13 @@ class ApprovalAction(BaseModel):
             "notified (push_outcome is null or 'failed'). Never fabricate calm: a "
             "true value here means this row must not render as an ordinary pending "
             "action (bu-mda0r)."
+        ),
+    )
+    execution_failure: ApprovalExecutionFailure | None = Field(
+        default=None,
+        description=(
+            "Content-free reason an approved outbound send failed or was rejected by the "
+            "provider; null when the send did not fail."
         ),
     )
     delivery: ApprovalDeliveryTruth | None = None
@@ -250,6 +271,13 @@ class ApprovalDetail(BaseModel):
         description=(
             "True when this action is still pending AND the owner was never actually "
             "notified. Never fabricate calm (bu-mda0r)."
+        ),
+    )
+    execution_failure: ApprovalExecutionFailure | None = Field(
+        default=None,
+        description=(
+            "Content-free reason an approved outbound send failed or was rejected by the "
+            "provider; null when the send did not fail."
         ),
     )
     delivery: ApprovalDeliveryTruth | None = None

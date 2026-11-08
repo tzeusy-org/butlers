@@ -183,6 +183,25 @@ _APPROVAL_CALLBACK_RESOLVED_TEXT = {
 }
 
 
+#: Card wording per closed failure code of an approved send (bu-dhloi1.184). Fixed prose only:
+#: the API sends a code, never provider text, a recipient or the message.
+_SEND_FAILED_CARD_REASONS = {
+    "provider_rejected": "the provider rejected it",
+    "recipient_unavailable": "no deliverable recipient",
+    "policy_denied": "delivery policy refused it",
+}
+_SEND_FAILED_STATUS_PREFIX = "send_failed:"
+
+
+def _resolved_card_text(status: str) -> str | None:
+    """Card text for a terminal approval status, including a failed approved send."""
+    if status.startswith(_SEND_FAILED_STATUS_PREFIX):
+        reason = _SEND_FAILED_CARD_REASONS.get(status[len(_SEND_FAILED_STATUS_PREFIX) :])
+        detail = f" ({reason})" if reason else ""
+        return f"⚠️ Approved, but the send failed{detail}. Open the dashboard for details."
+    return _APPROVAL_CALLBACK_RESOLVED_TEXT.get(status)
+
+
 def _gap_interview_outcome(data: dict[str, Any], answer: str) -> tuple[str, bool]:
     """Map a resolve-endpoint response to ``(toast, settled)``.
 
@@ -1452,6 +1471,11 @@ class TelegramBotConnector:
             return None
         data = payload.get("data") if isinstance(payload, dict) else None
         status = data.get("status") if isinstance(data, dict) else None
+        failure = data.get("execution_failure") if isinstance(data, dict) else None
+        failed_code = failure.get("code") if isinstance(failure, dict) else None
+        if isinstance(failed_code, str) and status in ("approved", "executed"):
+            # An approved send the provider or transport refused is not a success card.
+            return f"{_SEND_FAILED_STATUS_PREFIX}{failed_code}"
         return status if isinstance(status, str) else None
 
     async def _clear_stale_keyboard(self, callback_query: dict[str, Any]) -> None:
@@ -1804,7 +1828,7 @@ class TelegramBotConnector:
         drain lock: a sweep already retracting this card finishes first and this outcome lands
         last, and every later sweep skips the card (:attr:`_decided_here_cards`).
         """
-        text = _APPROVAL_CALLBACK_RESOLVED_TEXT.get(status)
+        text = _resolved_card_text(status)
         message = callback_query.get("message")
         chat = message.get("chat") if isinstance(message, dict) else None
         message_id = message.get("message_id") if isinstance(message, dict) else None

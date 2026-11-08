@@ -1585,6 +1585,49 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     expect(findButton(container, "Retry dispatch")).toBeUndefined();
   });
 
+  it("shows a content-free failure when the provider rejected an approved send", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("send-rejected")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({
+        id: "send-rejected",
+        title: "Notify (general)",
+        butler: "general",
+        created_at: "2026-05-17T10:00:00Z",
+        expires_at: null,
+        why: "The owner approved this.",
+        evidence: [],
+        proposed_action: { tool_name: "notify", tool_args: {}, agent_summary: null },
+        status: "executed",
+        decided_by: "human:owner@telegram",
+        decided_at: "2026-05-17T10:05:00Z",
+        execution_result: {
+          success: true,
+          result: { status: "delivery_rejected", delivery_confirmed: false },
+        },
+        execution_failure: {
+          code: "provider_rejected",
+          label: "The provider rejected the send",
+          terminal: true,
+        },
+        target_contact: null,
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="approval-execution-failure"]') !== null,
+    );
+
+    const failure = container.querySelector('[data-testid="approval-execution-failure"]');
+    const text = failure?.textContent ?? "";
+    expect(text).toContain("Send failed");
+    expect(text).toContain("The provider rejected the send");
+    expect(text).toContain("not delivered");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+  });
+
   it("renders dossier Retry only while an approved action has no execution result", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
       makeApiResponse([makeSummary("retry-eligible")]) as AnyMock,
