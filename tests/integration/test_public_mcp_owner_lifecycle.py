@@ -996,6 +996,139 @@ def test_filtered_families_propagate_real_iud_with_healthy_neighbors(copied):
     asyncio.run(exercise())
 
 
+def test_hiding_an_entity_hides_its_facts_edges_and_counts_until_it_returns(copied):
+    """bu-y66o00.16: no view returns a row about an entity the projection no longer holds."""
+    import asyncio
+
+    import asyncpg
+
+    from butlers.core.entity_graph_edges import (
+        project_entity_graph_edge,
+        withhold_entity_graph_edge,
+    )
+
+    topology, projection, _ = copied
+    views = {
+        "fact": "SELECT count(*) FROM mcp_read.general__facts WHERE source_id=:id",
+        "pointing": "SELECT count(*) FROM mcp_read.general__facts WHERE source_id=:id",
+        "relation": "SELECT count(*) FROM mcp_read.relationship__entity_facts WHERE source_id=:id",
+        "edge": "SELECT count(*) FROM mcp_read.public__entity_graph_edges WHERE fields->>'object_entity_id'=:id",
+        "count": "SELECT count(*) FROM mcp_read.public__entity_graph_withheld_counts WHERE fields->>'entity_id'=:id",
+    }
+
+    def visible(rows):
+        return {name: _scalar(projection, views[name], {"id": rows[name]}) for name in views}
+
+    async def exercise():
+        url = topology.engine.url.set(drivername="postgresql").render_as_string(hide_password=False)
+        actual = await asyncpg.create_pool(url, min_size=1, max_size=1, command_timeout=15)
+        hidden = other = None
+        rows: dict[str, str] = {}
+        try:
+            hidden = await actual.fetchval(
+                "INSERT INTO public.entities(canonical_name,entity_type) VALUES ('Hidden subject','person') RETURNING id"
+            )
+            other = await actual.fetchval(
+                "INSERT INTO public.entities(canonical_name,entity_type) VALUES ('Visible neighbour','person') RETURNING id"
+            )
+            fact = await actual.fetchval(
+                "INSERT INTO general.facts(subject,entity_id,predicate,content,sensitivity,validity) VALUES ('Hidden subject',$1,'note','About the hidden subject','normal','active') RETURNING id",
+                hidden,
+            )
+            async with actual.acquire() as conn, conn.transaction():
+                pointing = await conn.fetchval(
+                    "INSERT INTO general.facts(subject,entity_id,object_entity_id,predicate,content,sensitivity,validity) VALUES ('Visible neighbour',$1,$2,'knows','Knows the hidden subject','normal','active') RETURNING id",
+                    other,
+                    hidden,
+                )
+                await project_entity_graph_edge(
+                    conn,
+                    source_schema="general",
+                    source_table="facts",
+                    source_id=pointing,
+                    subject_entity_id=other,
+                    predicate="knows",
+                    object_entity_id=hidden,
+                )
+                private = await conn.fetchval(
+                    "INSERT INTO general.facts(subject,entity_id,predicate,content,sensitivity,validity) VALUES ('Hidden subject',$1,'note','Private','pii','active') RETURNING id",
+                    hidden,
+                )
+                await withhold_entity_graph_edge(
+                    conn,
+                    source_schema="general",
+                    source_table="facts",
+                    source_id=private,
+                    subject_entity_id=hidden,
+                    sensitivity="pii",
+                )
+            relation = await actual.fetchval(
+                "INSERT INTO relationship.entity_facts(subject,predicate,object,object_kind,src) VALUES ($1,'works-at',$2,'entity','hidden-entity-control') RETURNING id",
+                other,
+                str(hidden),
+            )
+            rows = {
+                "fact": str(fact),
+                "pointing": str(pointing),
+                "relation": str(relation),
+                "edge": str(hidden),
+                "count": str(hidden),
+            }
+            _barrier(topology, projection)
+            assert visible(rows) == dict.fromkeys(views, 1)
+
+            # Archive is the reversible hide; forget, delete, unlist and merge set the
+            # same `deleted` flag, so the entity row leaves the projection the same way.
+            await actual.execute(
+                "UPDATE public.entities SET metadata=metadata||'{\"archived\":true}' WHERE id=$1",
+                hidden,
+            )
+            _barrier(topology, projection)
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM mcp_read.public__entities WHERE source_id=:id",
+                    {"id": str(hidden)},
+                )
+                == 0
+            )
+            # The rows still replicate; only the views decline them.
+            assert (
+                _scalar(projection, "SELECT count(*) FROM general.facts WHERE id=:id", {"id": fact})
+                == 1
+            )
+            assert visible(rows) == dict.fromkeys(views, 0)
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM mcp_read.public__entities WHERE source_id=:id",
+                    {"id": str(other)},
+                )
+                == 1
+            )
+
+            await actual.execute(
+                "UPDATE public.entities SET metadata=metadata-'archived' WHERE id=$1", hidden
+            )
+            _barrier(topology, projection)
+            assert visible(rows) == dict.fromkeys(views, 1)
+        finally:
+            await actual.execute(
+                "DELETE FROM relationship.entity_facts WHERE src='hidden-entity-control'"
+            )
+            for entity in (hidden, other):
+                if entity:
+                    await actual.execute(
+                        "DELETE FROM public.entity_graph_edges WHERE subject_entity_id=$1", entity
+                    )
+                    await actual.execute("DELETE FROM general.facts WHERE entity_id=$1", entity)
+                    await actual.execute("DELETE FROM public.entities WHERE id=$1", entity)
+            await actual.close()
+            _barrier(topology, projection)
+
+    asyncio.run(exercise())
+
+
 def test_actual_tcp_principals_and_no_credential_guards(copied):
     from psycopg2 import OperationalError
 

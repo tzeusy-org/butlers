@@ -2183,6 +2183,11 @@ class _EntityMemoryPool:
     async def fetchval(self, query: str, *args: object):
         if "FROM public.entities" in query:
             return self._entity["id"] if self._entity is not None else None
+        if "UPDATE facts" in query:
+            self.execute_calls.append((query, args))
+            if self._fact_update_error is not None:
+                raise self._fact_update_error
+            return self._fact_count
         if "FROM facts" in query:
             if self._fact_error is not None:
                 raise self._fact_error

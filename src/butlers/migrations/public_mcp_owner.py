@@ -164,6 +164,39 @@ class SubscriberTable:
     read_fields: tuple[ReadField, ...]
 
 
+# An entity leaves the projection when it is forgotten, deleted, archived, unlisted or
+# merged, but its facts, edges and counts carry no entity flag a row filter could test.
+# Each view keeps only rows whose every referenced entity is still published, so hiding
+# an entity hides everything about it (bu-y66o00.16).
+_ENTITY_REFERENCES = {
+    "public.entity_graph_edges": ("subject_entity_id", "object_entity_id"),
+    "public.entity_graph_withheld_counts": ("entity_id",),
+    "relationship.entity_facts": ("subject", "object_entity_id"),
+}
+_FACT_ENTITY_REFERENCES = ("entity_id", "object_entity_id")
+
+
+def _entity_references(table: Table, extras: tuple[LocalColumn, ...]) -> tuple[str, ...]:
+    available = {*table.columns, *(x.name for x in extras)}
+    if table.source.endswith(".facts"):
+        missing = [c for c in _FACT_ENTITY_REFERENCES if c not in available]
+        if missing:
+            raise ManifestError(f"{table.source}: facts must publish {', '.join(missing)}")
+        return _FACT_ENTITY_REFERENCES
+    references = _ENTITY_REFERENCES.get(table.source, ())
+    if not set(references) <= available:
+        raise ManifestError(f"{table.source}: entity reference columns not published")
+    return references
+
+
+def _published_entity(column: str) -> str:
+    # A NULL reference names no entity (a property fact, an absent object).
+    return (
+        f"({quote(column)} IS NULL OR EXISTS (SELECT FROM public.entities AS e "
+        f"WHERE e.id = {quote(column)}))"
+    )
+
+
 def subscriber_plan(manifest: Manifest) -> tuple[SubscriberTable, ...]:
     # Validate callers' immutable objects through the same closed stored format.
     decode_applied_manifest(manifest.canonical)
@@ -188,6 +221,13 @@ def subscriber_plan(manifest: Manifest) -> tuple[SubscriberTable, ...]:
         ):
             raise ManifestError("subscriber view name collision/length")
         where = "deleted_at IS NULL" if table.source == "finance.transactions" else ""
+        references = _entity_references(table, extras)
+        if references:
+            if "public.entities" not in {t.source for t in manifest.tables}:
+                raise ManifestError(f"{table.source}: entity references need public.entities")
+            where = " AND ".join(
+                ([where] if where else []) + [_published_entity(c) for c in references]
+            )
         excluded = {
             "public.entities": {"deleted", "unidentified", "placeholder_name"},
             "public.entity_graph_edges": {"publish_key"},
@@ -476,7 +516,8 @@ CREATE TABLE IF NOT EXISTS mcp_local.manifest_applied (
             EXECUTE format('DROP TABLE %s', item.source::regclass);
         END IF;
     END LOOP;\n"""
-    for plan in plans:
+    # public.entities first: other views read it to hide rows about unpublished entities.
+    for plan in sorted(plans, key=lambda p: p.table.source != "public.entities"):
         table = plan.table
         columns = ", ".join(
             quote(c) + " " + typ + (" NOT NULL" if c in table.identity else "")

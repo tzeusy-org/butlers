@@ -2694,32 +2694,51 @@ async def _retire_entity_facts_for_delete(
                 ),
             )
 
-        # Retire all active facts for this entity across every memory pool.
-        async def _retire_facts(butler_name: str, fpool: object) -> int:
-            relation = _memory_relation(db, butler_name, "facts")
-            await fpool.execute(
-                f"UPDATE {relation} SET validity = 'retracted'"
-                " WHERE entity_id = $1 AND validity IN ('active', 'fading')",
-                eid,
-            )
-            return 0
-
-        retire_tracker = DegradedSources(logger)
-        await _fan_out_memory_queries(
-            db,
-            query_name="delete_entity_retire_facts",
-            query_fn=_retire_facts,
-            tracker=retire_tracker,
+        await retract_entity_facts_everywhere(
+            db, eid, operation="Entity deletion", subject_only=True
         )
-        if retire_tracker.failed:
-            names = ", ".join(retire_tracker.names)
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    f"Entity deletion incomplete: {len(retire_tracker.names)} butler database(s) "
-                    f"unreachable ({names}); fact retirement may have only partially completed."
-                ),
-            )
+
+
+async def retract_entity_facts_everywhere(
+    db: DatabaseManager,
+    entity_id: _uuid.UUID,
+    *,
+    operation: str,
+    subject_only: bool = False,
+) -> None:
+    """Retract an entity's live facts, and their graph edges, in every memory schema.
+
+    A forget retracts the facts naming the entity as subject or object; a delete with
+    ``retire_facts`` only those naming it as subject, as it always has. Pools commit
+    independently, so a failing pool raises 503 after the others commit, and a retry,
+    which finds nothing left in them, completes it (bu-y66o00.16).
+    """
+    from butlers.modules.memory.tools.entities import _retract_facts_where
+
+    columns = ("entity_id",) if subject_only else ("entity_id", "object_entity_id")
+
+    async def _retract(butler_name: str, fpool: object) -> int:
+        relation = _memory_relation(db, butler_name, "facts")
+        # Each retraction is one statement, so it and its edges commit together.
+        pool = cast(asyncpg.Pool, fpool)
+        return sum([await _retract_facts_where(pool, relation, c, entity_id) for c in columns])
+
+    tracker = DegradedSources(logger)
+    await _fan_out_memory_queries(
+        db,
+        query_name="retract_entity_facts",
+        query_fn=_retract,
+        tracker=tracker,
+    )
+    if tracker.failed:
+        names = ", ".join(tracker.names)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"{operation} incomplete: {len(tracker.names)} butler database(s) "
+                f"unreachable ({names}); fact retirement may have only partially completed."
+            ),
+        )
 
 
 @router.delete("/entities/{entity_id}", status_code=204)

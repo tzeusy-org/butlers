@@ -23,7 +23,6 @@ from butlers.modules.memory.tools.entities import (
     _SCORE_EXACT_NAME,
     _parse_rowcount,
     _repoint_episode_entities,
-    _retract_facts_on_conn,
     entity_create,
     entity_find_by_canonical,
     entity_get,
@@ -731,39 +730,8 @@ class TestRetractFactsOnConn:
     (``validity = 'retracted'``), not left active and dangling on the tombstone.
     """
 
-    async def test_issues_subject_and_object_retraction_updates(self):
-        conn = AsyncMock()
-        conn.execute = AsyncMock(side_effect=["UPDATE 3", "UPDATE 1"])
-
-        result = await _retract_facts_on_conn(conn, ENTITY_UUID)
-
-        # Two UPDATEs: subject-side (entity_id) then object-side (object_entity_id).
-        assert conn.execute.await_count == 2
-        subject_sql = conn.execute.await_args_list[0].args[0]
-        object_sql = conn.execute.await_args_list[1].args[0]
-
-        assert "UPDATE facts" in subject_sql
-        assert "validity = 'retracted'" in subject_sql
-        assert "entity_id = $1" in subject_sql
-        assert "object_entity_id" not in subject_sql
-
-        assert "UPDATE facts" in object_sql
-        assert "validity = 'retracted'" in object_sql
-        assert "object_entity_id = $1" in object_sql
-
-        # Only active/fading rows are retracted (idempotent on re-forget;
-        # already-superseded/expired/retracted rows are left alone). Fading
-        # rows must be included too (bu-5ud8p.1) or they'd be silently
-        # stranded on the tombstoned entity.
-        assert "validity IN ('active', 'fading')" in subject_sql
-        assert "validity IN ('active', 'fading')" in object_sql
-
-        # Both UPDATEs are bound to the entity being forgotten.
-        assert conn.execute.await_args_list[0].args[1] == ENTITY_UUID
-        assert conn.execute.await_args_list[1].args[1] == ENTITY_UUID
-
-        # Command tags are parsed into counts.
-        assert result == {"facts_retracted": 3, "edge_facts_retracted": 1}
+    # Retraction itself is exercised on real Postgres in
+    # roster/relationship/tests/test_forget_reaches_every_schema.py.
 
     async def test_parse_rowcount_handles_non_numeric_tags(self):
         # Real asyncpg tag.
