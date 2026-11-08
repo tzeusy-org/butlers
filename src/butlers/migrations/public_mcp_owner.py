@@ -737,9 +737,9 @@ BEGIN
         cols:=ARRAY(SELECT jsonb_array_elements_text(t->'columns'));
         IF cardinality(cols)=0 OR jsonb_array_length(t->'key')=0
            OR jsonb_array_length(t->'identity')=0
-           OR NOT t->'columns' @> t->'identity' OR NOT t->'identity' @>
-        t->'key'
-           OR NOT t->'columns' @> t->'identifiers'
+           OR NOT (t->'columns') @> (t->'identity')
+           OR NOT (t->'identity') @> (t->'key')
+           OR NOT (t->'columns') @> (t->'identifiers')
            OR EXISTS(SELECT 1 FROM unnest(cols) c WHERE c !~
         '^[a-z_][a-z0-9_]*$'
                OR lower(regexp_replace(c, '([a-z0-9])([A-Z])', '\1_\2',
@@ -1179,11 +1179,11 @@ SELECT (:'e_old_missing'::boolean OR :'e_slot_lost'::boolean OR
     WHERE n.t IS NULL OR n.t<>o.t)) AS e_rebuild,
 EXISTS(SELECT 1 FROM old o LEFT JOIN new n ON
         n.t->>'source'=o.t->>'source'
-    WHERE n.t IS NULL OR NOT n.t->'columns' @> o.t->'columns'
+    WHERE n.t IS NULL OR NOT (n.t->'columns') @> (o.t->'columns')
        OR EXISTS(SELECT 1 FROM jsonb_array_elements(n.t->'filters') nf
           WHERE NOT EXISTS(SELECT 1 FROM
         jsonb_array_elements(o.t->'filters') ofi
-             WHERE ofi->>0=nf->>0 AND nf->1 @> ofi->1))) AS e_narrowing
+             WHERE ofi->>0=nf->>0 AND (nf->1) @> (ofi->1)))) AS e_narrowing
 \\gset
 """
 
