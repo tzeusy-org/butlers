@@ -904,24 +904,31 @@ async def _retract_facts_on_conn(
 async def _retract_facts_where(
     conn: Any, relation: str, column: str, entity_uuid: uuid.UUID
 ) -> int:
-    """Retract the live facts whose *column* is *entity_uuid*, with their graph edges."""
-    # An edge is keyed by the schema that owns its fact row, which ``tableoid`` names
-    # whether *relation* is qualified or found through the search path.
+    """Retract the live facts whose *column* is *entity_uuid*, with their projections.
+
+    One statement, so the retraction and its projection invalidation commit together on
+    a pool or a connection. ``public.invalidate_memory_projection`` is the one
+    disownment boundary every other retraction uses: it stales the facts'
+    ``memory_catalog`` rows and deletes their graph edges, keyed by the schema that
+    owns each row, which ``tableoid`` names whether *relation* is qualified or not.
+    """
     return await conn.fetchval(
         f"""
         WITH retracted AS (
             UPDATE {relation} SET validity = 'retracted'
             WHERE {column} = $1 AND validity IN ('active', 'fading')
             RETURNING id, tableoid
-        ), edges AS (
-            DELETE FROM public.entity_graph_edges AS g
-            USING retracted AS r, pg_catalog.pg_class AS c, pg_catalog.pg_namespace AS n
-            WHERE c.oid = r.tableoid AND n.oid = c.relnamespace
-              AND g.source_schema = n.nspname
-              AND g.source_table = 'facts'
-              AND g.source_id = r.id
+        ), invalidated AS (
+            SELECT public.invalidate_memory_projection(
+                n.nspname, 'facts', array_agg(r.id), now(), TRUE, FALSE
+            )
+            FROM retracted AS r
+            JOIN pg_catalog.pg_class AS c ON c.oid = r.tableoid
+            JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+            GROUP BY n.nspname
         )
-        SELECT count(*) FROM retracted
+        SELECT (SELECT count(*) FROM retracted) AS retracted,
+               (SELECT count(*) FROM invalidated) AS schemas
         """,
         entity_uuid,
     )

@@ -23,6 +23,7 @@ from butlers.core.entity_graph_edges import (
     withhold_entity_graph_edge,
 )
 from butlers.migrations import run_migrations
+from butlers.modules.memory import storage as memory_storage
 from butlers.testing.db_manager import db_manager
 
 pytestmark = [
@@ -125,6 +126,14 @@ async def _edges(pool: asyncpg.Pool, entity: uuid.UUID) -> int:
     )
 
 
+async def _catalog_invalid(pool: asyncpg.Pool, fact: uuid.UUID) -> bool:
+    return await pool.fetchval(
+        "SELECT invalid_at IS NOT NULL FROM public.memory_catalog "
+        "WHERE source_table = 'facts' AND source_id = $1",
+        fact,
+    )
+
+
 async def _withheld(pool: asyncpg.Pool, entity: uuid.UUID) -> int:
     return await pool.fetchval(
         "SELECT count(*) FROM public.entity_graph_withheld_counts WHERE entity_id = $1", entity
@@ -146,6 +155,8 @@ async def test_a_forget_retracts_every_schema_and_its_edges_and_counts(pools) ->
     )
     unrelated = await _fact(gen, neighbour, points_at=await _entity(rel, "Bystander"))
     assert await _withheld(rel, forgotten) == 1
+    for schema, pool in pools.items():
+        await memory_storage._backfill_facts_to_catalog(pool, source_schema=schema, limit=100)
 
     await _forget_route()(forgotten, db=_manager(pools))
 
@@ -156,6 +167,10 @@ async def test_a_forget_retracts_every_schema_and_its_edges_and_counts(pools) ->
     assert await _withheld(rel, forgotten) == 0
     assert await _validity(gen, unrelated) == "active"
     assert await _edges(rel, neighbour) == 1
+    # Cross-butler search stops serving them too (bu-y66o00.22).
+    for fact in (local, about, pointing, fading):
+        assert await _catalog_invalid(rel, fact) is True
+    assert await _catalog_invalid(rel, unrelated) is False
 
 
 class _Unreachable:
