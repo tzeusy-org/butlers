@@ -1,0 +1,298 @@
+# Reviewed egress profiles: one per chart workload (RFC 0038 S7, bu-dhloi1.15).
+#
+# Egress widens only by a reviewed change to this file (owner decision bu-l8y3fn = B):
+# there is no runtime widening tool or API. `make egress-profiles` renders it into
+# deploy/helm/butlers/files/egress-profiles.json, which the chart reads when
+# egressProfiles.enabled is true (default off). See docs/operations/egress-profiles.md.
+#
+# Each [workloads.<component>] table names one `app.kubernetes.io/component` label and
+# declares two disjoint route classes:
+#   internal  - exact chart peers: {component, port[, end_port][, protocol]}
+#   sites     - site-located internal peers: {site, port[, protocol][, optional]}. The
+#               profile owns the port; deployment values supply only the location
+#               (namespace selector or one /32) under egressProfiles.sites.<site>.
+#   external  - exact public "hostname:port" entries, reachable only through the shared
+#               gateway on this workload's gateway_port. No IP literals, no wildcards.
+#   dynamic   - configured destinations deliberately NOT admitted, with the reason.
+#   held      - set to a reason when the workload cannot be enforced yet; rendering
+#               with that workload enabled fails instead of admitting it.
+# Every workload also gets cluster DNS. Anything not declared is denied.
+
+schema = "butlers-egress-profiles/v1"
+
+# Model-provider and package hosts repeat across workloads on purpose: each profile is
+# reviewed on its own and grants nothing to another workload.
+
+[workloads.butlers-up]
+summary = "Domain butler daemons, their modules and the LLM CLIs they spawn"
+gateway_port = 3101
+internal = [
+  { component = "butlers-up", port = 41100, end_port = 41112 },
+  { component = "butlers-control", port = 41100 },
+  { component = "dashboard-api", port = 41200 },
+]
+sites = [
+  { site = "database", port = 5432 },
+  { site = "otlp", port = 4318 },
+  { site = "home-assistant", port = 8123, optional = true },
+]
+external = [
+  # Startup `uv sync --dev` (butlers-up.yaml).
+  "pypi.org:443",
+  "files.pythonhosted.org:443",
+  # Model providers for spawned runtimes.
+  "api.anthropic.com:443",
+  "api.openai.com:443",
+  "chatgpt.com:443",
+  "auth.openai.com:443",
+  "generativelanguage.googleapis.com:443",
+  # Module and job APIs.
+  "api.telegram.org:443",
+  "oauth2.googleapis.com:443",
+  "www.googleapis.com:443",
+  "people.googleapis.com:443",
+  "gmail.googleapis.com:443",
+  "api.spotify.com:443",
+  "accounts.spotify.com:443",
+  "api.steampowered.com:443",
+  "api.open-meteo.com:443",
+  "air-quality-api.open-meteo.com:443",
+  "geocoding-api.open-meteo.com:443",
+  "api.aviationstack.com:443",
+  "api.github.com:443",
+  "github.com:443",
+]
+dynamic = [
+  { source = "LIVE_LISTENER_TRANSCRIPTION_URL", reason = "site-configured; not admitted until declared as a site peer" },
+]
+
+[workloads.butlers-control]
+summary = "Key-absent control plane: Switchboard and the session listener"
+gateway_port = 3102
+internal = [
+  { component = "butlers-up", port = 41101, end_port = 41112 },
+  { component = "dashboard-api", port = 41200 },
+]
+sites = [
+  { site = "database", port = 5432 },
+  { site = "otlp", port = 4318 },
+]
+external = [
+  "pypi.org:443",
+  "files.pythonhosted.org:443",
+  "api.anthropic.com:443",
+  "api.openai.com:443",
+  "chatgpt.com:443",
+  "auth.openai.com:443",
+  "generativelanguage.googleapis.com:443",
+  "api.telegram.org:443",
+]
+
+[workloads.session-host]
+summary = "RFC 0038 D3 session host: the control session listener and model providers only"
+gateway_port = 3103
+internal = [
+  { component = "butlers-control", port = 41199 },
+]
+external = [
+  "api.anthropic.com:443",
+  "api.openai.com:443",
+  "chatgpt.com:443",
+  "auth.openai.com:443",
+  "generativelanguage.googleapis.com:443",
+]
+
+[workloads.dashboard-api]
+summary = "Dashboard API, its migrations and the runtime CLI login sandbox"
+gateway_port = 3104
+internal = [
+  { component = "butlers-up", port = 41100, end_port = 41112 },
+  { component = "butlers-control", port = 41100 },
+]
+sites = [
+  { site = "database", port = 5432 },
+  { site = "otlp", port = 4318 },
+]
+external = [
+  "accounts.google.com:443",
+  "oauth2.googleapis.com:443",
+  "www.googleapis.com:443",
+  "gmail.googleapis.com:443",
+  "health.googleapis.com:443",
+  "accounts.spotify.com:443",
+  "api.spotify.com:443",
+  "api.github.com:443",
+  "api.steampowered.com:443",
+  "api.anthropic.com:443",
+  "chatgpt.com:443",
+  "auth.openai.com:443",
+]
+dynamic = [
+  { source = "EXTERNAL_DEADMAN_URL", reason = "secret-held URL; its host is not declared here, so the deadman ping is refused" },
+  { source = "PROMETHEUS_URL", reason = "site-configured; not admitted until declared as a site peer" },
+  { source = "OWNTRACKS_CONNECTOR_HOST", reason = "the public tailnet host builds webhook URLs; it is never dialled" },
+]
+
+[workloads.frontend]
+summary = "Static nginx; serves files and calls nothing"
+
+[workloads.log-cleanup]
+summary = "Log retention sweep on the shared volume; no network"
+
+[workloads.backup]
+summary = "Nightly pg_dump to the backups volume"
+sites = [
+  { site = "database", port = 5432 },
+]
+
+[workloads.offsite-copy]
+summary = "restic over SFTP to the owner's off-node device"
+sites = [
+  { site = "offsite-backup", port = 22 },
+]
+
+[workloads.connector-telegram-bot]
+summary = "Telegram Bot API poller"
+gateway_port = 3111
+internal = [
+  { component = "butlers-up", port = 41100 },
+  { component = "butlers-control", port = 41100 },
+  { component = "dashboard-api", port = 41200 },
+]
+sites = [
+  { site = "database", port = 5432 },
+  { site = "otlp", port = 4318 },
+]
+external = ["api.telegram.org:443"]
+dynamic = [
+  { source = "CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_URL", reason = "site-configured; not admitted until declared as a site peer" },
+]
+
+[workloads.connector-telegram-user]
+summary = "Telegram user client (Telethon)"
+held = "Telethon dials Telegram data centres by address over MTProto: there is no hostname for the gateway to bind, and it ignores proxy environment"
+
+[workloads.connector-whatsapp-user]
+summary = "WhatsApp user client; talks to the bridge over its socket volume"
+internal = [
+  { component = "butlers-up", port = 41100 },
+  { component = "butlers-control", port = 41100 },
+]
+sites = [
+  { site = "database", port = 5432 },
+  { site = "otlp", port = 4318 },
+]
+
+[workloads.connector-google-calendar]
+summary = "Google Calendar poller"
+gateway_port = 3112
+internal = [
+  { component = "butlers-up", port = 41100 },
+  { component = "butlers-control", port = 41100 },
+]
+sites = [
+  { site = "database", port = 5432 },
+  { site = "otlp", port = 4318 },
+]
+external = ["oauth2.googleapis.com:443", "www.googleapis.com:443"]
+
+[workloads.connector-spotify]
+summary = "Spotify listening history"
+gateway_port = 3113
+internal = [
+  { component = "butlers-up", port = 41100 },
+  { component = "butlers-control", port = 41100 },
+]
+sites = [
+  { site = "database", port = 5432 },
+  { site = "otlp", port = 4318 },
+]
+external = ["accounts.spotify.com:443", "api.spotify.com:443"]
+
+[workloads.connector-steam]
+summary = "Steam play activity"
+gateway_port = 3114
+internal = [
+  { component = "butlers-up", port = 41100 },
+  { component = "butlers-control", port = 41100 },
+]
+sites = [
+  { site = "database", port = 5432 },
+  { site = "otlp", port = 4318 },
+]
+external = ["api.steampowered.com:443"]
+
+[workloads.connector-owntracks]
+summary = "OwnTracks webhook receiver; inbound only"
+internal = [
+  { component = "butlers-up", port = 41100 },
+  { component = "butlers-control", port = 41100 },
+]
+sites = [
+  { site = "database", port = 5432 },
+  { site = "otlp", port = 4318 },
+]
+
+[workloads.connector-activitywatch]
+summary = "ActivityWatch poller; ACTIVITYWATCH_BASE_URL is pod-local"
+internal = [
+  { component = "butlers-up", port = 41100 },
+  { component = "butlers-control", port = 41100 },
+]
+sites = [
+  { site = "database", port = 5432 },
+  { site = "otlp", port = 4318 },
+]
+
+[workloads.connector-home-assistant]
+summary = "Home Assistant REST and websocket"
+internal = [
+  { component = "butlers-up", port = 41100 },
+  { component = "butlers-control", port = 41100 },
+]
+sites = [
+  { site = "database", port = 5432 },
+  { site = "otlp", port = 4318 },
+  { site = "home-assistant", port = 8123 },
+]
+
+[workloads.connector-gmail]
+summary = "Gmail history poller"
+gateway_port = 3115
+internal = [
+  { component = "butlers-up", port = 41100 },
+  { component = "butlers-control", port = 41100 },
+]
+sites = [
+  { site = "database", port = 5432 },
+  { site = "otlp", port = 4318 },
+]
+external = ["oauth2.googleapis.com:443", "gmail.googleapis.com:443"]
+
+[workloads.connector-google-drive]
+summary = "Google Drive change poller"
+gateway_port = 3116
+internal = [
+  { component = "butlers-up", port = 41100 },
+  { component = "butlers-control", port = 41100 },
+]
+sites = [
+  { site = "database", port = 5432 },
+  { site = "otlp", port = 4318 },
+]
+external = ["oauth2.googleapis.com:443", "www.googleapis.com:443"]
+
+[workloads.connector-google-health]
+summary = "Google Health wellness poller"
+gateway_port = 3117
+internal = [
+  { component = "butlers-up", port = 41100 },
+  # wait-for-health-routes reads the health butler's identity before polling.
+  { component = "butlers-up", port = 41103 },
+  { component = "butlers-control", port = 41100 },
+]
+sites = [
+  { site = "database", port = 5432 },
+  { site = "otlp", port = 4318 },
+]
+external = ["oauth2.googleapis.com:443", "health.googleapis.com:443"]

@@ -2,7 +2,8 @@
 With egressPolicy.enabled this one policy also mirrors scripts/egress-firewall.sh: the
 private ranges are excluded from the public rule and each allowlisted CIDR is admitted
 explicitly. NetworkPolicies are additive, so a second egress policy selecting the same
-pods could not narrow this one; keep exactly one.
+pods could not narrow this one; keep exactly one. egressProfiles.enabled replaces it
+with the per-workload policies in egress-profiles.yaml and renders it not at all.
 */ -}}
 {{- if or .Values.trackerEgress.enabled .Values.egressPolicy.enabled }}
 {{- if and .Values.trackerEgress.enabled (not .Values.trackerEgress.deniedCidrs) }}
@@ -18,6 +19,8 @@ pods could not narrow this one; keep exactly one.
 {{- end }}
 {{- end }}
 {{- end }}
+{{- /* Declared profiles replace this policy entirely (templates/egress-profiles.yaml). */}}
+{{- if not (include "butlers.egressProfilesEnabled" .) }}
 # The retired bridge grants no pod an exception. Retain the existing IPv4-only
 # tracker boundary independently of all product features and credentials.
 # Site configuration must cover every tracker IPv4 address; no CIDR means refusal.
@@ -60,4 +63,5 @@ spec:
               - {{ . }}
               {{- end }}
               {{- end }}
+{{- end }}
 {{- end }}

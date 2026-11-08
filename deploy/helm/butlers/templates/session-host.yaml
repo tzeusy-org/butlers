@@ -7,8 +7,9 @@
 # domain or connector credential, secret or credential volume. The environment
 # composition is pinned by tests/scripts/test_session_host_env_guard.py.
 # Egress is NOT restricted here: trackerEgress selects every pod and allows all
-# destinations, and policies union. Closing egress (RFC 0038 D3) is bu-kiuh8v.4's
-# reachability work and needs that policy to carve the session host out.
+# destinations, and policies union. egressProfiles.enabled (default off) replaces that
+# policy with the session-host profile in deploy/egress-profiles.toml; proving the
+# reachability (RFC 0038 D3) remains bu-kiuh8v.4's.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

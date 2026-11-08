@@ -539,6 +539,10 @@ tracker are not added automatically: list any that are private addresses. In
 production the policy keeps the name `<release>-tracker-egress` even with
 `trackerEgress.enabled=false`.
 
+Its successor is the per-workload [egress profiles](egress-profiles.md)
+(`egressProfiles.enabled`, default off), which replace this policy and refuse to render
+beside it.
+
 Rollback: set `egressPolicy.enabled=false` and `helm upgrade`. This confines a
 compromised pod from the LAN and tailnet; it does not change ingress. Pods are
 IPv4-only on k3s, so the IPv4 ranges are complete.

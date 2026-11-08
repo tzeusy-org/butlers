@@ -361,3 +361,16 @@ egressPolicy:
     - 192.168.0.0/16
     - 100.64.0.0/10
     - 169.254.0.0/16
+
+# Reviewed per-workload egress from deploy/egress-profiles.toml (RFC 0038 S7; see
+# docs/operations/egress-profiles.md). Default off. When enabled it replaces the
+# tracker-egress policy with default-deny egress plus one policy per workload, and
+# refuses egressPolicy.enabled. External hosts need the shared egress gateway; until
+# it is deployed, enabling this denies all external egress.
+egressProfiles:
+  enabled: false
+  # Location of each site peer the profiles name, never its port (the profile owns
+  # that): {namespace: <name>, podLabels: {...}} or {cidr: <one IPv4>/32}. A required
+  # site with no entry fails the render; an optional one is simply not admitted.
+  # Never commit real LAN or tailnet addresses: supply them per site.
+  sites: {}

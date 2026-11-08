@@ -104,6 +104,31 @@ https://{{ .Values.publicUrl.host }}
 {{- if .Values.butlersControl.enabled -}}butlers-control{{- else -}}butlers-up{{- end -}}
 {{- end -}}
 
+{{/* "true" when egressProfiles.enabled, "" when not. tracker-egress.yaml and
+     egress-profiles.yaml share it so they can never disagree; a non-boolean refuses. */}}
+{{- define "butlers.egressProfilesEnabled" -}}
+{{- $v := toString .Values.egressProfiles.enabled -}}
+{{- if not (has $v (list "true" "false")) -}}
+{{- fail (printf "egressProfiles.enabled must be true or false, not %q" $v) -}}
+{{- end -}}
+{{- if eq $v "true" -}}true{{- end -}}
+{{- end -}}
+
+{{/* Every workload component this release renders, as a JSON list. Each must have a
+     profile in deploy/egress-profiles.toml when egressProfiles.enabled; keep this in step
+     with the templates (tests/scripts/test_chart_egress_profiles.py checks it). */}}
+{{- define "butlers.egressWorkloads" -}}
+{{- $w := list "butlers-up" "dashboard-api" "frontend" "log-cleanup" -}}
+{{- if .Values.butlersControl.enabled -}}{{- $w = append $w "butlers-control" -}}{{- end -}}
+{{- if .Values.sessionHost.enabled -}}{{- $w = append $w "session-host" -}}{{- end -}}
+{{- if .Values.backup.enabled -}}{{- $w = append $w "backup" -}}{{- end -}}
+{{- if .Values.offsiteCopy.enabled -}}{{- $w = append $w "offsite-copy" -}}{{- end -}}
+{{- range $name, $c := .Values.connectors -}}
+{{- if ne (toString $c.enabled) "false" -}}{{- $w = append $w (printf "connector-%s" $name) -}}{{- end -}}
+{{- end -}}
+{{- toJson $w -}}
+{{- end -}}
+
 {{/* Preserve owner cap5 across exactly one control + one domain process.
      No shared counter or frozen spawner change; idle reservations are not lent. */}}
 {{- define "butlers.domainSessionCapacity" -}}

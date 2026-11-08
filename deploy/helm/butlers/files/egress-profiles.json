@@ -1,0 +1,867 @@
+{
+  "generated_from": "deploy/egress-profiles.toml (make egress-profiles); do not edit",
+  "schema": "butlers-egress-profiles/v1",
+  "workloads": {
+    "backup": {
+      "dynamic": [],
+      "external": [],
+      "gateway_port": null,
+      "held": null,
+      "internal": [],
+      "sites": [
+        {
+          "optional": false,
+          "port": 5432,
+          "protocol": "TCP",
+          "site": "database"
+        }
+      ],
+      "summary": "Nightly pg_dump to the backups volume"
+    },
+    "butlers-control": {
+      "dynamic": [],
+      "external": [
+        {
+          "host": "pypi.org",
+          "port": 443
+        },
+        {
+          "host": "files.pythonhosted.org",
+          "port": 443
+        },
+        {
+          "host": "api.anthropic.com",
+          "port": 443
+        },
+        {
+          "host": "api.openai.com",
+          "port": 443
+        },
+        {
+          "host": "chatgpt.com",
+          "port": 443
+        },
+        {
+          "host": "auth.openai.com",
+          "port": 443
+        },
+        {
+          "host": "generativelanguage.googleapis.com",
+          "port": 443
+        },
+        {
+          "host": "api.telegram.org",
+          "port": 443
+        }
+      ],
+      "gateway_port": 3102,
+      "held": null,
+      "internal": [
+        {
+          "component": "butlers-up",
+          "end_port": 41112,
+          "port": 41101,
+          "protocol": "TCP"
+        },
+        {
+          "component": "dashboard-api",
+          "end_port": 41200,
+          "port": 41200,
+          "protocol": "TCP"
+        }
+      ],
+      "sites": [
+        {
+          "optional": false,
+          "port": 5432,
+          "protocol": "TCP",
+          "site": "database"
+        },
+        {
+          "optional": false,
+          "port": 4318,
+          "protocol": "TCP",
+          "site": "otlp"
+        }
+      ],
+      "summary": "Key-absent control plane: Switchboard and the session listener"
+    },
+    "butlers-up": {
+      "dynamic": [
+        {
+          "reason": "site-configured; not admitted until declared as a site peer",
+          "source": "LIVE_LISTENER_TRANSCRIPTION_URL"
+        }
+      ],
+      "external": [
+        {
+          "host": "pypi.org",
+          "port": 443
+        },
+        {
+          "host": "files.pythonhosted.org",
+          "port": 443
+        },
+        {
+          "host": "api.anthropic.com",
+          "port": 443
+        },
+        {
+          "host": "api.openai.com",
+          "port": 443
+        },
+        {
+          "host": "chatgpt.com",
+          "port": 443
+        },
+        {
+          "host": "auth.openai.com",
+          "port": 443
+        },
+        {
+          "host": "generativelanguage.googleapis.com",
+          "port": 443
+        },
+        {
+          "host": "api.telegram.org",
+          "port": 443
+        },
+        {
+          "host": "oauth2.googleapis.com",
+          "port": 443
+        },
+        {
+          "host": "www.googleapis.com",
+          "port": 443
+        },
+        {
+          "host": "people.googleapis.com",
+          "port": 443
+        },
+        {
+          "host": "gmail.googleapis.com",
+          "port": 443
+        },
+        {
+          "host": "api.spotify.com",
+          "port": 443
+        },
+        {
+          "host": "accounts.spotify.com",
+          "port": 443
+        },
+        {
+          "host": "api.steampowered.com",
+          "port": 443
+        },
+        {
+          "host": "api.open-meteo.com",
+          "port": 443
+        },
+        {
+          "host": "air-quality-api.open-meteo.com",
+          "port": 443
+        },
+        {
+          "host": "geocoding-api.open-meteo.com",
+          "port": 443
+        },
+        {
+          "host": "api.aviationstack.com",
+          "port": 443
+        },
+        {
+          "host": "api.github.com",
+          "port": 443
+        },
+        {
+          "host": "github.com",
+          "port": 443
+        }
+      ],
+      "gateway_port": 3101,
+      "held": null,
+      "internal": [
+        {
+          "component": "butlers-up",
+          "end_port": 41112,
+          "port": 41100,
+          "protocol": "TCP"
+        },
+        {
+          "component": "butlers-control",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        },
+        {
+          "component": "dashboard-api",
+          "end_port": 41200,
+          "port": 41200,
+          "protocol": "TCP"
+        }
+      ],
+      "sites": [
+        {
+          "optional": false,
+          "port": 5432,
+          "protocol": "TCP",
+          "site": "database"
+        },
+        {
+          "optional": false,
+          "port": 4318,
+          "protocol": "TCP",
+          "site": "otlp"
+        },
+        {
+          "optional": true,
+          "port": 8123,
+          "protocol": "TCP",
+          "site": "home-assistant"
+        }
+      ],
+      "summary": "Domain butler daemons, their modules and the LLM CLIs they spawn"
+    },
+    "connector-activitywatch": {
+      "dynamic": [],
+      "external": [],
+      "gateway_port": null,
+      "held": null,
+      "internal": [
+        {
+          "component": "butlers-up",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        },
+        {
+          "component": "butlers-control",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        }
+      ],
+      "sites": [
+        {
+          "optional": false,
+          "port": 5432,
+          "protocol": "TCP",
+          "site": "database"
+        },
+        {
+          "optional": false,
+          "port": 4318,
+          "protocol": "TCP",
+          "site": "otlp"
+        }
+      ],
+      "summary": "ActivityWatch poller; ACTIVITYWATCH_BASE_URL is pod-local"
+    },
+    "connector-gmail": {
+      "dynamic": [],
+      "external": [
+        {
+          "host": "oauth2.googleapis.com",
+          "port": 443
+        },
+        {
+          "host": "gmail.googleapis.com",
+          "port": 443
+        }
+      ],
+      "gateway_port": 3115,
+      "held": null,
+      "internal": [
+        {
+          "component": "butlers-up",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        },
+        {
+          "component": "butlers-control",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        }
+      ],
+      "sites": [
+        {
+          "optional": false,
+          "port": 5432,
+          "protocol": "TCP",
+          "site": "database"
+        },
+        {
+          "optional": false,
+          "port": 4318,
+          "protocol": "TCP",
+          "site": "otlp"
+        }
+      ],
+      "summary": "Gmail history poller"
+    },
+    "connector-google-calendar": {
+      "dynamic": [],
+      "external": [
+        {
+          "host": "oauth2.googleapis.com",
+          "port": 443
+        },
+        {
+          "host": "www.googleapis.com",
+          "port": 443
+        }
+      ],
+      "gateway_port": 3112,
+      "held": null,
+      "internal": [
+        {
+          "component": "butlers-up",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        },
+        {
+          "component": "butlers-control",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        }
+      ],
+      "sites": [
+        {
+          "optional": false,
+          "port": 5432,
+          "protocol": "TCP",
+          "site": "database"
+        },
+        {
+          "optional": false,
+          "port": 4318,
+          "protocol": "TCP",
+          "site": "otlp"
+        }
+      ],
+      "summary": "Google Calendar poller"
+    },
+    "connector-google-drive": {
+      "dynamic": [],
+      "external": [
+        {
+          "host": "oauth2.googleapis.com",
+          "port": 443
+        },
+        {
+          "host": "www.googleapis.com",
+          "port": 443
+        }
+      ],
+      "gateway_port": 3116,
+      "held": null,
+      "internal": [
+        {
+          "component": "butlers-up",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        },
+        {
+          "component": "butlers-control",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        }
+      ],
+      "sites": [
+        {
+          "optional": false,
+          "port": 5432,
+          "protocol": "TCP",
+          "site": "database"
+        },
+        {
+          "optional": false,
+          "port": 4318,
+          "protocol": "TCP",
+          "site": "otlp"
+        }
+      ],
+      "summary": "Google Drive change poller"
+    },
+    "connector-google-health": {
+      "dynamic": [],
+      "external": [
+        {
+          "host": "oauth2.googleapis.com",
+          "port": 443
+        },
+        {
+          "host": "health.googleapis.com",
+          "port": 443
+        }
+      ],
+      "gateway_port": 3117,
+      "held": null,
+      "internal": [
+        {
+          "component": "butlers-up",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        },
+        {
+          "component": "butlers-up",
+          "end_port": 41103,
+          "port": 41103,
+          "protocol": "TCP"
+        },
+        {
+          "component": "butlers-control",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        }
+      ],
+      "sites": [
+        {
+          "optional": false,
+          "port": 5432,
+          "protocol": "TCP",
+          "site": "database"
+        },
+        {
+          "optional": false,
+          "port": 4318,
+          "protocol": "TCP",
+          "site": "otlp"
+        }
+      ],
+      "summary": "Google Health wellness poller"
+    },
+    "connector-home-assistant": {
+      "dynamic": [],
+      "external": [],
+      "gateway_port": null,
+      "held": null,
+      "internal": [
+        {
+          "component": "butlers-up",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        },
+        {
+          "component": "butlers-control",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        }
+      ],
+      "sites": [
+        {
+          "optional": false,
+          "port": 5432,
+          "protocol": "TCP",
+          "site": "database"
+        },
+        {
+          "optional": false,
+          "port": 4318,
+          "protocol": "TCP",
+          "site": "otlp"
+        },
+        {
+          "optional": false,
+          "port": 8123,
+          "protocol": "TCP",
+          "site": "home-assistant"
+        }
+      ],
+      "summary": "Home Assistant REST and websocket"
+    },
+    "connector-owntracks": {
+      "dynamic": [],
+      "external": [],
+      "gateway_port": null,
+      "held": null,
+      "internal": [
+        {
+          "component": "butlers-up",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        },
+        {
+          "component": "butlers-control",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        }
+      ],
+      "sites": [
+        {
+          "optional": false,
+          "port": 5432,
+          "protocol": "TCP",
+          "site": "database"
+        },
+        {
+          "optional": false,
+          "port": 4318,
+          "protocol": "TCP",
+          "site": "otlp"
+        }
+      ],
+      "summary": "OwnTracks webhook receiver; inbound only"
+    },
+    "connector-spotify": {
+      "dynamic": [],
+      "external": [
+        {
+          "host": "accounts.spotify.com",
+          "port": 443
+        },
+        {
+          "host": "api.spotify.com",
+          "port": 443
+        }
+      ],
+      "gateway_port": 3113,
+      "held": null,
+      "internal": [
+        {
+          "component": "butlers-up",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        },
+        {
+          "component": "butlers-control",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        }
+      ],
+      "sites": [
+        {
+          "optional": false,
+          "port": 5432,
+          "protocol": "TCP",
+          "site": "database"
+        },
+        {
+          "optional": false,
+          "port": 4318,
+          "protocol": "TCP",
+          "site": "otlp"
+        }
+      ],
+      "summary": "Spotify listening history"
+    },
+    "connector-steam": {
+      "dynamic": [],
+      "external": [
+        {
+          "host": "api.steampowered.com",
+          "port": 443
+        }
+      ],
+      "gateway_port": 3114,
+      "held": null,
+      "internal": [
+        {
+          "component": "butlers-up",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        },
+        {
+          "component": "butlers-control",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        }
+      ],
+      "sites": [
+        {
+          "optional": false,
+          "port": 5432,
+          "protocol": "TCP",
+          "site": "database"
+        },
+        {
+          "optional": false,
+          "port": 4318,
+          "protocol": "TCP",
+          "site": "otlp"
+        }
+      ],
+      "summary": "Steam play activity"
+    },
+    "connector-telegram-bot": {
+      "dynamic": [
+        {
+          "reason": "site-configured; not admitted until declared as a site peer",
+          "source": "CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_URL"
+        }
+      ],
+      "external": [
+        {
+          "host": "api.telegram.org",
+          "port": 443
+        }
+      ],
+      "gateway_port": 3111,
+      "held": null,
+      "internal": [
+        {
+          "component": "butlers-up",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        },
+        {
+          "component": "butlers-control",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        },
+        {
+          "component": "dashboard-api",
+          "end_port": 41200,
+          "port": 41200,
+          "protocol": "TCP"
+        }
+      ],
+      "sites": [
+        {
+          "optional": false,
+          "port": 5432,
+          "protocol": "TCP",
+          "site": "database"
+        },
+        {
+          "optional": false,
+          "port": 4318,
+          "protocol": "TCP",
+          "site": "otlp"
+        }
+      ],
+      "summary": "Telegram Bot API poller"
+    },
+    "connector-telegram-user": {
+      "dynamic": [],
+      "external": [],
+      "gateway_port": null,
+      "held": "Telethon dials Telegram data centres by address over MTProto: there is no hostname for the gateway to bind, and it ignores proxy environment",
+      "internal": [],
+      "sites": [],
+      "summary": "Telegram user client (Telethon)"
+    },
+    "connector-whatsapp-user": {
+      "dynamic": [],
+      "external": [],
+      "gateway_port": null,
+      "held": null,
+      "internal": [
+        {
+          "component": "butlers-up",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        },
+        {
+          "component": "butlers-control",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        }
+      ],
+      "sites": [
+        {
+          "optional": false,
+          "port": 5432,
+          "protocol": "TCP",
+          "site": "database"
+        },
+        {
+          "optional": false,
+          "port": 4318,
+          "protocol": "TCP",
+          "site": "otlp"
+        }
+      ],
+      "summary": "WhatsApp user client; talks to the bridge over its socket volume"
+    },
+    "dashboard-api": {
+      "dynamic": [
+        {
+          "reason": "secret-held URL; its host is not declared here, so the deadman ping is refused",
+          "source": "EXTERNAL_DEADMAN_URL"
+        },
+        {
+          "reason": "site-configured; not admitted until declared as a site peer",
+          "source": "PROMETHEUS_URL"
+        },
+        {
+          "reason": "the public tailnet host builds webhook URLs; it is never dialled",
+          "source": "OWNTRACKS_CONNECTOR_HOST"
+        }
+      ],
+      "external": [
+        {
+          "host": "accounts.google.com",
+          "port": 443
+        },
+        {
+          "host": "oauth2.googleapis.com",
+          "port": 443
+        },
+        {
+          "host": "www.googleapis.com",
+          "port": 443
+        },
+        {
+          "host": "gmail.googleapis.com",
+          "port": 443
+        },
+        {
+          "host": "health.googleapis.com",
+          "port": 443
+        },
+        {
+          "host": "accounts.spotify.com",
+          "port": 443
+        },
+        {
+          "host": "api.spotify.com",
+          "port": 443
+        },
+        {
+          "host": "api.github.com",
+          "port": 443
+        },
+        {
+          "host": "api.steampowered.com",
+          "port": 443
+        },
+        {
+          "host": "api.anthropic.com",
+          "port": 443
+        },
+        {
+          "host": "chatgpt.com",
+          "port": 443
+        },
+        {
+          "host": "auth.openai.com",
+          "port": 443
+        }
+      ],
+      "gateway_port": 3104,
+      "held": null,
+      "internal": [
+        {
+          "component": "butlers-up",
+          "end_port": 41112,
+          "port": 41100,
+          "protocol": "TCP"
+        },
+        {
+          "component": "butlers-control",
+          "end_port": 41100,
+          "port": 41100,
+          "protocol": "TCP"
+        }
+      ],
+      "sites": [
+        {
+          "optional": false,
+          "port": 5432,
+          "protocol": "TCP",
+          "site": "database"
+        },
+        {
+          "optional": false,
+          "port": 4318,
+          "protocol": "TCP",
+          "site": "otlp"
+        }
+      ],
+      "summary": "Dashboard API, its migrations and the runtime CLI login sandbox"
+    },
+    "frontend": {
+      "dynamic": [],
+      "external": [],
+      "gateway_port": null,
+      "held": null,
+      "internal": [],
+      "sites": [],
+      "summary": "Static nginx; serves files and calls nothing"
+    },
+    "log-cleanup": {
+      "dynamic": [],
+      "external": [],
+      "gateway_port": null,
+      "held": null,
+      "internal": [],
+      "sites": [],
+      "summary": "Log retention sweep on the shared volume; no network"
+    },
+    "offsite-copy": {
+      "dynamic": [],
+      "external": [],
+      "gateway_port": null,
+      "held": null,
+      "internal": [],
+      "sites": [
+        {
+          "optional": false,
+          "port": 22,
+          "protocol": "TCP",
+          "site": "offsite-backup"
+        }
+      ],
+      "summary": "restic over SFTP to the owner's off-node device"
+    },
+    "session-host": {
+      "dynamic": [],
+      "external": [
+        {
+          "host": "api.anthropic.com",
+          "port": 443
+        },
+        {
+          "host": "api.openai.com",
+          "port": 443
+        },
+        {
+          "host": "chatgpt.com",
+          "port": 443
+        },
+        {
+          "host": "auth.openai.com",
+          "port": 443
+        },
+        {
+          "host": "generativelanguage.googleapis.com",
+          "port": 443
+        }
+      ],
+      "gateway_port": 3103,
+      "held": null,
+      "internal": [
+        {
+          "component": "butlers-control",
+          "end_port": 41199,
+          "port": 41199,
+          "protocol": "TCP"
+        }
+      ],
+      "sites": [],
+      "summary": "RFC 0038 D3 session host: the control session listener and model providers only"
+    }
+  }
+}

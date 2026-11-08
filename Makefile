@@ -1,4 +1,4 @@
-.PHONY: typecheck prepare-typecheck update-type-baseline check-lock check-format lint install-lint-tools secrets-scan lint-workflows lint-tools-self-test format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-em-dashes check-requirement-trace check-openspec-strict check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag check-requirement-citations
+.PHONY: typecheck prepare-typecheck update-type-baseline check-lock check-format lint install-lint-tools secrets-scan lint-workflows lint-tools-self-test format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-em-dashes check-requirement-trace check-openspec-strict check-duplicate-names check-session-links egress-profiles lint-decision-beads lint-decision-beads-strict bump-version release-tag check-requirement-citations
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -197,6 +197,10 @@ check-for-update-joins:
 # frozen while any net-new em-dash fails. Mirrors the em-dash step of the CI `guards` job.
 check-em-dashes:
 	python3 scripts/check-no-em-dashes.py
+
+# Re-render deploy/egress-profiles.toml for the chart (bu-dhloi1.15); tests fail if stale.
+egress-profiles:
+	uv run --no-sync python -m butlers.egress.profiles
 
 # Regression guard for bu-xjs98p.1: every ADDED or MODIFIED requirement block in an active
 # change must carry ID, Source and Scope trace lines, or be frozen in
