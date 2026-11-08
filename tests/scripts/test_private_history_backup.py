@@ -461,7 +461,7 @@ def test_restore_refuses_foreign_or_malformed_rows(
 def _unexported_perception_relations(connection, registered: dict) -> list[str]:
     present = {
         f"{schema}.{name}"
-        for schema, name in connection.exec_driver_sql(
+        for schema, name in connection.execution_options(no_parameters=True).exec_driver_sql(
             "SELECT n.nspname,c.relname FROM pg_class c "
             "JOIN pg_namespace n ON n.oid=c.relnamespace "
             "WHERE c.relkind IN ('r','p') AND (n.nspname LIKE 'perception%' "
