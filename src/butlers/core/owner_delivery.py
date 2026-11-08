@@ -146,6 +146,10 @@ class RetractTarget:
     surface: str
     route_ref: str
     provider_ref: str | None
+    #: The authority row behind the card, so its surface owner can say what it was about.
+    kind: str | None = None
+    source_ref: str | None = None
+    owning_schema: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -804,7 +808,8 @@ async def pending_retractions(
     the surface owner reports nothing for it.
     """
     rows = await conn.fetch(
-        "SELECT p.id, p.surface, p.route_ref, p.provider_ref "
+        "SELECT p.id, p.surface, p.route_ref, p.provider_ref, "
+        "s.kind, s.source_ref, s.owning_schema "
         "FROM public.owner_delivery_presentations p "
         "JOIN public.owner_delivery_subjects s ON s.id = p.subject_id "
         "LEFT JOIN LATERAL ("
@@ -827,7 +832,15 @@ async def pending_retractions(
         float(RETRACTION_RETRY_AFTER_S),
     )
     return tuple(
-        RetractTarget(row["id"], row["surface"], row["route_ref"], row["provider_ref"])
+        RetractTarget(
+            row["id"],
+            row["surface"],
+            row["route_ref"],
+            row["provider_ref"],
+            row["kind"],
+            row["source_ref"],
+            row["owning_schema"],
+        )
         for row in rows
     )
 

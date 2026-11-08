@@ -136,7 +136,7 @@ routes (`_is_approval_callback_route`).
 | Route | Who | Behaviour |
 | --- | --- | --- |
 | `POST /actions {token}` | connector (surface `telegram`, needs `X-Butlers-Decision-Actor: owner@telegram`) or owner browser session (surface `dashboard`) | Redeems through the normal approve/deny path (audit, dispatch). `200` with the action on a win or a replay (a replay dispatches nothing); `409 {"error":"owner_delivery_refused","reason":…}` otherwise. The dashboard must echo the `displayed_call` it showed to approve (`409` if it differs, or if the call is open-only, before the token is touched) and may add a denial `reason`; the connector may not. |
-| `GET /retractions` | connector only | This deployment's stale Telegram cards: `{presentation_id, route_ref, provider_ref}`. A failed card returns after a 15-minute cooldown, and not at all after 5 failed attempts. |
+| `GET /retractions` | connector only | This deployment's stale Telegram cards: `{presentation_id, route_ref, provider_ref, subject_line?, open_label?, open_url?}`. A failed card returns after a 15-minute cooldown, and not at all after 5 failed attempts. |
 | `POST /retractions/{presentation_id} {retracted, reason?}` | connector only | Receipts one retraction attempt. `retracted=false` never claims success; the card stays eligible within the bound above. A live card (open subject, current generation) is refused with `409 presentation_live`. |
 
 ## Delivery path
@@ -191,6 +191,16 @@ drains on a timer (`CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S`, default 60 secon
 webhook modes), so a card staled by a dashboard decision, expiry or cancellation is retracted
 with no tap. One drain runs at a time. Telegram's "message is not modified" counts as retracted,
 because the card already shows that end state.
+
+A card the connector itself rewrote with the decided status (an `od1:` or `apr1:` tap) is never
+retracted: the tap's edit waits for a running drain, so the outcome lands last, and later drains
+receipt that card as `retracted` with reason `outcome_shown` (the card already shows the outcome the tap rendered, whether or not the tap decided it) without editing it. This is held in
+connector memory, so a restart between the tap and the next sweep falls back to a normal retraction.
+Every other card of the subject is retracted. A retracted approval card keeps a subject line
+(`[butler] Approval: <title>`) and one Open link button, both derived by the API (from the
+schema's `pending_actions` row and the verified dashboard origin) and sent in the `/retractions`
+listing as `subject_line`, `open_label`, `open_url`; no decision button survives, and a card
+without them gets the generic text.
 
 Failures split by what they say about the card, and every one is logged with the presentation id
 and the HTTP status or error type:

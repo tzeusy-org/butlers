@@ -260,15 +260,22 @@ async def edit_telegram_message_text(
     chat_id: str,
     message_id: int,
     text: str,
+    reply_markup: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Edit one Telegram message's text through ``editMessageText``."""
+    """Edit one Telegram message's text through ``editMessageText``.
+
+    Without ``reply_markup`` the edit also removes the message's inline keyboard; with it,
+    the given keyboard replaces the old one.
+    """
     source = clamp_edit_source(text)
-    payload = {
+    payload: dict[str, Any] = {
         "chat_id": chat_id,
         "message_id": message_id,
         "text": render_markdown(source),
         "parse_mode": "HTML",
     }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
     response = await client.post(f"{api_base_url}/editMessageText", json=payload)
     if telegram_parse_rejection(response):
         payload = {key: value for key, value in payload.items() if key != "parse_mode"}

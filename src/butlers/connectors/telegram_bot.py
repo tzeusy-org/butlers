@@ -432,6 +432,31 @@ async def _tolerate_not_modified(edit: Awaitable[Any]) -> None:
             raise
 
 
+def _retracted_card(item: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+    """Text and keyboard of a retracted approval card: its subject, the status, an Open link.
+
+    The subject line and link come from the dashboard API (derived there from the authority
+    row and the verified dashboard origin), never from Telegram. Decision buttons never
+    survive; a missing or malformed field just leaves the generic text.
+    """
+    subject = item.get("subject_line")
+    text = _OWNER_DELIVERY_RETRACTED_TEXT
+    if isinstance(subject, str) and subject.strip() and len(subject) <= 200:
+        text = f"{subject.strip()}\n{text}"
+    label = item.get("open_label")
+    url = item.get("open_url")
+    reply_markup = None
+    if (
+        isinstance(label, str)
+        and isinstance(url, str)
+        and 0 < len(label) <= 64
+        and url.startswith("https://")
+        and len(url) <= 300
+    ):
+        reply_markup = {"inline_keyboard": [[{"text": label, "url": url}]]}
+    return text, reply_markup
+
+
 class TelegramBotConnector:
     """Telegram bot connector runtime for transport-only ingestion.
 
@@ -1623,19 +1648,21 @@ class TelegramBotConnector:
             message_id = int(provider_ref)
         except ValueError:
             return False, "provider_ref_unusable"
+        text, reply_markup = _retracted_card(item)
         try:
-            # editMessageText without reply_markup also drops the inline keyboard, so this one
-            # edit is the whole retraction. A separate editMessageReplyMarkup is not sent: on a
-            # card with no keyboard Telegram refuses it with a 400, which receipted a visibly
-            # retracted card as failed. "Message is not modified" means a relisted card already
-            # holds the end state.
+            # editMessageText replaces the inline keyboard (here: nothing, or one Open link),
+            # so this one edit is the whole retraction. A separate editMessageReplyMarkup is not
+            # sent: on a card with no keyboard Telegram refuses it with a 400, which receipted
+            # a visibly retracted card as failed. "Message is not modified" means a relisted
+            # card already holds the end state.
             await _tolerate_not_modified(
                 edit_telegram_message_text(
                     self._http_client,
                     self._telegram_api_base,
                     chat_id=chat_id,
                     message_id=message_id,
-                    text=_OWNER_DELIVERY_RETRACTED_TEXT,
+                    text=text,
+                    reply_markup=reply_markup,
                 )
             )
         except httpx.HTTPStatusError as exc:

@@ -407,3 +407,57 @@ async def test_tap_edit_waits_for_a_running_drain_so_the_outcome_lands_last(
     await edit
 
     assert [b["text"] for b in http.telegram("editMessageText")] == ["✅ Approved"]
+
+
+async def test_retracted_card_keeps_its_subject_and_an_open_link(
+    owner_resolver: AsyncMock,
+) -> None:
+    token, _ = mint_token()
+    http = _Http(
+        _response(body={"data": {"status": "executed"}}),
+        [
+            {
+                "presentation_id": _STALE_ID,
+                "route_ref": "9001",
+                "provider_ref": "55",
+                "subject_line": "[messenger] Approval: Send Telegram message",
+                "open_label": "Open dash.example.com (dashboard)",
+                "open_url": "https://dash.example.com/approvals/" + _STALE_ID,
+            }
+        ],
+    )
+    connector = _connector()
+    connector._http_client = http  # type: ignore[assignment]
+
+    await connector._maybe_handle_owner_delivery_callback(_update(token))
+
+    [edit] = [b for b in http.telegram("editMessageText") if b["message_id"] == 55]
+    assert edit["text"].startswith("[messenger] Approval: Send Telegram message")
+    assert "Handled elsewhere" in edit["text"]
+    # Only an Open link remains: no decision button survives the retraction.
+    assert edit["reply_markup"] == {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "Open dash.example.com (dashboard)",
+                    "url": "https://dash.example.com/approvals/" + _STALE_ID,
+                }
+            ]
+        ]
+    }
+    assert http.telegram("editMessageReplyMarkup") == []
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},
+        {"subject_line": 5, "open_label": "x", "open_url": "http://insecure.example/a"},
+        {"subject_line": "  ", "open_label": "", "open_url": "https://dash.example.com/a"},
+    ],
+    ids=["absent", "malformed", "empty"],
+)
+def test_unusable_subject_or_link_falls_back_to_the_generic_card(extra: dict[str, Any]) -> None:
+    text, markup = telegram_bot_module._retracted_card({"presentation_id": _STALE_ID, **extra})
+    assert text == telegram_bot_module._OWNER_DELIVERY_RETRACTED_TEXT
+    assert markup is None
