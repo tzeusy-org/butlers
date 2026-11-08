@@ -57,6 +57,7 @@ def _instance_row(
     event_description: str | None = None,
     event_location: str | None = None,
     event_metadata: dict | str | None = None,
+    account_email: str | None = None,
     starts_at: datetime | None = None,
     ends_at: datetime | None = None,
     event_id: UUID | None = None,
@@ -80,6 +81,7 @@ def _instance_row(
             "event_description": event_description,
             "event_location": event_location,
             "event_metadata": event_metadata,
+            "account_email": account_email,
         }
     )
 
@@ -239,6 +241,7 @@ async def test_title_final_fallback_when_no_richer_context() -> None:
 
 
 _OWNER = "owner@example.com"
+_COLLEAGUE = "colleague@example.com"
 
 
 def _attendee(email: str, *, self_: bool = False, response: str = "accepted", **extra) -> dict:
@@ -256,14 +259,8 @@ _OWN_EVENT = _invite(organizer=_OWNER)
 @pytest.mark.parametrize(
     ("fields", "expected"),
     [
-        (
-            {"metadata": {"summary": "Standup"}, "event_location": "Zoom"},
-            "summary",
-        ),
-        (
-            {"metadata": {}, "event_title": "Standup", "event_location": "Zoom"},
-            "summary",
-        ),
+        ({"metadata": {"summary": "Standup"}, "event_location": "Zoom"}, "summary"),
+        ({"metadata": {}, "event_title": "Standup", "event_location": "Zoom"}, "summary"),
         ({"metadata": {}, "event_title": " ", "event_location": "12 Secret Rd"}, "fallback"),
         ({"metadata": {}, "event_title": None, "event_description": "Agenda"}, "fallback"),
         ({"metadata": {}, "event_title": None}, "fallback"),
@@ -271,30 +268,36 @@ _OWN_EVENT = _invite(organizer=_OWNER)
 )
 async def test_payload_says_where_the_title_came_from(fields, expected) -> None:
     """The public projection withholds a title built from the inviter's free text."""
-    ep = await _project_one(_instance_row(event_metadata=_OWN_EVENT, **fields))
+    row = _instance_row(event_metadata=_OWN_EVENT, account_email=_OWNER, **fields)
+    ep = await _project_one(row)
     assert ep.payload["title_source"] == expected
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("event_metadata", "expected"),
+    ("event_metadata", "account_email", "expected"),
     [
-        pytest.param(_OWN_EVENT, "summary", id="own-event-no-attendees"),
+        pytest.param(_OWN_EVENT, _OWNER, "summary", id="own-event-no-attendees"),
         pytest.param(
             _invite(
                 _attendee(_OWNER, self_=True, organizer=True),
                 _attendee("a@example.com"),
                 organizer=_OWNER,
             ),
+            _OWNER,
             "summary",
             id="organizer",
+        ),
+        pytest.param(
+            _invite(organizer=" Owner@Example.com "), _OWNER, "summary", id="organizer-casing"
         ),
         *[
             pytest.param(
                 _invite(
                     _attendee("host@example.com", organizer=True),
-                    _attendee(_OWNER, self_=True, response=response),
+                    _attendee(_OWNER.upper(), self_=True, response=response),
                 ),
+                _OWNER,
                 "summary",
                 id=f"invitee-{response}",
             )
@@ -302,34 +305,55 @@ async def test_payload_says_where_the_title_came_from(fields, expected) -> None:
         ],
         pytest.param(
             _invite(_attendee("host@example.com", organizer=True), _attendee("b@example.com")),
+            _OWNER,
             "unattended",
             id="shared-calendar-non-attendee",
         ),
+        # Google marks the entry of the calendar the event appears on as ``self``: on a
+        # subscribed colleague's calendar that is the colleague, not the owner.
         pytest.param(
             _invite(
-                organizer="team@group.calendar.google.com",
-                calendar="team@group.calendar.google.com",
+                _attendee("host@example.com", organizer=True),
+                _attendee(_COLLEAGUE, self_=True),
+                calendar=_COLLEAGUE,
             ),
+            _OWNER,
             "unattended",
-            id="group-calendar-no-attendees",
+            id="colleague-calendar-self-attendee",
         ),
         pytest.param(
-            _invite(organizer="host@example.com"), "unattended", id="someone-elses-no-attendees"
+            _invite(organizer=_COLLEAGUE, calendar=_COLLEAGUE),
+            _OWNER,
+            "unattended",
+            id="colleague-calendar-solo-event",
         ),
-        pytest.param(json.dumps(_OWN_EVENT), "summary", id="json-text"),
-        pytest.param({"organizer": _OWNER, "calendar_id": _OWNER}, "unattended", id="no-list"),
-        pytest.param(None, "unattended", id="no-metadata"),
-        pytest.param("not json", "unattended", id="unreadable"),
+        pytest.param(_OWN_EVENT, None, "unattended", id="account-unknown"),
+        pytest.param(_OWN_EVENT, " ", "unattended", id="account-blank"),
+        pytest.param(
+            _invite(organizer="team@group.calendar.google.com", calendar="butlers")
+            | {"butler_generated": True},
+            _OWNER,
+            "summary",
+            id="butler-written",
+        ),
+        pytest.param(json.dumps(_OWN_EVENT), _OWNER, "summary", id="json-text"),
+        pytest.param({"attendees": "owner@example.com"}, _OWNER, "unattended", id="no-list"),
+        pytest.param(None, _OWNER, "unattended", id="no-metadata"),
+        pytest.param("not json", _OWNER, "unattended", id="unreadable"),
     ],
 )
 async def test_a_summary_is_publishable_only_when_the_owner_attends(
-    event_metadata, expected
+    event_metadata, account_email, expected
 ) -> None:
     """bu-y66o00.20: owner decision 2026-11-08, publish another person's summary only to an
     event the owner organised or was invited to, whatever the response."""
-    ep = await _project_one(
-        _instance_row(metadata={}, event_title="Offsite", event_metadata=event_metadata)
+    row = _instance_row(
+        metadata={},
+        event_title="Offsite",
+        event_metadata=event_metadata,
+        account_email=account_email,
     )
+    ep = await _project_one(row)
     assert ep.payload["title_source"] == expected
     assert ep.title == "Offsite"
 

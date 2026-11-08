@@ -451,7 +451,8 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                                e.title AS event_title,
                                e.description AS event_description,
                                e.location AS event_location,
-                               e.metadata AS event_metadata
+                               e.metadata AS event_metadata,
+                               cs.metadata ->> 'account_email' AS account_email
                         FROM {quoted}.calendar_event_instances AS i
                         LEFT JOIN {quoted}.calendar_events AS e ON e.id = i.event_id
                         INNER JOIN {quoted}.calendar_sources AS cs ON cs.id = i.source_id
@@ -473,7 +474,8 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                                e.title AS event_title,
                                e.description AS event_description,
                                e.location AS event_location,
-                               e.metadata AS event_metadata
+                               e.metadata AS event_metadata,
+                               cs.metadata ->> 'account_email' AS account_email
                         FROM {quoted}.calendar_event_instances AS i
                         LEFT JOIN {quoted}.calendar_events AS e ON e.id = i.event_id
                         INNER JOIN {quoted}.calendar_sources AS cs ON cs.id = i.source_id
@@ -611,7 +613,7 @@ class CalendarCompletedAdapter(ProjectionAdapter):
         # someone else's shared calendar stays private.
         if not (title or self._clean_text(event_title)):
             payload["title_source"] = "fallback"
-        elif self._owner_attends(event_metadata):
+        elif self._owner_attends(event_metadata, self._maybe(row, "account_email")):
             payload["title_source"] = "summary"
         else:
             payload["title_source"] = "unattended"
@@ -665,12 +667,13 @@ class CalendarCompletedAdapter(ProjectionAdapter):
         return provenance
 
     @staticmethod
-    def _owner_attends(event_metadata: Any) -> bool:
+    def _owner_attends(event_metadata: Any, account_email: Any) -> bool:
         """Whether the owner organised or was invited to the event (any response).
 
-        Google marks the account's own attendee entry ``self``. An event with no attendees is the
-        owner's own only when its organizer is the synced calendar itself and that calendar is not
-        a shared group or imported one. Anything unreadable counts as not attended.
+        The owner is the synced Google account (``calendar_sources.metadata.account_email``), not
+        the calendar the event appears on: a subscribed colleague's calendar is synced too, and
+        Google's attendee ``self`` flag marks that calendar's entry. An event a butler wrote for
+        the owner counts as the owner's. Anything unreadable counts as not attended.
         """
         if isinstance(event_metadata, str):
             try:
@@ -679,18 +682,20 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                 return False
         if not isinstance(event_metadata, dict):
             return False
+        if event_metadata.get("butler_generated") is True:
+            return True
+        if not isinstance(account_email, str) or not account_email.strip():
+            return False
+        owner = account_email.strip().casefold()
+
+        def is_owner(email: Any) -> bool:
+            return isinstance(email, str) and email.strip().casefold() == owner
+
+        if is_owner(event_metadata.get("organizer")):
+            return True
         attendees = event_metadata.get("attendees")
-        if not isinstance(attendees, list):
-            return False
-        if attendees:
-            return any(isinstance(a, dict) and a.get("self") is True for a in attendees)
-        organizer = event_metadata.get("organizer")
-        calendar_id = event_metadata.get("calendar_id")
-        if not isinstance(organizer, str) or not isinstance(calendar_id, str):
-            return False
-        calendar_id = calendar_id.strip().casefold()
-        return organizer.strip().casefold() == calendar_id and not calendar_id.endswith(
-            ".calendar.google.com"
+        return isinstance(attendees, list) and any(
+            isinstance(a, dict) and is_owner(a.get("email")) for a in attendees
         )
 
     @staticmethod
