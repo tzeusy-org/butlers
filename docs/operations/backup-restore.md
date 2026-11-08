@@ -214,13 +214,17 @@ No canonical source observation is excluded.
 
 ### Private history export
 
-The full backup includes the complete DND history: every row of
+The required full-backup contract includes complete DND history: every row of
 `public.dnd_generation_mutations` (including expired and superseded receipts),
 the `public.dnd_generation_guard` row, and the `signal_type = 'dnd'` rows of
 `public.user_context`. The ten perception relations listed in
 `deploy/backup/private_history_manifest.json` join the same path when
 `bu-dhloi1.9` creates them; a test fails if any of them exists while its
-manifest status is not `exported`.
+manifest status is not `exported`. All ten canonical perception relations are currently
+unavailable. This is an inactive DND mechanism with partial evidence, not full-source
+completion or authority to release the human hold. An absent-table guard does not
+prove populated perception coverage, and a dark artifact omitting DND does not satisfy
+the required full backup or restore acceptance.
 
 **Mechanism.** The dump identity is never widened: it receives no grant,
 membership or EXECUTE for any of this. `scripts/init-db.sql` (the DND finalizer)
@@ -237,7 +241,15 @@ Both roles are created `NOLOGIN NOINHERIT` with no membership edge and no
 credential. `pg_dump.sh` runs the export in the same exported snapshot as the
 dump and proves in that transaction that the function is the exact owner-only
 interface before reading it. Runtime grants and forced owner-only RLS are
-unchanged.
+unchanged. Bootstrap refuses an existing backup schema/function with foreign ownership
+or noncanonical ACL grants before privileged adoption; a correct fixed-owner rerun
+preserves the exact boundary. Inert capability roles with credentials or membership
+edges are refused. Before rerunning this dark bootstrap, any separately activated
+capability must again satisfy these inert-role checks: disabling a member login
+alone does not remove its membership edge, and a capability credential must also be
+absent. Reversing activation remains a separate owner-controlled action.
+Restore rejects missing/null keys, mismatched ordinals, foreign row shapes and an
+absent or malformed singleton guard before changing the target.
 
 **Dark until activated.** Until the owner configures an export identity the
 script publishes the artifact without the history and says so on stderr (`NOTICE:

@@ -4,7 +4,7 @@
 
 The full application-data backup SHALL include the complete DND history (every
 mutation receipt including expired and superseded rows, the generation guard, and the
-`signal_type = 'dnd'` rows of `user_context`) and, once those relations exist, the
+`signal_type = 'dnd'` rows of `user_context`) and all
 ten perception relations of the perception registry. Their rows SHALL be captured in
 the same exported snapshot as the ordinary dump, through fixed `SECURITY DEFINER`
 functions owned by the relations' fenced owner and executable only by dedicated
@@ -12,10 +12,11 @@ functions owned by the relations' fenced owner and executable only by dedicated
 EXECUTE for this path, the owner roles' no-membership fences SHALL remain, and
 runtime grants and forced owner-only row security SHALL be unchanged.
 
-The interface SHALL ship dark. Until the owner activates an export credential, a
-backup run SHALL publish without these populations and SHALL state the omission on
-its error stream; once an export identity is configured, any export or proof failure
-SHALL refuse publication. Provisioning a login, delivering a credential, deployment and
+This implementation ships an inactive prerequisite, not completed full-backup
+coverage. An artifact omitting these populations SHALL NOT be certified as satisfying
+this requirement. The current dark path reports its omission on the error stream;
+once an export identity is configured, any export or proof failure SHALL refuse
+publication. Provisioning a login, delivering a credential, deployment and
 restore execution are owner activation steps, not effects of this requirement.
 
 Restore SHALL reproduce the exact captured rows into a fresh target, SHALL refuse a
@@ -38,7 +39,7 @@ Scope: v1-mandatory
 
 #### Scenario: The export is not yet activated
 - **WHEN** the interface is installed but no export identity is configured
-- **THEN** the backup publishes, states on its error stream that the DND history is not in the artifact, and does not fail or silently omit it
+- **THEN** the current dark artifact states that DND history is absent and does not satisfy the required full-inclusion or restore acceptance; activation and the unavailable perception implementation remain outstanding
 
 #### Scenario: A perception relation exists without an exporter
 - **WHEN** a relation registered as perception is created while its manifest status is not exported

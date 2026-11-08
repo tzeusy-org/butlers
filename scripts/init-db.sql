@@ -1998,8 +1998,7 @@ BEGIN
         SELECT oid INTO v_oid FROM pg_roles WHERE rolname = v_role;
         IF v_oid IS NULL THEN
             EXECUTE format(
-                'CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOCREATEDB '
-                || 'NOREPLICATION NOBYPASSRLS',
+                'CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS',
                 v_role
             );
         ELSIF NOT EXISTS (
@@ -2008,13 +2007,54 @@ BEGIN
               AND NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper
               AND NOT rolcreaterole AND NOT rolcreatedb AND NOT rolreplication
               AND NOT rolbypassrls
+              AND NOT EXISTS (SELECT 1 FROM pg_auth_members
+                              WHERE roleid = v_oid OR member = v_oid)
+              AND NOT EXISTS (SELECT 1 FROM pg_authid
+                              WHERE oid = v_oid AND rolpassword IS NOT NULL)
         ) THEN
             RAISE EXCEPTION 'DND backup role % is untrusted', v_role;
         END IF;
     END LOOP;
 
+    -- Never adopt migration/runtime-owned lookalikes: replacing a function
+    -- preserves its ACL, and transferring its owner would elevate those grants.
+    -- Correct owner-created objects may be refreshed, with only the fixed
+    -- capability grants and no grant options or third-party schema creation.
+    IF EXISTS (
+        SELECT 1 FROM pg_namespace n
+        WHERE n.nspname = 'dnd_generation_backup' AND (
+            n.nspowner <> v_dnd_owner OR EXISTS (
+                SELECT 1 FROM aclexplode(COALESCE(n.nspacl, acldefault('n', n.nspowner))) a
+                WHERE a.is_grantable OR NOT (
+                    a.grantee = v_dnd_owner OR
+                    (a.grantee IN ('butlers_backup_export'::regrole,
+                                   'butlers_backup_restore'::regrole)
+                     AND a.privilege_type = 'USAGE')
+                )
+            )
+        )
+    ) OR EXISTS (
+        SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'dnd_generation_backup' AND (
+            p.proowner <> v_dnd_owner OR NOT (
+                (p.proname = 'export_v1' AND p.pronargs = 0) OR
+                (p.proname = 'restore_v1' AND p.proargtypes = '3802'::oidvector)
+            ) OR EXISTS (
+                SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a
+                WHERE a.is_grantable OR NOT (
+                    a.grantee = v_dnd_owner OR
+                    (a.grantee = CASE p.proname
+                         WHEN 'export_v1' THEN 'butlers_backup_export'::regrole
+                         WHEN 'restore_v1' THEN 'butlers_backup_restore'::regrole END
+                     AND a.privilege_type = 'EXECUTE')
+                )
+            )
+        )
+    ) THEN
+        RAISE EXCEPTION 'DND backup schema or function authority is untrusted';
+    END IF;
+
     CREATE SCHEMA IF NOT EXISTS dnd_generation_backup AUTHORIZATION dnd_generation_owner;
-    EXECUTE 'ALTER SCHEMA dnd_generation_backup OWNER TO dnd_generation_owner';
 
     CREATE OR REPLACE FUNCTION dnd_generation_backup.export_v1()
     RETURNS TABLE (ordinal INTEGER, relation_name TEXT, payload JSONB)
@@ -2043,7 +2083,9 @@ BEGIN
     SET row_security = on
     AS $dnd_restore$
     DECLARE
-        v_bad INTEGER;
+        v_item JSONB;
+        v_relation REGCLASS;
+        v_columns TEXT[];
         v_expected_receipts BIGINT;
         v_expected_context BIGINT;
         v_guard JSONB;
@@ -2053,17 +2095,47 @@ BEGIN
         IF p_rows IS NULL OR jsonb_typeof(p_rows) <> 'array' THEN
             RAISE EXCEPTION 'DND restore requires a JSON array of staged rows';
         END IF;
-        SELECT count(*) INTO v_bad
-          FROM jsonb_array_elements(p_rows) AS item
-         WHERE jsonb_typeof(item) <> 'object'
-            OR item->>'relation' NOT IN
-               ('dnd_generation_mutations', 'dnd_generation_guard', 'user_context')
-            OR jsonb_typeof(item->'row') <> 'object'
-            OR (item->>'relation' = 'user_context'
-                AND item->'row'->>'signal_type' IS DISTINCT FROM 'dnd');
-        IF v_bad <> 0 THEN
-            RAISE EXCEPTION 'DND restore refused % malformed or foreign staged rows', v_bad;
-        END IF;
+        FOR v_item IN SELECT value FROM jsonb_array_elements(p_rows) LOOP
+            IF jsonb_typeof(v_item) IS DISTINCT FROM 'object' THEN
+                RAISE EXCEPTION 'DND restore refused malformed or foreign staged rows';
+            END IF;
+            IF NOT COALESCE(v_item ?& ARRAY['ordinal','relation','row'], false)
+               OR (v_item - ARRAY['ordinal','relation','row']) <> '{}'::jsonb
+               OR jsonb_typeof(v_item->'relation') IS DISTINCT FROM 'string'
+               OR jsonb_typeof(v_item->'ordinal') IS DISTINCT FROM 'number'
+               OR jsonb_typeof(v_item->'row') IS DISTINCT FROM 'object'
+               OR NOT COALESCE(v_item->>'relation' IN
+                   ('dnd_generation_mutations','dnd_generation_guard','user_context'), false)
+            THEN
+                RAISE EXCEPTION 'DND restore refused malformed or foreign staged rows';
+            END IF;
+            IF v_item->>'ordinal' IS DISTINCT FROM (CASE v_item->>'relation'
+                  WHEN 'dnd_generation_mutations' THEN '1'
+                  WHEN 'dnd_generation_guard' THEN '2'
+                  WHEN 'user_context' THEN '3' END)
+            THEN
+                RAISE EXCEPTION 'DND restore refused malformed or foreign staged rows';
+            END IF;
+            v_relation := CASE v_item->>'relation'
+                WHEN 'dnd_generation_mutations' THEN 'public.dnd_generation_mutations'::regclass
+                WHEN 'dnd_generation_guard' THEN 'public.dnd_generation_guard'::regclass
+                WHEN 'user_context' THEN 'public.user_context'::regclass END;
+            SELECT array_agg(attname::text) INTO v_columns
+            FROM pg_attribute WHERE attrelid = v_relation AND attnum > 0 AND NOT attisdropped;
+            IF NOT COALESCE((v_item->'row') ?& v_columns, false)
+               OR ((v_item->'row') - v_columns) <> '{}'::jsonb
+               OR (v_item->>'relation' = 'user_context'
+                   AND v_item->'row'->>'signal_type' IS DISTINCT FROM 'dnd')
+               OR (v_item->>'relation' = 'dnd_generation_guard' AND (
+                   v_item->'row'->'guard_id' IS DISTINCT FROM '1'::jsonb
+                   OR jsonb_typeof(v_item->'row'->'generation') IS DISTINCT FROM 'number'
+                   OR NOT COALESCE(v_item->'row'->>'generation' ~ '^(0|[1-9][0-9]*)$', false)
+                   OR jsonb_typeof(v_item->'row'->'updated_at') IS DISTINCT FROM 'string'
+               ))
+            THEN
+                RAISE EXCEPTION 'DND restore refused malformed or foreign staged rows';
+            END IF;
+        END LOOP;
 
         LOCK TABLE public.dnd_generation_guard, public.dnd_generation_mutations,
                    public.user_context IN SHARE ROW EXCLUSIVE MODE;
@@ -2071,8 +2143,8 @@ BEGIN
         SELECT count(*) INTO v_guard_count
           FROM jsonb_array_elements(p_rows) AS item
          WHERE item->>'relation' = 'dnd_generation_guard';
-        IF v_guard_count > 1 THEN
-            RAISE EXCEPTION 'DND restore refused: more than one guard row staged';
+        IF v_guard_count <> 1 THEN
+            RAISE EXCEPTION 'DND restore refused malformed or foreign staged rows: exactly one guard required';
         END IF;
         SELECT item->'row' INTO v_guard
           FROM jsonb_array_elements(p_rows) AS item

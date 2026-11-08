@@ -18,8 +18,10 @@ it, so the staging blocks used for pending confirms and job health cannot reach 
   snapshot as the dump. The dump identity gains no grant, membership or EXECUTE;
   `dnd_generation_owner` keeps its no-membership fence; runtime grants and forced RLS
   are unchanged.
-- Ship dark: until the owner activates an export credential the backup script logs the
-  omission instead of silently narrowing the artifact. Activation (LOGIN, credential,
+- Ship an inactive prerequisite: until an authorized export identity exists the backup
+  script reports omission, and that artifact does not satisfy full-inclusion acceptance.
+  All ten canonical perception sources/exporters remain unavailable; this increment
+  does not complete the source or release its human hold. Activation (LOGIN, credential,
   deployment, restore execution) is explicitly out of scope.
 - State the retention consequence: the artifact holds this private history for up to
   `BACKUP_RETAIN_DAYS` (default 14 days) beyond live expiry.
