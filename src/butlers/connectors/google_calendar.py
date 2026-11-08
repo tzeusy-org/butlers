@@ -72,6 +72,7 @@ from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, should_retry_with_ssl_disable
+from butlers.egress.http_transport import external_async_client
 from butlers.google_credentials import (
     GOOGLE_TOKEN_URL,
     GoogleTokenCache,
@@ -920,7 +921,7 @@ class CalendarConnectorRuntime:
         )
 
         self._running = True
-        self._http_client = httpx.AsyncClient(timeout=30)
+        self._http_client = external_async_client(timeout=30)
 
         try:
             # Load ingestion policy rules (lazy background refresh after this)

@@ -53,6 +53,8 @@ from typing import Any
 
 import httpx
 
+from butlers.egress.http_transport import external_async_client
+
 logger = logging.getLogger(__name__)
 
 
@@ -198,7 +200,7 @@ class GoogleHealthClient:
         self._token_fetcher = token_fetcher
         self._base_url = base_url.rstrip("/")
         self._owned_client = client is None
-        self._http = client or httpx.AsyncClient(timeout=request_timeout_s)
+        self._http = client or external_async_client(timeout=request_timeout_s)
         self._cached_token: str | None = None
         # Most recent observed rate-limit headers. Callers (the connector's
         # metrics reporter) read these after each successful request.

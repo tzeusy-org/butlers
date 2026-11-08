@@ -1,27 +1,9 @@
-"""Shared egress gateway: CONNECT-only, per-port workload identity (RFC 0038 S7).
+"""Per-workload HTTPS request execution (RFC0038 S7).
 
-Each profiled workload with external hosts reaches the gateway on its own
-``gateway_port``; NetworkPolicy admits only that workload's pods to that port, so
-the listening port is the workload identity. No request header can claim another
-identity. For every tunnel the gateway:
-
-- accepts only ``CONNECT host:port`` for an exact (host, port) in that workload's
-  profile, and a ``Host`` header, if sent, that agrees with it;
-- refuses IP literals, resolves the absolute name itself (IPv4 only, matching its
-  IPv4-only egress policy) and refuses it when any address is not globally routable
-  unicast (private, loopback, link-local/metadata, CGNAT/tailnet, multicast,
-  reserved), then connects to an address it validated, so a rebinding answer cannot
-  redirect the tunnel;
-- reads the client's TLS ClientHello and refuses unless its SNI equals the
-  CONNECT host (this binds the TLS name, not the tenant: a shared front end can
-  still route on the HTTP authority inside the encrypted session);
-- closes a tunnel after ``_IDLE_TIMEOUT_S`` with no bytes in either direction;
-- writes one content-free audit line per tunnel: workload, host, port, verdict,
-  reason, byte counts and duration. Never payload, headers or tokens.
-
-There is no plain-HTTP proxying, no runtime widening and no fallback route: a
-refusal or an outage denies the request with a diagnostic status, and the caller's
-own bounded retry applies.
+The gateway receives allowed HTTP requests transiently. It derives origin Host
+and verified TLS identity from one exact profile destination, and refuses every
+redirect before exposing response headers. Paths, headers, bodies and exception
+text never enter audit logs. There is no CONNECT or opaque upgraded TCP route.
 """
 
 from __future__ import annotations
@@ -32,12 +14,14 @@ import ipaddress
 import json
 import logging
 import socket
-import struct
+import ssl
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import h11
 
 from butlers.egress.profiles import RENDERED_PATH, SCHEMA
 
@@ -46,18 +30,36 @@ HEALTH_PORT = 3100
 _HEAD_LIMIT = 8192
 _HEAD_TIMEOUT_S = 10.0
 _CONNECT_TIMEOUT_S = 10.0
-_HELLO_TIMEOUT_S = 10.0
 _IDLE_TIMEOUT_S = 300.0
 _MAX_TUNNELS_PER_WORKLOAD = 128
-_TLS_HANDSHAKE = 0x16
-_CLIENT_HELLO = 0x01
-_SNI_EXTENSION = 0x0000
+_UPLOAD_LIMIT = 1024 * 1024 * 1024
+_DOWNLOAD_LIMIT = 1024 * 1024 * 1024
+_MAX_ACTIVE_REQUESTS = 32
+_EXCHANGE_TIMEOUT_S = 3600.0
+_PREFIX = b"/_butlers/egress/v1/https/"
+_HOP_HEADERS = frozenset(
+    {
+        b"connection",
+        b"keep-alive",
+        b"proxy-authenticate",
+        b"proxy-authorization",
+        b"proxy-connection",
+        b"te",
+        b"trailer",
+        b"transfer-encoding",
+        b"upgrade",
+        b"expect",
+    }
+)
 
 audit_log = logging.getLogger(AUDIT_LOGGER)
 log = logging.getLogger(__name__)
 
 Resolver = Callable[[str, int], Awaitable[list[str]]]
-Opener = Callable[[str, int], Awaitable[tuple[asyncio.StreamReader, asyncio.StreamWriter]]]
+Opener = Callable[
+    [str, int, str, ssl.SSLContext],
+    Awaitable[tuple[asyncio.StreamReader, asyncio.StreamWriter]],
+]
 
 
 class Refused(Exception):
@@ -118,71 +120,79 @@ def _is_ip_literal(host: str) -> bool:
     return True
 
 
-def parse_connect(head: bytes, route: Route) -> tuple[str, int]:
-    """Validate a CONNECT request head against the route; return (host, port)."""
-    try:
-        text = head.decode("ascii")
-    except UnicodeDecodeError as exc:
-        raise Refused("malformed_request", 400) from exc
-    lines = text.split("\r\n")
-    parts = lines[0].split(" ")
-    if len(parts) != 3 or parts[2] not in ("HTTP/1.0", "HTTP/1.1"):
+def request_origin(request: h11.Request, route: Route) -> tuple[str, int, bytes]:
+    """Validate the closed internal wire target; preserve origin path/query bytes."""
+    if request.http_version != b"1.1":
         raise Refused("malformed_request", 400)
-    method, authority, _ = parts
-    if method != "CONNECT":
-        raise Refused("method_not_connect", 405)
-    host, sep, port_text = authority.rpartition(":")
-    if _is_ip_literal(host or authority):
-        raise Refused("ip_literal")
-    if not sep or not (port_text.isascii() and port_text.isdigit()) or port_text.startswith("0"):
-        raise Refused("malformed_authority", 400)
-    host_header = [
-        line.split(":", 1)[1].strip() for line in lines[1:] if line.lower().startswith("host:")
-    ]
-    if len(host_header) > 1 or (host_header and host_header[0].lower() != authority.lower()):
-        raise Refused("host_header_mismatch")
-    if (host.lower(), int(port_text)) not in route.destinations or host != host.lower():
-        raise Refused("undeclared_destination")
-    return host, int(port_text)
-
-
-def client_hello_sni(record: bytes) -> str | None:
-    """SNI host_name from one TLS record carrying a whole ClientHello, else None."""
+    if request.method not in {b"GET", b"HEAD", b"POST", b"PUT", b"PATCH", b"DELETE", b"OPTIONS"}:
+        raise Refused("unsupported_method", 405)
+    target = request.target
+    if not target.startswith(_PREFIX) or b"#" in target or b"\\" in target:
+        raise Refused("malformed_target", 400)
+    parts = target[len(_PREFIX) :].split(b"/", 2)
+    if len(parts) != 3:
+        raise Refused("malformed_target", 400)
     try:
-        if record[0] != _TLS_HANDSHAKE or record[5] != _CLIENT_HELLO:
-            return None
-        (record_length,) = struct.unpack("!H", record[3:5])
-        body = record[5 : 5 + record_length]
-        hello_length = int.from_bytes(body[1:4], "big")
-        hello = body[4 : 4 + hello_length]
-        if len(hello) != hello_length:
-            return None  # A ClientHello split across records is refused, not guessed.
-        offset = 2 + 32
-        offset += 1 + hello[offset]
-        (suites,) = struct.unpack("!H", hello[offset : offset + 2])
-        offset += 2 + suites
-        offset += 1 + hello[offset]
-        (ext_total,) = struct.unpack("!H", hello[offset : offset + 2])
-        offset += 2
-        end = offset + ext_total
-        while offset + 4 <= end:
-            ext_type, ext_len = struct.unpack("!HH", hello[offset : offset + 4])
-            offset += 4
-            if ext_type == _SNI_EXTENSION:
-                data = hello[offset : offset + ext_len]
-                cursor = 2
-                while cursor + 3 <= len(data):
-                    name_type = data[cursor]
-                    (name_len,) = struct.unpack("!H", data[cursor + 1 : cursor + 3])
-                    name = data[cursor + 3 : cursor + 3 + name_len]
-                    if name_type == 0:
-                        return name.decode("ascii").lower()
-                    cursor += 3 + name_len
-                return None
-            offset += ext_len
-    except (IndexError, struct.error, UnicodeDecodeError):
-        return None
-    return None
+        host = parts[0].decode("ascii")
+        port_text = parts[1].decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise Refused("malformed_target", 400) from exc
+    if _is_ip_literal(host):
+        raise Refused("ip_literal")
+    if not port_text.isascii() or not port_text.isdecimal() or port_text.startswith("0"):
+        raise Refused("malformed_authority", 400)
+    port = int(port_text) if len(port_text) < 6 else 0
+    if (host, port) not in route.destinations or host != host.lower():
+        raise Refused("undeclared_destination")
+    headers = list(request.headers)
+    if [v for k, v in headers if k == b"host"] != [f"egress-gateway:{route.port}".encode()]:
+        raise Refused("host_header_mismatch")
+    for name, value in headers:
+        if (
+            (name in _HOP_HEADERS and name not in {b"connection", b"transfer-encoding"})
+            or (name == b"connection" and value.lower() != b"close")
+            or name == b"forwarded"
+            or name.startswith((b"x-forwarded-", b"x-egress-", b"x-butlers-"))
+        ):
+            raise Refused("forbidden_header")
+    return host, port, b"/" + parts[2]
+
+
+def _check_framing(head: bytes) -> None:
+    # h11 performs HTTP parsing. Inspect raw multiplicity before its deliberate
+    # normalization of repeated equal Content-Length values loses that fact.
+    names = [line.partition(b":")[0].lower() for line in head.split(b"\r\n")[1:] if line]
+    if (
+        names.count(b"host") != 1
+        or names.count(b"content-length") > 1
+        or (b"content-length" in names and b"transfer-encoding" in names)
+    ):
+        raise Refused("ambiguous_framing", 400)
+
+
+async def _head(reader: asyncio.StreamReader) -> bytes:
+    try:
+        head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), _HEAD_TIMEOUT_S)
+    except (asyncio.LimitOverrunError, asyncio.IncompleteReadError, TimeoutError) as exc:
+        raise Refused("malformed_headers", 400) from exc
+    if len(head) > _HEAD_LIMIT:
+        raise Refused("headers_too_large", 400)
+    return head
+
+
+async def _event(connection: h11.Connection, reader: asyncio.StreamReader):
+    while True:
+        event = connection.next_event()
+        if event is not h11.NEED_DATA:
+            return event
+        data = await asyncio.wait_for(reader.read(16384), _IDLE_TIMEOUT_S)
+        connection.receive_data(data)
+
+
+async def _write(writer: asyncio.StreamWriter, data: bytes | None) -> None:
+    if data:
+        writer.write(data)
+        await asyncio.wait_for(writer.drain(), _IDLE_TIMEOUT_S)
 
 
 async def system_resolver(host: str, port: int) -> list[str]:
@@ -198,66 +208,25 @@ async def system_resolver(host: str, port: int) -> list[str]:
     return list(dict.fromkeys(str(info[4][0]) for info in infos))
 
 
-async def open_tcp(address: str, port: int):
-    return await asyncio.open_connection(address, port)
-
-
-async def _read_hello(reader: asyncio.StreamReader) -> bytes:
-    header = await reader.readexactly(5)
-    (length,) = struct.unpack("!H", header[3:5])
-    if header[0] != _TLS_HANDSHAKE or length > 16384:
-        raise Refused("not_tls")
-    return header + await reader.readexactly(length)
-
-
-async def _pipe(
-    source: asyncio.StreamReader,
-    sink: asyncio.StreamWriter,
-    counter: list[int],
-    last_activity: list[float],
-) -> None:
-    """Copy one direction; on the source's EOF, half-close the sink."""
-    try:
-        while chunk := await source.read(65536):
-            counter[0] += len(chunk)
-            last_activity[0] = time.monotonic()
-            sink.write(chunk)
-            await sink.drain()
-    except ConnectionError:
-        return
-    if sink.can_write_eof():
-        try:
-            sink.write_eof()
-        except (OSError, RuntimeError):
-            pass
-
-
-async def _relay(
-    client: tuple[asyncio.StreamReader, asyncio.StreamWriter],
-    upstream: tuple[asyncio.StreamReader, asyncio.StreamWriter],
-    up: list[int],
-    down: list[int],
-) -> str:
-    """Relay both directions; the idle clock is shared, so a silent client does not
-    cut a live download. Returns the closed cause."""
-    last_activity = [time.monotonic()]
-    pipes = asyncio.gather(
-        _pipe(client[0], upstream[1], up, last_activity),
-        _pipe(upstream[0], client[1], down, last_activity),
+async def open_tls(address: str, port: int, host: str, context: ssl.SSLContext):
+    """Dial the validated numeric address; only TLS verification uses the origin name."""
+    return await asyncio.open_connection(
+        address,
+        port,
+        ssl=context,
+        server_hostname=host,
+        ssl_handshake_timeout=_CONNECT_TIMEOUT_S,
+        limit=16384,
     )
-    while not pipes.done():
-        remaining = last_activity[0] + _IDLE_TIMEOUT_S - time.monotonic()
-        if remaining <= 0:
-            pipes.cancel()
-            await asyncio.wait([pipes])
-            try:
-                pipes.exception()  # retrieve it, so the cancelled gather is not logged
-            except asyncio.CancelledError:
-                pass
-            return "idle_timeout"
-        await asyncio.wait([pipes], timeout=remaining)
-    pipes.result()
-    return "closed"
+
+
+async def _close(writer: asyncio.StreamWriter | None) -> None:
+    if writer is not None:
+        writer.close()
+        try:
+            await asyncio.wait_for(writer.wait_closed(), _CONNECT_TIMEOUT_S)
+        except (OSError, TimeoutError):
+            pass
 
 
 def _audit(route: Route, host: str | None, port: int | None, verdict: str, reason: str,
@@ -289,92 +258,178 @@ async def _refuse(writer: asyncio.StreamWriter, refusal: Refused) -> None:
         "Connection: close\r\n\r\n".encode("ascii")
     )
     try:
-        await writer.drain()
-    except ConnectionError:
+        await asyncio.wait_for(writer.drain(), _IDLE_TIMEOUT_S)
+    except (ConnectionError, TimeoutError):
         pass
 
 
-async def handle_tunnel(
+async def handle_request(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     route: Route,
     *,
     resolve: Resolver = system_resolver,
-    open_upstream: Opener = open_tcp,
+    open_upstream: Opener = open_tls,
+    tls_context: ssl.SSLContext | None = None,
     slots: asyncio.Semaphore | None = None,
+    global_slots: asyncio.Semaphore | None = None,
 ) -> None:
-    """Serve one client connection on ``route``'s port."""
+    """Execute exactly one bounded, framed request on the workload's listener."""
     started = time.monotonic()
     host: str | None = None
     port: int | None = None
-    up, down = [0], [0]
+    up = down = 0
     upstream: asyncio.StreamWriter | None = None
-    tunnelled = False
-    acquired = False
+    exposed = acquired = global_acquired = False
+    reason, verdict = "gateway_error", "refused"
     try:
-        try:
-            head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), _HEAD_TIMEOUT_S)
-        except (asyncio.LimitOverrunError, asyncio.IncompleteReadError, TimeoutError) as exc:
-            raise Refused("malformed_request", 400) from exc
-        if slots is not None:
-            if slots.locked():
-                raise Refused("busy", 503)
-            await slots.acquire()
-            acquired = True
-        host, port = parse_connect(head[:-4], route)
-        try:
-            addresses = await asyncio.wait_for(resolve(host, port), _CONNECT_TIMEOUT_S)
-        except (OSError, TimeoutError) as exc:
-            raise Refused("dns_failed", 502) from exc
-        if not addresses or not all(admissible_address(a) for a in addresses):
-            raise Refused("non_public_address")
-        upstream_reader = None
-        for address in addresses:
+        async with asyncio.timeout(_EXCHANGE_TIMEOUT_S):
+            if global_slots is not None:
+                if global_slots.locked():
+                    raise Refused("busy", 503)
+                await global_slots.acquire()
+                global_acquired = True
+            if slots is not None:
+                if slots.locked():
+                    raise Refused("busy", 503)
+                await slots.acquire()
+                acquired = True
+            head = await _head(reader)
+            client = h11.Connection(h11.SERVER, max_incomplete_event_size=_HEAD_LIMIT)
+            _check_framing(head)
+            client.receive_data(head)
+            request = client.next_event()
+            if not isinstance(request, h11.Request):
+                raise Refused("malformed_request", 400)
+            host, port, target = request_origin(request, route)
             try:
-                upstream_reader, upstream = await asyncio.wait_for(
-                    open_upstream(address, port), _CONNECT_TIMEOUT_S
+                addresses = await asyncio.wait_for(resolve(host, port), _CONNECT_TIMEOUT_S)
+            except (OSError, TimeoutError) as exc:
+                raise Refused("dns_failed", 502) from exc
+            if not addresses or not all(admissible_address(a) for a in addresses):
+                raise Refused("non_public_address")
+            context = tls_context if tls_context is not None else ssl.create_default_context()
+            if not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED:
+                raise Refused("tls_verification_required", 502)
+            origin_reader = None
+            for address in addresses:
+                try:
+                    origin_reader, upstream = await asyncio.wait_for(
+                        open_upstream(address, port, host, context), _CONNECT_TIMEOUT_S
+                    )
+                    break
+                except (OSError, TimeoutError):
+                    continue
+            if upstream is None or origin_reader is None:
+                raise Refused("upstream_unreachable", 502)
+            origin = h11.Connection(h11.CLIENT, max_incomplete_event_size=_HEAD_LIMIT)
+            headers = [
+                (k, v) for k, v in request.headers if k not in _HOP_HEADERS | {b"host", b"expect"}
+            ]
+            authority = host if port == 443 else f"{host}:{port}"
+            headers += [(b"host", authority.encode()), (b"connection", b"close")]
+            if not any(k == b"content-length" for k, _ in headers):
+                chunked = any(k == b"transfer-encoding" for k, _ in request.headers)
+                headers.append(
+                    (b"transfer-encoding", b"chunked") if chunked else (b"content-length", b"0")
                 )
+            await _write(
+                upstream,
+                origin.send(h11.Request(method=request.method, target=target, headers=headers)),
+            )
+            while True:
+                event = await _event(client, reader)
+                if isinstance(event, h11.EndOfMessage):
+                    if event.headers:
+                        raise Refused("trailers_refused", 400)
+                    await _write(upstream, origin.send(h11.EndOfMessage()))
+                    break
+                if not isinstance(event, h11.Data):
+                    raise Refused("malformed_body", 400)
+                up += len(event.data)
+                if up > _UPLOAD_LIMIT:
+                    raise Refused("upload_limit", 400)
+                await _write(upstream, origin.send(h11.Data(data=event.data)))
+            # Parse each complete header block before exposing any response.
+            for _ in range(5):
+                origin.receive_data(await _head(origin_reader))
+                response = origin.next_event()
+                if isinstance(response, h11.InformationalResponse) and response.status_code in (
+                    100,
+                    103,
+                ):
+                    continue
                 break
-            except (OSError, TimeoutError):
-                continue
-        if upstream is None or upstream_reader is None:
-            raise Refused("upstream_unreachable", 502)
-        writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        await writer.drain()
-        tunnelled = True
-        try:
-            hello = await asyncio.wait_for(_read_hello(reader), _HELLO_TIMEOUT_S)
-        except (asyncio.IncompleteReadError, TimeoutError) as exc:
-            raise Refused("not_tls") from exc
-        if client_hello_sni(hello) != host:
-            raise Refused("sni_mismatch")
-        upstream.write(hello)
-        await upstream.drain()
-        up[0] += len(hello)
-        closed = await _relay((reader, writer), (upstream_reader, upstream), up, down)
-        _audit(route, host, port, "allowed", closed, up[0], down[0], started)
+            if not isinstance(response, h11.Response):
+                raise Refused("unsupported_response", 502)
+            if 300 <= response.status_code <= 399:
+                raise Refused("redirect_refused")
+            nominated = {
+                token.strip().lower()
+                for name, value in response.headers
+                if name == b"connection"
+                for token in value.split(b",")
+            }
+            headers = [
+                (k, v)
+                for k, v in response.headers
+                if k not in _HOP_HEADERS | nominated | {b"content-length", b"x-egress-refusal"}
+            ]
+            headers.append((b"connection", b"close"))
+            await _write(
+                writer, client.send(h11.Response(status_code=response.status_code, headers=headers))
+            )
+            exposed = True
+            while True:
+                event = await _event(origin, origin_reader)
+                if isinstance(event, h11.EndOfMessage):
+                    if event.headers:
+                        raise Refused("trailers_refused", 502)
+                    await _write(writer, client.send(h11.EndOfMessage()))
+                    break
+                if not isinstance(event, h11.Data):
+                    raise Refused("malformed_response", 502)
+                down += len(event.data)
+                if down > _DOWNLOAD_LIMIT:
+                    raise Refused("download_limit", 502)
+                await _write(writer, client.send(h11.Data(data=event.data)))
+            verdict, reason = "allowed", "closed"
     except Refused as refusal:
-        if not tunnelled:
+        reason = refusal.reason
+        if not exposed:
             await _refuse(writer, refusal)
-        _audit(route, host, port, "refused", refusal.reason, up[0], down[0], started)
-    except Exception:  # noqa: BLE001 - one bad tunnel must not stop the gateway
-        log.exception("egress tunnel failed for %s", route.workload)
-        _audit(route, host, port, "refused", "gateway_error", up[0], down[0], started)
+    except (h11.RemoteProtocolError, h11.LocalProtocolError):
+        reason = "malformed_http"
+        if not exposed:
+            await _refuse(writer, Refused(reason, 400))
+    except TimeoutError:
+        reason = "timeout"
+        if not exposed:
+            await _refuse(writer, Refused(reason, 502))
+    except asyncio.CancelledError:
+        reason = "cancelled"
+        raise
+    except Exception:  # noqa: BLE001 - content-free failure; never log exception/payload
+        if not exposed:
+            await _refuse(writer, Refused(reason, 502))
     finally:
         if acquired and slots is not None:
             slots.release()
-        for stream in (upstream, writer):
-            if stream is not None:
-                stream.close()
+        if global_acquired and global_slots is not None:
+            global_slots.release()
+        await _close(upstream)
+        await _close(writer)
+        _audit(route, host, port, verdict, reason, up, down, started)
 
 
 async def serve(routes: Mapping[int, Route], host: str = "0.0.0.0") -> None:
     servers = []
+    active = asyncio.Semaphore(_MAX_ACTIVE_REQUESTS)
     for port, route in routes.items():
         slots = asyncio.Semaphore(_MAX_TUNNELS_PER_WORKLOAD)
 
         async def on_connect(reader, writer, route=route, slots=slots):
-            await handle_tunnel(reader, writer, route, slots=slots)
+            await handle_request(reader, writer, route, slots=slots, global_slots=active)
 
         servers.append(await asyncio.start_server(on_connect, host, port, limit=_HEAD_LIMIT))
 

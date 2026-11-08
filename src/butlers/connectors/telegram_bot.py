@@ -94,6 +94,7 @@ from butlers.credential_store import (
     shared_db_name_from_env,
 )
 from butlers.db import db_params_from_env
+from butlers.egress.http_transport import external_async_client
 from butlers.identity import resolve_owner_channel_via_definer
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.storage import BlobStore
@@ -482,7 +483,7 @@ class TelegramBotConnector:
         transcription_client: TranscriptionClient | None = None,
     ) -> None:
         self._config = config
-        self._http_client = httpx.AsyncClient(timeout=30.0)
+        self._http_client = external_async_client(timeout=30.0)
         self._mcp_client = CachedMCPClient(config.switchboard_mcp_url, client_name="telegram-bot")
         self._last_update_id: int | None = None
         self._running = False
@@ -2922,7 +2923,7 @@ async def resolve_telegram_endpoint_identity(token: str) -> str:
         RuntimeError: If the API call fails or returns no usable identity.
     """
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with external_async_client(timeout=10.0) as client:
             response = await client.get(
                 f"https://api.telegram.org/bot{token}/getMe",
             )

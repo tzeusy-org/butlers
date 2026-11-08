@@ -108,58 +108,47 @@ default 2, no service-account token), a Service with one port per profiled workl
 the profile rendering mounted from a ConfigMap (a checksum annotation rolls the pods on
 change).
 
-- **Identity is the port.** `<release>-egress-gateway-ingress` admits each workload's pods
-  to its own `gateway_port` only, and the gateway is excluded from
-  `<release>-namespace-ingress` so no wider rule unions onto it. No header can claim a
-  workload: the gateway ignores `Proxy-Authorization` and every other identity header.
-- **Per tunnel:** only `CONNECT host:port` (`HTTP/1.0` or `HTTP/1.1`, no leading-zero
-  port) for an exact declared pair, with any `Host` header agreeing; IP literals refused;
-  the gateway resolves the absolute name (`host.`, so pod search domains cannot rewrite
-  it) over IPv4 only and refuses it if *any* answer is not globally routable unicast
-  IPv4 (private, loopback, link-local and metadata, CGNAT/tailnet, multicast, reserved;
-  every IPv6 answer except IPv4-mapped, since NAT64 and IPv4-compatible forms embed
-  private addresses), then dials only an address it checked, so a rebinding answer
-  cannot redirect it; the client's ClientHello must carry SNI equal to the CONNECT host
-  (no SNI, a split ClientHello or non-TLS bytes are refused). Plain HTTP proxying does
-  not exist. Redirects are the client's next CONNECT, checked the same way. A tunnel
-  with no bytes in either direction for 5 minutes is closed (`idle_timeout`); a silent
-  client does not cut a live download.
-- **Its own egress** (`<release>-egress-egress-gateway`): DNS, and `0.0.0.0/0` except
-  `egressPolicy.privateCidrs`, `egressProfiles.gateway.deniedCidrs` and the tracker, on the
-  external ports profiles declare (today 443).
-- **Audit:** one JSON line per tunnel on logger `butlers.egress.audit`: workload, host,
-  port, verdict, closed reason, byte counts, duration. Never payload, headers or tokens.
-  A request refused before its destination is validated (undeclared, malformed, IP
-  literal) records `host: null`: the requested name is caller-supplied text and is not
-  logged.
-- **Outage:** an unreachable resolver or upstream answers `502` with
-  `X-Egress-Refusal: dns_failed` or `upstream_unreachable`; a refused request answers `403`
-  (or `405` for non-CONNECT) with its reason; a workload over 128 concurrent tunnels on
-  one gateway replica gets `503 busy` (so up to 128 per replica, 256 with the default two;
-  a connection that has not sent its request head is bounded by the 10 s head timeout,
-  not the slot count). With no gateway pod, connections are refused. In every case the caller sees
-  an ordinary connection error and its own bounded retry and cursors apply; the gateway
-  never falls back to a direct or internal route.
+- **Identity is the port.** Only the workload's pods may reach its dedicated listener.
+  No header can claim a different workload. CONNECT and opaque upgraded TCP are refused.
+- **Request execution:** an explicit internal HTTP/1.1 hop targets
+  `/_butlers/egress/v1/https/<host>/<port>/<path>?<query>`, with hop Host
+  `egress-gateway:<listener-port>`. The exact profile-approved origin supplies both
+  outbound Host and certificate-verified TLS server name. The gateway resolves one
+  absolute public IPv4 answer set, rejects the entire set if any address is forbidden,
+  then dials a validated numeric address without resolving again. Duplicate authority,
+  ambiguous framing, forwarding/identity headers and unsupported upgrades refuse.
+- **Response boundary:** h11 parses complete bounded origin headers before exposure.
+  Every300..399 (including304 and same-origin redirects) returns a fixed empty403
+  `X-Egress-Refusal: redirect_refused`, with no Location or redirect-target dial.
+  Nonredirect responses, errors and SSE stream with backpressure. Origin-supplied
+  reserved refusal metadata is discarded.
+- **Resources:** headers8KiB/10s; streamed16KiB chunks;1GiB per direction;
+ 300s inactivity and3600s total exchange. The process admits32 exchanges globally,
+  with an additional128 per-workload cap. Streaming avoids whole-upload buffering
+  against the256MiB pod limit. Known Gmail25MiB/base64, voice20MiB and notification
+  document50MiB limits fit; larger configurable/model/dependency transfers require
+  separate compatibility closure. Busy gives503; DNS/dial failures502. No fallback.
+- **Privacy:** the gateway transiently receives approved request headers/query/body.
+  It is a credential-bearing execution boundary when activated. Audit contains only
+  validated origin/workload, closed verdict/reason, body byte counts and duration;
+  never paths, payloads, headers or exception text. Real credential transit/activation
+  remains gated separately.
 
-Workloads whose profile declares external hosts get `HTTPS_PROXY`/`https_proxy` set to
-`http://egress-gateway:<gateway_port>` and `NO_PROXY` for cluster names; `HTTP_PROXY` is
-never set. Workloads without external hosts get no proxy variables.
+Profiled workloads receive paired nonsecret `BUTLERS_EGRESS_MODE=request-v1` and
+`BUTLERS_EGRESS_GATEWAY=http://egress-gateway:<port>`. Shared external HTTPX/SDK
+construction selects the request transport; incomplete configuration refuses.
+Internal/site-local clients remain separate. Off-mode preserves existing caller
+proxy behavior. No ambient proxy variable forwards into selected mode.
 
 ## Current limits
 
-- **Not every client honours the proxy variables.** httpx does by default; the Home
-  Assistant connector's aiohttp session does not (it needs no external host today), and
-  Telethon does not (its profile is held). LLM CLIs' proxy support is unverified.
-- **Connector outage behaviour is not yet proven** against a down gateway (cursor
-  retention and bounded backoff, acceptance 3), and no CI check yet compares profiles
-  with static base URLs in source (acceptance 4).
-- **The external host lists are a seed inventory.** Static base URLs were collected from
-  source; the LLM CLIs' provider endpoints (claude, codex, gemini, opencode) are
-  unverified and need conformance before activation.
-- **SNI binds the TLS name, not the tenant.** A declared host on a shared front end
-  (`*.googleapis.com`, `github.com`) can route on the HTTP authority inside the
-  encrypted session, so domain fronting can reach other tenants behind the same front
-  end. Closing that needs TLS interception, which this gateway deliberately does not do.
+- **Vendor/runtime compatibility is incomplete.** The Python request transport does
+  not prove the four pinned CLI/auth adapters, native WS, image dependency/plugin/model
+  closure, or actual per-workload CNI/principal/outage/cursor behavior. Those are required
+  subsequent stages; no opaque TLS success or permanently held required caller replaces
+  them. No real rollout/credential activation is authorized by source controls.
+- **The external host lists are a seed inventory.** Static/dynamic source coverage and
+  connector outage behavior still require their named runtime evidence.
 - **IPv4 only.** The gateway resolves and dials IPv4; a declared host with no IPv4
   address is unreachable.
 - **Internal peers are reachability only.** RFC 0038 S7 also requires both endpoints to

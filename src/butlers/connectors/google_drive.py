@@ -72,6 +72,7 @@ from butlers.connectors.known_contact_snapshot import PriorityContactSnapshotSou
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.known_contact_state import KnownContactSnapshot, not_applicable_classification
+from butlers.egress.http_transport import external_async_client
 from butlers.google_credentials import (
     GOOGLE_TOKEN_URL,
     GoogleTokenCache,
@@ -952,7 +953,7 @@ class GDriveAccountLoop:
     async def _get_access_token(self) -> str:
         """Return an account token through the shared locked 60-second cache."""
         if self._http_client is None:
-            self._http_client = httpx.AsyncClient(timeout=30)
+            self._http_client = external_async_client(timeout=30)
         cache = getattr(self, "_google_token_cache", None)
         if cache is None:
             cache = self._google_token_cache = GoogleTokenCache(
@@ -1047,7 +1048,7 @@ class GDriveAccountLoop:
         starting point for the next poll cycle.
         """
         if self._http_client is None:
-            self._http_client = httpx.AsyncClient(timeout=30)
+            self._http_client = external_async_client(timeout=30)
 
         token = await self._get_access_token()
         url = build_start_page_token_url()
@@ -1091,7 +1092,7 @@ class GDriveAccountLoop:
         Returns the raw parsed JSON response.
         """
         if self._http_client is None:
-            self._http_client = httpx.AsyncClient(timeout=30)
+            self._http_client = external_async_client(timeout=30)
 
         token = await self._get_access_token()
         url = build_changes_list_url(page_token)
@@ -1243,7 +1244,7 @@ class GDriveAccountLoop:
         """
         # Ensure HTTP client is open
         if self._http_client is None:
-            self._http_client = httpx.AsyncClient(timeout=30)
+            self._http_client = external_async_client(timeout=30)
 
         await self._refresh_known_contacts()
 

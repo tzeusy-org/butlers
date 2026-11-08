@@ -438,29 +438,32 @@ def _env(docs: list[dict]) -> dict[str, dict[str, str]]:
     return found
 
 
-def test_each_workload_proxies_https_to_its_own_gateway_port_only(everything):
+def test_each_workload_selects_request_execution_on_its_own_gateway_port_only(everything):
     profiles = load_profiles().workloads
     env = _env(everything)
     for component, variables in env.items():
         profile = profiles.get(component)
         if profile is not None and profile.gateway_port:
             expected = f"http://egress-gateway:{profile.gateway_port}"
-            assert variables.get("HTTPS_PROXY") == expected, component
-            assert variables.get("https_proxy") == expected, component
-            assert "egress-gateway" not in variables.get("NO_PROXY", ""), component
+            assert variables.get("BUTLERS_EGRESS_GATEWAY") == expected, component
+            assert variables.get("BUTLERS_EGRESS_MODE") == "request-v1", component
         else:
-            assert "HTTPS_PROXY" not in variables, component
-        assert "HTTP_PROXY" not in variables and "http_proxy" not in variables, component
+            assert "BUTLERS_EGRESS_GATEWAY" not in variables, component
+            assert "BUTLERS_EGRESS_MODE" not in variables, component
+        assert not {"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} & variables.keys(), (
+            component
+        )
 
 
-def test_profiles_off_renders_no_gateway_and_no_proxy_env():
+def test_profiles_off_renders_no_gateway_and_no_request_env():
     docs = _docs()
     names = [d["metadata"]["name"] for d in docs]
     # Release-prefixed too: butlers-egress-gateway-ingress, butlers-egress-profiles, ...
     assert not [n for n in names if "egress-gateway" in n or "egress-profiles" in n]
     assert not [n for n in names if n.startswith("butlers-egress-")], names
     for component, variables in _env(docs).items():
-        assert "HTTPS_PROXY" not in variables, component
+        assert "BUTLERS_EGRESS_GATEWAY" not in variables, component
+        assert "BUTLERS_EGRESS_MODE" not in variables, component
     namespace = next(d for d in docs if d["metadata"]["name"] == "butlers-namespace-ingress")
     excluded = namespace["spec"]["podSelector"]["matchExpressions"][0]["values"]
     assert "egress-gateway" not in excluded

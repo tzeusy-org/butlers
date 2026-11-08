@@ -27,6 +27,8 @@ from typing import Any
 
 import httpx
 
+from butlers.egress.http_transport import external_async_client
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -223,7 +225,7 @@ class SteamAPIClient:
     async def open(self) -> None:
         """Open the HTTP client if not already open."""
         if self._http_client is None:
-            self._http_client = httpx.AsyncClient()
+            self._http_client = external_async_client()
         if self._log_filter is None and self._api_key:
             self._log_filter = _APIKeyRedactingFilter(self._api_key)
             logging.getLogger("httpx").addFilter(self._log_filter)

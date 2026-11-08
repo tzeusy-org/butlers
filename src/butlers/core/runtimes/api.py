@@ -46,6 +46,7 @@ import anthropic
 
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
 from butlers.core.runtimes.served_identity import api_evidence, observe_invocation
+from butlers.egress.http_transport import GatewayConfig, external_async_client
 
 if TYPE_CHECKING:
     from butlers.credential_store import CredentialStore
@@ -184,7 +185,12 @@ class ApiAdapter(RuntimeAdapter):
         if self._client_override is not None:
             return self._client_override
         if self._client is None or self._client_api_key != api_key:
-            self._client = anthropic.AsyncAnthropic(api_key=api_key)
+            options: dict[str, Any] = {}
+            if GatewayConfig.from_environment() is not None:
+                options["http_client"] = external_async_client(
+                    client_factory=anthropic.DefaultAsyncHttpxClient,
+                )
+            self._client = anthropic.AsyncAnthropic(api_key=api_key, **options)
             self._client_api_key = api_key
         return self._client
 

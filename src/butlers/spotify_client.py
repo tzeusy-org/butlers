@@ -65,6 +65,7 @@ from butlers.credential_store import (
     resolve_owner_entity_info,
     upsert_owner_entity_info_on_connection,
 )
+from butlers.egress.http_transport import external_async_client
 from butlers.spotify_credentials import (
     SPOTIFY_CLIENT_ID,
     SPOTIFY_OAUTH_ACCESS,
@@ -287,7 +288,7 @@ class SpotifyClient:
     async def open(self) -> None:
         """Open the HTTP client and load credentials from the store."""
         if self._owns_client:
-            self._http_client = httpx.AsyncClient(timeout=30.0)
+            self._http_client = external_async_client(timeout=30.0)
         await self._load_credentials()
 
     async def close(self) -> None:

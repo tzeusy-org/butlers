@@ -1,129 +1,37 @@
-"""bu-dhloi1.15 / RFC 0038 S7: the shared egress gateway refuses everything undeclared.
-
-Tunnels run through real sockets on loopback. Name resolution and the upstream dial are
-injected (the gateway itself refuses loopback), so each test fixes what the name
-"resolves" to and observes what the gateway does with it.
-"""
+"""Production request executor controls over genuine owned loopback TLS."""
 
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
-import logging
 import socket
-import struct
+import ssl
+from contextlib import asynccontextmanager
 
+import h11
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
 from butlers.egress import gateway
 from butlers.egress.gateway import (
     AUDIT_LOGGER,
     HEALTH_PORT,
-    Refused,
     Route,
     admissible_address,
-    client_hello_sni,
-    handle_tunnel,
-    parse_connect,
     routes_from_rendered,
     system_resolver,
 )
 from butlers.egress.profiles import RENDERED_PATH, load_profiles
 
 pytestmark = pytest.mark.unit
-
-_PUBLIC = "93.184.216.34"
-_ROUTE = Route(
-    workload="connector-gmail",
-    port=3115,
-    destinations=frozenset({("gmail.googleapis.com", 443), ("oauth2.googleapis.com", 443)}),
-)
-
-
-def _hello(sni: str | None) -> bytes:
-    """A minimal TLS 1.2-framed ClientHello record, with or without SNI."""
-    extensions = b""
-    if sni is not None:
-        name = sni.encode("ascii")
-        server_name_list = b"\x00" + struct.pack("!H", len(name)) + name
-        data = struct.pack("!H", len(server_name_list)) + server_name_list
-        extensions = struct.pack("!HH", 0, len(data)) + data
-    hello = (
-        b"\x03\x03" + b"\x00" * 32 + b"\x00"  # version, random, empty session id
-        + struct.pack("!H", 2) + b"\x13\x01"  # one cipher suite
-        + b"\x01\x00"  # null compression
-        + struct.pack("!H", len(extensions)) + extensions
-    )  # fmt: skip
-    handshake = b"\x01" + len(hello).to_bytes(3, "big") + hello
-    return b"\x16\x03\x01" + struct.pack("!H", len(handshake)) + handshake
-
-
-def _connect(authority: str, *headers: str) -> bytes:
-    lines = [f"CONNECT {authority} HTTP/1.1", *headers]
-    return ("\r\n".join(lines) + "\r\n\r\n").encode("ascii")
-
-
-class _Upstream:
-    """Loopback echo server standing in for the declared public host."""
-
-    def __init__(self) -> None:
-        self.received = bytearray()
-        self.dials: list[tuple[str, int]] = []
-        self.server: asyncio.Server | None = None
-
-    async def __aenter__(self):
-        async def echo(reader, writer):
-            while chunk := await reader.read(65536):
-                self.received += chunk
-                writer.write(chunk)
-                await writer.drain()
-            writer.close()
-
-        self.server = await asyncio.start_server(echo, "127.0.0.1", 0)
-        return self
-
-    async def __aexit__(self, *_exc):
-        assert self.server is not None
-        self.server.close()
-        await self.server.wait_closed()
-
-    async def open(self, address: str, port: int):
-        self.dials.append((address, port))
-        assert self.server is not None
-        return await asyncio.open_connection(*self.server.sockets[0].getsockname()[:2])
-
-
-async def _exchange(request: bytes, *, resolve=None, open_upstream=None, slots=None) -> bytes:
-    async def resolver(_host, _port):
-        return [_PUBLIC]
-
-    async def refuse_dial(_address, _port):
-        raise AssertionError("this test expects no upstream dial")
-
-    async def on_connect(reader, writer):
-        await handle_tunnel(
-            reader,
-            writer,
-            _ROUTE,
-            resolve=resolve or resolver,
-            open_upstream=open_upstream or refuse_dial,
-            slots=slots,
-        )
-
-    server = await asyncio.start_server(on_connect, "127.0.0.1", 0)
-    reader, writer = await asyncio.open_connection(*server.sockets[0].getsockname()[:2])
-    writer.write(request)
-    await writer.drain()
-    writer.write_eof()
-    response = await asyncio.wait_for(reader.read(), 10)
-    writer.close()
-    server.close()
-    await server.wait_closed()
-    return response
-
-
-def _audits(caplog) -> list[dict]:
-    return [json.loads(r.getMessage()) for r in caplog.records if r.name == AUDIT_LOGGER]
+HOST = "gmail.googleapis.com"
+ROUTE = Route("connector-gmail", 3115, frozenset({(HOST, 443)}))
+PUBLIC = "93.184.216.34"
+_PUBLIC = PUBLIC
 
 
 def test_routes_come_from_the_rendered_profiles_and_skip_held_or_internal_only_workloads():
@@ -166,144 +74,6 @@ def test_only_globally_routable_unicast_addresses_are_admissible(address, admitt
     assert admissible_address(address) is admitted
 
 
-@pytest.mark.parametrize(
-    ("head", "reason"),
-    [
-        (b"GET http://gmail.googleapis.com/ HTTP/1.1", "method_not_connect"),
-        (b"CONNECT 93.184.216.34:443 HTTP/1.1", "ip_literal"),
-        (b"CONNECT [2606:4700:4700::1111]:443 HTTP/1.1", "ip_literal"),
-        (b"CONNECT www.googleapis.com:443 HTTP/1.1", "undeclared_destination"),
-        (b"CONNECT gmail.googleapis.com:80 HTTP/1.1", "undeclared_destination"),
-        (b"CONNECT GMAIL.googleapis.com:443 HTTP/1.1", "undeclared_destination"),
-        (b"CONNECT gmail.googleapis.com.:443 HTTP/1.1", "undeclared_destination"),
-        (
-            b"CONNECT gmail.googleapis.com:443 HTTP/1.1\r\nHost: oauth2.googleapis.com:443",
-            "host_header_mismatch",
-        ),
-        (b"CONNECT gmail.googleapis.com HTTP/1.1", "malformed_authority"),
-        (b"CONNECT gmail.googleapis.com:0443 HTTP/1.1", "malformed_authority"),
-        (b"CONNECT gmail.googleapis.com:443", "malformed_request"),
-        (b"CONNECT gmail.googleapis.com:443 HTTP/1.9", "malformed_request"),
-    ],
-)
-def test_a_connect_outside_the_route_is_refused(head, reason):
-    with pytest.raises(Refused) as refused:
-        parse_connect(head, _ROUTE)
-    assert refused.value.reason == reason
-
-
-def test_an_identity_header_cannot_borrow_another_workloads_hosts():
-    # Identity is the listening port; a header naming a workload with wider hosts is inert.
-    head = b"CONNECT api.anthropic.com:443 HTTP/1.1\r\nX-Butlers-Workload: butlers-up"
-    with pytest.raises(Refused, match="undeclared_destination"):
-        parse_connect(head, _ROUTE)
-
-
-def test_a_matching_connect_is_accepted():
-    head = b"CONNECT gmail.googleapis.com:443 HTTP/1.1\r\nHost: gmail.googleapis.com:443"
-    assert parse_connect(head, _ROUTE) == ("gmail.googleapis.com", 443)
-
-
-def test_sni_is_read_from_a_whole_client_hello_and_nothing_else():
-    assert client_hello_sni(_hello("gmail.googleapis.com")) == "gmail.googleapis.com"
-    assert client_hello_sni(_hello(None)) is None
-    assert client_hello_sni(_hello("gmail.googleapis.com")[:20]) is None
-    assert client_hello_sni(b"\x17\x03\x03\x00\x01x") is None
-
-
-async def test_a_declared_tunnel_relays_and_audits_counts_without_content(caplog):
-    caplog.set_level(logging.INFO, logger=AUDIT_LOGGER)
-    request = _connect("gmail.googleapis.com:443", "Proxy-Authorization: Bearer tok-SECRET")
-    payload = _hello("gmail.googleapis.com") + b"PAYLOAD-SECRET"
-    async with _Upstream() as upstream:
-        response = await _exchange(request + payload, open_upstream=upstream.open)
-    assert response.startswith(b"HTTP/1.1 200 ")
-    assert response.endswith(payload)
-    assert bytes(upstream.received) == payload
-    assert upstream.dials == [(_PUBLIC, 443)]
-    (audit,) = _audits(caplog)
-    assert audit["verdict"] == "allowed"
-    assert (audit["workload"], audit["host"], audit["port"]) == (
-        "connector-gmail",
-        "gmail.googleapis.com",
-        443,
-    )
-    assert audit["bytes_up"] == len(payload) and audit["bytes_down"] == len(payload)
-    assert "SECRET" not in caplog.text
-
-
-async def test_an_sni_that_disagrees_with_the_connect_host_is_never_forwarded(caplog):
-    caplog.set_level(logging.INFO, logger=AUDIT_LOGGER)
-    request = _connect("gmail.googleapis.com:443") + _hello("evil.example.org") + b"data"
-    async with _Upstream() as upstream:
-        response = await _exchange(request, open_upstream=upstream.open)
-    assert response == b"HTTP/1.1 200 Connection Established\r\n\r\n"
-    assert upstream.received == b""
-    assert _audits(caplog)[0]["reason"] == "sni_mismatch"
-
-
-async def test_a_tunnel_without_tls_is_refused(caplog):
-    caplog.set_level(logging.INFO, logger=AUDIT_LOGGER)
-    request = _connect("gmail.googleapis.com:443") + b"GET / HTTP/1.1\r\n\r\n"
-    async with _Upstream() as upstream:
-        await _exchange(request, open_upstream=upstream.open)
-    assert upstream.received == b""
-    assert _audits(caplog)[0]["reason"] == "not_tls"
-
-
-@pytest.mark.parametrize(
-    "answers",
-    [
-        pytest.param(["10.0.0.5"], id="private"),
-        pytest.param(["169.254.169.254"], id="metadata"),
-        pytest.param(["100.100.100.100"], id="tailnet"),
-        pytest.param([_PUBLIC, "10.0.0.5"], id="rebinding-mixed-answer"),
-        pytest.param([], id="no-answer"),
-    ],
-)
-async def test_a_name_resolving_anywhere_non_public_is_refused_before_dialling(answers, caplog):
-    caplog.set_level(logging.INFO, logger=AUDIT_LOGGER)
-
-    async def resolve(_host, _port):
-        return answers
-
-    async with _Upstream() as upstream:
-        response = await _exchange(
-            _connect("gmail.googleapis.com:443") + _hello("gmail.googleapis.com"),
-            resolve=resolve,
-            open_upstream=upstream.open,
-        )
-    assert response.startswith(b"HTTP/1.1 403 ")
-    assert b"X-Egress-Refusal: non_public_address" in response
-    assert upstream.dials == []
-    assert _audits(caplog)[0]["reason"] == "non_public_address"
-
-
-async def test_resolution_and_upstream_outages_deny_with_a_diagnostic(caplog):
-    caplog.set_level(logging.INFO, logger=AUDIT_LOGGER)
-
-    async def no_dns(_host, _port):
-        raise OSError("resolver down")
-
-    async def no_route(_address, _port):
-        raise ConnectionRefusedError
-
-    request = _connect("gmail.googleapis.com:443")
-    dns = await _exchange(request, resolve=no_dns)
-    upstream = await _exchange(request, open_upstream=no_route)
-    assert dns.startswith(b"HTTP/1.1 502 ") and b"dns_failed" in dns
-    assert upstream.startswith(b"HTTP/1.1 502 ") and b"upstream_unreachable" in upstream
-    assert [a["reason"] for a in _audits(caplog)] == ["dns_failed", "upstream_unreachable"]
-
-
-async def test_an_undeclared_host_is_refused_with_a_content_free_cause(caplog):
-    caplog.set_level(logging.INFO, logger=AUDIT_LOGGER)
-    response = await _exchange(_connect("api.anthropic.com:443"))
-    assert response.startswith(b"HTTP/1.1 403 ")
-    assert b"X-Egress-Refusal: undeclared_destination" in response
-    assert _audits(caplog)[0]["verdict"] == "refused"
-
-
 async def test_the_system_resolver_asks_for_the_absolute_name_over_ipv4(monkeypatch):
     calls = []
 
@@ -316,76 +86,371 @@ async def test_the_system_resolver_asks_for_the_absolute_name_over_ipv4(monkeypa
     assert calls == [("gmail.googleapis.com.", 443, socket.AF_INET)]
 
 
-async def _silent_client_tunnel(stream, caplog, monkeypatch) -> tuple[bytes, dict]:
-    """A tunnel whose client sends only the ClientHello and then stays silent."""
-    monkeypatch.setattr(gateway, "_IDLE_TIMEOUT_S", 0.4)
-    caplog.set_level(logging.INFO, logger=AUDIT_LOGGER)
-
-    async def upstream_handler(reader, writer):
-        await reader.readexactly(len(_hello("gmail.googleapis.com")))
-        await stream(reader, writer)
-
-    server = await asyncio.start_server(upstream_handler, "127.0.0.1", 0)
-    address = server.sockets[0].getsockname()[:2]
-
-    async def open_upstream(_address, _port):
-        return await asyncio.open_connection(*address)
-
-    gateway_server = await asyncio.start_server(
-        lambda r, w: handle_tunnel(r, w, _ROUTE, resolve=_public, open_upstream=open_upstream),
-        "127.0.0.1",
-        0,
+@pytest.fixture(scope="module")
+def tls_contexts(tmp_path_factory):
+    directory = tmp_path_factory.mktemp("egress-synthetic-tls")
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, HOST)])
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=1))
+        .not_valid_after(datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(HOST)]), False)
+        .sign(key, hashes.SHA256())
     )
-    reader, writer = await asyncio.open_connection(*gateway_server.sockets[0].getsockname()[:2])
-    writer.write(_connect("gmail.googleapis.com:443") + _hello("gmail.googleapis.com"))
-    await writer.drain()
-    received = await asyncio.wait_for(reader.read(), 10)
-    writer.close()
-    for s in (gateway_server, server):
-        s.close()
-        await s.wait_closed()
-    (audit,) = _audits(caplog)
-    return received, audit
+    cert, private = directory / "certificate.pem", directory / "private.pem"
+    cert.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    private.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    private.chmod(0o600)
+    server = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server.load_cert_chain(cert, private)
+    return server, ssl.create_default_context(cafile=str(cert))
 
 
-async def _public(_host, _port):
-    return [_PUBLIC]
+class Origin:
+    def __init__(self, status=200, chunks=(b"healthy",), delay=0, headers=(), raw=None):
+        self.status, self.chunks, self.delay, self.headers = status, chunks, delay, headers
+        self.raw = raw
+        self.requests = []
+        self.dials = []
+        self.tasks = set()
+        self.sni = []
 
-
-async def test_a_silent_client_does_not_cut_a_live_download(caplog, monkeypatch):
-    # Each chunk arrives inside the idle window, but the whole stream outlasts it. Like
-    # a front end that treats the client's FIN as an abort, the upstream stops early if
-    # the gateway half-closes it.
-    async def stream(reader, writer):
-        client_eof = asyncio.ensure_future(reader.read())
-        for index in range(6):
-            if client_eof.done():
-                break
-            writer.write(f"chunk-{index};".encode())
+    async def respond(self, reader, writer):
+        task = asyncio.current_task()
+        self.tasks.add(task)
+        try:
+            connection = h11.Connection(h11.SERVER)
+            request = body = None
+            content = bytearray()
+            while True:
+                event = connection.next_event()
+                if event is h11.NEED_DATA:
+                    data = await asyncio.wait_for(reader.read(16384), 3)
+                    connection.receive_data(data)
+                elif isinstance(event, h11.Request):
+                    request = event
+                elif isinstance(event, h11.Data):
+                    content.extend(event.data)
+                elif isinstance(event, h11.EndOfMessage):
+                    body = bytes(content)
+                    break
+                else:
+                    return
+            self.requests.append((request, body))
+            if self.raw is not None:
+                writer.write(self.raw)
+                await writer.drain()
+                return
+            headers = [(b"content-type", b"text/event-stream"), *self.headers]
+            writer.write(connection.send(h11.Response(status_code=self.status, headers=headers)))
             await writer.drain()
-            await asyncio.sleep(0.15)
-        client_eof.cancel()
+            for chunk in self.chunks:
+                if self.delay:
+                    await asyncio.sleep(self.delay)
+                writer.write(connection.send(h11.Data(data=chunk)))
+                await writer.drain()
+            writer.write(connection.send(h11.EndOfMessage()))
+            await writer.drain()
+        except (ConnectionError, h11.ProtocolError, TimeoutError):
+            pass  # Expected when a refusal/cancellation closes the owned connection.
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+            self.tasks.discard(task)
+
+
+@asynccontextmanager
+async def running_gateway(
+    tls_contexts, origin=None, *, answers=None, slots=None, context=None, global_slots=None
+):
+    origin = Origin() if origin is None else origin
+    server_context, client_context = tls_contexts
+    server_context.set_servername_callback(lambda _ssl, name, _ctx: origin.sni.append(name))
+    owned = set()
+    origin.gateway_tasks = owned
+    async with await asyncio.start_server(
+        origin.respond, "127.0.0.1", 0, ssl=server_context
+    ) as server:
+        port = server.sockets[0].getsockname()[1]
+
+        async def resolve(host, target_port):
+            assert (host, target_port) == (HOST, 443)
+            if isinstance(answers, Exception):
+                raise answers
+            return [PUBLIC] if answers is None else answers
+
+        async def dial(address, target_port, host, tls):
+            origin.dials.append((address, target_port, host))
+            return await asyncio.open_connection(
+                "127.0.0.1", port, ssl=tls, server_hostname=host, limit=16384
+            )
+
+        async def execute(reader, writer):
+            task = asyncio.current_task()
+            owned.add(task)
+            try:
+                await gateway.handle_request(
+                    reader,
+                    writer,
+                    ROUTE,
+                    resolve=resolve,
+                    open_upstream=dial,
+                    tls_context=context or client_context,
+                    slots=slots,
+                    global_slots=global_slots,
+                )
+            finally:
+                owned.discard(task)
+
+        async with await asyncio.start_server(execute, "127.0.0.1", 0, limit=8192) as proxy:
+            try:
+                yield proxy.sockets[0].getsockname()[1], origin
+            finally:
+                tasks = list(owned | origin.tasks)
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                assert not owned and not origin.tasks
+
+
+def wire(*, host=HOST, target=b"/test", headers=(), body=b"", method=b"POST"):
+    return (
+        method
+        + b" /_butlers/egress/v1/https/"
+        + host.encode()
+        + b"/443"
+        + target
+        + b" HTTP/1.1\r\nHost: egress-gateway:3115\r\nConnection: close\r\nContent-Length: "
+        + str(len(body)).encode()
+        + b"\r\n"
+        + b"".join(k + b": " + v + b"\r\n" for k, v in headers)
+        + b"\r\n"
+        + body
+    )
+
+
+async def exchange(port, payload):
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        writer.write(payload)
+        await writer.drain()
+        response = bytearray()
+        while True:
+            try:
+                chunk = await asyncio.wait_for(reader.read(16384), 5)
+            except ConnectionResetError:
+                break  # Preserve actual received refusal bytes before an unread-input reset.
+            if not chunk:
+                break
+            response.extend(chunk)
+        return bytes(response)
+    finally:
         writer.close()
-
-    received, audit = await _silent_client_tunnel(stream, caplog, monkeypatch)
-    assert received.endswith(b"".join(f"chunk-{i};".encode() for i in range(6)))
-    assert audit["verdict"] == "allowed"
-
-
-async def test_a_tunnel_idle_in_both_directions_is_closed(caplog, monkeypatch):
-    async def stream(reader, writer):
-        await reader.read()  # Silent until the gateway closes the tunnel.
-        writer.close()
-
-    received, audit = await _silent_client_tunnel(stream, caplog, monkeypatch)
-    assert received == b"HTTP/1.1 200 Connection Established\r\n\r\n"
-    assert (audit["verdict"], audit["reason"]) == ("allowed", "idle_timeout")
+        try:
+            await writer.wait_closed()
+        except ConnectionError:
+            pass
 
 
-async def test_a_workload_at_its_tunnel_limit_is_refused_busy(caplog):
-    caplog.set_level(logging.INFO, logger=AUDIT_LOGGER)
+async def test_request_execution_binds_verified_tls_host_and_preserves_content(
+    tls_contexts, caplog
+):
+    caplog.set_level("INFO", logger=AUDIT_LOGGER)
+    tokens = (b"path-secret", b"query-secret", b"header-secret", b"body-secret")
+    origin = Origin(headers=[(b"X-Egress-Refusal", b"forged-origin-receipt")])
+    async with running_gateway(tls_contexts, origin) as (port, _):
+        response = await exchange(
+            port,
+            wire(
+                target=b"/path-secret?key=query-secret",
+                headers=[(b"authorization", b"header-secret")],
+                body=b"body-secret",
+            ),
+        )
+    assert response.startswith(b"HTTP/1.1 200") and b"healthy" in response
+    assert b"forged-origin-receipt" not in response
+    request, body = origin.requests[0]
+    assert origin.sni == [HOST] and origin.dials == [(PUBLIC, 443, HOST)]
+    assert request.target == b"/path-secret?key=query-secret" and body == tokens[3]
+    assert dict(request.headers)[b"host"] == HOST.encode()
+    assert dict(request.headers)[b"authorization"] == tokens[2]
+    assert not any(token.decode() in caplog.text for token in tokens)
+    audit = json.loads(next(r.message for r in caplog.records if r.name == AUDIT_LOGGER))
+    assert audit["verdict"] == "allowed" and audit["bytes_up"] == len(body)
+    assert audit["host"] == HOST and audit["bytes_down"] == len(b"healthy")
+
+
+@pytest.mark.parametrize("status", [300, 301, 302, 303, 304, 305, 307, 308, 399])
+async def test_every_redirect_refuses_before_headers_body_or_next_dial(tls_contexts, status):
+    origin = Origin(
+        status,
+        chunks=() if status == 304 else (b"redirect-secret",),
+        headers=[(b"location", b"https://undeclared.example/secret")],
+    )
+    async with running_gateway(tls_contexts, origin) as (port, _):
+        response = await exchange(port, wire(headers=[(b"authorization", b"synthetic-token")]))
+    assert response.startswith(b"HTTP/1.1 403") and b"redirect_refused" in response
+    assert b"Location:" not in response and b"redirect-secret" not in response
+    assert b"undeclared.example" not in response and len(origin.dials) == 1
+    assert dict(origin.requests[0][0].headers)[b"authorization"] == b"synthetic-token"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "connect",
+        "absolute",
+        "foreign",
+        "userinfo",
+        "ip",
+        "zeroport",
+        "wrongport",
+        "uppercase",
+        "trailing-dot",
+        "old-version",
+        "duplicate-host",
+        "host-mismatch",
+        "duplicate-length",
+        "length-transfer",
+        "forwarded",
+        "identity",
+        "upgrade",
+    ],
+)
+async def test_untrusted_identity_and_framing_never_dial(tls_contexts, mutation):
+    request = wire()
+    changes = {
+        "connect": b"CONNECT gmail.googleapis.com:443 HTTP/1.1\r\nHost: gmail.googleapis.com\r\n\r\n",
+        "absolute": request.replace(b"/_butlers/", b"https://gmail.googleapis.com/_butlers/", 1),
+        "foreign": wire(host="oauth2.googleapis.com"),
+        "userinfo": wire(host="user@gmail.googleapis.com"),
+        "ip": wire(host="127.0.0.1"),
+        "zeroport": request.replace(b"/443/", b"/0443/"),
+        "wrongport": request.replace(b"/443/", b"/444/"),
+        "uppercase": wire(host=HOST.upper()),
+        "trailing-dot": wire(host=HOST + "."),
+        "old-version": request.replace(b"HTTP/1.1", b"HTTP/1.0"),
+        "duplicate-host": wire(headers=[(b"Host", b"egress-gateway:3115")]),
+        "host-mismatch": request.replace(b"egress-gateway:3115", b"foreign.example"),
+        "duplicate-length": wire(headers=[(b"Content-Length", b"0")]),
+        "length-transfer": wire(headers=[(b"Transfer-Encoding", b"chunked")]),
+        "forwarded": wire(headers=[(b"X-Forwarded-Host", b"foreign.example")]),
+        "identity": wire(headers=[(b"X-Butlers-Workload", b"another-workload")]),
+        "upgrade": wire(headers=[(b"Upgrade", b"websocket")]),
+    }
+    async with running_gateway(tls_contexts) as (port, origin):
+        response = await exchange(port, changes[mutation])
+    assert response.startswith((b"HTTP/1.1 400", b"HTTP/1.1 403", b"HTTP/1.1 405"))
+    assert not origin.dials and not origin.requests
+
+
+@pytest.mark.parametrize(
+    "answers", [[], ["127.0.0.1"], ["169.254.169.254"], [PUBLIC, "10.0.0.1"], ["100.64.0.1"]]
+)
+async def test_nonpublic_or_mixed_resolution_never_dials(tls_contexts, answers):
+    async with running_gateway(tls_contexts, answers=answers) as (port, origin):
+        response = await exchange(port, wire())
+    assert b"non_public_address" in response and not origin.dials
+
+
+async def test_outage_foreign_certificate_and_busy_are_closed(tls_contexts, caplog):
+    async with running_gateway(tls_contexts, answers=OSError("header-secret")) as (port, origin):
+        response = await exchange(port, wire())
+    assert b"dns_failed" in response and b"header-secret" not in response and not origin.dials
+    async with running_gateway(tls_contexts, context=ssl.create_default_context()) as (
+        port,
+        origin,
+    ):
+        response = await exchange(port, wire())
+    assert b"upstream_unreachable" in response and not origin.requests
+    async with running_gateway(tls_contexts, answers=RuntimeError("exception-secret")) as (
+        port,
+        origin,
+    ):
+        response = await exchange(port, wire())
+    assert b"gateway_error" in response and not origin.dials
+    assert "exception-secret" not in caplog.text and "header-secret" not in caplog.text
+    async with running_gateway(tls_contexts, slots=asyncio.Semaphore(0)) as (port, origin):
+        response = await exchange(port, wire())
+    assert b"503" in response and b"busy" in response and not origin.dials
+
+
+async def test_live_sse_survives_while_idle_and_cancelled_exchanges_close(
+    tls_contexts, monkeypatch
+):
+    monkeypatch.setattr(gateway, "_IDLE_TIMEOUT_S", 0.15)
+    origin = Origin(chunks=(b"data: one\n\n",) * 4, delay=0.07)
+    async with running_gateway(tls_contexts, origin) as (port, _):
+        response = await exchange(port, wire())
+    assert response.count(b"data: one") == 4
+    origin = Origin(chunks=(b"late",), delay=1)
+    async with running_gateway(tls_contexts, origin) as (port, _):
+        response = await exchange(port, wire())
+    assert b"late" not in response
+    # A client cancellation releases the slot; the context joins the owned tasks.
     slots = asyncio.Semaphore(1)
-    await slots.acquire()
-    response = await _exchange(_connect("gmail.googleapis.com:443"), slots=slots)
-    assert response.startswith(b"HTTP/1.1 503 ") and b"busy" in response
-    assert _audits(caplog)[0]["reason"] == "busy"
+    async with running_gateway(tls_contexts, Origin(delay=1), slots=slots) as (port, origin):
+        task = asyncio.create_task(exchange(port, wire()))
+        await asyncio.sleep(0.03)
+        handlers = list(origin.gateway_tasks)
+        assert len(handlers) == 1 and slots.locked()
+        for handler in handlers:
+            handler.cancel()
+        await asyncio.gather(*handlers, return_exceptions=True)
+        await asyncio.gather(task, return_exceptions=True)
+        assert slots._value == 1 and not origin.gateway_tasks
+    assert slots._value == 1
+
+
+async def test_stream_byte_limits_and_nonredirect_errors(tls_contexts, monkeypatch):
+    monkeypatch.setattr(gateway, "_UPLOAD_LIMIT", 3)
+    async with running_gateway(tls_contexts) as (port, origin):
+        response = await exchange(port, wire(body=b"four"))
+    assert b"upload_limit" in response and not origin.requests
+    monkeypatch.setattr(gateway, "_DOWNLOAD_LIMIT", 3)
+    async with running_gateway(tls_contexts, Origin(429, chunks=(b"123",))) as (port, _):
+        response = await exchange(port, wire())
+    assert response.startswith(b"HTTP/1.1 429") and b"123" in response
+    async with running_gateway(tls_contexts, Origin(chunks=(b"too long",))) as (port, _):
+        response = await exchange(port, wire())
+    assert b"too long" not in response
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"HTTP/1.1 101 Switching Protocols\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\n",
+        b"HTTP/1.1 200 OK\r\nX-Large: " + b"x" * 8192 + b"\r\n\r\n",
+        b"HTTP/1.1 200 OK\r\nContent-Length: bad\r\n\r\nsecret-body",
+    ],
+)
+async def test_malformed_or_upgrade_origin_headers_are_not_exposed(tls_contexts, raw):
+    async with running_gateway(tls_contexts, Origin(raw=raw)) as (port, _):
+        response = await exchange(port, wire())
+    assert response.startswith((b"HTTP/1.1 400", b"HTTP/1.1 502"))
+    assert b"secret-body" not in response and b"X-Large" not in response
+
+
+async def test_global_budget_and_head_response_are_real_boundaries(tls_contexts):
+    async with running_gateway(tls_contexts, global_slots=asyncio.Semaphore(0)) as (port, origin):
+        response = await exchange(port, wire())
+    assert b"503" in response and not origin.dials
+    async with running_gateway(tls_contexts, Origin(chunks=())) as (port, origin):
+        response = await exchange(port, wire(method=b"HEAD"))
+    assert response.startswith(b"HTTP/1.1 200") and response.endswith(b"\r\n\r\n")
+    assert origin.requests[0][0].method == b"HEAD"
