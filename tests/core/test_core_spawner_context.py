@@ -262,6 +262,44 @@ class TestBlindSpotPreambleComposition:
         assert composed == "base\n\ncontext\n\nblind-spot-block\n\nrouting"
 
 
+class TestStablePrefixOrdering:
+    """bu-dhloi1.181: the cacheable prefix is stable; per-request layers come last.
+
+    Provider prompt caches match on a byte prefix, so any per-request text placed
+    early in the system prompt forfeits the cache for everything after it. Memory
+    context differs on nearly every session (216 distinct shas across 360 dev
+    sessions) and must therefore be the last layer.
+    """
+
+    _STABLE = dict(
+        general_timezone_instruction="tz",
+        routing_instructions="routing",
+        context_preamble="context",
+        blind_spot_preamble="blind-spot",
+    )
+
+    def test_memory_context_is_the_last_layer(self) -> None:
+        composed = _compose_system_prompt("base", "memory-A", **self._STABLE)
+
+        assert composed.endswith("\n\nmemory-A")
+        assert composed.index("routing") < composed.index("memory-A")
+        assert composed.index("context") < composed.index("memory-A")
+
+    def test_changing_memory_never_changes_a_byte_before_it(self) -> None:
+        first = _compose_system_prompt("base", "memory-A", **self._STABLE)
+        second = _compose_system_prompt("base", "memory-B, different length", **self._STABLE)
+
+        prefix = _compose_system_prompt("base", None, **self._STABLE) + "\n\n"
+        assert first.startswith(prefix)
+        assert second.startswith(prefix)
+
+    def test_base_prompt_and_timezone_lead_every_composition(self) -> None:
+        """The two always-static layers come first, so they stay a shared prefix."""
+        for memory in (None, "memory"):
+            composed = _compose_system_prompt("base", memory, **self._STABLE)
+            assert composed.startswith("base\n\ntz\n\n")
+
+
 def test_effective_prompt_receipt_is_deterministic_for_synthetic_roster(tmp_path: Path) -> None:
     """The receipt covers exact composed UTF-8 bytes and every named layer."""
     roster = tmp_path / "roster"
