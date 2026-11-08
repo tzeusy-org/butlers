@@ -401,7 +401,10 @@ def test_each_workload_proxies_https_to_its_own_gateway_port_only(everything):
 
 def test_profiles_off_renders_no_gateway_and_no_proxy_env():
     docs = _docs()
-    assert not any(d["metadata"]["name"].startswith("egress-gateway") for d in docs)
+    names = [d["metadata"]["name"] for d in docs]
+    # Release-prefixed too: butlers-egress-gateway-ingress, butlers-egress-profiles, ...
+    assert not [n for n in names if "egress-gateway" in n or "egress-profiles" in n]
+    assert not [n for n in names if n.startswith("butlers-egress-")], names
     for component, variables in _env(docs).items():
         assert "HTTPS_PROXY" not in variables, component
     namespace = next(d for d in docs if d["metadata"]["name"] == "butlers-namespace-ingress")

@@ -112,22 +112,32 @@ change).
   to its own `gateway_port` only, and the gateway is excluded from
   `<release>-namespace-ingress` so no wider rule unions onto it. No header can claim a
   workload: the gateway ignores `Proxy-Authorization` and every other identity header.
-- **Per tunnel:** only `CONNECT host:port` for an exact declared pair, with any `Host`
-  header agreeing; IP literals refused; the gateway resolves the name itself and refuses
-  it if *any* answer is not globally routable unicast (private, loopback, link-local and
-  metadata, CGNAT/tailnet, multicast, reserved), then dials only an address it checked,
-  so a rebinding answer cannot redirect it; the client's ClientHello must carry SNI equal
-  to the CONNECT host (no SNI, a split ClientHello or non-TLS bytes are refused). Plain HTTP
-  proxying does not exist. Redirects are the client's next CONNECT, checked the same way.
+- **Per tunnel:** only `CONNECT host:port` (`HTTP/1.0` or `HTTP/1.1`, no leading-zero
+  port) for an exact declared pair, with any `Host` header agreeing; IP literals refused;
+  the gateway resolves the absolute name (`host.`, so pod search domains cannot rewrite
+  it) over IPv4 only and refuses it if *any* answer is not globally routable unicast
+  IPv4 (private, loopback, link-local and metadata, CGNAT/tailnet, multicast, reserved;
+  every IPv6 answer except IPv4-mapped, since NAT64 and IPv4-compatible forms embed
+  private addresses), then dials only an address it checked, so a rebinding answer
+  cannot redirect it; the client's ClientHello must carry SNI equal to the CONNECT host
+  (no SNI, a split ClientHello or non-TLS bytes are refused). Plain HTTP proxying does
+  not exist. Redirects are the client's next CONNECT, checked the same way. A tunnel
+  with no bytes in either direction for 5 minutes is closed (`idle_timeout`); a silent
+  client does not cut a live download.
 - **Its own egress** (`<release>-egress-egress-gateway`): DNS, and `0.0.0.0/0` except
   `egressPolicy.privateCidrs`, `egressProfiles.gateway.deniedCidrs` and the tracker, on the
   external ports profiles declare (today 443).
 - **Audit:** one JSON line per tunnel on logger `butlers.egress.audit`: workload, host,
   port, verdict, closed reason, byte counts, duration. Never payload, headers or tokens.
+  A request refused before its destination is validated (undeclared, malformed, IP
+  literal) records `host: null`: the requested name is caller-supplied text and is not
+  logged.
 - **Outage:** an unreachable resolver or upstream answers `502` with
   `X-Egress-Refusal: dns_failed` or `upstream_unreachable`; a refused request answers `403`
-  (or `405` for non-CONNECT) with its reason; a workload over 128 concurrent tunnels gets
-  `503 busy`. With no gateway pod, connections are refused. In every case the caller sees
+  (or `405` for non-CONNECT) with its reason; a workload over 128 concurrent tunnels on
+  one gateway replica gets `503 busy` (so up to 128 per replica, 256 with the default two;
+  a connection that has not sent its request head is bounded by the 10 s head timeout,
+  not the slot count). With no gateway pod, connections are refused. In every case the caller sees
   an ordinary connection error and its own bounded retry and cursors apply; the gateway
   never falls back to a direct or internal route.
 
@@ -146,6 +156,12 @@ never set. Workloads without external hosts get no proxy variables.
 - **The external host lists are a seed inventory.** Static base URLs were collected from
   source; the LLM CLIs' provider endpoints (claude, codex, gemini, opencode) are
   unverified and need conformance before activation.
+- **SNI binds the TLS name, not the tenant.** A declared host on a shared front end
+  (`*.googleapis.com`, `github.com`) can route on the HTTP authority inside the
+  encrypted session, so domain fronting can reach other tenants behind the same front
+  end. Closing that needs TLS interception, which this gateway deliberately does not do.
+- **IPv4 only.** The gateway resolves and dials IPv4; a declared host with no IPv4
+  address is unreachable.
 - **Internal peers are reachability only.** RFC 0038 S7 also requires both endpoints to
   authenticate; that is the existing application authentication, not this policy.
 - `scripts/egress-firewall.sh` (compose) stays until every supported caller is replaced

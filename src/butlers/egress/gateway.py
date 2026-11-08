@@ -7,12 +7,15 @@ identity. For every tunnel the gateway:
 
 - accepts only ``CONNECT host:port`` for an exact (host, port) in that workload's
   profile, and a ``Host`` header, if sent, that agrees with it;
-- refuses IP literals, resolves the name itself and refuses it when any address is
-  not globally routable (private, loopback, link-local/metadata, CGNAT/tailnet,
-  multicast, reserved), then connects to an address it validated, so a rebinding
-  answer cannot redirect the tunnel;
+- refuses IP literals, resolves the absolute name itself (IPv4 only, matching its
+  IPv4-only egress policy) and refuses it when any address is not globally routable
+  unicast (private, loopback, link-local/metadata, CGNAT/tailnet, multicast,
+  reserved), then connects to an address it validated, so a rebinding answer cannot
+  redirect the tunnel;
 - reads the client's TLS ClientHello and refuses unless its SNI equals the
-  CONNECT host, so the tunnel carries the declared host's TLS session;
+  CONNECT host (this binds the TLS name, not the tenant: a shared front end can
+  still route on the HTTP authority inside the encrypted session);
+- closes a tunnel after ``_IDLE_TIMEOUT_S`` with no bytes in either direction;
 - writes one content-free audit line per tunnel: workload, host, port, verdict,
   reason, byte counts and duration. Never payload, headers or tokens.
 
@@ -90,9 +93,17 @@ def routes_from_rendered(document: Mapping[str, Any]) -> dict[int, Route]:
 
 
 def admissible_address(address: str) -> bool:
-    """True only for a globally routable unicast address."""
+    """True only for a globally routable unicast IPv4 address.
+
+    IPv6 is refused outright: the gateway's egress policy is IPv4-only, and
+    ``is_global`` admits IPv6 forms that embed or reach private IPv4 (NAT64
+    ``64:ff9b::/96``, IPv4-compatible ``::/96``, deprecated site-local ``fec0::/10``).
+    An IPv4-mapped address is judged as the IPv4 address it maps.
+    """
     ip = ipaddress.ip_address(address)
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is None:
+            return False
         ip = ip.ipv4_mapped
     return ip.is_global and not ip.is_multicast
 
@@ -115,7 +126,7 @@ def parse_connect(head: bytes, route: Route) -> tuple[str, int]:
         raise Refused("malformed_request", 400) from exc
     lines = text.split("\r\n")
     parts = lines[0].split(" ")
-    if len(parts) != 3 or not parts[2].startswith("HTTP/1."):
+    if len(parts) != 3 or parts[2] not in ("HTTP/1.0", "HTTP/1.1"):
         raise Refused("malformed_request", 400)
     method, authority, _ = parts
     if method != "CONNECT":
@@ -123,7 +134,7 @@ def parse_connect(head: bytes, route: Route) -> tuple[str, int]:
     host, sep, port_text = authority.rpartition(":")
     if _is_ip_literal(host or authority):
         raise Refused("ip_literal")
-    if not sep or not (port_text.isascii() and port_text.isdigit()):
+    if not sep or not (port_text.isascii() and port_text.isdigit()) or port_text.startswith("0"):
         raise Refused("malformed_authority", 400)
     host_header = [
         line.split(":", 1)[1].strip() for line in lines[1:] if line.lower().startswith("host:")
@@ -175,9 +186,15 @@ def client_hello_sni(record: bytes) -> str | None:
 
 
 async def system_resolver(host: str, port: int) -> list[str]:
+    """IPv4 addresses for the absolute name ``host.``.
+
+    The trailing dot stops the pod's resolv.conf search domains (``ndots:5``) from
+    turning a declared name into a different, undeclared one.
+    """
     infos = await asyncio.get_running_loop().getaddrinfo(
-        host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP
-    )
+        host + ".", port, family=socket.AF_INET, type=socket.SOCK_STREAM,
+        proto=socket.IPPROTO_TCP,
+    )  # fmt: skip
     return list(dict.fromkeys(str(info[4][0]) for info in infos))
 
 
@@ -193,23 +210,54 @@ async def _read_hello(reader: asyncio.StreamReader) -> bytes:
     return header + await reader.readexactly(length)
 
 
-async def _pipe(source: asyncio.StreamReader, sink: asyncio.StreamWriter, counter: list[int]):
+async def _pipe(
+    source: asyncio.StreamReader,
+    sink: asyncio.StreamWriter,
+    counter: list[int],
+    last_activity: list[float],
+) -> None:
+    """Copy one direction; on the source's EOF, half-close the sink."""
     try:
-        while True:
-            chunk = await asyncio.wait_for(source.read(65536), _IDLE_TIMEOUT_S)
-            if not chunk:
-                break
+        while chunk := await source.read(65536):
             counter[0] += len(chunk)
+            last_activity[0] = time.monotonic()
             sink.write(chunk)
             await sink.drain()
-    except (TimeoutError, ConnectionError):
-        pass
-    finally:
-        if sink.can_write_eof():
+    except ConnectionError:
+        return
+    if sink.can_write_eof():
+        try:
+            sink.write_eof()
+        except (OSError, RuntimeError):
+            pass
+
+
+async def _relay(
+    client: tuple[asyncio.StreamReader, asyncio.StreamWriter],
+    upstream: tuple[asyncio.StreamReader, asyncio.StreamWriter],
+    up: list[int],
+    down: list[int],
+) -> str:
+    """Relay both directions; the idle clock is shared, so a silent client does not
+    cut a live download. Returns the closed cause."""
+    last_activity = [time.monotonic()]
+    pipes = asyncio.gather(
+        _pipe(client[0], upstream[1], up, last_activity),
+        _pipe(upstream[0], client[1], down, last_activity),
+    )
+    while not pipes.done():
+        remaining = last_activity[0] + _IDLE_TIMEOUT_S - time.monotonic()
+        if remaining <= 0:
+            pipes.cancel()
+            await asyncio.wait([pipes])
             try:
-                sink.write_eof()
-            except (OSError, RuntimeError):
+                pipes.exception()  # retrieve it, so the cancelled gather is not logged
+            except asyncio.CancelledError:
                 pass
+            return "idle_timeout"
+        await asyncio.wait([pipes], timeout=remaining)
+    pipes.result()
+    return "closed"
 
 
 def _audit(route: Route, host: str | None, port: int | None, verdict: str, reason: str,
@@ -303,8 +351,8 @@ async def handle_tunnel(
         upstream.write(hello)
         await upstream.drain()
         up[0] += len(hello)
-        await asyncio.gather(_pipe(reader, upstream, up), _pipe(upstream_reader, writer, down))
-        _audit(route, host, port, "allowed", "closed", up[0], down[0], started)
+        closed = await _relay((reader, writer), (upstream_reader, upstream), up, down)
+        _audit(route, host, port, "allowed", closed, up[0], down[0], started)
     except Refused as refusal:
         if not tunnelled:
             await _refuse(writer, refusal)

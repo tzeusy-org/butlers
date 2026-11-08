@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 import struct
 
 import pytest
 
+from butlers.egress import gateway
 from butlers.egress.gateway import (
     AUDIT_LOGGER,
     HEALTH_PORT,
@@ -24,6 +26,7 @@ from butlers.egress.gateway import (
     handle_tunnel,
     parse_connect,
     routes_from_rendered,
+    system_resolver,
 )
 from butlers.egress.profiles import RENDERED_PATH, load_profiles
 
@@ -150,8 +153,13 @@ def test_routes_come_from_the_rendered_profiles_and_skip_held_or_internal_only_w
         ("fe80::1", False),
         ("fd00::1", False),
         ("::ffff:10.0.0.1", False),
+        ("64:ff9b::a00:1", False),  # NAT64 of 10.0.0.1
+        ("64:ff9b::a9fe:a9fe", False),  # NAT64 of the metadata address
+        ("::a00:1", False),  # IPv4-compatible 10.0.0.1
+        ("fec0::1", False),  # deprecated site-local
+        ("2606:4700:4700::1111", False),  # IPv6 at all: the gateway policy is IPv4-only
         (_PUBLIC, True),
-        ("2606:4700:4700::1111", True),
+        (f"::ffff:{_PUBLIC}", True),
     ],
 )
 def test_only_globally_routable_unicast_addresses_are_admissible(address, admitted):
@@ -173,7 +181,9 @@ def test_only_globally_routable_unicast_addresses_are_admissible(address, admitt
             "host_header_mismatch",
         ),
         (b"CONNECT gmail.googleapis.com HTTP/1.1", "malformed_authority"),
+        (b"CONNECT gmail.googleapis.com:0443 HTTP/1.1", "malformed_authority"),
         (b"CONNECT gmail.googleapis.com:443", "malformed_request"),
+        (b"CONNECT gmail.googleapis.com:443 HTTP/1.9", "malformed_request"),
     ],
 )
 def test_a_connect_outside_the_route_is_refused(head, reason):
@@ -292,6 +302,84 @@ async def test_an_undeclared_host_is_refused_with_a_content_free_cause(caplog):
     assert response.startswith(b"HTTP/1.1 403 ")
     assert b"X-Egress-Refusal: undeclared_destination" in response
     assert _audits(caplog)[0]["verdict"] == "refused"
+
+
+async def test_the_system_resolver_asks_for_the_absolute_name_over_ipv4(monkeypatch):
+    calls = []
+
+    async def fake_getaddrinfo(host, port, **kwargs):
+        calls.append((host, port, kwargs.get("family")))
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (_PUBLIC, port))]
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", fake_getaddrinfo)
+    assert await system_resolver("gmail.googleapis.com", 443) == [_PUBLIC]
+    assert calls == [("gmail.googleapis.com.", 443, socket.AF_INET)]
+
+
+async def _silent_client_tunnel(stream, caplog, monkeypatch) -> tuple[bytes, dict]:
+    """A tunnel whose client sends only the ClientHello and then stays silent."""
+    monkeypatch.setattr(gateway, "_IDLE_TIMEOUT_S", 0.4)
+    caplog.set_level(logging.INFO, logger=AUDIT_LOGGER)
+
+    async def upstream_handler(reader, writer):
+        await reader.readexactly(len(_hello("gmail.googleapis.com")))
+        await stream(reader, writer)
+
+    server = await asyncio.start_server(upstream_handler, "127.0.0.1", 0)
+    address = server.sockets[0].getsockname()[:2]
+
+    async def open_upstream(_address, _port):
+        return await asyncio.open_connection(*address)
+
+    gateway_server = await asyncio.start_server(
+        lambda r, w: handle_tunnel(r, w, _ROUTE, resolve=_public, open_upstream=open_upstream),
+        "127.0.0.1",
+        0,
+    )
+    reader, writer = await asyncio.open_connection(*gateway_server.sockets[0].getsockname()[:2])
+    writer.write(_connect("gmail.googleapis.com:443") + _hello("gmail.googleapis.com"))
+    await writer.drain()
+    received = await asyncio.wait_for(reader.read(), 10)
+    writer.close()
+    for s in (gateway_server, server):
+        s.close()
+        await s.wait_closed()
+    (audit,) = _audits(caplog)
+    return received, audit
+
+
+async def _public(_host, _port):
+    return [_PUBLIC]
+
+
+async def test_a_silent_client_does_not_cut_a_live_download(caplog, monkeypatch):
+    # Each chunk arrives inside the idle window, but the whole stream outlasts it. Like
+    # a front end that treats the client's FIN as an abort, the upstream stops early if
+    # the gateway half-closes it.
+    async def stream(reader, writer):
+        client_eof = asyncio.ensure_future(reader.read())
+        for index in range(6):
+            if client_eof.done():
+                break
+            writer.write(f"chunk-{index};".encode())
+            await writer.drain()
+            await asyncio.sleep(0.15)
+        client_eof.cancel()
+        writer.close()
+
+    received, audit = await _silent_client_tunnel(stream, caplog, monkeypatch)
+    assert received.endswith(b"".join(f"chunk-{i};".encode() for i in range(6)))
+    assert audit["verdict"] == "allowed"
+
+
+async def test_a_tunnel_idle_in_both_directions_is_closed(caplog, monkeypatch):
+    async def stream(reader, writer):
+        await reader.read()  # Silent until the gateway closes the tunnel.
+        writer.close()
+
+    received, audit = await _silent_client_tunnel(stream, caplog, monkeypatch)
+    assert received == b"HTTP/1.1 200 Connection Established\r\n\r\n"
+    assert (audit["verdict"], audit["reason"]) == ("allowed", "idle_timeout")
 
 
 async def test_a_workload_at_its_tunnel_limit_is_refused_busy(caplog):
