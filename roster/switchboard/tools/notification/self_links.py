@@ -125,6 +125,15 @@ def _resolve(reference: SelfLinkReferenceV1) -> dict[str, Any] | None:
     }
 
 
+def resolve_self_link(reference: SelfLinkReferenceV1) -> dict[str, Any] | None:
+    """The verified dashboard link for one typed route reference, or ``None``.
+
+    For a surface that edits a card it already sent (a retraction keeps the Open button),
+    where there is no whole notification to resolve. Same rules as :func:`resolve_self_links`.
+    """
+    return _resolve(reference)
+
+
 def resolve_self_links(request: NotifyRequestV1) -> NotifyRequestV1:
     """Mint output only from an already admitted public notification."""
     if not request.actions:

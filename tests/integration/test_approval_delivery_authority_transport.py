@@ -1094,10 +1094,11 @@ async def _insert_notify_row(
         "non-notify",
         "digest-mismatch",
         "wrong-schema",
+        "other-schemas-pool",
         "wrong-role",
     ],
 )
-async def test_approved_notify_live_row_predicate(authority_pools, case):
+async def test_approved_notify_live_row_predicate(authority_pools, authority_db_url, case):
     """RFC 0038 D13: only a live, approved, unexecuted, goal-free notify row attests.
 
     This is the security predicate behind the single-use approved-notify proof.
@@ -1121,12 +1122,32 @@ async def test_approved_notify_live_row_predicate(authority_pools, case):
         digest = "0" * 64
     elif case == "wrong-schema":
         schema = "messenger"
-    elif case == "wrong-role":
+    elif case == "other-schemas-pool":
+        # The messenger pool has no such row in its own schema: the schema guard answers.
         pool = authority_pools["messenger"]
 
-    stored = await ApprovalDeliveryRepository(pool).approved_notify_args(
-        action_id, owning_schema=schema, args_digest=digest
-    )
+    async with AsyncExitStack() as stack:
+        if case == "wrong-role":
+            # Isolates the role predicate: the live row is in the right schema, the digest
+            # matches and the schema guard passes, but the caller is the migration owner,
+            # not the owning ``butler_relationship_rw`` role.
+            pool = await asyncpg.create_pool(
+                authority_db_url,
+                min_size=1,
+                max_size=1,
+                init=register_jsonb_codec,
+                server_settings={"search_path": "relationship,public"},
+            )
+            stack.push_async_callback(pool.close)
+            assert await pool.fetchval("SELECT current_schema()") == "relationship"
+            assert await pool.fetchval("SELECT current_user") != "butler_relationship_rw"
+            assert (
+                await pool.fetchval("SELECT count(*) FROM pending_actions WHERE id = $1", action_id)
+                == 1
+            )
+        stored = await ApprovalDeliveryRepository(pool).approved_notify_args(
+            action_id, owning_schema=schema, args_digest=digest
+        )
 
     assert stored == (_APPROVED_NOTIFY_ARGS if case == "approved" else None)
 

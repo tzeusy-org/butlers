@@ -227,7 +227,9 @@ def telegram_message_not_modified(response: httpx.Response) -> bool:
     )
 
 
-_SAFE_DESCRIPTION = re.compile(r"[A-Za-z0-9 ,.:'_()-]{1,120}\Z", re.ASCII)
+_SAFE_DESCRIPTION = re.compile(r"[A-Za-z0-9 ,.:;'_()-]{1,120}\Z", re.ASCII)
+# A bot token is ``<digits>:<secret>``; a description shaped like one is never a Telegram phrase.
+_TOKEN_SHAPED = re.compile(r"\d{5,}:[A-Za-z0-9_-]{20,}")
 
 
 def telegram_error_description(response: httpx.Response) -> str:
@@ -245,6 +247,7 @@ def telegram_error_description(response: httpx.Response) -> str:
         isinstance(description, str)
         and _SAFE_DESCRIPTION.fullmatch(description)
         and "http" not in description.lower()
+        and not _TOKEN_SHAPED.search(description)
     ):
         return description
     return "unparsed"
@@ -257,15 +260,22 @@ async def edit_telegram_message_text(
     chat_id: str,
     message_id: int,
     text: str,
+    reply_markup: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Edit one Telegram message's text through ``editMessageText``."""
+    """Edit one Telegram message's text through ``editMessageText``.
+
+    Without ``reply_markup`` the edit also removes the message's inline keyboard; with it,
+    the given keyboard replaces the old one.
+    """
     source = clamp_edit_source(text)
-    payload = {
+    payload: dict[str, Any] = {
         "chat_id": chat_id,
         "message_id": message_id,
         "text": render_markdown(source),
         "parse_mode": "HTML",
     }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
     response = await client.post(f"{api_base_url}/editMessageText", json=payload)
     if telegram_parse_rejection(response):
         payload = {key: value for key, value in payload.items() if key != "parse_mode"}

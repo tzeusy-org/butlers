@@ -90,18 +90,13 @@ async def test_dashboard_writer_does_not_block_the_decision_on_slow_writeback(mo
     assert finished == []
 
     release.set()
-    for _ in range(50):
-        if len(finished) == 2:
-            break
-        await asyncio.sleep(0.01)
+    await approvals.drain_decision_writebacks()
     assert sorted(finished) == ["a1:rejected", "r1:False"]
 
 
 async def test_dashboard_writer_background_failure_is_logged_not_raised(
     monkeypatch, caplog
 ) -> None:
-    import asyncio
-
     settings = approvals._DecisionMemorySettings(
         memory_schema=None, embedding_model="m", tool_metadata={}
     )
@@ -115,10 +110,7 @@ async def test_dashboard_writer_background_failure_is_logged_not_raised(
     monkeypatch.setattr(approvals.DecisionMemoryWriter, "record_terminal_decision", _boom)
     with caplog.at_level("WARNING"):
         await writer.record_terminal_decision("a1", "rejected")
-        for _ in range(50):
-            if any("background" in r.getMessage() for r in caplog.records):
-                break
-            await asyncio.sleep(0.01)
+        await approvals.drain_decision_writebacks()
     assert any("background" in r.getMessage() for r in caplog.records)
 
 

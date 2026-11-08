@@ -126,10 +126,19 @@ may have happened. The executor then records the action executed with
 `{"status": "outcome_unknown"}` instead of leaving it eligible for a Retry that could
 message a non-owner twice.
 
-Without this topology (single-daemon `butlers run`, split hosts, or a source
-whose worker flag is off) the executor falls back to an ordinary `deliver`.
-Messenger's recipient gate then applies and parks a non-owner send as the native
-channel command, which renders its preview and replays once on approval.
+### Supported topology and the fallback
+
+Owner decision (2026-11-08): an approved non-owner send is supported only in the
+cohosted `butlers up` topology, meaning a kernel-admitted Switchboard companion and
+the source butler's approvals worker flag (`approval_delivery_rollout`) on. Only
+there does the single-use proof exist, so only there is the approval honoured once.
+
+Outside it (single-daemon `butlers run`, split hosts, or a source whose worker flag
+is off) the executor falls back to an ordinary `deliver`. Messenger's recipient gate
+then applies and parks a non-owner send as a second, previewable native channel
+command, which renders its preview and replays once on approval. That second owner
+approval is the intended safe behaviour in those topologies, not a defect: nothing
+is sent to a non-owner without it, and the proof transport is not extended to them.
 
 ## Composition and cleanup
 

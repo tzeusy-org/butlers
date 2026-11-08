@@ -161,7 +161,7 @@ the effect. An edit to a goal action's arguments is refused with that code.
 Every legacy run path (the shared executor, dispatch-by-id, both retry routes)
 refuses a goal action with the same typed code.
 
-All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — uses the shared `execute_approved_action()` path. It holds a database row lock from its approved/null eligibility check through handler invocation and the successful terminal write, so an Abandon request cannot win after a side effect starts. A successful action becomes `executed` only after its result and immutable audit event are persisted. If a handler is unavailable or fails, the action remains `approved` with no execution result so the operator can retry, reject, or dashboard-abandon it; an already-executed replay returns the stored result without re-running the tool.
+All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — uses the shared `execute_approved_action()` path. It holds a database row lock from its approved/null eligibility check through handler invocation and the successful terminal write, so an Abandon request cannot win after a side effect starts. A successful action becomes `executed` only after its result and immutable audit event are persisted. If a handler is unavailable or fails, the action remains `approved` with no execution result so the operator can retry, reject, or dashboard-abandon it. The exception is a send that may already have gone out (an uncertain transport outcome, or a Telegram effect-uncertain or partial-delivery marker): it is recorded `executed` with `{status: outcome_unknown, delivery_confirmed: false}` and never retried, because Retry could message a non-owner twice (REQ-runtime-attention-outbox-002). An already-executed replay returns the stored result without re-running the tool.
 
 `abandoned` is a terminal, dashboard-only recovery outcome for an action that was
 previously approved but intentionally left unexecuted. It requires a non-blank
@@ -239,8 +239,11 @@ None. The approvals module is a leaf module. Other modules interact with it indi
   intent and delivery fields stay inside `delivery`, with `request_context` on the envelope; the
   owning daemon supplies both `origin_butler` and `source_butler`. It never resolves or substitutes
   a recipient. Where the cohost approval topology exists, the envelope carries a single-use source
-  proof so Messenger honours the approval instead of parking it twice
-  ([approval delivery authority](../runtime/approval-delivery-authority.md#approved-notify-proof-rfc-0038-d13)).
+  proof so Messenger honours the approval instead of parking it twice. That is the only supported
+  topology for approved non-owner sends (cohosted `butlers up`, source approvals worker flag on).
+  In a single `butlers run`, on split hosts, or with the worker flag off, Messenger parks a
+  second, previewable native approval instead, by design
+  ([approval delivery authority](../runtime/approval-delivery-authority.md#supported-topology-and-the-fallback)).
   This handoff runs inside the shared executor's row lock. A failed delivery, a refused proof, or
   a second park leaves the action `approved` with a null execution result.
 - Calendar mutation replay (the eight tools in `CALENDAR_APPROVAL_TOOLS`,

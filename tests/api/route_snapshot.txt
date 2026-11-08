@@ -2081,7 +2081,7 @@ SCHEMA OwnTracksStatusResponse 8b7b7bdb8832
 SCHEMA OwnTracksTokenResponse 8f03dcfca4e8
 SCHEMA OwnerDeliveryActionRequest 14d512dadf87
 SCHEMA OwnerDeliveryCard 26c1a45d1b35
-SCHEMA OwnerDeliveryRetraction 5432c1fd6db9
+SCHEMA OwnerDeliveryRetraction b83839dbad06
 SCHEMA OwnerDeliveryRetractionReport 086e02926afd
 SCHEMA OwnerEntityInfoResponse d596c1058f5d
 SCHEMA OwnerLawReceipt 66c0392973e2

@@ -123,8 +123,8 @@ async def test_owner_tap_redeems_once_then_retracts_every_other_stale_card(
     edited = {body["message_id"]: body["text"] for body in http.telegram("editMessageText")}
     assert edited[44] == "✅ Approved"
     assert edited[55] == telegram_bot_module._OWNER_DELIVERY_RETRACTED_TEXT
-    # The retraction's own text edit drops the keyboard; no second markup call is made for it.
-    assert [body["message_id"] for body in http.telegram("editMessageReplyMarkup")] == [44]
+    # A text edit without reply_markup drops the keyboard itself; no markup call follows it.
+    assert http.telegram("editMessageReplyMarkup") == []
     # Each retraction attempt is receipted honestly; an unaddressable card is not success.
     reports = {
         url.rsplit("/", 1)[-1]: body
@@ -249,26 +249,6 @@ class _TelegramRefusal(_Http):
         return await super().post(url, **kwargs)
 
 
-async def test_keyboardless_card_retraction_succeeds_without_a_markup_call(
-    owner_resolver: AsyncMock,
-) -> None:
-    """A card with no keyboard retracts cleanly: the text edit is the whole retraction."""
-    token, _ = mint_token()
-    http = _Http(
-        _response(body={"data": {"status": "executed"}}),
-        [{"presentation_id": _STALE_ID, "route_ref": "9001", "provider_ref": "55"}],
-    )
-    connector = _connector()
-    connector._http_client = http  # type: ignore[assignment]
-
-    assert await connector._maybe_handle_owner_delivery_callback(_update(token)) is True
-
-    assert [body["message_id"] for body in http.telegram("editMessageText")][-1] == 55
-    assert 55 not in [body["message_id"] for body in http.telegram("editMessageReplyMarkup")]
-    [(_, report)] = http.dashboard("/api/owner-delivery/retractions/")
-    assert report == {"retracted": True, "reason": None}
-
-
 async def test_genuine_400_on_retraction_still_fails_and_logs_a_safe_description(
     owner_resolver: AsyncMock, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -310,3 +290,174 @@ async def test_unsafe_400_description_is_not_logged_verbatim(
 
     assert "test-token" not in caplog.text
     assert "api.telegram.org" not in caplog.text
+
+
+async def test_token_shaped_400_description_is_not_logged(
+    owner_resolver: AsyncMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A phrase that passes the character filter but looks like a bot token is dropped."""
+    leaked = "123456789:AAEhBOweik6ad9r_QXMENQjcrGbqCr4K-Ao"
+    token, _ = mint_token()
+    http = _TelegramRefusal(
+        _response(body={"data": {"status": "executed"}}),
+        [{"presentation_id": _STALE_ID, "route_ref": "9001", "provider_ref": "55"}],
+        description=f"Bad Request: {leaked}",
+    )
+    http.refuse_text_edit_for = 55
+    connector = _connector()
+    connector._http_client = http  # type: ignore[assignment]
+
+    with caplog.at_level(logging.WARNING):
+        await connector._maybe_handle_owner_delivery_callback(_update(token))
+
+    assert "HTTP 400" in caplog.text
+    assert leaked not in caplog.text
+    assert "AAEhBOweik6ad9r" not in caplog.text
+
+
+_TAPPED_ID = "aaaaaaaa-0000-4000-8000-000000000044"
+
+
+async def test_tapped_card_keeps_its_outcome_and_other_cards_still_retract(
+    owner_resolver: AsyncMock,
+) -> None:
+    """The sweep lists the tapped card too; it must not overwrite the outcome it shows."""
+    token, _ = mint_token()
+    http = _Http(
+        _response(body={"data": {"status": "executed"}}),
+        [
+            {"presentation_id": _TAPPED_ID, "route_ref": "9001", "provider_ref": "44"},
+            {"presentation_id": _STALE_ID, "route_ref": "9001", "provider_ref": "55"},
+        ],
+    )
+    connector = _connector()
+    connector._http_client = http  # type: ignore[assignment]
+
+    assert await connector._maybe_handle_owner_delivery_callback(_update(token)) is True
+
+    edits = [(body["message_id"], body["text"]) for body in http.telegram("editMessageText")]
+    assert [text for mid, text in edits if mid == 44] == ["✅ Approved"]
+    assert [mid for mid, _ in edits if mid == 55] == [55]
+    # The tapped card's own edit drops its buttons: no markup call at all.
+    assert http.telegram("editMessageReplyMarkup") == []
+    reports = {
+        url.rsplit("/", 1)[-1]: body
+        for url, body in http.dashboard("/api/owner-delivery/retractions/")
+    }
+    assert reports == {
+        _TAPPED_ID: {"retracted": True, "reason": "outcome_shown"},
+        _STALE_ID: {"retracted": True, "reason": None},
+    }
+
+
+async def test_apr1_tap_card_is_not_retracted_by_a_later_sweep(
+    owner_resolver: AsyncMock,
+) -> None:
+    connector = _connector()
+    http = _Http(
+        _response(),
+        [{"presentation_id": _TAPPED_ID, "route_ref": "9001", "provider_ref": "44"}],
+    )
+    connector._http_client = http  # type: ignore[assignment]
+
+    await connector._edit_approval_callback_message(_update("x")["callback_query"], "approved")
+    await connector._drain_owner_delivery_retractions()
+
+    assert [b["text"] for b in http.telegram("editMessageText")] == ["✅ Approved"]
+    assert http.telegram("editMessageReplyMarkup") == []
+
+
+async def test_failed_tap_edit_leaves_the_card_to_the_sweep(owner_resolver: AsyncMock) -> None:
+    http = _TelegramRefusal(
+        _response(),
+        [{"presentation_id": _TAPPED_ID, "route_ref": "9001", "provider_ref": "44"}],
+        description="Bad Request: message to edit not found",
+    )
+    http.refuse_text_edit_for = 44
+    connector = _connector()
+    connector._http_client = http  # type: ignore[assignment]
+
+    await connector._edit_approval_callback_message(_update("x")["callback_query"], "approved")
+    await connector._drain_owner_delivery_retractions()
+
+    [(_, report)] = http.dashboard("/api/owner-delivery/retractions/")
+    assert report["reason"] != "outcome_shown"
+
+
+async def test_tap_edit_waits_for_a_running_drain_so_the_outcome_lands_last(
+    owner_resolver: AsyncMock,
+) -> None:
+    import asyncio
+
+    http = _Http(
+        _response(),
+        [{"presentation_id": _TAPPED_ID, "route_ref": "9001", "provider_ref": "44"}],
+    )
+    connector = _connector()
+    connector._http_client = http  # type: ignore[assignment]
+    await connector._owner_delivery_drain_lock.acquire()  # a sweep is mid-drain
+
+    edit = asyncio.create_task(
+        connector._edit_approval_callback_message(_update("x")["callback_query"], "approved")
+    )
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert http.telegram("editMessageText") == []
+    connector._owner_delivery_drain_lock.release()
+    await edit
+
+    assert [b["text"] for b in http.telegram("editMessageText")] == ["✅ Approved"]
+
+
+async def test_retracted_card_keeps_its_subject_and_an_open_link(
+    owner_resolver: AsyncMock,
+) -> None:
+    token, _ = mint_token()
+    http = _Http(
+        _response(body={"data": {"status": "executed"}}),
+        [
+            {
+                "presentation_id": _STALE_ID,
+                "route_ref": "9001",
+                "provider_ref": "55",
+                "subject_line": "[messenger] Approval: Send Telegram message",
+                "open_label": "Open dash.example.com (dashboard)",
+                "open_url": "https://dash.example.com/approvals/" + _STALE_ID,
+            }
+        ],
+    )
+    connector = _connector()
+    connector._http_client = http  # type: ignore[assignment]
+
+    await connector._maybe_handle_owner_delivery_callback(_update(token))
+
+    [edit] = [b for b in http.telegram("editMessageText") if b["message_id"] == 55]
+    assert edit["text"].startswith("[messenger] Approval: Send Telegram message")
+    assert "Handled elsewhere" in edit["text"]
+    # Only an Open link remains: no decision button survives the retraction.
+    assert edit["reply_markup"] == {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "Open dash.example.com (dashboard)",
+                    "url": "https://dash.example.com/approvals/" + _STALE_ID,
+                }
+            ]
+        ]
+    }
+    assert http.telegram("editMessageReplyMarkup") == []
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},
+        {"subject_line": 5, "open_label": "x", "open_url": "http://insecure.example/a"},
+        {"subject_line": "  ", "open_label": "", "open_url": "https://dash.example.com/a"},
+    ],
+    ids=["absent", "malformed", "empty"],
+)
+def test_unusable_subject_or_link_falls_back_to_the_generic_card(extra: dict[str, Any]) -> None:
+    text, markup = telegram_bot_module._retracted_card({"presentation_id": _STALE_ID, **extra})
+    assert text == telegram_bot_module._OWNER_DELIVERY_RETRACTED_TEXT
+    assert markup is None

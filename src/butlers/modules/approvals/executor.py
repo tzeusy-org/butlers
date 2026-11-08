@@ -38,6 +38,7 @@ from butlers.modules.calendar_approval import (
     CALENDAR_APPROVAL_TOOLS,
     retire_legacy_calendar_approval_args,
 )
+from butlers.telegram_api import terminal_telegram_metadata
 
 if TYPE_CHECKING:
     from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
@@ -47,6 +48,30 @@ _EXECUTION_LOCKS: weakref.WeakValueDictionary[uuid.UUID, asyncio.Lock] = (
     weakref.WeakValueDictionary()
 )
 _EXECUTION_LOCKS_GUARD = asyncio.Lock()
+
+
+#: What an approved egress call records when its send may already have reached the recipient.
+_OUTCOME_UNKNOWN_RESULT: dict[str, Any] = {"status": "outcome_unknown", "delivery_confirmed": False}
+
+
+def _send_outcome_unknown(result: Any, *, _depth: int = 0) -> bool:
+    """Whether a tool's failure result says the send may have gone out.
+
+    REQ-runtime-attention-outbox-002: only a proven not-attempted send may be replayed. A
+    ``transport.outcome == "uncertain"`` fragment (Switchboard ``deliver``), a Telegram
+    effect-uncertain or partial-delivery marker, anywhere in the result, is not retryable.
+    """
+    if _depth > 8 or not isinstance(result, dict):
+        return False
+    transport = result.get("transport")
+    if isinstance(transport, dict) and transport.get("outcome") == "uncertain":
+        return True
+    if terminal_telegram_metadata(result):
+        return True
+    return any(
+        _send_outcome_unknown(result.get(key), _depth=_depth + 1)
+        for key in ("result", "data", "error", "notify_response")
+    )
 
 
 @dataclass
@@ -225,6 +250,7 @@ async def execute_approved_action(
         # is already allowed to perform its side effect.
         failed_execution: ExecutionResult | None = None
         execution_result: ExecutionResult | None = None
+        outcome_unknown = False
         action_origin: str | None = None
         now = datetime.now(UTC)
         try:
@@ -331,6 +357,19 @@ async def execute_approved_action(
                             raw_result = await raw_result
                     finally:
                         reset_approval_execution_context(context_token)
+                    outcome_unknown = _send_outcome_unknown(raw_result)
+                    if outcome_unknown:
+                        # The send may have reached the recipient, so Retry could send it
+                        # twice, possibly to a non-owner. Record the action as executed with
+                        # an unknown outcome, never the provider's text; the owner checks the
+                        # channel and sends again deliberately.
+                        logger.warning(
+                            "Approved action %s (%s) outcome unknown after a send that may "
+                            "have gone out; recorded executed, not retryable",
+                            action_id,
+                            tool_name,
+                        )
+                        raw_result = dict(_OUTCOME_UNKNOWN_RESULT)
                     # MCP tool contracts use an error dict for an unsuccessful
                     # operation. Treat it exactly like an exception so a handler that
                     # reports its own failure cannot be recorded as `executed`.
@@ -393,7 +432,10 @@ async def execute_approved_action(
                         actor="system:executor",
                         action_id=action_id,
                         rule_id=approval_rule_id,
-                        metadata={"tool_name": tool_name},
+                        metadata={
+                            "tool_name": tool_name,
+                            **({"outcome": "unknown"} if outcome_unknown else {}),
+                        },
                         occurred_at=now,
                     )
         except Exception as exc:

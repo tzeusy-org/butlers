@@ -19,7 +19,10 @@ neither stranded nor left un-retracted.
 
 from __future__ import annotations
 
+import importlib
+import json
 import logging
+import re
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -67,6 +70,11 @@ class OwnerDeliveryRetraction(BaseModel):
     presentation_id: str
     route_ref: str
     provider_ref: str | None = None
+    # What the card was about and where to read the outcome, derived here from the authority
+    # row and the verified dashboard origin: the connector never takes them from Telegram.
+    subject_line: str | None = None
+    open_label: str | None = None
+    open_url: str | None = None
 
 
 class OwnerDeliveryRetractionReport(BaseModel):
@@ -173,18 +181,81 @@ async def list_owner_delivery_retractions(
     for _, pool in await _find_named_approvals_pools(db_mgr, "pending_actions"):
         try:
             async with pool.acquire() as conn:
-                targets = await _schema_retractions(conn)
+                for t in await _schema_retractions(conn):
+                    try:
+                        shown = await _card_subject(conn, t)
+                    except Exception:  # noqa: BLE001 -- a card without a subject still retracts
+                        logger.warning("owner-delivery card subject unavailable", exc_info=True)
+                        shown = {}
+                    items.append(
+                        OwnerDeliveryRetraction(
+                            presentation_id=str(t.presentation_id),
+                            route_ref=t.route_ref,
+                            provider_ref=t.provider_ref,
+                            **shown,
+                        )
+                    )
         except Exception:
             continue
-        items.extend(
-            OwnerDeliveryRetraction(
-                presentation_id=str(t.presentation_id),
-                route_ref=t.route_ref,
-                provider_ref=t.provider_ref,
-            )
-            for t in targets
-        )
     return ApiResponse(data=items)
+
+
+_PLAIN_UNSAFE = re.compile(r"[^A-Za-z0-9_. -]")
+
+
+def _plain(value: object, limit: int = 80) -> str:
+    """A bounded identifier-like span: no markup, links, or control characters."""
+    return _PLAIN_UNSAFE.sub("", str(value)).strip()[:limit]
+
+
+async def _card_subject(conn: Any, target: owner_delivery.RetractTarget) -> dict[str, str]:
+    """The subject line and Open link of one stale approval card, or ``{}``.
+
+    Read from the schema's own ``pending_actions`` row and the Switchboard's link resolver,
+    so a retracted card still says which approval it was and where to read the outcome.
+    """
+    if target.kind != "approval" or not target.source_ref:
+        return {}
+    try:
+        action_id = UUID(target.source_ref)
+    except ValueError:
+        return {}
+    shown: dict[str, str] = {}
+    row = await conn.fetchrow(
+        "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1", action_id
+    )
+    if row is not None:
+        from butlers.modules.approvals.previews import resolve_call_preview
+
+        tool_name = str(row["tool_name"])
+        raw = row["tool_args"]
+        args = json.loads(raw) if isinstance(raw, str) else raw
+        preview = resolve_call_preview(tool_name, args)
+        title = _plain(preview.title if preview is not None else tool_name)
+        if title:
+            butler = _plain(target.owning_schema or "", 32)
+            shown["subject_line"] = (
+                f"[{butler}] Approval: {title}" if butler else (f"Approval: {title}")
+            )
+    # Switchboard's roster tools are installed under a runtime alias. A link that cannot be
+    # resolved must not cost the card its subject line.
+    try:
+        reference = importlib.import_module(
+            "butlers.tools.switchboard.contracts"
+        ).SelfLinkReferenceV1
+        resolver = importlib.import_module("butlers.tools.switchboard.notification.self_links")
+        link = resolver.resolve_self_link(
+            reference(
+                kind="self", route_key="approval_detail", params={"action_id": str(action_id)}
+            )
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("owner-delivery card link unavailable", exc_info=True)
+        link = None
+    if link is not None:
+        shown["open_label"] = str(link["label"])
+        shown["open_url"] = str(link["url"])
+    return shown
 
 
 async def _schema_retractions(conn: Any) -> tuple[owner_delivery.RetractTarget, ...]:
