@@ -44,6 +44,12 @@ def test_unknown_or_missing_detail_falls_back_to_the_generic_code() -> None:
     assert not provider_rejected(_failed("not_attempted", "recipient_unavailable"))
 
 
+def test_uncertain_transport_codes_are_not_failure_codes() -> None:
+    # An ambiguous send is outcome_unknown, never a retryable "send failed" code.
+    assert send_failure_code(_failed("uncertain", "transport_timeout")) == "send_failed"
+    assert SendFailure("worker_recovery").code == "send_failed"
+
+
 def test_send_failure_text_is_only_the_code() -> None:
     assert str(SendFailure("policy_denied")) == "send_failed:policy_denied"
     assert SendFailure("chat_id='@x'").code == "send_failed"

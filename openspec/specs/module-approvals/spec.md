@@ -367,9 +367,10 @@ Scope: v1-mandatory
 #### Scenario: A failed approved send records a closed, content-free failure code
 
 - **WHEN** an approved outbound send (`notify`, or a Telegram, email or WhatsApp send tool) fails without a proven provider rejection
-- **THEN** the returned error and the `action_execution_failed` event reason are `send_failed:<code>`, where `<code>` is drawn from a closed vocabulary (`recipient_unavailable`, `policy_denied`, `transport_timeout`, `transport_connection_lost`, `worker_recovery`, or the generic `send_failed`), and the event metadata carries `failure_code`
+- **THEN** the returned error and the `action_execution_failed` event reason are `send_failed:<code>`, where `<code>` is drawn from a closed vocabulary (`recipient_unavailable`, `policy_denied`, or the generic `send_failed`), and the event metadata carries `failure_code`
 - **AND** no recipient, message body or provider description appears in the error, event or any API field
 - **AND** status remains `approved` and retryable
+- **AND** an uncertain or partial send is never in this vocabulary: it is recorded executed with `outcome_unknown` and is not retryable
 
 #### Scenario: Manual approval without executor wired
 

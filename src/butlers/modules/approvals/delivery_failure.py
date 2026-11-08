@@ -19,9 +19,6 @@ SEND_FAILURE_LABELS: dict[str, str] = {
     "provider_rejected": "The provider rejected the send (for example a blocked or unknown chat)",
     "recipient_unavailable": "No deliverable recipient was available",
     "policy_denied": "Delivery policy refused the send",
-    "transport_timeout": "The provider did not answer in time",
-    "transport_connection_lost": "The connection to the provider was lost",
-    "worker_recovery": "Delivery was interrupted and could not be confirmed",
     "send_failed": "The send failed before the provider confirmed it",
 }
 

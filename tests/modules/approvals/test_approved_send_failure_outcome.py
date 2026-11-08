@@ -136,3 +136,26 @@ async def test_raw_provider_text_never_reaches_the_record(approvals_pool) -> Non
         action_id,
     )
     assert "Butlerly" not in event["reason"]
+
+
+async def test_uncertain_send_is_executed_outcome_unknown_and_not_retryable(
+    approvals_pool,
+) -> None:
+    action_id = await _approved(approvals_pool)
+    uncertain = {
+        "status": "failed",
+        "error": "timed out talking to chat_id='@Butlerly'",
+        "transport": {"outcome": "uncertain", "error_detail": "transport_timeout"},
+    }
+
+    result = await _run(approvals_pool, action_id, AsyncMock(return_value=uncertain))
+
+    assert result.success is True
+    row = await approvals_pool.fetchrow(
+        "SELECT status, execution_result FROM pending_actions WHERE id = $1", action_id
+    )
+    assert row["status"] == ActionStatus.EXECUTED.value
+    assert row["execution_result"]["result"] == {
+        "status": "outcome_unknown",
+        "delivery_confirmed": False,
+    }

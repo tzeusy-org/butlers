@@ -189,9 +189,6 @@ _SEND_FAILED_CARD_REASONS = {
     "provider_rejected": "the provider rejected it",
     "recipient_unavailable": "no deliverable recipient",
     "policy_denied": "delivery policy refused it",
-    "transport_timeout": "the provider did not answer in time",
-    "transport_connection_lost": "the connection was lost",
-    "worker_recovery": "delivery was interrupted",
 }
 _SEND_FAILED_STATUS_PREFIX = "send_failed:"
 
