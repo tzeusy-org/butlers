@@ -12,7 +12,12 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CHART = _REPO_ROOT / "deploy" / "helm" / "butlers"
 # Site CIDRs are documentation addresses, never real host or credential values.
-_SITE = ["--set", "trackerEgress.deniedCidrs={192.0.2.1/32,192.0.2.2/32}"]
+_SITE = [
+    "--set",
+    "trackerEgress.deniedCidrs={192.0.2.1/32,192.0.2.2/32}",
+    "--set",
+    "egressPolicy.allowedCidrs={198.51.100.7/32}",
+]
 
 needs_helm = pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
 
@@ -119,7 +124,7 @@ def test_dev_ships_review_jobs_on_and_one_tap_routing_off() -> None:
 
 @needs_helm
 def test_tracker_egress_policy_covers_every_pod_without_a_bridge_exception() -> None:
-    names = _by_kind_name(_render("dev", *_SITE))
+    names = _by_kind_name(_render("dev", *_SITE, "--set", "egressPolicy.enabled=false"))
     policy = names[("NetworkPolicy", "butlers-tracker-egress")]["spec"]
     assert policy["podSelector"] == {}
     assert policy["policyTypes"] == ["Egress"]
@@ -134,3 +139,91 @@ def test_tracker_isolation_refuses_missing_site_cidrs() -> None:
     with pytest.raises(subprocess.CalledProcessError) as exc:
         _render("dev")
     assert "trackerEgress.deniedCidrs is required" in exc.value.stderr
+
+
+_PRIVATE = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16"]
+_ALLOW = [
+    "--set",
+    "egressPolicy.enabled=true",
+    "--set",
+    "egressPolicy.allowedCidrs={198.51.100.7/32}",
+]
+
+
+@needs_helm
+@pytest.mark.parametrize("env", ["dev", "prod"])
+def test_egress_policy_excludes_private_ranges_and_admits_the_allowlist(env: str) -> None:
+    docs = _render(env, *_SITE, *_ALLOW)
+    policies = [
+        d for d in docs if d["kind"] == "NetworkPolicy" and "Egress" in d["spec"]["policyTypes"]
+    ]
+    assert [p["metadata"]["name"] for p in policies] == ["butlers-tracker-egress"]
+    assert policies[0]["spec"]["podSelector"] == {}
+    egress = policies[0]["spec"]["egress"]
+    assert {"to": [{"namespaceSelector": {}}]} in egress
+    assert {"to": [{"ipBlock": {"cidr": "198.51.100.7/32"}}]} in egress
+    assert {
+        "to": [
+            {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}}
+        ],
+        "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}],
+    } in egress
+    public = [r for r in egress if r["to"][0].get("ipBlock", {}).get("cidr") == "0.0.0.0/0"]
+    assert public[0]["to"][0]["ipBlock"]["except"] == ["192.0.2.1/32", "192.0.2.2/32", *_PRIVATE]
+
+
+@needs_helm
+def test_egress_policy_refuses_an_empty_allowlist_unless_opted_out() -> None:
+    with pytest.raises(subprocess.CalledProcessError) as exc:
+        _render(
+            "dev",
+            *_SITE,
+            "--set",
+            "egressPolicy.enabled=true",
+            "--set",
+            "egressPolicy.allowedCidrs=null",
+        )
+    assert "egressPolicy.allowedCidrs is required" in exc.value.stderr
+    docs = _render(
+        "dev", *_SITE, "--set", "egressPolicy.enabled=true", "--set", "egressPolicy.allowedCidrs=null",
+        "--set", "egressPolicy.allowNoAllowlist=true",
+    )  # fmt: skip
+    assert ("NetworkPolicy", "butlers-tracker-egress") in _by_kind_name(docs)
+
+
+@needs_helm
+def test_egress_policy_renders_without_the_dolt_deny_in_prod() -> None:
+    names = _by_kind_name(_render("prod", *_ALLOW))
+    public = names[("NetworkPolicy", "butlers-tracker-egress")]["spec"]["egress"][-1]
+    assert public["to"][0]["ipBlock"]["except"] == _PRIVATE
+
+
+@needs_helm
+def test_egress_allowlist_cannot_readmit_a_denied_tracker_cidr() -> None:
+    with pytest.raises(subprocess.CalledProcessError) as exc:
+        _render(
+            "dev",
+            *_SITE,
+            "--set",
+            "egressPolicy.enabled=true",
+            "--set",
+            "egressPolicy.allowedCidrs={192.0.2.1/32}",
+        )
+    assert "would re-admit the tracker" in exc.value.stderr
+
+
+def _site_args(hosts: str) -> subprocess.CompletedProcess[str]:
+    env = {"PATH": "/usr/bin:/bin", "ALLOWED_TAILNET_HOSTS": hosts}
+    script = _REPO_ROOT / "scripts" / "k8s" / "site-helm-args.sh"
+    return subprocess.run(["bash", str(script)], capture_output=True, text=True, env=env, cwd="/")
+
+
+def test_site_args_map_hosts_to_cidrs_without_globbing() -> None:
+    ok = _site_args("198.51.100.1  198.51.100.2")
+    assert (
+        ok.stdout.strip() == "--set 'egressPolicy.allowedCidrs={198.51.100.1/32,198.51.100.2/32}'"
+    )
+    for bad in ("*", "host.example", "198.51.100.1 *"):
+        refused = _site_args(bad)
+        assert refused.returncode == 1 and "IPv4" in refused.stderr and not refused.stdout
+    assert _site_args("   ").stdout == ""

@@ -1031,6 +1031,8 @@ def test_key_absent_control_workload_and_session_network_contract():
             "database.host=db.invalid",
             "--set",
             "trackerEgress.enabled=false",
+            "--set",
+            "egressPolicy.enabled=false",
             *extra,
         ]
         return subprocess.run(command, capture_output=True, text=True)
