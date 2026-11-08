@@ -406,6 +406,59 @@ $dnd_boundary$;
 \endif
 DND_AUDIT_SQL
 
+# Closed ten-relation perception companion has its own namespace/owner audit.
+PERCEPTION_DECLARED=false
+if gunzip -c "$BACKUP_FILE" | awk '
+  /^CREATE SCHEMA perception_backup;/ { found=1 }
+  END { exit !found }'; then
+  PERCEPTION_DECLARED=true
+fi
+PGPASSWORD="$PG_PASSWORD" psql --host="$PG_HOST" --port="$PG_PORT" \
+  --username="$PG_USER" --dbname="$TARGET_DB" --no-password --set=ON_ERROR_STOP=1 \
+  --set=perception_declared="$PERCEPTION_DECLARED" --quiet <<'PERCEPTION_AUDIT_SQL'
+SELECT :'perception_declared'::boolean OR to_regnamespace('perception_backup') IS NOT NULL AS perception_audit_needed \gset
+\if :perception_audit_needed
+DO $perception_boundary$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname='perception_owner'
+      AND NOT r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolcreaterole
+      AND NOT r.rolcreatedb AND NOT r.rolreplication AND NOT r.rolbypassrls
+      AND NOT EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.roleid=r.oid OR m.member=r.oid))
+     OR (SELECT count(*) FROM pg_roles WHERE rolname IN ('butlers_backup_export','butlers_backup_restore')
+         AND NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper AND NOT rolcreaterole
+         AND NOT rolcreatedb AND NOT rolreplication AND NOT rolbypassrls) <> 2
+     OR NOT EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname='perception_backup'
+         AND n.nspowner=to_regrole('perception_owner') AND NOT EXISTS (
+           SELECT 1 FROM aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a
+           WHERE a.is_grantable OR NOT (a.grantee=n.nspowner OR
+             (a.grantee IN (to_regrole('butlers_backup_export'),to_regrole('butlers_backup_restore'))
+              AND a.privilege_type='USAGE'))))
+     OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='perception_backup') <> 3
+     OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='perception_backup' AND p.proowner=to_regrole('perception_owner')
+           AND p.prosecdef AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp','row_security=on']
+           AND ((p.proname='export_v1' AND p.pronargs=0 AND p.proretset AND p.prorettype=2249 AND p.provolatile='s')
+             OR (p.proname='export_schema_v1' AND p.pronargs=0 AND p.proretset AND p.prorettype=25 AND p.provolatile='s')
+             OR (p.proname='restore_v1' AND p.proargtypes='3802'::oidvector
+                 AND NOT p.proretset AND p.prorettype=2278 AND p.provolatile='v'))
+           AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+             WHERE a.is_grantable OR NOT (a.grantee=p.proowner OR
+               (a.grantee=CASE WHEN p.proname='restore_v1' THEN to_regrole('butlers_backup_restore')
+                               ELSE to_regrole('butlers_backup_export') END AND a.privilege_type='EXECUTE')))
+           AND has_function_privilege(CASE WHEN p.proname='restore_v1' THEN 'butlers_backup_restore'
+                                           ELSE 'butlers_backup_export' END,p.oid,'EXECUTE')) <> 3
+     OR NOT coalesce(has_schema_privilege('butlers_backup_export',to_regnamespace('perception_backup'),'USAGE'),false)
+     OR NOT coalesce(has_schema_privilege('butlers_backup_restore',to_regnamespace('perception_backup'),'USAGE'),false)
+  THEN
+    RAISE EXCEPTION 'PERCEPTION backup authority is untrusted; restore is not certified';
+  END IF;
+END
+$perception_boundary$;
+SELECT count(*) FROM perception_private.backup_catalog();
+\endif
+PERCEPTION_AUDIT_SQL
+
 # A strict scoped importer failure still cannot skip the existing ownership
 # diagnosis. Preserve that audit, then refuse certification of incomplete data.
 if [[ "$RESTORE_DATA_FAILED" == true ]]; then

@@ -1,15 +1,7 @@
-"""Partial private-history backup foundation (bu-cew60z).
+"""Complete fixed private-history backup: DND plus all ten perception populations.
 
-The required full backup includes DND receipts, guard and DND-only context plus
-all ten canonical perception relations. Those perception sources are not yet
-implemented; an absent-table guard does not prove populated coverage. The dark
-producer logs unavailable DND export and does not satisfy full backup acceptance.
-
-The controls below exercise fixed-owner authority, strict staged-row validation,
-expired/superseded DND history, and the actual emitted-artifact restore consumer
-with a positioned ordinary/private shared-snapshot mutation. They never widen the
-dump identity. Synthetic disposable verification is not operational activation,
-independent conformance approval, full-source completion or human-hold release.
+Synthetic disposable verification never activates a live export/restore identity.
+The ordinary dump identity remains outside both owner and backup capabilities.
 """
 
 from __future__ import annotations
@@ -466,6 +458,28 @@ def test_restore_refuses_foreign_or_malformed_rows(
     assert _dnd_snapshot(admin) == before
 
 
+def _unexported_perception_relations(connection, registered: dict) -> list[str]:
+    present = {
+        f"{schema}.{name}"
+        for schema, name in connection.exec_driver_sql(
+            "SELECT n.nspname,c.relname FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid=c.relnamespace "
+            "WHERE c.relkind IN ('r','p') AND (n.nspname LIKE 'perception%' "
+            "OR c.relname LIKE 'perception\\_%') "
+            "AND NOT (n.nspname='perception_admin' AND c.relname='bootstrap_configuration')"
+        )
+    }
+    present |= {
+        relation
+        for relation, entry in registered.items()
+        if entry["interface"] == "perception"
+        and connection.execute(
+            text("SELECT to_regclass(:name) IS NOT NULL"), {"name": relation}
+        ).scalar_one()
+    }
+    return sorted(r for r in present if registered.get(r, {}).get("status") != "exported")
+
+
 @pytest.mark.db
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
@@ -481,23 +495,26 @@ def test_every_perception_relation_present_is_covered_by_the_export_manifest(
     admin = _admin_for(postgres_container, migrated_db_url)
     manifest = _manifest()
     registered = {p["relation"]: p for p in manifest["populations"]}
-    present = {
-        f"{schema}.{name}"
-        for schema, name in _rows(
-            admin,
-            "SELECT n.nspname, c.relname FROM pg_class c "
-            "JOIN pg_namespace n ON n.oid = c.relnamespace "
-            "WHERE c.relkind IN ('r', 'p') AND (n.nspname LIKE 'perception%' "
-            "OR c.relname LIKE 'perception\\_%')",
-        )
-    }
-    present |= {
-        relation
-        for relation, entry in registered.items()
-        if entry["interface"] == "perception"
-        and _scalar(admin, "SELECT to_regclass(:name) IS NOT NULL", name=relation)
-    }
-    unexported = sorted(r for r in present if registered.get(r, {}).get("status") != "exported")
+    engine = create_engine(admin)
+    try:
+        with engine.connect() as conn:
+            unexported = _unexported_perception_relations(conn, registered)
+            assert conn.exec_driver_sql(
+                "SELECT to_regclass('perception_admin.bootstrap_configuration') IS NOT NULL"
+            ).scalar_one()
+            with conn.begin_nested() as renamed:
+                # A real migrated relation becomes an unregistered private name;
+                # no test-owned DDL/fictional table can substitute this inverse.
+                conn.exec_driver_sql(
+                    "ALTER TABLE perception_private.source_refs RENAME TO unexpected_source_refs"
+                )
+                assert _unexported_perception_relations(conn, registered) == [
+                    "perception_private.unexpected_source_refs"
+                ]
+                renamed.rollback()
+            assert _unexported_perception_relations(conn, registered) == unexported
+    finally:
+        engine.dispose()
     assert not unexported, (
         "Perception relations exist but are not exported by the private-history "
         f"backup: {unexported}. Add an exporter and set status 'exported' in "
@@ -509,6 +526,103 @@ def test_every_perception_relation_present_is_covered_by_the_export_manifest(
             assert _scalar(
                 admin, "SELECT to_regprocedure(:fn) IS NOT NULL", fn=iface["export_function"]
             ), f"{relation} is marked exported but its exporter is missing"
+
+
+def _perception_snapshot(admin: str) -> dict:
+    relations = [
+        p["relation"] for p in _manifest()["populations"] if p["interface"] == "perception"
+    ]
+    assert len(relations) == 10 and all(
+        p["status"] == "exported" for p in _manifest()["populations"]
+    )
+    return {
+        r: _rows(admin, f"SELECT to_jsonb(t)::text FROM {r} t ORDER BY to_jsonb(t)::text")
+        for r in relations
+    }
+
+
+def _seed_perception(admin: str) -> None:
+    from datetime import timedelta
+
+    from tests.perception.factories import AT, EVIDENCE, OWNER, request, wire_time
+    from tests.perception.test_perception_postgres import call, write
+
+    engine = create_engine(admin)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO public.entities(id,canonical_name,entity_type,roles) VALUES(:id,'Synthetic perception owner','person',ARRAY['owner'])"
+                ),
+                {"id": OWNER},
+            )
+            conn.execute(
+                text(
+                    "UPDATE perception_private.sources SET subjects=ARRAY[CAST(:id AS uuid)],null_subject=true,max_age_seconds=3600,expectation_kinds=ARRAY['confirmed_routine'],evidence_sources=ARRAY['fixture.evidence']"
+                ),
+                {"id": OWNER},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO perception_private.source_refs(id,source,ref_type) SELECT :id,source,'evidence' FROM perception_private.sources"
+                ),
+                {"id": EVIDENCE},
+            )
+            receipt = conn.exec_driver_sql(
+                "SELECT mutation_id FROM public.dnd_generation_mutations ORDER BY generation LIMIT 1"
+            ).scalar_one()
+            conn.execute(
+                text(
+                    "INSERT INTO perception_private.suppression_refs(id,source) VALUES(:id,'attention.suppression')"
+                ),
+                {"id": receipt},
+            )
+            write(conn, request(key="backup-enter"))
+            write(
+                conn,
+                request(
+                    key="backup-leave",
+                    generation=1,
+                    minute=1,
+                    value={"presence": "outside", "place_ref": None, "locality_ref": None},
+                ),
+            )
+            write(conn, request(key="backup-return", generation=2, minute=2))
+            write(conn, request(key="backup-mode", kind="owner.mode"), "perception_context_writer")
+            body = {
+                "version": 1,
+                "id": str(uuid.uuid4()),
+                "kind": "owner.activity",
+                "subject": str(OWNER),
+                "goal_ref": str(uuid.uuid4()),
+                "predicate": {"tag": "at", "instant": wire_time(AT), "zone": "UTC"},
+                "source_boundary": ["fixture.evidence"],
+                "source": "context.activity",
+                "starts_at": wire_time(AT),
+                "expires_at": wire_time(AT + timedelta(minutes=5)),
+                "evidence_refs": [str(EVIDENCE)],
+                "authority_ref": None,
+            }
+            call(
+                conn,
+                "SELECT public.perception_bind(CAST(:body AS jsonb))",
+                {"body": json.dumps(body)},
+                "perception_context_writer",
+            )
+            body.update(
+                id=str(uuid.uuid4()),
+                kind="owner.suppression",
+                source="attention.suppression",
+                authority_ref=str(receipt),
+            )
+            call(
+                conn,
+                "SELECT public.perception_bind(CAST(:body AS jsonb))",
+                {"body": json.dumps(body)},
+                "perception_attention_writer",
+            )
+    finally:
+        engine.dispose()
 
 
 def _backup_with_export_login(
@@ -537,6 +651,9 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
     migrated_db_url = fresh_db("core")
     admin = _admin_for(postgres_container, migrated_db_url)
     _seed_dnd(admin)
+    _seed_perception(admin)
+    perception_before = _perception_snapshot(admin)
+    assert all(perception_before.values())
 
     dark_dir = tmp_path / "dark"
     dark_dir.mkdir()
@@ -547,7 +664,9 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
     )
     (dark_artifact,) = dark_dir.glob("butlers_*.sql.gz")
     with gzip.open(dark_artifact, "rt", encoding="utf-8", errors="replace") as handle:
-        assert "butlers_dnd_restore_rows" not in handle.read()
+        dark_sql = handle.read()
+        assert "butlers_dnd_restore_rows" not in dark_sql
+        assert "butlers_perception_restore_rows" not in dark_sql
 
     source_before = _dnd_snapshot(admin)
     ordinary_engine = create_engine(admin)
@@ -666,6 +785,7 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
                     "UPDATE public.entities SET canonical_name='After backup snapshot' WHERE id=%s",
                     (ordinary_id,),
                 )
+                conn.exec_driver_sql("UPDATE perception_private.sources SET max_age_seconds=1800")
                 conn.exec_driver_sql("SET LOCAL ROLE butler_general_rw")
                 conn.exec_driver_sql(
                     "SELECT public.context_dnd_mutate(%s::uuid,'general','set',"
@@ -675,6 +795,7 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
         finally:
             changed.dispose()
         assert _dnd_snapshot(admin) != source_before
+        assert _perception_snapshot(admin) != perception_before
         release.touch()
         stdout, stderr = process.communicate(timeout=120)
         assert process.returncode == 0, stderr
@@ -695,6 +816,9 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
         dump = handle.read()
     assert "-- Butlers private DND history" in dump
     assert "dnd_generation_backup.restore_v1(" in dump
+    assert "perception_backup.restore_v1(" in dump
+    for relation in perception_before:
+        assert f"\t{relation}\t" in dump
     staged = [
         json.loads(bytes.fromhex(line.split("\t", 2)[2]).decode("utf-8"))
         for line in dump.splitlines()
@@ -739,6 +863,10 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
         with damage.begin() as conn:
             # Genuine canonical tables were provisioned above, not fabricated.
             # Only the omitted objects/namespace are absent for this handoff.
+            conn.exec_driver_sql("DROP SCHEMA perception_private CASCADE")
+            conn.exec_driver_sql(
+                "DROP TABLE public.situation_slots,public.owner_modes,public.timeline,public.perception_conditions,public.perception_suppressions CASCADE"
+            )
             conn.exec_driver_sql("DROP SCHEMA dnd_generation_backup CASCADE")
             conn.exec_driver_sql("DROP TABLE public.dnd_generation_mutations,public.user_context")
     finally:
@@ -793,6 +921,7 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
     assert json.loads(epoch_file.read_text())["generation"] != prior_epoch["generation"]
     restored = control._replace(path=f"/{target_db}").geturl()
     assert _dnd_snapshot(restored) == source_before
+    assert _perception_snapshot(restored) == perception_before
     assert (
         _scalar(restored, "SELECT canonical_name FROM public.entities WHERE id=:id", id=ordinary_id)
         == "Before backup snapshot"
@@ -916,3 +1045,38 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
     finally:
         runtime.dispose()
     assert _dnd_snapshot(restored) == source_before
+
+    assert _perception_snapshot(restored) == perception_before
+    audit = create_engine(restored)
+    try:
+        with audit.begin() as conn:
+            assert (
+                conn.exec_driver_sql(
+                    "SELECT count(*) FROM perception_backup.export_schema_v1()"
+                ).scalar_one()
+                > 100
+            )
+            for relation in perception_before:
+                assert conn.execute(
+                    text(
+                        "SELECT relowner='perception_owner'::regrole AND relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid=to_regclass(:r)"
+                    ),
+                    {"r": relation},
+                ).scalar_one()
+                for role in (
+                    urlparse(migrated_db_url).username,
+                    "butler_general_rw",
+                    "butlers_backup_export",
+                    "butlers_backup_restore",
+                ):
+                    assert not conn.execute(
+                        text("SELECT has_table_privilege(:role,to_regclass(:r),'SELECT')"),
+                        {"role": role, "r": relation},
+                    ).scalar_one()
+        for relation in ("public.timeline", "perception_private.receipts"):
+            with pytest.raises(DBAPIError, match="immutable"):
+                with audit.begin() as conn:
+                    conn.exec_driver_sql("SET LOCAL ROLE perception_owner")
+                    conn.exec_driver_sql(f"DELETE FROM {relation}")
+    finally:
+        audit.dispose()

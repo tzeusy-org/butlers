@@ -36,6 +36,7 @@ _ADMINS = (
     ("restore_drill_executor_admin", "core_196_restore_drill_executor_boundary.py"),
     ("dnd_generation_admin", "core_197_canonical_dnd_generation_guard.py"),
     ("runtime_attention_admin", "core_198_runtime_attention_outbox.py"),
+    ("perception_admin", "core_322_dark_perception.py"),
 )
 
 
@@ -180,6 +181,19 @@ SELECT NOT EXISTS (
 # predicate instead. Bootstrap-only producer/control tables are not outbox
 # installation and therefore are intentionally not sentinels here.
 _INSTALLED = {
+    "perception_admin": """
+        SELECT to_regnamespace('perception_private') IS NOT NULL
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_class AS c
+            JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace
+            WHERE n.nspname='public' AND c.relname IN
+                ('situation_slots','timeline','owner_modes',
+                 'perception_conditions','perception_suppressions'))
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc AS p
+            JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace
+            WHERE n.nspname='public' AND p.proname IN
+                ('perception_write','perception_read','perception_timeline',
+                 'perception_bind','perception_registry'))
+    """,
     "restore_drill_executor_admin": """
         SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace AS n
             WHERE n.nspname = 'restore_drill_executor' AND (
@@ -255,6 +269,10 @@ _CATALOG_NAMES = frozenset(
         "count",
         "unnest",
         "array_length",
+        "array_agg",
+        "encode",
+        "sha256",
+        "convert_to",
         "cardinality",
         "to_regclass",
         "to_regnamespace",
@@ -288,7 +306,7 @@ def _qualified_predicate(sql: str) -> str:
     return _SQL_TOKEN.sub(replace, sql)
 
 
-@lru_cache(maxsize=3)
+@lru_cache(maxsize=4)
 def _finalized_predicate(filename: str) -> str:
     # The runner already requires this checked-in Alembic directory. Loading
     # trusted code constants avoids maintaining a weaker duplicate of hundreds

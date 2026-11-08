@@ -277,3 +277,16 @@ The connector records detected changes independently of ingest; Chronicler reads
 through its SELECT-only runtime role. The established `connector_writer` role
 writes the table. Bootstrap replay maintains the read grant. The table survives
 source downgrade so rolling back a producer cannot erase captured observations.
+
+### Dark canonical perception
+
+`core_322` installs the shared, forced owner-only representation under
+`perception_owner`: `public.situation_slots`, `public.owner_modes`,
+`public.timeline`, `public.perception_conditions`, `public.perception_suppressions`
+and `perception_private.{kinds,sources,source_refs,suppression_refs,receipts}`.
+The privileged control singleton stays in `perception_admin`; normal migrations
+cannot own or read it. `perception_backup` holds only the closed export/schema/
+restore functions, with no application tables or runtime grants. All ten durable
+populations use the same-snapshot private backup companion. These objects do not
+activate any producer or replace context-bus, DND, concern or UI-timeline truth.
+See [perception](perception.md) and [backup](../operations/backup-restore.md#private-history-export).
