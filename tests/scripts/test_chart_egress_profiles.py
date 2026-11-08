@@ -29,6 +29,7 @@ _TRACKER = "192.0.2.1"
 _OTLP = "198.51.100.9"
 _HOME_ASSISTANT = "198.51.100.10"
 _OFFSITE = "198.51.100.11"
+_POLICY_SITE = "10.0.0.7"
 _SITES = (
     "egressProfiles.sites.database.namespace=postgres-dev",
     f"egressProfiles.sites.otlp.cidr={_OTLP}/32",
@@ -68,7 +69,15 @@ _GATEWAY = _component("egress-gateway")
 def _render(*settings: str) -> subprocess.CompletedProcess[str]:
     command = ["helm", "template", "butlers", str(_CHART), "--namespace", _NS]
     command += ["-f", str(_CHART / "values.yaml"), "-f", str(_CHART / "values.dev.yaml")]
-    site = (f"trackerEgress.deniedCidrs={{{_TRACKER}/32}}", "database.host=postgres.invalid")
+    # Declare test topology/mode rather than inheriting the environment's dev enable.
+    # Explicit per-case settings below can select the predecessor policy instead.
+    site = (
+        "trackerEgress.enabled=true",
+        f"trackerEgress.deniedCidrs={{{_TRACKER}/32}}",
+        "egressPolicy.enabled=false",
+        f"egressPolicy.allowedCidrs={{{_POLICY_SITE}/32}}",
+        "database.host=postgres.invalid",
+    )
     for setting in ("image.tag=t", "frontendImage.tag=t", *site, *settings):
         command += ["--set", setting]
     return subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
@@ -174,9 +183,54 @@ def everything() -> list[dict]:
     return _docs(*_EVERYTHING)
 
 
-def test_profiles_off_renders_no_profile_policy_and_keeps_the_tracker_policy():
-    names = {d["metadata"]["name"] for d in _egress_policies(_docs())}
+@pytest.mark.parametrize("policy_enabled", [False, True])
+def test_profiles_off_renders_no_profile_policy_and_keeps_the_tracker_policy(policy_enabled):
+    docs = _docs(
+        "egressProfiles.enabled=false", f"egressPolicy.enabled={str(policy_enabled).lower()}"
+    )
+    names = {d["metadata"]["name"] for d in _egress_policies(docs)}
     assert names == {"butlers-tracker-egress"}
+    pod = _pods(docs)["butlers-up"]
+    assert not _admitting(docs, pod, Dest(ip=_TRACKER), 3307)
+    assert _admitting(docs, pod, Dest(ip="203.0.113.5"), 443)
+    assert _admitting(docs, pod, Dest(ip=_POLICY_SITE), 443)
+    assert bool(_admitting(docs, pod, Dest(ip="10.0.0.5"), 443)) is (not policy_enabled)
+
+
+@pytest.mark.parametrize("tracker_enabled", [True, False])
+def test_rollback_holds_workloads_and_retains_restrictive_policy_union(tracker_enabled):
+    settings = (
+        *_EVERYTHING,
+        "egressPolicy.enabled=false",
+        f"trackerEgress.enabled={str(tracker_enabled).lower()}",
+    )
+    before = _docs(*settings)
+    held = _docs(*settings, "suspend=true")
+    deployments = [d for d in held if d["kind"] == "Deployment"]
+    cronjobs = [d for d in held if d["kind"] == "CronJob"]
+    assert deployments and cronjobs
+    assert all(d["spec"]["replicas"] == 0 for d in deployments)
+    assert all(d["spec"]["suspend"] is True for d in cronjobs)
+    # Suspend does not remove policies: even a lingering/recreated pod stays contained.
+    assert _egress_policies(held) == _egress_policies(before)
+    forbidden = [(Dest(ip=_PUBLIC_IP), 443), (_component("dashboard-api"), 49999)]
+    for name, labels in _pods(held).items():
+        gateway = labels["app.kubernetes.io/component"] == "egress-gateway"
+        for dest, port in forbidden:
+            # Keep workload containment while retaining the gateway's declared
+            # public route. Suspend changes replicas, never the policy union.
+            expected = gateway and dest.ip == _PUBLIC_IP and port == 443
+            assert bool(_admitting(held, labels, dest, port)) is expected, (name, dest, port)
+    # Position the unsafe former runbook: turning profiles off widens the union,
+    # whether it restores tracker-egress or leaves the pod without an egress policy.
+    unsafe = _docs(*settings, "egressProfiles.enabled=false")
+    assert any(d["spec"]["replicas"] > 0 for d in unsafe if d["kind"] == "Deployment")
+    pod = _pods(unsafe)["butlers-up"]
+    assert all(_admitting(unsafe, pod, dest, port) for dest, port in forbidden)
+    # Existing positive routes survive in the retained configuration; hold is not a
+    # replacement allowlist or evidence that actual workloads have been drained.
+    assert _admitting(held, pod, _DNS, 53, "UDP")
+    assert _admitting(held, pod, _component("dashboard-api"), 41200)
 
 
 def test_profiles_replace_the_tracker_policy_and_every_pod_starts_denied(everything):

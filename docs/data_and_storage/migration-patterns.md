@@ -120,6 +120,26 @@ To create a new module migration chain:
 3. Create the first migration with `branch_labels = ("<name>",)` and `down_revision = None`.
 4. CLI and daemon discover the non-empty directory through `get_module_migration_chains()`; no hook override is needed.
 
+### Granting to runtime roles
+
+Never spell the runtime-role fleet out by hand. A literal "every butler" tuple
+freezes the fleet on the day it was written: the lists written before the
+concierge existed all omit `butler_concierge_rw`. Grant through
+`butlers.db_authority.roles`: `butler_roles()` (every `butler_<schema>_rw`,
+derived from `roster/*/butler.toml`) or `runtime_roles()` (those plus
+`connector_writer`). Both raise rather than return a partial list when the
+roster is unreadable. A narrow, deliberate reader list (one or two named
+butlers) stays literal.
+
+`tests/config/test_literal_role_list_ratchet.py` fails on a new literal fleet
+list in a revision: seven or more runtime roles or roster schema names in one
+tuple, list or set, or seven or more roles in one SQL string. Existing sites are
+frozen in its baseline, which only shrinks. `tests/config/test_db_authority_roles.py`
+holds the four fleet arrays in `scripts/init-db.sql` and
+`butlers.bootstrap_prerequisite._BUTLERS` equal to the roster. This is the first slice of the DB authority model
+(bu-dss7he.6); the declarative grant manifest that replaces init-db's blanket
+public-table DML comes later.
+
 ### Database-global protected public boundaries
 
 Core migrations may be replayed once for each target schema even when they

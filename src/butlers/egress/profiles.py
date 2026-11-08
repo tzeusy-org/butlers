@@ -117,7 +117,7 @@ def _text(where: str, value: Any) -> str:
 
 
 def _name(where: str, value: Any) -> str:
-    if not isinstance(value, str) or not _NAME.match(value):
+    if not isinstance(value, str) or not _NAME.fullmatch(value):
         raise ProfileError(f"{where}: {value!r} is not a valid component/site name")
     return value
 
@@ -187,8 +187,8 @@ def _external(where: str, value: Any) -> ExternalHost:
         host != host.lower()
         or len(host) > 253
         or len(labels) < 2
-        or not all(_LABEL.match(label) for label in labels)
-        or not _TLD.match(labels[-1])
+        or not all(_LABEL.fullmatch(label) for label in labels)
+        or not _TLD.fullmatch(labels[-1])
     ):
         raise ProfileError(
             f"{where}: {host!r} must be an exact lowercase public DNS name "

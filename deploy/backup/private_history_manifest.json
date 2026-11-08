@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "description": "Relations whose full history enters the backup only through a fixed export definer, never through the dump identity (bu-cew60z). status 'exported' means deploy/backup/pg_dump.sh stages the rows; any listed relation that exists in a database while its status is not 'exported' fails tests/scripts/test_private_history_backup.py.",
+  "export_role": "butlers_backup_export",
+  "restore_role": "butlers_backup_restore",
+  "interfaces": {
+    "dnd": {
+      "export_function": "dnd_generation_backup.export_v1()",
+      "schema_function": "dnd_generation_backup.export_schema_v1()",
+      "restore_function": "dnd_generation_backup.restore_v1(jsonb)",
+      "owner": "dnd_generation_owner"
+    }
+  },
+  "populations": [
+    {"relation": "public.dnd_generation_mutations", "interface": "dnd", "status": "exported", "ordinal": 1, "filter": null},
+    {"relation": "public.dnd_generation_guard", "interface": "dnd", "status": "exported", "ordinal": 2, "filter": null},
+    {"relation": "public.user_context", "interface": "dnd", "status": "exported", "ordinal": 3, "filter": "signal_type = 'dnd'"},
+    {"relation": "perception_private.kinds", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
+    {"relation": "perception_private.sources", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
+    {"relation": "perception_private.source_refs", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
+    {"relation": "perception_private.suppression_refs", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
+    {"relation": "perception_private.receipts", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
+    {"relation": "public.situation_slots", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
+    {"relation": "public.owner_modes", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
+    {"relation": "public.timeline", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
+    {"relation": "public.perception_conditions", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
+    {"relation": "public.perception_suppressions", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"}
+  ]
+}
