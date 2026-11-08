@@ -239,8 +239,11 @@ None. The approvals module is a leaf module. Other modules interact with it indi
   intent and delivery fields stay inside `delivery`, with `request_context` on the envelope; the
   owning daemon supplies both `origin_butler` and `source_butler`. It never resolves or substitutes
   a recipient. Where the cohost approval topology exists, the envelope carries a single-use source
-  proof so Messenger honours the approval instead of parking it twice
-  ([approval delivery authority](../runtime/approval-delivery-authority.md#approved-notify-proof-rfc-0038-d13)).
+  proof so Messenger honours the approval instead of parking it twice. That is the only supported
+  topology for approved non-owner sends (cohosted `butlers up`, source approvals worker flag on).
+  In a single `butlers run`, on split hosts, or with the worker flag off, Messenger parks a
+  second, previewable native approval instead, by design
+  ([approval delivery authority](../runtime/approval-delivery-authority.md#supported-topology-and-the-fallback)).
   This handoff runs inside the shared executor's row lock. A failed delivery, a refused proof, or
   a second park leaves the action `approved` with a null execution result.
 - Calendar mutation replay (the eight tools in `CALENDAR_APPROVAL_TOOLS`,
