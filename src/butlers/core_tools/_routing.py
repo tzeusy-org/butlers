@@ -40,6 +40,12 @@ from butlers.core.approvals_hooks import (
     is_approved_tool_execution,
     park_pending_action,
 )
+from butlers.core.approved_delivery import (
+    APPROVED_NOTIFY_CONTEXT_KEY,
+    ApprovedNotifyAttestation,
+    bind_verified_approved_delivery,
+    reset_verified_approved_delivery,
+)
 from butlers.core.dashboard_turns import claim_target, mark_route_enqueued, mark_terminal
 from butlers.core.model_routing import Complexity, coerce_complexity_tier
 from butlers.core.notify_attachments import AttachmentError, redact_attachment_content
@@ -125,6 +131,27 @@ def _raw_input_has_approval_recovery(input_payload: Any) -> bool:
         return False
     notify_request = context.get("notify_request")
     return isinstance(notify_request, dict) and notify_request.get("recovery") is not None
+
+
+def _authenticated_approved_notify(input_payload: Any) -> ApprovedNotifyAttestation | None:
+    """Return Switchboard's approved-notify attestation only from its protected hop.
+
+    The field is a plain value on any public request, so it is honoured only when
+    the kernel-admitted Switchboard principal installed this request. Coverage of
+    the exact routed envelope is checked later by the shared approval matcher.
+    """
+    if not isinstance(input_payload, dict):
+        return None
+    context = input_payload.get("context")
+    raw = context.get(APPROVED_NOTIFY_CONTEXT_KEY) if isinstance(context, dict) else None
+    if raw is None:
+        return None
+    if protected_approval_principal(audience="messenger:approval-recovery") != "switchboard":
+        return None
+    try:
+        return ApprovedNotifyAttestation.from_internal_dict(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def _preauthenticate_messenger_recovery(
@@ -919,30 +946,43 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             except Exception:
                 return _approval_recovery_refusal_response()
 
-        parent_ctx = extract_trace_context(trace_context) if trace_context else None
-        tracer = trace.get_tracer("butlers")
-        with tracer.start_as_current_span("butler.tool.route.execute", context=parent_ctx) as _span:
-            tag_butler_span(_span, butler_name)
-            # Capture the accept-phase span context so the background processing
-            # task can link back to it via a SpanLink (cross-trace correlation).
-            accept_span_ctx = _span.get_span_context()
-            return await _route_execute_inner(
-                schema_version=schema_version,
-                request_context=request_context,
-                input=input,
-                subrequest=subrequest,
-                target=target,
-                source_metadata=source_metadata,
-                trace_context=trace_context,
-                parent_ctx=parent_ctx,
-                accept_span_ctx=accept_span_ctx,
-                daemon=daemon,
-                pool=pool,
-                spawner=spawner,
-                butler_name=butler_name,
-                route_metrics=route_metrics,
-                trusted_messenger_recovery=trusted_messenger_recovery,
-            )
+        # RFC 0038 D13: an owner-approved notify arrives with Switchboard's
+        # attestation. It counts only on the kernel-admitted Switchboard hop and
+        # only for this task; on public ingress it is an inert, ignored field.
+        approved_token = None
+        attestation = _authenticated_approved_notify(input) if butler_name == "messenger" else None
+        if attestation is not None:
+            approved_token = bind_verified_approved_delivery(attestation)
+        try:
+            parent_ctx = extract_trace_context(trace_context) if trace_context else None
+            tracer = trace.get_tracer("butlers")
+            with tracer.start_as_current_span(
+                "butler.tool.route.execute", context=parent_ctx
+            ) as _span:
+                tag_butler_span(_span, butler_name)
+                # Capture the accept-phase span context so the background processing
+                # task can link back to it via a SpanLink (cross-trace correlation).
+                accept_span_ctx = _span.get_span_context()
+                return await _route_execute_inner(
+                    schema_version=schema_version,
+                    request_context=request_context,
+                    input=input,
+                    subrequest=subrequest,
+                    target=target,
+                    source_metadata=source_metadata,
+                    trace_context=trace_context,
+                    parent_ctx=parent_ctx,
+                    accept_span_ctx=accept_span_ctx,
+                    daemon=daemon,
+                    pool=pool,
+                    spawner=spawner,
+                    butler_name=butler_name,
+                    route_metrics=route_metrics,
+                    trusted_messenger_recovery=trusted_messenger_recovery,
+                )
+        finally:
+            if approved_token is not None:
+                reset_verified_approved_delivery(approved_token)
 
     async def _route_execute_inner(
         schema_version: str,

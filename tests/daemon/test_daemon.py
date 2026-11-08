@@ -1881,6 +1881,114 @@ async def test_route_execute_parks_telegram_actions_with_native_tool_args(
     assert call_kwargs["park_tool_args"] == (route_args if expected_args is None else expected_args)
 
 
+@pytest.mark.parametrize(
+    ("principal", "issuer", "tamper", "delivers"),
+    [
+        # RFC 0038 D13 positive: Switchboard's protected hop attests this exact send.
+        ("switchboard", "health", None, True),
+        # A bare flag (no kernel-admitted Switchboard principal) is an inert field.
+        (None, "health", None, False),
+        # Any changed byte in the routed envelope is outside the attestation.
+        ("switchboard", "health", "digest", False),
+        # An attestation for another source cannot cover this source's send.
+        ("switchboard", "relationship", None, False),
+        # A malformed attestation is ignored, never partially honoured.
+        ("switchboard", "health", "malformed", False),
+    ],
+    ids=["verified", "bare-flag", "digest-mismatch", "foreign-issuer", "malformed"],
+)
+async def test_route_execute_honours_only_an_authenticated_approved_notify_attestation(
+    tmp_path: Path, principal: str | None, issuer: str, tamper: str | None, delivers: bool
+) -> None:
+    """An owner-approved notify is delivered once, never parked a second time.
+
+    The shared approval matcher is the one authority: it honours Switchboard's
+    attestation only when it arrived on the kernel-admitted hop and covers the
+    exact routed ``notify_request``. Everything else parks as before.
+    """
+    import copy
+
+    import butlers.core.approvals_hooks as approval_hooks
+    from butlers.core.approved_delivery import notify_request_digest
+    from butlers.modules.approvals.email_guard import EmailGuardDecision
+    from butlers.modules.approvals.execution_context import get_approval_execution_context
+
+    butler_dir = _make_butler_toml(
+        tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
+    )
+    patches = _infra()
+    daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+    assert route_execute_fn is not None
+    telegram_module = next(module for module in daemon._modules if module.name == "telegram")
+    telegram_module._send_message = AsyncMock(return_value={"result": {"message_id": 321}})
+    guard = AsyncMock(
+        return_value=EmailGuardDecision(
+            allowed=False, reason="parked", action_id=uuid.uuid4(), contact_desc="unknown"
+        )
+    )
+    notify_request = {
+        "schema_version": "notify.v1",
+        "origin_butler": "health",
+        "delivery": {
+            "intent": "send",
+            "channel": "telegram",
+            "message": "Approved words.",
+            "recipient": "900800700",
+        },
+    }
+    attested = copy.deepcopy(notify_request)
+    if tamper == "digest":
+        attested["delivery"]["message"] = "Different words."
+    attestation: Any = {
+        "issuer": issuer,
+        "action_id": str(uuid.uuid4()),
+        "notify_digest": notify_request_digest(attested),
+    }
+    if tamper == "malformed":
+        attestation = {**attestation, "extra": "field"}
+
+    def approved_execution_matches(*, tool_name: str, tool_args: dict[str, Any]) -> bool:
+        return get_approval_execution_context(tool_name=tool_name, tool_args=tool_args) is not None
+
+    hook_pool = patches["mock_pool"]
+    hook_runtime = approval_hooks.register_approval_hooks(
+        hook_pool,
+        email_guard=AsyncMock(),
+        recipient_guard=guard,
+        park_pending_action=AsyncMock(),
+        approved_execution_matches=approved_execution_matches,
+    )
+    try:
+        with patch(
+            "butlers.core_tools._routing.protected_approval_principal",
+            new=lambda *, audience: (
+                principal if audience == "messenger:approval-recovery" else None
+            ),
+        ):
+            result = await route_execute_fn(
+                schema_version="route.v1",
+                request_context=_route_request_context(),
+                input={
+                    "prompt": "Deliver.",
+                    "context": {
+                        "notify_request": notify_request,
+                        "_trusted_approved_notify": attestation,
+                    },
+                },
+            )
+    finally:
+        approval_hooks.unregister_approval_hooks(hook_pool, hook_runtime)
+
+    if delivers:
+        assert result["status"] == "ok", result
+        guard.assert_not_awaited()
+        telegram_module._send_message.assert_awaited_once()
+    else:
+        assert result["status"] == "error"
+        guard.assert_awaited_once()
+        telegram_module._send_message.assert_not_awaited()
+
+
 async def test_route_execute_revalidates_notify_decision_dossier(tmp_path: Path) -> None:
     """Messenger receives and rechecks dossier metadata from a deferred envelope."""
     import butlers.core.approvals_hooks as approval_hooks

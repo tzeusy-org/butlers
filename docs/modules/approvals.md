@@ -39,7 +39,7 @@ The approval gate operates at two independent layers, both enforcing gating:
 
 **Layer 1 -- MCP tool wrapping** (`gate.py`): Intercepts gated tool calls at the MCP boundary. Primary gate for direct LLM tool invocations.
 
-**Layer 2 -- `route.execute` inline gate** (`core_tools/_routing.py`): The Messenger butler's `route.execute` handler calls channel module methods directly, bypassing MCP tool wrappers. An inline gate re-enforces role-based gating at this layer. A plain send or reply it parks is stored as the registered native tool (`telegram_send_message`, `telegram_reply_to_message`, `email_send_message`, `email_reply_to_thread`, `whatsapp_send_message`) with that handler's arguments, so the card shows the registered preview and approval replays the native tool once. Inert-link and file deliveries have no native argument for those facts; they keep the exact routed envelope and their cards are Open only.
+**Layer 2 -- `route.execute` inline gate** (`core_tools/_routing.py`): The Messenger butler's `route.execute` handler calls channel module methods directly, bypassing MCP tool wrappers. An inline gate re-enforces role-based gating at this layer. A plain send or reply it parks is stored as the registered native tool (`telegram_send_message`, `telegram_reply_to_message`, `email_send_message`, `email_reply_to_thread`, `whatsapp_send_message`) with that handler's arguments, so the card shows the registered preview and approval replays the native tool once. Inert-link and file deliveries have no native argument for those facts; they keep the exact routed envelope and their cards are Open only. An owner-approved `notify` that arrives with a Switchboard attestation of its source's verified single-use proof is not parked again: the shared approval matcher honours it for that exact routed envelope only, and only on the kernel-admitted Switchboard hop.
 
 ### Role-Based Auto-Approval
 
@@ -232,12 +232,17 @@ None. The approvals module is a leaf module. Other modules interact with it indi
 - `execute_approved_action` is idempotent per `action_id`: a per-action lock serialises it, an
   `executed` action replays its stored `execution_result`, and the terminal write happens only
   from `approved`.
-- Dashboard approval and Retry dispatch stored `notify` calls through Switchboard `deliver`
-  using a `notify.v1` envelope. The approved intent and delivery fields stay inside `delivery`,
-  with `request_context` on the envelope; the owning action schema supplies both `origin_butler`
-  and `source_butler`. The adapter never resolves or substitutes a recipient. This handoff runs
-  inside the shared executor's row lock, and failed envelope validation or delivery leaves the
-  action `approved` with a null execution result.
+- Dashboard approval, Telegram approval taps and Retry dispatch stored `notify` calls to the
+  owning butler's `dispatch_approved_action`, like every other tool; the API process never calls
+  Switchboard `deliver` itself. The owning daemon's executor
+  (`src/butlers/modules/approvals/approved_notify.py`) sends a `notify.v1` envelope: the approved
+  intent and delivery fields stay inside `delivery`, with `request_context` on the envelope; the
+  owning daemon supplies both `origin_butler` and `source_butler`. It never resolves or substitutes
+  a recipient. Where the cohost approval topology exists, the envelope carries a single-use source
+  proof so Messenger honours the approval instead of parking it twice
+  ([approval delivery authority](../runtime/approval-delivery-authority.md#approved-notify-proof-rfc-0038-d13)).
+  This handoff runs inside the shared executor's row lock. A failed delivery, a refused proof, or
+  a second park leaves the action `approved` with a null execution result.
 - Calendar mutation replay (the eight tools in `CALENDAR_APPROVAL_TOOLS`,
   `src/butlers/modules/calendar_approval.py`) first checks the requested tool name and argument
   digest against the locked approved row; a mismatch refuses before dispatch. The executor then

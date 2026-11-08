@@ -1046,12 +1046,12 @@
   },
   "current_public": "773d1d81b8112a951776db56241eaf6988717263",
   "counts": {
-    "direct": 81,
-    "direct_files": 37,
-    "container": 98,
+    "direct": 86,
+    "direct_files": 39,
+    "container": 103,
     "supplementary": 43,
     "all_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 54,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 59,
       "NON_NAME_ENUM_OR_MODULE": 27,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 32,
@@ -1059,7 +1059,7 @@
       "SCHEMA_OWNERSHIP": 13
     },
     "direct_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 36,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 41,
       "NON_NAME_ENUM_OR_MODULE": 5,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 3,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 21,
@@ -4584,6 +4584,131 @@
       "baseline_ids": [],
       "public_source_commit": "ac9dd9b39f972492f60468764bb2ecae1d2f4762",
       "reason": "bu-y66o00.4 Package D primary foundation: RFC 0039 D4 and OD17/OD21/OD22 govern these fixed exposure-domain/privacy distinctions. The canonical citations preserve schema/storage boundaries; this is not configurable host policy or proof of complete REQ004/subscriber delivery."
+    },
+    {
+      "id": "4158cc7875964d8237a9a22abb1c6bada069ebe856a370a52b49b2ab99e958f7",
+      "path": "src/butlers/core/approval_delivery_authority.py",
+      "symbol": "SourceApprovalAdmission.verifier_mcp.verify_approved_notify",
+      "kind": "compare",
+      "expression": "protected_approval_principal(audience=f'{self._schema}:approval-verifier') != 'switchboard'",
+      "occurrence": 1,
+      "line": 532,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Admit approved-notify proof verification only from the protected Switchboard principal.",
+      "citations": [
+        {
+          "path": "openspec/specs/module-approvals/spec.md",
+          "requirement": "Shared Executor Path"
+        },
+        {
+          "path": "openspec/specs/core-notify/spec.md",
+          "requirement": "Messenger route.execute Approval Gate (Defense-in-Depth)"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "New RFC 0038 D13 approved-notify identity fence (bu-dhloi1.168)."
+    },
+    {
+      "id": "8965117a8c51c6234ed647beadb5081d02f0a875cf75042b8ad683379a74473e",
+      "path": "src/butlers/core/approved_delivery.py",
+      "symbol": "approved_delivery_covering",
+      "kind": "compare",
+      "expression": "request_context.get('source_endpoint_identity') != 'switchboard'",
+      "occurrence": 1,
+      "line": 141,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Honour an approved-notify attestation only on the Switchboard-scoped route context.",
+      "citations": [
+        {
+          "path": "openspec/specs/module-approvals/spec.md",
+          "requirement": "Shared Executor Path"
+        },
+        {
+          "path": "openspec/specs/core-notify/spec.md",
+          "requirement": "Messenger route.execute Approval Gate (Defense-in-Depth)"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "New RFC 0038 D13 approved-notify identity fence (bu-dhloi1.168)."
+    },
+    {
+      "id": "91f76db7183ae7c20225c72981092f3bf77c970c9b6870936cb0df4f650b0b65",
+      "path": "src/butlers/core_tools/_routing.py",
+      "symbol": "_authenticated_approved_notify",
+      "kind": "compare",
+      "expression": "protected_approval_principal(audience='messenger:approval-recovery') != 'switchboard'",
+      "occurrence": 1,
+      "line": 149,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Parse and bind an approved-notify attestation only on Messenger's protected Switchboard hop.",
+      "citations": [
+        {
+          "path": "openspec/specs/module-approvals/spec.md",
+          "requirement": "Shared Executor Path"
+        },
+        {
+          "path": "openspec/specs/core-notify/spec.md",
+          "requirement": "Messenger route.execute Approval Gate (Defense-in-Depth)"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "New RFC 0038 D13 approved-notify identity fence (bu-dhloi1.168)."
+    },
+    {
+      "id": "2cc95261a92313f153592d149628835d0d4b7003bfd16fa099b478ddcca914b4",
+      "path": "src/butlers/core_tools/_routing.py",
+      "symbol": "register_routing_tools.route_execute",
+      "kind": "compare",
+      "expression": "butler_name == 'messenger'",
+      "occurrence": 2,
+      "line": 953,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Parse and bind an approved-notify attestation only on Messenger's protected Switchboard hop.",
+      "citations": [
+        {
+          "path": "openspec/specs/module-approvals/spec.md",
+          "requirement": "Shared Executor Path"
+        },
+        {
+          "path": "openspec/specs/core-notify/spec.md",
+          "requirement": "Messenger route.execute Approval Gate (Defense-in-Depth)"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "New RFC 0038 D13 approved-notify identity fence (bu-dhloi1.168)."
+    },
+    {
+      "id": "95018587255ef8aab45ad815a9a5d5d49f868c720dd4086651e4aa1ffd974aa4",
+      "path": "src/butlers/modules/approvals/approved_notify.py",
+      "symbol": "deliver_approved_notify",
+      "kind": "compare",
+      "expression": "origin != 'switchboard'",
+      "occurrence": 1,
+      "line": 63,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Only the Switchboard daemon itself may deliver an approved notify in-process.",
+      "citations": [
+        {
+          "path": "openspec/specs/module-approvals/spec.md",
+          "requirement": "Shared Executor Path"
+        },
+        {
+          "path": "openspec/specs/core-notify/spec.md",
+          "requirement": "Messenger route.execute Approval Gate (Defense-in-Depth)"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "New RFC 0038 D13 approved-notify identity fence (bu-dhloi1.168)."
     }
   ],
   "retired": [

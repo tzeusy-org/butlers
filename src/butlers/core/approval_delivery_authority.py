@@ -11,6 +11,7 @@ import asyncio
 import functools
 import hashlib
 import hmac
+import importlib
 import inspect
 import json
 import logging
@@ -296,6 +297,18 @@ class _Admission:
     expires_at: float
 
 
+@dataclass(frozen=True, slots=True)
+class _ApprovedNotifyAdmission:
+    action_id: uuid.UUID
+    args_digest: str
+    digest: str
+    expires_at: float
+
+
+_APPROVED_NOTIFY_PROOF_SECONDS = 10.0
+_APPROVED_NOTIFY_REFUSAL = "Approved notification authority rejected."
+
+
 class SourceApprovalAdmission:
     """Ephemeral proof minted only beside the source's own durable repository.
 
@@ -308,11 +321,120 @@ class SourceApprovalAdmission:
         self._schema = owning_schema
         self.epoch = str(uuid.uuid4())
         self._admissions: dict[str, _Admission] = {}
+        self._approved_notifications: dict[str, _ApprovedNotifyAdmission] = {}
         self._retired = False
 
     def retire(self) -> None:
         self._retired = True
         self._admissions.clear()
+        self._approved_notifications.clear()
+
+    async def _live_approved_notify(
+        self, action_id: uuid.UUID, args_digest: str
+    ) -> dict[str, Any] | None:
+        """The exact owner-approved notify envelope, while its row is still unexecuted."""
+        from butlers.core.approved_delivery import approved_notify_request
+
+        reader: Any = getattr(self._repository, "approved_notify_args", None)
+        if reader is None:
+            # A repository without the live-row read can never mint or verify.
+            return None
+        # The owning repository compares the stored-call digest (its own canonical
+        # form) and returns nothing unless the live row still matches it.
+        stored = await reader(action_id, owning_schema=self._schema, args_digest=args_digest)
+        if not isinstance(stored, dict):
+            return None
+        return approved_notify_request(self._schema, stored)
+
+    async def mint_approved_notify(
+        self, action_id: uuid.UUID, args_digest: str, payload: dict[str, Any]
+    ) -> str:
+        """Mint a single-use proof for one live owner-approved ``notify`` delivery.
+
+        Private source code called only by this daemon's approval executor while
+        it holds the approved, unexecuted row. A separate operation from the
+        RFC 0023 ``approval_request`` admission: it neither widens that mint nor
+        shares its proofs. The proof binds the action id, the stored call digest
+        and the exact envelope projected from the stored row, expires within ten
+        seconds, and is consumed by its first verification.
+        """
+        from butlers.core.approved_delivery import notify_request_digest
+
+        # Switchboard's roster contracts are installed under a runtime alias.
+        contracts = importlib.import_module("butlers.tools.switchboard.contracts")
+        if self._retired:
+            raise RecoveryAuthorityError(_APPROVED_NOTIFY_REFUSAL)
+        try:
+            request = contracts.parse_notify_request(payload)
+        except ValueError:
+            # Pydantic's ValidationError is a ValueError; keep the refusal content-blind.
+            raise RecoveryAuthorityError(_APPROVED_NOTIFY_REFUSAL) from None
+        if (
+            request.recovery is not None
+            or request.origin_butler != self._schema
+            or request.delivery.intent in contracts.OWNER_CONTROL_INTENTS
+        ):
+            raise RecoveryAuthorityError(_APPROVED_NOTIFY_REFUSAL)
+        started_at = time.monotonic()
+        expected = await self._live_approved_notify(action_id, args_digest)
+        digest = notify_request_digest(payload)
+        if (
+            self._retired
+            or expected is None
+            or not hmac.compare_digest(notify_request_digest(expected), digest)
+        ):
+            raise RecoveryAuthorityError(_APPROVED_NOTIFY_REFUSAL)
+        now = time.monotonic()
+        self._approved_notifications = {
+            key: value
+            for key, value in self._approved_notifications.items()
+            if value.expires_at > now
+        }
+        if len(self._approved_notifications) >= 4096:
+            raise RecoveryAuthorityError(_APPROVED_NOTIFY_REFUSAL)
+        proof = secrets.token_urlsafe(32)
+        self._approved_notifications[hashlib.sha256(proof.encode()).hexdigest()] = (
+            _ApprovedNotifyAdmission(
+                action_id, args_digest, digest, started_at + _APPROVED_NOTIFY_PROOF_SECONDS
+            )
+        )
+        return proof
+
+    def revoke_approved_notify(self, proof: str) -> None:
+        self._approved_notifications.pop(hashlib.sha256(proof.encode()).hexdigest(), None)
+
+    async def verify_approved_notify(
+        self, payload: dict[str, Any], proof: str | None
+    ) -> dict[str, Any]:
+        """Consume a proof; attest only the exact live approved unexecuted notification."""
+        from butlers.core.approved_delivery import notify_request_digest
+
+        if self._retired or not isinstance(proof, str) or len(proof) > 128:
+            return {"allowed": False}
+        # Single use: the first presentation consumes the proof whatever its outcome.
+        admission = self._approved_notifications.pop(
+            hashlib.sha256(proof.encode()).hexdigest(), None
+        )
+        if admission is None or admission.expires_at <= time.monotonic():
+            return {"allowed": False}
+        try:
+            if not hmac.compare_digest(admission.digest, notify_request_digest(payload)):
+                return {"allowed": False}
+            expected = await self._live_approved_notify(admission.action_id, admission.args_digest)
+            if (
+                expected is None
+                or self._retired
+                or admission.expires_at <= time.monotonic()
+                or not hmac.compare_digest(notify_request_digest(expected), admission.digest)
+            ):
+                return {"allowed": False}
+        except Exception:
+            return {"allowed": False}
+        return {
+            "allowed": True,
+            "source_epoch": self.epoch,
+            "action_id": str(admission.action_id),
+        }
 
     def revoke(self, proof: str) -> None:
         self._admissions.pop(hashlib.sha256(proof.encode()).hexdigest(), None)
@@ -405,6 +527,15 @@ class SourceApprovalAdmission:
             proof = get_http_request().headers.get(_PROOF_HEADER)
             return await self.verify(notify_request, proof)
 
+        @mcp.tool()
+        async def verify_approved_notify(notify_request: dict[str, Any]) -> dict[str, Any]:
+            if protected_approval_principal(audience=f"{self._schema}:approval-verifier") != (
+                "switchboard"
+            ):
+                return {"allowed": False}
+            proof = get_http_request().headers.get(_PROOF_HEADER)
+            return await self.verify_approved_notify(notify_request, proof)
+
         return mcp
 
 
@@ -422,6 +553,59 @@ class SourceApprovalVerifier:
         if response.get("allowed") is not True or response.get("source_epoch") != self.source_epoch:
             raise RecoveryAuthorityError(_REFUSAL)
         return TrustedRecoveryContext.from_internal_dict(response["context"])
+
+    async def verify_approved_notify(self, payload: dict[str, Any], proof: str | None) -> uuid.UUID:
+        response = await self.endpoint.call(
+            "verify_approved_notify", {"notify_request": payload}, proof=proof
+        )
+        if response.get("allowed") is not True or response.get("source_epoch") != self.source_epoch:
+            raise RecoveryAuthorityError(_APPROVED_NOTIFY_REFUSAL)
+        return uuid.UUID(str(response["action_id"]))
+
+
+def approved_notify_proof_presented() -> bool:
+    """True when a proof header arrived on the kernel-admitted Switchboard ingress.
+
+    Public TCP traffic has no protected principal, so a header there is ignored
+    and the notification stays ordinary (Messenger's recipient gate applies).
+    """
+    if protected_approval_principal(audience=_SWITCHBOARD_AUDIENCE) is None:
+        return False
+    try:
+        return get_http_request().headers.get(_PROOF_HEADER) is not None
+    except RuntimeError:
+        return False
+
+
+async def verify_switchboard_approved_notify(module: Any, payload: dict[str, Any]) -> Any:
+    """Have the authenticated source verify (and consume) its approved-notify proof.
+
+    Returns an ``ApprovedNotifyAttestation`` binding the source, action and the
+    exact presented envelope digest, or ``None``. Switchboard re-digests the
+    envelope it actually forwards before attaching an attestation for Messenger.
+    """
+    from butlers.core.approved_delivery import ApprovedNotifyAttestation, notify_request_digest
+
+    issuer = protected_approval_principal(audience=_SWITCHBOARD_AUDIENCE)
+    verifiers = getattr(module, "_approval_recovery_verifiers", {})
+    verifier = verifiers.get(issuer)
+    if issuer is None or not isinstance(verifier, SourceApprovalVerifier):
+        return None
+    try:
+        action_id = await verifier.verify_approved_notify(
+            payload, get_http_request().headers.get(_PROOF_HEADER)
+        )
+        if (
+            payload.get("origin_butler") != issuer
+            or protected_approval_principal(audience=_SWITCHBOARD_AUDIENCE) != issuer
+            or getattr(module, "_approval_recovery_verifiers", {}).get(issuer) is not verifier
+        ):
+            return None
+        return ApprovedNotifyAttestation(
+            issuer=issuer, action_id=action_id, notify_digest=notify_request_digest(payload)
+        )
+    except Exception:
+        return None
 
 
 async def verify_switchboard_recovery(
@@ -462,6 +646,28 @@ class SourceApprovalDispatch:
         )
 
 
+class SourceApprovedNotifyDispatch:
+    """The source executor's authenticated deliver hop for one approved notify."""
+
+    def __init__(self, admission: SourceApprovalAdmission, endpoint: ProtectedApprovalMCP):
+        self._admission = admission
+        self._endpoint = endpoint
+
+    async def __call__(
+        self, action_id: uuid.UUID, args_digest: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        proof = await self._admission.mint_approved_notify(action_id, args_digest, payload)
+        try:
+            return await self._endpoint.call(
+                "deliver",
+                {"source_butler": payload["origin_butler"], "notify_request": payload},
+                proof=proof,
+            )
+        finally:
+            # Verification consumes it; never leave an unpresented proof usable.
+            self._admission.revoke_approved_notify(proof)
+
+
 async def approval_companion_mcp(registered: FastMCP, tool_name: str) -> FastMCP:
     """Reuse the actual registered wrapper while exposing only its operation."""
     companion = FastMCP("approval-only")
@@ -498,6 +704,7 @@ class ApprovalAuthorityTopology:
         self._socket_directory = socket_directory
         self._stack = AsyncExitStack()
         self._dispatches: dict[str, SourceApprovalDispatch] = {}
+        self._approved_notify_dispatches: dict[str, SourceApprovedNotifyDispatch] = {}
         self._verifiers: dict[str, SourceApprovalVerifier] = {}
         self._call: Callable[..., Awaitable[dict[str, Any]]] | None = None
 
@@ -546,6 +753,9 @@ class ApprovalAuthorityTopology:
                     )
                 )
                 self._dispatches[issuer] = SourceApprovalDispatch(source, switchboard)
+                self._approved_notify_dispatches[issuer] = SourceApprovedNotifyDispatch(
+                    source, switchboard
+                )
             self._module._approval_recovery_verifiers = self._verifiers
             self._module._approval_recovery_call = self._call
             return self
@@ -572,10 +782,18 @@ class ApprovalAuthorityTopology:
             resolve_callback_secret=resolve_callback_secret,
         )
 
+    def approved_notify_dispatch(self, issuer: str) -> SourceApprovedNotifyDispatch:
+        """Return the source executor's approved-notify hop without attaching it."""
+        dispatch = self._approved_notify_dispatches.get(issuer)
+        if dispatch is None:
+            raise RecoveryAuthorityError(_REFUSAL)
+        return dispatch
+
     async def close(self) -> None:
         for source in self._sources.values():
             source.retire()
         self._dispatches.clear()
+        self._approved_notify_dispatches.clear()
         if getattr(self._module, "_approval_recovery_call", None) is self._call:
             self._module._approval_recovery_call = None
         if getattr(self._module, "_approval_recovery_verifiers", None) is self._verifiers:
@@ -657,6 +875,7 @@ async def approval_delivery_composition(
 
     stack = AsyncExitStack()
     runtimes: list[tuple[Any, ApprovalRecoveryRuntime]] = []
+    approved_notify_dispatches: list[tuple[Any, SourceApprovedNotifyDispatch]] = []
 
     async def close() -> None:
         try:
@@ -672,6 +891,9 @@ async def approval_delivery_composition(
             for daemon, runtime in runtimes:
                 if daemon._approval_delivery_runtime is runtime:
                     daemon._approval_delivery_runtime = None
+            for daemon, dispatch in approved_notify_dispatches:
+                if getattr(daemon, "_approved_notify_dispatch", None) is dispatch:
+                    daemon._approved_notify_dispatch = None
             await stack.aclose()
 
     try:
@@ -724,6 +946,11 @@ async def approval_delivery_composition(
             )
             runtimes.append((daemon, runtime))
             daemon._approval_delivery_runtime = runtime
+            # The source's own approval executor carries its approved-notify proof
+            # over this same authenticated hop (RFC 0038 D13: never parked twice).
+            approved_dispatch = topology.approved_notify_dispatch(daemon.config.name)
+            approved_notify_dispatches.append((daemon, approved_dispatch))
+            daemon._approved_notify_dispatch = approved_dispatch
             await start_approval_delivery_worker(daemon)
     except BaseException as exc:
         await close()

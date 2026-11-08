@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from butlers.core.approved_delivery import approved_delivery_covering
 from butlers.core.goal_lineage import approving_lineage
 
 
@@ -53,7 +54,24 @@ def get_approval_execution_context(
     goal lineage: an ``approval_ref`` whose assertion covers this exact tool
     and argument digest, in the task it was verified in, is the approval. It
     has no spawner session; ``session_id`` is ``None``.
+
+    An owner-approved ``notify`` reaching Messenger carries a source-verified
+    attestation (RFC 0038 D13, ``butlers.core.approved_delivery``). Bound to
+    the handling task, it approves only the exact routed delivery it covers.
+    These are the only cross-process approvals the egress gate honours.
     """
+    approved = approved_delivery_covering(tool_name, tool_args)
+    if approved is not None and tool_name is not None and tool_args is not None:
+        task = asyncio.current_task()
+        if task is not None:
+            return ApprovalExecutionContext(
+                action_id=approved.action_id,
+                session_id=None,
+                actor=f"approved:{approved.issuer}",
+                tool_name=tool_name,
+                tool_args_digest=approval_tool_args_digest(tool_args),
+                authorized_task=task,
+            )
     lineage = approving_lineage(tool_name, tool_args)
     if lineage is not None and tool_name is not None and tool_args is not None:
         try:
