@@ -193,3 +193,49 @@ async def test_timeout_before_verification_raises_so_row_stays_retryable() -> No
         await _with_executor_context(
             uuid.uuid4(), _TOOL_ARGS, lambda: deliver_approved_notify(daemon, dict(_TOOL_ARGS))
         )
+
+
+def _transport_failure(outcome: str, error_class: str, detail: str) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "error": "Telegram said chat_id='@Butlerly' not found",
+        "retryable": False,
+        "transport": {
+            "outcome": outcome,
+            "retryable": outcome == "not_attempted",
+            "error_class": error_class,
+            "error_detail": detail,
+        },
+    }
+
+
+async def test_provider_rejected_send_returns_a_distinct_content_free_outcome() -> None:
+    """bu-dhloi1.184: a proven provider rejection is not silently retryable."""
+    reply = _transport_failure("rejected", "transport_rejected", "provider_rejected")
+    daemon = _daemon(_approved_notify_dispatch=AsyncMock(return_value=reply))
+
+    result = await _with_executor_context(
+        uuid.uuid4(), _TOOL_ARGS, lambda: deliver_approved_notify(daemon, dict(_TOOL_ARGS))
+    )
+
+    assert result == {
+        "status": "delivery_rejected",
+        "delivery_confirmed": False,
+        "failure_code": "provider_rejected",
+    }
+    assert "Butlerly" not in str(result)
+
+
+async def test_not_attempted_failure_raises_a_coded_content_free_failure() -> None:
+    from butlers.modules.approvals.delivery_failure import SendFailure
+
+    reply = _transport_failure("not_attempted", "pre_transport", "recipient_unavailable")
+    daemon = _daemon(_approved_notify_dispatch=AsyncMock(return_value=reply))
+
+    with pytest.raises(SendFailure) as raised:
+        await _with_executor_context(
+            uuid.uuid4(), _TOOL_ARGS, lambda: deliver_approved_notify(daemon, dict(_TOOL_ARGS))
+        )
+
+    assert raised.value.code == "recipient_unavailable"
+    assert "Butlerly" not in str(raised.value)

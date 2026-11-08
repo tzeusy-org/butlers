@@ -25,6 +25,13 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from butlers.core.audit_transaction import AuditTransactionError, audit_transaction
+from butlers.modules.approvals.delivery_failure import (
+    DELIVERY_REJECTED_STATUS,
+    SendFailure,
+    delivery_rejected_result,
+    is_egress_tool,
+    send_failure_code,
+)
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.execution_context import (
     ApprovalExecutionContext,
@@ -84,6 +91,8 @@ class ExecutionResult:
     executed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     # A typed refusal that never reached the tool (e.g. a goal effect).
     code: str | None = None
+    # Content-free code of a failed outbound send (delivery_failure.SEND_FAILURE_LABELS).
+    failure_code: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-safe dictionary."""
@@ -97,6 +106,8 @@ class ExecutionResult:
             d["error"] = self.error
         if self.code is not None:
             d["code"] = self.code
+        if self.failure_code is not None:
+            d["failure_code"] = self.failure_code
         return d
 
 
@@ -251,6 +262,7 @@ async def execute_approved_action(
         failed_execution: ExecutionResult | None = None
         execution_result: ExecutionResult | None = None
         outcome_unknown = False
+        rejected_code: str | None = None
         action_origin: str | None = None
         now = datetime.now(UTC)
         try:
@@ -370,19 +382,40 @@ async def execute_approved_action(
                             tool_name,
                         )
                         raw_result = dict(_OUTCOME_UNKNOWN_RESULT)
+                    send_rejected = (
+                        isinstance(raw_result, dict)
+                        and raw_result.get("status") == DELIVERY_REJECTED_STATUS
+                    )
+                    if send_rejected:
+                        # The provider proved it rejected the send, so nothing was delivered
+                        # and a retry would meet the same rejection. Record it executed with
+                        # a distinct, content-free outcome the owner can see.
+                        logger.warning(
+                            "Approved action %s (%s) was rejected by the provider",
+                            action_id,
+                            tool_name,
+                        )
+                        raw_result = delivery_rejected_result(raw_result.get("failure_code"))
+                        rejected_code = raw_result["failure_code"]
                     # MCP tool contracts use an error dict for an unsuccessful
                     # operation. Treat it exactly like an exception so a handler that
                     # reports its own failure cannot be recorded as `executed`.
                     if isinstance(raw_result, dict):
-                        if raw_result.get("error"):
-                            raise RuntimeError(str(raw_result["error"]))
-                        if raw_result.get("success") is False:
+                        if raw_result.get("error") or raw_result.get("success") is False:
+                            if is_egress_tool(tool_name):
+                                raise SendFailure(send_failure_code(raw_result))
+                            if raw_result.get("error"):
+                                raise RuntimeError(str(raw_result["error"]))
                             raise RuntimeError("tool reported unsuccessful execution")
                 except Exception as exc:
+                    send_code = send_failure_code(exc) if is_egress_tool(tool_name) else None
                     failed_execution = ExecutionResult(
                         success=False,
-                        error=str(exc),
+                        # An egress failure's text can carry a recipient or provider words;
+                        # only the closed code is recorded and shown.
+                        error=f"send_failed:{send_code}" if send_code else str(exc),
                         executed_at=now,
+                        failure_code=send_code,
                     )
                     logger.error(
                         "Tool execution failed for action %s (%s): %s",
@@ -435,6 +468,11 @@ async def execute_approved_action(
                         metadata={
                             "tool_name": tool_name,
                             **({"outcome": "unknown"} if outcome_unknown else {}),
+                            **(
+                                {"outcome": "rejected", "failure_code": rejected_code}
+                                if rejected_code
+                                else {}
+                            ),
                         },
                         occurred_at=now,
                     )
@@ -481,7 +519,14 @@ async def execute_approved_action(
                         action_id=action_id,
                         rule_id=approval_rule_id,
                         reason=failed_execution.error,
-                        metadata={"tool_name": tool_name},
+                        metadata={
+                            "tool_name": tool_name,
+                            **(
+                                {"failure_code": failed_execution.failure_code}
+                                if failed_execution.failure_code
+                                else {}
+                            ),
+                        },
                         occurred_at=failed_execution.executed_at,
                     )
             except Exception:  # noqa: BLE001 -- failure audit cannot change queue state

@@ -21,6 +21,12 @@ from butlers.core.approval_delivery_authority import (
     approved_notify_deliver_deadline,
 )
 from butlers.core.approved_delivery import approved_notify_request
+from butlers.modules.approvals.delivery_failure import (
+    SendFailure,
+    delivery_rejected_result,
+    provider_rejected,
+    send_failure_code,
+)
 from butlers.modules.approvals.execution_context import get_approval_execution_context
 
 logger = logging.getLogger(__name__)
@@ -37,7 +43,11 @@ def _delivery_result(raw: Any) -> dict[str, Any]:
         # A second park is not a delivery; the approved row stays retryable.
         raise RuntimeError("delivery re-entered the approval gate")
     if result.get("error") or result.get("success") is False or result.get("status") == "failed":
-        raise RuntimeError("switchboard deliver returned an unsuccessful result")
+        if provider_rejected(result):
+            # Proven rejected: terminal and never delivered. The executor records it
+            # as a distinct outcome instead of leaving a silently retryable row.
+            return delivery_rejected_result(send_failure_code(result))
+        raise SendFailure(send_failure_code(result))
     return result
 
 

@@ -3705,6 +3705,14 @@ export interface OwnerDeliveryActionRequest {
   reason?: string | null;
 }
 
+/** Content-free reason an approved outbound send failed or was rejected (never provider text). */
+export interface ApprovalExecutionFailure {
+  code: string;
+  label: string;
+  /** True when the provider proved it rejected the send: not retryable. */
+  terminal?: boolean;
+}
+
 export interface ApprovalDetail {
   call_preview?: ApprovalCallPreview | null;
   owner_delivery?: OwnerDeliveryCard | null;
@@ -3731,6 +3739,8 @@ export interface ApprovalDetail {
   denial_reason?: string | null;
   /** Already redacted by the approval-detail API before dashboard presentation. */
   execution_result?: Record<string, unknown> | null;
+  /** Why an approved send failed or was provider-rejected; null when it did not. */
+  execution_failure?: ApprovalExecutionFailure | null;
   target_contact?: TargetContact | null;
   /**
    * Originating session UUID that produced this action, when known. Lets the

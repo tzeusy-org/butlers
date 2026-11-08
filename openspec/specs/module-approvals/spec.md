@@ -355,7 +355,21 @@ Scope: v1-mandatory
 - **THEN** the executor persists `{"status": "outcome_unknown", "delivery_confirmed": false}` as the execution result, with status `executed` and an `action_execution_succeeded` event whose metadata marks the outcome unknown
 - **AND** neither the provider's text nor the recipient is persisted
 - **AND** Retry does not run the tool again, so a non-owner never receives a second message
-- **AND** a failure proven not attempted, or an explicit provider rejection, stays `approved` and retryable as before
+- **AND** a failure proven not attempted stays `approved` and retryable as before
+
+#### Scenario: A provider-rejected send is recorded as a distinct failed outcome
+
+- **WHEN** an approved outbound send fails with a transport outcome of `rejected` (the provider proved it refused the send, so nothing was delivered)
+- **THEN** the executor persists `{"status": "delivery_rejected", "delivery_confirmed": false, "failure_code": "provider_rejected"}` as the execution result, with status `executed` and an `action_execution_succeeded` event whose metadata carries `outcome: "rejected"` and the failure code
+- **AND** the outcome is distinct from success and from `outcome_unknown`, and Retry does not run the tool again
+- **AND** neither the provider's text, the recipient nor the message body is persisted
+
+#### Scenario: A failed approved send records a closed, content-free failure code
+
+- **WHEN** an approved outbound send (`notify`, or a Telegram, email or WhatsApp send tool) fails without a proven provider rejection
+- **THEN** the returned error and the `action_execution_failed` event reason are `send_failed:<code>`, where `<code>` is drawn from a closed vocabulary (`recipient_unavailable`, `policy_denied`, `transport_timeout`, `transport_connection_lost`, `worker_recovery`, or the generic `send_failed`), and the event metadata carries `failure_code`
+- **AND** no recipient, message body or provider description appears in the error, event or any API field
+- **AND** status remains `approved` and retryable
 
 #### Scenario: Manual approval without executor wired
 

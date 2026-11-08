@@ -999,7 +999,10 @@ function Dossier({
           </section>
         )}
 
-        {(detail.denial_reason || detail.execution_result || canRetryDispatch) && (
+        {(detail.denial_reason ||
+          detail.execution_result ||
+          detail.execution_failure ||
+          canRetryDispatch) && (
           <section
             data-testid="approval-decision-outcome"
             aria-labelledby="approval-decision-outcome-heading"
@@ -1018,6 +1021,19 @@ function Dossier({
                     Denial reason
                   </dt>
                   <dd className="mt-0.5 text-sm text-foreground">{detail.denial_reason}</dd>
+                </div>
+              )}
+              {detail.execution_failure && (
+                <div data-testid="approval-execution-failure">
+                  <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                    Send failed
+                  </dt>
+                  <dd className="mt-0.5 text-sm text-destructive">
+                    {detail.execution_failure.label}
+                    {detail.execution_failure.terminal
+                      ? ". It was not delivered; send it again deliberately if you still want it."
+                      : ". You can retry the send."}
+                  </dd>
                 </div>
               )}
               {detail.execution_result && (

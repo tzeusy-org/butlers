@@ -52,6 +52,7 @@ from butlers.api.models.approval import (
     ApprovalDeliveryTruth,
     ApprovalDenyRequest,
     ApprovalDetail,
+    ApprovalExecutionFailure,
     ApprovalGatedTool,
     ApprovalGoalLineage,
     ApprovalMetrics,
@@ -90,6 +91,10 @@ from butlers.modules.approvals import reply_templates
 from butlers.modules.approvals.decision_memory import (
     DecisionMemoryWriter,
     memory_pool_for_schema,
+)
+from butlers.modules.approvals.delivery_failure import (
+    failure_from_execution_result,
+    failure_payload,
 )
 from butlers.modules.approvals.delivery_lifecycle import (
     defer_pending_action,
@@ -652,7 +657,41 @@ def _pending_action_to_api(
         push_failed=_push_failed(action, delivery),
         delivery=delivery,
         goal=_goal_lineage(action),
+        execution_failure=_execution_failure(action),
     )
+
+
+def _execution_failure(
+    action: PendingAction, failed_code: str | None = None
+) -> ApprovalExecutionFailure | None:
+    """The content-free reason an approved send failed, for the owner (bu-dhloi1.184).
+
+    A provider-proven rejection is recorded in the executed result (terminal); any other
+    failed send leaves the row approved and retryable, its code on the failure event.
+    """
+    rejected = failure_from_execution_result(action.execution_result)
+    if rejected is not None:
+        return ApprovalExecutionFailure(**rejected, terminal=True)
+    if action.status == ActionStatus.APPROVED and action.execution_result is None:
+        payload = failure_payload(failed_code)
+        if payload is not None:
+            return ApprovalExecutionFailure(**payload)
+    return None
+
+
+async def _latest_execution_failure_code(conn: Any, action_id: UUID) -> str | None:
+    """The closed code of the latest failed send attempt, when this pool can supply it."""
+    try:
+        event = await conn.fetchrow(
+            "SELECT event_metadata ->> 'failure_code' AS code FROM approval_events "
+            "WHERE action_id = $1 AND event_type = 'action_execution_failed' "
+            "ORDER BY occurred_at DESC, event_id DESC LIMIT 1",
+            action_id,
+        )
+    except Exception:  # noqa: BLE001 -- optional provenance must not break the dossier
+        logger.debug("Unable to read execution failure provenance for %s", action_id)
+        return None
+    return event["code"] if event is not None else None
 
 
 def _goal_lineage(action: PendingAction) -> ApprovalGoalLineage | None:
@@ -707,6 +746,7 @@ def _pending_action_to_detail(
     *,
     denial_reason: str | None = None,
     delivery: ApprovalDeliveryTruth | None = None,
+    failed_code: str | None = None,
 ) -> ApprovalDetail:
     """Convert a PendingAction to the full Dispatch dossier ApprovalDetail."""
     title = f"{action.tool_name.replace('_', ' ').title()} ({butler_name})"
@@ -743,6 +783,7 @@ def _pending_action_to_detail(
         push_outcome=action.push_outcome,
         push_failed=_push_failed(action, delivery),
         delivery=delivery,
+        execution_failure=_execution_failure(action, failed_code),
     )
 
 
@@ -1306,6 +1347,8 @@ class _DispatchOutcome:
     kind: Literal["executed", "unreachable", "rejected"]
     action: dict[str, Any] | None = None
     detail: str | None = None
+    #: Closed, content-free code when an approved send failed (never provider text).
+    failure_code: str | None = None
 
 
 def _safe_dispatch_detail(value: Any) -> str:
@@ -1313,6 +1356,10 @@ def _safe_dispatch_detail(value: Any) -> str:
     if isinstance(value, dict):
         value = value.get("error") or value.get("message") or value.get("status")
     raw_detail = "" if value is None else " ".join(str(value).split())
+    if raw_detail.startswith("send_failed:"):
+        payload = failure_payload(raw_detail.partition(":")[2])
+        if payload is not None:
+            return f"the approved send failed: {payload['label']}"
     unexpected_arg = re.search(
         r"unexpected keyword argument ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]",
         raw_detail,
@@ -1452,9 +1499,11 @@ async def _dispatch_approved_action_outcome(
                 action_id,
                 result.get("error"),
             )
+            code = result.get("failure_code")
             return _DispatchOutcome(
                 kind="rejected",
                 detail=_safe_dispatch_detail(result),
+                failure_code=code if failure_payload(code) is not None else None,
             )
         return _DispatchOutcome(kind="executed", action=result)
 
@@ -3479,6 +3528,11 @@ async def get_approval_detail(
                         if pa.status.value == "rejected"
                         else None
                     )
+                    failed_code = (
+                        await _latest_execution_failure_code(conn, pa.id)
+                        if pa.status.value == "approved" and pa.execution_result is None
+                        else None
+                    )
             if row is not None:
                 target_contact = await _resolve_target_contact(db_mgr, pa)
                 referenced_entities = await _resolve_referenced_entities(db_mgr, pa.tool_args)
@@ -3489,6 +3543,7 @@ async def get_approval_detail(
                     referenced_entities,
                     denial_reason=denial_reason,
                     delivery=_delivery_truth(row, pa),
+                    failed_code=failed_code,
                 )
                 # Only the owner's own dashboard session is a dashboard presentation;
                 # a connector read (apr1 verification) or a review source never is.
@@ -3866,6 +3921,7 @@ async def approve_owning_action(
             # must not become a failed decision because its memory sink failed.
             logger.exception("Post-commit standing-rule memory writeback failed")
 
+    dispatch_failure_code: str | None = None
     # A goal effect is decided here but run only by the capability broker. A replayed
     # card token answers with the current state and dispatches nothing.
     if (
@@ -3893,11 +3949,18 @@ async def approve_owning_action(
         )
         if dispatch_outcome.kind == "executed" and dispatch_outcome.action is not None:
             result = dispatch_outcome.action
+        dispatch_failure_code = dispatch_outcome.failure_code
 
     result.setdefault("butler", action_butler)
     action_resp = ApprovalAction(
         **{k: result[k] for k in ApprovalAction.model_fields if k in result}
     )
+    rejected = failure_from_execution_result(action_resp.execution_result)
+    retryable_failure = failure_payload(dispatch_failure_code)
+    if rejected is not None:
+        action_resp.execution_failure = ApprovalExecutionFailure(**rejected, terminal=True)
+    elif action_resp.status == "approved" and retryable_failure is not None:
+        action_resp.execution_failure = ApprovalExecutionFailure(**retryable_failure)
     # Honest dispatch status: the action only ran if it reached 'executed'.
     # 'approved' means approved-but-not-yet-dispatched (e.g. no reachable daemon);
     # it stays retry-able. Surface this so the FE never claims success falsely.

@@ -759,6 +759,13 @@ copy of an audit-event rejection reason or broaden retry behavior.
 - **THEN** the dossier does not render Retry dispatch
 - **AND** an executed failure is not made retryable by this dashboard surface.
 
+#### Scenario: A failed or provider-rejected approved send is shown with a content-free reason
+
+- **WHEN** an approved outbound send failed, or the provider rejected it
+- **THEN** the detail response carries `execution_failure` with a closed `code`, a fixed `label` and `terminal` (true only for a provider-proven rejection), and the dossier renders it under "Send failed"
+- **AND** the field never carries a message body, a recipient or provider text
+- **AND** the decision response (including a Telegram card redemption) carries the same field when the dispatch it triggered failed, so a card is not rendered as a plain success
+
 ### Requirement: Retry Reports Dispatch Failure Class Truthfully
 
 Approval Retry endpoints MUST distinguish failure to reach the owning butler from a
