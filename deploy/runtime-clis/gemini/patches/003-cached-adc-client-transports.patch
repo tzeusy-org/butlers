@@ -1,0 +1,260 @@
+--- a/packages/core/src/code_assist/oauth2.ts
++++ b/packages/core/src/code_assist/oauth2.ts
+@@ -7,0 +8 @@
++import { fromJSONWithGateway } from '../utils/butlersGoogleAuth.js';
+@@ -140 +141,3 @@
+-        ...(gatewayConfig() ? { fetchImplementation: egressFetch } : { proxy: config.getProxy() }),
++        ...(gatewayConfig()
++          ? { fetchImplementation: egressFetch }
++          : { proxy: config.getProxy() }),
+@@ -179 +181,0 @@
+-          ...(gatewayConfig() && { clientOptions: { transporterOptions: { fetchImplementation: egressFetch } } }),
+@@ -181 +183 @@
+-        const adcClient = auth.fromJSON({
++        const adcClient = fromJSONWithGateway(auth, {
+--- a/packages/core/src/code_assist/oauth2.test.ts
++++ b/packages/core/src/code_assist/oauth2.test.ts
+@@ -706,44 +706,65 @@
+-      it('should use GoogleAuth for BYOID credentials from GOOGLE_APPLICATION_CREDENTIALS', async () => {
+-        // Setup BYOID credentials via environment variable
+-        const byoidCredentials = {
+-          type: 'external_account_authorized_user',
+-          client_id: 'mock-client-id',
+-        };
+-        const envCredsPath = path.join(tempHomeDir, 'byoid_creds.json');
+-        await fs.promises.writeFile(
+-          envCredsPath,
+-          JSON.stringify(byoidCredentials),
+-        );
+-        vi.stubEnv('GOOGLE_APPLICATION_CREDENTIALS', envCredsPath);
+-
+-        // Mock GoogleAuth and its chain of calls
+-        const mockExternalAccountClient = {
+-          getAccessToken: vi.fn().mockResolvedValue({ token: 'byoid-token' }),
+-        };
+-        const mockFromJSON = vi.fn().mockReturnValue(mockExternalAccountClient);
+-        const mockGoogleAuthInstance = {
+-          fromJSON: mockFromJSON,
+-        };
+-        (GoogleAuth as unknown as Mock).mockImplementation(
+-          () => mockGoogleAuthInstance,
+-        );
+-
+-        const mockOAuth2Client = {
+-          on: vi.fn(),
+-        };
+-        (OAuth2Client as unknown as Mock).mockImplementation(
+-          () => mockOAuth2Client,
+-        );
+-
+-        const client = await getOauthClient(
+-          AuthType.LOGIN_WITH_GOOGLE,
+-          mockConfig,
+-        );
+-
+-        // Assert that GoogleAuth was used and the correct client was returned
+-        expect(GoogleAuth).toHaveBeenCalledWith({
+-          scopes: expect.any(Array),
+-        });
+-        expect(mockFromJSON).toHaveBeenCalledWith(byoidCredentials);
+-        expect(client).toBe(mockExternalAccountClient);
+-      });
++      it.each([false, true])(
++        'should use GoogleAuth for BYOID credentials from GOOGLE_APPLICATION_CREDENTIALS (selected=%s)',
++        async (selected) => {
++          if (selected) {
++            vi.stubEnv('BUTLERS_EGRESS_MODE', 'request-v1');
++            vi.stubEnv('BUTLERS_EGRESS_GATEWAY', 'http://egress-gateway:3115');
++          }
++          // Setup BYOID credentials via environment variable
++          const byoidCredentials = {
++            type: 'external_account_authorized_user',
++            client_id: 'mock-client-id',
++          };
++          const envCredsPath = path.join(tempHomeDir, 'byoid_creds.json');
++          await fs.promises.writeFile(
++            envCredsPath,
++            JSON.stringify(byoidCredentials),
++          );
++          vi.stubEnv('GOOGLE_APPLICATION_CREDENTIALS', envCredsPath);
++
++          // Mock GoogleAuth and its chain of calls
++          const mockExternalAccountClient = {
++            getAccessToken: vi.fn().mockResolvedValue({ token: 'byoid-token' }),
++            transporter: { defaults: {} },
++          };
++          const mockFromJSON = vi
++            .fn()
++            .mockReturnValue(mockExternalAccountClient);
++          const mockGoogleAuthInstance = {
++            fromJSON: mockFromJSON,
++          };
++          (GoogleAuth as unknown as Mock).mockImplementation(
++            () => mockGoogleAuthInstance,
++          );
++
++          const mockOAuth2Client = {
++            on: vi.fn(),
++          };
++          (OAuth2Client as unknown as Mock).mockImplementation(
++            () => mockOAuth2Client,
++          );
++
++          const client = await getOauthClient(
++            AuthType.LOGIN_WITH_GOOGLE,
++            mockConfig,
++          );
++
++          // Assert that GoogleAuth was used and the correct client was returned
++          if (selected) {
++            expect(mockFromJSON).toHaveBeenCalledWith(
++              byoidCredentials,
++              expect.objectContaining({
++                transporterOptions: expect.objectContaining({
++                  fetchImplementation: expect.any(Function),
++                }),
++              }),
++            );
++          } else {
++            expect(GoogleAuth).toHaveBeenCalledWith({
++              scopes: expect.any(Array),
++            });
++            expect(mockFromJSON).toHaveBeenCalledWith(byoidCredentials);
++          }
++          expect(client).toBe(mockExternalAccountClient);
++        },
++      );
+--- /dev/null
++++ b/packages/core/src/utils/butlersGoogleAuth.ts
+@@ -0,0 +1,31 @@
++/** Selected transport for factory-owned cached ADC clients, including recursive sources. */
++import type { GoogleAuth } from 'google-auth-library';
++import { egressFetch, gatewayConfig } from './butlersEgress.js';
++
++export function fromJSONWithGateway(
++  auth: GoogleAuth,
++  credentials: Parameters<GoogleAuth['fromJSON']>[0],
++): ReturnType<GoogleAuth['fromJSON']> {
++  if (!gatewayConfig()) return auth.fromJSON(credentials);
++  const nativeFromJSON = auth.fromJSON.bind(auth);
++  // GoogleAuth's impersonation parser recursively calls this public method while
++  // ignoring its outer clientOptions. This owned-instance hook reaches each
++  // source client without replacing parsers, credentials, caches or interceptors.
++  auth.fromJSON = (
++    json,
++    options: NonNullable<Parameters<GoogleAuth['fromJSON']>[1]> = {},
++  ) => {
++    const client = nativeFromJSON(json, {
++      ...options,
++      transporterOptions: {
++        ...options.transporterOptions,
++        fetchImplementation: egressFetch,
++      },
++    });
++    // The impersonated outer constructor also ignores fromJSON's options.
++    // Preserve its native transporter/interceptors and set only its fetch default.
++    client.transporter.defaults.fetchImplementation = egressFetch;
++    return client;
++  };
++  return auth.fromJSON(credentials);
++}
+--- /dev/null
++++ b/packages/core/src/utils/butlersGoogleAuth.test.ts
+@@ -0,0 +1,97 @@
++import { beforeEach, expect, it, vi } from 'vitest';
++import { generateKeyPairSync } from 'node:crypto';
++import { GoogleAuth } from 'google-auth-library';
++import { fromJSONWithGateway } from './butlersGoogleAuth.js';
++
++const state = vi.hoisted(() => ({ selected: true, requests: [] as string[] }));
++vi.mock('./butlersEgress.js', () => ({
++  gatewayConfig: () => (state.selected ? { port: 3115 } : undefined),
++  egressFetch: async (input: string | URL) => {
++    const url = String(input);
++    state.requests.push(url);
++    return new Response(
++      JSON.stringify(
++        url.endsWith(':generateAccessToken')
++          ? {
++              accessToken: 'synthetic-impersonated',
++              expireTime: new Date(Date.now() + 3600000).toISOString(),
++            }
++          : {
++              access_token: 'synthetic-source',
++              expires_in: 3600,
++              token_type: 'Bearer',
++            },
++      ),
++      { status: 200, headers: { 'content-type': 'application/json' } },
++    );
++  },
++}));
++beforeEach(() => {
++  state.selected = true;
++  state.requests.length = 0;
++});
++
++it('actual external-account authorized-user refresh uses selected fetch', async () => {
++  const auth = new GoogleAuth({
++    scopes: ['https://www.googleapis.com/auth/cloud-platform'],
++  });
++  const client = fromJSONWithGateway(auth, {
++    type: 'external_account_authorized_user',
++    client_id: 'synthetic-client',
++    client_secret: 'synthetic-secret',
++    refresh_token: 'synthetic-refresh',
++    token_url: 'https://sts.googleapis.com/v1/oauthtoken',
++  });
++  expect((await client.getAccessToken()).token).toBe('synthetic-source');
++  expect(state.requests).toEqual(['https://sts.googleapis.com/v1/oauthtoken']);
++});
++
++it('actual impersonation refresh keeps both source and target transports selected', async () => {
++  const auth = new GoogleAuth({
++    scopes: ['https://www.googleapis.com/auth/cloud-platform'],
++  });
++  const client = fromJSONWithGateway(auth, {
++    type: 'impersonated_service_account',
++    source_credentials: {
++      type: 'authorized_user',
++      client_id: 'synthetic-client',
++      client_secret: 'synthetic-secret',
++      refresh_token: 'synthetic-refresh',
++    },
++    service_account_impersonation_url:
++      'https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/fixture@fixture.iam.gserviceaccount.com:generateAccessToken',
++  });
++  expect((await client.getAccessToken()).token).toBe('synthetic-impersonated');
++  expect(state.requests).toHaveLength(2);
++  expect(state.requests[0]).toBe('https://oauth2.googleapis.com/token');
++  expect(state.requests[1]).toContain('iamcredentials.googleapis.com');
++});
++
++it('off mode keeps the original fromJSON method and native transporter default', () => {
++  state.selected = false;
++  const auth = new GoogleAuth();
++  const nativeFromJSON = auth.fromJSON;
++  const client = fromJSONWithGateway(auth, {
++    type: 'authorized_user',
++    client_id: 'synthetic-client',
++    client_secret: 'synthetic-secret',
++    refresh_token: 'synthetic-refresh',
++  });
++  expect(auth.fromJSON).toBe(nativeFromJSON);
++  expect(client.transporter.defaults.fetchImplementation).toBeUndefined();
++  expect(state.requests).toEqual([]);
++});
++
++it('actual service-account JWT refresh uses selected fetch', async () => {
++  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
++  const auth = new GoogleAuth({
++    scopes: ['https://www.googleapis.com/auth/cloud-platform'],
++  });
++  const client = fromJSONWithGateway(auth, {
++    type: 'service_account',
++    client_email: 'fixture@fixture.iam.gserviceaccount.com',
++    private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
++  });
++  expect((await client.getAccessToken()).token).toBe('synthetic-source');
++  expect(state.requests).toEqual(['https://oauth2.googleapis.com/token']);
++});

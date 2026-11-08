@@ -11,7 +11,14 @@ The core package and stock lock both name the verified SDK artifact. Existing
 nested GoogleAuth/Gaxios versions stay intact. The isolated transport alias adds
 one package without replacing the core or SDK’s original Undici graph. The
 selected OAuth/ADC factories inject fetch through their actual transporter
-options. Web Fetch preserves its native permission/timeout handling and routes
+options. Cached ADC parsing passes those options to the actual `fromJSON`
+factory and keeps an instance-local hook for recursive impersonation source
+clients. The returned client's native transporter keeps its interceptors and
+receives the same selected fetch default, including the outer impersonated
+client whose parser ignores constructor options. Off mode calls the original
+factory unchanged. Real core-resolved client controls cover external-account,
+service-account JWT and impersonated refresh with synthetic responses; they do
+not claim real ADC credentials or every optional credential subtype. Web Fetch preserves its native permission/timeout handling and routes
 its terminal request before ambient proxy selection; the gateway performs the
 public-address decision. API-key and Vertex mode detection stay unchanged.
 Do not use `GOOGLE_GEMINI_BASE_URL` to select this transport: Gemini treats that

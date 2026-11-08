@@ -50,10 +50,36 @@
           "after_sha256": "7151fafef798eb4c5da9235547c820dbf693f096d0f0d09778bb729aaa94442c"
         }
       ]
+    },
+    {
+      "path": "patches/003-cached-adc-client-transports.patch",
+      "sha256": "663d38bc13da48e54bf5551f5481bda6ab2f0d64be1840e49e7a94b23df76b33",
+      "files": [
+        {
+          "path": "packages/core/src/code_assist/oauth2.ts",
+          "before_sha256": "0aff56def814678eaf46f935188dee4ca0f8c1b401b73648920b6385509eccb6",
+          "after_sha256": "63eca9175553d4612697b5aca75a88126987d6434277b3523f79745ad7c6a25e"
+        },
+        {
+          "path": "packages/core/src/code_assist/oauth2.test.ts",
+          "before_sha256": "8302e03bc6e2d3c2fea1ac3ec92261250444bab69a32282d676705b78e7b75c8",
+          "after_sha256": "43d3e9f087e0bce781ccfa993fa42b2f00039bd4b8a0757f7009bc5fac0e5286"
+        },
+        {
+          "path": "packages/core/src/utils/butlersGoogleAuth.ts",
+          "before_sha256": null,
+          "after_sha256": "0f605aa9549fc88d75b8e1f38ff5c1fd91332b76a3ad08157c2d546fff035ecc"
+        },
+        {
+          "path": "packages/core/src/utils/butlersGoogleAuth.test.ts",
+          "before_sha256": null,
+          "after_sha256": "0a68965c83fb626a20792b37396ad50cc7dfe4e7fc5c797d6e952fdd8a0a2a42"
+        }
+      ]
     }
   ],
-  "source_tree_sha256": "31e71c164814b9f58d00e8c527fcdb9f2e51de2f93a03bd6f32b4c04c06bc9fd",
+  "source_tree_sha256": "b92a4a0357b81d05c897ffbd4e1741fff757877edbce3ead7078536ef69bdcfd",
   "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches.",
-  "qualification": "Source replay excludes separately verified SDK build artifact. Stock npm ci and full workspace build accepted exact SDK artifact with original nested auth graph; native Gemini API-key configured-model turn succeeded. All native tools/auth modes and immutable image closure remain separate.",
+  "qualification": "Exact cached-ADC factory correction source replay. Actual core-resolved GoogleAuth10.9.0/Gaxios7.2.0 owning factory and four synthetic dependency-level refresh controls passed; corrected full Gemini build/native CLI remains pending. Prior API-key native artifact is not the corrected artifact. All native tools/auth modes and immutable image closure remain separate.",
   "shared_executor_head": "318c33d665a67fdfb984e31333941b1bebdfa05e"
 }
