@@ -49,7 +49,25 @@ _SWITCHBOARD_AUDIENCE = "switchboard:approval-recovery"
 _MESSENGER_AUDIENCE = "messenger:approval-recovery"
 _REFUSAL = "Approval recovery authority rejected."
 _CALL_TIMEOUT_SECONDS = 10.0
+# The approved-notify deliver hop runs two nested protected calls (the source
+# verifier, then Switchboard -> Messenger), each bounded by _CALL_TIMEOUT_SECONDS.
+# Its own deadline must outlast both, and stay inside the dashboard API's 30 s
+# dispatch deadline so the API never abandons an executor mid-send.
+_APPROVED_NOTIFY_DEADLINE_MARGIN_SECONDS = 5.0
 logger = logging.getLogger(__name__)
+
+
+def approved_notify_deliver_deadline() -> float:
+    """Complete-call deadline for the source's approved-notify deliver hop."""
+    return 2 * _CALL_TIMEOUT_SECONDS + _APPROVED_NOTIFY_DEADLINE_MARGIN_SECONDS
+
+
+class ApprovalCallTimeout(RecoveryAuthorityError):
+    """A protected call's deadline expired; the peer may still have acted."""
+
+
+class ApprovedNotifyOutcomeUnknown(RecoveryAuthorityError):
+    """The proof was consumed but no reply arrived: the send may have happened."""
 
 
 def guard_registered_approval_tool(
@@ -239,9 +257,18 @@ class ProtectedApprovalMCP:
         await self.close()
 
     async def call(
-        self, tool: str, arguments: dict[str, Any], *, proof: str | None = None
+        self,
+        tool: str,
+        arguments: dict[str, Any],
+        *,
+        proof: str | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
-        """Call only this bootstrap-bound companion over its Unix socket."""
+        """Call only this bootstrap-bound companion over its Unix socket.
+
+        ``deadline`` overrides the default complete-call deadline for a hop
+        whose handler itself makes protected calls (it must outlast them).
+        """
         if not self._active:
             raise RecoveryAuthorityError(_REFUSAL)
 
@@ -267,17 +294,17 @@ class ProtectedApprovalMCP:
         try:
             # Include initialization and client teardown, not only tool-call
             # read timeout. No reply may leave a recovery worker waiting forever.
-            async with asyncio.timeout(_CALL_TIMEOUT_SECONDS):
+            async with asyncio.timeout(deadline if deadline is not None else _CALL_TIMEOUT_SECONDS):
                 async with Client(transport) as client:
                     result = await client.call_tool(tool, arguments)
         except (TimeoutError, httpx.TimeoutException):
-            raise RecoveryAuthorityError(_REFUSAL) from None
+            raise ApprovalCallTimeout(_REFUSAL) from None
         except RuntimeError as error:
             # FastMCP wraps initialization failures with their explicit cause.
             # Inspect one typed hop, never messages or unrelated runtime faults.
             if not isinstance(error.__cause__, (TimeoutError, httpx.TimeoutException)):
                 raise
-            raise RecoveryAuthorityError(_REFUSAL) from None
+            raise ApprovalCallTimeout(_REFUSAL) from None
         if not isinstance(result.data, dict):
             raise RecoveryAuthorityError(_REFUSAL)
         return result.data
@@ -399,6 +426,10 @@ class SourceApprovalAdmission:
             )
         )
         return proof
+
+    def approved_notify_unpresented(self, proof: str) -> bool:
+        """True while a minted proof has not been consumed by verification."""
+        return hashlib.sha256(proof.encode()).hexdigest() in self._approved_notifications
 
     def revoke_approved_notify(self, proof: str) -> None:
         self._approved_notifications.pop(hashlib.sha256(proof.encode()).hexdigest(), None)
@@ -662,7 +693,15 @@ class SourceApprovedNotifyDispatch:
                 "deliver",
                 {"source_butler": payload["origin_butler"], "notify_request": payload},
                 proof=proof,
+                deadline=approved_notify_deliver_deadline(),
             )
+        except ApprovalCallTimeout:
+            # An unconsumed proof proves Switchboard never verified it, so nothing
+            # was forwarded and a retry is safe. A consumed proof means delivery
+            # may have happened: report it as unknown, never as retryable.
+            if self._admission.approved_notify_unpresented(proof):
+                raise
+            raise ApprovedNotifyOutcomeUnknown(_APPROVED_NOTIFY_REFUSAL) from None
         finally:
             # Verification consumes it; never leave an unpresented proof usable.
             self._admission.revoke_approved_notify(proof)

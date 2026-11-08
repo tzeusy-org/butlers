@@ -116,6 +116,16 @@ the request, binds it to the handling task, and lets the shared approval matcher
 names the issuer as origin and route sender, and carries no recovery. A bare
 field, a caller origin or an action id grants nothing.
 
+The deliver hop nests two protected calls (the source verifier, then Switchboard
+to Messenger), each bounded by the ten-second companion deadline. Its own deadline
+(`approved_notify_deliver_deadline()`, 25 s) outlasts both and stays inside the
+dashboard API's 30 s dispatch deadline, so a late but successful send is never
+reported as a failure. If the hop still times out, an unconsumed proof proves
+nothing was forwarded and the row stays retryable. A consumed proof means the send
+may have happened. The executor then records the action executed with
+`{"status": "outcome_unknown"}` instead of leaving it eligible for a Retry that could
+message a non-owner twice.
+
 Without this topology (single-daemon `butlers run`, split hosts, or a source
 whose worker flag is off) the executor falls back to an ordinary `deliver`.
 Messenger's recipient gate then applies and parks a non-owner send as the native

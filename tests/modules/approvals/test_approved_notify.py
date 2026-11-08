@@ -166,3 +166,30 @@ async def test_fallback_park_is_reported_not_counted_as_delivery() -> None:
         await _with_executor_context(
             uuid.uuid4(), _TOOL_ARGS, lambda: deliver_approved_notify(daemon, dict(_TOOL_ARGS))
         )
+
+
+async def test_consumed_proof_without_reply_records_unknown_outcome_not_retry() -> None:
+    """A send that may have happened is never left retryable (no second message)."""
+    from butlers.core.approval_delivery_authority import ApprovedNotifyOutcomeUnknown
+
+    dispatch = AsyncMock(side_effect=ApprovedNotifyOutcomeUnknown("unknown"))
+    daemon = _daemon(_approved_notify_dispatch=dispatch)
+
+    result = await _with_executor_context(
+        uuid.uuid4(), _TOOL_ARGS, lambda: deliver_approved_notify(daemon, dict(_TOOL_ARGS))
+    )
+
+    # Returned (not raised): the executor marks the row executed with this result.
+    assert result == {"status": "outcome_unknown", "delivery_confirmed": False}
+
+
+async def test_timeout_before_verification_raises_so_row_stays_retryable() -> None:
+    from butlers.core.approval_delivery_authority import ApprovalCallTimeout
+
+    dispatch = AsyncMock(side_effect=ApprovalCallTimeout("deadline"))
+    daemon = _daemon(_approved_notify_dispatch=dispatch)
+
+    with pytest.raises(ApprovalCallTimeout):
+        await _with_executor_context(
+            uuid.uuid4(), _TOOL_ARGS, lambda: deliver_approved_notify(daemon, dict(_TOOL_ARGS))
+        )

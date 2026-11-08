@@ -176,7 +176,14 @@ async def test_dispatch_revokes_an_unpresented_proof() -> None:
     presented: list[str] = []
 
     class _Endpoint:
-        async def call(self, tool: str, arguments: dict[str, Any], *, proof: str | None = None):
+        async def call(
+            self,
+            tool: str,
+            arguments: dict[str, Any],
+            *,
+            proof: str | None = None,
+            deadline: float | None = None,
+        ):
             assert tool == "deliver"
             assert arguments == {"source_butler": "relationship", "notify_request": payload}
             assert proof is not None
@@ -189,6 +196,59 @@ async def test_dispatch_revokes_an_unpresented_proof() -> None:
 
     assert len(presented) == 1
     assert await source.verify_approved_notify(payload, presented[0]) == {"allowed": False}
+
+
+def test_deliver_hop_deadline_outlasts_its_nested_calls_and_fits_the_api() -> None:
+    """The outer hop must not give up while an inner protected call can still succeed.
+
+    The approved-notify deliver hop runs the source verifier and then the
+    Switchboard -> Messenger call, each bounded by the companion deadline. A
+    late but successful Messenger send must never look like a failure (the row
+    would stay retryable and Retry would send twice), and the dashboard API
+    must not abandon the executor before the hop resolves.
+    """
+    from butlers.api.routers import approvals as approvals_router
+
+    deadline = authority.approved_notify_deliver_deadline()
+    assert deadline > 2 * authority._CALL_TIMEOUT_SECONDS
+    assert deadline < approvals_router._MCP_DISPATCH_TIMEOUT_S
+
+
+def _timing_out_endpoint(source: SourceApprovalAdmission, *, verify_first: bool):
+    seen: dict[str, Any] = {}
+
+    class _Endpoint:
+        async def call(self, tool, arguments, *, proof=None, deadline=None):
+            seen["deadline"] = deadline
+            if verify_first:
+                # Switchboard verified (consumed) the proof, then the reply was lost.
+                verdict = await source.verify_approved_notify(arguments["notify_request"], proof)
+                assert verdict["allowed"] is True
+            raise authority.ApprovalCallTimeout("deadline")
+
+    return _Endpoint(), seen
+
+
+async def test_timeout_before_verification_stays_retryable() -> None:
+    source, _, action_id, digest, payload = _source()
+    endpoint, seen = _timing_out_endpoint(source, verify_first=False)
+    dispatch = SourceApprovedNotifyDispatch(source, endpoint)  # type: ignore[arg-type]
+
+    with pytest.raises(authority.ApprovalCallTimeout):
+        await dispatch(action_id, digest, payload)
+
+    assert seen["deadline"] == authority.approved_notify_deliver_deadline()
+    # Nothing was forwarded, and the unpresented proof is revoked.
+    assert source._approved_notifications == {}
+
+
+async def test_timeout_after_verification_is_an_unknown_outcome() -> None:
+    source, _, action_id, digest, payload = _source()
+    endpoint, _ = _timing_out_endpoint(source, verify_first=True)
+    dispatch = SourceApprovedNotifyDispatch(source, endpoint)  # type: ignore[arg-type]
+
+    with pytest.raises(authority.ApprovedNotifyOutcomeUnknown):
+        await dispatch(action_id, digest, payload)
 
 
 async def test_unauthenticated_in_process_call_gets_no_attestation() -> None:
@@ -315,3 +375,43 @@ async def test_kernel_socket_chain_verifies_once_and_refuses_replay_and_foreign(
     assert [entry[1] for entry in seen[1:]] == [False, True, True]
     assert all(entry[2] is None for entry in seen[1:])
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(not hasattr(socket, "SO_PEERCRED"), reason="kernel peer admission")
+async def test_kernel_socket_late_success_is_not_reported_as_failure(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Switchboard reply slower than one companion deadline still lands.
+
+    Before the fix the outer hop shared the 10 s companion deadline with the
+    nested verify + Messenger calls, so a late successful send surfaced as a
+    failure and left the row retryable (a second send on Retry).
+    """
+    monkeypatch.setattr(authority, "_CALL_TIMEOUT_SECONDS", 1.0)
+    source, _, action_id, digest, payload = _source()
+    switchboard = FastMCP("approved-notify-slow-switchboard")
+    messenger = FastMCP("approved-notify-slow-messenger")
+    module = SimpleNamespace()
+
+    @switchboard.tool(name="deliver")
+    async def deliver(source_butler: str, notify_request: dict) -> dict:
+        attestation = await verify_switchboard_approved_notify(module, notify_request)
+        # Messenger's protected call may legitimately take most of its own deadline.
+        await asyncio.sleep(1.5)
+        return {"attested": attestation is not None}
+
+    @messenger.tool(name="route.execute")
+    async def route_execute() -> dict:
+        return {}
+
+    topology = ApprovalAuthorityTopology(
+        sources={"relationship": source},
+        switchboard_registered=switchboard,
+        switchboard_module=module,
+        messenger_registered=messenger,
+        messenger_registry_url="http://localhost:41102/mcp",
+        socket_directory=tmp_path,
+    )
+    async with asyncio.timeout(15), topology:
+        hop = topology.approved_notify_dispatch("relationship")
+        assert await hop(action_id, digest, payload) == {"attested": True}

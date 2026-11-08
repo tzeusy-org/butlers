@@ -25,6 +25,7 @@ Scope: v1-mandatory
 ### Requirement: Approval-Gated Delivery
 Sensitive channel sends SHALL remain approval-gated before execution. A send or reply whose recipients do not all resolve uniquely to the live owner SHALL execute only under per-event owner approval or a matching standing rule the owner created, and no goal origin, grant, exposure state, lead, or child SHALL bypass this. A send requested by an exposed invocation to anyone other than the owner SHALL require per-event owner approval unless the matching standing rule is template-pinned (`REQ-capability-authorization-006`). Messenger's service-plane delivery endpoint (today `route.execute` on Messenger) SHALL apply the same non-owner rule to every delivery that Switchboard `deliver()` hands it, including deliveries from deterministic service-plane senders.
 
+ID: REQ-butler-messenger-007
 Source: RFC 0038 D4, D6 and D7; RFC 0021
 Scope: v1-mandatory
 
@@ -32,6 +33,20 @@ Scope: v1-mandatory
 - **WHEN** Messenger starts with approvals enabled
 - **THEN** its configured Telegram, email, and WhatsApp send/reply tools require
   approval before production use
+
+#### Scenario: An owner-approved notify is not parked twice
+- **WHEN** an owner-approved `notify` arrives through Switchboard from its owning
+  butler's approval executor with a source-verified, single-use attestation that
+  covers the exact routed `notify_request`
+- **THEN** Messenger delivers it once without parking a second pending action
+- **AND** a bare attestation flag, a caller origin, or an action id without that
+  verified attestation still parks a non-owner delivery
+
+#### Scenario: A recipient park is replayable through the native tool
+- **WHEN** Messenger parks a non-owner plain send or reply
+- **THEN** the pending action names the registered native channel tool with that
+  tool's handler arguments, so the approval card renders its native preview and
+  approval replays that tool exactly once
 
 #### Scenario: A goal sends to a non-owner without a standing rule
 - **WHEN** an unexposed owner goal requests a send to a recipient who does not resolve uniquely to the owner and no owner-created standing rule matches

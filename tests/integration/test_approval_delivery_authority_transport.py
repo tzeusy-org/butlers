@@ -1053,3 +1053,101 @@ async def test_actual_recovery_ledger_never_replays_native_telegram_unknown_rece
                 )
             assert row["handoff_class"] == "ambiguous"
             assert row["provider_reference"] is None and row["provider_started_at"] is not None
+
+
+_APPROVED_NOTIFY_ARGS = {"intent": "send", "channel": "telegram", "message": "Approved words"}
+
+
+async def _insert_notify_row(
+    pool, *, tool_name="notify", status="approved", result=None, goal=False
+):
+    action_id = uuid.uuid4()
+    goal_columns = ""
+    goal_values = ""
+    goal_args: list = []
+    if goal:
+        goal_columns = ", goal_id, goal_invocation_id, goal_depth, goal_exposed, goal_origin"
+        goal_values = ", $5, $6, 0, false, 'owner'"
+        goal_args = [uuid.uuid4(), uuid.uuid4()]
+    await pool.execute(
+        f"INSERT INTO pending_actions (id, tool_name, tool_args, status, execution_result"
+        f"{goal_columns}) VALUES ($1, $2, $3, $4, ${len(goal_args) + 5}{goal_values})",
+        action_id,
+        tool_name,
+        _APPROVED_NOTIFY_ARGS,
+        status,
+        *goal_args,
+        result,
+    )
+    return action_id
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "approved",
+        "executed",
+        "pending",
+        "rejected",
+        "approved-with-result",
+        "goal",
+        "non-notify",
+        "digest-mismatch",
+        "wrong-schema",
+        "wrong-role",
+    ],
+)
+async def test_approved_notify_live_row_predicate(authority_pools, case):
+    """RFC 0038 D13: only a live, approved, unexecuted, goal-free notify row attests.
+
+    This is the security predicate behind the single-use approved-notify proof.
+    It runs under the owning SET ROLE pool against the real migrated schema.
+    """
+    from butlers.modules.approvals.execution_context import approval_tool_args_digest
+
+    source = authority_pools["relationship"]
+    digest = approval_tool_args_digest(_APPROVED_NOTIFY_ARGS)
+    row = dict(
+        executed={"status": "executed", "result": {"success": True}},
+        pending={"status": "pending"},
+        rejected={"status": "rejected"},
+        **{"approved-with-result": {"result": {"success": False}}},
+        goal={"goal": True},
+        **{"non-notify": {"tool_name": "telegram_send_message"}},
+    ).get(case, {})
+    action_id = await _insert_notify_row(source, **row)
+    pool, schema = source, "relationship"
+    if case == "digest-mismatch":
+        digest = "0" * 64
+    elif case == "wrong-schema":
+        schema = "messenger"
+    elif case == "wrong-role":
+        pool = authority_pools["messenger"]
+
+    stored = await ApprovalDeliveryRepository(pool).approved_notify_args(
+        action_id, owning_schema=schema, args_digest=digest
+    )
+
+    assert stored == (_APPROVED_NOTIFY_ARGS if case == "approved" else None)
+
+
+async def test_approved_notify_read_does_not_wait_on_the_executor_row_lock(authority_pools):
+    """The source verifies while its own executor holds FOR UPDATE on the row."""
+    from butlers.modules.approvals.execution_context import approval_tool_args_digest
+
+    source = authority_pools["relationship"]
+    action_id = await _insert_notify_row(source)
+    async with source.acquire() as executor, executor.transaction():
+        locked = await executor.fetchrow(
+            "SELECT status FROM pending_actions WHERE id = $1 FOR UPDATE", action_id
+        )
+        assert locked["status"] == "approved"
+        stored = await asyncio.wait_for(
+            ApprovalDeliveryRepository(source).approved_notify_args(
+                action_id,
+                owning_schema="relationship",
+                args_digest=approval_tool_args_digest(_APPROVED_NOTIFY_ARGS),
+            ),
+            timeout=5,
+        )
+    assert stored == _APPROVED_NOTIFY_ARGS

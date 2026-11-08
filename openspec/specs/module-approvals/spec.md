@@ -376,6 +376,7 @@ Scope: v1-mandatory
 - **AND** where the trusted cohost approval hop exists, the source mints an in-memory proof bound to the action id, the stored-call digest and the exact envelope digest, valid for at most ten seconds and consumed by its first verification
 - **AND** Switchboard accepts that proof only from the kernel-admitted caller that is the source, has the source verify it against the live approved, unexecuted row, and forwards an attestation over the protected Messenger hop
 - **AND** a replayed, expired, mismatched or foreign proof, or an action that is no longer approved and unexecuted, is refused and the row stays approved for retry
+- **AND** if Switchboard consumed the proof but no reply arrives before the hop deadline (which outlasts its nested verifier and Messenger calls), the action is recorded executed with an unknown outcome and is not retried, so a non-owner never receives a second message
 - **AND** this operation is separate from the `approval_request` admission, which it does not widen
 - **AND** without the trusted hop the delivery is ordinary, so Messenger's recipient gate applies and parks a native, previewable command
 
