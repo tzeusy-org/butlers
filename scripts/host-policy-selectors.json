@@ -4608,7 +4608,7 @@
         }
       ],
       "baseline_ids": [],
-      "public_source_commit": "3ced3dbd7b3408fc1c2c7cc9b99afa7e3650aa73",
+      "public_source_commit": "1fd3ff8e213a3146ee88bafee3a8a8d1ab04bd8c",
       "reason": "Package E internal subscriber prerequisite: RFC0039 D2/D3/D4 fixes these Finance/Health exclusions and exact migration chain ownership. This closed source selection neither expands the canonical47 manifest nor proves deployed authority/runtime completion."
     },
     {
@@ -4634,7 +4634,7 @@
         }
       ],
       "baseline_ids": [],
-      "public_source_commit": "3ced3dbd7b3408fc1c2c7cc9b99afa7e3650aa73",
+      "public_source_commit": "1fd3ff8e213a3146ee88bafee3a8a8d1ab04bd8c",
       "reason": "Package E internal subscriber prerequisite: RFC0039 D2/D3/D4 fixes these Finance/Health exclusions and exact migration chain ownership. This closed source selection neither expands the canonical47 manifest nor proves deployed authority/runtime completion."
     },
     {
@@ -4660,7 +4660,7 @@
         }
       ],
       "baseline_ids": [],
-      "public_source_commit": "3ced3dbd7b3408fc1c2c7cc9b99afa7e3650aa73",
+      "public_source_commit": "1fd3ff8e213a3146ee88bafee3a8a8d1ab04bd8c",
       "reason": "Package E internal subscriber prerequisite: RFC0039 D2/D3/D4 fixes these Finance/Health exclusions and exact migration chain ownership. This closed source selection neither expands the canonical47 manifest nor proves deployed authority/runtime completion."
     },
     {
@@ -4686,7 +4686,7 @@
         }
       ],
       "baseline_ids": [],
-      "public_source_commit": "3ced3dbd7b3408fc1c2c7cc9b99afa7e3650aa73",
+      "public_source_commit": "1fd3ff8e213a3146ee88bafee3a8a8d1ab04bd8c",
       "reason": "Package E internal subscriber prerequisite: RFC0039 D2/D3/D4 fixes these Finance/Health exclusions and exact migration chain ownership. This closed source selection neither expands the canonical47 manifest nor proves deployed authority/runtime completion."
     }
   ],
