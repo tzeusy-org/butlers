@@ -749,6 +749,15 @@ immediate execution when approval is not required.
 - **WHEN** an outbound routed delivery requires approval
 - **THEN** the pending action stores the registered native delivery tool name
 - **AND** `tool_args` contains every required handler argument and no routing-only argument
+- **AND** the approval card renders that native tool's registered preview
+- **AND** approval replays that native tool's handler exactly once, never `route.execute`
+
+#### Scenario: Routed delivery carries a fact the native handler cannot accept
+
+- **WHEN** a parked routed delivery requires inert-link rendering or carries file attachments
+- **THEN** no native handler argument can carry that fact, so the pending action stores the
+  exact routed `route.execute` envelope instead of a lossy native command
+- **AND** its card fails closed to Open only rather than showing a call that would not execute
 
 #### Scenario: Immediate and deferred execution are equivalent
 

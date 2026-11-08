@@ -1771,12 +1771,11 @@ async def test_route_execute_parks_email_actions_with_native_tool_args(
     call_kwargs = guard.await_args.kwargs
     assert call_kwargs["rule_tool_name"] == expected_tool
     assert call_kwargs["rule_match_args"] == expected_args
-    assert call_kwargs["park_tool_name"] == "route.execute"
-    assert call_kwargs["park_tool_args"] == {
-        "schema_version": "route.v1",
-        "request_context": _route_request_context(),
-        "input": {"prompt": "Deliver.", "context": {"notify_request": notify_request}},
-    }
+    # Spec: module-approvals "Pending Actions Store Replayable Executable Commands".
+    # The park is the registered native command, never the routing envelope, so the
+    # card's registered preview applies and approval replays through that tool.
+    assert call_kwargs["park_tool_name"] == expected_tool
+    assert call_kwargs["park_tool_args"] == expected_args
 
     # Spec: REQ-core-notify-032; only committed typed recipient parks emit a review reference.
     refusal = result["result"]["notify_response"]
@@ -1802,6 +1801,84 @@ async def test_route_execute_parks_email_actions_with_native_tool_args(
             )
         assert rejected["status"] == "error"
         assert "approval_review" not in rejected["result"]["notify_response"]
+
+
+@pytest.mark.parametrize(
+    ("intent", "context", "inert", "expected_tool", "expected_args"),
+    [
+        (
+            "send",
+            None,
+            False,
+            "telegram_send_message",
+            {"chat_id": "9001", "text": "[health] Requested update."},
+        ),
+        (
+            "reply",
+            {
+                "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
+                "source_channel": "telegram_bot",
+                "source_endpoint_identity": "switchboard",
+                "source_sender_identity": "9001",
+                "source_thread_identity": "9001:44",
+            },
+            False,
+            "telegram_reply_to_message",
+            {"chat_id": "9001", "message_id": 44, "text": "[health] Requested update."},
+        ),
+        # Inert-link rendering has no native tool argument, so it keeps the exact
+        # routed envelope (its replay re-enters route.execute with that flag).
+        ("send", None, True, "route.execute", None),
+    ],
+)
+async def test_route_execute_parks_telegram_actions_with_native_tool_args(
+    tmp_path: Path,
+    intent: str,
+    context: dict[str, str] | None,
+    inert: bool,
+    expected_tool: str,
+    expected_args: dict[str, Any] | None,
+) -> None:
+    """A non-owner Telegram park stores the registered tool and its handler args."""
+    from butlers.modules.approvals.email_guard import EmailGuardDecision
+
+    butler_dir = _make_butler_toml(
+        tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
+    )
+    _, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, _infra())
+    assert route_execute_fn is not None
+    guard = AsyncMock(
+        return_value=EmailGuardDecision(
+            allowed=False, reason="parked", action_id=uuid.uuid4(), contact_desc="unknown"
+        )
+    )
+    notify_request: dict[str, Any] = {
+        "schema_version": "notify.v1",
+        "origin_butler": "health",
+        "delivery": {
+            "intent": intent,
+            "channel": "telegram",
+            "message": "Requested update.",
+            **({"recipient": "9001"} if intent == "send" else {}),
+        },
+    }
+    if context is not None:
+        notify_request["request_context"] = context
+    if inert:
+        notify_request["render_links_inert"] = True
+    route_args = {
+        "schema_version": "route.v1",
+        "request_context": _route_request_context(),
+        "input": {"prompt": "Deliver.", "context": {"notify_request": notify_request}},
+    }
+
+    with patch("butlers.core.approvals_hooks.check_recipient", new=guard):
+        result = await route_execute_fn(**route_args)
+
+    assert result["status"] == "error"
+    call_kwargs = guard.await_args.kwargs
+    assert call_kwargs["park_tool_name"] == expected_tool
+    assert call_kwargs["park_tool_args"] == (route_args if expected_args is None else expected_args)
 
 
 async def test_route_execute_revalidates_notify_decision_dossier(tmp_path: Path) -> None:

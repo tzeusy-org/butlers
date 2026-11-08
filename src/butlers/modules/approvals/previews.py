@@ -195,6 +195,38 @@ def _telegram_preview(args: Mapping[str, Any]) -> CallPreview:
     )
 
 
+def _positive_message_id(args: Mapping[str, Any]) -> str:
+    message_id = args.get("message_id")
+    if isinstance(message_id, bool) or not isinstance(message_id, int) or message_id <= 0:
+        raise PreviewError("message_id is missing or not a positive integer")
+    return str(message_id)
+
+
+def _telegram_reply_preview(args: Mapping[str, Any]) -> CallPreview:
+    _reject_unshown(args, frozenset({"chat_id", "message_id", "text"}))
+    return CallPreview(
+        title="Reply to Telegram message",
+        facts=(
+            PreviewFact("To", _require_text(args, "chat_id")),
+            PreviewFact("In reply to", _positive_message_id(args)),
+            PreviewFact("Message", _require_text(args, "text")),
+        ),
+    )
+
+
+def _email_reply_preview(args: Mapping[str, Any]) -> CallPreview:
+    _reject_unshown(args, frozenset({"to", "thread_id", "subject", "body"}))
+    facts = [
+        PreviewFact("To", _recipients(args, "to", required=True) or ""),
+        PreviewFact("Thread", _require_text(args, "thread_id")),
+    ]
+    subject = _optional_text(args, "subject")
+    if subject is not None:
+        facts.append(PreviewFact("Subject", subject))
+    facts.append(PreviewFact("Body", _require_text(args, "body", allow_empty=True)))
+    return CallPreview(title="Reply to email thread", facts=tuple(facts))
+
+
 def _telegram_reaction_preview(args: Mapping[str, Any]) -> CallPreview:
     if set(args) - {"chat_id", "message_id", "emoji"} - _DOSSIER_KEYS:
         raise PreviewError("reaction has unshown arguments")
@@ -245,6 +277,8 @@ def _notify_preview(args: Mapping[str, Any]) -> CallPreview:
 
 register_preview("email_send_message", _email_preview)
 register_preview("telegram_send_message", _telegram_preview)
+register_preview("telegram_reply_to_message", _telegram_reply_preview)
+register_preview("email_reply_to_thread", _email_reply_preview)
 register_preview(
     "telegram_react_to_message", _telegram_reaction_preview, effect_class="communicate"
 )

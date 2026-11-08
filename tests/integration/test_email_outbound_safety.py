@@ -1324,7 +1324,12 @@ def _make_route_envelope(
 
 
 def _parked_route_command(daemon: Any) -> tuple[str, dict[str, Any]]:
-    """Return the single stored command captured by the pending-action insert."""
+    """Return the single stored command captured by the pending-action insert.
+
+    A plain routed send/reply parks as the registered native tool with exactly
+    the handler args its standing-rule match used (module-approvals replayable
+    commands), never the routing envelope.
+    """
     pending_inserts = [
         call
         for call in daemon.db.pool.execute.await_args_list
@@ -1392,7 +1397,7 @@ class TestRouteExecuteApprovalGate:
                 "subject": "[relationship] Notification",
             },
         )
-        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        assert _parked_route_command(daemon) == rules.await_args.args[1:]
         reply_spy.assert_not_awaited()
 
     async def test_send_to_secondary_owner_email_is_allowed_cross_schema(
@@ -1489,7 +1494,7 @@ class TestRouteExecuteApprovalGate:
                 "body": "Hello friend",
             },
         )
-        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        assert _parked_route_command(daemon) == rules.await_args.args[1:]
         send_spy.assert_not_awaited()
 
     async def test_reply_without_provider_thread_identity_fails_before_parking(
@@ -1646,7 +1651,7 @@ class TestRouteExecuteTelegramApprovalGate:
                 "text": "[relationship] Hello friend",
             },
         )
-        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        assert _parked_route_command(daemon) == rules.await_args.args[1:]
         send_spy.assert_not_awaited()
 
     async def test_send_to_owner_telegram_is_allowed(self, tmp_path: Path) -> None:
@@ -1769,7 +1774,7 @@ class TestRouteExecuteTelegramApprovalGate:
                 "text": "[relationship] Hello friend",
             },
         )
-        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        assert _parked_route_command(daemon) == rules.await_args.args[1:]
         send_spy.assert_not_awaited()
 
     async def test_reply_to_non_owner_telegram_parks_native_reply_command(
@@ -1813,7 +1818,7 @@ class TestRouteExecuteTelegramApprovalGate:
                 "text": "[relationship] Reply in place",
             },
         )
-        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        assert _parked_route_command(daemon) == rules.await_args.args[1:]
         reply_spy.assert_not_awaited()
 
 
@@ -1883,7 +1888,7 @@ class TestRouteExecuteWhatsAppApprovalGate:
             "whatsapp_send_message",
             {"recipient": recipient, "text": "[relationship] Hello friend"},
         )
-        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        assert _parked_route_command(daemon) == rules.await_args.args[1:]
         send_spy.assert_not_awaited()
 
     async def test_reply_parks_current_native_send_semantics(self, tmp_path: Path) -> None:
@@ -1920,7 +1925,7 @@ class TestRouteExecuteWhatsAppApprovalGate:
             "whatsapp_send_message",
             {"recipient": thread_identity, "text": "[relationship] Reply in place"},
         )
-        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        assert _parked_route_command(daemon) == rules.await_args.args[1:]
         send_spy.assert_not_awaited()
 
 

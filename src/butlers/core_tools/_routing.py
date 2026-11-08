@@ -630,6 +630,36 @@ async def _build_routed_delivery_command(
     raise RuntimeError(f"Registered notify channel lacks a delivery handler: {channel}")
 
 
+# Native channel tools whose registered handler accepts the materialized command
+# arguments unchanged. File sends pin redacted refs/digests (not the handler's
+# input) and have no native argument for inert-link rendering.
+_NATIVE_REPLAY_TOOLS = frozenset(
+    {
+        "telegram_send_message",
+        "telegram_reply_to_message",
+        "email_send_message",
+        "email_reply_to_thread",
+        "whatsapp_send_message",
+    }
+)
+
+
+def _replayable_park_command(
+    command: _RoutedDeliveryCommand, notify_request: Any
+) -> tuple[str, dict[str, Any] | None]:
+    """Return the tool name and args a recipient park stores for exact replay.
+
+    A plain send or reply parks as the registered native tool with its handler
+    arguments, so the approval card's registered preview renders and approval
+    replays that tool once. Inert-link rendering and file sends have no native
+    handler argument; they keep the routed envelope (``None`` args) and replay
+    through ``route.execute`` with every rendering fact intact.
+    """
+    if command.tool_name in _NATIVE_REPLAY_TOOLS and not notify_request.render_links_inert:
+        return command.tool_name, json.loads(json.dumps(command.tool_args))
+    return "route.execute", None
+
+
 async def _check_routed_delivery_approval(
     *,
     daemon: Any,
@@ -715,11 +745,14 @@ async def _check_routed_delivery_approval(
 
     if command is None:
         return None
+    # Park the registered native command so its preview renders and approval
+    # replays that exact handler call (module-approvals: replayable commands).
+    park_tool_name, park_tool_args = _replayable_park_command(command, notify_request)
     kwargs = {
         "rule_tool_name": command.tool_name,
         "rule_match_args": command.tool_args,
-        "park_tool_name": "route.execute",
-        "park_tool_args": approved_args,
+        "park_tool_name": park_tool_name,
+        "park_tool_args": park_tool_args if park_tool_args is not None else approved_args,
         "park_summary": "Messenger delivery to a recipient not uniquely identified as owner.",
         "session_id": session_id,
         "butler_name": daemon.config.name,
