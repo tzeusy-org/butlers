@@ -35,10 +35,8 @@ spec:
   podSelector: {}
   policyTypes: [Ingress]
 ---
-# Butler-to-butler and dashboard-to-daemon MCP stay inside the namespace. Daemons
-# serve MCP with no caller authentication, so reachability is the boundary. The
-# pods with a narrower policy below stay out of this selector: the union would
-# otherwise widen them.
+# Pods without a narrower policy below accept ingress from the namespace. Those
+# pods stay out of this selector: the union would otherwise widen them.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -50,11 +48,79 @@ spec:
     matchExpressions:
       - key: app.kubernetes.io/component
         operator: NotIn
-        values: [dashboard-api, frontend, connector-owntracks, butlers-control{{ if .Values.sessionHost.enabled }}, session-host{{ end }}]
+        values: [dashboard-api, frontend, connector-owntracks, butlers-control, butlers-up{{ if .Values.sessionHost.enabled }}, session-host{{ end }}]
   policyTypes: [Ingress]
   ingress:
     - from:
         - podSelector: {}
+---
+{{- $daemonPorts := untilStep (int (ternary 41101 41100 .Values.butlersControl.enabled)) 41113 1 }}
+{{- $connectors := list }}
+{{- $healthWaiters := list }}
+{{- range $name, $c := .Values.connectors }}
+{{- if ne (toString $c.enabled) "false" }}
+{{- $connectors = append $connectors (printf "connector-%s" $name) }}
+{{- if $c.waitForHealthRoutes }}
+{{- $healthWaiters = append $healthWaiters (printf "connector-%s" $name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+# Daemons serve MCP with no caller authentication, so reachability is the only
+# in-cluster boundary (bu-dhloi1.187): `trigger` on any port starts a session.
+# Only pods that hold an MCP client of the daemons are admitted, each on the
+# ports it uses. This does not cover kubectl port-forward, node processes or
+# the daemons' own LLM sessions (loopback): see docs/operations/kubernetes-deployment.md.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-daemon-ingress
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: butlers-up
+  policyTypes: [Ingress]
+  ingress:
+    # Every daemon: the dashboard API, Switchboard, and the cohosted daemons.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: dashboard-api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: butlers-up
+        {{- if .Values.butlersControl.enabled }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: butlers-control
+        {{- end }}
+      ports:
+        {{- range $p := $daemonPorts }}
+        - {protocol: TCP, port: {{ $p }}}
+        {{- end }}
+    {{- if and $connectors (not .Values.butlersControl.enabled) }}
+    # Connectors ingest through the cohosted Switchboard only.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [{{ join ", " $connectors }}]
+      ports:
+        - {protocol: TCP, port: 41100}
+    {{- end }}
+    {{- if $healthWaiters }}
+    # Their init container waits on Health's identity route before polling.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [{{ join ", " $healthWaiters }}]
+      ports:
+        - {protocol: TCP, port: 41103}
+    {{- end }}
 ---
 # NodePorts listen on every node address (LAN, tailnet), unlike the old
 # compose ports bound to 127.0.0.1. Admit only the node itself (host
@@ -104,7 +170,7 @@ spec:
     matchExpressions:
       - key: app.kubernetes.io/component
         operator: NotIn
-        values: [dashboard-api, frontend, connector-owntracks, butlers-control]
+        values: [dashboard-api, frontend, connector-owntracks, butlers-control, butlers-up]
   policyTypes: [Ingress]
   ingress:
     - ports:
