@@ -142,6 +142,24 @@ if [[ "$HAS_CAPTURE" == true ]]; then
 
 fi
 
+# Explicit complete coverage is a format declaration, not inferred from
+# restored catalog absence. Validate all framing before any target mutation.
+PERCEPTION_COVERAGE=$(gunzip -c "$BACKUP_FILE" | awk '
+ /^-- Butlers private-history coverage: perception-v1 export$/ { declared++ }
+ /^-- Butlers canonical perception history \(all ten fixed populations\)$/ { starts++ }
+ /^-- Butlers canonical perception history end$/ { ends++ }
+ /^CREATE TEMP TABLE butlers_perception_restore_rows / { stages++ }
+ END { print declared+0,starts+0,ends+0,stages+0 }')
+read -r PERCEPTION_COMPLETE PERCEPTION_STARTS PERCEPTION_ENDS PERCEPTION_STAGES <<< "$PERCEPTION_COVERAGE"
+PERCEPTION_HISTORY_DECLARED=false
+if [[ "$PERCEPTION_COMPLETE" != 0 || "$PERCEPTION_STARTS" != 0 || "$PERCEPTION_ENDS" != 0 || "$PERCEPTION_STAGES" != 0 ]]; then
+  if [[ "$PERCEPTION_COMPLETE" != 1 || "$PERCEPTION_STARTS" != 1 || "$PERCEPTION_ENDS" != 1 || "$PERCEPTION_STAGES" != 1 ]]; then
+    echo "[restore] ERROR: declared complete perception companion framing is missing or inconsistent" >&2
+    exit 1
+  fi
+  PERCEPTION_HISTORY_DECLARED=true
+fi
+
 # ── Drop existing target if requested ───────────────────────────────────
 if [[ "$DROP_EXISTING" == "true" ]]; then
   echo "[restore] Dropping existing database '${TARGET_DB}' (--drop-existing)"
@@ -415,8 +433,15 @@ if gunzip -c "$BACKUP_FILE" | awk '
 fi
 PGPASSWORD="$PG_PASSWORD" psql --host="$PG_HOST" --port="$PG_PORT" \
   --username="$PG_USER" --dbname="$TARGET_DB" --no-password --set=ON_ERROR_STOP=1 \
-  --set=perception_declared="$PERCEPTION_DECLARED" --quiet <<'PERCEPTION_AUDIT_SQL'
-SELECT :'perception_declared'::boolean OR to_regnamespace('perception_backup') IS NOT NULL AS perception_audit_needed \gset
+  --set=perception_declared="$PERCEPTION_DECLARED" \
+  --set=perception_history_declared="$PERCEPTION_HISTORY_DECLARED" --quiet <<'PERCEPTION_AUDIT_SQL'
+SELECT :'perception_history_declared'::boolean OR :'perception_declared'::boolean
+  OR to_regnamespace('perception_backup') IS NOT NULL
+  OR to_regnamespace('perception_private') IS NOT NULL OR EXISTS (
+    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE n.nspname='public' AND c.relname IN
+      ('timeline','situation_slots','owner_modes','perception_conditions','perception_suppressions'))
+  AS perception_audit_needed \gset
 \if :perception_audit_needed
 DO $perception_boundary$
 BEGIN
@@ -455,7 +480,21 @@ BEGIN
   END IF;
 END
 $perception_boundary$;
-SELECT count(*) FROM perception_private.backup_catalog();
+SELECT :'perception_history_declared'::boolean =
+  (to_regnamespace('perception_private') IS NOT NULL OR EXISTS (
+    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE n.nspname='public' AND c.relname IN
+      ('timeline','situation_slots','owner_modes','perception_conditions','perception_suppressions')))
+  AS perception_coverage_matches \gset
+\if :perception_coverage_matches
+\if :perception_history_declared
+SELECT count(*) FROM perception_backup.export_schema_v1();
+\else
+\echo '[restore] perception history absent: ordinary/dark artifact, not complete private-history certification'
+\endif
+\else
+DO $$ BEGIN RAISE EXCEPTION 'declared perception history/schema is absent or inconsistent'; END $$;
+\endif
 \endif
 PERCEPTION_AUDIT_SQL
 

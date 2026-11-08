@@ -995,6 +995,9 @@ DND_REPLAY_PROOF
   printf '%s\n' "SELECT dnd_generation_backup.restore_v1(jsonb_agg(jsonb_build_object('ordinal', ordinal, 'relation', relation_name, 'row', convert_from(decode(payload_hex, 'hex'), 'UTF8')::jsonb) ORDER BY ordinal, payload_hex)) FROM butlers_dnd_restore_rows;"
   printf '%s\n' 'RESET ROLE;' '\else' '\set ON_ERROR_STOP on' "DO \$\$ BEGIN RAISE EXCEPTION 'DND history restore requires butlers_backup_restore membership'; END \$\$;" '\endif' '\endif' 'DROP TABLE butlers_dnd_restore_rows;'
   fi
+  # Coverage is outside the companion: a declared complete artifact cannot
+  # silently become an ordinary/dark dump if a component is lost.
+  printf '\n-- Butlers private-history coverage: perception-v1 %s\n' "${PERCEPTION_EXPORT_MODE}"
   if [ "${PERCEPTION_EXPORT_MODE}" = "export" ]; then
   printf '\n-- Butlers canonical perception history (all ten fixed populations)\n'
   # Canonical schema metadata, without pg_dump's forbidden private-table LOCK.
@@ -1134,6 +1137,7 @@ PERCEPTION_REPLAY_PROOF
   printf '%s\n' "SELECT coalesce(pg_has_role(current_user, to_regrole('butlers_backup_restore'), 'MEMBER'), false) AS butlers_perception_restore_authorized \\gset" '\if :butlers_perception_restore_authorized' '\set ON_ERROR_STOP on' 'GRANT SELECT ON butlers_perception_restore_rows TO butlers_backup_restore;' 'SET ROLE butlers_backup_restore;'
   printf '%s\n' "SELECT perception_backup.restore_v1(jsonb_agg(jsonb_build_object('ordinal', ordinal, 'relation', relation_name, 'row', convert_from(decode(payload_hex, 'hex'), 'UTF8')::jsonb) ORDER BY ordinal, payload_hex)) FROM butlers_perception_restore_rows;"
   printf '%s\n' 'RESET ROLE;' '\else' '\set ON_ERROR_STOP on' "DO \$\$ BEGIN RAISE EXCEPTION 'PERCEPTION history restore requires butlers_backup_restore membership'; END \$\$;" '\endif' '\endif' 'DROP TABLE butlers_perception_restore_rows;'
+  printf '\n-- Butlers canonical perception history end\n'
   fi
 } | gzip > "${TMPFILE}"
 

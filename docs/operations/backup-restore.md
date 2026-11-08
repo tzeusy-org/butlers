@@ -889,3 +889,10 @@ downgrade tolerates complete shared absence; partial tables, altered General
 policies or retained admission/operation evidence require forward remediation.
 The empty check holds exclusive table locks so a concurrent admission cannot
 commit between inspection and removal.
+
+The perception companion carries an explicit versioned complete-coverage
+marker and start/end/staging framing. The consumer refuses a missing or
+inconsistent component before target mutation, even for empty populations.
+Restored complete history must pass the fixed full catalog validator. Older or
+dark ordinary artifacts retain inert namespace ownership checks and explicitly
+report that absent perception history is not complete private-history proof.

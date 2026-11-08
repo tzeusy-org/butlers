@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import time
 import uuid
+from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -578,7 +579,7 @@ def _seed_perception(admin: str) -> None:
                 {"id": receipt},
             )
             write(conn, request(key="backup-enter"))
-            write(
+            leave = write(
                 conn,
                 request(
                     key="backup-leave",
@@ -587,7 +588,13 @@ def _seed_perception(admin: str) -> None:
                     value={"presence": "outside", "place_ref": None, "locality_ref": None},
                 ),
             )
-            write(conn, request(key="backup-return", generation=2, minute=2))
+            write(
+                conn,
+                {
+                    **request(key="backup-return", generation=2, minute=2),
+                    "retracts_event_id": leave["event_id"],
+                },
+            )
             write(conn, request(key="backup-mode", kind="owner.mode"), "perception_context_writer")
             body = {
                 "version": 1,
@@ -654,6 +661,12 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
     _seed_perception(admin)
     perception_before = _perception_snapshot(admin)
     assert all(perception_before.values())
+    timeline_before = [json.loads(r[0]) for r in perception_before["public.timeline"]]
+    receipts_before = [json.loads(r[0]) for r in perception_before["perception_private.receipts"]]
+    retractions = [r for r in timeline_before if r["retracts_event_id"] is not None]
+    assert len(retractions) == 1 and retractions[0]["operation"] == "retract"
+    assert retractions[0]["retracts_event_id"] in {r["id"] for r in timeline_before}
+    assert retractions[0]["id"] in {r["event_id"] for r in receipts_before}
 
     dark_dir = tmp_path / "dark"
     dark_dir.mkdir()
@@ -889,6 +902,19 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
         name=prepared.username,
     )
 
+    # Removing a framing marker must not downgrade declared complete coverage
+    # into an accepted ordinary artifact, even though every SQL/data byte stays.
+    damaged_marker = tmp_path / "missing-perception-marker.sql.gz"
+    marker = "-- Butlers canonical perception history end\n"
+    assert dump.count(marker) == 1
+    with gzip.open(damaged_marker, "wt", encoding="utf-8") as handle:
+        handle.write(dump.replace(marker, "", 1))
+    marker_refused = _run_restore_script(
+        damaged_marker, normal_target, prepared_db, drop_existing=False
+    )
+    assert marker_refused.returncode != 0
+    assert "declared complete perception companion framing" in marker_refused.stderr
+
     # Authorized companion: the COMPLETE emitted artifact, through the actual
     # supported consumer, creates an empty target and reconstructs real catalog
     # DDL before the fixed staged importer. No extracted-tail substitution.
@@ -1047,9 +1073,21 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
     assert _dnd_snapshot(restored) == source_before
 
     assert _perception_snapshot(restored) == perception_before
+    from tests.perception.factories import AT, OWNER
+    from tests.perception.test_perception_postgres import read, timeline
+
     audit = create_engine(restored)
     try:
         with audit.begin() as conn:
+            row = read(conn, subject=OWNER, at=AT + timedelta(minutes=3))
+            assert row["value"]["presence"] == "inside" and row["generation"] == 3
+            history = timeline(conn)
+            assert any(e["operation"] == "retract" for e in history)
+            assert any(
+                e["id"] == retractions[0]["retracts_event_id"] and e["retracted"] for e in history
+            )
+            live = timeline(conn, until=AT + timedelta(minutes=3), live=True)
+            assert not any(e["operation"] == "retract" or e["retracted"] for e in live)
             assert (
                 conn.exec_driver_sql(
                     "SELECT count(*) FROM perception_backup.export_schema_v1()"

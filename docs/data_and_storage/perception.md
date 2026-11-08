@@ -55,6 +55,13 @@ locality, principal and evidence references. Expectation enums are declared by t
 profile; suppression references have a real foreign key to canonical DND mutation
 receipts, without granting perception direct DND reads or writes. These
 are configuration custody, with no registration tool or runtime DML grant.
+The SQL read boundary resolves legacy aliases to that same canonical row. A
+nullable, bounded `source_refs.read_alias` names only registered dependencies;
+`system.dep.<name-or-UUID>` must resolve uniquely to a configured dependency
+subject. `expect.<registered-kind>[UUID]` requires the configured routine subject
+and matching source enum. Conflicting, unknown, unregistered or mismatched
+subjects refuse; dynamic aliases are private-reader only. Static aliases retain
+the canonical exposed-reader restriction. None is accepted by the writer.
 Profiles start **unconfigured**; missing profiles/evidence refuse mutation.
 Producer owners must verify original source expiry and the existing context
 signal's maximum before configuring a profile. Conversion never renews an old

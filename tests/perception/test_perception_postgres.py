@@ -530,6 +530,95 @@ def test_owner_modes_are_one_projection_and_all_kind_values_round_trip(db):
             write(db, request(key="bad", kind=kind, generation=1, value=value), roles[kind])
 
 
+def test_read_aliases_share_the_canonical_row_without_write_authority(db):
+    aliases = {
+        "owner.place": ["owner.presence", "at_home", "in_space", "away"],
+        "owner.activity": [
+            "traveling",
+            "sleeping",
+            "meeting",
+            "focused",
+            "exercising",
+            "sick",
+            "socializing",
+            "commuting",
+        ],
+        "owner.clock": ["owner_clock"],
+        "owner.suppression": ["dnd"],
+    }
+    roles = {
+        "owner.place": "perception_dots_writer",
+        "owner.activity": "perception_context_writer",
+        "owner.clock": "perception_context_writer",
+        "owner.suppression": "perception_attention_writer",
+    }
+    for kind, names in aliases.items():
+        write(db, request(kind=kind), roles[kind])
+        for at in (AT + timedelta(seconds=30), AT + timedelta(hours=2)):
+            canonical = read(db, kind=kind, at=at)
+            for name in names:
+                assert read(db, kind=name, at=at) == canonical
+                assert read(db, kind=name, at=at, role="perception_availability_reader") == read(
+                    db, kind=kind, at=at, role="perception_availability_reader"
+                )
+        before = counts(db)
+        for name in names:
+            with pytest.raises(DBAPIError):
+                write(db, {**request(kind=kind), "kind": name}, roles[kind])
+        assert counts(db) == before
+    for name in ("unknown.alias", "in_flight", "owner.presence.extra"):
+        with pytest.raises(DBAPIError):
+            read(db, kind=name)
+
+
+def test_dynamic_read_aliases_require_registered_subject_and_profile(db):
+    db.execute(
+        text(
+            "INSERT INTO perception_private.source_refs(id,source,ref_type,read_alias) VALUES(:id,'health.dependencies','dependency','conditions'),(:id,'chronicler.expectations','routine',NULL)"
+        ),
+        {"id": OWNER},
+    )
+    db.execute(
+        text(
+            "UPDATE perception_private.sources SET expectation_kinds=ARRAY['confirmed_routine','other_routine'] WHERE kind='expect.window'"
+        )
+    )
+    write(db, request(kind="system.dep"), "perception_health_writer")
+    write(db, request(kind="expect.window"), "perception_expect_writer")
+    for alias, canonical in [
+        ("system.dep.conditions", "system.dep"),
+        (f"system.dep.{OWNER}", "system.dep"),
+        (f"expect.confirmed_routine[{OWNER}]", "expect.window"),
+    ]:
+        for at in (AT, AT + timedelta(hours=2)):
+            assert read(db, kind=alias, subject=None, at=at) == read(db, kind=canonical, at=at)
+            assert read(db, kind=alias, at=at) == read(db, kind=canonical, at=at)
+        with pytest.raises(DBAPIError):
+            read(db, kind=alias, subject=uuid.uuid4())
+        with pytest.raises(DBAPIError):
+            read(db, kind=alias, role="perception_availability_reader")
+    for alias in (
+        "system.dep.unregistered",
+        f"system.dep.{EVIDENCE}",
+        f"expect.unregistered[{OWNER}]",
+        f"expect.other_routine[{OWNER}]",
+        f"expect.confirmed_routine[{EVIDENCE}]",
+        "expect.confirmed_routine[not-a-uuid]",
+        f"expect.confirmed_routine[{OWNER}][extra]",
+    ):
+        with pytest.raises(DBAPIError):
+            read(db, kind=alias, subject=None)
+    db.execute(
+        text(
+            "DELETE FROM perception_private.source_refs WHERE ref_type IN ('routine','dependency')"
+        )
+    )
+    with pytest.raises(DBAPIError):
+        read(db, kind="system.dep.conditions", subject=None)
+    with pytest.raises(DBAPIError):
+        read(db, kind=f"expect.confirmed_routine[{OWNER}]", subject=None)
+
+
 def test_bindings_remain_dark_immutable_finite_and_source_bound(db):
     b = {
         "version": 1,
@@ -861,6 +950,7 @@ async def test_real_python_writer_and_reader_keep_caller_transaction_and_jsonb(d
         await conn.execute("SET LOCAL ROLE perception_owner_reader")
         row = await store.read("owner.place", OWNER, as_of=AT)
         assert row["value"]["presence"] == "inside" and row["generation"] == 1
+        assert await store.read("owner.presence", OWNER, as_of=AT) == row
         history = await store.timeline(
             since=AT - timedelta(seconds=1),
             until=AT + timedelta(minutes=1),
@@ -884,7 +974,15 @@ def test_fixed_backup_catalog_rejects_drift_and_exports_all_ten(db):
         "butlers_backup_export",
     )
     assert len(ddl) > 100
-    assert sum(line.startswith("CREATE TABLE ") for line in ddl) == 10
+    assert (
+        call(
+            db,
+            "SELECT count(*) FROM jsonb_object_keys(perception_private.backup_catalog()->'tables')",
+            {},
+            "perception_owner",
+        )
+        == 10
+    )
     exported = call(
         db,
         "SELECT jsonb_agg(to_jsonb(r)) FROM perception_backup.export_v1() r",

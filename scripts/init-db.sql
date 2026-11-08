@@ -8190,7 +8190,9 @@ BEGIN
         id uuid NOT NULL, source text NOT NULL REFERENCES perception_private.sources(source),
         ref_type text NOT NULL CHECK(ref_type IN ('place','locality','suppression',
             'expectation_kind','routine','dependency','sensing_group','principal','evidence')),
-        PRIMARY KEY(id,source,ref_type)
+        read_alias text CHECK(read_alias IS NULL OR (ref_type='dependency'
+            AND read_alias ~ '^[a-z][a-z0-9_.-]{0,127}$')),
+        PRIMARY KEY(id,source,ref_type), UNIQUE(source,read_alias)
     );
     CREATE TABLE IF NOT EXISTS perception_private.suppression_refs (
         id uuid PRIMARY KEY REFERENCES public.dnd_generation_mutations(mutation_id),
@@ -8582,10 +8584,49 @@ BEGIN
     CREATE OR REPLACE FUNCTION public.perception_read(k text,subj uuid,as_of timestamptz) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER STABLE SET search_path=pg_catalog,pg_temp AS $read$
     DECLARE actor name:=COALESCE(NULLIF(current_setting('role',true),'none'),session_user)::name;
-        slot record; configured boolean;
+        slot record; configured boolean; alias_subject uuid; alias_parts text[]; matches integer;
     BEGIN
         IF actor NOT IN ('perception_owner_reader','perception_availability_reader') THEN
             RAISE EXCEPTION 'perception reader authority required' USING ERRCODE='42501';
+        END IF;
+        -- Resolve only reads, after caller authority. Alias metadata is
+        -- privileged registration on the existing source-reference registry;
+        -- neither a suffix nor caller subject creates a dependency/routine.
+        IF k IS NULL OR octet_length(k)>256 THEN
+            RAISE EXCEPTION 'bounded perception alias required' USING ERRCODE='22023';
+        END IF;
+        k:=CASE WHEN k IN ('owner.presence','at_home','in_space','away') THEN 'owner.place'
+            WHEN k IN ('traveling','sleeping','meeting','focused','exercising','sick','socializing','commuting') THEN 'owner.activity'
+            WHEN k='owner_clock' THEN 'owner.clock' WHEN k='dnd' THEN 'owner.suppression' ELSE k END;
+        IF k LIKE 'system.dep.%' OR k LIKE 'expect.%' AND k<>'expect.window' THEN
+            IF actor<>'perception_owner_reader' THEN
+                RAISE EXCEPTION 'private registered alias required' USING ERRCODE='42501';
+            END IF;
+            IF k LIKE 'system.dep.%' THEN
+                SELECT count(*),(array_agg(ref.id))[1] INTO matches,alias_subject
+                FROM perception_private.source_refs ref
+                JOIN perception_private.sources src ON src.source=ref.source
+                WHERE ref.ref_type='dependency' AND src.kind='system.dep'
+                    AND src.max_age_seconds IS NOT NULL AND ref.id=ANY(src.subjects)
+                    AND (ref.read_alias=substring(k FROM 12) OR ref.id::text=substring(k FROM 12));
+                k:='system.dep';
+            ELSE
+                alias_parts:=regexp_match(k,'^expect\.([^\[\]]+)\[([0-9a-f-]{36})\]$');
+                IF alias_parts IS NULL THEN
+                    RAISE EXCEPTION 'registered expectation alias required' USING ERRCODE='22023';
+                END IF;
+                SELECT count(*),(array_agg(ref.id))[1] INTO matches,alias_subject
+                FROM perception_private.source_refs ref
+                JOIN perception_private.sources src ON src.source=ref.source
+                WHERE ref.ref_type='routine' AND src.kind='expect.window'
+                    AND src.max_age_seconds IS NOT NULL AND ref.id=ANY(src.subjects)
+                    AND ref.id::text=alias_parts[2] AND alias_parts[1]=ANY(src.expectation_kinds);
+                k:='expect.window';
+            END IF;
+            IF matches<>1 OR subj IS NOT NULL AND subj<>alias_subject THEN
+                RAISE EXCEPTION 'unambiguous registered perception alias required' USING ERRCODE='22023';
+            END IF;
+            subj:=alias_subject;
         END IF;
         IF as_of IS NULL OR NOT isfinite(as_of) OR k NOT IN ('owner.place','owner.activity','owner.clock','system.dep',
             'expect.window','home.sensing','owner.mode','owner.suppression') THEN
@@ -8606,6 +8647,10 @@ BEGIN
             SELECT * INTO slot FROM public.owner_modes WHERE kind=k AND subject_entity IS NOT DISTINCT FROM subj;
         ELSE
             SELECT * INTO slot FROM public.situation_slots WHERE kind=k AND subject_entity IS NOT DISTINCT FROM subj;
+        END IF;
+        IF alias_parts IS NOT NULL AND slot.state='known'
+            AND slot.typed_value->>'expectation_kind' IS DISTINCT FROM alias_parts[1] THEN
+            RAISE EXCEPTION 'expectation alias does not identify this routine value' USING ERRCODE='22023';
         END IF;
         IF slot.id IS NULL THEN
             RETURN jsonb_build_object('state',CASE WHEN configured THEN 'unknown' ELSE 'unconfigured' END,
@@ -8925,7 +8970,7 @@ SELECT jsonb_build_object('tables',(SELECT jsonb_object_agg(name,value) FROM tab
         relations text[]:=ARRAY['perception_private.kinds','perception_private.sources','perception_private.source_refs','perception_private.suppression_refs','public.timeline','perception_private.receipts','public.situation_slots','public.owner_modes','public.perception_conditions','public.perception_suppressions'];
     BEGIN
         catalog:=perception_private.backup_catalog();
-        IF encode(sha256(convert_to(catalog::text,'UTF8')),'hex')<>'3250d4f0dddc82951f13f3ba1768e7aeeaea62c40b8129956a7a5797c2c6f5bf'
+        IF encode(sha256(convert_to(catalog::text,'UTF8')),'hex')<>'bfd04e904b65ac243bcdeea552f783cb93507601508e07e0cbe6a73068bee35b'
             OR (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
                 WHERE n.nspname='perception_private' AND c.relkind IN ('r','v','m','f','p'))<>5
             OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace

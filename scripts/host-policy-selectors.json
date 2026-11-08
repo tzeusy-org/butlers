@@ -1048,11 +1048,11 @@
   "counts": {
     "direct": 86,
     "direct_files": 39,
-    "container": 107,
+    "container": 108,
     "supplementary": 43,
     "all_categories": {
       "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 59,
-      "NON_NAME_ENUM_OR_MODULE": 27,
+      "NON_NAME_ENUM_OR_MODULE": 28,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 35,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 9,
@@ -4813,6 +4813,28 @@
       ],
       "baseline_ids": [],
       "reason": "New RFC 0038 D13 approved-notify identity fence (bu-dhloi1.168)."
+    },
+    {
+      "id": "0ca7d6b31f7d035b1421370f1d95b1983a637884e0ab0a583175b9a1fb51e039",
+      "path": "src/butlers/perception/model.py",
+      "symbol": "validate_value",
+      "kind": "compare",
+      "expression": "v['basis'] not in {'phone', 'owner', 'home', 'utc_fallback', 'owner_confirmed_booking'}",
+      "occurrence": 1,
+      "line": 108,
+      "direct": false,
+      "container": true,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Validate the closed owner.clock evidence-basis enum; home denotes source evidence, not a roster authority or host policy.",
+      "reason": "RFC0038 S3.1 owner.clock wire registry, introduced by the dark perception package; no authority or freshness policy is inferred from the basis enum.",
+      "citations": [
+        {
+          "path": "openspec/specs/context-bus/spec.md",
+          "requirement": "Signal Vocabulary"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "60401d269b1c9c4f32e71abe93d9ad6197f7b358"
     }
   ],
   "retired": [
