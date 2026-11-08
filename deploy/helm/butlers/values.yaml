@@ -344,3 +344,20 @@ connectors:
 trackerEgress:
   enabled: false
   deniedCidrs: []
+
+# Opt-in egress boundary mirroring scripts/egress-firewall.sh (see
+# docs/operations/kubernetes-deployment.md). Folds into the one tracker-egress
+# policy: the public rule excludes privateCidrs, and allowedCidrs (site-specific
+# /32 hosts such as telemetry, Postgres, ollama, storage, Home Assistant; never
+# commit real addresses) are admitted explicitly. Default off: no posture change.
+egressPolicy:
+  enabled: false
+  allowedCidrs: []
+  # Render with an empty allowlist (every private address denied) only when true.
+  allowNoAllowlist: false
+  privateCidrs:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 100.64.0.0/10
+    - 169.254.0.0/16

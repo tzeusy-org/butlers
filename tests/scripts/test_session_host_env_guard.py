@@ -122,7 +122,11 @@ def compose_service() -> dict | None:
 def _render(*settings: str) -> list[dict]:
     command = ["helm", "template", "butlers", str(_CHART)]
     command += ["-f", str(_CHART / "values.yaml"), "-f", str(_CHART / "values.dev.yaml")]
-    site = ("trackerEgress.deniedCidrs={192.0.2.1/32}", "database.host=postgres.invalid")
+    site = (
+        "trackerEgress.deniedCidrs={192.0.2.1/32}",
+        "egressPolicy.allowedCidrs={198.51.100.7/32}",
+        "database.host=postgres.invalid",
+    )
     for setting in ("image.tag=t", "frontendImage.tag=t", *site, *settings):
         command += ["--set", setting]
     result = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
@@ -167,6 +171,7 @@ def test_helm_session_host_requires_the_control_plane_it_reaches() -> None:
     command += ["-f", str(_CHART / "values.dev.yaml"), "--set", "sessionHost.enabled=true"]
     command += ["--set", "image.tag=t", "--set", "frontendImage.tag=t"]
     command += ["--set", "trackerEgress.deniedCidrs={192.0.2.1/32}"]
+    command += ["--set", "egressPolicy.allowedCidrs={198.51.100.7/32}"]
     result = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode != 0 and "butlersControl.enabled" in result.stderr
 

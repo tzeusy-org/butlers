@@ -175,6 +175,29 @@ artifact that is undersized or does not decompress SHALL NOT be published.
 - **THEN** the run exits non-zero and reports the failure on its error stream,
   and the backup directory retains only previously published artifacts
 
+### Requirement: Opt-In Kubernetes Private-Network Egress Allowlist
+
+The Kubernetes chart SHALL provide an opt-in `egressPolicy` that mirrors the compose
+egress firewall: private and link-local ranges (10/8, 172.16/12, 192.168/16,
+100.64/10, 169.254/16) are denied to pods, explicitly allowlisted CIDRs, DNS and
+in-cluster traffic are admitted, and the public internet remains reachable. The
+policy SHALL be one NetworkPolicy per release, because NetworkPolicies are additive.
+It SHALL be disabled by default, leaving rendered manifests unchanged, and enabling it
+SHALL NOT admit any host beyond the compose firewall's allowlist.
+
+#### Scenario: Default render is unchanged
+- **WHEN** the chart renders with `egressPolicy.enabled` unset
+- **THEN** the rendered manifests are identical to a chart without the option
+
+#### Scenario: Enabled policy excludes private ranges
+- **WHEN** the chart renders with `egressPolicy.enabled=true` and an allowlist
+- **THEN** exactly one egress policy selects every pod, excludes the five private
+  ranges from the public rule, and admits each allowlisted CIDR and DNS
+
+#### Scenario: Missing allowlist refuses
+- **WHEN** `egressPolicy.enabled=true` with no allowlist and no explicit opt-out
+- **THEN** rendering fails with a message naming `egressPolicy.allowedCidrs`
+
 ## Source References
 - Non-Negotiable Rule 1 (User-federated: one user, one instance, full
   sovereignty) — protecting the owner's always-on personal-data deployment from

@@ -11,6 +11,7 @@ from uuid import UUID
 from butlers.core.expected_signals import (
     ExpectedSignalEvaluation,
     ExpectedSignalState,
+    evaluate_expected_signal,
     upsert_expected_signal,
 )
 from butlers.identity import resolve_contacts_by_channel_bulk
@@ -223,8 +224,15 @@ async def evaluate_stale_contact_signal(
     expected_cadence: timedelta,
     last_observed_at: datetime | None,
     now: datetime | None = None,
+    persist: bool = True,
 ) -> StaleContactSignal:
-    """Persist one contact's signal after fail-closed producer resolution."""
+    """Evaluate one contact's signal after fail-closed producer resolution.
+
+    ``persist=True`` (butler-side producers) also upserts the row under the caller's
+    role. Read-only callers such as the dashboard API pass ``persist=False``: RLS
+    on ``public.expected_signals`` only lets the producing role write, so they
+    evaluate without writing.
+    """
     producer = "unknown"
     endpoint: str | None = None
 
@@ -258,7 +266,8 @@ async def evaluate_stale_contact_signal(
                 latest_rows=list(latest_rows),
             )
 
-    evaluation = await upsert_expected_signal(
+    evaluate = upsert_expected_signal if persist else evaluate_expected_signal
+    evaluation = await evaluate(
         pool,
         signal_key=f"relationship:stale-contact:{contact_id}",
         producer=producer,

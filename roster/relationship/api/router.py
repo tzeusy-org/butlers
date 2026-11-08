@@ -5787,7 +5787,7 @@ async def get_overdue_contacts(
     from butlers.tools.relationship.stay_in_touch import contacts_overdue_with_availability
 
     try:
-        result = await contacts_overdue_with_availability(_pool(db))
+        result = await contacts_overdue_with_availability(_pool(db), persist=False)
     except Exception:  # noqa: BLE001 -- unavailable evaluation is not an empty all-clear
         logger.warning("Relationship overdue cadence evaluation unavailable", exc_info=True)
         return OverdueContactsResponse(
@@ -5969,6 +5969,7 @@ async def get_dunbar_ranking(
                     entity_id=r["entity_id"],
                     expected_cadence=timedelta(days=effective_cadence),
                     last_observed_at=r.get("last_interaction_at"),
+                    persist=False,  # dashboard role cannot write expected_signals (RLS)
                 )
                 stale_contact_state = signal.evaluation.state.value
             except Exception:  # noqa: BLE001 -- API must expose incomplete availability

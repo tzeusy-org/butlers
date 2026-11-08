@@ -19,6 +19,11 @@ from butlers.core.approval_delivery_transport import (
     TrustedRecoveryContext,
 )
 from butlers.core.approval_review import review_from_notify_refusal
+from butlers.core.approved_delivery import (
+    APPROVED_NOTIFY_CONTEXT_KEY,
+    ApprovedNotifyAttestation,
+    notify_request_digest,
+)
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.telegram_api import terminal_telegram_metadata
 from butlers.tools.switchboard.contracts import (
@@ -303,6 +308,7 @@ async def _deliver_via_notify_request(
     metadata: dict[str, Any] | None,
     call_fn: Any | None,
     session_id: str | None = None,
+    approved_attestation: ApprovedNotifyAttestation | None = None,
 ) -> dict[str, Any]:
     if notify_request.recovery is not None:
         raise RuntimeError("approval recovery cannot enter generic notification delivery")
@@ -345,12 +351,27 @@ async def _deliver_via_notify_request(
     )
     parse_route_envelope(route_payload)
 
+    internal_context: dict[str, Any] | None = None
+    if approved_attestation is not None:
+        # Attest exactly the envelope Messenger will receive: the source-verified
+        # request after this Switchboard's own sender facts (inert rendering,
+        # self-link resolution). Messenger re-digests what arrives.
+        forwarded = route_payload["input"]["context"]["notify_request"]
+        internal_context = {
+            APPROVED_NOTIFY_CONTEXT_KEY: ApprovedNotifyAttestation(
+                issuer=approved_attestation.issuer,
+                action_id=approved_attestation.action_id,
+                notify_digest=notify_request_digest(forwarded),
+            ).as_internal_dict()
+        }
+
     route_result = await route(
         pool,
         target_butler=MESSENGER_BUTLER_NAME,
         tool_name="route.execute",
         args=route_payload,
         source_butler=source_butler,
+        internal_context=internal_context,
         call_fn=call_fn,
     )
 
@@ -692,6 +713,7 @@ async def deliver(
     trusted_source: str | None = None,
     verified_context: TrustedRecoveryContext | None = None,
     content_requires_inert_links: bool = False,
+    approved_attestation: ApprovedNotifyAttestation | None = None,
 ) -> dict[str, Any]:
     """Deliver a notification through the specified channel.
 
@@ -719,6 +741,11 @@ async def deliver(
         ``messenger`` via ``route.execute``.
     call_fn:
         Optional callable for testing; forwarded to :func:`route`.
+    approved_attestation:
+        Set only by the registered tool after the authenticated source verified
+        its single-use approved-notify proof. It must name this source and
+        travel over the protected Messenger ``call_fn``; otherwise delivery is
+        refused rather than downgraded.
 
     Returns
     -------
@@ -809,6 +836,17 @@ async def deliver(
                 span.set_status(trace.StatusCode.ERROR, error_msg)
                 return {"error": error_msg, "status": "failed"}
 
+            if approved_attestation is not None and (
+                approved_attestation.issuer != source_butler
+                or parsed_notify.origin_butler != approved_attestation.issuer
+                or call_fn is None
+            ):
+                return {
+                    "status": "failed",
+                    "error": "Approved notification authority rejected.",
+                    "retryable": False,
+                }
+
             request_context = parsed_notify.request_context or _default_notify_request_context(
                 source_butler
             )
@@ -823,6 +861,7 @@ async def deliver(
                 metadata=metadata,
                 call_fn=call_fn,
                 session_id=session_id,
+                approved_attestation=approved_attestation,
             )
 
         if channel not in SUPPORTED_CHANNELS:

@@ -313,7 +313,11 @@ def _deliver_through(booted, monkeypatch) -> tuple[Any, list[dict[str, Any]]]:
     return delivery, routed
 
 
-_APPROVALS_MESSENGER_TOML = "[modules.telegram]\n\n[modules.email]\n\n[modules.approvals]\n"
+# Mirrors roster/messenger: email send tools are registered, so a native email
+# park has a handler for its approved replay.
+_APPROVALS_MESSENGER_TOML = (
+    "[modules.telegram]\n\n[modules.email]\nsend_tools = true\n\n[modules.approvals]\n"
+)
 
 
 @pytest.fixture(scope="module")
@@ -617,6 +621,72 @@ async def test_scheduled_delivery_parks_full_envelope_and_approved_registered_re
 
 
 @_booted
+async def test_plain_delivery_parks_native_command_with_preview_and_replays_once(
+    approvals_messenger, monkeypatch
+):
+    """Spec: module-approvals "Pending Actions Store Replayable Executable Commands".
+
+    A plain (not inert, no files) non-owner send parks the registered native tool
+    with its handler args, so the card's registered preview renders; approval
+    replays that native tool through the daemon's executor exactly once.
+    """
+    from butlers.core_tools import _routing
+    from butlers.modules.approvals.previews import resolve_call_preview
+
+    booted = approvals_messenger
+    actions = await _ActionLog.open(booted)
+    approvals = _module(booted, "approvals")
+    delivery, _routed = _deliver_through(booted, monkeypatch)
+    real_registered = _routing._native_tool_registered
+    cases = [
+        ("telegram", "9001", "_send_message", "telegram_send_message", True),
+        ("email", "non-owner@example.test", "_send_email", "email_send_message", True),
+        # A daemon that does not serve the native tool (email without send_tools)
+        # keeps the routed envelope, which its executor can always replay.
+        ("email", "non-owner@example.test", "_send_email", "email_send_message", False),
+    ]
+    for channel, recipient, send_attr, native_tool, registered in cases:
+        send = AsyncMock(
+            return_value={"ok": True, "result": {"message_id": 991}, "message_id": "991"}
+        )
+        monkeypatch.setattr(_module(booted, channel), send_attr, send)
+
+        async def native_registered(daemon, tool_name, *, _registered=registered):
+            return _registered and await real_registered(daemon, tool_name)
+
+        monkeypatch.setattr(_routing, "_native_tool_registered", native_registered)
+        request = _valid_notify_request()
+        request["delivery"].update(channel=channel, recipient=recipient, message="Plain text")
+        await delivery.deliver(_switchboard_pool(), source_butler="health", notify_request=request)
+        send.assert_not_awaited()
+        parked = [row for row in await actions.rows() if row["status"] == "pending"]
+        assert len(parked) == 1, channel
+        row = parked[0]
+        if registered:
+            assert row["tool_name"] == native_tool
+            assert "input" not in row["tool_args"]
+            assert "notify_request" not in str(row["tool_args"])
+            assert resolve_call_preview(row["tool_name"], row["tool_args"]) is not None
+        else:
+            assert row["tool_name"] == "route.execute"
+            parked_request = row["tool_args"]["input"]["context"]["notify_request"]
+            assert parked_request["delivery"]["recipient"] == recipient
+
+        result = await approvals._approve_action(str(row["id"]), actor=_HUMAN_OWNER)
+
+        assert "error" not in result, (channel, result)
+        assert {r["id"]: r for r in await actions.rows()}[row["id"]]["status"] == "executed"
+        if channel == "telegram":
+            send.assert_awaited_once_with("9001", "[health] Plain text", reply_markup=None)
+        else:
+            send.assert_awaited_once_with(
+                "non-owner@example.test", "[health] Notification", "Plain text"
+            )
+        await approvals._dispatch_approved_action_by_id(str(row["id"]))
+        assert send.await_count == 1
+
+
+@_booted
 async def test_attachment_delivery_parks_with_pinned_digests_and_replay_reverifies(
     approvals_messenger, monkeypatch
 ):
@@ -789,7 +859,9 @@ async def test_registered_delivery_replay_rejects_tampered_wrong_tool_and_child_
         finally:
             reset_approval_execution_context(token)
         assert result["status"] == "error", case
-        sent_args.append(altered)
+        # The recipient park stores the native command it was actually given.
+        message = altered["input"]["context"]["notify_request"]["delivery"]["message"]
+        sent_args.append({"chat_id": "12345", "text": f"[health] {message}"})
         assert [row["tool_args"] for row in await actions.rows()] == sent_args, case
         send.assert_not_awaited()
 

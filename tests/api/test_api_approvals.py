@@ -2839,8 +2839,8 @@ def _build_dispatch_mocks(
     mock_mcp.butler_names = ["messenger"]
     mock_mcp.get_client = AsyncMock(return_value=mock_client)
 
-    # DB pool — notify now uses the shared executor, so the fixture must model
-    # its pre-delivery row lock and transaction rather than only mark_executed.
+    # DB pool — models the shared executor's pre-delivery row lock and
+    # transaction rather than only mark_executed.
     mock_conn = AsyncMock()
     mock_conn.fetchrow = AsyncMock(return_value={"status": "approved", "execution_result": None})
     mock_conn.execute = AsyncMock(return_value="UPDATE 1")
@@ -2860,27 +2860,6 @@ def _build_dispatch_mocks(
             return _MockAcquire()
 
     mock_pool = _MockPool()
-
-    if tool_name == "notify":
-        from inspect import signature
-
-        from pydantic import ValidationError
-
-        from butlers.tools.switchboard.contracts import parse_notify_request
-        from butlers.tools.switchboard.notification.deliver import deliver
-
-        async def _validated_deliver(name, arguments):
-            assert name == "deliver"
-            # Match the real handler boundary before returning the canned result:
-            # permissive AsyncMock kwargs hid notify's unsupported intent argument.
-            signature(deliver).bind(pool=mock_pool, **arguments)
-            try:
-                parse_notify_request(arguments["notify_request"])
-            except ValidationError:
-                return _mcp_result('{"status": "failed", "error": "Invalid notify.v1 envelope"}')
-            return mcp_result
-
-        mock_client.call_tool.side_effect = _validated_deliver
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["messenger"]
@@ -3061,7 +3040,6 @@ async def test_retry_reports_unreachable_owner_truthfully(
 ):
     """Only read-only preflight can repeat; every action invocation stays once-only."""
     import json
-    from inspect import signature
 
     from fastmcp import Client, FastMCP
     from mcp.client.session import ClientSession
@@ -3069,8 +3047,6 @@ async def test_retry_reports_unreachable_owner_truthfully(
     import butlers.api.deps as deps
     import butlers.api.routers.approvals as approvals
     from butlers.modules.approvals.module import ApprovalsModule
-    from butlers.tools.switchboard.contracts import parse_notify_request
-    from butlers.tools.switchboard.notification.deliver import deliver
 
     action = _make_action(tool_name=tool_name, status="approved")
     action["tool_args"] = (
@@ -3092,7 +3068,9 @@ async def test_retry_reports_unreachable_owner_truthfully(
 
         conn.execute.side_effect = execute
     app.dependency_overrides[get_db] = lambda: db
-    owner = "switchboard" if tool_name == "notify" else "messenger"
+    # notify runs in its owning daemon like every other tool (RFC 0038 D13):
+    # the API never calls Switchboard deliver itself.
+    owner = "messenger"
     manager = MCPClientManager()
     manager.register(owner, deps.ButlerConnectionInfo(owner, 41104))
     # Real shallow-connected FastMCP state over a genuinely closed AnyIO stream.
@@ -3129,14 +3107,6 @@ async def test_retry_reports_unreachable_owner_truthfully(
     module.set_tool_executor(original_handler)
 
     async def fresh_dispatch(name, kwargs):
-        if tool_name == "notify":
-            assert name == "deliver"
-            signature(deliver).bind(pool=pool, **kwargs)
-            parse_notify_request(kwargs["notify_request"])
-            assert kwargs["source_butler"] == "messenger"
-            assert kwargs["notify_request"]["delivery"] == action["tool_args"]
-            effects.append(kwargs)
-            return _mcp_result('{"ok":true}')
         assert name == "dispatch_approved_action"
         result = await module._dispatch_approved_action_by_id(kwargs["action_id"])
         return _mcp_result(json.dumps(result, default=str))
@@ -3366,192 +3336,75 @@ def test_first_json_block_handles_json_text_and_empty():
     assert _first_json_block(_mcp_result("oops")) == {"value": "oops"}
 
 
-async def test_dispatch_approved_action_outcome_re_gate_guard_uses_pending_action_id(
-    caplog: pytest.LogCaptureFixture,
-):
-    """Re-gate guard: notify email-guard path keys the phantom id as pending_action_id.
+async def test_dispatch_approved_notify_runs_in_owning_daemon_never_api_deliver():
+    """Approved notify executes in its owning daemon, like every other tool.
 
-    The notify email-guard returns {status: pending_approval, pending_action_id: ...}
-    (NOT action_id). The re-gate guard must extract the phantom id from that key so
-    the error message names the phantom action correctly instead of falling back
-    to '<unknown>'.
-
-    Regression test for bu-2r332.
+    The API process used to call Switchboard ``deliver`` itself. That hop carried
+    no proof of the owner's approval, so Messenger parked the same send a second
+    time (bu-dhloi1.168). Only the owning daemon can mint the single-use proof,
+    so the API must hand notify to ``dispatch_approved_action`` and never call
+    ``deliver`` or the shared executor in this process.
     """
     import json
 
+    from butlers.api.routers import approvals as approvals_router
     from butlers.api.routers.approvals import _dispatch_approved_action_outcome
 
     action_id = uuid4()
-    phantom_action_id = uuid4()
-
-    # notify email-guard returns pending_approval with pending_action_id (not action_id)
-    notify_email_guard_payload = json.dumps(
-        {
-            "status": "pending_approval",
-            "error": (
-                "Delivery blocked: email target 'someone@example.com' is a "
-                "non-standing contact and no standing approval rule matches."
-            ),
-            "pending_action_id": str(phantom_action_id),
-        }
-    )
-
-    mock_mcp, mock_db, mock_pool, _ = _build_dispatch_mocks(
-        action_id=action_id,
-        tool_name="notify",
-        tool_args={"channel": "email", "message": "Hello", "recipient": "someone@example.com"},
-        mcp_text_payload=notify_email_guard_payload,
-        mcp_is_error=False,
-    )
-
-    outcome = await _dispatch_approved_action_outcome(
-        mock_mcp,
-        mock_db,
-        mock_pool,
-        str(action_id),
-        "notify",
-        {"channel": "email", "message": "Hello", "recipient": "someone@example.com"},
-        "relationship",
-    )
-
-    # The failed delivery must leave the action retryable rather than writing a
-    # false terminal result. The log retains the useful phantom-id diagnosis.
-    assert outcome.kind == "rejected"
-    assert outcome.action is None
-    async with mock_pool.acquire() as conn:
-        assert not any(
-            call.args[0].startswith("UPDATE pending_actions")
-            for call in conn.execute.await_args_list
-        )
-    assert str(phantom_action_id) in caplog.text
-    assert "phantom pending_action=<unknown>" not in caplog.text
-
-
-@pytest.mark.parametrize("failure", ["payload", "validation"])
-async def test_dispatch_approved_notify_error_payload_stays_retryable(failure):
-    """Delivery and validation failures cannot become terminal execution results."""
-    import json
-
-    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
-
-    action_id = uuid4()
-    tool_args = {
-        "channel": "email",
-        "message": "Hello",
-        "recipient": "owner@example.com",
-        "intent": "insight" if failure != "validation" else "unsupported",
-    }
+    tool_args = {"intent": "insight", "channel": "telegram", "message": "Approved"}
+    executed_payload = {**_make_action(tool_name="notify", status="executed"), "id": str(action_id)}
     mock_mcp, mock_db, mock_pool, _ = _build_dispatch_mocks(
         action_id=action_id,
         tool_name="notify",
         tool_args=tool_args,
-        mcp_text_payload=json.dumps({"status": "failed", "error": "SMTP unavailable"}),
-        mcp_is_error=False,
+        mcp_text_payload=json.dumps(executed_payload, default=str),
     )
 
     outcome = await _dispatch_approved_action_outcome(
-        mock_mcp,
-        mock_db,
-        mock_pool,
-        str(action_id),
-        "notify",
-        tool_args,
-        "relationship",
+        mock_mcp, mock_db, mock_pool, str(action_id), "notify", tool_args, "relationship"
     )
 
-    assert outcome.kind == "rejected"
-    assert outcome.action is None
-    async with mock_pool.acquire() as conn:
-        assert not any(
-            call.args[0].startswith("UPDATE pending_actions")
-            for call in conn.execute.await_args_list
-        )
-
-
-async def test_dispatch_approved_action_outcome_notify_passes_origin_butler():
-    """Approved notify uses deliver's real contract and retains its owning origin.
-
-    ``park_prepared_action`` always parks with ``tool_name="notify"``, so this is
-    the real production path a dashboard approval takes for a prepared reach-out.
-    Without ``origin_butler`` reaching ``execute_approved_action``, the
-    attention-ledger-on-failure write for ``origin='prepared'`` actions
-    (bu-2jtfw.11) can never fire for an owner-approved action, even though
-    ``execute_approved_action`` itself supports it. This exercises the router's
-    call site directly rather than ``execute_approved_action`` in isolation, so
-    a regression here cannot hide behind a test that already supplies the
-    parameter.
-    """
-    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
-    from butlers.modules.approvals.executor import execute_approved_action
-
-    action_id = uuid4()
-    tool_args = {
-        "intent": "insight",
-        "channel": "email",
-        "message": "Hello exactly as approved",
-        "recipient": "approved@example.com",
-        "subject": "Approved subject",
-        "request_context": {
-            "request_id": "019c2710-0000-7000-8000-000000000001",
-            "source_channel": "email",
-            "source_endpoint_identity": "relationship-email",
-            "source_sender_identity": "approved@example.com",
-        },
-    }
-    mock_mcp, mock_db, mock_pool, _ = _build_dispatch_mocks(
-        action_id=action_id,
-        tool_name="notify",
-        tool_args=tool_args,
-        mcp_text_payload='{"ok": true}',
-        mcp_is_error=False,
-    )
-    executed_row = _make_action(tool_name="notify", status="executed")
-    executed_row["id"] = action_id
-    async with mock_pool.acquire() as conn:
-        conn.fetchrow.side_effect = [
-            {"status": "approved", "execution_result": None},
-            executed_row,
-        ]
-
-    with patch(
-        "butlers.api.routers.approvals.execute_approved_action",
-        wraps=execute_approved_action,
-    ) as mock_execute:
-        outcome = await _dispatch_approved_action_outcome(
-            mock_mcp,
-            mock_db,
-            mock_pool,
-            str(action_id),
-            "notify",
-            tool_args,
-            "relationship",
-        )
-
-    assert mock_execute.await_args.kwargs["origin_butler"] == "relationship"
     assert outcome.kind == "executed", outcome.detail
-    async with mock_pool.acquire() as conn:
-        terminal_writes = [
-            call
-            for call in conn.execute.await_args_list
-            if call.args[0].startswith("UPDATE pending_actions")
-        ]
-        assert len(terminal_writes) == 1
-        assert terminal_writes[0].args[1] == "executed"
+    assert [c.args[0] for c in mock_mcp.get_client.await_args_list] == ["relationship"]
     mock_mcp.get_client.return_value.call_tool.assert_awaited_once_with(
-        "deliver",
-        {
-            "source_butler": "relationship",
-            "notify_request": {
-                "schema_version": "notify.v1",
-                "origin_butler": "relationship",
-                "delivery": {
-                    key: value for key, value in tool_args.items() if key != "request_context"
-                },
-                "request_context": tool_args["request_context"],
-            },
-        },
+        "dispatch_approved_action", {"action_id": str(action_id)}
     )
+    # The API no longer imports the executor at all: it cannot run notify here.
+    assert not hasattr(approvals_router, "execute_approved_action")
+    async with mock_pool.acquire() as conn:
+        conn.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"error": "delivery re-entered the approval gate"},
+        {"error": "Approved notification authority rejected."},
+    ],
+)
+async def test_dispatch_approved_notify_owner_failure_stays_retryable(payload):
+    """An owning-daemon delivery failure is a rejection; the API writes nothing."""
+    import json
+
+    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
+
+    action_id = uuid4()
+    tool_args = {"intent": "insight", "channel": "email", "message": "Hi"}
+    mock_mcp, mock_db, mock_pool, _ = _build_dispatch_mocks(
+        action_id=action_id,
+        tool_name="notify",
+        tool_args=tool_args,
+        mcp_text_payload=json.dumps(payload),
+    )
+
+    outcome = await _dispatch_approved_action_outcome(
+        mock_mcp, mock_db, mock_pool, str(action_id), "notify", tool_args, "relationship"
+    )
+
+    assert outcome.kind == "rejected"
+    assert outcome.action is None
+    async with mock_pool.acquire() as conn:
+        conn.execute.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ integration tests in test_tools.py which use a real Postgres container.
 from __future__ import annotations
 
 import errno
+import importlib
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -77,6 +78,11 @@ def _make_mock_pool(
 
     pool.execute = AsyncMock()
     return pool
+
+
+def _runtime_deliver() -> Any:
+    """Switchboard ``deliver`` through its runtime alias (not statically resolvable)."""
+    return importlib.import_module("butlers.tools.switchboard.notification.deliver").deliver
 
 
 def _notif_id_row() -> dict[str, Any]:
@@ -1225,6 +1231,128 @@ class TestDeliverNotifyRouting:
         inner_ctx = routed_payload["input"]["context"]["notify_request"]["request_context"]
         assert inner_ctx["request_id"] == original_request_id
         assert inner_ctx["source_endpoint_identity"] == "telegram:BigButlerBot"
+        # An ordinary delivery never carries an approved-notify attestation.
+        assert "_trusted_approved_notify" not in routed_payload["input"]["context"]
+
+    async def test_approved_attestation_covers_exact_forwarded_envelope(self) -> None:
+        """RFC 0038 D13: Switchboard attests exactly the envelope Messenger receives.
+
+        The source verified the envelope it sent; Switchboard re-digests the
+        request it actually forwards (with its own rendering facts) and folds the
+        attestation into Switchboard-only route context, never a public field.
+        """
+        from butlers.core.approved_delivery import (
+            ApprovedNotifyAttestation,
+            notify_request_digest,
+        )
+
+        deliver = _runtime_deliver()
+        pool = _make_mock_pool(
+            fetchrow_side_effect=[
+                [],
+                _registry_row("messenger", "http://localhost:9200/sse"),
+                _notif_id_row(),
+            ],
+        )
+        captured: list[dict[str, Any]] = []
+
+        async def mock_call(endpoint_url, tool_name, args):
+            captured.append({"tool_name": tool_name, "args": args})
+            return {
+                "status": "ok",
+                "result": {
+                    "notify_response": {
+                        "schema_version": "notify_response.v1",
+                        "status": "ok",
+                        "delivery": {"channel": "telegram", "delivery_id": "tg-approved"},
+                    }
+                },
+            }
+
+        action_id = uuid.uuid4()
+        notify_request = {
+            "schema_version": "notify.v1",
+            "origin_butler": "relationship",
+            "delivery": {"intent": "send", "channel": "telegram", "message": "Approved"},
+        }
+        attestation = ApprovedNotifyAttestation(
+            issuer="relationship", action_id=action_id, notify_digest="0" * 64
+        )
+
+        result = await deliver(
+            pool,
+            source_butler="relationship",
+            notify_request=notify_request,
+            approved_attestation=attestation,
+            call_fn=mock_call,
+        )
+
+        assert result["status"] == "sent", result
+        assert len(captured) == 1
+        context = captured[0]["args"]["input"]["context"]
+        forwarded = context["notify_request"]
+        assert context["_trusted_approved_notify"] == {
+            "issuer": "relationship",
+            "action_id": str(action_id),
+            "notify_digest": notify_request_digest(forwarded),
+        }
+
+    @pytest.mark.parametrize(
+        "issuer,source,origin",
+        [
+            ("relationship", "health", "health"),  # attested source is not the caller
+            ("relationship", "relationship", "health"),  # envelope names another origin
+        ],
+    )
+    async def test_approved_attestation_for_another_source_is_refused(
+        self, issuer: str, source: str, origin: str
+    ) -> None:
+        from butlers.core.approved_delivery import ApprovedNotifyAttestation
+
+        deliver = _runtime_deliver()
+        pool = _make_mock_pool()
+        call = AsyncMock()
+
+        result = await deliver(
+            pool,
+            source_butler=source,
+            notify_request={
+                "schema_version": "notify.v1",
+                "origin_butler": origin,
+                "delivery": {"intent": "send", "channel": "telegram", "message": "Hi"},
+            },
+            approved_attestation=ApprovedNotifyAttestation(
+                issuer=issuer, action_id=uuid.uuid4(), notify_digest="0" * 64
+            ),
+            call_fn=call,
+        )
+
+        assert result["status"] == "failed"
+        call.assert_not_awaited()
+
+    async def test_approved_attestation_without_protected_hop_is_refused(self) -> None:
+        """No protected call_fn means no attestation can reach Messenger: refuse."""
+        from butlers.core.approved_delivery import ApprovedNotifyAttestation
+
+        deliver = _runtime_deliver()
+        result = await deliver(
+            _make_mock_pool(),
+            source_butler="relationship",
+            notify_request={
+                "schema_version": "notify.v1",
+                "origin_butler": "relationship",
+                "delivery": {"intent": "send", "channel": "telegram", "message": "Hi"},
+            },
+            approved_attestation=ApprovedNotifyAttestation(
+                issuer="relationship", action_id=uuid.uuid4(), notify_digest="0" * 64
+            ),
+        )
+
+        assert result == {
+            "status": "failed",
+            "error": "Approved notification authority rejected.",
+            "retryable": False,
+        }
 
     async def test_invalid_notify_request_fails_validation(self) -> None:
         from butlers.tools.switchboard import deliver

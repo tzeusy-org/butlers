@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import uuid
 from collections.abc import Mapping
@@ -182,6 +183,39 @@ class ApprovalDeliveryRepository:
             claim.reconcile_only,
         )
         return float(remaining) if remaining is not None else None
+
+    async def approved_notify_args(
+        self, action_id: Any, *, owning_schema: str, args_digest: str
+    ) -> dict[str, Any] | None:
+        """Return a live approved, unexecuted ``notify`` row's stored args, else ``None``.
+
+        Read only, from this owning schema and role. The stored call must still
+        hash to ``args_digest`` (the executor's binding). The executor holds the
+        row lock while delivering; this plain read does not wait on it. A goal
+        effect belongs to the broker and is never attested here.
+        """
+        from butlers.modules.approvals.execution_context import approval_tool_args_digest
+
+        raw = await self._pool.fetchval(
+            """
+            SELECT tool_args FROM pending_actions
+             WHERE current_schema() = $2
+               AND current_user = 'butler_' || $2 || '_rw'
+               AND current_setting('role') = 'butler_' || $2 || '_rw'
+               AND id = $1 AND tool_name = 'notify'
+               AND status = 'approved' AND execution_result IS NULL
+               AND goal_id IS NULL
+            """,
+            action_id,
+            owning_schema,
+        )
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+        if not isinstance(raw, dict) or not hmac.compare_digest(
+            approval_tool_args_digest(raw), args_digest
+        ):
+            return None
+        return dict(raw)
 
     async def cancel_ineligible_presentations(self) -> int:
         """Cancel only presentation recovery; never transition a domain action.
