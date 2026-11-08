@@ -6,6 +6,7 @@
   "interfaces": {
     "dnd": {
       "export_function": "dnd_generation_backup.export_v1()",
+      "schema_function": "dnd_generation_backup.export_schema_v1()",
       "restore_function": "dnd_generation_backup.restore_v1(jsonb)",
       "owner": "dnd_generation_owner"
     }

@@ -475,7 +475,7 @@ def _docker_client(
 
 
 def _run_restore_script(
-    backup: Path, target: _Target, target_db: str
+    backup: Path, target: _Target, target_db: str, *, drop_existing: bool = True
 ) -> subprocess.CompletedProcess:
     """Run the real ``scripts/pg_restore.sh`` against *target*.
 
@@ -489,8 +489,9 @@ def _run_restore_script(
         "bash /pg_restore.sh /backup.sql.gz "
         "--host host.docker.internal "
         f"--port {target.port} --user {target.login} "
-        f"--target-db {target_db} --drop-existing "
-        "--capture-epoch-file /capture-host/epoch.json",
+        f"--target-db {target_db} "
+        + ("--drop-existing " if drop_existing else "")
+        + "--capture-epoch-file /capture-host/epoch.json",
         password=target.password,
     )
 

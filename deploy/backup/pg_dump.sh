@@ -813,6 +813,56 @@ SET LOCAL row_security=on;',
 
   if [ "${DND_EXPORT_MODE}" = "export" ]; then
   printf '\n-- Butlers private DND history (receipts, generation guard, DND context)\n'
+  # Canonical schema metadata, without pg_dump's forbidden private-table LOCK.
+  # The fixed function emits no rows or caller-chosen relation/DDL names.
+  PGPASSWORD="${BACKUP_EXPORT_PASSWORD:-}" psql \
+    --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+    --username="${BACKUP_EXPORT_USER}" --dbname="${POSTGRES_DB}" \
+    --no-password --quiet --no-align --tuples-only --set=ON_ERROR_STOP=1 <<DND_SCHEMA_SQL \
+  || { echo "$?" > "${STATUSFILE}"; exit 0; }
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+SET TRANSACTION SNAPSHOT '${BACKUP_SNAPSHOT}';
+DO \$dnd_boundary\$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname='dnd_generation_owner'
+      AND NOT r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolcreaterole
+      AND NOT r.rolcreatedb AND NOT r.rolreplication AND NOT r.rolbypassrls
+      AND NOT EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.roleid=r.oid OR m.member=r.oid))
+     OR (SELECT count(*) FROM pg_roles WHERE rolname IN ('butlers_backup_export','butlers_backup_restore')
+         AND NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper AND NOT rolcreaterole
+         AND NOT rolcreatedb AND NOT rolreplication AND NOT rolbypassrls) <> 2
+     OR NOT EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname='dnd_generation_backup'
+         AND n.nspowner=to_regrole('dnd_generation_owner') AND NOT EXISTS (
+           SELECT 1 FROM aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a
+           WHERE a.is_grantable OR NOT (a.grantee=n.nspowner OR
+             (a.grantee IN (to_regrole('butlers_backup_export'),to_regrole('butlers_backup_restore'))
+              AND a.privilege_type='USAGE'))))
+     OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='dnd_generation_backup') <> 3
+     OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='dnd_generation_backup' AND p.proowner=to_regrole('dnd_generation_owner')
+           AND p.prosecdef AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp','row_security=on']
+           AND ((p.proname='export_v1' AND p.pronargs=0 AND p.proretset AND p.prorettype=2249 AND p.provolatile='s')
+             OR (p.proname='export_schema_v1' AND p.pronargs=0 AND p.proretset AND p.prorettype=25 AND p.provolatile='s')
+             OR (p.proname='restore_v1' AND p.proargtypes='3802'::oidvector
+                 AND NOT p.proretset AND p.prorettype=2278 AND p.provolatile='v'))
+           AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+             WHERE a.is_grantable OR NOT (a.grantee=p.proowner OR
+               (a.grantee=CASE WHEN p.proname='restore_v1' THEN to_regrole('butlers_backup_restore')
+                               ELSE to_regrole('butlers_backup_export') END AND a.privilege_type='EXECUTE')))
+           AND has_function_privilege(CASE WHEN p.proname='restore_v1' THEN 'butlers_backup_restore'
+                                           ELSE 'butlers_backup_export' END,p.oid,'EXECUTE')) <> 3
+     OR NOT coalesce(has_schema_privilege('butlers_backup_export',to_regnamespace('dnd_generation_backup'),'USAGE'),false)
+     OR NOT coalesce(has_schema_privilege('butlers_backup_restore',to_regnamespace('dnd_generation_backup'),'USAGE'),false)
+  THEN
+    RAISE EXCEPTION 'DND backup authority is untrusted; restore is not certified';
+  END IF;
+END
+\$dnd_boundary\$;
+SET LOCAL ROLE butlers_backup_export;
+SELECT * FROM dnd_generation_backup.export_schema_v1();
+COMMIT;
+DND_SCHEMA_SQL
   printf 'CREATE TEMP TABLE butlers_dnd_restore_rows (ordinal integer NOT NULL CHECK (ordinal IN (1,2,3)), relation_name text NOT NULL, payload_hex text NOT NULL);\n'
   printf 'COPY butlers_dnd_restore_rows (ordinal, relation_name, payload_hex) FROM stdin;\n'
   # The proof and the export share one transaction and the dump's snapshot. The
@@ -853,10 +903,51 @@ COMMIT;
 DND_EXPORT_SQL
   printf '\\.\n'
   printf '%s\n' "SELECT EXISTS(SELECT 1 FROM butlers_dnd_restore_rows) AS butlers_dnd_restore_needed \\gset" '\if :butlers_dnd_restore_needed'
-  # The DND relations are excluded from the ordinary dump, so an empty restore
-  # target does not have them. Populated history is never dropped silently:
-  # restore into a target bootstrapped by scripts/init-db.sql and migrated.
-  printf '%s\n' '\set ON_ERROR_STOP on' "DO \$\$ BEGIN IF to_regclass('public.dnd_generation_mutations') IS NULL OR to_regclass('public.dnd_generation_guard') IS NULL OR to_regclass('public.user_context') IS NULL OR to_regprocedure('dnd_generation_backup.restore_v1(jsonb)') IS NULL THEN RAISE EXCEPTION 'DND history restore requires a target bootstrapped with scripts/init-db.sql and migrated past core_197; the DND relations are absent'; END IF; END \$\$;"
+  # Fail before a staged call can use a dumped function whose owner handoff failed.
+  cat <<'DND_REPLAY_PROOF'
+\set ON_ERROR_STOP on
+DO $dnd_boundary$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname='dnd_generation_owner'
+      AND NOT r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolcreaterole
+      AND NOT r.rolcreatedb AND NOT r.rolreplication AND NOT r.rolbypassrls
+      AND NOT EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.roleid=r.oid OR m.member=r.oid))
+     OR (SELECT count(*) FROM pg_roles WHERE rolname IN ('butlers_backup_export','butlers_backup_restore')
+         AND NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper AND NOT rolcreaterole
+         AND NOT rolcreatedb AND NOT rolreplication AND NOT rolbypassrls) <> 2
+     OR NOT EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname='dnd_generation_backup'
+         AND n.nspowner=to_regrole('dnd_generation_owner') AND NOT EXISTS (
+           SELECT 1 FROM aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a
+           WHERE a.is_grantable OR NOT (a.grantee=n.nspowner OR
+             (a.grantee IN (to_regrole('butlers_backup_export'),to_regrole('butlers_backup_restore'))
+              AND a.privilege_type='USAGE'))))
+     OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='dnd_generation_backup') <> 3
+     OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='dnd_generation_backup' AND p.proowner=to_regrole('dnd_generation_owner')
+           AND p.prosecdef AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp','row_security=on']
+           AND ((p.proname='export_v1' AND p.pronargs=0 AND p.proretset AND p.prorettype=2249 AND p.provolatile='s')
+             OR (p.proname='export_schema_v1' AND p.pronargs=0 AND p.proretset AND p.prorettype=25 AND p.provolatile='s')
+             OR (p.proname='restore_v1' AND p.proargtypes='3802'::oidvector
+                 AND NOT p.proretset AND p.prorettype=2278 AND p.provolatile='v'))
+           AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+             WHERE a.is_grantable OR NOT (a.grantee=p.proowner OR
+               (a.grantee=CASE WHEN p.proname='restore_v1' THEN to_regrole('butlers_backup_restore')
+                               ELSE to_regrole('butlers_backup_export') END AND a.privilege_type='EXECUTE')))
+           AND has_function_privilege(CASE WHEN p.proname='restore_v1' THEN 'butlers_backup_restore'
+                                           ELSE 'butlers_backup_export' END,p.oid,'EXECUTE')) <> 3
+     OR NOT coalesce(has_schema_privilege('butlers_backup_export',to_regnamespace('dnd_generation_backup'),'USAGE'),false)
+     OR NOT coalesce(has_schema_privilege('butlers_backup_restore',to_regnamespace('dnd_generation_backup'),'USAGE'),false)
+  THEN
+    RAISE EXCEPTION 'DND backup authority is untrusted; restore is not certified';
+  END IF;
+END
+$dnd_boundary$;
+DO $$ BEGIN IF (SELECT count(*) FROM pg_class WHERE oid IN
+  (to_regclass('public.dnd_generation_mutations'),to_regclass('public.dnd_generation_guard'),
+   to_regclass('public.user_context')) AND relowner=to_regrole('dnd_generation_owner')) <> 3
+THEN RAISE EXCEPTION 'DND relations are absent or their fixed ownership was not preserved'; END IF; END $$;
+DND_REPLAY_PROOF
   printf '%s\n' "SELECT coalesce(pg_has_role(current_user, to_regrole('butlers_backup_restore'), 'MEMBER'), false) AS butlers_dnd_restore_authorized \\gset" '\if :butlers_dnd_restore_authorized' '\set ON_ERROR_STOP on' 'GRANT SELECT ON butlers_dnd_restore_rows TO butlers_backup_restore;' 'SET ROLE butlers_backup_restore;'
   printf '%s\n' "SELECT dnd_generation_backup.restore_v1(jsonb_agg(jsonb_build_object('ordinal', ordinal, 'relation', relation_name, 'row', convert_from(decode(payload_hex, 'hex'), 'UTF8')::jsonb) ORDER BY ordinal, payload_hex)) FROM butlers_dnd_restore_rows;"
   printf '%s\n' 'RESET ROLE;' '\else' '\set ON_ERROR_STOP on' "DO \$\$ BEGIN RAISE EXCEPTION 'DND history restore requires butlers_backup_restore membership'; END \$\$;" '\endif' '\endif' 'DROP TABLE butlers_dnd_restore_rows;'

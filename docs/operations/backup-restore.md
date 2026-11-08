@@ -228,13 +228,14 @@ the required full backup or restore acceptance.
 
 **Mechanism.** The dump identity is never widened: it receives no grant,
 membership or EXECUTE for any of this. `scripts/init-db.sql` (the DND finalizer)
-installs two fixed `SECURITY DEFINER` functions in schema
+installs three fixed `SECURITY DEFINER` functions in schema
 `dnd_generation_backup`, owned by `dnd_generation_owner`, whose no-membership
 fence is unchanged:
 
 | Function | Executable by | Does |
 |---|---|---|
 | `export_v1()` | `butlers_backup_export` only | Returns the three populations as typed JSON rows in the caller's snapshot |
+| `export_schema_v1()` | `butlers_backup_export` only | Emits actual catalog DDL for only the two omitted canonical tables, without private rows or pg_dump table locks; refuses unsupported shape/dependencies |
 | `restore_v1(jsonb)` | `butlers_backup_restore` only | Inserts them into a fresh target, in receipt, guard, context order; refuses a target that already holds DND history |
 
 Both roles are created `NOLOGIN NOINHERIT` with no membership edge and no
@@ -259,13 +260,29 @@ failure refuses publication; there is no silent fallback.
 Activation is an owner step and is not performed by any repository change: give
 the export login `CONNECT` on the database and membership in (or make it)
 `butlers_backup_export`; export `BACKUP_EXPORT_USER` and
-`BACKUP_EXPORT_PASSWORD` to the backup process. On restore, the target must already be
-bootstrapped by `scripts/init-db.sql` and migrated past core_197, because the DND
-relations are excluded from the ordinary dump: restoring a populated DND block into
-an empty target fails loudly (`DND relations are absent`) and the restore is not
-certified. The restoring login must be a member of `butlers_backup_restore` (and
-hold `TEMPORARY`); a populated
-DND block without that membership fails loudly rather than being dropped.
+`BACKUP_EXPORT_PASSWORD` to the backup process. The same read-only snapshot also
+supplies canonical schema metadata for the two omitted tables. The schema interface
+accepts no table argument: it verifies the fixed names/types, owners, ordinary-table
+shape and supported dependencies, then emits actual columns/defaults, constraints,
+indexes, owner/ACL and RLS/policies. Unexpected columns, column ACLs, triggers,
+inheritance, generated/identity columns or foreign expression dependencies refuse
+publication. The ordinary dump identity still cannot lock/read those tables; merely
+using `--exclude-table-data` would not avoid pg_dump's definition locks.
+
+An authorized complete-artifact restore can therefore reconstruct these omitted
+relations on an empty target before replaying staged DND history. The restoring
+login still needs the existing trusted-owner handoff authority (see Ownership
+precondition), `butlers_backup_restore` membership and `TEMPORARY`; none is granted
+by the producer or consumer. Both the staged block and the actual restore consumer
+verify the fixed namespace owner, exact three function signatures, SECURITY DEFINER,
+configuration and capability-only EXECUTE/USAGE ACLs. The consumer refuses a missing,
+foreign or failed ownership handoff even when all public function fences remain
+correct. It does not repair it or elevate a normal database owner. Private replay
+also requires all three tables to retain their canonical owner and fresh history.
+The complete consumer's ordinary snapshot, core tracking and rotated capture epoch
+remain part of restore verification; replaying an extracted private tail is not a
+supported substitute. Disposable tests prepare bootstrap-dependent targets before
+temporary export activation and remove that activation before later bootstrap.
 
 **Retention consequence.** The artifact now holds private DND history, including
 rows already expired or superseded in the live database, for up to
@@ -276,8 +293,9 @@ Databases that already applied the DND migration receive the interface when
 `scripts/init-db.sql` is next re-run as the cluster superuser (the DND finalizer
 installs it). Until then the script logs the omission. The ordinary dump also
 lists the `dnd_generation_backup` schema and function definitions, as it already
-does for `dnd_generation_private`; a restore target is bootstrapped by
-`init-db.sql`, which owns them.
+does for `dnd_generation_private`. Roles and trusted authority must already be
+provisioned by `init-db.sql`; the dump does not create role memberships. Failed
+ownership assignments are refused, not certified as an ordinary successful restore.
 
 Restore restores the exact snapshot: guard generation and timestamps are
 preserved, no counter is reseeded and no mutation is replayed.

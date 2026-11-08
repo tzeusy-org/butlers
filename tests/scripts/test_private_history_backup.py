@@ -25,13 +25,11 @@ from urllib.parse import urlparse
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
 
-from alembic import command
-from butlers.migrations import _build_alembic_config
+from butlers.migrations import get_chain_head
 from butlers.testing.migration import (
     _bootstrap_migration_prerequisites,
-    create_migration_db,
-    migration_db_name,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -548,6 +546,33 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
     finally:
         ordinary_engine.dispose()
 
+    # The schema interface is fixed, not a generic exporter: a changed catalog
+    # cannot silently extend its DDL surface. Transaction rollback restores the
+    # genuine source and the healthy full-artifact companion below uses it.
+    unsupported = create_engine(admin)
+    try:
+        with pytest.raises(DBAPIError, match="supported canonical relations"):
+            with unsupported.begin() as conn:
+                conn.exec_driver_sql("ALTER TABLE public.user_context ADD COLUMN unexpected text")
+                conn.exec_driver_sql("SET LOCAL ROLE butlers_backup_export")
+                conn.exec_driver_sql("SELECT * FROM dnd_generation_backup.export_schema_v1()")
+    finally:
+        unsupported.dispose()
+
+    # Managed bootstrap requires inert capability roles. Prepare the normal-role
+    # failed-handoff target BEFORE temporary export activation, never after it.
+    prepared_url = fresh_db("core")
+    # The canonical template clone preserves the source migration identity, so
+    # unrelated public functions cannot turn this into an earlier owner failure.
+    assert urlparse(prepared_url).username == urlparse(migrated_db_url).username
+    prepared_admin = _admin_for(postgres_container, prepared_url)
+    source_policies = _rows(
+        admin,
+        "SELECT polname,polcmd,polpermissive,polroles::text,"
+        "pg_get_expr(polqual,polrelid),pg_get_expr(polwithcheck,polrelid) "
+        "FROM pg_policy WHERE polrelid='public.user_context'::regclass ORDER BY polname",
+    )
+
     # Simulate the owner's activation step on this disposable database only.
     login = f"export_{uuid.uuid4().hex[:8]}"
     password = uuid.uuid4().hex
@@ -561,7 +586,12 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
     finally:
         engine.dispose()
 
+    export_active = True
+
     def _deactivate() -> None:
+        nonlocal export_active
+        if not export_active:
+            return
         # The container is shared: leave no login or membership edge behind, so
         # the "no membership edge" fence proof stays order-independent.
         cleanup = create_engine(admin, isolation_level="AUTOCOMMIT")
@@ -569,6 +599,7 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
             with cleanup.connect() as conn:
                 conn.exec_driver_sql(f'REVOKE CONNECT ON DATABASE "{db}" FROM "{login}"')
                 conn.exec_driver_sql(f'DROP ROLE "{login}"')
+                export_active = False
         finally:
             cleanup.dispose()
 
@@ -657,18 +688,70 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
             ("1\tdnd_generation_mutations\t", "2\tdnd_generation_guard\t", "3\tuser_context\t")
         )
     ]
+    assert "CREATE TABLE public.dnd_generation_mutations" in dump
+    assert "CREATE TABLE public.user_context" in dump
     assert len(staged) == 3 + 1 + 1
     assert all("location" not in json.dumps(row) for row in staged)
 
-    # Reuse the supported consumer transport and its fresh persistent epoch.
-    # Its --drop-existing creates an empty target; no bootstrap schema/data is
-    # imported over itself. The source cluster already holds the fenced roles.
-    from tests.scripts.test_pg_restore_definer_ownership import (
-        _docker_client,
-        _run_restore_script,
-        _Target,
+    # Remove all disposable activation before any further managed bootstrap.
+    _deactivate()
+    assert not _scalar(
+        admin, "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=:name)", name=login
+    )
+    assert not _scalar(
+        admin,
+        "SELECT EXISTS (SELECT 1 FROM pg_auth_members WHERE roleid IN "
+        "('butlers_backup_export'::regrole,'butlers_backup_restore'::regrole) OR member IN "
+        "('butlers_backup_export'::regrole,'butlers_backup_restore'::regrole))",
+    )
+    _bootstrap_migration_prerequisites(prepared_admin, urlparse(prepared_url).username or "")
+
+    # A normal database owner cannot complete a fixed-owner handoff. All public
+    # fences are already correct: this positions the namespace-specific audit,
+    # instead of claiming an earlier public audit failure proves its coverage.
+    from tests.scripts.test_pg_restore_definer_ownership import _run_restore_script, _Target
+
+    prepared = urlparse(prepared_url)
+    prepared_db = (prepared.path or "").lstrip("/")
+    assert not _scalar(
+        prepared_admin,
+        "SELECT rolsuper OR rolcreatedb OR rolcreaterole FROM pg_roles WHERE rolname=:name",
+        name=prepared.username,
+    )
+    assert not _scalar(
+        prepared_admin,
+        "SELECT EXISTS(SELECT 1 FROM pg_auth_members WHERE roleid='dnd_generation_owner'::regrole)",
+    )
+    damage = create_engine(prepared_admin)
+    try:
+        with damage.begin() as conn:
+            # Genuine canonical tables were provisioned above, not fabricated.
+            # Only the omitted objects/namespace are absent for this handoff.
+            conn.exec_driver_sql("DROP SCHEMA dnd_generation_backup CASCADE")
+            conn.exec_driver_sql("DROP TABLE public.dnd_generation_mutations,public.user_context")
+    finally:
+        damage.dispose()
+    normal_target = _Target(
+        str(postgres_container.get_exposed_port(5432)),
+        prepared.username or "",
+        prepared.password or "",
+        prepared_url,
+    )
+    refused = _run_restore_script(artifact, normal_target, prepared_db, drop_existing=False)
+    assert refused.returncode != 0, refused.stderr + refused.stdout
+    assert "no SECURITY DEFINER function in 'public' fell" in refused.stdout
+    assert "DND backup authority is untrusted" in refused.stderr + refused.stdout
+    assert _scalar(
+        prepared_admin,
+        "SELECT bool_and(proowner=(SELECT oid FROM pg_roles "
+        "WHERE rolname=:name)) FROM pg_proc WHERE pronamespace="
+        "'dnd_generation_backup'::regnamespace",
+        name=prepared.username,
     )
 
+    # Authorized companion: the COMPLETE emitted artifact, through the actual
+    # supported consumer, creates an empty target and reconstructs real catalog
+    # DDL before the fixed staged importer. No extracted-tail substitution.
     control_url = postgres_container.get_connection_url()
     control = urlparse(control_url)
     target = _Target(
@@ -683,46 +766,110 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
         cleanup = create_engine(control_url, isolation_level="AUTOCOMMIT")
         try:
             with cleanup.connect() as conn:
-                conn.exec_driver_sql(f'DROP DATABASE IF EXISTS "{target_db}"')
+                conn.exec_driver_sql(f'DROP DATABASE IF EXISTS "{target_db}" WITH (FORCE)')
         finally:
             cleanup.dispose()
 
     request.addfinalizer(_drop_target)
-    # The DND relations are excluded from the ordinary dump, so an empty target
-    # has none of them. The populated history must then refuse loudly: the
-    # restore is never certified with the history silently dropped.
-    assert not (artifact.parent / "epoch.json").exists()
+    # The negative consumer also rotated its own persistent epoch. The healthy
+    # complete restore must rotate it again, not merely reuse that observation.
+    epoch_file = artifact.parent / "epoch.json"
+    prior_epoch = json.loads(epoch_file.read_text())
     restore = _run_restore_script(artifact, target, target_db)
-    assert restore.returncode != 0, restore.stderr + restore.stdout
-    assert "incomplete data is not certified" in restore.stderr
-    assert "DND relations are absent" in restore.stdout + restore.stderr
-
-    # Into a target bootstrapped by init-db.sql and migrated, the same staged
-    # block restores the exact pre-snapshot history through the fixed definer.
-    prepared_url = create_migration_db(postgres_container, migration_db_name())
-    command.upgrade(_build_alembic_config(prepared_url, chains=["core"]), "core@head")
-    prepared_db = (urlparse(prepared_url).path or "").lstrip("/")
-    prepared_admin = _admin_for(postgres_container, prepared_url)
-    replay = _docker_client(
-        artifact,
-        "gunzip -c /backup.sql.gz | sed -n '/^-- Butlers private DND history/,$p' | "
-        f"psql -h host.docker.internal -p {target.port} -U {target.login} --no-password "
-        f"-d {prepared_db} --quiet -v ON_ERROR_STOP=1",
-        password=target.password,
-        mount_script=False,
-    )
-    assert replay.returncode == 0, replay.stderr + replay.stdout
-    assert _dnd_snapshot(prepared_admin) == source_before
+    assert restore.returncode == 0, restore.stderr + restore.stdout
+    assert f"[restore] done — '{target_db}' is populated" in restore.stdout
+    assert json.loads(epoch_file.read_text())["generation"] != prior_epoch["generation"]
+    restored = control._replace(path=f"/{target_db}").geturl()
+    assert _dnd_snapshot(restored) == source_before
     assert (
-        _scalar(
-            prepared_admin,
-            "SELECT count(*) FROM public.user_context WHERE signal_type='location'",
-        )
+        _scalar(restored, "SELECT canonical_name FROM public.entities WHERE id=:id", id=ordinary_id)
+        == "Before backup snapshot"
+    )
+    assert _scalar(restored, "SELECT version_num FROM public.alembic_version") == get_chain_head(
+        "core"
+    )
+    assert (
+        _scalar(restored, "SELECT count(*) FROM public.user_context WHERE signal_type='location'")
         == 0
     )
     assert _scalar(
-        prepared_admin,
-        "SELECT bool_and(relforcerowsecurity) FROM pg_class "
+        restored,
+        "SELECT bool_and(relowner='dnd_generation_owner'::regrole) FROM pg_class "
         "WHERE oid IN ('public.dnd_generation_guard'::regclass,"
         "'public.dnd_generation_mutations'::regclass,'public.user_context'::regclass)",
     )
+    assert (
+        _rows(
+            restored,
+            "SELECT polname,polcmd,polpermissive,polroles::text,"
+            "pg_get_expr(polqual,polrelid),pg_get_expr(polwithcheck,polrelid) "
+            "FROM pg_policy WHERE polrelid='public.user_context'::regclass ORDER BY polname",
+        )
+        == source_policies
+    )
+    assert _scalar(
+        restored,
+        "SELECT relrowsecurity AND relforcerowsecurity FROM pg_class "
+        "WHERE oid='public.user_context'::regclass",
+    )
+    assert not _scalar(
+        restored,
+        "SELECT bool_or(relrowsecurity OR relforcerowsecurity) FROM pg_class "
+        "WHERE oid IN ('public.dnd_generation_guard'::regclass,"
+        "'public.dnd_generation_mutations'::regclass)",
+    )
+    assert (
+        _scalar(
+            restored,
+            "SELECT count(*) FROM pg_class c, "
+            "LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a "
+            "WHERE c.oid='public.dnd_generation_mutations'::regclass AND a.grantee<>c.relowner",
+        )
+        == 0
+    )
+    assert (
+        _scalar(
+            restored,
+            "SELECT count(*) FROM pg_class c, "
+            "LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a "
+            "WHERE c.oid='public.dnd_generation_guard'::regclass "
+            "AND a.grantee<>c.relowner AND a.privilege_type<>'SELECT'",
+        )
+        == 0
+    )
+    runtime = create_engine(restored)
+    try:
+        with runtime.begin() as conn:
+            conn.exec_driver_sql("SET LOCAL ROLE butler_general_rw")
+            assert (
+                conn.exec_driver_sql(
+                    "SELECT count(*) FROM public.dnd_generation_guard"
+                ).scalar_one()
+                == 1
+            )
+            assert not conn.exec_driver_sql(
+                "SELECT has_function_privilege(current_user,"
+                "'dnd_generation_backup.restore_v1(jsonb)','EXECUTE')"
+            ).scalar_one()
+            assert not conn.exec_driver_sql(
+                "SELECT has_table_privilege(current_user,"
+                "'public.dnd_generation_mutations','SELECT')"
+            ).scalar_one()
+            conn.exec_driver_sql(
+                "INSERT INTO public.user_context(signal_type,set_by_butler,expires_at) "
+                "VALUES ('location','general',now()+interval '1 hour')"
+            )
+        with pytest.raises(DBAPIError, match="row-level security"):
+            with runtime.begin() as conn:
+                conn.exec_driver_sql("SET LOCAL ROLE butler_general_rw")
+                conn.exec_driver_sql(
+                    "INSERT INTO public.user_context(signal_type,set_by_butler,expires_at) "
+                    "VALUES ('dnd','other',now()+interval '1 hour')"
+                )
+        with pytest.raises(DBAPIError, match="permission denied"):
+            with runtime.begin() as conn:
+                conn.exec_driver_sql("SET LOCAL ROLE butler_general_rw")
+                conn.exec_driver_sql("SELECT * FROM public.dnd_generation_mutations")
+    finally:
+        runtime.dispose()
+    assert _dnd_snapshot(restored) == source_before
