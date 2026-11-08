@@ -292,7 +292,7 @@ Scope: v1-mandatory
 - **THEN** the entity SHALL be absent from the projection after replication catches up, and reversing it SHALL publish the entity again
 
 #### Scenario: A hidden entity's facts, edges and counts leave every view
-- **WHEN** an entity that a published fact, relationship fact, graph edge or withheld count names is forgotten, deleted, archived, unlisted or merged on the primary
+- **WHEN** an entity that a published fact, relationship fact, graph edge or withheld count names is forgotten, deleted, archived or unlisted on the primary
 - **THEN** after replication catches up no `mcp_read` view SHALL return that row, though its subscriber table may still hold it
 - **AND** reversing an archive or unlist SHALL return the rows to the views
 

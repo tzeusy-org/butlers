@@ -164,8 +164,8 @@ class SubscriberTable:
     read_fields: tuple[ReadField, ...]
 
 
-# An entity leaves the projection when it is forgotten, deleted, archived, unlisted or
-# merged, but its facts, edges and counts carry no entity flag a row filter could test.
+# An entity leaves the projection when it is forgotten, deleted, archived or unlisted,
+# but its facts, edges and counts carry no entity flag a row filter could test.
 # Each view keeps only rows whose every referenced entity is still published, so hiding
 # an entity hides everything about it (bu-y66o00.16).
 _ENTITY_REFERENCES = {

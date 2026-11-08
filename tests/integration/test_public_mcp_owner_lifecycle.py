@@ -999,6 +999,7 @@ def test_filtered_families_propagate_real_iud_with_healthy_neighbors(copied):
 def test_hiding_an_entity_hides_its_facts_edges_and_counts_until_it_returns(copied):
     """bu-y66o00.16: no view returns a row about an entity the projection no longer holds."""
     import asyncio
+    from typing import cast
 
     import asyncpg
 
@@ -1035,8 +1036,9 @@ def test_hiding_an_entity_hides_its_facts_edges_and_counts_until_it_returns(copi
                 "INSERT INTO general.facts(subject,entity_id,predicate,content,sensitivity,validity) VALUES ('Hidden subject',$1,'note','About the hidden subject','normal','active') RETURNING id",
                 hidden,
             )
-            async with actual.acquire() as conn, conn.transaction():
-                pointing = await conn.fetchval(
+            async with actual.acquire() as proxy, proxy.transaction():
+                conn = cast(asyncpg.Connection, proxy)
+                pointing = await proxy.fetchval(
                     "INSERT INTO general.facts(subject,entity_id,object_entity_id,predicate,content,sensitivity,validity) VALUES ('Visible neighbour',$1,$2,'knows','Knows the hidden subject','normal','active') RETURNING id",
                     other,
                     hidden,
@@ -1050,7 +1052,7 @@ def test_hiding_an_entity_hides_its_facts_edges_and_counts_until_it_returns(copi
                     predicate="knows",
                     object_entity_id=hidden,
                 )
-                private = await conn.fetchval(
+                private = await proxy.fetchval(
                     "INSERT INTO general.facts(subject,entity_id,predicate,content,sensitivity,validity) VALUES ('Hidden subject',$1,'note','Private','pii','active') RETURNING id",
                     hidden,
                 )
@@ -1077,7 +1079,7 @@ def test_hiding_an_entity_hides_its_facts_edges_and_counts_until_it_returns(copi
             _barrier(topology, projection)
             assert visible(rows) == dict.fromkeys(views, 1)
 
-            # Archive is the reversible hide; forget, delete, unlist and merge set the
+            # Archive is the reversible hide; forget, delete and unlist set the
             # same `deleted` flag, so the entity row leaves the projection the same way.
             await actual.execute(
                 "UPDATE public.entities SET metadata=metadata||'{\"archived\":true}' WHERE id=$1",

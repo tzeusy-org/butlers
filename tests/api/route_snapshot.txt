@@ -28,7 +28,7 @@ OP DELETE /api/projections/{projection_id} c36ca2ec3ef8
 OP DELETE /api/qa/dismissals/{fingerprint} f5ea825f2fb5
 OP DELETE /api/qa/known-issues/{fingerprint}/dismiss d557015576ad
 OP DELETE /api/qa/settings/allowed-repos/{owner}/{repo} 7cd50ca32136
-OP DELETE /api/relationship/entities/{entity_id} eeb11e898c9f
+OP DELETE /api/relationship/entities/{entity_id} 6a42dc60bbdc
 OP DELETE /api/relationship/entities/{entity_id}/contacts/{predicate}/{value_hash} 6e09857ae6fa
 OP DELETE /api/relationship/entities/{entity_id}/info/{info_id} 1b361473d61e
 OP DELETE /api/relationship/entities/{entity_id}/preferred-channel 895b78156b42

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import uuid
+from typing import cast
 
 import asyncpg
 import pytest
@@ -71,8 +72,9 @@ async def _fact(
 ) -> uuid.UUID:
     """A memory fact, with the edge or withheld stub its writer would project."""
     schema = await pool.fetchval("SELECT current_schema()")
-    async with pool.acquire() as conn, conn.transaction():
-        fact = await conn.fetchval(
+    async with pool.acquire() as proxy, proxy.transaction():
+        conn = cast(asyncpg.Connection, proxy)
+        fact = await proxy.fetchval(
             "INSERT INTO facts (subject, entity_id, object_entity_id, predicate, content, "
             "sensitivity) VALUES ('opaque', $1, $2, 'knows', 'opaque', $3) RETURNING id",
             entity,
@@ -137,13 +139,18 @@ async def test_a_forget_retracts_every_schema_and_its_edges_and_counts(pools) ->
     about = await _fact(gen, forgotten, points_at=neighbour)
     pointing = await _fact(gen, neighbour, points_at=forgotten)
     withheld = await _fact(gen, forgotten, sensitivity="pii")
+    fading = await gen.fetchval(
+        "INSERT INTO facts (subject, entity_id, predicate, content, validity) "
+        "VALUES ('opaque', $1, 'note', 'opaque', 'fading') RETURNING id",
+        forgotten,
+    )
     unrelated = await _fact(gen, neighbour, points_at=await _entity(rel, "Bystander"))
     assert await _withheld(rel, forgotten) == 1
 
     await _forget_route()(forgotten, db=_manager(pools))
 
     assert await _validity(rel, local) == "retracted"
-    for fact in (about, pointing, withheld):
+    for fact in (about, pointing, withheld, fading):
         assert await _validity(gen, fact) == "retracted"
     assert await _edges(rel, forgotten) == 0
     assert await _withheld(rel, forgotten) == 0
