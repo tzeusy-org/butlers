@@ -29,6 +29,7 @@ from butlers.modules.approvals.delivery_failure import (
     DELIVERY_REJECTED_STATUS,
     SendFailure,
     delivery_rejected_result,
+    failure_text,
     is_egress_tool,
     send_failure_code,
 )
@@ -413,7 +414,7 @@ async def execute_approved_action(
                         success=False,
                         # An egress failure's text can carry a recipient or provider words;
                         # only the closed code is recorded and shown.
-                        error=f"send_failed:{send_code}" if send_code else str(exc),
+                        error=failure_text(send_code) if send_code else str(exc),
                         executed_at=now,
                         failure_code=send_code,
                     )

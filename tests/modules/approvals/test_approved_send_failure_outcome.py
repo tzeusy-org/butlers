@@ -129,7 +129,7 @@ async def test_raw_provider_text_never_reaches_the_record(approvals_pool) -> Non
         AsyncMock(side_effect=RuntimeError("chat not found for chat_id='@Butlerly'")),
     )
 
-    assert result.error == "send_failed:send_failed"
+    assert result.error == "send_failed"
     event = await approvals_pool.fetchrow(
         "SELECT reason FROM approval_events WHERE action_id = $1 "
         "AND event_type = 'action_execution_failed'",

@@ -93,6 +93,7 @@ from butlers.modules.approvals.decision_memory import (
     memory_pool_for_schema,
 )
 from butlers.modules.approvals.delivery_failure import (
+    code_from_failure_text,
     failure_from_execution_result,
     failure_payload,
 )
@@ -1360,8 +1361,9 @@ def _safe_dispatch_detail(value: Any) -> str:
     if isinstance(value, dict):
         value = value.get("error") or value.get("message") or value.get("status")
     raw_detail = "" if value is None else " ".join(str(value).split())
-    if raw_detail.startswith("send_failed:"):
-        payload = failure_payload(raw_detail.partition(":")[2])
+    failed_code = code_from_failure_text(raw_detail)
+    if failed_code is not None:
+        payload = failure_payload(failed_code)
         if payload is not None:
             return f"the approved send failed: {payload['label']}"
     unexpected_arg = re.search(

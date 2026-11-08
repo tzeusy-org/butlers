@@ -179,7 +179,9 @@ async def test_execution_failure_on_a_prepared_action_records_attention_ledger_r
     assert ledger_row["source"] == "approvals"
     assert ledger_row["outcome"] == "failed"
     assert ledger_row["origin_butler"] == "relationship"
-    assert "delivery channel unavailable" in ledger_row["reason"]
+    # An outbound send's failure is recorded content-free: its closed code, never the raw
+    # exception text (bu-dhloi1.184). An unclassified failure is the generic code.
+    assert ledger_row["reason"] == "send_failed"
 
     # Sanity: record_attention_event itself accepts the new source value
     # (guards against a future VALID_SOURCES regression silently dropping rows).

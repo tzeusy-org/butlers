@@ -41,12 +41,27 @@ def is_egress_tool(tool_name: str) -> bool:
     return tool_name == "notify" or tool_name.startswith(_EGRESS_PREFIXES)
 
 
+def failure_text(code: str) -> str:
+    """The one content-free error string for a code; the generic code renders once."""
+    return GENERIC_SEND_FAILURE if code == GENERIC_SEND_FAILURE else f"send_failed:{code}"
+
+
+def code_from_failure_text(text: str) -> str | None:
+    """Inverse of :func:`failure_text`; ``None`` when the text is not one of ours."""
+    if text == GENERIC_SEND_FAILURE:
+        return GENERIC_SEND_FAILURE
+    prefix = f"{GENERIC_SEND_FAILURE}:"
+    if text.startswith(prefix) and text[len(prefix) :] in SEND_FAILURE_LABELS:
+        return text[len(prefix) :]
+    return None
+
+
 class SendFailure(RuntimeError):
     """An approved send failed with a known, content-free code."""
 
     def __init__(self, code: str) -> None:
         self.code = code if code in SEND_FAILURE_LABELS else GENERIC_SEND_FAILURE
-        super().__init__(f"send_failed:{self.code}")
+        super().__init__(failure_text(self.code))
 
 
 def _transport(value: Any, *, _depth: int = 0) -> dict[str, Any] | None:
@@ -115,6 +130,8 @@ __all__ = [
     "GENERIC_SEND_FAILURE",
     "SEND_FAILURE_LABELS",
     "SendFailure",
+    "code_from_failure_text",
+    "failure_text",
     "delivery_rejected_result",
     "failure_from_execution_result",
     "failure_payload",
