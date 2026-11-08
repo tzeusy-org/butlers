@@ -1189,8 +1189,8 @@ class TestResolveTelegramUsernameAgainstFacts:
         self, booted_daemon, tmp_path: Path
     ) -> None:
         booted = await _relationship_butler(booted_daemon, tmp_path)
-        await _seed_entity(booted, [("has-handle", "@alicex")])  # a twitter handle
-        await _seed_entity(booted, [("has-handle", "telegram:777")])
+        # One contact: a twitter handle spelled like the username, plus a telegram id.
+        await _seed_entity(booted, [("has-handle", "@alicex"), ("has-handle", "telegram:777")])
         resolved = await booted.daemon._resolve_telegram_username_recipient("@alicex")
         assert resolved is None
 
