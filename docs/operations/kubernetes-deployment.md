@@ -555,7 +555,10 @@ wrapper resolves it at deploy time from `<service>.$TAILNET_NAME` for the compos
 firewall's service set minus the compose-only Postgres hosts (dev Postgres is
 in-cluster), plus the transcription host: `otel`, `ollama`, `tzehouse-synology`,
 `homeassistant`, `wyoming-faster-whisper`. The Dolt tracker host stays denied.
-Rollback: set `egressPolicy.enabled: false` in `values.dev.yaml` and redeploy.
+Fast rollback: `helm -n butlers-dev rollback butlers` to the previous revision; with the
+flag off, the tracker-egress policy renders as before.
+Durable rollback: set `egressPolicy.enabled: false` in `values.dev.yaml`. Each allowlist
+entry is a `/32` with no port restriction, matching the compose firewall.
 Production stays off; no prod rollout is implied.
 
 Smoke evidence (2026-11-08, disposable `butlers-rehearsal` namespace on this k3s,
