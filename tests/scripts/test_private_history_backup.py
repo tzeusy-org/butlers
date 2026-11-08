@@ -116,6 +116,9 @@ def test_dump_identity_is_not_widened_and_the_dnd_owner_fence_holds(
         "AND p.proname = 'export_v1'",
         "SELECT has_function_privilege(:r, p.oid, 'EXECUTE') FROM pg_proc p "
         "WHERE p.pronamespace = 'dnd_generation_backup'::regnamespace "
+        "AND p.proname = 'export_schema_v1'",
+        "SELECT has_function_privilege(:r, p.oid, 'EXECUTE') FROM pg_proc p "
+        "WHERE p.pronamespace = 'dnd_generation_backup'::regnamespace "
         "AND p.proname = 'restore_v1'",
         "SELECT has_table_privilege(:r, 'public.dnd_generation_mutations', 'SELECT')",
         "SELECT pg_has_role(:r, 'butlers_backup_export', 'MEMBER')",
@@ -148,30 +151,41 @@ def test_dump_identity_is_not_widened_and_the_dnd_owner_fence_holds(
         == 0
     )
 
-    # Exactly one fixed definer per role, owned by the DND owner, no PUBLIC EXECUTE.
+    # Exact closed three-function surface: the two exports share the inert
+    # export capability; only the restore capability can execute the importer.
     functions = _rows(
         admin,
-        "SELECT p.proname, pg_get_userbyid(p.proowner), p.prosecdef, "
+        "SELECT p.proname,p.proargtypes::text,p.prorettype::regtype::text,p.proretset,"
+        "p.prokind,l.lanname,p.provolatile,pg_get_userbyid(p.proowner),p.prosecdef,p.proconfig,"
         "(SELECT array_agg(g.name ORDER BY g.name) FROM ("
-        "   SELECT CASE WHEN a.grantee = 0 THEN 'PUBLIC' "
+        "   SELECT CASE WHEN a.grantee=0 THEN 'PUBLIC' "
         "               ELSE pg_get_userbyid(a.grantee) END AS name "
-        "   FROM aclexplode(p.proacl) a WHERE a.privilege_type = 'EXECUTE') g) "
-        "FROM pg_proc p WHERE p.pronamespace = 'dnd_generation_backup'::regnamespace "
-        "ORDER BY 1",
+        "   FROM aclexplode(p.proacl) a WHERE a.privilege_type='EXECUTE') g),"
+        "EXISTS (SELECT 1 FROM aclexplode(p.proacl) a WHERE a.is_grantable) "
+        "FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang "
+        "WHERE p.pronamespace='dnd_generation_backup'::regnamespace ORDER BY 1",
     )
+    expected = [
+        ("export_schema_v1", "", "text", True, "plpgsql", "s", _EXPORT_ROLE),
+        ("export_v1", "", "record", True, "sql", "s", _EXPORT_ROLE),
+        ("restore_v1", "3802", "void", False, "plpgsql", "v", _RESTORE_ROLE),
+    ]
     assert functions == [
         (
-            "export_v1",
+            name,
+            arguments,
+            result,
+            returns_set,
+            "f",
+            language,
+            volatility,
             "dnd_generation_owner",
             True,
-            ["butlers_backup_export", "dnd_generation_owner"],
-        ),
-        (
-            "restore_v1",
-            "dnd_generation_owner",
-            True,
-            ["butlers_backup_restore", "dnd_generation_owner"],
-        ),
+            ["search_path=pg_catalog, pg_temp", "row_security=on"],
+            [capability, "dnd_generation_owner"],
+            False,
+        )
+        for name, arguments, result, returns_set, language, volatility, capability in expected
     ]
     # The existing DND relations keep exactly their owner ACL (no export grant).
     assert (
@@ -688,8 +702,6 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
             ("1\tdnd_generation_mutations\t", "2\tdnd_generation_guard\t", "3\tuser_context\t")
         )
     ]
-    assert "CREATE TABLE public.dnd_generation_mutations" in dump
-    assert "CREATE TABLE public.user_context" in dump
     assert len(staged) == 3 + 1 + 1
     assert all("location" not in json.dumps(row) for row in staged)
 
@@ -840,17 +852,48 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
     runtime = create_engine(restored)
     try:
         with runtime.begin() as conn:
+            # Resolve while authorized; text function-name resolution after SET
+            # ROLE must itself be denied by the schema's missing USAGE grant.
+            restore_oid, backup_schema_oid = conn.exec_driver_sql(
+                "SELECT 'dnd_generation_backup.restore_v1(jsonb)'::regprocedure::oid,"
+                "'dnd_generation_backup'::regnamespace::oid"
+            ).one()
+            assert restore_oid > 0 and backup_schema_oid > 0
+            assert (
+                conn.exec_driver_sql(
+                    "SELECT has_function_privilege('butlers_backup_restore',%s::oid,'EXECUTE')",
+                    (restore_oid,),
+                ).scalar_one()
+                is True
+            )
+            assert (
+                conn.exec_driver_sql(
+                    "SELECT has_schema_privilege('butlers_backup_restore',%s::oid,'USAGE')",
+                    (backup_schema_oid,),
+                ).scalar_one()
+                is True
+            )
             conn.exec_driver_sql("SET LOCAL ROLE butler_general_rw")
+            assert (
+                conn.exec_driver_sql(
+                    "SELECT has_schema_privilege(current_user,%s::oid,'USAGE')",
+                    (backup_schema_oid,),
+                ).scalar_one()
+                is False
+            )
             assert (
                 conn.exec_driver_sql(
                     "SELECT count(*) FROM public.dnd_generation_guard"
                 ).scalar_one()
                 == 1
             )
-            assert not conn.exec_driver_sql(
-                "SELECT has_function_privilege(current_user,"
-                "'dnd_generation_backup.restore_v1(jsonb)','EXECUTE')"
-            ).scalar_one()
+            assert (
+                conn.exec_driver_sql(
+                    "SELECT has_function_privilege(current_user,%s::oid,'EXECUTE')",
+                    (restore_oid,),
+                ).scalar_one()
+                is False
+            )
             assert not conn.exec_driver_sql(
                 "SELECT has_table_privilege(current_user,"
                 "'public.dnd_generation_mutations','SELECT')"
