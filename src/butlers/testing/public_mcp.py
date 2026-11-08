@@ -206,11 +206,16 @@ def _restart_peer_cluster(postgres: PostgresContainer, old_url) -> None:
                             "SELECT current_setting('unix_socket_directories'), "
                             "current_setting('hba_file'), current_setting('ident_file')"
                         ).one()
-                    if actual != (
-                        "/controller/run",
-                        "/tmp/public_mcp_hba.conf",
-                        "/tmp/public_mcp_ident.conf",
-                    ):
+                    # PostgreSQL's GUC_LIST_QUOTE preserves the quoted singleton
+                    # written by ALTER SYSTEM. Accept only these exact spellings;
+                    # additional, malformed or different directories still refuse.
+                    matches = {
+                        "socket": actual[0] in ("/controller/run", '"/controller/run"'),
+                        "hba": actual[1] == "/tmp/public_mcp_hba.conf",
+                        "ident": actual[2] == "/tmp/public_mcp_ident.conf",
+                    }
+                    if not all(matches.values()):
+                        facts["configuration_matches"] = matches
                         facts["stage"] = "configuration-mismatch"
                         break
                     return
