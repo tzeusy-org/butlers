@@ -1087,3 +1087,129 @@ class TestNotifyChannelResolution:
         assert result["status"] == "ok"
         delivery = client.call_tool.await_args.args[1]["notify_request"]["delivery"]
         assert delivery["channel"] == "telegram"
+
+
+class TestNotifyTelegramUsernameRecipient:
+    """bu-dhloi1.177 - the Bot API cannot message a private user by @username.
+
+    A telegram recipient spelled as a username must become a numeric chat id before
+    the approval parks, so the card and the executed send name the same deliverable
+    target; when it cannot, notify refuses before parking.
+    """
+
+    async def test_username_resolves_to_numeric_chat_id_before_gate(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        booted = await _fresh(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
+
+        with (
+            patch.object(
+                daemon,
+                "_resolve_telegram_username_recipient",
+                new=AsyncMock(return_value=("210454304", "Alice Example")),
+            ) as resolver,
+            patch("butlers.core.approvals_hooks.check_recipient", new_callable=AsyncMock) as guard,
+        ):
+            guard.return_value = SimpleNamespace(
+                allowed=True,
+                reason="owner",
+                action_id=None,
+                rule_id=None,
+                contact_desc="owner",
+                dossier_error=None,
+            )
+            result = await notify_fn(channel="telegram", message="Hi", recipient="@Butlerly")
+        assert result["status"] == "ok"
+        resolver.assert_awaited_once_with("@Butlerly")
+        assert guard.await_args.kwargs["target"] == "210454304"
+        assert guard.await_args.kwargs["park_tool_args"]["recipient"] == "210454304"
+        summary = guard.await_args.kwargs["park_summary"]
+        assert "@Butlerly" in summary and "Alice Example" in summary
+        delivery = client.call_tool.await_args.args[1]["notify_request"]["delivery"]
+        assert delivery["recipient"] == "210454304"
+
+    async def test_unresolvable_username_refuses_before_parking(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        booted = await _fresh(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
+
+        with (
+            patch.object(
+                daemon,
+                "_resolve_telegram_username_recipient",
+                new=AsyncMock(return_value=None),
+            ),
+            patch("butlers.core.approvals_hooks.check_recipient", new_callable=AsyncMock) as guard,
+        ):
+            result = await notify_fn(channel="telegram", message="Hi", recipient="@Nobody")
+        assert result["status"] == "error"
+        assert "numeric chat id" in result["error"]
+        guard.assert_not_awaited()
+        client.call_tool.assert_not_awaited()
+
+    async def test_numeric_recipient_skips_username_resolution(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        booted = await _fresh(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
+
+        with (
+            patch.object(
+                daemon, "_resolve_telegram_username_recipient", new=AsyncMock()
+            ) as resolver,
+            patch("butlers.core.approvals_hooks.check_recipient", new_callable=AsyncMock) as guard,
+        ):
+            guard.return_value = SimpleNamespace(
+                allowed=True,
+                reason="owner",
+                action_id=None,
+                rule_id=None,
+                contact_desc="owner",
+                dossier_error=None,
+            )
+            result = await notify_fn(channel="telegram", message="Hi", recipient="210454304")
+        assert result["status"] == "ok"
+        resolver.assert_not_awaited()
+        delivery = client.call_tool.await_args.args[1]["notify_request"]["delivery"]
+        assert delivery["recipient"] == "210454304"
+
+
+class TestResolveTelegramUsernameAgainstFacts:
+    """bu-dhloi1.177: only telegram:-prefixed handles name a Telegram recipient."""
+
+    async def test_twitter_alias_never_resolves_to_a_telegram_contact(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
+        booted = await _relationship_butler(booted_daemon, tmp_path)
+        # One contact: a twitter handle spelled like the username, plus a telegram id.
+        await _seed_entity(booted, [("has-handle", "@alicex"), ("has-handle", "telegram:777")])
+        resolved = await booted.daemon._resolve_telegram_username_recipient("@alicex")
+        assert resolved is None
+
+    async def test_prefixed_username_resolves_to_numeric_chat_id(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
+        booted = await _relationship_butler(booted_daemon, tmp_path)
+        await _seed_entity(
+            booted, [("has-handle", "telegram:AlicePal"), ("has-handle", "telegram:4242")]
+        )
+        resolved = await booted.daemon._resolve_telegram_username_recipient("@alicepal")
+        assert resolved is not None and resolved[0] == "4242"
+
+    async def test_case_only_collision_refuses(self, booted_daemon, tmp_path: Path) -> None:
+        booted = await _relationship_butler(booted_daemon, tmp_path)
+        await _seed_entity(
+            booted, [("has-handle", "telegram:Bobby1"), ("has-handle", "telegram:11")]
+        )
+        await _seed_entity(
+            booted, [("has-handle", "telegram:bobby1"), ("has-handle", "telegram:22")]
+        )
+        assert await booted.daemon._resolve_telegram_username_recipient("@bobby1") is None
