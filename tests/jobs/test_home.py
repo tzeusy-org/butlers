@@ -23,12 +23,15 @@ from butlers.jobs.home import (
     MaintenanceItemRow,
     _build_health_check_notification,
     _load_battery_thresholds,
+    _load_health_check_ignore,
     _load_offline_hours_thresholds,
     _NoOpEmbeddingEngine,
     build_notification_text,
     classify_battery,
     classify_item,
     classify_offline,
+    find_restart_storm,
+    is_ignored_entity,
     is_steady_state_unknown,
     run_device_health_check,
     run_maintenance_schedule_check,
@@ -348,6 +351,10 @@ def test_classify_offline(hours_ago, expected):
         ("infrared.livingroom_broadlink_rm4_pro_ir_emitter", True),
         ("radio_frequency.livingroom_broadlink_rm4_pro", True),
         ("tts.google_translate_en_com", True),
+        ("person.tze_how", True),
+        ("sensor.backup_next_scheduled_automatic_backup", True),
+        ("sensor.backup_last_successful_automatic_backup", True),
+        ("sensor.backup_backup_manager_state", False),
         ("sensor.bedroom_knob_action_brightness_delta", True),
         ("sensor.living_room_knob_action_transition_time", True),
         ("sensor.basement_battery", False),
@@ -362,6 +369,38 @@ def test_is_steady_state_unknown(entity_id, expected):
     sensors normally rest at "unknown" between interactions and must not be
     treated as offline; ordinary sensors/automations/devices are not exempt."""
     assert is_steady_state_unknown(entity_id) == expected
+
+
+# ---------------------------------------------------------------------------
+# is_ignored_entity / find_restart_storm
+# ---------------------------------------------------------------------------
+
+
+def test_is_ignored_entity_matches_exact_and_glob():
+    patterns = ["sensor.withings_*", "switch.walkway_lights_tuya_fingerbot_switch"]
+    assert is_ignored_entity("sensor.withings_heart_pulse", patterns)
+    assert is_ignored_entity("switch.walkway_lights_tuya_fingerbot_switch", patterns)
+    assert not is_ignored_entity("sensor.basement_battery", patterns)
+    assert not is_ignored_entity("sensor.withings_heart_pulse", [])
+
+
+def test_find_restart_storm_suppresses_recent_simultaneous_cluster():
+    base = _NOW - timedelta(hours=2)
+    cluster = [(f"sensor.a{i}", base + timedelta(seconds=i)) for i in range(25)]
+    lone = [("sensor.lone", _NOW - timedelta(hours=1))]
+    assert find_restart_storm(cluster + lone, now=_NOW) == {e for e, _ in cluster}
+
+
+def test_find_restart_storm_ignores_small_clusters():
+    base = _NOW - timedelta(hours=2)
+    cluster = [(f"sensor.a{i}", base + timedelta(seconds=i)) for i in range(5)]
+    assert find_restart_storm(cluster, now=_NOW) == set()
+
+
+def test_find_restart_storm_stops_suppressing_after_max_age():
+    base = _NOW - timedelta(hours=60)
+    cluster = [(f"sensor.a{i}", base + timedelta(seconds=i)) for i in range(25)]
+    assert find_restart_storm(cluster, now=_NOW) == set()
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +617,7 @@ async def test_run_device_health_check_suppresses_repeat_alert_within_window():
         side_effect=[
             None,  # battery thresholds -> defaults
             None,  # offline thresholds -> defaults
+            None,  # retired-entity ignore list -> none
             None,  # realert threshold -> default 24h
             {"offline:automation.stuck_thing": last_alerted},  # prior alert state
             1,  # state_set's RETURNING version
@@ -610,6 +650,7 @@ async def test_run_device_health_check_realerts_after_window_elapses():
         side_effect=[
             None,
             None,
+            None,  # retired-entity ignore list -> none
             None,
             {"offline:automation.stuck_thing": last_alerted},
             1,
@@ -660,3 +701,122 @@ def test_noop_embedding_engine_matches_store_fact_interface():
 
 # device_health_check registration is asserted by the canonical
 # test_all_home_deterministic_jobs_registered in test_home_energy_digest.py.
+
+
+# ---------------------------------------------------------------------------
+# run_device_health_check: retired list and restart storm wiring
+# ---------------------------------------------------------------------------
+
+
+def _offline_rows(prefix: str, count: int, *, age: timedelta) -> list:
+    base = datetime.now(UTC) - age
+    return [
+        _make_entity_row(
+            f"sensor.{prefix}_{i}", state="unavailable", last_updated=base + timedelta(seconds=i)
+        )
+        for i in range(count)
+    ]
+
+
+async def test_run_device_health_check_skips_retired_entities():
+    rows = [
+        _make_entity_row(
+            "sensor.withings_heart_pulse",
+            state="unavailable",
+            last_updated=datetime.now(UTC) - timedelta(hours=48),
+        ),
+        _make_entity_row(
+            "sensor.real_fault",
+            state="unavailable",
+            last_updated=datetime.now(UTC) - timedelta(hours=48),
+        ),
+    ]
+    pool = _make_health_pool(entity_rows=rows)
+    with (
+        patch(
+            "butlers.jobs.home._load_health_check_ignore",
+            new_callable=AsyncMock,
+            return_value=["sensor.withings_*"],
+        ),
+        patch("butlers.jobs.home._send_notify", new_callable=AsyncMock),
+        patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock),
+    ):
+        result = await run_device_health_check(pool, None)
+
+    assert result["issues_found"] == 1
+
+
+async def test_run_device_health_check_suppresses_restart_storm_and_says_so():
+    rows = _offline_rows("burst", 25, age=timedelta(hours=30)) + [
+        _make_entity_row(
+            "sensor.lone_fault",
+            state="unavailable",
+            last_updated=datetime.now(UTC) - timedelta(hours=40),
+        )
+    ]
+    pool = _make_health_pool(entity_rows=rows)
+    storm_rows = _offline_rows("fresh", 25, age=timedelta(hours=1))
+    pool.fetch = AsyncMock(return_value=rows + storm_rows)
+    with (
+        patch(
+            "butlers.jobs.home._load_health_check_ignore",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch("butlers.jobs.home._send_notify", new_callable=AsyncMock) as mock_notify,
+        patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock),
+    ):
+        result = await run_device_health_check(pool, None)
+
+    # Only the lone fault is reported; both 25-entity bursts are held back.
+    assert result["issues_found"] == 1
+    sent = [call.args[1] for call in mock_notify.call_args_list]
+    assert any("went offline together" in message for message in sent)
+
+
+async def test_run_device_health_check_does_not_repeat_storm_notice_for_old_burst():
+    rows = _offline_rows("burst", 25, age=timedelta(hours=10))
+    pool = _make_health_pool(entity_rows=rows)
+    with (
+        patch(
+            "butlers.jobs.home._load_health_check_ignore",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch("butlers.jobs.home._send_notify", new_callable=AsyncMock) as mock_notify,
+        patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock),
+    ):
+        await run_device_health_check(pool, None)
+
+    sent = [call.args[1] for call in mock_notify.call_args_list]
+    assert not any("went offline together" in message for message in sent)
+
+
+@pytest.mark.parametrize(
+    "stored, expected",
+    [
+        (["sensor.a_*", "switch.b"], ["sensor.a_*", "switch.b"]),
+        ('["sensor.a_*"]', ["sensor.a_*"]),
+        (["*", "**", "?", ""], []),
+        ({"sensor.a": 1}, []),
+        ("not json", []),
+        (None, []),
+        (["sensor.a", 7, None], ["sensor.a"]),
+    ],
+)
+async def test_load_health_check_ignore_shapes(stored, expected):
+    pool = _make_health_pool(state_value=stored)
+    assert await _load_health_check_ignore(pool) == expected
+
+
+def test_find_restart_storm_window_and_age_boundaries():
+    base = _NOW - timedelta(hours=2)
+    exactly_20 = [(f"s.a{i}", base + timedelta(seconds=i)) for i in range(20)]
+    assert len(find_restart_storm(exactly_20, now=_NOW)) == 20
+    assert find_restart_storm(exactly_20[:19], now=_NOW) == set()
+    spread = [(f"s.a{i}", base + timedelta(minutes=i)) for i in range(20)]  # 19 min span
+    assert find_restart_storm(spread, now=_NOW) == set()
+    edge = [
+        (f"s.a{i}", _NOW - timedelta(hours=48, seconds=1) + timedelta(seconds=i)) for i in range(20)
+    ]
+    assert find_restart_storm(edge, now=_NOW) == set()  # one member just aged out: 19 left

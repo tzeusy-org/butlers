@@ -19,6 +19,12 @@ issue that was already reported within the last 24h (state store key
 `home:health_check:last_alerted`); only surface it again once resolved-and-recurred or once the
 re-alert window has passed.
 
+The deterministic job (`src/butlers/jobs/home.py`) also skips: `person.*` and HA backup timestamp
+sensors (rest at `unknown`); entities matching the owner's retired list in state key
+`home:health_check:ignore` (JSON list of entity ids or `fnmatch` globs, e.g.
+`["sensor.withings_*"]`); and bursts of 20+ entities that went offline within 15 minutes of each
+other in the last 48h (a Home Assistant restart, not 20 failures).
+
 ## When to Use
 
 Use this skill when:
