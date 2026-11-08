@@ -117,6 +117,8 @@ _RETRACTION_NO_VERDICT = frozenset(
     {_RETRACTION_PROVIDER_UNAVAILABLE, _RETRACTION_PROVIDER_5XX, _RETRACTION_TOKEN_REJECTED}
 )
 #: One such answer may concern that message alone; two in a row need an explanation.
+_RETRACTION_DECIDED_HERE = "outcome_shown"
+_DECIDED_HERE_CARDS_MAX = 256
 _RETRACTION_OUTAGES_TO_STOP_DRAIN = 2
 #: Drains spent on a refused token, with no answer from Telegram between them, before the sweep
 #: stops attempting cards. It then only asks ``getMe`` each drain, and resumes when that passes.
@@ -463,6 +465,10 @@ class TelegramBotConnector:
         self._owner_delivery_sweep_task: asyncio.Task[None] | None = None
         self._owner_delivery_drain_lock = asyncio.Lock()
         self._owner_delivery_token_rejected_drains = 0
+        # Cards (chat id, message id) this connector itself rewrote with the decided status.
+        # The sweep must leave them alone: retracting one would replace "Approved" with
+        # "Handled elsewhere" on the card the owner just tapped. Insertion-ordered and bounded.
+        self._decided_here_cards: dict[tuple[str, str], None] = {}
 
         # DB pool for cursor read/write to switchboard.connector_registry.
         self._cursor_pool = cursor_pool
@@ -1514,6 +1520,15 @@ class TelegramBotConnector:
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict) or not isinstance(item.get("presentation_id"), str):
                 continue
+            card = (str(item.get("route_ref")), str(item.get("provider_ref")))
+            if card in self._decided_here_cards:
+                # A tap already rewrote this card with the decided status: receipt it so it
+                # leaves the listing, and leave the text alone.
+                if await self._report_retraction(
+                    base, headers, item, ok=True, reason=_RETRACTION_DECIDED_HERE
+                ):
+                    self._decided_here_cards.pop(card, None)
+                continue
             ok, reason = await self._retract_owner_card(item)
             if reason in _RETRACTION_NO_VERDICT:
                 token_rejected = token_rejected or reason == _RETRACTION_TOKEN_REJECTED
@@ -1538,25 +1553,40 @@ class TelegramBotConnector:
                 logger.warning(
                     "Owner-delivery retraction failed for %s (%s)", item["presentation_id"], reason
                 )
-            try:
-                receipt = await self._http_client.post(
-                    f"{base}/{item['presentation_id']}",
-                    json={"retracted": ok, "reason": reason},
-                    headers=headers,
-                )
-                if receipt.status_code != 200:
-                    logger.warning(
-                        "Owner-delivery retraction receipt refused for %s (%s)",
-                        item["presentation_id"],
-                        receipt.status_code,
-                    )
-            except Exception:  # noqa: BLE001 -- the card stays listed for the next drain
-                logger.warning("Owner-delivery retraction receipt failed")
+            await self._report_retraction(base, headers, item, ok=ok, reason=reason)
         # Pausing stops every retraction, so the token itself must be what Telegram refused.
         if token_rejected and not telegram_answered:
             telegram_answered = await self._telegram_answers()
         self._note_owner_delivery_token_answer(rejected=token_rejected, answered=telegram_answered)
         return retracted
+
+    async def _report_retraction(
+        self,
+        base: str,
+        headers: dict[str, str],
+        item: dict[str, Any],
+        *,
+        ok: bool,
+        reason: str | None,
+    ) -> bool:
+        """Receipt one attempt; ``False`` leaves the card listed for the next drain."""
+        try:
+            receipt = await self._http_client.post(
+                f"{base}/{item['presentation_id']}",
+                json={"retracted": ok, "reason": reason},
+                headers=headers,
+            )
+        except Exception:  # noqa: BLE001 -- the card stays listed for the next drain
+            logger.warning("Owner-delivery retraction receipt failed")
+            return False
+        if receipt.status_code != 200:
+            logger.warning(
+                "Owner-delivery retraction receipt refused for %s (%s)",
+                item["presentation_id"],
+                receipt.status_code,
+            )
+            return False
+        return True
 
     def _note_owner_delivery_token_answer(self, *, rejected: bool, answered: bool) -> None:
         """Count drains Telegram spent refusing the token, and pause once it looks settled."""
@@ -1740,7 +1770,13 @@ class TelegramBotConnector:
     async def _edit_approval_callback_message(
         self, callback_query: dict[str, Any], status: str
     ) -> None:
-        """Render one terminal approval state and remove its inline keyboard."""
+        """Render one terminal approval state on the tapped card and drop its keyboard.
+
+        ``editMessageText`` without ``reply_markup`` removes the keyboard itself, so a
+        separate markup call is only a fallback when the text edit fails. The edit holds the
+        drain lock: a sweep already retracting this card finishes first and this outcome lands
+        last, and every later sweep skips the card (:attr:`_decided_here_cards`).
+        """
         text = _APPROVAL_CALLBACK_RESOLVED_TEXT.get(status)
         message = callback_query.get("message")
         chat = message.get("chat") if isinstance(message, dict) else None
@@ -1748,16 +1784,24 @@ class TelegramBotConnector:
         chat_id = chat.get("id") if isinstance(chat, dict) else None
         if text is None or chat_id is None or not isinstance(message_id, int):
             return
-        try:
-            await edit_telegram_message_text(
-                self._http_client,
-                self._telegram_api_base,
-                chat_id=str(chat_id),
-                message_id=message_id,
-                text=text,
-            )
-        except Exception:  # noqa: BLE001 -- resolution already persisted
-            logger.warning("Failed to edit resolved Telegram approval prompt", exc_info=True)
+        async with self._owner_delivery_drain_lock:
+            try:
+                await _tolerate_not_modified(
+                    edit_telegram_message_text(
+                        self._http_client,
+                        self._telegram_api_base,
+                        chat_id=str(chat_id),
+                        message_id=message_id,
+                        text=text,
+                    )
+                )
+            except Exception:  # noqa: BLE001 -- resolution already persisted
+                logger.warning("Failed to edit resolved Telegram approval prompt", exc_info=True)
+            else:
+                self._decided_here_cards[(str(chat_id), str(message_id))] = None
+                while len(self._decided_here_cards) > _DECIDED_HERE_CARDS_MAX:
+                    del self._decided_here_cards[next(iter(self._decided_here_cards))]
+                return
         try:
             await remove_telegram_inline_keyboard(
                 self._http_client,

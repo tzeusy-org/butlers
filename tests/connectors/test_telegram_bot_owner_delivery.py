@@ -123,8 +123,8 @@ async def test_owner_tap_redeems_once_then_retracts_every_other_stale_card(
     edited = {body["message_id"]: body["text"] for body in http.telegram("editMessageText")}
     assert edited[44] == "✅ Approved"
     assert edited[55] == telegram_bot_module._OWNER_DELIVERY_RETRACTED_TEXT
-    # The retraction's own text edit drops the keyboard; no second markup call is made for it.
-    assert [body["message_id"] for body in http.telegram("editMessageReplyMarkup")] == [44]
+    # A text edit without reply_markup drops the keyboard itself; no markup call follows it.
+    assert http.telegram("editMessageReplyMarkup") == []
     # Each retraction attempt is receipted honestly; an unaddressable card is not success.
     reports = {
         url.rsplit("/", 1)[-1]: body
@@ -313,3 +313,97 @@ async def test_token_shaped_400_description_is_not_logged(
     assert "HTTP 400" in caplog.text
     assert leaked not in caplog.text
     assert "AAEhBOweik6ad9r" not in caplog.text
+
+
+_TAPPED_ID = "aaaaaaaa-0000-4000-8000-000000000044"
+
+
+async def test_tapped_card_keeps_its_outcome_and_other_cards_still_retract(
+    owner_resolver: AsyncMock,
+) -> None:
+    """The sweep lists the tapped card too; it must not overwrite the outcome it shows."""
+    token, _ = mint_token()
+    http = _Http(
+        _response(body={"data": {"status": "executed"}}),
+        [
+            {"presentation_id": _TAPPED_ID, "route_ref": "9001", "provider_ref": "44"},
+            {"presentation_id": _STALE_ID, "route_ref": "9001", "provider_ref": "55"},
+        ],
+    )
+    connector = _connector()
+    connector._http_client = http  # type: ignore[assignment]
+
+    assert await connector._maybe_handle_owner_delivery_callback(_update(token)) is True
+
+    edits = [(body["message_id"], body["text"]) for body in http.telegram("editMessageText")]
+    assert [text for mid, text in edits if mid == 44] == ["✅ Approved"]
+    assert [mid for mid, _ in edits if mid == 55] == [55]
+    # The tapped card's own edit drops its buttons: no markup call at all.
+    assert http.telegram("editMessageReplyMarkup") == []
+    reports = {
+        url.rsplit("/", 1)[-1]: body
+        for url, body in http.dashboard("/api/owner-delivery/retractions/")
+    }
+    assert reports == {
+        _TAPPED_ID: {"retracted": True, "reason": "outcome_shown"},
+        _STALE_ID: {"retracted": True, "reason": None},
+    }
+
+
+async def test_apr1_tap_card_is_not_retracted_by_a_later_sweep(
+    owner_resolver: AsyncMock,
+) -> None:
+    connector = _connector()
+    http = _Http(
+        _response(),
+        [{"presentation_id": _TAPPED_ID, "route_ref": "9001", "provider_ref": "44"}],
+    )
+    connector._http_client = http  # type: ignore[assignment]
+
+    await connector._edit_approval_callback_message(_update("x")["callback_query"], "approved")
+    await connector._drain_owner_delivery_retractions()
+
+    assert [b["text"] for b in http.telegram("editMessageText")] == ["✅ Approved"]
+    assert http.telegram("editMessageReplyMarkup") == []
+
+
+async def test_failed_tap_edit_leaves_the_card_to_the_sweep(owner_resolver: AsyncMock) -> None:
+    http = _TelegramRefusal(
+        _response(),
+        [{"presentation_id": _TAPPED_ID, "route_ref": "9001", "provider_ref": "44"}],
+        description="Bad Request: message to edit not found",
+    )
+    http.refuse_text_edit_for = 44
+    connector = _connector()
+    connector._http_client = http  # type: ignore[assignment]
+
+    await connector._edit_approval_callback_message(_update("x")["callback_query"], "approved")
+    await connector._drain_owner_delivery_retractions()
+
+    [(_, report)] = http.dashboard("/api/owner-delivery/retractions/")
+    assert report["reason"] != "outcome_shown"
+
+
+async def test_tap_edit_waits_for_a_running_drain_so_the_outcome_lands_last(
+    owner_resolver: AsyncMock,
+) -> None:
+    import asyncio
+
+    http = _Http(
+        _response(),
+        [{"presentation_id": _TAPPED_ID, "route_ref": "9001", "provider_ref": "44"}],
+    )
+    connector = _connector()
+    connector._http_client = http  # type: ignore[assignment]
+    await connector._owner_delivery_drain_lock.acquire()  # a sweep is mid-drain
+
+    edit = asyncio.create_task(
+        connector._edit_approval_callback_message(_update("x")["callback_query"], "approved")
+    )
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert http.telegram("editMessageText") == []
+    connector._owner_delivery_drain_lock.release()
+    await edit
+
+    assert [b["text"] for b in http.telegram("editMessageText")] == ["✅ Approved"]

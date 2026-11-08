@@ -308,18 +308,12 @@ async def test_gate_park_owner_approve_executes_edits_and_preserves_provenance(
     assert [url.rsplit("/", 1)[-1] for url, _ in http_client.telegram_calls] == [
         "answerCallbackQuery",
         "editMessageText",
-        "editMessageReplyMarkup",
     ]
     assert http_client.telegram_calls[1][1] == {
         "chat_id": "9001",
         "message_id": 44,
         "text": "✅ Approved",
         "parse_mode": "HTML",
-    }
-    assert http_client.telegram_calls[2][1] == {
-        "chat_id": "9001",
-        "message_id": 44,
-        "reply_markup": None,
     }
 
 
@@ -536,7 +530,6 @@ async def test_owner_reject_tap_transitions_and_audits_via_standard_approval_rou
     assert [url.rsplit("/", 1)[-1] for url, _ in http_client.telegram_calls] == [
         "answerCallbackQuery",
         "editMessageText",
-        "editMessageReplyMarkup",
     ]
     assert [method for method, _, _ in http_client.dashboard_calls] == ["GET", "POST"]
     for _, _, call_kwargs in http_client.dashboard_calls:
@@ -676,7 +669,6 @@ async def test_expired_owner_reject_tap_expires_without_human_decision_provenanc
     assert [url.rsplit("/", 1)[-1] for url, _ in http_client.telegram_calls] == [
         "answerCallbackQuery",
         "editMessageText",
-        "editMessageReplyMarkup",
     ]
     assert http_client.telegram_calls[0][1]["text"] == "Already handled."
     assert [method for method, _, _ in http_client.dashboard_calls] == ["GET", "POST", "GET"]
