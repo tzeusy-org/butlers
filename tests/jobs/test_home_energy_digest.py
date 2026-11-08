@@ -15,6 +15,7 @@ from butlers.home_assistant_client import HAStatisticsError
 from butlers.jobs.home import (
     _build_digest_message,
     _compute_device_totals,
+    _discover_energy_sensors,
     _fetch_weekly_statistics,
     _is_energy_entity,
     detect_anomalies,
@@ -66,6 +67,35 @@ def _make_totals(items):
 
 def _make_baselines(items):
     return {eid: {"content": f"{kwh:.1f} kWh weekly baseline"} for eid, kwh in items}
+
+
+# ---------------------------------------------------------------------------
+# _discover_energy_sensors
+# ---------------------------------------------------------------------------
+
+
+async def test_discover_energy_sensors_skips_non_energy_entities():
+    """Power/voltage/current, cost, tariff, switches and selects are not cumulative energy."""
+
+    def snap(entity_id, **attrs):
+        return {"entity_id": entity_id, "state": "1", "attributes": attrs}
+
+    pool = fake_pool(
+        fetch=records(
+            [
+                snap("sensor.a_energy", device_class="energy", unit_of_measurement="kWh"),
+                snap("sensor.a_power", device_class="power", unit_of_measurement="W"),
+                snap("sensor.a_voltage", device_class="voltage", unit_of_measurement="V"),
+                snap("sensor.a_energy_cost", device_class="monetary", unit_of_measurement="SGD"),
+                snap("sensor.tariff_kwh", unit_of_measurement="SGD/kWh"),
+                snap("switch.a_power"),
+                snap("select.a_power_on_behavior"),
+                snap("sensor.legacy_energy_kwh"),
+            ]
+        )
+    )
+    found = await _discover_energy_sensors(pool)
+    assert [s["entity_id"] for s in found] == ["sensor.a_energy", "sensor.legacy_energy_kwh"]
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,8 @@ from butlers.jobs.home import (
     classify_battery,
     classify_item,
     classify_offline,
+    find_restart_storm,
+    is_ignored_entity,
     is_steady_state_unknown,
     run_device_health_check,
     run_maintenance_schedule_check,
@@ -348,6 +350,10 @@ def test_classify_offline(hours_ago, expected):
         ("infrared.livingroom_broadlink_rm4_pro_ir_emitter", True),
         ("radio_frequency.livingroom_broadlink_rm4_pro", True),
         ("tts.google_translate_en_com", True),
+        ("person.tze_how", True),
+        ("sensor.backup_next_scheduled_automatic_backup", True),
+        ("sensor.backup_last_successful_automatic_backup", True),
+        ("sensor.backup_backup_manager_state", False),
         ("sensor.bedroom_knob_action_brightness_delta", True),
         ("sensor.living_room_knob_action_transition_time", True),
         ("sensor.basement_battery", False),
@@ -362,6 +368,38 @@ def test_is_steady_state_unknown(entity_id, expected):
     sensors normally rest at "unknown" between interactions and must not be
     treated as offline; ordinary sensors/automations/devices are not exempt."""
     assert is_steady_state_unknown(entity_id) == expected
+
+
+# ---------------------------------------------------------------------------
+# is_ignored_entity / find_restart_storm
+# ---------------------------------------------------------------------------
+
+
+def test_is_ignored_entity_matches_exact_and_glob():
+    patterns = ["sensor.withings_*", "switch.walkway_lights_tuya_fingerbot_switch"]
+    assert is_ignored_entity("sensor.withings_heart_pulse", patterns)
+    assert is_ignored_entity("switch.walkway_lights_tuya_fingerbot_switch", patterns)
+    assert not is_ignored_entity("sensor.basement_battery", patterns)
+    assert not is_ignored_entity("sensor.withings_heart_pulse", [])
+
+
+def test_find_restart_storm_suppresses_recent_simultaneous_cluster():
+    base = _NOW - timedelta(hours=2)
+    cluster = [(f"sensor.a{i}", base + timedelta(seconds=i)) for i in range(25)]
+    lone = [("sensor.lone", _NOW - timedelta(hours=1))]
+    assert find_restart_storm(cluster + lone, now=_NOW) == {e for e, _ in cluster}
+
+
+def test_find_restart_storm_ignores_small_clusters():
+    base = _NOW - timedelta(hours=2)
+    cluster = [(f"sensor.a{i}", base + timedelta(seconds=i)) for i in range(5)]
+    assert find_restart_storm(cluster, now=_NOW) == set()
+
+
+def test_find_restart_storm_stops_suppressing_after_max_age():
+    base = _NOW - timedelta(hours=60)
+    cluster = [(f"sensor.a{i}", base + timedelta(seconds=i)) for i in range(25)]
+    assert find_restart_storm(cluster, now=_NOW) == set()
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +616,7 @@ async def test_run_device_health_check_suppresses_repeat_alert_within_window():
         side_effect=[
             None,  # battery thresholds -> defaults
             None,  # offline thresholds -> defaults
+            None,  # retired-entity ignore list -> none
             None,  # realert threshold -> default 24h
             {"offline:automation.stuck_thing": last_alerted},  # prior alert state
             1,  # state_set's RETURNING version
@@ -610,6 +649,7 @@ async def test_run_device_health_check_realerts_after_window_elapses():
         side_effect=[
             None,
             None,
+            None,  # retired-entity ignore list -> none
             None,
             {"offline:automation.stuck_thing": last_alerted},
             1,
