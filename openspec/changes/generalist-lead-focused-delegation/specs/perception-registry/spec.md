@@ -75,6 +75,7 @@ Scope: v1-mandatory
 ### Requirement: Dark representation has named activation and privacy owners
 Perception readers SHALL return S3/S5 source/age/state/labels and availability-only restrictions. Representation SHALL remain dark until the separately named producer/reader activation, with .9 registry, Dots .17 owner.place, .21 clock/modes and .14 health ownership preserved.
 Readers SHALL implement S3.2's consistent target relation even across pagination/windows, exposing operation/target/confirmation/late/retracted state to owner history. Default real-time transition/evaluator reads SHALL skip late/retracted assertions and never fire on the retraction record. Activation/rollback remain .21-owned and cannot drop history or reverse already committed effects.
+The ten perception relations SHALL be included in the full application-data backup through the fixed export interface of REQ-deployment-hardening-014, in the same snapshot as the ordinary dump and without widening the dump identity, runtime grants or forced owner-only row security; the artifact then holds their history, including expired and superseded rows, for up to the backup retention (default 14 days).
 
 ID: REQ-perception-registry-003
 Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S3/S5; bu-dhloi1.19
@@ -91,6 +92,10 @@ Scope: v1-mandatory
 #### Scenario: Rollback disables a new reader
 - **WHEN** a successor reader fails parity or must be withdrawn
 - **THEN** old compatible reader authority remains without enabling a competing store or losing new receipts
+
+#### Scenario: A perception relation is added without a backup exporter
+- **WHEN** a perception relation exists but is not covered by the private-history export manifest
+- **THEN** backup verification fails and names it; it is never silently omitted
 
 #### Scenario: The retraction is outside the current query page
 - **WHEN** owner history or a transition reader loads a leave whose target retraction lies outside its selected page/window

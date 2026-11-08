@@ -1969,6 +1969,179 @@ $dnd_install_private_mutation$;
 
 REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_private_mutation() FROM PUBLIC;
 
+-- Private-history backup interface (bu-cew60z). Installed only by the
+-- finalizer above/below, never by the migration login. See
+-- docs/operations/backup-restore.md "Private history export".
+CREATE OR REPLACE FUNCTION dnd_generation_admin.install_backup_interface()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $dnd_backup_installer$
+DECLARE
+    v_role NAME;
+    v_oid OID;
+    v_dnd_owner OID;
+BEGIN
+    SELECT oid INTO v_dnd_owner FROM pg_roles WHERE rolname = 'dnd_generation_owner';
+    IF v_dnd_owner IS NULL
+       OR to_regclass('public.dnd_generation_guard') IS NULL
+       OR to_regclass('public.dnd_generation_mutations') IS NULL
+       OR to_regclass('public.user_context') IS NULL THEN
+        RAISE EXCEPTION 'DND backup interface requires the finalized DND relations';
+    END IF;
+
+    -- Both roles are inert: NOLOGIN, no memberships either way, no credential.
+    -- Granting LOGIN or a membership edge is the owner's activation act.
+    FOREACH v_role IN ARRAY ARRAY['butlers_backup_export', 'butlers_backup_restore']::name[] LOOP
+        SELECT oid INTO v_oid FROM pg_roles WHERE rolname = v_role;
+        IF v_oid IS NULL THEN
+            EXECUTE format(
+                'CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOCREATEDB '
+                || 'NOREPLICATION NOBYPASSRLS',
+                v_role
+            );
+        ELSIF NOT EXISTS (
+            SELECT 1 FROM pg_roles
+            WHERE oid = v_oid
+              AND NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper
+              AND NOT rolcreaterole AND NOT rolcreatedb AND NOT rolreplication
+              AND NOT rolbypassrls
+        ) THEN
+            RAISE EXCEPTION 'DND backup role % is untrusted', v_role;
+        END IF;
+    END LOOP;
+
+    CREATE SCHEMA IF NOT EXISTS dnd_generation_backup AUTHORIZATION dnd_generation_owner;
+    EXECUTE 'ALTER SCHEMA dnd_generation_backup OWNER TO dnd_generation_owner';
+
+    CREATE OR REPLACE FUNCTION dnd_generation_backup.export_v1()
+    RETURNS TABLE (ordinal INTEGER, relation_name TEXT, payload JSONB)
+    LANGUAGE sql
+    STABLE
+    SECURITY DEFINER
+    SET search_path = pg_catalog, pg_temp
+    SET row_security = on
+    AS $dnd_export$
+        SELECT 1, 'dnd_generation_mutations'::text, to_jsonb(m)
+          FROM public.dnd_generation_mutations AS m
+        UNION ALL
+        SELECT 2, 'dnd_generation_guard'::text, to_jsonb(g)
+          FROM public.dnd_generation_guard AS g
+        UNION ALL
+        SELECT 3, 'user_context'::text, to_jsonb(c)
+          FROM public.user_context AS c
+         WHERE c.signal_type = 'dnd'
+    $dnd_export$;
+
+    CREATE OR REPLACE FUNCTION dnd_generation_backup.restore_v1(p_rows JSONB)
+    RETURNS void
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, pg_temp
+    SET row_security = on
+    AS $dnd_restore$
+    DECLARE
+        v_bad INTEGER;
+        v_expected_receipts BIGINT;
+        v_expected_context BIGINT;
+        v_guard JSONB;
+        v_guard_count BIGINT;
+        v_current_generation BIGINT;
+    BEGIN
+        IF p_rows IS NULL OR jsonb_typeof(p_rows) <> 'array' THEN
+            RAISE EXCEPTION 'DND restore requires a JSON array of staged rows';
+        END IF;
+        SELECT count(*) INTO v_bad
+          FROM jsonb_array_elements(p_rows) AS item
+         WHERE jsonb_typeof(item) <> 'object'
+            OR item->>'relation' NOT IN
+               ('dnd_generation_mutations', 'dnd_generation_guard', 'user_context')
+            OR jsonb_typeof(item->'row') <> 'object'
+            OR (item->>'relation' = 'user_context'
+                AND item->'row'->>'signal_type' IS DISTINCT FROM 'dnd');
+        IF v_bad <> 0 THEN
+            RAISE EXCEPTION 'DND restore refused % malformed or foreign staged rows', v_bad;
+        END IF;
+
+        LOCK TABLE public.dnd_generation_guard, public.dnd_generation_mutations,
+                   public.user_context IN SHARE ROW EXCLUSIVE MODE;
+
+        SELECT count(*) INTO v_guard_count
+          FROM jsonb_array_elements(p_rows) AS item
+         WHERE item->>'relation' = 'dnd_generation_guard';
+        IF v_guard_count > 1 THEN
+            RAISE EXCEPTION 'DND restore refused: more than one guard row staged';
+        END IF;
+        SELECT item->'row' INTO v_guard
+          FROM jsonb_array_elements(p_rows) AS item
+         WHERE item->>'relation' = 'dnd_generation_guard';
+
+        SELECT generation INTO v_current_generation
+          FROM public.dnd_generation_guard WHERE guard_id = 1;
+        -- Only a fresh target: no receipts, no DND context, and a guard that is
+        -- still at its seed or already equals the staged snapshot.
+        IF EXISTS (SELECT 1 FROM public.dnd_generation_mutations)
+           OR EXISTS (SELECT 1 FROM public.user_context WHERE signal_type = 'dnd')
+           OR v_current_generation IS NULL
+           OR (v_current_generation <> 0
+               AND (v_guard IS NULL OR v_current_generation <> (v_guard->>'generation')::bigint))
+        THEN
+            RAISE EXCEPTION 'DND restore refused: target already holds DND history';
+        END IF;
+
+        SELECT count(*) INTO v_expected_receipts FROM jsonb_array_elements(p_rows) AS item
+         WHERE item->>'relation' = 'dnd_generation_mutations';
+        SELECT count(*) INTO v_expected_context FROM jsonb_array_elements(p_rows) AS item
+         WHERE item->>'relation' = 'user_context';
+
+        INSERT INTO public.dnd_generation_mutations
+        SELECT (jsonb_populate_record(NULL::public.dnd_generation_mutations, item->'row')).*
+          FROM jsonb_array_elements(p_rows) AS item
+         WHERE item->>'relation' = 'dnd_generation_mutations'
+         ORDER BY (item->'row'->>'generation')::bigint;
+
+        IF v_guard IS NOT NULL THEN
+            UPDATE public.dnd_generation_guard AS guard
+               SET generation = (v_guard->>'generation')::bigint,
+                   updated_at = (v_guard->>'updated_at')::timestamptz
+             WHERE guard.guard_id = 1;
+        END IF;
+        IF EXISTS (
+            SELECT 1 FROM public.dnd_generation_mutations AS receipt
+             WHERE receipt.generation > (SELECT generation FROM public.dnd_generation_guard)
+        ) THEN
+            RAISE EXCEPTION 'DND restore refused: receipts exceed the staged guard generation';
+        END IF;
+
+        INSERT INTO public.user_context
+        SELECT (jsonb_populate_record(NULL::public.user_context, item->'row')).*
+          FROM jsonb_array_elements(p_rows) AS item
+         WHERE item->>'relation' = 'user_context'
+         ORDER BY item->'row'->>'id';
+
+        IF (SELECT count(*) FROM public.dnd_generation_mutations) <> v_expected_receipts
+           OR (SELECT count(*) FROM public.user_context WHERE signal_type = 'dnd')
+              <> v_expected_context THEN
+            RAISE EXCEPTION 'DND restore row-count parity failed';
+        END IF;
+    END;
+    $dnd_restore$;
+
+    EXECUTE 'ALTER FUNCTION dnd_generation_backup.export_v1() OWNER TO dnd_generation_owner';
+    EXECUTE 'ALTER FUNCTION dnd_generation_backup.restore_v1(jsonb) OWNER TO dnd_generation_owner';
+    REVOKE ALL PRIVILEGES ON SCHEMA dnd_generation_backup FROM PUBLIC;
+    REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_backup.export_v1() FROM PUBLIC;
+    REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_backup.restore_v1(jsonb) FROM PUBLIC;
+    GRANT USAGE ON SCHEMA dnd_generation_backup
+        TO butlers_backup_export, butlers_backup_restore;
+    GRANT EXECUTE ON FUNCTION dnd_generation_backup.export_v1() TO butlers_backup_export;
+    GRANT EXECUTE ON FUNCTION dnd_generation_backup.restore_v1(jsonb) TO butlers_backup_restore;
+END;
+$dnd_backup_installer$;
+
+REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_backup_interface() FROM PUBLIC;
+
 CREATE OR REPLACE FUNCTION dnd_generation_admin.finalize_interface()
 RETURNS void
 LANGUAGE plpgsql
@@ -2498,13 +2671,23 @@ BEGIN
             'dnd_generation_admin.install_interface()'::regprocedure,
             'dnd_generation_admin.finalize_interface()'::regprocedure,
             'dnd_generation_admin.install_private_mutation()'::regprocedure,
-            'dnd_generation_admin.rollback_interface()'::regprocedure
+            'dnd_generation_admin.rollback_interface()'::regprocedure,
+            'dnd_generation_admin.install_backup_interface()'::regprocedure
         )
           AND acl.privilege_type = 'EXECUTE'
           AND acl.grantee <> v_bootstrap_owner
     ) THEN
         RAISE EXCEPTION 'DND authority ACL finalization is incomplete';
     END IF;
+
+    -- Private-history backup interface (bu-cew60z). The dump identity stays
+    -- unable to read the three DND relations and gains no grant, membership or
+    -- EXECUTE here. Two fixed NOLOGIN roles, each holding exactly one fixed
+    -- SECURITY DEFINER function owned by dnd_generation_owner, are the only
+    -- way to export or restore the complete DND population. Nothing may log in
+    -- as either role until the owner performs the documented activation step;
+    -- dnd_generation_owner itself keeps its no-membership fence.
+    PERFORM dnd_generation_admin.install_backup_interface();
 
     EXECUTE 'ALTER DEFAULT PRIVILEGES FOR ROLE dnd_generation_owner IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC';
     EXECUTE 'ALTER DEFAULT PRIVILEGES FOR ROLE dnd_generation_owner IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC';
@@ -3016,6 +3199,7 @@ BEGIN
     DROP FUNCTION public.context_dnd_mutate(uuid, text, text, timestamptz, text, real, jsonb);
     DROP FUNCTION dnd_generation_private.mutate(uuid, text, text, timestamptz, text, real, jsonb);
     DROP FUNCTION dnd_generation_private.canonical_json(jsonb);
+    DROP SCHEMA IF EXISTS dnd_generation_backup CASCADE;
     DROP SCHEMA dnd_generation_private;
     DROP TABLE public.dnd_generation_mutations;
     DROP TABLE public.dnd_generation_guard;

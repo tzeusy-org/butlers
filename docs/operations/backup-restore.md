@@ -149,8 +149,8 @@ plane by name:
 |---|---|
 | `restore_drill_executor` schema | The restore-drill result ledger and its three constrained functions |
 | `restore_drill_executor_admin`, `dnd_generation_admin`, `runtime_attention_admin` schemas | Bootstrap configuration rows and the fixed installer/finalizer functions |
-| `public.dnd_generation_mutations` | DND generation mutation audit |
-| `public.user_context` | Context-bus signals; every row carries a hard `expires_at` |
+| `public.dnd_generation_mutations` | Excluded from the ordinary dump; its rows travel through the [private history export](#private-history-export) once that is activated |
+| `public.user_context` | Excluded from the ordinary dump; only the `signal_type = 'dnd'` rows travel through the [private history export](#private-history-export). Every other signal is expiring, self-regenerating state and is not backed up |
 | `public.runtime_attention_outbox`, `public.runtime_attention_delivery_lease`, `public.runtime_attention_producer_control` | Runtime-attention delivery state and its producer control row |
 | `public.task_continuity` | Task continuity control state; not recovered from this artifact |
 | `public.runtime_attention_condition_episodes` | Fenced runtime attention episode state |
@@ -211,6 +211,53 @@ Everything else in the table above is reconstructed by the bootstrap, expiring
 runtime state, or a deterministic projection rebuilt on the next detector run.
 No canonical source observation is excluded.
 
+
+### Private history export
+
+The full backup includes the complete DND history: every row of
+`public.dnd_generation_mutations` (including expired and superseded receipts),
+the `public.dnd_generation_guard` row, and the `signal_type = 'dnd'` rows of
+`public.user_context`. The ten perception relations listed in
+`deploy/backup/private_history_manifest.json` join the same path when
+`bu-dhloi1.9` creates them; a test fails if any of them exists while its
+manifest status is not `exported`.
+
+**Mechanism.** The dump identity is never widened: it receives no grant,
+membership or EXECUTE for any of this. `scripts/init-db.sql` (the DND finalizer)
+installs two fixed `SECURITY DEFINER` functions in schema
+`dnd_generation_backup`, owned by `dnd_generation_owner`, whose no-membership
+fence is unchanged:
+
+| Function | Executable by | Does |
+|---|---|---|
+| `export_v1()` | `butlers_backup_export` only | Returns the three populations as typed JSON rows in the caller's snapshot |
+| `restore_v1(jsonb)` | `butlers_backup_restore` only | Inserts them into a fresh target, in receipt, guard, context order; refuses a target that already holds DND history |
+
+Both roles are created `NOLOGIN NOINHERIT` with no membership edge and no
+credential. `pg_dump.sh` runs the export in the same exported snapshot as the
+dump and proves in that transaction that the function is the exact owner-only
+interface before reading it. Runtime grants and forced owner-only RLS are
+unchanged.
+
+**Dark until activated.** Until the owner configures an export identity the
+script publishes the artifact without the history and says so on stderr (`NOTICE:
+... NOT in this artifact`). Once `BACKUP_EXPORT_USER` is set, an export or proof
+failure refuses publication; there is no silent fallback.
+
+Activation is an owner step and is not performed by any repository change: give
+the export login `CONNECT` on the database and membership in (or make it)
+`butlers_backup_export`; export `BACKUP_EXPORT_USER` and
+`BACKUP_EXPORT_PASSWORD` to the backup process. On restore, the restoring login
+must be a member of `butlers_backup_restore` (and hold `TEMPORARY`); a populated
+DND block without that membership fails loudly rather than being dropped.
+
+**Retention consequence.** The artifact now holds private DND history, including
+rows already expired or superseded in the live database, for up to
+`BACKUP_RETAIN_DAYS` (default 14 days) after they stop being live. Backup
+retention, cadence and artifact handling are unchanged.
+
+Restore restores the exact snapshot: guard generation and timestamps are
+preserved, no counter is reseeded and no mutation is replayed.
 
 ### Fleet case history
 
