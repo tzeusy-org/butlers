@@ -4378,162 +4378,6 @@
       "reason": "bu-y66o00.3 Package C: this source-introducing commit is local until normal publication of this PR. The selector restricts domain-owned post-memory finalization, including retained flat fixtures; it is schema ownership, not configurable host policy."
     },
     {
-      "id": "65dad6d90238010a2a07dbd9856a396845b9454362b47ac7aa55229302ab4330",
-      "path": "src/butlers/knowledge_read/manifest.py",
-      "symbol": "load_manifest",
-      "kind": "alias_compare",
-      "expression": "domain not in _DOMAINS",
-      "occurrence": 1,
-      "line": 274,
-      "direct": false,
-      "container": false,
-      "category": "NON_NAME_ENUM_OR_MODULE",
-      "purpose": "Validate the closed public read domain vocabulary, including the domainless surface metadata.",
-      "citations": [
-        {
-          "path": "openspec/specs/core-state/spec.md",
-          "requirement": "Per-Butler Schema Isolation"
-        },
-        {
-          "path": "openspec/specs/module-memory/spec.md",
-          "requirement": "Storage layer CRUD operations"
-        }
-      ],
-      "baseline_ids": [],
-      "public_source_commit": "ac9dd9b39f972492f60468764bb2ecae1d2f4762",
-      "reason": "bu-y66o00.4 Package D primary foundation: RFC 0039 D4 and OD17/OD21/OD22 govern these fixed exposure-domain/privacy distinctions. The canonical citations preserve schema/storage boundaries; this is not configurable host policy or proof of complete REQ004/subscriber delivery."
-    },
-    {
-      "id": "87b33332ea82f3b47affe821cbbb4ecec80443953ccd16879d7d1cc1897fc207",
-      "path": "src/butlers/knowledge_read/manifest.py",
-      "symbol": "load_manifest",
-      "kind": "compare",
-      "expression": "domain not in {'finance', 'health'}",
-      "occurrence": 1,
-      "line": 306,
-      "direct": false,
-      "container": true,
-      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
-      "purpose": "Enforce the narrower non-Finance/Health D4 column breadth floor; the credential tier applies to every domain.",
-      "citations": [
-        {
-          "path": "openspec/specs/core-state/spec.md",
-          "requirement": "Per-Butler Schema Isolation"
-        },
-        {
-          "path": "openspec/specs/module-memory/spec.md",
-          "requirement": "Storage layer CRUD operations"
-        }
-      ],
-      "baseline_ids": [],
-      "public_source_commit": "ac9dd9b39f972492f60468764bb2ecae1d2f4762",
-      "reason": "bu-y66o00.4 Package D primary foundation: RFC 0039 D4 and OD17/OD21/OD22 govern these fixed exposure-domain/privacy distinctions. The canonical citations preserve schema/storage boundaries; this is not configurable host policy or proof of complete REQ004/subscriber delivery."
-    },
-    {
-      "id": "4578d1cc794028645cf6ea550242cd9447081d2f9150910ceccba0ef35716d2a",
-      "path": "src/butlers/knowledge_read/manifest.py",
-      "symbol": "load_manifest",
-      "kind": "compare",
-      "expression": "domain in {'finance', 'health'}",
-      "occurrence": 1,
-      "line": 319,
-      "direct": false,
-      "container": true,
-      "category": "SCHEMA_OWNERSHIP",
-      "purpose": "Validate the actual Finance/Health single-column primary-key requirement before offline shape generation.",
-      "citations": [
-        {
-          "path": "openspec/specs/core-state/spec.md",
-          "requirement": "Per-Butler Schema Isolation"
-        },
-        {
-          "path": "openspec/specs/module-memory/spec.md",
-          "requirement": "Storage layer CRUD operations"
-        }
-      ],
-      "baseline_ids": [],
-      "public_source_commit": "ac9dd9b39f972492f60468764bb2ecae1d2f4762",
-      "reason": "bu-y66o00.4 Package D primary foundation: RFC 0039 D4 and OD17/OD21/OD22 govern these fixed exposure-domain/privacy distinctions. The canonical citations preserve schema/storage boundaries; this is not configurable host policy or proof of complete REQ004/subscriber delivery."
-    },
-    {
-      "id": "00eba18cc8b8072052865479876d88b5f01ad3829bcf1a162d56fc7f0a71146d",
-      "path": "src/butlers/knowledge_read/manifest.py",
-      "symbol": "load_manifest",
-      "kind": "compare",
-      "expression": "domain in {'finance', 'health'}",
-      "occurrence": 2,
-      "line": 357,
-      "direct": false,
-      "container": true,
-      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
-      "purpose": "Require active-only Finance/Health facts without applying the non-Finance/Health sensitivity/predicate restriction.",
-      "citations": [
-        {
-          "path": "openspec/specs/core-state/spec.md",
-          "requirement": "Per-Butler Schema Isolation"
-        },
-        {
-          "path": "openspec/specs/module-memory/spec.md",
-          "requirement": "Storage layer CRUD operations"
-        }
-      ],
-      "baseline_ids": [],
-      "public_source_commit": "ac9dd9b39f972492f60468764bb2ecae1d2f4762",
-      "reason": "bu-y66o00.4 Package D primary foundation: RFC 0039 D4 and OD17/OD21/OD22 govern these fixed exposure-domain/privacy distinctions. The canonical citations preserve schema/storage boundaries; this is not configurable host policy or proof of complete REQ004/subscriber delivery."
-    },
-    {
-      "id": "826573e58ca15c3c32f075a32e5a0d94d61de284b9b7750aa393a74ac1029150",
-      "path": "src/butlers/knowledge_read/manifest.py",
-      "symbol": "load_manifest",
-      "kind": "compare",
-      "expression": "domain not in {'finance', 'health'}",
-      "occurrence": 2,
-      "line": 387,
-      "direct": false,
-      "container": true,
-      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
-      "purpose": "Restrict identifier marks to approved Finance/Health sources, excluding generic JSON-leaf rows.",
-      "citations": [
-        {
-          "path": "openspec/specs/core-state/spec.md",
-          "requirement": "Per-Butler Schema Isolation"
-        },
-        {
-          "path": "openspec/specs/module-memory/spec.md",
-          "requirement": "Storage layer CRUD operations"
-        }
-      ],
-      "baseline_ids": [],
-      "public_source_commit": "ac9dd9b39f972492f60468764bb2ecae1d2f4762",
-      "reason": "bu-y66o00.4 Package D primary foundation: RFC 0039 D4 and OD17/OD21/OD22 govern these fixed exposure-domain/privacy distinctions. The canonical citations preserve schema/storage boundaries; this is not configurable host policy or proof of complete REQ004/subscriber delivery."
-    },
-    {
-      "id": "69ca53bbeb14e890bc031d774a8d060b2ca7722ccfc02cc3ab1ed707aa8ef72a",
-      "path": "src/butlers/knowledge_read/manifest.py",
-      "symbol": "load_manifest",
-      "kind": "compare",
-      "expression": "t.domain not in {'finance', 'health'}",
-      "occurrence": 1,
-      "line": 419,
-      "direct": false,
-      "container": true,
-      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
-      "purpose": "Derive shared graph allowlist keys only from the explicit non-Finance/Health fact predicate decisions.",
-      "citations": [
-        {
-          "path": "openspec/specs/core-state/spec.md",
-          "requirement": "Per-Butler Schema Isolation"
-        },
-        {
-          "path": "openspec/specs/module-memory/spec.md",
-          "requirement": "Storage layer CRUD operations"
-        }
-      ],
-      "baseline_ids": [],
-      "public_source_commit": "ac9dd9b39f972492f60468764bb2ecae1d2f4762",
-      "reason": "bu-y66o00.4 Package D primary foundation: RFC 0039 D4 and OD17/OD21/OD22 govern these fixed exposure-domain/privacy distinctions. The canonical citations preserve schema/storage boundaries; this is not configurable host policy or proof of complete REQ004/subscriber delivery."
-    },
-    {
       "id": "35ac324823b2c0485a50dafb93430852a2c6545f0847197cf54f7c13aa0a821e",
       "path": "src/butlers/migrations/public_mcp.py",
       "symbol": "validate_catalog",
@@ -4584,6 +4428,266 @@
       "baseline_ids": [],
       "public_source_commit": "ac9dd9b39f972492f60468764bb2ecae1d2f4762",
       "reason": "bu-y66o00.4 Package D primary foundation: RFC 0039 D4 and OD17/OD21/OD22 govern these fixed exposure-domain/privacy distinctions. The canonical citations preserve schema/storage boundaries; this is not configurable host policy or proof of complete REQ004/subscriber delivery."
+    },
+    {
+      "id": "5c56a9ebbbde12d037d3ff621f3f5f3ef2112f2e3a8aad8b39d0ea8b404ab13c",
+      "path": "src/butlers/knowledge_read/manifest.py",
+      "symbol": "_parse_manifest",
+      "kind": "alias_compare",
+      "expression": "domain not in _DOMAINS",
+      "occurrence": 1,
+      "line": 281,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Validate the closed public read domain vocabulary, including the domainless surface metadata.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-state/spec.md",
+          "requirement": "Per-Butler Schema Isolation"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "ac9dd9b39f972492f60468764bb2ecae1d2f4762",
+      "reason": "bu-y66o00.4 Package D primary foundation: RFC 0039 D4 and OD17/OD21/OD22 govern these fixed exposure-domain/privacy distinctions. The canonical citations preserve schema/storage boundaries; this is not configurable host policy or proof of complete REQ004/subscriber delivery."
+    },
+    {
+      "id": "186453dc130ba8b81eeacfc5992c34d3e53bb736453bbfe932e4de88507b9bef",
+      "path": "src/butlers/knowledge_read/manifest.py",
+      "symbol": "_parse_manifest",
+      "kind": "compare",
+      "expression": "domain not in {'finance', 'health'}",
+      "occurrence": 1,
+      "line": 318,
+      "direct": false,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Enforce the narrower non-Finance/Health D4 column breadth floor; the credential tier applies to every domain.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-state/spec.md",
+          "requirement": "Per-Butler Schema Isolation"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "ac9dd9b39f972492f60468764bb2ecae1d2f4762",
+      "reason": "bu-y66o00.4 Package D primary foundation: RFC 0039 D4 and OD17/OD21/OD22 govern these fixed exposure-domain/privacy distinctions. The canonical citations preserve schema/storage boundaries; this is not configurable host policy or proof of complete REQ004/subscriber delivery."
+    },
+    {
+      "id": "96b2b8e803c284c6ade701e7a81279630bfa7754432eaadfb145bfa17585dae6",
+      "path": "src/butlers/knowledge_read/manifest.py",
+      "symbol": "_parse_manifest",
+      "kind": "compare",
+      "expression": "domain in {'finance', 'health'}",
+      "occurrence": 1,
+      "line": 342,
+      "direct": false,
+      "container": true,
+      "category": "SCHEMA_OWNERSHIP",
+      "purpose": "Validate the actual Finance/Health single-column primary-key requirement before offline shape generation.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-state/spec.md",
+          "requirement": "Per-Butler Schema Isolation"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "ac9dd9b39f972492f60468764bb2ecae1d2f4762",
+      "reason": "bu-y66o00.4 Package D primary foundation: RFC 0039 D4 and OD17/OD21/OD22 govern these fixed exposure-domain/privacy distinctions. The canonical citations preserve schema/storage boundaries; this is not configurable host policy or proof of complete REQ004/subscriber delivery."
+    },
+    {
+      "id": "15a8f6f8206963c2bcc5037dcfaa8098ac4d23f695891da811459b853c652a94",
+      "path": "src/butlers/knowledge_read/manifest.py",
+      "symbol": "_parse_manifest",
+      "kind": "compare",
+      "expression": "domain in {'finance', 'health'}",
+      "occurrence": 2,
+      "line": 380,
+      "direct": false,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Require active-only Finance/Health facts without applying the non-Finance/Health sensitivity/predicate restriction.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-state/spec.md",
+          "requirement": "Per-Butler Schema Isolation"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "ac9dd9b39f972492f60468764bb2ecae1d2f4762",
+      "reason": "bu-y66o00.4 Package D primary foundation: RFC 0039 D4 and OD17/OD21/OD22 govern these fixed exposure-domain/privacy distinctions. The canonical citations preserve schema/storage boundaries; this is not configurable host policy or proof of complete REQ004/subscriber delivery."
+    },
+    {
+      "id": "4ae776241a997c3ce6ebaeb45d4462c9d8b09c921daefa6d9353f7faec7cc334",
+      "path": "src/butlers/knowledge_read/manifest.py",
+      "symbol": "_parse_manifest",
+      "kind": "compare",
+      "expression": "domain not in {'finance', 'health'}",
+      "occurrence": 2,
+      "line": 410,
+      "direct": false,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Restrict identifier marks to approved Finance/Health sources, excluding generic JSON-leaf rows.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-state/spec.md",
+          "requirement": "Per-Butler Schema Isolation"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "ac9dd9b39f972492f60468764bb2ecae1d2f4762",
+      "reason": "bu-y66o00.4 Package D primary foundation: RFC 0039 D4 and OD17/OD21/OD22 govern these fixed exposure-domain/privacy distinctions. The canonical citations preserve schema/storage boundaries; this is not configurable host policy or proof of complete REQ004/subscriber delivery."
+    },
+    {
+      "id": "9b7a21c8398950e6291fa3df20eef705b500fa55349f36f7be5902e5d44a56f8",
+      "path": "src/butlers/knowledge_read/manifest.py",
+      "symbol": "_parse_manifest",
+      "kind": "compare",
+      "expression": "t.domain not in {'finance', 'health'}",
+      "occurrence": 1,
+      "line": 442,
+      "direct": false,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Derive shared graph allowlist keys only from the explicit non-Finance/Health fact predicate decisions.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-state/spec.md",
+          "requirement": "Per-Butler Schema Isolation"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "ac9dd9b39f972492f60468764bb2ecae1d2f4762",
+      "reason": "bu-y66o00.4 Package D primary foundation: RFC 0039 D4 and OD17/OD21/OD22 govern these fixed exposure-domain/privacy distinctions. The canonical citations preserve schema/storage boundaries; this is not configurable host policy or proof of complete REQ004/subscriber delivery."
+    },
+    {
+      "id": "e5c807f9a803ef8ac0f942a292382e8bdcea4b65b0d1a25218e0a386adb14931",
+      "path": "src/butlers/migrations/public_mcp_owner.py",
+      "symbol": "subscriber_plan",
+      "kind": "compare",
+      "expression": "t.domain not in {'finance', 'health'}",
+      "occurrence": 1,
+      "line": 210,
+      "direct": false,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Enforce the fixed RFC0039 subscriber-local read/privacy projection or real owning-chain fixture selection; never configurable host policy.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-state/spec.md",
+          "requirement": "Per-Butler Schema Isolation"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "3ced3dbd7b3408fc1c2c7cc9b99afa7e3650aa73",
+      "reason": "Package E internal subscriber prerequisite: RFC0039 D2/D3/D4 fixes these Finance/Health exclusions and exact migration chain ownership. This closed source selection neither expands the canonical47 manifest nor proves deployed authority/runtime completion."
+    },
+    {
+      "id": "9e9f5c0c654671d203a8c9b3343e38018719da0d37ad31da65cbee9e4e064c67",
+      "path": "src/butlers/migrations/public_mcp_owner.py",
+      "symbol": "_primary_catalog_guard",
+      "kind": "compare",
+      "expression": "table.domain not in {'finance', 'health'}",
+      "occurrence": 1,
+      "line": 366,
+      "direct": false,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Enforce the fixed RFC0039 subscriber-local read/privacy projection or real owning-chain fixture selection; never configurable host policy.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-state/spec.md",
+          "requirement": "Per-Butler Schema Isolation"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "3ced3dbd7b3408fc1c2c7cc9b99afa7e3650aa73",
+      "reason": "Package E internal subscriber prerequisite: RFC0039 D2/D3/D4 fixes these Finance/Health exclusions and exact migration chain ownership. This closed source selection neither expands the canonical47 manifest nor proves deployed authority/runtime completion."
+    },
+    {
+      "id": "3822ef28263d8e06caf3628af7842f7ee0b787f2e32ade128e7258131dcbaa66",
+      "path": "src/butlers/migrations/public_mcp_owner.py",
+      "symbol": "_primary_catalog_guard",
+      "kind": "compare",
+      "expression": "table.domain not in {'finance', 'health'}",
+      "occurrence": 2,
+      "line": 386,
+      "direct": false,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Enforce the fixed RFC0039 subscriber-local read/privacy projection or real owning-chain fixture selection; never configurable host policy.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-state/spec.md",
+          "requirement": "Per-Butler Schema Isolation"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "3ced3dbd7b3408fc1c2c7cc9b99afa7e3650aa73",
+      "reason": "Package E internal subscriber prerequisite: RFC0039 D2/D3/D4 fixes these Finance/Health exclusions and exact migration chain ownership. This closed source selection neither expands the canonical47 manifest nor proves deployed authority/runtime completion."
+    },
+    {
+      "id": "c4c0f941b07aa13b7275f98d5b67ec9660c681796e639be1c5534ea231542dec",
+      "path": "src/butlers/testing/public_mcp.py",
+      "symbol": "public_mcp_topology.install",
+      "kind": "compare",
+      "expression": "domain in ('travel', 'relationship', 'finance', 'health')",
+      "occurrence": 1,
+      "line": 205,
+      "direct": false,
+      "container": true,
+      "category": "SCHEMA_OWNERSHIP",
+      "purpose": "Enforce the fixed RFC0039 subscriber-local read/privacy projection or real owning-chain fixture selection; never configurable host policy.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-state/spec.md",
+          "requirement": "Per-Butler Schema Isolation"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "3ced3dbd7b3408fc1c2c7cc9b99afa7e3650aa73",
+      "reason": "Package E internal subscriber prerequisite: RFC0039 D2/D3/D4 fixes these Finance/Health exclusions and exact migration chain ownership. This closed source selection neither expands the canonical47 manifest nor proves deployed authority/runtime completion."
     }
   ],
   "retired": [
@@ -4606,6 +4710,30 @@
     {
       "id": "69ec3fefef743053f7e4d3e12c73460a89cd1a28ebb466c98bbfe4e11ac9e680",
       "reason": "bu-m0vjeb.9: move-only split of core/scheduler.py into the core/scheduler/ package; tick() now lives in core/scheduler/dispatch.py, so the path-keyed identity moved to 3b3affcb701593a943a4107ce3be29d613fcf9884efa7e3be02af2528cd9ff1e. Selector and category unchanged."
+    },
+    {
+      "id": "65dad6d90238010a2a07dbd9856a396845b9454362b47ac7aa55229302ab4330",
+      "reason": "Package E preserves this exact semantic selector/category/citations while extracting the TOML validator into shared _parse_manifest for the closed applied JSON decoder; successor 5c56a9ebbbde12d037d3ff621f3f5f3ef2112f2e3a8aad8b39d0ea8b404ab13c"
+    },
+    {
+      "id": "87b33332ea82f3b47affe821cbbb4ecec80443953ccd16879d7d1cc1897fc207",
+      "reason": "Package E preserves this exact semantic selector/category/citations while extracting the TOML validator into shared _parse_manifest for the closed applied JSON decoder; successor 186453dc130ba8b81eeacfc5992c34d3e53bb736453bbfe932e4de88507b9bef"
+    },
+    {
+      "id": "4578d1cc794028645cf6ea550242cd9447081d2f9150910ceccba0ef35716d2a",
+      "reason": "Package E preserves this exact semantic selector/category/citations while extracting the TOML validator into shared _parse_manifest for the closed applied JSON decoder; successor 96b2b8e803c284c6ade701e7a81279630bfa7754432eaadfb145bfa17585dae6"
+    },
+    {
+      "id": "00eba18cc8b8072052865479876d88b5f01ad3829bcf1a162d56fc7f0a71146d",
+      "reason": "Package E preserves this exact semantic selector/category/citations while extracting the TOML validator into shared _parse_manifest for the closed applied JSON decoder; successor 15a8f6f8206963c2bcc5037dcfaa8098ac4d23f695891da811459b853c652a94"
+    },
+    {
+      "id": "826573e58ca15c3c32f075a32e5a0d94d61de284b9b7750aa393a74ac1029150",
+      "reason": "Package E preserves this exact semantic selector/category/citations while extracting the TOML validator into shared _parse_manifest for the closed applied JSON decoder; successor 4ae776241a997c3ce6ebaeb45d4462c9d8b09c921daefa6d9353f7faec7cc334"
+    },
+    {
+      "id": "69ca53bbeb14e890bc031d774a8d060b2ca7722ccfc02cc3ab1ed707aa8ef72a",
+      "reason": "Package E preserves this exact semantic selector/category/citations while extracting the TOML validator into shared _parse_manifest for the closed applied JSON decoder; successor 9b7a21c8398950e6291fa3df20eef705b500fa55349f36f7be5902e5d44a56f8"
     }
   ]
 }

@@ -7386,6 +7386,8 @@ DECLARE
     expected_checks text[];
     actual_checks text[];
     runtime_role text;
+    item record;
+    attribute record;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname='butlers_public')
        OR (SELECT count(*) FROM pg_roles WHERE rolname IN (
@@ -7393,6 +7395,69 @@ BEGIN
            'mcp_proposals_reader', 'mcp_subscription_owner')) <> 5 THEN
         RETURN;
     END IF;
+    -- PUBLIC_MCP_PUBLISHER_SECURITY_BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_authid WHERE
+        rolname='butlers_projection_publisher'
+              AND rolcanlogin AND rolreplication AND NOT rolinherit
+              AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole
+              AND NOT rolbypassrls AND rolpassword IS NULL) THEN
+    RAISE EXCEPTION 'public MCP publisher attributes/credential refused';
+END IF;
+IF EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles r
+           ON r.oid IN (m.roleid, m.member)
+           WHERE r.rolname='butlers_projection_publisher') THEN
+    RAISE EXCEPTION 'public MCP publisher membership refused';
+END IF;
+IF EXISTS (SELECT 1 FROM pg_hba_file_rules WHERE error IS NOT NULL)
+   OR EXISTS (SELECT 1 FROM pg_ident_file_mappings WHERE error IS NOT
+        NULL) THEN
+    RAISE EXCEPTION 'public MCP authentication configuration refused';
+END IF;
+IF (SELECT count(*) FROM pg_ident_file_mappings WHERE
+        map_name='local')<>2
+   OR NOT EXISTS (SELECT 1 FROM pg_ident_file_mappings WHERE
+        map_name='local'
+                  AND sys_name='postgres' AND pg_username='postgres')
+   OR NOT EXISTS (SELECT 1 FROM pg_ident_file_mappings WHERE
+        map_name='local'
+                  AND sys_name='postgres' AND
+        pg_username='butlers_projection_publisher')
+        THEN
+    RAISE EXCEPTION 'public MCP local peer map refused';
+END IF;
+IF (SELECT count(*) FROM pg_hba_file_rules WHERE type='local'
+    AND database=ARRAY['all'] AND user_name=ARRAY['all']
+    AND auth_method='peer' AND options=ARRAY['map=local'])<>1 THEN
+    RAISE EXCEPTION 'public MCP local peer rule refused';
+END IF;
+IF NOT EXISTS (SELECT 1 FROM pg_hba_file_rules WHERE type='host'
+               AND database=ARRAY['all'] AND
+        user_name=ARRAY['butlers_projection_publisher']
+               AND address='all' AND auth_method='reject') THEN
+    RAISE EXCEPTION 'public MCP publisher TCP rejection missing';
+END IF;
+IF EXISTS (
+    SELECT 1 FROM pg_hba_file_rules h
+    WHERE (h.user_name && ARRAY['all', 'butlers_projection_publisher']
+           OR EXISTS (SELECT 1 FROM unnest(h.user_name) u WHERE u LIKE
+        '+%' OR u LIKE '/%'))
+      AND (
+        'replication'=ANY(h.database)
+        OR (h.type='local' AND NOT (h.database=ARRAY['all']
+              AND h.user_name=ARRAY['all'] AND h.auth_method='peer'
+              AND h.options=ARRAY['map=local']))
+        OR (h.type<>'local' AND h.auth_method<>'reject'
+            AND h.rule_number < (SELECT min(rule_number) FROM
+        pg_hba_file_rules
+                 WHERE type='host' AND database=ARRAY['all']
+                   AND user_name=ARRAY['butlers_projection_publisher']
+                   AND address='all' AND auth_method='reject'))
+      )
+) THEN
+    RAISE EXCEPTION
+        'public MCP publisher alternate authentication refused';
+END IF;
+    -- PUBLIC_MCP_PUBLISHER_SECURITY_END
     SELECT oid INTO STRICT migration_oid FROM pg_roles WHERE rolname=migration_role;
     IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname='mcp_surface'
                AND nspowner<>migration_oid) THEN
@@ -7460,6 +7525,8 @@ BEGIN
         -- Refuse unrecognized grants instead of silently taking over a foreign interface.
         IF EXISTS (SELECT 1 FROM pg_class c, LATERAL aclexplode(c.relacl) a
                    WHERE c.oid=relation_oid AND a.grantee<>migration_oid
+                   AND NOT (a.grantee='butlers_projection_publisher'::regrole
+                            AND a.privilege_type='SELECT' AND NOT a.is_grantable)
                    AND a.grantee<>0 AND a.grantee NOT IN (
                        SELECT oid FROM pg_roles WHERE rolname LIKE 'butler\_%\_rw' ESCAPE '\'
                        OR rolname='connector_writer')) THEN
@@ -7486,6 +7553,8 @@ BEGIN
     END LOOP;
     IF EXISTS (SELECT 1 FROM pg_namespace n, LATERAL aclexplode(n.nspacl) a
                WHERE n.nspname='mcp_surface' AND a.grantee<>migration_oid
+               AND NOT (a.grantee='butlers_projection_publisher'::regrole
+                        AND a.privilege_type='USAGE' AND NOT a.is_grantable)
                AND a.grantee<>0 AND a.grantee NOT IN (
                    SELECT oid FROM pg_roles WHERE rolname LIKE 'butler\_%\_rw' ESCAPE '\'
                    OR rolname='connector_writer')) THEN
@@ -7502,6 +7571,51 @@ BEGIN
         SELECT domain,'enabled' FROM unnest(ARRAY[
             'all','knowledge','travel','relationship','time','finance','health','proposals']) domain
         ON CONFLICT DO NOTHING;
+    -- PUBLIC_MCP_PUBLISHER_GRANTS_BEGIN
+GRANT CONNECT ON DATABASE butlers TO butlers_projection_publisher;
+FOR item IN SELECT nspname FROM pg_namespace
+    WHERE left(nspname, 3)<>'pg_' AND nspname<>'information_schema' LOOP
+    EXECUTE
+        format('REVOKE ALL ON SCHEMA %I FROM butlers_projection_publisher',
+        item.nspname);
+    EXECUTE
+
+        format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA %I FROM butlers_projection_publisher',
+        item.nspname);
+END LOOP;
+FOR item IN SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace
+        n ON
+        n.oid=c.relnamespace
+    WHERE left(n.nspname, 3)<>'pg_' AND n.nspname<>'information_schema'
+      AND c.relkind IN ('r', 'p', 'v', 'm', 'f') LOOP
+    EXECUTE
+        format('REVOKE ALL ON TABLE %I.%I FROM butlers_projection_publisher',
+                   item.nspname, item.relname);
+    FOR attribute IN SELECT attname FROM pg_attribute
+        WHERE attrelid=format('%I.%I', item.nspname,
+        item.relname)::regclass
+          AND attnum>0 AND NOT attisdropped LOOP
+        EXECUTE
+        format('REVOKE ALL (%I) ON TABLE %I.%I FROM butlers_projection_publisher',
+
+                       attribute.attname, item.nspname, item.relname);
+    END LOOP;
+END LOOP;
+FOR item IN SELECT DISTINCT schemaname FROM pg_publication_tables
+             WHERE pubname='butlers_public_v1' LOOP
+    EXECUTE
+
+        format('GRANT USAGE ON SCHEMA %I TO butlers_projection_publisher',
+        item.schemaname);
+END LOOP;
+FOR item IN SELECT schemaname, tablename FROM pg_publication_tables
+             WHERE pubname='butlers_public_v1' LOOP
+    EXECUTE
+        format('GRANT SELECT ON TABLE %I.%I TO butlers_projection_publisher',
+                   item.schemaname, item.tablename);
+END LOOP;
+    -- PUBLIC_MCP_PUBLISHER_GRANTS_END
+    ALTER ROLE mcp_public_ro SET statement_timeout='2s';
     EXECUTE format('GRANT CREATE ON DATABASE %I TO %I',current_database(),migration_role);
 END
 $public_mcp_primary$;

@@ -237,6 +237,13 @@ def load_manifest(data: bytes | None = None) -> Manifest:
         )
     except (UnicodeError, tomllib.TOMLDecodeError) as exc:
         raise ManifestError("manifest: invalid TOML/encoding") from exc
+    return _parse_manifest(raw)
+
+
+def _parse_manifest(raw: object) -> Manifest:
+    """One semantic validator for packaged TOML and already-applied JSON."""
+    if not isinstance(raw, dict):
+        raise ManifestError("manifest: expected object")
     if set(raw) != {"version", "table"} or type(raw["version"]) is not int or raw["version"] != 1:
         raise ManifestError("manifest: expected version1 and table array")
     if not isinstance(raw["table"], list) or not raw["table"]:
@@ -462,3 +469,120 @@ def load_manifest(data: bytes | None = None) -> Manifest:
                 raise ManifestError(f"{table.source}: incomplete graph identity/filter columns")
             tables[i] = replace(table, filters=filters)
     return Manifest(tuple(sorted(tables, key=lambda t: t.source)))
+
+
+_CANONICAL_FIELDS = frozenset(
+    {
+        "source",
+        "domain",
+        "columns",
+        "types",
+        "key",
+        "identity",
+        "time_column",
+        "uri",
+        "tools",
+        "filters",
+        "identifiers",
+        "json_identifiers",
+    }
+)
+
+
+def decode_applied_manifest(data: str) -> Manifest:
+    """Decode the actual stored canonical JSON; never interpret it as TOML.
+
+    No unknown fields, duplicate object keys, noncanonical normalizations or
+    semantic exposure shortcuts are accepted. Digest bytes remain version1.
+    """
+    try:
+        if not isinstance(data, str) or len(data.encode()) > 1048576:
+            raise ManifestError("applied manifest: invalid/oversized text")
+    except UnicodeError as exc:
+        raise ManifestError("applied manifest: invalid encoding") from exc
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ManifestError("applied manifest: duplicate JSON field")
+            result[key] = value
+        return result
+
+    try:
+        raw = json.loads(data, object_pairs_hook=unique)
+    except (TypeError, ValueError) as exc:
+        raise ManifestError("applied manifest: invalid JSON") from exc
+    if (
+        not isinstance(raw, dict)
+        or set(raw) != {"version", "tables"}
+        or type(raw["version"]) is not int
+        or raw["version"] != 1
+        or not isinstance(raw["tables"], list)
+        or not raw["tables"]
+    ):
+        raise ManifestError("applied manifest: expected version1 tables")
+    entries = []
+    for row in raw["tables"]:
+        if not isinstance(row, dict) or set(row) != _CANONICAL_FIELDS:
+            raise ManifestError("applied manifest: invalid table fields")
+        item = dict(row)
+        if not isinstance(item["source"], str):
+            raise ManifestError("applied manifest: invalid source")
+        for field in ("types", "filters"):
+            pairs = item.pop(field)
+            if (
+                not isinstance(pairs, list)
+                or any(
+                    not isinstance(pair, list) or len(pair) != 2 or not isinstance(pair[0], str)
+                    for pair in pairs
+                )
+                or len({pair[0] for pair in pairs}) != len(pairs)
+            ):
+                raise ManifestError("applied manifest: invalid normalized pairs")
+            item["types" if field == "types" else "row_filter"] = dict(pairs)
+        item["replica_identity"] = item.pop("identity")
+        if item["source"] in {"public.entity_graph_edges", "public.entity_graph_withheld_counts"}:
+            item["derived"] = "edges" if item["source"] == "public.entity_graph_edges" else "counts"
+            # The common validator derives the exact graph lists from fact entries.
+            item["row_filter"] = {}
+        entries.append(item)
+    result = _parse_manifest({"version": 1, "table": entries})
+    if result.canonical != data:
+        raise ManifestError("applied manifest: noncanonical or inconsistent declarations")
+    return result
+
+
+@dataclass(frozen=True)
+class ManifestTransition:
+    """A changed old entry needs rebuild, even when its change only widens."""
+
+    rebuild: bool
+    narrowing: bool
+
+    @property
+    def direction(self) -> str:
+        return "narrowing" if self.narrowing else "widening"
+
+
+def manifest_transition(applied: Manifest | None, target: Manifest) -> ManifestTransition:
+    """Shared owner/recovery and future request-side pending classification."""
+    if applied is None:
+        return ManifestTransition(True, False)
+    desired = {table.source: table for table in target.tables}
+    rebuild = False
+    narrowing = False
+    for old in applied.tables:
+        new = desired.get(old.source)
+        if old != new:
+            rebuild = True
+        if new is None or not set(old.columns) <= set(new.columns):
+            narrowing = True
+        if new is not None:
+            previous_filters = dict(old.filters)
+            for column, values in new.filters:
+                if column not in previous_filters or not set(previous_filters[column]) <= set(
+                    values
+                ):
+                    narrowing = True
+    return ManifestTransition(rebuild, narrowing)

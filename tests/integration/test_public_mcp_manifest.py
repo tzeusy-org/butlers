@@ -10,82 +10,24 @@ import asyncio
 from dataclasses import replace
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from butlers.knowledge_read.manifest import Manifest, ManifestError, load_manifest
-from butlers.migrations import run_migrations
 from butlers.migrations.public_mcp import (
     publication_state,
     reconcile_connection,
     validate_catalog,
 )
-from butlers.testing.migration import (
-    _bootstrap_migration_prerequisites,
-    create_migration_db,
-    migration_bootstrap_db_url,
-    migration_db_name,
-)
-from tests.migrations.test_public_projection_source import logical_postgres  # noqa: F401
 
 pytestmark = pytest.mark.integration
-_MANAGED = (
-    "butlers_projection_publisher",
-    "mcp_projection_owner",
-    "mcp_public_ro",
-    "mcp_proposals_reader",
-    "mcp_subscription_owner",
-)
 
 
 @pytest.fixture(scope="module")
-def manifest_primary(logical_postgres):  # noqa: F811
-    name = migration_db_name()
-    url = create_migration_db(logical_postgres, name)
-    engine = create_engine(url)
-    admin_url = migration_bootstrap_db_url(logical_postgres, name)
-    admin = create_engine(admin_url)
-    with engine.connect() as conn:
-        migration_role = conn.execute(text("SELECT current_user")).scalar_one()
-        assert conn.execute(text("SELECT to_regclass('mcp_surface.controls')")).scalar_one() is None
-    control = create_engine(logical_postgres.get_connection_url(), isolation_level="AUTOCOMMIT")
-    try:
-        with control.connect() as conn:
-            for role in _MANAGED:
-                if not conn.execute(
-                    text("SELECT 1 FROM pg_roles WHERE rolname=:role"), {"role": role}
-                ).scalar():
-                    conn.exec_driver_sql(f'CREATE ROLE "{role}" NOLOGIN NOREPLICATION')
-            if not conn.execute(
-                text("SELECT 1 FROM pg_database WHERE datname='butlers_public'")
-            ).scalar():
-                conn.exec_driver_sql("CREATE DATABASE butlers_public")
-        _bootstrap_migration_prerequisites(admin_url, migration_role)
+def manifest_primary():
+    from butlers.testing.public_mcp import public_mcp_topology
 
-        async def install():
-            for domain in (
-                "general",
-                "lifestyle",
-                "education",
-                "travel",
-                "relationship",
-                "finance",
-                "health",
-            ):
-                await run_migrations(url, chain="core", schema=domain)
-                if domain in ("travel", "relationship", "finance", "health"):
-                    await run_migrations(url, chain=domain, schema=domain)
-                await run_migrations(url, chain="memory", schema=domain)
-            await run_migrations(url, chain="core", schema="chronicler")
-            await run_migrations(url, chain="core", schema="chronicler_mem")
-            await run_migrations(url, chain="memory", schema="chronicler_mem")
-            await run_migrations(url, chain="chronicler", schema="chronicler")
-
-        asyncio.run(install())
-        yield engine, admin, migration_role
-    finally:
-        engine.dispose()
-        admin.dispose()
-        control.dispose()
+    with public_mcp_topology() as topology:
+        yield topology.engine, topology.admin, topology.migration_role
 
 
 @pytest.fixture

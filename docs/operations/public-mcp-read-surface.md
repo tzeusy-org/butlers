@@ -12,7 +12,7 @@
 
 ---
 
-## Status: primary foundation; subscriber and public runtime pending
+## Status: primary foundation and internal subscriber lifecycle; public activation pending
 
 The source now provides the canonical full-v1
 `src/butlers/knowledge_read/projection.toml`, its closed immutable model, catalog validation,
@@ -25,7 +25,11 @@ With all five CNPG-managed roles and `butlers_public` already present, the privi
 configured migration principal, and its primary database CREATE privilege. Absent those exact
 prerequisites, projection additions are skipped. Existing foreign owners, unsupported shapes and
 unrecognized ACLs refuse; runtime/PUBLIC metadata grants are revoked on rerun, with Relationship
-retaining USAGE and SELECT on controls only. Managed role attributes are untouched by these additions.
+retaining USAGE and SELECT on controls only. The bootstrap preserves externally managed identities and refuses a publisher credential,
+membership or incompatible peer/HBA configuration. It sets the public reader timeout to
+two seconds and synchronizes publisher CONNECT, schema USAGE and table SELECT to the
+actual publication, revoking its other schema/table/column/sequence grants. Only the named
+publisher SELECT/USAGE metadata grants are recognized on rerun; other foreign ACLs refuse.
 
 Run reconcile explicitly as that ordinary migration principal **after all source chains**
 (core, domain, memory) have completed. It validates every source before publication DDL, takes a
@@ -42,13 +46,50 @@ an explicit edit. Finance/Health JSONB arrives through the existing credential-f
 materializations, never as JSONB columns. Graph keys derive from the same fact predicate lists.
 The packaged resource is read without a mutable external manifest override.
 
-**Still pending:** publisher grant synchronization, subscriber/owner-sql, request/canary/digest
-serving semantics, actual named read-consumer and manifested subscriber comparisons, public
-server/chart, deployed privileges/network and live owner steps. The deployed API and migrations
-currently share a configured database login and the API does not SET ROLE. SQL ACLs cannot
-establish controls-only API writes while that effective identity also owns manifest state;
-this remains an explicit required runtime identity boundary. Synthetic bootstrap/catalog tests
-prove their source scope only. No deployment or actual owner step is established by this change.
+The connection-free internal renderer `butlers.migrations.public_mcp_owner` supplies the
+subscriber database prerequisite. It is not an operator entrypoint: no public `owner-sql`
+command, deployment recipe or public chart is delivered here. Those three must ship together
+in their required later PR and use this implementation. The target procedures below remain
+pending until then; agents must not improvise a supported activation path.
+
+The renderer validates the reconciled digest and actual publication, primary types/keys,
+credentialless publisher, finite WAL cap and closed existing subscriber catalog before
+mutation. Applied JSON is decoded with the same closed version-1 semantics as the pure
+transition comparator. Rebuild and narrowing are separate decisions. Rebuilds capture
+validated identities and delete the applied row atomically before disabling, disassociating
+and dropping the subscription. Cleanup targets only the exact main slot and sync slots whose
+subscription OIDs were captured from the validated catalog. Unrelated slots and backends
+remain untouched. The final applied write is last; enabled subscription and all expected
+relation states `r` independently determine initial-copy completeness. An unchanged healthy
+rerun preserves the applied row and view/subscription OIDs.
+
+An owner-only `mcp_local.rebuild_state` journal retains database/subscription identity, an
+attempt UUID, target digest, at most 16 validated canonical declarations and at most 16
+captured subscription OIDs. Its closed columns, constraints, ownership and ACLs are checked;
+malformed, foreign or conflicting live identities refuse. Capture and applied-row deletion
+share one transaction, so interruption cannot lose the exact old cleanup identities. Resume
+retains them even if the target changes. Final applied write and journal removal share one
+transaction; a journal is never evidence of completion and has no reader/importer grant.
+
+Subscriber-local `mcp_read` views use a fixed `(source_id text, fields jsonb)` output.
+Fields are explicitly declared, never whole-row discovery. Numeric values are represented
+as exact decimal text, nulls remain null, composite source IDs use JSON arrays, and graph
+source prefixes map to manifest domains without exposing `publish_key`. Entity deletion,
+unidentified and placeholder flags are excluded from every read view. Finance transactions
+hide soft-deleted rows. These local representations do not alter publication columns or the
+canonical digest. Added base inputs precede view replacement; replaced definitions stop
+referencing removed/generated/type-changing inputs before those inputs are dropped. Existing
+view OIDs remain stable; only a source removed from the manifest loses its view. Metadata is
+a view and freshness is a timestamp-only function; exactly two pinned-search-path definers
+exist, with no monitoring role.
+
+**Still pending:** hosted execution of the new real-PG17 lifecycle controls, public command,
+recipe/chart activation, request/canary/digest serving semantics, named read consumers,
+deployed privileges/network and live owner steps. The deployed API and migrations currently
+share a configured database login and the API does not SET ROLE. SQL ACLs cannot establish
+controls-only API writes while that effective identity also owns manifest state. Both
+original member issues remain partial; no server/importer/approval/retention or deployment
+completion follows from this database foundation.
 
 The remaining sections retain the full target procedure and its pending ownership below.
 

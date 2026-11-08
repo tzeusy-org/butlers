@@ -1504,15 +1504,27 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
     )
 
 
-def test_public_mcp_primary_bootstrap_is_guarded_private_and_repeatable(postgres_container):
+@pytest.fixture(scope="module")
+def public_mcp_postgres_container():
+    from butlers.testing.public_mcp import public_mcp_cluster
+
+    with public_mcp_cluster() as postgres:
+        yield postgres
+
+
+def test_public_mcp_primary_bootstrap_is_guarded_private_and_repeatable(
+    public_mcp_postgres_container,
+):
     """Real script: absent owner prerequisites skip, then precise metadata ACLs survive rerun."""
     from butlers.testing.migration import (
         create_migration_db,
         migration_bootstrap_db_url,
-        migration_db_name,
     )
 
-    name = migration_db_name()
+    postgres_container = public_mcp_postgres_container
+    from butlers.testing.public_mcp import create_public_mcp_roles
+
+    name = "butlers"
     url = create_migration_db(postgres_container, name)
     migration = create_engine(url)
     admin = create_engine(migration_bootstrap_db_url(postgres_container, name))
@@ -1557,11 +1569,7 @@ def test_public_mcp_primary_bootstrap_is_guarded_private_and_repeatable(postgres
             ).scalar_one()
         # Supply only the CNPG-managed role prerequisites first; no projection DB => still skip.
         with cluster.connect() as conn:
-            for role in roles[:-1]:
-                if not conn.execute(
-                    text("SELECT 1 FROM pg_roles WHERE rolname=:r"), {"r": role}
-                ).scalar():
-                    conn.exec_driver_sql(f'CREATE ROLE "{role}" NOLOGIN NOREPLICATION')
+            create_public_mcp_roles(conn, include_subscription_owner=False)
             before = conn.execute(
                 text(
                     "SELECT rolname,rolcanlogin,rolreplication,rolinherit FROM pg_roles WHERE rolname=ANY(:roles) ORDER BY rolname"
@@ -1575,7 +1583,7 @@ def test_public_mcp_primary_bootstrap_is_guarded_private_and_repeatable(postgres
                 is None
             )
         with cluster.connect() as conn:
-            conn.exec_driver_sql("CREATE DATABASE butlers_public")
+            conn.exec_driver_sql("CREATE DATABASE butlers_public OWNER mcp_projection_owner")
         # A projection DB with one missing managed identity still supplies no metadata.
         assert bootstrap().returncode == 0
         with admin.connect() as conn:
@@ -1584,7 +1592,10 @@ def test_public_mcp_primary_bootstrap_is_guarded_private_and_repeatable(postgres
                 is None
             )
         with cluster.connect() as conn:
-            conn.exec_driver_sql("CREATE ROLE mcp_subscription_owner NOLOGIN NOREPLICATION")
+            conn.exec_driver_sql("CREATE ROLE mcp_subscription_owner LOGIN NOREPLICATION")
+            conn.exec_driver_sql(
+                "GRANT pg_create_subscription,mcp_projection_owner TO mcp_subscription_owner"
+            )
             before = conn.execute(
                 text(
                     "SELECT rolname,rolcanlogin,rolreplication,rolinherit FROM pg_roles WHERE rolname=ANY(:roles) ORDER BY rolname"
@@ -1666,6 +1677,96 @@ def test_public_mcp_primary_bootstrap_is_guarded_private_and_repeatable(postgres
                 ).all()
                 == before
             )
+        # Grant synchronization uses actual publication membership. Explicit
+        # metadata SELECT/USAGE is recognized on rerun; publisher UPDATE is not.
+        with admin.begin() as conn:
+            conn.exec_driver_sql(
+                "CREATE PUBLICATION butlers_public_v1 FOR TABLE mcp_surface.controls, mcp_surface.manifest_state"
+            )
+            unrelated_before = conn.execute(
+                text(
+                    "SELECT oid,rolcanlogin,rolsuper,rolreplication FROM pg_roles WHERE rolname='butler_finance_rw'"
+                )
+            ).one()
+        assert bootstrap().returncode == 0
+        assert bootstrap().returncode == 0
+        with admin.connect() as conn:
+            assert conn.execute(
+                text(
+                    "SELECT has_database_privilege('butlers_projection_publisher','butlers','CONNECT') AND has_schema_privilege('butlers_projection_publisher','mcp_surface','USAGE') AND has_table_privilege('butlers_projection_publisher','mcp_surface.controls','SELECT') AND has_table_privilege('butlers_projection_publisher','mcp_surface.manifest_state','SELECT')"
+                )
+            ).scalar_one()
+            assert not conn.execute(
+                text(
+                    "SELECT EXISTS(SELECT 1 FROM pg_namespace n,LATERAL aclexplode(n.nspacl) a WHERE n.nspname='public' AND a.grantee='butlers_projection_publisher'::regrole)"
+                )
+            ).scalar_one()
+            assert not conn.execute(
+                text(
+                    "SELECT has_table_privilege('butlers_projection_publisher','mcp_surface.controls','UPDATE,INSERT,DELETE')"
+                )
+            ).scalar_one()
+            assert conn.execute(
+                text(
+                    "SELECT 'statement_timeout=2s'=ANY(rolconfig) FROM pg_roles WHERE rolname='mcp_public_ro'"
+                )
+            ).scalar_one()
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT oid,rolcanlogin,rolsuper,rolreplication FROM pg_roles WHERE rolname='butler_finance_rw'"
+                    )
+                ).one()
+                == unrelated_before
+            )
+        for fault, restore, message in (
+            (
+                "ALTER ROLE butlers_projection_publisher PASSWORD 'disposable-fault'",
+                "ALTER ROLE butlers_projection_publisher PASSWORD NULL",
+                "attributes/credential",
+            ),
+            (
+                "GRANT butler_finance_rw TO butlers_projection_publisher",
+                "REVOKE butler_finance_rw FROM butlers_projection_publisher",
+                "membership",
+            ),
+            (
+                "GRANT UPDATE ON mcp_surface.manifest_state TO butlers_projection_publisher",
+                "REVOKE UPDATE ON mcp_surface.manifest_state FROM butlers_projection_publisher",
+                "unsupported ACL",
+            ),
+        ):
+            try:
+                with cluster.connect() as conn:
+                    # Role changes are cluster-global; relation grants belong to butlers.
+                    if fault.startswith("GRANT UPDATE"):
+                        with admin.begin() as primary:
+                            primary.exec_driver_sql(fault)
+                    else:
+                        conn.exec_driver_sql(fault)
+                refused = bootstrap(check=False)
+                assert refused.returncode != 0 and message in refused.stderr
+            finally:
+                if restore.startswith("REVOKE UPDATE"):
+                    with admin.begin() as conn:
+                        conn.exec_driver_sql(restore)
+                else:
+                    with cluster.connect() as conn:
+                        conn.exec_driver_sql(restore)
+            assert bootstrap().returncode == 0
+        # The real dedicated HBA/peer files are scoped and restored, including
+        # bootstrap reruns: a NULL password alone does not establish this guard.
+        from butlers.testing.public_mcp import PublicMcpTopology
+
+        topology = PublicMcpTopology(postgres_container, migration, admin, principal, {})
+        for config, message in (
+            ({"ident": "local postgres postgres\n"}, "peer map"),
+            ({"hba": "local all all trust\nhost all all all trust\n"}, "peer rule"),
+        ):
+            with topology.authentication(**config):
+                refused = bootstrap(check=False)
+                assert refused.returncode != 0 and message in refused.stderr
+            assert bootstrap().returncode == 0
         # Unknown authority cannot be quietly normalized by an ordinary rerun.
         with admin.begin() as conn:
             conn.exec_driver_sql("GRANT SELECT ON mcp_surface.manifest_state TO mcp_public_ro")
