@@ -670,6 +670,8 @@ _STORM_MIN_ENTITIES = 20
 _STORM_WINDOW = timedelta(minutes=15)
 # After this long a cluster member is a genuinely dead device, not a restart artifact.
 _STORM_MAX_AGE = timedelta(hours=48)
+# The burst is announced on the run that first sees it (the check runs every 4h).
+_STORM_NOTICE_WINDOW = timedelta(hours=4)
 
 # Zigbee2MQTT per-gesture dimmer "action" sensors (e.g.
 # sensor.bedroom_knob_action_brightness_delta) only hold a value during an
@@ -709,7 +711,8 @@ async def _load_health_check_ignore(pool: asyncpg.Pool) -> list[str]:
             raw = None
     if not isinstance(raw, list):
         return []
-    return [p for p in raw if isinstance(p, str) and p]
+    # A bare wildcard would mute the whole check while still reporting "all healthy".
+    return [p for p in raw if isinstance(p, str) and p.strip("*?")]
 
 
 def find_restart_storm(candidates: list[tuple[str, datetime]], *, now: datetime) -> set[str]:
@@ -2337,12 +2340,28 @@ async def run_device_health_check(
         ):
             offline_candidates.append((row["entity_id"], stamp))
     storm_entity_ids = find_restart_storm(offline_candidates, now=now)
+    if ignore_patterns:
+        logger.info(
+            "device_health_check: %d retired-entity pattern(s) active, %d entities skipped",
+            len(ignore_patterns),
+            sum(1 for row in rows if is_ignored_entity(row["entity_id"], ignore_patterns)),
+        )
     if storm_entity_ids:
         logger.info(
             "device_health_check: suppressing %d entities that went offline together "
             "(likely a Home Assistant restart)",
             len(storm_entity_ids),
         )
+        newest = max(ts for eid, ts in offline_candidates if eid in storm_entity_ids)
+        if now - (newest if newest.tzinfo else newest.replace(tzinfo=UTC)) < _STORM_NOTICE_WINDOW:
+            # Suppression must never be silent: one notice per burst (runs are 4h apart).
+            await _send_notify(
+                pool,
+                f"ℹ️ {len(storm_entity_ids)} Home Assistant entities went offline "
+                "together, which usually means an HA restart or an integration/coordinator "
+                "outage. They are held back from device alerts for 48h; check Home Assistant "
+                "if they do not recover.",
+            )
 
     # ------------------------------------------------------------------
     # 3 & 4. Classify battery and offline issues
