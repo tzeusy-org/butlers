@@ -20,7 +20,7 @@ with the per-workload policies in egress-profiles.yaml and renders it not at all
 {{- end }}
 {{- end }}
 {{- /* Declared profiles replace this policy entirely (templates/egress-profiles.yaml). */}}
-{{- if not .Values.egressProfiles.enabled }}
+{{- if not (include "butlers.egressProfilesEnabled" .) }}
 # The retired bridge grants no pod an exception. Retain the existing IPv4-only
 # tracker boundary independently of all product features and credentials.
 # Site configuration must cover every tracker IPv4 address; no CIDR means refusal.

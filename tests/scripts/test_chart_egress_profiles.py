@@ -282,6 +282,17 @@ def test_no_rule_admits_every_destination(everything):
         (("egressProfiles.sites.otlp.cidr=0.0.0.0/0",), "one IPv4 /32"),
         ((f"egressProfiles.sites.otlp.cidr={_TRACKER}/32",), "tracker, metadata"),
         (("egressProfiles.sites.otlp.cidr=169.254.169.254/32",), "tracker, metadata"),
+        # Kubernetes reads 192.0.2.01 as the tracker's 192.0.2.1.
+        (("egressProfiles.sites.otlp.cidr=192.0.2.01/32",), "one IPv4 /32"),
+        (("egressProfiles.sites.otlp.cidr=127.0.0.1/32",), "tracker, metadata"),
+        (("egressProfiles.sites.otlp.cidr=224.0.0.1/32",), "tracker, metadata"),
+        (("egressProfiles.sites.otlp.cidr=255.255.255.255/32",), "tracker, metadata"),
+        (
+            ("trackerEgress.enabled=false", "trackerEgress.deniedCidrs=null"),
+            "egressProfiles.enabled needs trackerEgress.deniedCidrs",
+        ),
+        (("egressProfiles.enabled=yes",), "must be true or false"),
+        (("egressProfiles.sites.database.namespace=butlers-dev",), "release's namespace"),
         (("egressProfiles.sites.otlp.namespace=lgtm",), "exactly one of namespace or cidr"),
         (("egressProfiles.sites.otlp.port=1",), "unknown key port"),
         (("egressProfiles.sites.database.namespace=Bad_Name",), "valid namespace name"),

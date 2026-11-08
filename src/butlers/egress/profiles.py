@@ -45,6 +45,10 @@ _PRIVATE_SUFFIXES = (
     ".example",
 )
 _PROTOCOLS = frozenset({"TCP", "UDP"})
+# The shared gateway's component. Reaching it is granted only through gateway_port, so
+# no profile may name it as a peer (that would borrow another workload's identity) or
+# declare it as a workload.
+GATEWAY_COMPONENT = "egress-gateway"
 _WORKLOAD_KEYS = frozenset(
     {"summary", "held", "gateway_port", "internal", "sites", "external", "dynamic"}
 )
@@ -175,7 +179,8 @@ def _site(where: str, value: Any) -> SitePeer:
 def _external(where: str, value: Any) -> ExternalHost:
     text = _text(where, value)
     host, sep, port_text = text.rpartition(":")
-    if not sep or not port_text.isdigit():
+    # isdigit alone admits Unicode digits; a leading zero would not be the exact port.
+    if not sep or not (port_text.isascii() and port_text.isdigit()) or port_text[0] == "0":
         raise ProfileError(f"{where}: {text!r} must be hostname:port")
     labels = host.split(".")
     if (
@@ -265,7 +270,21 @@ def parse_profiles(text: str) -> EgressProfiles:
     tables = _table("workloads", document.get("workloads"))
     if not tables:
         raise ProfileError("workloads: at least one profile is required")
+    if GATEWAY_COMPONENT in tables:
+        raise ProfileError(f"workloads.{GATEWAY_COMPONENT}: the gateway is not a profiled workload")
     workloads = {name: _workload(name, value) for name, value in tables.items()}
+    for profile in workloads.values():
+        for peer in profile.internal:
+            if peer.component == GATEWAY_COMPONENT:
+                raise ProfileError(
+                    f"workloads.{profile.name}.internal: the gateway is reachable only through "
+                    "gateway_port, never as an internal peer"
+                )
+            if peer.component not in workloads:
+                raise ProfileError(
+                    f"workloads.{profile.name}.internal: {peer.component!r} "
+                    "is not a declared workload"
+                )
     ports: dict[int, str] = {}
     for profile in workloads.values():
         if profile.gateway_port is None:

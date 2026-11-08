@@ -28,7 +28,12 @@ The file's header documents each key. In short:
 The parser (`src/butlers/egress/profiles.py`) refuses IP literals, wildcards, uppercase
 or trailing-dot names, single-label names, cluster/LAN/tailnet suffixes (`.svc`,
 `.cluster.local`, `.local`, `.lan`, `.internal`, `.home.arpa`, `.ts.net`), unknown keys,
-a gateway port shared by two workloads, and a held workload that also declares routes.
+a gateway port shared by two workloads, a held workload that also declares routes, and
+an internal peer that is not a declared workload or is the gateway itself (the gateway is
+reachable only through `gateway_port`). The parser checks spelling, not resolution: a
+public-looking name that resolves to a private address (for example a wildcard-DNS
+service) passes it. Refusing those at connect time, including DNS rebinding, is the
+gateway's job.
 
 After editing the TOML, run `make egress-profiles` and commit both files. The chart
 reads the rendering, `deploy/helm/butlers/files/egress-profiles.json`;
@@ -41,7 +46,7 @@ implicitly admitted.
 
 | `egressProfiles.enabled` | Egress policies |
 | --- | --- |
-| `false` (default) | Unchanged: the one `<release>-tracker-egress` policy when `trackerEgress.enabled` or `egressPolicy.enabled` (see [Kubernetes deployment](kubernetes-deployment.md#egress-policy-opt-in)). |
+| `false` (default) | As before (the only render change is a component label on the log-cleanup pod): the one `<release>-tracker-egress` policy when `trackerEgress.enabled` or `egressPolicy.enabled` (see [Kubernetes deployment](kubernetes-deployment.md#egress-policy-opt-in)). |
 | `true` | `<release>-default-deny-egress` selecting every pod with no rule, plus one `<release>-egress-<component>` per rendered workload. `<release>-tracker-egress` is not rendered. |
 
 Egress allow rules union, so the profiles replace the tracker-egress policy rather than
@@ -58,7 +63,10 @@ Each workload policy admits exactly:
   when the workload declares external hosts.
 
 Nothing else is reachable. In particular the tracker stays unreachable: no profile can
-name it, and a site `/32` equal to a `trackerEgress.deniedCidrs` entry is refused.
+name it, enabling profiles requires `trackerEgress.deniedCidrs` (in every environment,
+not only where `trackerEgress.enabled`), and a site `/32` equal to one of its entries is
+refused. Site CIDRs must be written with canonical octets, because Kubernetes reads
+`01` as `1`.
 
 Rendering fails, naming the workload or site, when:
 
@@ -67,8 +75,10 @@ Rendering fails, naming the workload or site, when:
 - a rendered workload's profile is `held` (today: `connector-telegram-user`, because
   Telethon dials Telegram data centres by address and ignores proxy environment);
 - a required site peer has no location, or a location is malformed: not exactly one of
-  `namespace` or `cidr`, a CIDR other than one IPv4 `/32`, or a tracker, metadata,
-  loopback or unspecified address.
+  `namespace` or `cidr`, the release's own namespace, a CIDR other than one canonical
+  IPv4 `/32`, or a tracker, metadata, loopback, unspecified, multicast or reserved
+  address;
+- `trackerEgress.deniedCidrs` is empty, or `egressProfiles.enabled` is not a boolean.
 
 `tests/scripts/test_chart_egress_profiles.py` evaluates the rendered union for every pod.
 That is rendered intent, not enforcement evidence.

@@ -206,7 +206,8 @@ peers whose port the profile owns, and exact public `hostname:port` entries reac
 only through the shared egress gateway on the workload's own gateway port. Egress SHALL
 widen only by a reviewed change to that file; no runtime widening path exists. The
 parser SHALL refuse IP literals, wildcards, private, cluster and tailnet names, unknown
-keys and a gateway port shared by two workloads. The chart's opt-in
+keys, a gateway port shared by two workloads, and an internal peer that is the gateway
+or not a declared workload. The chart's opt-in
 `egressProfiles.enabled` SHALL replace the tracker-egress policy with default-deny
 egress for every pod plus exactly one allow policy per workload, and SHALL be disabled
 by default.
@@ -227,8 +228,13 @@ by default.
 
 #### Scenario: Direct private and public destinations are denied
 - **WHEN** the chart renders with profiles enabled
-- **THEN** no pod's egress union admits the tracker, link-local metadata, private or
-  public addresses directly, and a workload reaches the gateway only on its own port
+- **THEN** no pod's egress union admits the tracker, link-local metadata, or any
+  private or public address other than its declared site `/32`s, and a workload reaches
+  the gateway only on its own port
+
+#### Scenario: Profiles need the tracker addresses
+- **WHEN** `egressProfiles.enabled=true` with no `trackerEgress.deniedCidrs`
+- **THEN** rendering fails, so no site `/32` can name an unknown tracker address
 
 #### Scenario: Stale rendering fails
 - **WHEN** `deploy/egress-profiles.toml` changes without re-rendering

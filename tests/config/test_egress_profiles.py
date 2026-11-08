@@ -33,6 +33,9 @@ gateway_port = 3101
 internal = [{{ component = "beta", port = 41100, end_port = 41112 }}]
 sites = [{{ site = "database", port = 5432 }}]
 external = ["api.example-provider.com:443"]
+
+[workloads.beta]
+summary = "b"
 """
 
 
@@ -105,8 +108,10 @@ def test_an_external_entry_that_is_not_an_exact_public_name_is_refused(host):
     ("workload", "match"),
     [
         ('gateway_port = 3101\nexternal = ["api.example-provider.com"]', "hostname:port"),
-        ('gateway_port = 3101\nexternal = ["api.example-provider.com:0"]', "port"),
-        ('gateway_port = 3101\nexternal = ["api.example-provider.com:70000"]', "port"),
+        ('gateway_port = 3101\nexternal = ["api.example-provider.com:0"]', "hostname:port"),
+        ('gateway_port = 3101\nexternal = ["api.example-provider.com:0443"]', "hostname:port"),
+        ('gateway_port = 3101\nexternal = ["api.example-provider.com:²"]', "hostname:port"),
+        ('gateway_port = 3101\nexternal = ["api.example-provider.com:70000"]', "not a port in"),
         ('external = ["api.example-provider.com:443"]', "need a gateway_port"),
         ("gateway_port = 3101", "without external"),
         ('gateway_port = 80\nexternal = ["api.example-provider.com:443"]', "1024-65535"),
@@ -116,7 +121,7 @@ def test_an_external_entry_that_is_not_an_exact_public_name_is_refused(host):
             '"api.example-provider.com:443"]',
             "duplicate",
         ),
-        ('internal = [{ component = "beta", port = true }]', "port"),
+        ('internal = [{ component = "beta", port = true }]', "not a port in"),
         ('internal = [{ component = "beta", port = 41100, end_port = 41000 }]', "below"),
         ('internal = [{ component = "beta", port = 41100, protocol = "SCTP" }]', "protocol"),
         ('internal = [{ component = "Beta", port = 41100 }]', "component/site name"),
@@ -156,6 +161,33 @@ def test_a_shared_gateway_port_is_refused_because_it_is_the_workload_identity():
     )
     with pytest.raises(ProfileError, match="workload identity"):
         parse_profiles(text)
+
+
+@pytest.mark.parametrize(
+    ("extra", "match"),
+    [
+        pytest.param(
+            '\n[workloads.gamma]\nsummary = "g"\n'
+            'internal = [{ component = "egress-gateway", port = 3101 }]\n',
+            "only through gateway_port",
+            id="gateway-as-internal-peer-borrows-another-identity",
+        ),
+        pytest.param(
+            '\n[workloads.egress-gateway]\nsummary = "g"\n',
+            "not a profiled workload",
+            id="gateway-as-workload",
+        ),
+        pytest.param(
+            '\n[workloads.gamma]\nsummary = "g"\n'
+            'internal = [{ component = "undeclared", port = 1, end_port = 65535 }]\n',
+            "not a declared workload",
+            id="undeclared-peer",
+        ),
+    ],
+)
+def test_a_peer_outside_the_declared_workloads_is_refused(extra, match):
+    with pytest.raises(ProfileError, match=match):
+        parse_profiles(_VALID + extra)
 
 
 def test_check_mode_fails_on_a_stale_rendering_and_passes_once_rendered(tmp_path, capsys):

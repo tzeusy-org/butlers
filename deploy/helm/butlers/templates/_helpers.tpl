@@ -104,6 +104,16 @@ https://{{ .Values.publicUrl.host }}
 {{- if .Values.butlersControl.enabled -}}butlers-control{{- else -}}butlers-up{{- end -}}
 {{- end -}}
 
+{{/* "true" when egressProfiles.enabled, "" when not. tracker-egress.yaml and
+     egress-profiles.yaml share it so they can never disagree; a non-boolean refuses. */}}
+{{- define "butlers.egressProfilesEnabled" -}}
+{{- $v := toString .Values.egressProfiles.enabled -}}
+{{- if not (has $v (list "true" "false")) -}}
+{{- fail (printf "egressProfiles.enabled must be true or false, not %q" $v) -}}
+{{- end -}}
+{{- if eq $v "true" -}}true{{- end -}}
+{{- end -}}
+
 {{/* Every workload component this release renders, as a JSON list. Each must have a
      profile in deploy/egress-profiles.toml when egressProfiles.enabled; keep this in step
      with the templates (tests/scripts/test_chart_egress_profiles.py checks it). */}}

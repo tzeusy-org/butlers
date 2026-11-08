@@ -12,7 +12,7 @@ is the workload's identity at the gateway). A rendered workload without a profil
 or with a held one, fails the render. The tracker stays unreachable because no
 profile can name it: site CIDRs are single /32s that may not be a tracker address.
 */ -}}
-{{- if .Values.egressProfiles.enabled }}
+{{- if include "butlers.egressProfilesEnabled" . }}
 {{- if .Values.egressPolicy.enabled }}
 {{- fail "egressProfiles.enabled supersedes egressPolicy: set egressPolicy.enabled=false, or its additive 0.0.0.0/0 rule stays open beside the profiles" }}
 {{- end }}
@@ -23,6 +23,9 @@ profile can name it: site CIDRs are single /32s that may not be a tracker addres
 {{- $profiles := $doc.workloads }}
 {{- $sites := .Values.egressProfiles.sites | default dict }}
 {{- $denied := .Values.trackerEgress.deniedCidrs | default list }}
+{{- if not $denied }}
+{{- fail "egressProfiles.enabled needs trackerEgress.deniedCidrs (scripts/k8s/site-helm-args.sh resolves it), so no site /32 can name the tracker" }}
+{{- end }}
 {{- $release := .Release.Name }}
 # Default-deny egress for every pod, including CronJobs and any future workload.
 apiVersion: networking.k8s.io/v1
@@ -92,11 +95,14 @@ spec:
     - to:
         {{- if hasKey $loc "cidr" }}
         {{- $cidr := toString $loc.cidr }}
-        {{- if or (hasKey $loc "podLabels") (not (regexMatch "^(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}/32$" $cidr)) }}
+        {{- /* Canonical octets only: Kubernetes reads 01 as 1, so a leading zero could
+               spell a tracker address that the exact-match check below would miss. */}}
+        {{- if or (hasKey $loc "podLabels") (not (regexMatch "^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}/32$" $cidr)) }}
         {{- fail (printf "egressProfiles.sites.%s.cidr must be one IPv4 /32 with no podLabels" $site) }}
         {{- end }}
-        {{- if or (has $cidr $denied) (hasPrefix "169.254." $cidr) (hasPrefix "127." $cidr) (hasPrefix "0." $cidr) }}
-        {{- fail (printf "egressProfiles.sites.%s.cidr %s is a tracker, metadata, loopback or unspecified address" $site $cidr) }}
+        {{- $first := int (first (splitList "." $cidr)) }}
+        {{- if or (has $cidr $denied) (hasPrefix "169.254." $cidr) (eq $first 127) (eq $first 0) (ge $first 224) }}
+        {{- fail (printf "egressProfiles.sites.%s.cidr %s is a tracker, metadata, loopback, unspecified, multicast or reserved address" $site $cidr) }}
         {{- end }}
         - ipBlock:
             cidr: {{ $cidr }}
@@ -104,6 +110,9 @@ spec:
         {{- $ns := toString $loc.namespace }}
         {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $ns) }}
         {{- fail (printf "egressProfiles.sites.%s.namespace must be one valid namespace name" $site) }}
+        {{- end }}
+        {{- if eq $ns $.Release.Namespace }}
+        {{- fail (printf "egressProfiles.sites.%s.namespace is this release's namespace: chart peers are internal entries, and a site there would admit every pod, the gateway included" $site) }}
         {{- end }}
         - namespaceSelector:
             matchLabels:
