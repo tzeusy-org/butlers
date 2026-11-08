@@ -81,12 +81,14 @@ def provider_rejected(value: Any) -> bool:
     return transport is not None and transport.get("outcome") == "rejected"
 
 
-def delivery_rejected_result(code: str = "provider_rejected") -> dict[str, Any]:
+def delivery_rejected_result(code: Any = "provider_rejected") -> dict[str, Any]:
     """What an approved send records when the provider proved it rejected the send."""
     return {
         "status": DELIVERY_REJECTED_STATUS,
         "delivery_confirmed": False,
-        "failure_code": code if code in SEND_FAILURE_LABELS else "provider_rejected",
+        "failure_code": code
+        if isinstance(code, str) and code in SEND_FAILURE_LABELS
+        else "provider_rejected",
     }
 
 
@@ -94,7 +96,8 @@ def failure_from_execution_result(result: Any) -> dict[str, str] | None:
     """The ``{code, label}`` of a recorded rejected send, read from its execution result."""
     if not isinstance(result, dict):
         return None
-    inner = result.get("result") if isinstance(result.get("result"), dict) else result
+    nested = result.get("result")
+    inner: dict[str, Any] = nested if isinstance(nested, dict) else result
     if inner.get("status") != DELIVERY_REJECTED_STATUS:
         return None
     return failure_payload(inner.get("failure_code"))
