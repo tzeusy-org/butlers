@@ -8,6 +8,7 @@ apply worker, source migrations or owning source triggers with stand-ins.
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import replace
@@ -298,9 +299,25 @@ def test_view_oid_survives_real_type_and_generated_dependency_changes(copied, ki
     try:
         if kind == "type-change":
             with topology.engine.begin() as conn:
+                # PostgreSQL cannot alter a published column's type. This is
+                # the real source migration boundary, before subscriber repair:
+                # remove only this owned membership, change the source type and
+                # restore the exact target publication atomically.
+                conn.exec_driver_sql(
+                    "ALTER PUBLICATION butlers_public_v1 DROP TABLE finance.accounts"
+                )
                 conn.exec_driver_sql(
                     "ALTER TABLE finance.accounts ALTER COLUMN last_four TYPE text"
                 )
+                reconcile_connection(conn, target)
+            assert (
+                _scalar(
+                    topology.engine,
+                    "SELECT format_type(atttypid,atttypmod) FROM pg_attribute "
+                    "WHERE attrelid='finance.accounts'::regclass AND attname='last_four'",
+                )
+                == "text"
+            )
         _apply(topology, projection, target)
         assert _scalar(projection, "SELECT to_regclass(:view)::oid", {"view": view}) == before
         with projection.connect() as conn:
@@ -320,9 +337,23 @@ def test_view_oid_survives_real_type_and_generated_dependency_changes(copied, ki
     finally:
         if kind == "type-change":
             with topology.engine.begin() as conn:
+                # A failed apply may leave this membership absent. Inspect it
+                # before restoring, so cleanup handles either actual catalog.
+                if conn.execute(
+                    text(
+                        "SELECT EXISTS(SELECT 1 FROM pg_publication_rel r "
+                        "JOIN pg_publication p ON p.oid=r.prpubid "
+                        "WHERE p.pubname='butlers_public_v1' "
+                        "AND r.prrelid='finance.accounts'::regclass)"
+                    )
+                ).scalar_one():
+                    conn.exec_driver_sql(
+                        "ALTER PUBLICATION butlers_public_v1 DROP TABLE finance.accounts"
+                    )
                 conn.exec_driver_sql(
                     "ALTER TABLE finance.accounts ALTER COLUMN last_four TYPE character(4)"
                 )
+                reconcile_connection(conn, full)
         _apply(topology, projection, full)
     assert _scalar(projection, "SELECT to_regclass(:view)::oid", {"view": view}) == before
     if kind == "generated-dependency-removal":
@@ -451,10 +482,18 @@ def test_view_fields_replicate_exact_values_and_hide_private_neighbors(copied):
                 ),
                 ids,
             ).scalar_one()
+            ids["category_name"] = "subscriber-" + uuid.uuid4().hex
+            ids["category"] = conn.execute(
+                text(
+                    "INSERT INTO finance.categories(name,display_name) "
+                    "VALUES (:category_name,'Subscriber category') RETURNING id"
+                ),
+                ids,
+            ).scalar_one()
             ids["transaction"] = conn.execute(
                 text(
                     "INSERT INTO finance.transactions(account_id,posted_at,merchant,amount,currency,direction,category) "
-                    "VALUES (:account,clock_timestamp(),'Synthetic merchant',12.34,'USD','debit','synthetic') RETURNING id"
+                    "VALUES (:account,clock_timestamp(),'Synthetic merchant',12.34,'USD','debit',:category_name) RETURNING id"
                 ),
                 ids,
             ).scalar_one()
@@ -560,6 +599,8 @@ def test_view_fields_replicate_exact_values_and_hide_private_neighbors(copied):
         with topology.engine.begin() as conn:
             if "transaction" in ids:
                 conn.execute(text("DELETE FROM finance.transactions WHERE id=:transaction"), ids)
+            if "category" in ids:
+                conn.execute(text("DELETE FROM finance.categories WHERE id=:category"), ids)
             if "balance" in ids:
                 conn.execute(text("DELETE FROM finance.balance_snapshots WHERE id=:balance"), ids)
             if "account" in ids:
@@ -956,6 +997,8 @@ def test_filtered_families_propagate_real_iud_with_healthy_neighbors(copied):
 
 
 def test_actual_tcp_principals_and_no_credential_guards(copied):
+    from psycopg2 import OperationalError
+
     from butlers.testing.public_mcp import _HBA, _IDENT
 
     topology, projection, manifest = copied
@@ -964,6 +1007,12 @@ def test_actual_tcp_principals_and_no_credential_guards(copied):
     try:
         assert _scalar(reader, "SELECT count(*) FROM mcp_read.mcp_surface__controls") == 8
         assert _scalar(importer, "SELECT count(*) FROM mcp_inbox.proposals") == 0
+        for allowed, role in ((reader, "mcp_public_ro"), (importer, "mcp_proposals_reader")):
+            with allowed.connect() as conn:
+                assert conn.execute(text("SELECT current_user,current_database()")).one() == (
+                    role,
+                    "butlers_public",
+                )
         for role in ("mcp_public_ro", "mcp_proposals_reader", "butlers_projection_publisher"):
             for database in ("butlers", "postgres", "template1"):
                 denied = topology.reader_engine(role, database)
@@ -971,7 +1020,33 @@ def test_actual_tcp_principals_and_no_credential_guards(copied):
                     with pytest.raises(DBAPIError) as refusal:
                         with denied.connect():
                             pytest.fail("foreign database connection must be refused")
-                    assert refusal.value.orig.pgcode == "28000"
+                    original = refusal.value.orig
+                    # libpq startup failures can lack a structured SQLSTATE.
+                    # Match only the server's explicit reject for this principal
+                    # and database; wrong passwords/unreachable endpoints and
+                    # unrelated OperationalErrors cannot satisfy this predicate.
+                    # Keep the raw diagnostic in RAM; assertion output is closed.
+                    hba_reject = re.search(
+                        r"(?:^|failed: )FATAL:\s+pg_hba\.conf rejects connection for host "
+                        r'"[^"\r\n]+", user "'
+                        + re.escape(role)
+                        + r'", database "'
+                        + re.escape(database)
+                        + r'", (?:no encryption|SSL encryption)\s*$',
+                        str(original),
+                        re.MULTILINE,
+                    )
+                    facts = {
+                        "same_healthy_tcp_endpoint": (denied.url.host, denied.url.port)
+                        == (reader.url.host, reader.url.port),
+                        "expected_principal": denied.url.username == role,
+                        "expected_database": denied.url.database == database,
+                        "startup_driver_error": isinstance(original, OperationalError),
+                        "sqlstate_available_or_startup_unavailable": original.pgcode
+                        in (None, "28000"),
+                        "explicit_server_hba_reject": hba_reject is not None,
+                    }
+                    assert all(facts.values()), facts
                 finally:
                     denied.dispose()
         before = _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied")
