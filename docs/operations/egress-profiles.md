@@ -100,19 +100,61 @@ egressProfiles:
 A namespace location may add `podLabels` to narrow it. A required site with no entry
 fails the render; an `optional` one is simply not admitted.
 
+## The shared gateway
+
+`src/butlers/egress/gateway.py`, rendered by `templates/egress-gateway.yaml` only with
+`egressProfiles.enabled`: a Deployment `egress-gateway` (`egressProfiles.gateway.replicas`,
+default 2, no service-account token), a Service with one port per profiled workload, and
+the profile rendering mounted from a ConfigMap (a checksum annotation rolls the pods on
+change).
+
+- **Identity is the port.** Only the workload's pods may reach its dedicated listener.
+  No header can claim a different workload. CONNECT and opaque upgraded TCP are refused.
+- **Request execution:** an explicit internal HTTP/1.1 hop targets
+  `/_butlers/egress/v1/https/<host>/<port>/<path>?<query>`, with hop Host
+  `egress-gateway:<listener-port>`. The exact profile-approved origin supplies both
+  outbound Host and certificate-verified TLS server name. The gateway resolves one
+  absolute public IPv4 answer set, rejects the entire set if any address is forbidden,
+  then dials a validated numeric address without resolving again. Duplicate authority,
+  ambiguous framing, forwarding/identity headers and unsupported upgrades refuse.
+- **Response boundary:** h11 parses complete bounded origin headers before exposure.
+  Every300..399 (including304 and same-origin redirects) returns a fixed empty403
+  `X-Egress-Refusal: redirect_refused`, with no Location or redirect-target dial.
+  Upload and response progress run concurrently, so an early final response stops
+  and joins the remaining upload. Nonredirect errors and SSE retain streaming.
+  Origin-supplied reserved refusal metadata is discarded.
+- **Resources:** headers8KiB/10s; streamed16KiB chunks;1GiB per direction;
+ 300s inactivity and3600s total exchange. The process admits32 exchanges globally,
+  with an additional128 per-workload cap held through bounded task/writer teardown.
+  The response-header budget starts on its first byte or completed upload, whichever
+  comes first; a still-progressing upload does not start an unconditional response
+  timer. Streaming avoids whole-upload buffering
+  against the256MiB pod limit. Known Gmail25MiB/base64, voice20MiB and notification
+  document50MiB limits fit; larger configurable/model/dependency transfers require
+  separate compatibility closure. Busy gives503; DNS/dial failures502. No fallback.
+- **Privacy:** the gateway transiently receives approved request headers/query/body.
+  It is a credential-bearing execution boundary when activated. Audit contains only
+  validated origin/workload, closed verdict/reason, body byte counts and duration;
+  never paths, payloads, headers or exception text. Real credential transit/activation
+  remains gated separately.
+
+Profiled workloads receive paired nonsecret `BUTLERS_EGRESS_MODE=request-v1` and
+`BUTLERS_EGRESS_GATEWAY=http://egress-gateway:<port>`. Shared external HTTPX/SDK
+construction selects the request transport; incomplete configuration refuses.
+Internal/site-local clients remain separate. Off-mode preserves existing caller
+proxy behavior. No ambient proxy variable forwards into selected mode.
+
 ## Current limits
 
-- **The shared gateway is not deployed yet.** Workload policies point at
-  `egress-gateway` pods that no chart template renders, so enabling profiles today denies
-  every external host. The gateway (CONNECT proxy with per-port workload identity,
-  SNI/authority agreement, IP-literal, private-address and rebinding refusal, content-free
-  audit, two replicas) is the next `bu-dhloi1.15` package.
-- **Clients do not use the gateway yet.** Workloads need proxy configuration
-  (`HTTPS_PROXY` to their own gateway port, `NO_PROXY` for internal peers). httpx honours
-  it by default; the Home Assistant connector's aiohttp session and Telethon do not.
-- **The external host lists are a seed inventory.** Static base URLs were collected from
-  source; the LLM CLIs' provider endpoints (claude, codex, gemini, opencode) are
-  unverified and need conformance before activation.
+- **Vendor/runtime compatibility is incomplete.** The Python request transport does
+  not prove the four pinned CLI/auth adapters, native WS, image dependency/plugin/model
+  closure, or actual per-workload CNI/principal/outage/cursor behavior. Those are required
+  subsequent stages; no opaque TLS success or permanently held required caller replaces
+  them. No real rollout/credential activation is authorized by source controls.
+- **The external host lists are a seed inventory.** Static/dynamic source coverage and
+  connector outage behavior still require their named runtime evidence.
+- **IPv4 only.** The gateway resolves and dials IPv4; a declared host with no IPv4
+  address is unreachable.
 - **Internal peers are reachability only.** RFC 0038 S7 also requires both endpoints to
   authenticate; that is the existing application authentication, not this policy.
 - `scripts/egress-firewall.sh` (compose) stays until every supported caller is replaced
@@ -122,7 +164,7 @@ fails the render; an `optional` one is simply not admitted.
 
 Not authorized by this source change. Each step needs its own authorization:
 
-1. Land the gateway and per-workload proxy wiring.
+1. Prove connector outage behaviour and land the static base-URL coverage check.
 2. Run per-workload conformance in the disposable `butlers-rehearsal` namespace: each
    workload reaches a declared service, and is refused an undeclared public host,
    private/link-local/metadata destinations, another workload's gateway port and an

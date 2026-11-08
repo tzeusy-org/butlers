@@ -20,6 +20,7 @@ from typing import Any, Literal, Protocol
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
+from butlers.egress.http_transport import external_async_client
 from butlers.google_credentials import GOOGLE_TOKEN_URL, GoogleOAuthClient
 
 GOOGLE_OAUTH_TOKEN_URL = GOOGLE_TOKEN_URL
@@ -375,7 +376,7 @@ class GoogleContactsProvider(ContactsProvider):
         self._http_client = (
             http_client
             if http_client is not None
-            else httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=10.0))
+            else external_async_client(timeout=httpx.Timeout(20.0, connect=10.0))
         )
         self._oauth = GoogleOAuthClient(
             self._credentials,

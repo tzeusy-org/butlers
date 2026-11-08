@@ -30,6 +30,7 @@ from butlers.cli_auth.sandbox import (
 )
 from butlers.cli_auth.session import _strip_ansi
 from butlers.credential_store import CredentialStore
+from butlers.egress.http_transport import external_async_client
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ async def _probe_codex_backend(access_token: str) -> tuple[bool, str | None]:
     provider that's actually fine.
     """
     try:
-        async with httpx.AsyncClient(timeout=_CODEX_BACKEND_PROBE_TIMEOUT) as client:
+        async with external_async_client(timeout=_CODEX_BACKEND_PROBE_TIMEOUT) as client:
             resp = await client.get(
                 _CODEX_BACKEND_PROBE_URL,
                 headers={"Authorization": f"Bearer {access_token}"},

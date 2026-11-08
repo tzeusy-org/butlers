@@ -36,6 +36,7 @@ spec:
           command: ["sleep", "infinity"]
           env:
             - {name: HOME, value: /root}
+            {{- with (include "butlers.egressProxyEnv" (dict "root" . "component" "session-host") | trim) }}{{ . | nindent 12 }}{{- end }}
           resources:
             {{- toYaml .Values.sessionHost.resources | nindent 12 }}
 {{- end }}

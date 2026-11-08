@@ -126,6 +126,7 @@ from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
+from butlers.egress.http_transport import external_async_client
 from butlers.google_account_registry import (
     GOOGLE_HEALTH_SCOPE_FAMILIES,
     GoogleAccount,
@@ -966,7 +967,7 @@ class GoogleHealthConnector:
         """Full startup sequence followed by the main poll loop."""
         logger.info("GoogleHealthConnector starting")
 
-        self._http_client = httpx.AsyncClient(timeout=30.0)
+        self._http_client = external_async_client(timeout=30.0)
         self._running = True
 
         try:

@@ -114,6 +114,20 @@ https://{{ .Values.publicUrl.host }}
 {{- if eq $v "true" -}}true{{- end -}}
 {{- end -}}
 
+{{/* Explicit request-executor configuration for this workload listener. Internal
+     clients stay separate; no ambient HTTP(S)_PROXY fallback is configured. */}}
+{{- define "butlers.egressProxyEnv" -}}
+{{- if include "butlers.egressProfilesEnabled" .root -}}
+{{- $p := get (.root.Files.Get "files/egress-profiles.json" | fromJson).workloads .component -}}
+{{- if and $p $p.gateway_port }}
+- name: BUTLERS_EGRESS_MODE
+  value: "request-v1"
+- name: BUTLERS_EGRESS_GATEWAY
+  value: "http://egress-gateway:{{ int $p.gateway_port }}"
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{/* Every workload component this release renders, as a JSON list. Each must have a
      profile in deploy/egress-profiles.toml when egressProfiles.enabled; keep this in step
      with the templates (tests/scripts/test_chart_egress_profiles.py checks it). */}}

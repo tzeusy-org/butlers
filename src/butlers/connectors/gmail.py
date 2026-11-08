@@ -68,6 +68,7 @@ from butlers.connectors.google_fleet import (
 from butlers.connectors.google_fleet import (
     _format_google_error as _format_google_response_error,
 )
+from butlers.egress.http_transport import external_async_client
 from butlers.google_credentials import GoogleTokenCache
 
 if TYPE_CHECKING:
@@ -982,7 +983,7 @@ class GmailConnectorRuntime:
     async def start(self) -> None:
         """Start the Gmail connector runtime."""
         self._running = True
-        self._http_client = httpx.AsyncClient(timeout=30.0)
+        self._http_client = external_async_client(timeout=30.0)
 
         # Start health server
         self._start_health_server()

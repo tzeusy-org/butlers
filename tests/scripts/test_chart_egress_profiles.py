@@ -62,6 +62,7 @@ def _component(name: str) -> Dest:
 
 
 _DNS = Dest("kube-system", {"k8s-app": "kube-dns"})
+_PUBLIC_IP = "93.184.216.34"
 _GATEWAY = _component("egress-gateway")
 
 
@@ -103,8 +104,18 @@ def _pods(docs: list[dict]) -> dict[str, dict[str, str]]:
 
 
 def _selects(selector: dict, labels: dict[str, str]) -> bool:
-    if set(selector) - {"matchLabels"}:
+    if set(selector) - {"matchLabels", "matchExpressions"}:
         raise ValueError(f"selector shape this evaluator does not read: {selector}")
+    for expression in selector.get("matchExpressions", []):
+        value, values = labels.get(expression["key"]), expression.get("values", [])
+        if expression["operator"] == "In":
+            matched = value in values
+        elif expression["operator"] == "NotIn":
+            matched = value not in values
+        else:
+            raise ValueError(f"selector operator this evaluator does not read: {expression}")
+        if not matched:
+            return False
     return all(labels.get(k) == v for k, v in selector.get("matchLabels", {}).items())
 
 
@@ -202,10 +213,14 @@ def test_rollback_holds_workloads_and_retains_restrictive_policy_union(tracker_e
     assert all(d["spec"]["suspend"] is True for d in cronjobs)
     # Suspend does not remove policies: even a lingering/recreated pod stays contained.
     assert _egress_policies(held) == _egress_policies(before)
-    forbidden = [(Dest(ip="203.0.113.5"), 443), (_component("dashboard-api"), 49999)]
+    forbidden = [(Dest(ip=_PUBLIC_IP), 443), (_component("dashboard-api"), 49999)]
     for name, labels in _pods(held).items():
+        gateway = labels["app.kubernetes.io/component"] == "egress-gateway"
         for dest, port in forbidden:
-            assert not _admitting(held, labels, dest, port), (name, dest, port)
+            # Keep workload containment while retaining the gateway's declared
+            # public route. Suspend changes replicas, never the policy union.
+            expected = gateway and dest.ip == _PUBLIC_IP and port == 443
+            assert bool(_admitting(held, labels, dest, port)) is expected, (name, dest, port)
     # Position the unsafe former runbook: turning profiles off widens the union,
     # whether it restores tracker-egress or leaves the pod without an egress policy.
     unsafe = _docs(*settings, "egressProfiles.enabled=false")
@@ -248,11 +263,15 @@ def test_every_rendered_pod_has_exactly_one_policy_owner_its_own_profile(everyth
 
 
 def test_no_pod_reaches_the_tracker_metadata_lan_or_a_public_address_directly(everything):
-    forbidden = (_TRACKER, "169.254.169.254", "10.0.0.5", "100.100.100.100", "203.0.113.5")
+    private = (_TRACKER, "169.254.169.254", "10.0.0.5", "100.100.100.100", "127.0.0.1")
     for name, labels in _pods(everything).items():
-        for ip in forbidden:
+        gateway = labels["app.kubernetes.io/component"] == "egress-gateway"
+        for ip in (*private, _PUBLIC_IP):
             for port in (22, 53, 80, 443, 3307, 5432):
-                assert _admitting(everything, labels, Dest(ip=ip), port) == [], (name, ip, port)
+                admitted = _admitting(everything, labels, Dest(ip=ip), port)
+                # Only the gateway dials public addresses, and only on declared ports.
+                expected = gateway and ip == _PUBLIC_IP and port == 443
+                assert bool(admitted) is expected, (name, ip, port)
 
 
 def test_each_workload_reaches_the_gateway_only_on_its_own_port(everything):
@@ -304,6 +323,8 @@ def test_declared_peers_are_reachable_and_undeclared_ones_are_not(everything):
 
 def test_every_declared_internal_peer_renders_across_its_whole_port_range(everything):
     for name, labels in _pods(everything).items():
+        if labels["app.kubernetes.io/component"] == "egress-gateway":
+            continue  # The gateway has no profile; its policy is checked on its own.
         for peer in _profile(labels["app.kubernetes.io/component"]).internal:
             dest = _component(peer.component)
             for port in (peer.port, peer.end_port):
@@ -360,3 +381,89 @@ def test_an_optional_site_left_unset_is_denied_not_required():
                  "connectors.home-assistant.enabled=false")  # fmt: skip
     pods = _pods(docs)
     assert not _admitting(docs, pods["butlers-up"], Dest(ip=_HOME_ASSISTANT), 8123)
+
+
+def _ingress_admitting(docs, pod: dict[str, str], source: Dest, port: int) -> list[str]:
+    """Names of ingress policies admitting source to pod:port (empty union: open)."""
+    selecting = [
+        doc
+        for doc in docs
+        if doc["kind"] == "NetworkPolicy"
+        and "Ingress" in doc["spec"].get("policyTypes", [])
+        and _selects(doc["spec"]["podSelector"], pod)
+    ]
+    assert selecting, "no ingress policy selects this pod, so all ingress is open"
+    return [
+        policy["metadata"]["name"]
+        for policy in selecting
+        for rule in policy["spec"].get("ingress", [])
+        if _port_admits(rule, port, "TCP")
+        and (not rule.get("from") or any(_peer_admits(peer, source) for peer in rule["from"]))
+    ]
+
+
+def test_the_gateway_admits_each_workload_only_on_that_workloads_port(everything):
+    gateway = _pods(everything)["egress-gateway"]
+    ports = {n: p.gateway_port for n, p in load_profiles().workloads.items() if p.gateway_port}
+    for source in [*ports, "frontend", "connector-owntracks", "backup"]:
+        for owner, port in ports.items():
+            admitted = _ingress_admitting(everything, gateway, _component(source), port)
+            assert bool(admitted) is (source == owner), (source, owner, admitted)
+        # The health port is for the kubelet only.
+        assert not _ingress_admitting(everything, gateway, _component(source), 3100), source
+    assert not _ingress_admitting(everything, gateway, Dest("other", {}), ports["butlers-up"])
+
+
+def test_the_gateway_runs_two_replicas_with_no_service_account_token(everything):
+    deployment = next(
+        d
+        for d in everything
+        if d["kind"] == "Deployment" and d["metadata"]["name"] == "egress-gateway"
+    )
+    assert deployment["spec"]["replicas"] == 2
+    pod = deployment["spec"]["template"]["spec"]
+    assert pod["automountServiceAccountToken"] is False
+    assert "--profiles" in pod["containers"][0]["command"]
+
+
+def _env(docs: list[dict]) -> dict[str, dict[str, str]]:
+    found = {}
+    for doc in docs:
+        if doc["kind"] != "Deployment":
+            continue
+        template = doc["spec"]["template"]
+        component = template["metadata"]["labels"]["app.kubernetes.io/component"]
+        container = template["spec"]["containers"][0]
+        found[component] = {e["name"]: e.get("value") for e in container.get("env", [])}
+    return found
+
+
+def test_each_workload_selects_request_execution_on_its_own_gateway_port_only(everything):
+    profiles = load_profiles().workloads
+    env = _env(everything)
+    for component, variables in env.items():
+        profile = profiles.get(component)
+        if profile is not None and profile.gateway_port:
+            expected = f"http://egress-gateway:{profile.gateway_port}"
+            assert variables.get("BUTLERS_EGRESS_GATEWAY") == expected, component
+            assert variables.get("BUTLERS_EGRESS_MODE") == "request-v1", component
+        else:
+            assert "BUTLERS_EGRESS_GATEWAY" not in variables, component
+            assert "BUTLERS_EGRESS_MODE" not in variables, component
+        assert not {"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} & variables.keys(), (
+            component
+        )
+
+
+def test_profiles_off_renders_no_gateway_and_no_request_env():
+    docs = _docs()
+    names = [d["metadata"]["name"] for d in docs]
+    # Release-prefixed too: butlers-egress-gateway-ingress, butlers-egress-profiles, ...
+    assert not [n for n in names if "egress-gateway" in n or "egress-profiles" in n]
+    assert not [n for n in names if n.startswith("butlers-egress-")], names
+    for component, variables in _env(docs).items():
+        assert "BUTLERS_EGRESS_GATEWAY" not in variables, component
+        assert "BUTLERS_EGRESS_MODE" not in variables, component
+    namespace = next(d for d in docs if d["metadata"]["name"] == "butlers-namespace-ingress")
+    excluded = namespace["spec"]["podSelector"]["matchExpressions"][0]["values"]
+    assert "egress-gateway" not in excluded

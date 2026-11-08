@@ -365,8 +365,8 @@ egressPolicy:
 # Reviewed per-workload egress from deploy/egress-profiles.toml (RFC 0038 S7; see
 # docs/operations/egress-profiles.md). Default off. When enabled it replaces the
 # tracker-egress policy with default-deny egress plus one policy per workload, and
-# refuses egressPolicy.enabled. External hosts need the shared egress gateway; until
-# it is deployed, enabling this denies all external egress.
+# refuses egressPolicy.enabled. External hosts go only through the shared egress
+# gateway rendered with it (templates/egress-gateway.yaml).
 egressProfiles:
   enabled: false
   # Location of each site peer the profiles name, never its port (the profile owns
@@ -374,3 +374,18 @@ egressProfiles:
   # site with no entry fails the render; an optional one is simply not admitted.
   # Never commit real LAN or tailnet addresses: supply them per site.
   sites: {}
+  # The shared gateway (src/butlers/egress/gateway.py), rendered only when enabled.
+  gateway:
+    replicas: 2
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {memory: 256Mi}
+    # Destinations the gateway's own policy never admits, beside egressPolicy.privateCidrs
+    # and the tracker. The gateway refuses them per tunnel as well.
+    deniedCidrs:
+      - 0.0.0.0/8
+      - 127.0.0.0/8
+      - 192.0.0.0/24
+      - 198.18.0.0/15
+      - 224.0.0.0/4
+      - 240.0.0.0/4

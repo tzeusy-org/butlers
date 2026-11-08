@@ -42,6 +42,7 @@ spec:
             - {name: BUTLERS_SWITCHBOARD_URL, value: "http://dashboard-api:41200"}
             - {name: DASHBOARD_URL, value: "https://{{ $u.host }}/{{ $u.dashboardPrefix }}"}
             - {name: BUTLERS_MAX_GLOBAL_SESSIONS, value: "1"}
+            {{- with (include "butlers.egressProxyEnv" (dict "root" . "component" "butlers-control") | trim) }}{{ . | nindent 12 }}{{- end }}
           readinessProbe:
             httpGet: {path: /health, port: service}
             periodSeconds: 5

@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 import httpx
 
+from butlers.egress.http_transport import external_async_client
 from butlers.google_credentials import GoogleOAuthClient, _mark_account_revoked
 from butlers.modules.calendar_response import (
     CalendarResponseError,
@@ -68,7 +69,7 @@ class _GoogleProvider(CalendarProvider):
         self._config = config
         self._pool = pool
         self._owns_http_client = http_client is None
-        self._http_client = http_client or httpx.AsyncClient(timeout=30.0)
+        self._http_client = http_client or external_async_client(timeout=30.0)
 
         # Wire post-refresh callbacks so account health follows observed OAuth
         # outcomes from this module, not only dashboard-originated changes.
