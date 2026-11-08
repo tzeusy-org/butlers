@@ -428,7 +428,9 @@ class TestDunbarRankingReadOnly:
     async def test_ranking_does_not_write_expected_signals(self, monkeypatch: pytest.MonkeyPatch):
         from datetime import UTC, datetime, timedelta  # noqa: PLC0415
 
-        from butlers.tools.relationship import stale_contacts  # noqa: PLC0415
+        from butlers.roster_imports import roster_module  # noqa: PLC0415
+
+        stale_contacts = roster_module("relationship", "tools/stale_contacts")
 
         entity_id = uuid4()
         ranked = [
