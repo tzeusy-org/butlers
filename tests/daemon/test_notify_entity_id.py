@@ -1109,7 +1109,7 @@ class TestNotifyTelegramUsernameRecipient:
             patch.object(
                 daemon,
                 "_resolve_telegram_username_recipient",
-                new=AsyncMock(return_value="210454304"),
+                new=AsyncMock(return_value=("210454304", "Alice Example")),
             ) as resolver,
             patch("butlers.core.approvals_hooks.check_recipient", new_callable=AsyncMock) as guard,
         ):
@@ -1126,6 +1126,8 @@ class TestNotifyTelegramUsernameRecipient:
         resolver.assert_awaited_once_with("@Butlerly")
         assert guard.await_args.kwargs["target"] == "210454304"
         assert guard.await_args.kwargs["park_tool_args"]["recipient"] == "210454304"
+        summary = guard.await_args.kwargs["park_summary"]
+        assert "@Butlerly" in summary and "Alice Example" in summary
         delivery = client.call_tool.await_args.args[1]["notify_request"]["delivery"]
         assert delivery["recipient"] == "210454304"
 
@@ -1178,3 +1180,36 @@ class TestNotifyTelegramUsernameRecipient:
         resolver.assert_not_awaited()
         delivery = client.call_tool.await_args.args[1]["notify_request"]["delivery"]
         assert delivery["recipient"] == "210454304"
+
+
+class TestResolveTelegramUsernameAgainstFacts:
+    """bu-dhloi1.177: only telegram:-prefixed handles name a Telegram recipient."""
+
+    async def test_twitter_alias_never_resolves_to_a_telegram_contact(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
+        booted = await _relationship_butler(booted_daemon, tmp_path)
+        await _seed_entity(booted, [("has-handle", "@alicex")])  # a twitter handle
+        await _seed_entity(booted, [("has-handle", "telegram:777")])
+        resolved = await booted.daemon._resolve_telegram_username_recipient("@alicex")
+        assert resolved is None
+
+    async def test_prefixed_username_resolves_to_numeric_chat_id(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
+        booted = await _relationship_butler(booted_daemon, tmp_path)
+        await _seed_entity(
+            booted, [("has-handle", "telegram:AlicePal"), ("has-handle", "telegram:4242")]
+        )
+        resolved = await booted.daemon._resolve_telegram_username_recipient("@alicepal")
+        assert resolved is not None and resolved[0] == "4242"
+
+    async def test_case_only_collision_refuses(self, booted_daemon, tmp_path: Path) -> None:
+        booted = await _relationship_butler(booted_daemon, tmp_path)
+        await _seed_entity(
+            booted, [("has-handle", "telegram:Bobby1"), ("has-handle", "telegram:11")]
+        )
+        await _seed_entity(
+            booted, [("has-handle", "telegram:bobby1"), ("has-handle", "telegram:22")]
+        )
+        assert await booted.daemon._resolve_telegram_username_recipient("@bobby1") is None

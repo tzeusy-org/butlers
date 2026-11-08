@@ -999,6 +999,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             # The Bot API cannot message a private user by @username. Resolve it to a
             # numeric chat id before anything parks, so the approval card, rule match
             # and executed send all name one deliverable target (bu-dhloi1.177).
+            _target_label = repr(resolved_recipient)
             if (
                 channel == "telegram"
                 and intent in {"send", "insight", "confirm"}
@@ -1006,7 +1007,16 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 and resolved_recipient.startswith("@")
             ):
                 _username = resolved_recipient
-                resolved_recipient = await daemon._resolve_telegram_username_recipient(_username)
+                _resolved = await daemon._resolve_telegram_username_recipient(_username)
+                if _resolved is not None:
+                    resolved_recipient, _contact_name = _resolved
+                    # Card text only: the gated recipient stays the bare numeric id.
+                    _target_label = (
+                        f"{_username} ({_contact_name or 'unnamed contact'}) "
+                        f"[chat id {resolved_recipient}]"
+                    )
+                else:
+                    resolved_recipient = None
                 if resolved_recipient is None:
                     return {
                         "status": "error",
@@ -1144,7 +1154,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         park_tool_args=_notify_args,
                         park_summary=(
                             f"notify() rejected: {channel} message to "
-                            f"{resolved_recipient!r}. Message: {message!r}"
+                            f"{_target_label}. Message: {message!r}"
                         ),
                         session_id=get_current_runtime_session_id(),
                         butler_name=butler_name,
