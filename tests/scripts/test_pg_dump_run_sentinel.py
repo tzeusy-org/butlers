@@ -336,9 +336,13 @@ def test_successful_run_records_success_and_names_the_artifact(backup_dir: Path,
     # replay section is checked: arbitrary data bytes are not a framing oracle.
     with gzip.open(published[0], "rt", encoding="utf-8") as stream:
         dump = stream.read()
-    health_lines = dump.split("\n-- Butlers owner-only supervised-job health data\n", 1)[
-        1
-    ].splitlines()
+    health_section, next_boundary, following_section = dump.split(
+        "\n-- Butlers owner-only supervised-job health data\n", 1
+    )[1].partition("\n-- Butlers ")
+    assert next_boundary and following_section.startswith(
+        ("private DND history (", "private-history coverage: perception-v1 ")
+    )
+    health_lines = health_section.splitlines()
     assert (
         "SELECT EXISTS(SELECT 1 FROM butlers_job_health_restore_rows) "
         "AS butlers_job_health_restore_needed \\gset"

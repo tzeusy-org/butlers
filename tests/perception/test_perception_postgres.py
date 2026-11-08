@@ -937,7 +937,8 @@ def test_nonempty_downgrade_refuses_without_history_loss(db, database):
 @pytest.mark.asyncio
 async def test_real_python_writer_and_reader_keep_caller_transaction_and_jsonb(database):
     conn = await asyncpg.connect(
-        database[1].url.render_as_string(hide_password=False), command_timeout=30
+        database[1].url.set(drivername="postgresql").render_as_string(hide_password=False),
+        command_timeout=30,
     )
     await register_jsonb_codec(conn)
     tx = conn.transaction()

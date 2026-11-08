@@ -121,4 +121,8 @@ foreign owners/ACLs, missing interfaces and nonempty restore populations refuse.
 Source profiles, original event IDs, retraction targets and receipts restore as
 history without disabling immutable triggers or calling live writers. Artifacts
 retain expired/private history for up to the existing fourteen-day backup window.
+The fixed catalog fingerprint sorts textual metadata with PostgreSQL's `C`
+collation, so an otherwise identical catalog has the same fingerprint across
+database locales. Ownership, ACL, column, constraint and function drift still
+refuse export.
 See [the complete-artifact contract](../operations/backup-restore.md#private-history-export).

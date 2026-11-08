@@ -72,7 +72,7 @@ AND (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname='perception_private')=6
 AND NOT EXISTS (SELECT 1 FROM (VALUES
 ('perception_private','backup_catalog','',
- '9c5bce3d1e65149161172561379349d76194b5d599a156519cce8fcf6bebb5e8'),
+ '53706967a0c035eb59818bac76b0d31a42e13b5841ecaf2002e1ad52938595df'),
 ('perception_private','canonical_json','3802',
  'b7f838abba7be235551748ebacde47f00614a2995b682c0c9ae38176e43788ca'),
 ('perception_private','immutable_event','',
