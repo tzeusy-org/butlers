@@ -20,6 +20,14 @@ fi
 # Hosts the opt-in egress policy (egressPolicy.enabled) still admits; same input as
 # scripts/egress-firewall.sh. Never committed: operators supply real addresses.
 if [ -n "${ALLOWED_TAILNET_HOSTS:-}" ]; then
-    _allowed_cidrs="$(printf '%s\n' ${ALLOWED_TAILNET_HOSTS} | awk '{print $1 "/32"}' | sort -u | paste -sd, -)"
-    printf '%s\n' "--set 'egressPolicy.allowedCidrs={${_allowed_cidrs}}'"
+    read -ra _allowed_hosts <<<"${ALLOWED_TAILNET_HOSTS}"
+    _allowed_cidrs=""
+    for _host in "${_allowed_hosts[@]}"; do
+        # IPv4 only, like the compose firewall; reject anything else rather than glob or guess.
+        case "${_host}" in
+            *[!0-9.]* | "") echo "site-helm-args.sh: ALLOWED_TAILNET_HOSTS entries must be IPv4 addresses" >&2; exit 1 ;;
+        esac
+        _allowed_cidrs="${_allowed_cidrs:+${_allowed_cidrs},}${_host}/32"
+    done
+    [ -z "${_allowed_cidrs}" ] || printf '%s\n' "--set 'egressPolicy.allowedCidrs={${_allowed_cidrs}}'"
 fi

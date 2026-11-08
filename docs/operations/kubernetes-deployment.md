@@ -532,6 +532,13 @@ and an empty allowlist fails unless `egressPolicy.allowNoAllowlist=true`. A pod
 that must reach a private address that is not a pod, such as the node-hosted
 Kubernetes API, needs that address allowlisted too.
 
+Allowlisting a CIDR that is also in `trackerEgress.deniedCidrs` is refused (exact
+match only; overlap by containment is the operator's responsibility). Hosts named by
+`BUTLERS_OTLP_ENDPOINT`, `LIVE_LISTENER_TRANSCRIPTION_URL`, `database.host` and the
+tracker are not added automatically: list any that are private addresses. In
+production the policy keeps the name `<release>-tracker-egress` even with
+`trackerEgress.enabled=false`.
+
 Rollback: set `egressPolicy.enabled=false` and `helm upgrade`. This confines a
 compromised pod from the LAN and tailnet; it does not change ingress. Pods are
 IPv4-only on k3s, so the IPv4 ranges are complete.

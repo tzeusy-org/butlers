@@ -9,7 +9,14 @@ pods could not narrow this one; keep exactly one.
 {{- fail "trackerEgress.deniedCidrs is required when trackerEgress.enabled (scripts/k8s/site-helm-args.sh resolves it)" }}
 {{- end }}
 {{- if and .Values.egressPolicy.enabled (not .Values.egressPolicy.allowedCidrs) (not .Values.egressPolicy.allowNoAllowlist) }}
-{{- fail "egressPolicy.allowedCidrs is required when egressPolicy.enabled; set egressPolicy.allowNoAllowlist=true only to deny every private address" }}
+{{- fail "egressPolicy.allowedCidrs is required when egressPolicy.enabled (scripts/k8s/site-helm-args.sh maps ALLOWED_TAILNET_HOSTS to it); set egressPolicy.allowNoAllowlist=true only to deny every private address" }}
+{{- end }}
+{{- if and .Values.egressPolicy.enabled .Values.trackerEgress.enabled }}
+{{- range .Values.egressPolicy.allowedCidrs }}
+{{- if has . $.Values.trackerEgress.deniedCidrs }}
+{{- fail (printf "egressPolicy.allowedCidrs entry %s is also in trackerEgress.deniedCidrs; allow rules are additive and would re-admit the tracker" .) }}
+{{- end }}
+{{- end }}
 {{- end }}
 # The retired bridge grants no pod an exception. Retain the existing IPv4-only
 # tracker boundary independently of all product features and credentials.
@@ -27,6 +34,7 @@ spec:
     - to:
         - namespaceSelector: {}
     {{- if .Values.egressPolicy.enabled }}
+    {{- /* Explicit DNS admission; also covered by the namespaceSelector rule above. */}}
     - to:
         - namespaceSelector:
             matchLabels:
