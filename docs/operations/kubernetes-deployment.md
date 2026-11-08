@@ -548,10 +548,15 @@ kube-router network-policy controller unless it was started with
 `--disable-network-policy`. From a pod, a connection to a non-allowlisted private
 address must time out while an allowlisted host, a public host and DNS succeed.
 
-The policy ships off everywhere. Enabling it in dev (`egressPolicy.enabled: true` in
-`values.dev.yaml`) is an owner act with an authorized smoke (owner decision
-2026-11-08): the deploy must first supply `ALLOWED_TAILNET_HOSTS` for every private or
-tailnet destination dev pods use, or rendering refuses. Production stays off.
+Dev enables the policy (`values.dev.yaml`, owner decision 2026-11-08, `bu-viat6h.11`).
+A dev deploy therefore needs `ALLOWED_TAILNET_HOSTS` (IPv4 addresses of every private or
+tailnet destination dev pods use) or it refuses to render. The owner's dev redeploy
+wrapper resolves it at deploy time from `<service>.$TAILNET_NAME` for the compose
+firewall's service set minus the compose-only Postgres hosts (dev Postgres is
+in-cluster), plus the transcription host: `otel`, `ollama`, `tzehouse-synology`,
+`homeassistant`, `wyoming-faster-whisper`. The Dolt tracker host stays denied.
+Rollback: set `egressPolicy.enabled: false` in `values.dev.yaml` and redeploy.
+Production stays off; no prod rollout is implied.
 
 Smoke evidence (2026-11-08, disposable `butlers-rehearsal` namespace on this k3s,
 recorded on `bu-viat6h.6`): a deny-all egress control blocked every probe, so the CNI
