@@ -208,3 +208,27 @@ def test_a_fact_entry_that_cannot_name_its_entities_is_refused():
     manifest = Manifest(tuple(narrowed if t == fact else t for t in target.tables))
     with pytest.raises(ManifestError, match="facts must publish object_entity_id"):
         subscriber_plan(manifest)
+
+
+@pytest.mark.parametrize(
+    ("dropped", "refused"),
+    [({"object_kind"}, True), ({"object", "object_kind"}, False)],
+    ids=["object-without-its-kind", "neither"],
+)
+def test_entity_facts_cannot_publish_an_object_it_cannot_hide(dropped, refused):
+    target = load_manifest()
+    facts = next(t for t in target.tables if t.source == "relationship.entity_facts")
+    narrowed = replace(
+        facts,
+        columns=tuple(c for c in facts.columns if c not in dropped),
+        types=tuple(p for p in facts.types if p[0] not in dropped),
+    )
+    manifest = Manifest(tuple(narrowed if t == facts else t for t in target.tables))
+    if refused:
+        with pytest.raises(ManifestError, match="object published without its entity reference"):
+            subscriber_plan(manifest)
+    else:
+        plan = next(p for p in subscriber_plan(manifest) if p.table == narrowed)
+        assert plan.view_where == (
+            '("subject" IS NULL OR EXISTS (SELECT FROM public.entities AS e WHERE e.id = "subject"))'
+        )

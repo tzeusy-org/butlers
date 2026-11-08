@@ -287,10 +287,13 @@ def test_view_oid_survives_real_type_and_generated_dependency_changes(copied, ki
             ),
         )
     else:
+        # Both inputs of the generated object_entity_id go: publishing `object` without
+        # them would name an entity the view could not hide.
+        dropped = {"object", "object_kind"}
         changed = replace(
             original,
-            columns=tuple(name for name in original.columns if name != "object_kind"),
-            types=tuple(pair for pair in original.types if pair[0] != "object_kind"),
+            columns=tuple(name for name in original.columns if name not in dropped),
+            types=tuple(pair for pair in original.types if pair[0] not in dropped),
         )
     target = Manifest(tuple(changed if table == original else table for table in full.tables))
     decode_applied_manifest(target.canonical)
@@ -333,7 +336,7 @@ def test_view_oid_survives_real_type_and_generated_dependency_changes(copied, ki
         if kind == "type-change":
             assert attrs["last_four"] == "text"
         else:
-            assert "object_kind" not in attrs and "object_entity_id" not in attrs
+            assert not {"object", "object_kind", "object_entity_id"} & set(attrs)
     finally:
         if kind == "type-change":
             with topology.engine.begin() as conn:
