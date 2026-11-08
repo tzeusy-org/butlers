@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
+import re
 import tarfile
 import time
 import uuid
@@ -82,34 +84,144 @@ def public_mcp_cluster():
                 conn.exec_driver_sql("ALTER SYSTEM SET ident_file='/tmp/public_mcp_ident.conf'")
                 conn.exec_driver_sql("ALTER SYSTEM SET unix_socket_directories='/controller/run'")
             engine.dispose()
-            # Restart the owned container, not its PID1 server via pg_ctl. The
-            # initialized volume and /tmp auth files survive; the socket tmpfs
-            # is recreated. The entrypoint now skips first-database setup.
-            postgres.get_wrapped_container().restart(timeout=10)
-            deadline = time.monotonic() + 30
-            while True:
+            _restart_peer_cluster(postgres, engine.url)
+            yield postgres
+        finally:
+            engine.dispose()
+
+
+def _restart_peer_cluster(postgres: PostgresContainer, old_url) -> None:
+    """Restart once, then inspect current endpoints without emitting credentials."""
+    from docker.errors import DockerException
+
+    def endpoint(url):
+        parsed = make_url(url)
+        return {"host": parsed.host, "port": parsed.port}
+
+    def error_facts(exc):
+        original = getattr(exc, "orig", None)
+        code = getattr(original, "pgcode", None)
+        return {
+            "error_class": type(exc).__name__,
+            "driver_class": type(original).__name__ if original is not None else None,
+            "sqlstate": code
+            if isinstance(code, str) and re.fullmatch(r"[0-9A-Z]{5}", code)
+            else None,
+        }
+
+    wrapped = postgres.get_wrapped_container()
+    facts = {
+        "stage": "restart",
+        "old_endpoint": endpoint(old_url),
+        "fresh_endpoint": None,
+        "status": "unknown",
+        "running": None,
+        "exit_code": None,
+        "socket_exit_code": None,
+    }
+    restart_failed = False
+    try:
+        # PID1 belongs to Docker. Restart the exact owned container, preserving
+        # its initialized volume and auth files while recreating the socket tmpfs.
+        wrapped.restart(timeout=10)
+    except DockerException as exc:
+        facts["restart_error"] = error_facts(exc)
+        restart_failed = True
+
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            facts["stage"] = "inspect"
+            wrapped.reload()
+            state = wrapped.attrs.get("State", {})
+            status = state.get("Status")
+            facts["status"] = (
+                status
+                if status
+                in {"created", "restarting", "running", "removing", "paused", "exited", "dead"}
+                else "unknown"
+            )
+            facts["running"] = state.get("Running") if type(state.get("Running")) is bool else None
+            exit_code = state.get("ExitCode")
+            facts["exit_code"] = exit_code if type(exit_code) is int else None
+            if restart_failed or facts["status"] in {"exited", "dead"}:
+                break
+            # Match Testcontainers' connection-mode/first-port semantics, using
+            # this fresh inspect. get_connection_url/get_exposed_port would enter
+            # an independent status waiter (with its own timeout and raw logs).
+            # Keep endpoint readiness inside this loop instead.
+            facts["stage"] = "endpoint-pending"
+            facts["fresh_endpoint"] = None
+            port = postgres.port
+            if postgres.get_docker_client().get_connection_mode().use_mapped_port:
+                bindings = (
+                    wrapped.attrs.get("NetworkSettings", {}).get("Ports", {}).get(f"{port}/tcp")
+                )
+                candidate = bindings[0].get("HostPort") if bindings else None
+                if not isinstance(candidate, str) or not candidate.isdecimal():
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.1)
+                    continue
+                port = int(candidate)
+                if not 1 <= port <= 65535:
+                    break
+            fresh_url = make_url(old_url).set(host=postgres.get_container_host_ip(), port=port)
+            facts["fresh_endpoint"] = endpoint(fresh_url)
+            facts["stage"] = "peer-socket"
+            peer = wrapped.exec_run(
+                [
+                    "psql",
+                    "-X",
+                    "-w",
+                    "-v",
+                    "ON_ERROR_STOP=1",
+                    "-h",
+                    "/controller/run",
+                    "-U",
+                    "postgres",
+                    "-d",
+                    "postgres",
+                    "-Atqc",
+                    "SELECT 1",
+                ],
+                user="postgres",
+                environment={"PGCONNECT_TIMEOUT": "2"},
+            )
+            facts["socket_exit_code"] = peer.exit_code
+            if peer.exit_code == 0 and peer.output.strip() == b"1":
+                facts["stage"] = "fresh-tcp"
+                fresh_engine = create_engine(
+                    fresh_url,
+                    isolation_level="AUTOCOMMIT",
+                    connect_args={"connect_timeout": 5},
+                )
                 try:
-                    with engine.connect() as conn:
+                    with fresh_engine.connect() as conn:
                         actual = conn.exec_driver_sql(
                             "SELECT current_setting('unix_socket_directories'), "
                             "current_setting('hba_file'), current_setting('ident_file')"
                         ).one()
-                    assert actual == (
+                    if actual != (
                         "/controller/run",
                         "/tmp/public_mcp_hba.conf",
                         "/tmp/public_mcp_ident.conf",
-                    ), "dedicated public MCP authentication configuration differs"
-                    break
-                except OperationalError:
-                    if time.monotonic() >= deadline:
-                        # Do not serialize connection URLs or synthetic passwords.
-                        raise RuntimeError(
-                            "dedicated public MCP restart did not become ready"
-                        ) from None
-                    time.sleep(0.1)
-            yield postgres
-        finally:
-            engine.dispose()
+                    ):
+                        facts["stage"] = "configuration-mismatch"
+                        break
+                    return
+                finally:
+                    fresh_engine.dispose()
+        except (OperationalError, DockerException) as exc:
+            facts.update(error_facts(exc))
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.1)
+    # Only the explicitly selected closed fields above are serialized. Never
+    # emit Docker attrs/Env, connection URLs, raw driver messages or SQL params.
+    raise RuntimeError(
+        "dedicated public MCP restart refused: " + json.dumps(facts, sort_keys=True)
+    ) from None
 
 
 def create_public_mcp_roles(conn, *, include_subscription_owner: bool = True) -> dict[str, str]:
