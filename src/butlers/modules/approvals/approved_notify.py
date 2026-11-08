@@ -28,7 +28,7 @@ from butlers.modules.approvals.delivery_failure import (
     send_failure_code,
 )
 from butlers.modules.approvals.execution_context import get_approval_execution_context
-from butlers.modules.approvals.executor import _send_outcome_unknown
+from butlers.modules.approvals.executor import send_outcome_unknown
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ def _delivery_result(raw: Any) -> dict[str, Any]:
         # A second park is not a delivery; the approved row stays retryable.
         raise RuntimeError("delivery re-entered the approval gate")
     if result.get("error") or result.get("success") is False or result.get("status") == "failed":
-        if _send_outcome_unknown(result):
+        if send_outcome_unknown(result):
             # An uncertain or partial send may already have reached the recipient: hand it
             # to the executor unraised so it is recorded executed/outcome_unknown, never
             # left retryable or shown as a plain failure.

@@ -244,7 +244,7 @@ async def test_not_attempted_failure_raises_a_coded_content_free_failure() -> No
 @pytest.mark.parametrize("detail", ["transport_timeout", "transport_connection_lost"])
 async def test_uncertain_send_is_handed_to_the_executor_unraised(detail: str) -> None:
     """An ambiguous send is never raised as a retryable failure (no duplicate message)."""
-    from butlers.modules.approvals.executor import _send_outcome_unknown
+    from butlers.modules.approvals.executor import send_outcome_unknown
 
     reply = _transport_failure("uncertain", "transport_uncertain", detail)
     daemon = _daemon(_approved_notify_dispatch=AsyncMock(return_value=reply))
@@ -254,4 +254,4 @@ async def test_uncertain_send_is_handed_to_the_executor_unraised(detail: str) ->
     )
 
     assert result is reply
-    assert _send_outcome_unknown(result)
+    assert send_outcome_unknown(result)

@@ -61,7 +61,7 @@ _EXECUTION_LOCKS_GUARD = asyncio.Lock()
 _OUTCOME_UNKNOWN_RESULT: dict[str, Any] = {"status": "outcome_unknown", "delivery_confirmed": False}
 
 
-def _send_outcome_unknown(result: Any, *, _depth: int = 0) -> bool:
+def send_outcome_unknown(result: Any, *, _depth: int = 0) -> bool:
     """Whether a tool's failure result says the send may have gone out.
 
     REQ-runtime-attention-outbox-002: only a proven not-attempted send may be replayed. A
@@ -76,7 +76,7 @@ def _send_outcome_unknown(result: Any, *, _depth: int = 0) -> bool:
     if terminal_telegram_metadata(result):
         return True
     return any(
-        _send_outcome_unknown(result.get(key), _depth=_depth + 1)
+        send_outcome_unknown(result.get(key), _depth=_depth + 1)
         for key in ("result", "data", "error", "notify_response")
     )
 
@@ -369,7 +369,7 @@ async def execute_approved_action(
                             raw_result = await raw_result
                     finally:
                         reset_approval_execution_context(context_token)
-                    outcome_unknown = _send_outcome_unknown(raw_result)
+                    outcome_unknown = send_outcome_unknown(raw_result)
                     if outcome_unknown:
                         # The send may have reached the recipient, so Retry could send it
                         # twice, possibly to a non-owner. Record the action as executed with

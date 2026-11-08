@@ -661,6 +661,10 @@ def _pending_action_to_api(
     )
 
 
+def _failure_model(payload: dict[str, str], *, terminal: bool = False) -> ApprovalExecutionFailure:
+    return ApprovalExecutionFailure(code=payload["code"], label=payload["label"], terminal=terminal)
+
+
 def _execution_failure(
     action: PendingAction, failed_code: str | None = None
 ) -> ApprovalExecutionFailure | None:
@@ -671,11 +675,11 @@ def _execution_failure(
     """
     rejected = failure_from_execution_result(action.execution_result)
     if rejected is not None:
-        return ApprovalExecutionFailure(**rejected, terminal=True)
+        return _failure_model(rejected, terminal=True)
     if action.status == ActionStatus.APPROVED and action.execution_result is None:
         payload = failure_payload(failed_code)
         if payload is not None:
-            return ApprovalExecutionFailure(**payload)
+            return _failure_model(payload)
     return None
 
 
@@ -3958,9 +3962,9 @@ async def approve_owning_action(
     rejected = failure_from_execution_result(action_resp.execution_result)
     retryable_failure = failure_payload(dispatch_failure_code)
     if rejected is not None:
-        action_resp.execution_failure = ApprovalExecutionFailure(**rejected, terminal=True)
+        action_resp.execution_failure = _failure_model(rejected, terminal=True)
     elif action_resp.status == "approved" and retryable_failure is not None:
-        action_resp.execution_failure = ApprovalExecutionFailure(**retryable_failure)
+        action_resp.execution_failure = _failure_model(retryable_failure)
     # Honest dispatch status: the action only ran if it reached 'executed'.
     # 'approved' means approved-but-not-yet-dispatched (e.g. no reachable daemon);
     # it stays retry-able. Surface this so the FE never claims success falsely.
