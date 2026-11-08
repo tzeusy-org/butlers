@@ -26,8 +26,13 @@ from urllib.parse import urlparse
 import pytest
 from sqlalchemy import create_engine, text
 
-from butlers.migrations import get_chain_head
-from butlers.testing.migration import _bootstrap_migration_prerequisites
+from alembic import command
+from butlers.migrations import _build_alembic_config
+from butlers.testing.migration import (
+    _bootstrap_migration_prerequisites,
+    create_migration_db,
+    migration_db_name,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MANIFEST = _REPO_ROOT / "deploy" / "backup" / "private_history_manifest.json"
@@ -256,7 +261,9 @@ def test_bootstrap_refuses_hostile_backup_authority_and_clean_rerun_is_exact(
         assert neutralized[:start] + definition[start:end] + neutralized[start:] == definition
         try:
             with engine.begin() as conn:
-                conn.exec_driver_sql(neutralized)
+                # The driver treats bare % as a parameter marker; the installer
+                # body has format() specifiers, so double them for execution.
+                conn.exec_driver_sql(neutralized.replace("%", "%%"))
                 conn.exec_driver_sql("SELECT dnd_generation_admin.install_backup_interface()")
                 conn.exec_driver_sql("SET LOCAL ROLE butler_health_rw")
                 assert (
@@ -277,7 +284,7 @@ def test_bootstrap_refuses_hostile_backup_authority_and_clean_rerun_is_exact(
             assert _dnd_snapshot(admin) == before
         finally:
             with engine.begin() as conn:
-                conn.exec_driver_sql(definition)
+                conn.exec_driver_sql(definition.replace("%", "%%"))
                 conn.exec_driver_sql("DROP SCHEMA dnd_generation_backup CASCADE")
                 conn.exec_driver_sql("SELECT dnd_generation_admin.install_backup_interface()")
         with engine.begin() as conn:
@@ -656,7 +663,11 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
     # Reuse the supported consumer transport and its fresh persistent epoch.
     # Its --drop-existing creates an empty target; no bootstrap schema/data is
     # imported over itself. The source cluster already holds the fenced roles.
-    from tests.scripts.test_pg_restore_definer_ownership import _run_restore_script, _Target
+    from tests.scripts.test_pg_restore_definer_ownership import (
+        _docker_client,
+        _run_restore_script,
+        _Target,
+    )
 
     control_url = postgres_container.get_connection_url()
     control = urlparse(control_url)
@@ -667,7 +678,6 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
         control_url,
     )
     target_db = "private_history_restore_" + uuid.uuid4().hex[:8]
-    target_admin = target.url(target_db)
 
     def _drop_target() -> None:
         cleanup = create_engine(control_url, isolation_level="AUTOCOMMIT")
@@ -678,31 +688,40 @@ def test_script_logs_the_omission_until_activation_then_stages_the_history(
             cleanup.dispose()
 
     request.addfinalizer(_drop_target)
+    # The DND relations are excluded from the ordinary dump, so an empty target
+    # has none of them. The populated history must then refuse loudly: the
+    # restore is never certified with the history silently dropped.
     assert not (artifact.parent / "epoch.json").exists()
     restore = _run_restore_script(artifact, target, target_db)
-    assert restore.returncode == 0, restore.stderr + restore.stdout
-    assert (artifact.parent / "epoch.json").is_file()
-    assert _dnd_snapshot(target_admin) == source_before
-    assert _scalar(
-        target_admin, "SELECT version_num FROM public.alembic_version"
-    ) == get_chain_head("core")
-    assert (
-        _scalar(
-            target_admin,
-            "SELECT canonical_name FROM public.entities WHERE id=:id",
-            id=ordinary_id,
-        )
-        == "Before backup snapshot"
+    assert restore.returncode != 0, restore.stderr + restore.stdout
+    assert "incomplete data is not certified" in restore.stderr
+    assert "DND relations are absent" in restore.stdout + restore.stderr
+
+    # Into a target bootstrapped by init-db.sql and migrated, the same staged
+    # block restores the exact pre-snapshot history through the fixed definer.
+    prepared_url = create_migration_db(postgres_container, migration_db_name())
+    command.upgrade(_build_alembic_config(prepared_url, chains=["core"]), "core@head")
+    prepared_db = (urlparse(prepared_url).path or "").lstrip("/")
+    prepared_admin = _admin_for(postgres_container, prepared_url)
+    replay = _docker_client(
+        artifact,
+        "gunzip -c /backup.sql.gz | sed -n '/^-- Butlers private DND history/,$p' | "
+        f"psql -h host.docker.internal -p {target.port} -U {target.login} --no-password "
+        f"-d {prepared_db} --quiet -v ON_ERROR_STOP=1",
+        password=target.password,
+        mount_script=False,
     )
+    assert replay.returncode == 0, replay.stderr + replay.stdout
+    assert _dnd_snapshot(prepared_admin) == source_before
     assert (
         _scalar(
-            target_admin,
+            prepared_admin,
             "SELECT count(*) FROM public.user_context WHERE signal_type='location'",
         )
         == 0
     )
     assert _scalar(
-        target_admin,
+        prepared_admin,
         "SELECT bool_and(relforcerowsecurity) FROM pg_class "
         "WHERE oid IN ('public.dnd_generation_guard'::regclass,"
         "'public.dnd_generation_mutations'::regclass,'public.user_context'::regclass)",

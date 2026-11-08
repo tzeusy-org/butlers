@@ -259,8 +259,12 @@ failure refuses publication; there is no silent fallback.
 Activation is an owner step and is not performed by any repository change: give
 the export login `CONNECT` on the database and membership in (or make it)
 `butlers_backup_export`; export `BACKUP_EXPORT_USER` and
-`BACKUP_EXPORT_PASSWORD` to the backup process. On restore, the restoring login
-must be a member of `butlers_backup_restore` (and hold `TEMPORARY`); a populated
+`BACKUP_EXPORT_PASSWORD` to the backup process. On restore, the target must already be
+bootstrapped by `scripts/init-db.sql` and migrated past core_197, because the DND
+relations are excluded from the ordinary dump: restoring a populated DND block into
+an empty target fails loudly (`DND relations are absent`) and the restore is not
+certified. The restoring login must be a member of `butlers_backup_restore` (and
+hold `TEMPORARY`); a populated
 DND block without that membership fails loudly rather than being dropped.
 
 **Retention consequence.** The artifact now holds private DND history, including

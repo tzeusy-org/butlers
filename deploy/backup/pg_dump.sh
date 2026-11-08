@@ -853,6 +853,10 @@ COMMIT;
 DND_EXPORT_SQL
   printf '\\.\n'
   printf '%s\n' "SELECT EXISTS(SELECT 1 FROM butlers_dnd_restore_rows) AS butlers_dnd_restore_needed \\gset" '\if :butlers_dnd_restore_needed'
+  # The DND relations are excluded from the ordinary dump, so an empty restore
+  # target does not have them. Populated history is never dropped silently:
+  # restore into a target bootstrapped by scripts/init-db.sql and migrated.
+  printf '%s\n' '\set ON_ERROR_STOP on' "DO \$\$ BEGIN IF to_regclass('public.dnd_generation_mutations') IS NULL OR to_regclass('public.dnd_generation_guard') IS NULL OR to_regclass('public.user_context') IS NULL OR to_regprocedure('dnd_generation_backup.restore_v1(jsonb)') IS NULL THEN RAISE EXCEPTION 'DND history restore requires a target bootstrapped with scripts/init-db.sql and migrated past core_197; the DND relations are absent'; END IF; END \$\$;"
   printf '%s\n' "SELECT coalesce(pg_has_role(current_user, to_regrole('butlers_backup_restore'), 'MEMBER'), false) AS butlers_dnd_restore_authorized \\gset" '\if :butlers_dnd_restore_authorized' '\set ON_ERROR_STOP on' 'GRANT SELECT ON butlers_dnd_restore_rows TO butlers_backup_restore;' 'SET ROLE butlers_backup_restore;'
   printf '%s\n' "SELECT dnd_generation_backup.restore_v1(jsonb_agg(jsonb_build_object('ordinal', ordinal, 'relation', relation_name, 'row', convert_from(decode(payload_hex, 'hex'), 'UTF8')::jsonb) ORDER BY ordinal, payload_hex)) FROM butlers_dnd_restore_rows;"
   printf '%s\n' 'RESET ROLE;' '\else' '\set ON_ERROR_STOP on' "DO \$\$ BEGIN RAISE EXCEPTION 'DND history restore requires butlers_backup_restore membership'; END \$\$;" '\endif' '\endif' 'DROP TABLE butlers_dnd_restore_rows;'
