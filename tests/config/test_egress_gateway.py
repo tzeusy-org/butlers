@@ -801,6 +801,7 @@ async def test_websocket_redirect_refuses_before_upgrade_without_sensitive_respo
         (b"Sec-WebSocket-Version: 13", b"Sec-WebSocket-Version: 12"),
         (b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", b"Sec-WebSocket-Key: invalid"),
         (b"Sec-WebSocket-Protocol: responses", b"Sec-WebSocket-Protocol: responses, responses"),
+        (b"Sec-WebSocket-Protocol: responses", b"Sec-WebSocket-Protocol: "),
         (b"GET /", b"POST /"),
         (b"\r\n\r\n", b"\r\nContent-Length: 1\r\n\r\nx"),
     ],
@@ -819,6 +820,7 @@ async def test_websocket_invalid_client_handshake_refuses_before_origin_dial(
     "headers",
     [
         b"Sec-WebSocket-Accept: wrong\r\n",
+        b"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nSec-WebSocket-Protocol: \r\n",
         b"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nSec-WebSocket-Protocol: undeclared\r\n",
         b"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nSec-WebSocket-Extensions: permessage-deflate\r\n",
         b"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nUpgrade: websocket\r\n",
@@ -838,6 +840,49 @@ async def test_websocket_invalid_origin_handshake_refuses_before_101_exposure(
         assert b"502" in response.split(b"\r\n")[0]
         assert b"101" not in response
         assert b"SECRET" not in response
+        assert len(observed.dials) == 1
+
+
+@pytest.mark.parametrize("selected", [None, b"responses"])
+@pytest.mark.parametrize("connection", [b"Upgrade", b"keep-alive, UpGrAdE, x-origin-hop"])
+async def test_websocket_origin_connection_tokens_and_optional_protocol(
+    tls_contexts, selected, connection
+):
+    from websockets.frames import Frame, Opcode
+
+    protocol = b"" if selected is None else b"Sec-WebSocket-Protocol: " + selected + b"\r\n"
+    origin = Origin(
+        raw=b"HTTP/1.1 101 Switching Protocols\r\nConnection: "
+        + connection
+        + b"\r\nUpgrade: websocket\r\n"
+        b"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"
+        b"x-origin-hop: hidden\r\n"
+        + protocol
+        + b"\r\n"
+        + Frame(Opcode.CLOSE, b"\x03\xe8").serialize(mask=False),
+        early=True,
+    )
+    async with running_gateway(tls_contexts, origin) as (port, observed):
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            request = ws_wire()
+            if selected is None:
+                request = request.replace(b"Sec-WebSocket-Protocol: responses\r\n", b"")
+            writer.write(request)
+            await writer.drain()
+            head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 1)
+            assert head.startswith(b"HTTP/1.1 101")
+            assert (b"sec-websocket-protocol:" in head.lower()) == (selected is not None)
+            assert b"connection: Upgrade\r\n" in head
+            if b"x-origin-hop" in connection:
+                assert b"x-origin-hop:" not in head.lower()
+            assert await reader.readexactly(4) == b"\x88\x02\x03\xe8"
+            writer.write(Frame(Opcode.CLOSE, b"\x03\xe8").serialize(mask=True))
+            await writer.drain()
+            assert await asyncio.wait_for(reader.read(), 1) == b""
+        finally:
+            writer.close()
+            await writer.wait_closed()
         assert len(observed.dials) == 1
 
 

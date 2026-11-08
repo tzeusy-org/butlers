@@ -27,11 +27,11 @@ _GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _TOKEN = frozenset(b"!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 
-def _one(headers, name: bytes, *, required: bool = True) -> bytes:
+def _one(headers, name: bytes, *, required: bool = True) -> bytes | None:
     values = [value for key, value in headers if key == name]
     if len(values) > 1 or (required and not values):
         raise gateway.Refused("malformed_websocket", 400)
-    return values[0] if values else b""
+    return values[0] if values else None
 
 
 def validate_request(request: h11.Request) -> tuple[bytes, list[bytes]]:
@@ -43,7 +43,7 @@ def validate_request(request: h11.Request) -> tuple[bytes, list[bytes]]:
     except binascii.Error:
         raise gateway.Refused("malformed_websocket", 400) from None
     protocols = _one(headers, b"sec-websocket-protocol", required=False)
-    offered = [token.strip() for token in protocols.split(b",")] if protocols else []
+    offered = [token.strip() for token in protocols.split(b",")] if protocols is not None else []
     if (
         request.method != b"GET"
         or _one(headers, b"upgrade").lower() != b"websocket"
@@ -98,11 +98,17 @@ async def handshake(reader, writer, request, host, port, target) -> Handshake:
     expected = base64.b64encode(hashlib.sha1(key + _GUID).digest())
     try:
         selected = _one(values, b"sec-websocket-protocol", required=False)
+        connection_tokens = [
+            token.strip().lower() for token in _one(values, b"connection").split(b",")
+        ]
+        nominated = set(connection_tokens)
         valid = (
             _one(values, b"upgrade").lower() == b"websocket"
-            and _one(values, b"connection").lower() == b"upgrade"
+            and b"upgrade" in nominated
+            and all(token and set(token) <= _TOKEN for token in connection_tokens)
+            and not nominated.intersection({b"sec-websocket-accept", b"sec-websocket-protocol"})
             and _one(values, b"sec-websocket-accept") == expected
-            and (not selected or selected in offered)
+            and (selected is None or (bool(selected) and selected in offered))
             and not any(
                 name in {b"sec-websocket-extensions", b"content-length", b"transfer-encoding"}
                 for name, _ in values
@@ -117,7 +123,7 @@ async def handshake(reader, writer, request, host, port, target) -> Handshake:
     headers = [
         (name, value)
         for name, value in values
-        if name not in gateway._HOP_HEADERS | {b"x-egress-refusal"}
+        if name not in gateway._HOP_HEADERS | nominated | {b"x-egress-refusal"}
         and not name.startswith((b"x-forwarded-", b"x-egress-", b"x-butlers-"))
         and name != b"forwarded"
     ]
