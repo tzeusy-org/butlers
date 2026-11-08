@@ -14,6 +14,7 @@ import codecs
 import hashlib
 import time
 from dataclasses import dataclass
+from typing import Literal, overload
 
 import h11
 from websockets.exceptions import ProtocolError
@@ -25,6 +26,14 @@ PREFIX = b"/_butlers/egress/v1/wss/"
 _MESSAGE_LIMIT = 64 * 1024 * 1024
 _GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _TOKEN = frozenset(b"!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+
+@overload
+def _one(headers, name: bytes, *, required: Literal[True] = True) -> bytes: ...
+
+
+@overload
+def _one(headers, name: bytes, *, required: Literal[False]) -> bytes | None: ...
 
 
 def _one(headers, name: bytes, *, required: bool = True) -> bytes | None:
