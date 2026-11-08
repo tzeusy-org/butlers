@@ -417,6 +417,14 @@ Scope: v1-mandatory
 - **AND** status remains `approved` with `execution_result = null`
 - **AND** no automatic replay occurs; an operator may retry the approved action or reject it explicitly
 
+#### Scenario: A send that may have gone out is recorded, not left retryable
+
+- **WHEN** the tool returns a failure whose transport outcome is uncertain, or carries a Telegram effect-uncertain or partial-delivery marker (REQ-runtime-attention-outbox-002)
+- **THEN** the executor persists `{"status": "outcome_unknown", "delivery_confirmed": false}` as the execution result, with status `executed` and an `action_execution_succeeded` event whose metadata marks the outcome unknown
+- **AND** neither the provider's text nor the recipient is persisted
+- **AND** Retry does not run the tool again, so a non-owner never receives a second message
+- **AND** a failure proven not attempted, or an explicit provider rejection, stays `approved` and retryable as before
+
 #### Scenario: Manual approval without executor wired
 
 - **WHEN** `approve_action` is called but no tool executor is wired

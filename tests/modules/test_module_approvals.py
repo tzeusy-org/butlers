@@ -734,6 +734,75 @@ class TestDispatchApprovedActionById:
         event_types = [call["args"][0] for call in mock_db.approval_events]
         assert "action_execution_failed" in event_types
 
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            {
+                "status": "failed",
+                "error": "deadline",
+                "retryable": False,
+                "transport": {"outcome": "uncertain", "retryable": False},
+            },
+            {"error": "partial", "partial_delivery": True, "retryable": False},
+            {"error": "unknown effect", "telegram_effect_uncertain": True, "retryable": False},
+            {"result": {"error": "x", "transport": {"outcome": "uncertain"}}, "error": "wrapped"},
+        ],
+        ids=["transport-uncertain", "partial-delivery", "telegram-uncertain", "nested"],
+    )
+    async def test_uncertain_egress_outcome_is_recorded_not_left_retryable(
+        self, module: ApprovalsModule, mock_db: MockDB, failure: dict
+    ):
+        """A send that may have gone out is executed-with-unknown-outcome: Retry would resend."""
+        await module.on_startup(config=None, db=mock_db)
+        action_id = mock_db._insert_action(
+            tool_name="telegram_send_message",
+            tool_args={"chat_id": "1", "text": "hi"},
+            status="approved",
+        )
+        calls: list[str] = []
+
+        async def uncertain_executor(tool_name, tool_args):
+            calls.append(tool_name)
+            return failure
+
+        module.set_tool_executor(uncertain_executor)
+        result = await module._dispatch_approved_action_by_id(str(action_id))
+
+        assert result["status"] == "executed"
+        assert mock_db.pending_actions[action_id]["status"] == "executed"
+        stored = mock_db.pending_actions[action_id]["execution_result"]
+        assert stored["result"] == {"status": "outcome_unknown", "delivery_confirmed": False}
+        # No provider text or recipient from the failure is persisted.
+        assert "deadline" not in str(stored) and "unknown effect" not in str(stored)
+
+        again = await module._dispatch_approved_action_by_id(str(action_id))
+        assert again["status"] == "executed"
+        assert calls == ["telegram_send_message"]
+
+    async def test_proven_unsent_or_rejected_egress_failure_stays_retryable(
+        self, module: ApprovalsModule, mock_db: MockDB
+    ):
+        await module.on_startup(config=None, db=mock_db)
+        action_id = mock_db._insert_action(
+            tool_name="telegram_send_message",
+            tool_args={"chat_id": "1", "text": "hi"},
+            status="approved",
+        )
+
+        async def not_attempted(tool_name, tool_args):
+            return {
+                "status": "failed",
+                "error": "recipient unavailable",
+                "retryable": True,
+                "transport": {"outcome": "not_attempted", "retryable": True},
+            }
+
+        module.set_tool_executor(not_attempted)
+        result = await module._dispatch_approved_action_by_id(str(action_id))
+
+        assert "error" in result
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
+
     async def test_unsuccessful_executor_result_leaves_action_approved_without_result(
         self, module: ApprovalsModule, mock_db: MockDB
     ):
