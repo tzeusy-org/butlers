@@ -26,10 +26,13 @@ A build requires the declared toolchain, target, full locked dependencies and
 native assets. Neither a prepared source tree nor a version smoke check proves
 that a native CLI operation uses the selected executor.
 
-The shared TypeScript executor uses an explicit `node:http` internal hop and
+The shared TypeScript executor uses a private pinned Undici dispatcher for the internal hop and
 bounded streaming interfaces for WHATWG fetch and Gaxios. It is copied verbatim
 into each patched vendor source and its digest belongs in that vendor's series.
 It never replaces global fetch, modifies an auth store, or selects a provider.
-Off mode delegates to the existing terminal implementation. Vendor integration,
+Off mode delegates to the existing terminal implementation. An isolated npm alias
+keeps the vendors' existing Undici versions unchanged. Exact internal entry points
+avoid both Bun's built-in Undici shim and the upstream package root's global
+dispatcher initialization. Fresh-process controls verify that import boundary. Vendor integration,
 native operation coverage, immutable builder/assets, final sandbox manifests and
 offline image closure require their own artifact evidence.
