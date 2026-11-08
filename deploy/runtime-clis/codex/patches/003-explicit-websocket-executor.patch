@@ -1,9 +1,6 @@
 --- a/codex-rs/websocket-client/src/lib.rs
 +++ b/codex-rs/websocket-client/src/lib.rs
-@@ -173,7 +173,12 @@
-             {
-                 request.headers_mut().insert(COOKIE, cookies);
-             }
+@@ -176 +176,6 @@
 -            let proxy_route = route.await.map_err(WebSocketError::Io)?;
 +            let proxy_route = match codex_http_client::gateway::GatewayConfig::from_environment()
 +                .map_err(WebSocketError::Io)?
@@ -11,15 +8,9 @@
 +                Some(_) => OutboundProxyRoute::Direct,
 +                None => route.await.map_err(WebSocketError::Io)?,
 +            };
-             let result = dialer::connect(
-                 request,
-                 config,
 --- a/codex-rs/websocket-client/src/dialer.rs
 +++ b/codex-rs/websocket-client/src/dialer.rs
-@@ -42,6 +42,20 @@
-     loopback_direct: bool,
- ) -> Result<(ConnectionInner, Response), WebSocketError> {
-     let disable_nagle = tcp_nodelay == TcpNodelay::Enabled;
+@@ -44,0 +45,14 @@
 +    if !loopback_direct {
 +        if let Some(gateway) = codex_http_client::gateway::GatewayConfig::from_environment()
 +            .map_err(WebSocketError::Io)?
@@ -34,13 +25,7 @@
 +        }
 +    }
 +
-     let proxy_url = match proxy_route {
-         OutboundProxyRoute::TransportDefault => {
-             // The workspace enables tokio-tungstenite's `proxy` feature, so its default dialer
-@@ -134,6 +148,47 @@
-     Ok((ConnectionInner::Right(stream), response))
- }
- 
+@@ -136,0 +151,41 @@
 +async fn selected_handshake(
 +    mut request: Request,
 +    config: WebSocketConfig,
@@ -82,15 +67,9 @@
 +    Ok((ConnectionInner::Right(socket), response))
 +}
 +
- #[derive(Debug, PartialEq, Eq)]
- struct ProxyEndpoint {
-     config: ProxyConfig,
 --- a/codex-rs/websocket-client/src/dialer_tests.rs
 +++ b/codex-rs/websocket-client/src/dialer_tests.rs
-@@ -713,3 +713,75 @@
-         .unwrap();
-     WebSocketConnection::new(inner, lease)
- }
+@@ -715,0 +716,72 @@
 +
 +#[tokio::test]
 +async fn selected_gateway_handshake_keeps_native_key_auth_frames_and_logical_authority() {

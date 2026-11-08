@@ -521,29 +521,14 @@
 +}
 --- a/codex-rs/http-client/src/lib.rs
 +++ b/codex-rs/http-client/src/lib.rs
-@@ -5,6 +5,7 @@
- mod client_tls;
- mod custom_ca;
- mod error;
+@@ -7,0 +8 @@
 +pub mod gateway;
- mod network_policy;
- mod outbound_proxy;
- mod request;
 --- a/codex-rs/http-client/src/client.rs
 +++ b/codex-rs/http-client/src/client.rs
-@@ -37,6 +37,8 @@
-     pub(crate) inner: reqwest::Client,
-     pub(crate) request_logging: RequestLogging,
-     default_headers: Arc<HeaderMap>,
+@@ -39,0 +40,2 @@
 +    gateway: Result<Option<crate::gateway::GatewayClient>, String>,
 +    gateway_cookies: Option<Arc<dyn reqwest::cookie::CookieStore>>,
- }
- 
- impl std::fmt::Debug for TransportClient {
-@@ -83,6 +85,18 @@
-         }
-     }
- 
+@@ -85,0 +88,12 @@
 +    pub(crate) fn with_gateway_configuration(
 +        mut self,
 +        cookies: Option<Arc<dyn reqwest::cookie::CookieStore>>,
@@ -556,23 +541,11 @@
 +        self
 +    }
 +
-     pub fn get<U: IntoUrl>(&self, url: U) -> RequestBuilder {
-         self.request(Method::GET, url)
-     }
-@@ -109,6 +123,9 @@
-     }
- 
-     pub(crate) fn request_logging_enabled(&self) -> bool {
+@@ -111,0 +126,3 @@
 +        if crate::gateway::selected() {
 +            return false;
 +        }
-         match &self.backend {
-             HttpClientBackend::Direct(client) => client.request_logging == RequestLogging::Enabled,
-             HttpClientBackend::Routed(pool) => {
-@@ -138,13 +155,25 @@
-             inner,
-             request_logging,
-             default_headers: Arc::new(default_headers),
+@@ -141 +158,13 @@
 -        }
 +            gateway: crate::gateway::GatewayClient::from_environment(None),
 +            gateway_cookies: None,
@@ -587,24 +560,13 @@
 +        self.gateway_cookies = cookies;
 +        self.gateway = crate::gateway::GatewayClient::from_environment(timeout);
 +        self
-     }
- 
-     pub(crate) async fn execute(
-         &self,
-         request: reqwest::Request,
+@@ -147 +176 @@
 -    ) -> Result<reqwest::Response, reqwest::Error> {
 +    ) -> Result<reqwest::Response, HttpError> {
-         let method = request.method().clone();
-         let url = request.url().to_string();
- 
-@@ -163,14 +192,20 @@
-     pub(crate) async fn execute_without_request_logging(
-         &self,
-         mut request: reqwest::Request,
+@@ -166 +195 @@
 -    ) -> Result<reqwest::Response, reqwest::Error> {
 +    ) -> Result<reqwest::Response, HttpError> {
-         apply_default_headers(request.headers_mut(), &self.default_headers);
-         request.headers_mut().extend(trace_headers());
+@@ -169 +198,7 @@
 -        self.inner.execute(request).await
 +        match &self.gateway {
 +            Ok(Some(client)) => client.execute(request, self.gateway_cookies.as_ref()).await,
@@ -613,53 +575,26 @@
 +                "invalid selected egress configuration".to_string(),
 +            )),
 +        }
-     }
- 
-     pub(crate) fn log_response(&self, method: &Method, url: &str, response: &reqwest::Response) {
+@@ -173 +208 @@
 -        if self.request_logging == RequestLogging::Enabled {
 +        if !crate::gateway::selected() && self.request_logging == RequestLogging::Enabled {
-             tracing::debug!(
-                 method = %method,
-                 url = %url,
-@@ -182,8 +217,8 @@
-         }
-     }
- 
+@@ -185,2 +220,2 @@
 -    pub(crate) fn log_error(&self, method: &Method, url: &str, error: &reqwest::Error) {
 -        if self.request_logging == RequestLogging::Enabled {
 +    pub(crate) fn log_error(&self, method: &Method, url: &str, error: &HttpError) {
 +        if !crate::gateway::selected() && self.request_logging == RequestLogging::Enabled {
-             tracing::debug!(
-                 method = %method,
-                 url = %url,
-@@ -194,7 +229,7 @@
-         }
-     }
-     pub(crate) fn log_error_summary(&self, method: &Method, url: &str, error: &reqwest::Error) {
+@@ -197 +232 @@
 -        if self.request_logging == RequestLogging::Enabled {
 +        if !crate::gateway::selected() && self.request_logging == RequestLogging::Enabled {
-             tracing::debug!(
-                 method = %method,
-                 url = %url,
 --- a/codex-rs/http-client/src/client_builder.rs
 +++ b/codex-rs/http-client/src/client_builder.rs
-@@ -40,7 +40,7 @@
-     pub(crate) redirect_observed: Option<Arc<AtomicBool>>,
-     connect_timeout: Option<Duration>,
-     chatgpt_cloudflare_cookie_store: bool,
+@@ -43 +43 @@
 -    chatgpt_cookie_store: Option<Arc<ChatGptCookieStore>>,
 +    pub(crate) chatgpt_cookie_store: Option<Arc<ChatGptCookieStore>>,
-     pub(crate) request_logging: RequestLogging,
-     tls_backend: TlsBackend,
-     tls: HttpClientTlsConfig,
-@@ -183,13 +183,14 @@
-             .into_client());
-         }
-         self.chatgpt_cookie_store = http_client_factory.chatgpt_cookie_store();
+@@ -185,0 +186,2 @@
 +        let gateway_cookies = self.gateway_cookie_store();
 +        let gateway_timeout = self.connect_timeout;
-         let (builder, request_logging, default_headers) = self.into_reqwest_parts();
-         let inner = http_client_factory.build_reqwest_client(builder, request_url, route_class)?;
+@@ -188,5 +190,4 @@
 -        Ok(HttpClient::from_parts(
 -            inner,
 -            request_logging,
@@ -669,22 +604,10 @@
 +            HttpClient::from_parts(inner, request_logging, default_headers)
 +                .with_gateway_configuration(gateway_cookies, gateway_timeout),
 +        )
-     }
- 
-     /// Builds a client for a route that was already resolved by a route-aware caller.
-@@ -201,6 +202,8 @@
-     ) -> Result<TransportClient, BuildRouteAwareHttpClientError> {
-         self.chatgpt_cookie_store = http_client_factory.chatgpt_cookie_store();
-         let explicit_roots = self.tls.root_certificate.is_some();
+@@ -203,0 +205,2 @@
 +        let gateway_cookies = self.gateway_cookie_store();
 +        let gateway_timeout = self.connect_timeout;
-         let (builder, request_logging, default_headers) = self.into_reqwest_parts();
-         let builder = crate::outbound_proxy::configure_builder_for_resolved_route(
-             builder,
-@@ -214,11 +217,10 @@
-         } else {
-             build_reqwest_client_with_custom_ca(builder)?
-         };
+@@ -217,5 +220,4 @@
 -        Ok(TransportClient::new(
 -            inner,
 -            request_logging,
@@ -694,39 +617,20 @@
 +            TransportClient::new(inner, request_logging, default_headers)
 +                .with_gateway_configuration(gateway_cookies, gateway_timeout),
 +        )
-     }
- 
-     /// Builds a client using the transport's default proxy behavior.
-@@ -289,10 +291,14 @@
-         mut self,
-         proxy_routing: ProxyRouting,
-     ) -> Result<HttpClient, BuildCustomCaTransportError> {
+@@ -291,0 +294,2 @@
 +        let gateway_cookies = self.gateway_cookie_store();
 +        let gateway_timeout = self.connect_timeout;
-         let request_logging = self.request_logging;
-         let default_headers = self.default_headers.take().unwrap_or_default();
+@@ -294,2 +298,4 @@
 -        build_reqwest_client_with_custom_ca(self.reqwest_builder(proxy_routing))
 -            .map(|inner| HttpClient::from_parts(inner, request_logging, default_headers))
 +        build_reqwest_client_with_custom_ca(self.reqwest_builder(proxy_routing)).map(|inner| {
 +            HttpClient::from_parts(inner, request_logging, default_headers)
 +                .with_gateway_configuration(gateway_cookies, gateway_timeout)
 +        })
-     }
- 
-     pub(crate) fn build_with_custom_ca_fallback(
-@@ -310,6 +316,8 @@
-         )
-             -> Result<reqwest::Client, BuildCustomCaTransportError>,
-     ) -> TransportClient {
+@@ -312,0 +319,2 @@
 +        let gateway_cookies = self.gateway_cookie_store();
 +        let gateway_timeout = self.connect_timeout;
-         let request_logging = self.request_logging;
-         let default_headers = self.default_headers.take().unwrap_or_default();
-         let inner = match build_with_custom_ca(self.clone().reqwest_builder(proxy_routing)) {
-@@ -334,6 +342,31 @@
-             }
-         };
-         TransportClient::new(inner, request_logging, default_headers)
+@@ -336,0 +345,25 @@
 +            .with_gateway_configuration(gateway_cookies, gateway_timeout)
 +    }
 +
@@ -752,15 +656,9 @@
 +            TransportClient::new(inner, RequestLogging::Disabled, defaults)
 +                .with_gateway_configuration(cookies, timeout),
 +        )
-     }
- 
-     fn into_reqwest_parts(mut self) -> (reqwest::ClientBuilder, RequestLogging, HeaderMap) {
 --- a/codex-rs/http-client/src/chatgpt_cloudflare_cookies.rs
 +++ b/codex-rs/http-client/src/chatgpt_cloudflare_cookies.rs
-@@ -489,3 +489,13 @@
-         }
-     }
- }
+@@ -491,0 +492,10 @@
 +
 +/// The selected executor asks this same store with the original logical URL.
 +pub(crate) fn gateway_cookie_store(
@@ -773,35 +671,20 @@
 +}
 --- a/codex-rs/http-client/src/outbound_proxy.rs
 +++ b/codex-rs/http-client/src/outbound_proxy.rs
-@@ -488,6 +488,11 @@
-     outbound_proxy_policy: OutboundProxyPolicy,
-     resolve_system_proxy: impl FnOnce(&str, &RequestOrigin) -> SystemProxyDecision,
- ) -> Result<reqwest::ClientBuilder, BuildRouteAwareHttpClientError> {
+@@ -490,0 +491,5 @@
 +    if crate::gateway::selected() {
 +        return Ok(builder
 +            .no_proxy()
 +            .redirect(reqwest::redirect::Policy::none()));
 +    }
-     let route = resolve_proxy_route(
-         env,
-         request_url,
 --- a/codex-rs/http-client/src/route_aware_client_pool.rs
 +++ b/codex-rs/http-client/src/route_aware_client_pool.rs
-@@ -203,7 +203,7 @@
- 
- impl RouteAwareClientPool {
-     pub(crate) fn request_logging_enabled(&self) -> bool {
+@@ -206 +206 @@
 -        self.client_builder.request_logging_enabled()
 +        !crate::gateway::selected() && self.client_builder.request_logging_enabled()
-     }
- 
-     pub fn outbound_proxy_policy(&self) -> OutboundProxyPolicy {
 --- a/codex-rs/http-client/src/route_aware_client_pool/execution.rs
 +++ b/codex-rs/http-client/src/route_aware_client_pool/execution.rs
-@@ -59,6 +59,20 @@
-             .http_client_factory
-             .network_policy()
-             .acquire(request.request.url())?;
+@@ -61,0 +62,14 @@
 +        if crate::gateway::GatewayConfig::from_environment()
 +            .map_err(|_| {
 +                RouteAwareRequestError::Build("invalid selected egress configuration".to_string())
@@ -816,17 +699,10 @@
 +            let response = permit.run(client.execute(request)).await??;
 +            return Ok(HttpResponse::new(response, permit));
 +        }
-         permit
-             .run(Box::pin(self.send_authorized(request, resolve_route)))
-             .await?
-@@ -206,9 +220,21 @@
-         current_route: &OutboundProxyRoute,
-         selected_tls_backend: SelectedTlsBackend,
-         replay: Option<&reqwest::Request>,
+@@ -209 +223 @@
 -        error: reqwest::Error,
 +        error: RouteAwareRequestError,
-         timeout_deadline: Option<tokio::time::Instant>,
-     ) -> Result<reqwest::Response, RouteAwareRequestError> {
+@@ -211,0 +226,12 @@
 +        let error = match error {
 +            RouteAwareRequestError::Request(error) => error,
 +            other => return Err(other),
@@ -839,6 +715,3 @@
 +        {
 +            return Err(error.into());
 +        }
-         let Some(rustls_clients) = self.rustls_clients.as_ref() else {
-             return Err(error.into());
-         };

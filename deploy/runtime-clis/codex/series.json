@@ -11,7 +11,7 @@
   "patches": [
     {
       "path": "patches/001-workspace-release-versions.patch",
-      "sha256": "5cc48c7de66491a321687007f47073b9824a31574eb0f7ff8e8c57b8b276ac3b",
+      "sha256": "3a7260f09562f9046a5b8f99b45506f959fb2331e7512175f2ec9cda7536ca43",
       "files": [
         {
           "path": "codex-rs/Cargo.lock",
@@ -22,7 +22,7 @@
     },
     {
       "path": "patches/002-explicit-http-executor.patch",
-      "sha256": "89ac3bdbd30228eb6167644b42e1ace4c48506e59dc51862eb9a129ff4cfdf05",
+      "sha256": "06e728e1bed84b6e6460ea01040a5b1e080058bcc47ab11dd0d5b5aafa72bbe0",
       "files": [
         {
           "path": "codex-rs/http-client/src/gateway.rs",
@@ -68,7 +68,7 @@
     },
     {
       "path": "patches/003-explicit-websocket-executor.patch",
-      "sha256": "50d53da5acc262333af7cf22b261616a44f20312e7e3653977ad2a7d4a5ade2d",
+      "sha256": "23d303ca89c3b89a3520d7d5140b00b6c941c55fc1299eb1d956162e66bebe59",
       "files": [
         {
           "path": "codex-rs/websocket-client/src/lib.rs",
@@ -118,5 +118,6 @@
       "-j2"
     ]
   },
-  "source_tree_sha256": "9fd1aec92e9881a097e12b634722f2a311786869101b4de99504bc94c5f6ee77"
+  "source_tree_sha256": "9fd1aec92e9881a097e12b634722f2a311786869101b4de99504bc94c5f6ee77",
+  "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches."
 }
