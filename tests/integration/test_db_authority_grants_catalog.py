@@ -20,7 +20,7 @@ import pytest
 from sqlalchemy import create_engine
 
 from butlers.db_authority.catalog import diff_public_catalog, read_public_catalog
-from butlers.db_authority.grants import PUBLIC_RELATIONS
+from butlers.db_authority.grants import WA_BRIDGE_RELATIONS
 from butlers.testing.migration import (
     create_migrated_test_db,
     init_db_sql_for_dbapi,
@@ -43,7 +43,7 @@ def _diff(db_url: str) -> list[str]:
     finally:
         engine.dispose()
     assert catalog.privileges, "no public relations were read"
-    return diff_public_catalog(catalog, absent_ok=PUBLIC_RELATIONS)
+    return diff_public_catalog(catalog, absent_ok=WA_BRIDGE_RELATIONS)
 
 
 def _replay_init_db(postgres_container, db_name: str, migration_user: str) -> None:
@@ -73,7 +73,10 @@ def test_public_grants_equal_manifest_before_and_after_bootstrap_replay(
         chains=["core", "switchboard"],
         schemas={"switchboard": "switchboard"},
     )
-    assert _diff(db_url) == []
+    fresh = _diff(db_url)
 
     _replay_init_db(postgres_container, db_name, str(urlparse(db_url).username))
-    assert _diff(db_url) == []
+    replayed = _diff(db_url)
+    assert not fresh and not replayed, "\n".join(
+        ["FRESH:", *fresh, "AFTER INIT-DB REPLAY:", *replayed]
+    )
