@@ -1053,7 +1053,7 @@ def test_hiding_an_entity_hides_its_facts_edges_and_counts_until_it_returns(copi
                     object_entity_id=hidden,
                 )
                 private = await proxy.fetchval(
-                    "INSERT INTO general.facts(subject,entity_id,predicate,content,sensitivity,validity) VALUES ('Hidden subject',$1,'note','Private','pii','active') RETURNING id",
+                    "INSERT INTO general.facts(subject,entity_id,predicate,content,sensitivity,validity) VALUES ('Hidden subject',$1,'idea','Private','pii','active') RETURNING id",
                     hidden,
                 )
                 await withhold_entity_graph_edge(

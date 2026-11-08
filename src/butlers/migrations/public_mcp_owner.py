@@ -183,10 +183,13 @@ def _entity_references(table: Table, extras: tuple[LocalColumn, ...]) -> tuple[s
         if missing:
             raise ManifestError(f"{table.source}: facts must publish {', '.join(missing)}")
         return _FACT_ENTITY_REFERENCES
-    references = _ENTITY_REFERENCES.get(table.source, ())
-    if not set(references) <= available:
+    declared = _ENTITY_REFERENCES.get(table.source, ())
+    # The first reference is the row's subject and always required. An object reference
+    # exists only while its inputs are published (entity_facts derives it from
+    # object/object_kind); without them no row can name an object entity to hide.
+    if declared and declared[0] not in available:
         raise ManifestError(f"{table.source}: entity reference columns not published")
-    return references
+    return tuple(c for c in declared if c in available)
 
 
 def _published_entity(column: str) -> str:
