@@ -1573,7 +1573,7 @@ SCHEMA ApiResponse_list_TopSession__ 112ee6422509
 SCHEMA ApiResponse_list_UnroutableAttentionItem__ 668dd0d0cfa7
 SCHEMA ApiResponse_list_WebhookRow__ 9eb02b8594cb
 SCHEMA ApprovalAbandonRequest a8a92416bec3
-SCHEMA ApprovalAction 9577cb59599e
+SCHEMA ApprovalAction 1630f47899bf
 SCHEMA ApprovalActionApproveRequest 027c8f4e9ca6
 SCHEMA ApprovalActionRejectRequest e21d651d71f6
 SCHEMA ApprovalApproveRequest 36a0c4b35e98
@@ -1582,8 +1582,9 @@ SCHEMA ApprovalDeferRequest 023af4d72529
 SCHEMA ApprovalDeliveryCohort e7e33a20369c
 SCHEMA ApprovalDeliveryTruth 87c19f8ee9d2
 SCHEMA ApprovalDenyRequest 55a7a3a30dfb
-SCHEMA ApprovalDetail 81afb5796f07
+SCHEMA ApprovalDetail 9db7e276b414
 SCHEMA ApprovalEvidence a6d1fa38cb99
+SCHEMA ApprovalExecutionFailure 5428028e4931
 SCHEMA ApprovalGatedTool 8fe8094e04a0
 SCHEMA ApprovalGoalLineage bce6af8bb80c
 SCHEMA ApprovalMetrics d6a47dc8fcc0
