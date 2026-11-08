@@ -20,7 +20,9 @@ The four ordered patches have separate purposes:
 4. Classify a failed selected gateway connection as a gateway service failure.
    Retain its underlying logical URL and use the standard bounded stream retry
    path. It must not enter the native unbounded network-wait branch. Off-mode
-   connection and TLS classifications retain their original behavior.
+   connection and TLS classifications retain their original behavior. Connector
+   deadlines (including DNS stalls) are connection failures too; an accepted-hop
+   response timeout keeps its original timeout category.
 
 Build from the prepared source with Rust 1.95.0, the locked graph, default features
 and the target recorded in the series. The source commit is embedded explicitly:

@@ -89,12 +89,12 @@
     },
     {
       "path": "patches/004-bounded-selected-hop-errors.patch",
-      "sha256": "3ec251e537c0c32a2be6da99b9ace1b685bda8bd7a8cf4f773988c59c6d3b080",
+      "sha256": "7c0216178ec5ee2ea29cb9014ce7fc60ebb4dcd4e15d3a205411605212bdfc13",
       "files": [
         {
           "path": "codex-rs/http-client/src/gateway.rs",
           "before_sha256": "8f3b449e27dc712c8dddd75175709570e82591d0b3a27cc6b00bc289fdec16a5",
-          "after_sha256": "4d08cd5c4de6a28e80db4b6b0d670d9c6b8b69f4ad9608b33a29dff5d95f3307"
+          "after_sha256": "a992faad0dc7cf68cc72c5efc301321ac2b524952c398ad9bdc8a262f3a7884a"
         },
         {
           "path": "codex-rs/http-client/src/route_aware_client_pool.rs",
@@ -109,7 +109,7 @@
         {
           "path": "codex-rs/http-client/src/transport_tests.rs",
           "before_sha256": "5ffe4f903c7fe20d91623adcdff5e1a39da9e209619747dacda07e1707eb834c",
-          "after_sha256": "acd27768ffac0558074cb652f0b5e9ca7b7af269d53bdf998dbe5d1efa427527"
+          "after_sha256": "7e3aadaa4ff8807781c35950fcb58b25a52bc249683f900020da933452b20c4f"
         },
         {
           "path": "codex-rs/backend-client/src/client.rs",
@@ -154,6 +154,6 @@
       "-j2"
     ]
   },
-  "source_tree_sha256": "c5a2068efd66e410dd897a2013bfa523796ee67cb48d15e902f9a84dd6c01fa2",
+  "source_tree_sha256": "a3d6dc8d1e40e0ab10f27b1b8a74b6332fa74c2267c058ff7252d4cc85d2a1d9",
   "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches."
 }
