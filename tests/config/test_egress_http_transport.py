@@ -170,3 +170,198 @@ async def test_real_httpx_receives_capacity_refusal_without_a_direct_fallback(tl
             response = await caller.get(f"https://{HOST}/")
     assert response.status_code == 503 and response.headers["x-egress-refusal"] == "busy"
     assert not origin.dials and not origin.requests
+
+
+@pytest.mark.parametrize("ready_fragment", [False, True])
+async def test_default_selected_httpx_reads_early_refusal_before_upload_finishes(
+    tls_contexts, monkeypatch, ready_fragment
+):
+    import socket
+
+    from butlers.egress import gateway
+
+    monkeypatch.setattr(gateway, "_IDLE_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(gateway, "_HEAD_TIMEOUT_S", 0.3)
+    origin = Origin(
+        302, chunks=(), early=True, headers=[(b"Location", b"https://undeclared.example/private")]
+    )
+    release, closed = asyncio.Event(), asyncio.Event()
+
+    async def body():
+        try:
+            yield b"first"
+            await origin.headers_seen.wait()
+            if ready_fragment:
+                yield b"racing-fragment"
+            await release.wait()
+            yield b"last"
+        finally:
+            closed.set()
+
+    original = socket.getaddrinfo
+
+    def resolve(host, port, *args, **kwargs):
+        return original(
+            "127.0.0.1" if host in {"egress-gateway", b"egress-gateway"} else host,
+            port,
+            *args,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    async with running_gateway(tls_contexts, origin, bound_port=True) as (port, _):
+        monkeypatch.setenv("BUTLERS_EGRESS_MODE", "request-v1")
+        monkeypatch.setenv("BUTLERS_EGRESS_GATEWAY", f"http://egress-gateway:{port}")
+        async with external_async_client(timeout=1) as caller:
+            request = asyncio.create_task(caller.post(f"https://{HOST}/", content=body()))
+            try:
+                await asyncio.wait_for(origin.headers_seen.wait(), 1)
+                await asyncio.wait({request}, timeout=0.2)
+                assert request.done(), (
+                    "default production HTTPX transport still waits for upload after origin final response"
+                )
+                response = request.result()
+                assert (
+                    response.status_code == 403
+                    and response.headers["x-egress-refusal"] == "redirect_refused"
+                ), response.headers.get("x-egress-refusal", "missing")
+                assert closed.is_set() and not release.is_set()
+                assert len(origin.dials) == 1
+            finally:
+                release.set()
+                await asyncio.gather(request, return_exceptions=True)
+
+
+def map_owned_hop(monkeypatch):
+    import socket
+
+    original = socket.getaddrinfo
+
+    def resolve(host, port, *args, **kwargs):
+        return original(
+            "127.0.0.1" if host in {"egress-gateway", b"egress-gateway"} else host,
+            port,
+            *args,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+
+
+async def test_default_hop_progressing_upload_stream_and_aclose(tls_contexts, monkeypatch):
+    from butlers.egress import gateway
+
+    map_owned_hop(monkeypatch)
+    monkeypatch.setattr(gateway, "_HEAD_TIMEOUT_S", 0.04)
+    monkeypatch.setattr(gateway, "_IDLE_TIMEOUT_S", 0.2)
+    origin = Origin(chunks=(b"data: one\n\n", b"data: two\n\n"), delay=0.02)
+
+    async def body():
+        for _ in range(5):
+            await asyncio.sleep(0.03)
+            yield b"part"
+
+    async with running_gateway(tls_contexts, origin, bound_port=True) as (port, _):
+        transport = GatewayTransport(GatewayConfig(port))
+        async with httpx.AsyncClient(
+            transport=transport, timeout=httpx.Timeout(connect=0.2, write=0.2, read=0.04, pool=0.2)
+        ) as caller:
+            async with caller.stream("POST", f"https://{HOST}/", content=body()) as response:
+                assert response.status_code == 200
+                assert [chunk async for chunk in response.aiter_bytes()] == [
+                    b"data: one\n\n",
+                    b"data: two\n\n",
+                ]
+            assert not transport._hop._streams
+        assert transport._hop._closed
+    assert origin.requests[0][1] == b"part" * 5
+
+
+@pytest.mark.parametrize(
+    ("case", "category"),
+    [
+        ("connect-timeout", httpx.ConnectTimeout),
+        ("connect-error", httpx.ConnectError),
+        ("write-timeout", httpx.WriteTimeout),
+        ("read-timeout", httpx.ReadTimeout),
+        ("malformed-response", httpx.RemoteProtocolError),
+    ],
+)
+async def test_default_hop_keeps_timeouts_and_httpx_errors(monkeypatch, case, category):
+    owned = set()
+    gate = asyncio.Event()
+
+    async def peer(reader, writer):
+        task = asyncio.current_task()
+        owned.add(task)
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            if case == "malformed-response":
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: bad\r\n\r\n")
+                await writer.drain()
+            else:
+                await gate.wait()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            owned.discard(task)
+
+    class ParkedDrain:
+        def __init__(self, writer):
+            self.writer = writer
+
+        def __getattr__(self, name):
+            return getattr(self.writer, name)
+
+        async def drain(self):
+            await gate.wait()
+
+    async with await asyncio.start_server(peer, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+
+        async def open_hop(config):
+            assert config.port == 3115
+            if case == "connect-timeout":
+                await gate.wait()
+            if case == "connect-error":
+                raise OSError("synthetic-nonpublic-error-text")
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            return reader, ParkedDrain(writer) if case == "write-timeout" else writer
+
+        monkeypatch.setattr(http_transport, "_open_hop", open_hop)
+        transport = GatewayTransport(GatewayConfig(3115))
+        try:
+            async with httpx.AsyncClient(transport=transport, timeout=0.03) as caller:
+                with pytest.raises(category) as failure:
+                    await caller.get(f"https://{HOST}/private-path?token=synthetic")
+                assert isinstance(failure.value, httpx.RequestError)
+                assert failure.value.request.url.host == HOST
+                assert "synthetic-nonpublic-error-text" not in str(failure.value)
+                assert not transport._hop._streams
+        finally:
+            gate.set()
+            if owned:
+                await asyncio.gather(*list(owned), return_exceptions=True)
+            assert not owned
+
+
+async def test_default_hop_caller_cancellation_closes_its_stream(tls_contexts, monkeypatch):
+    map_owned_hop(monkeypatch)
+    origin = Origin(chunks=(b"first", b"later"), delay=0.05)
+    async with running_gateway(tls_contexts, origin, bound_port=True) as (port, _):
+        transport = GatewayTransport(GatewayConfig(port))
+        async with httpx.AsyncClient(transport=transport) as caller:
+            async with caller.stream("GET", f"https://{HOST}/") as response:
+                iterator = response.aiter_bytes()
+                assert await anext(iterator) == b"first"
+                assert transport._hop._streams
+                await response.aclose()
+                await iterator.aclose()
+                assert not transport._hop._streams
+            origin.headers_seen.clear()
+            task = asyncio.create_task(caller.get(f"https://{HOST}/"))
+            await asyncio.wait_for(origin.headers_seen.wait(), 1)
+            assert transport._hop._streams
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            assert not transport._hop._streams

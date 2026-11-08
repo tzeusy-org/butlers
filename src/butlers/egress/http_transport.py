@@ -6,13 +6,17 @@ proxy environment variables and never falls back to a direct origin connection.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
+import h11
 import httpx
+
+from butlers.egress import gateway
 
 _MODE_ENV = "BUTLERS_EGRESS_MODE"
 _GATEWAY_ENV = "BUTLERS_EGRESS_GATEWAY"
@@ -46,6 +50,192 @@ class GatewayConfig:
         return f"http://egress-gateway:{self.port}{_PREFIX.decode()}{host}/{port}"
 
 
+def _timeout(request: httpx.Request, phase: str, maximum: float) -> float:
+    configured = request.extensions.get("timeout", {}).get(phase)
+    return maximum if configured is None else min(float(configured), maximum)
+
+
+async def _open_hop(config: GatewayConfig):
+    # This is the one configured internal service, never a URL-selected origin.
+    return await asyncio.open_connection("egress-gateway", config.port, limit=gateway._HEAD_LIMIT)
+
+
+class _HopStream(httpx.AsyncByteStream):
+    def __init__(self, owner, request, connection, reader, writer):
+        self.owner, self.request, self.connection = owner, request, connection
+        self.reader, self.writer = reader, writer
+        self._closing = None
+
+    async def __aiter__(self):
+        received = 0
+        try:
+            while True:
+                event = await gateway._event(
+                    self.connection,
+                    self.reader,
+                    read_budget=_timeout(self.request, "read", gateway._IDLE_TIMEOUT_S),
+                )
+                if isinstance(event, h11.EndOfMessage):
+                    if event.headers:
+                        raise httpx.RemoteProtocolError(
+                            "gateway response trailers refused", request=self.request
+                        )
+                    return
+                if not isinstance(event, h11.Data):
+                    raise httpx.RemoteProtocolError(
+                        "incomplete gateway response", request=self.request
+                    )
+                received += len(event.data)
+                if received > gateway._DOWNLOAD_LIMIT:
+                    raise httpx.RemoteProtocolError("gateway response limit", request=self.request)
+                yield bytes(event.data)
+        except TimeoutError:
+            raise httpx.ReadTimeout("gateway response timed out", request=self.request) from None
+        except (h11.RemoteProtocolError, gateway.Refused):
+            raise httpx.RemoteProtocolError(
+                "invalid gateway response", request=self.request
+            ) from None
+        except OSError:
+            raise httpx.ReadError("gateway response failed", request=self.request) from None
+        finally:
+            await self.aclose()
+
+    async def aclose(self):
+        if self._closing is None:
+
+            async def close():
+                try:
+                    await gateway._settle_writers(self.writer)
+                finally:
+                    self.owner._streams.discard(self)
+
+            self._closing = asyncio.create_task(close())
+        await gateway._finish(self._closing)
+
+
+class _RequestHopTransport(httpx.AsyncBaseTransport):
+    """One bounded full-duplex HTTP/1.1 hop; no pool, proxy or origin fallback."""
+
+    def __init__(self, config):
+        self.config = config
+        self._streams = set()
+        self._closed = False
+
+    async def handle_async_request(self, request):
+        if self._closed:
+            raise httpx.TransportError("gateway transport is closed", request=request)
+        writer = None
+        stream = None
+        try:
+            try:
+                reader, writer = await asyncio.wait_for(
+                    _open_hop(self.config), _timeout(request, "connect", gateway._CONNECT_TIMEOUT_S)
+                )
+            except TimeoutError:
+                raise httpx.ConnectTimeout(
+                    "gateway connection timed out", request=request
+                ) from None
+            except OSError:
+                raise httpx.ConnectError("gateway connection failed", request=request) from None
+            connection = h11.Connection(h11.CLIENT, max_incomplete_event_size=gateway._HEAD_LIMIT)
+            stream = _HopStream(self, request, connection, reader, writer)
+            self._streams.add(stream)
+            if self._closed:
+                raise httpx.TransportError("gateway transport is closed", request=request)
+
+            async def write(data):
+                try:
+                    await gateway._write(
+                        writer,
+                        data,
+                        write_budget=_timeout(request, "write", gateway._IDLE_TIMEOUT_S),
+                    )
+                except TimeoutError:
+                    raise httpx.WriteTimeout("gateway upload timed out", request=request) from None
+                except OSError:
+                    raise httpx.WriteError("gateway upload failed", request=request) from None
+
+            await write(
+                connection.send(
+                    h11.Request(
+                        method=request.method.encode(),
+                        target=request.url.raw_path,
+                        headers=request.headers.raw,
+                    )
+                )
+            )
+
+            async def upload():
+                sent = 0
+                try:
+                    async for chunk in request.stream:
+                        # Bound each write even when an application yields a large buffer.
+                        for offset in range(0, len(chunk), 16384):
+                            part = chunk[offset : offset + 16384]
+                            sent += len(part)
+                            if sent > gateway._UPLOAD_LIMIT:
+                                raise httpx.LocalProtocolError(
+                                    "gateway upload limit", request=request
+                                )
+                            await write(connection.send(h11.Data(data=part)))
+                    await write(connection.send(h11.EndOfMessage()))
+                finally:
+                    await request.stream.aclose()
+
+            response = await gateway._upload_and_response(
+                connection,
+                reader,
+                upload(),
+                header_timeout=_timeout(request, "read", gateway._HEAD_TIMEOUT_S),
+                upload_errors=(OSError, httpx.WriteError, httpx.WriteTimeout),
+            )
+            writer = None  # Transfer connection ownership to the response stream.
+            return httpx.Response(
+                response.status_code,
+                headers=list(response.headers),
+                stream=stream,
+                extensions={"http_version": b"HTTP/1.1"},
+            )
+        except TimeoutError:
+            raise httpx.ReadTimeout("gateway response timed out", request=request) from None
+        except h11.LocalProtocolError:
+            raise httpx.LocalProtocolError("invalid gateway request", request=request) from None
+        except (h11.RemoteProtocolError, gateway.Refused):
+            raise httpx.RemoteProtocolError("invalid gateway response", request=request) from None
+        except OSError:
+            raise httpx.ReadError("gateway response failed", request=request) from None
+        finally:
+            if writer is not None:
+                if stream is not None:
+                    await stream.aclose()
+                else:
+                    await gateway._settle_writers(writer)
+
+    async def aclose(self):
+        self._closed = True
+        await gateway._finish(
+            asyncio.gather(
+                *(stream.aclose() for stream in list(self._streams)), return_exceptions=True
+            )
+        )
+
+
+class _LogicalStream(httpx.AsyncByteStream):
+    def __init__(self, stream, request):
+        self.stream, self.request = stream, request
+
+    async def __aiter__(self):
+        try:
+            async for chunk in self.stream:
+                yield chunk
+        except httpx.RequestError as exc:
+            exc.request = self.request
+            raise
+
+    async def aclose(self):
+        await self.stream.aclose()
+
+
 class GatewayTransport(httpx.AsyncBaseTransport):
     """Map a logical HTTPS request to one framed internal gateway request."""
 
@@ -56,13 +246,7 @@ class GatewayTransport(httpx.AsyncBaseTransport):
         hop_transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.config = config
-        self._hop = (
-            hop_transport
-            if hop_transport is not None
-            else httpx.AsyncHTTPTransport(
-                trust_env=False,
-            )
-        )
+        self._hop = hop_transport if hop_transport is not None else _RequestHopTransport(config)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         url = request.url
@@ -95,13 +279,17 @@ class GatewayTransport(httpx.AsyncBaseTransport):
             stream=request.stream,
             extensions=request.extensions,
         )
-        response = await self._hop.handle_async_request(hop)
+        try:
+            response = await self._hop.handle_async_request(hop)
+        except httpx.RequestError as exc:
+            exc.request = request
+            raise
         # HTTPX associates this response with the original logical request. Keep
         # its streaming body/close semantics; do not buffer downloads or SSE.
         return httpx.Response(
             response.status_code,
             headers=response.headers,
-            stream=response.stream,
+            stream=_LogicalStream(response.stream, request),
             extensions=response.extensions,
         )
 

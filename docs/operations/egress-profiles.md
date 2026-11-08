@@ -120,11 +120,15 @@ change).
 - **Response boundary:** h11 parses complete bounded origin headers before exposure.
   Every300..399 (including304 and same-origin redirects) returns a fixed empty403
   `X-Egress-Refusal: redirect_refused`, with no Location or redirect-target dial.
-  Nonredirect responses, errors and SSE stream with backpressure. Origin-supplied
-  reserved refusal metadata is discarded.
+  Upload and response progress run concurrently, so an early final response stops
+  and joins the remaining upload. Nonredirect errors and SSE retain streaming.
+  Origin-supplied reserved refusal metadata is discarded.
 - **Resources:** headers8KiB/10s; streamed16KiB chunks;1GiB per direction;
  300s inactivity and3600s total exchange. The process admits32 exchanges globally,
-  with an additional128 per-workload cap. Streaming avoids whole-upload buffering
+  with an additional128 per-workload cap held through bounded task/writer teardown.
+  The response-header budget starts on its first byte or completed upload, whichever
+  comes first; a still-progressing upload does not start an unconditional response
+  timer. Streaming avoids whole-upload buffering
   against the256MiB pod limit. Known Gmail25MiB/base64, voice20MiB and notification
   document50MiB limits fit; larger configurable/model/dependency transfers require
   separate compatibility closure. Busy gives503; DNS/dial failures502. No fallback.

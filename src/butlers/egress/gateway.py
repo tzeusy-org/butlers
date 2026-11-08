@@ -158,16 +158,19 @@ def request_origin(request: h11.Request, route: Route) -> tuple[str, int, bytes]
     return host, port, b"/" + parts[2]
 
 
-def _check_framing(head: bytes) -> None:
+def _check_framing(head: bytes, *, response: bool = False) -> None:
     # h11 performs HTTP parsing. Inspect raw multiplicity before its deliberate
     # normalization of repeated equal Content-Length values loses that fact.
     names = [line.partition(b":")[0].lower() for line in head.split(b"\r\n")[1:] if line]
     if (
-        names.count(b"host") != 1
+        (not response and names.count(b"host") != 1)
         or names.count(b"content-length") > 1
         or (b"content-length" in names and b"transfer-encoding" in names)
     ):
-        raise Refused("ambiguous_framing", 400)
+        raise Refused(
+            "ambiguous_response_framing" if response else "ambiguous_framing",
+            502 if response else 400,
+        )
 
 
 async def _head(reader: asyncio.StreamReader) -> bytes:
@@ -180,19 +183,127 @@ async def _head(reader: asyncio.StreamReader) -> bytes:
     return head
 
 
-async def _event(connection: h11.Connection, reader: asyncio.StreamReader):
+async def _event(
+    connection: h11.Connection, reader: asyncio.StreamReader, *, read_budget: float | None = None
+):
     while True:
         event = connection.next_event()
         if event is not h11.NEED_DATA:
             return event
-        data = await asyncio.wait_for(reader.read(16384), _IDLE_TIMEOUT_S)
+        data = await asyncio.wait_for(
+            reader.read(16384), _IDLE_TIMEOUT_S if read_budget is None else read_budget
+        )
         connection.receive_data(data)
 
 
-async def _write(writer: asyncio.StreamWriter, data: bytes | None) -> None:
+async def _write(
+    writer: asyncio.StreamWriter, data: bytes | None, *, write_budget: float | None = None
+) -> None:
     if data:
         writer.write(data)
-        await asyncio.wait_for(writer.drain(), _IDLE_TIMEOUT_S)
+        await asyncio.wait_for(
+            writer.drain(), _IDLE_TIMEOUT_S if write_budget is None else write_budget
+        )
+
+
+async def _finish(future: asyncio.Future) -> None:
+    """Join owned cleanup despite cancellation; propagate it after settlement."""
+    interrupted = False
+    while not future.done():
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError:
+            interrupted = True
+    future.result()
+    if interrupted:
+        raise asyncio.CancelledError
+
+
+async def _cancel_and_join(*tasks: asyncio.Task) -> None:
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    await _finish(asyncio.gather(*tasks, return_exceptions=True))
+
+
+async def _origin_head(
+    reader: asyncio.StreamReader, uploaded: asyncio.Event, header_budget: float
+) -> bytes:
+    # A healthy origin may wait for a long, progressing upload. Start its header
+    # budget on the first response byte or upload completion, whichever is first.
+    first = asyncio.create_task(reader.readexactly(1))
+    completed = asyncio.create_task(uploaded.wait())
+    try:
+        await asyncio.wait({first, completed}, return_when=asyncio.FIRST_COMPLETED)
+        async with asyncio.timeout(header_budget):
+            initial = await first
+            head = initial + await reader.readuntil(b"\r\n\r\n")
+        if len(head) > _HEAD_LIMIT:
+            raise Refused("headers_too_large", 502)
+        return head
+    except (asyncio.LimitOverrunError, asyncio.IncompleteReadError) as exc:
+        raise Refused("malformed_headers", 502) from exc
+    finally:
+        await _cancel_and_join(first, completed)
+
+
+async def _upload_and_response(
+    connection: h11.Connection,
+    reader: asyncio.StreamReader,
+    upload: Awaitable[None],
+    *,
+    header_timeout: float | None = None,
+    upload_errors: tuple[type[Exception], ...] = (OSError,),
+):
+    """One h11 duplex exchange for origin execution and the selected HTTPX hop."""
+    uploaded = asyncio.Event()
+
+    early_final = False
+
+    async def receive():
+        nonlocal early_final
+        for _ in range(5):
+            head = await _origin_head(
+                reader, uploaded, _HEAD_TIMEOUT_S if header_timeout is None else header_timeout
+            )
+            _check_framing(head, response=True)
+            connection.receive_data(head)
+            response = connection.next_event()
+            if isinstance(response, h11.InformationalResponse) and response.status_code in (
+                100,
+                103,
+            ):
+                continue
+            if not isinstance(response, h11.Response):
+                raise Refused("unsupported_response", 502)
+            early_final = True
+            # Stop the sender in the same turn that changes h11's send state;
+            # it must not resume a body write after a final response is parsed.
+            if not sending.done():
+                sending.cancel()
+            return response
+        raise Refused("unsupported_response", 502)
+
+    sending = asyncio.ensure_future(upload)
+    sending.add_done_callback(lambda _task: uploaded.set())
+    receiving = asyncio.create_task(receive())
+    try:
+        await asyncio.wait({sending, receiving}, return_when=asyncio.FIRST_COMPLETED)
+        if sending.done() and (not sending.cancelled() or not early_final):
+            try:
+                sending.result()
+            except upload_errors as upload_error:
+                # A peer can close its read side immediately after a final
+                # response. Do not let that racing write failure hide the
+                # response already in flight. Completion arms the bounded
+                # response budget; absent a valid response, keep the write error.
+                try:
+                    return await receiving
+                except Exception:
+                    raise upload_error from None
+        return await receiving
+    finally:
+        await _cancel_and_join(sending, receiving)
 
 
 async def system_resolver(host: str, port: int) -> list[str]:
@@ -221,12 +332,20 @@ async def open_tls(address: str, port: int, host: str, context: ssl.SSLContext):
 
 
 async def _close(writer: asyncio.StreamWriter | None) -> None:
-    if writer is not None:
+    if writer is None:
+        return
+    try:
         writer.close()
-        try:
-            await asyncio.wait_for(writer.wait_closed(), _CONNECT_TIMEOUT_S)
-        except (OSError, TimeoutError):
-            pass
+        await asyncio.wait_for(writer.wait_closed(), _CONNECT_TIMEOUT_S)
+    except asyncio.CancelledError:
+        writer.transport.abort()
+        raise
+    except Exception:  # noqa: BLE001 - force-close failed/timed-out teardown, no exception text
+        writer.transport.abort()
+
+
+async def _settle_writers(*writers: asyncio.StreamWriter | None) -> None:
+    await _finish(asyncio.gather(*(_close(writer) for writer in writers), return_exceptions=True))
 
 
 def _audit(route: Route, host: str | None, port: int | None, verdict: str, reason: str,
@@ -337,31 +456,24 @@ async def handle_request(
                 upstream,
                 origin.send(h11.Request(method=request.method, target=target, headers=headers)),
             )
-            while True:
-                event = await _event(client, reader)
-                if isinstance(event, h11.EndOfMessage):
-                    if event.headers:
-                        raise Refused("trailers_refused", 400)
-                    await _write(upstream, origin.send(h11.EndOfMessage()))
-                    break
-                if not isinstance(event, h11.Data):
-                    raise Refused("malformed_body", 400)
-                up += len(event.data)
-                if up > _UPLOAD_LIMIT:
-                    raise Refused("upload_limit", 400)
-                await _write(upstream, origin.send(h11.Data(data=event.data)))
-            # Parse each complete header block before exposing any response.
-            for _ in range(5):
-                origin.receive_data(await _head(origin_reader))
-                response = origin.next_event()
-                if isinstance(response, h11.InformationalResponse) and response.status_code in (
-                    100,
-                    103,
-                ):
-                    continue
-                break
-            if not isinstance(response, h11.Response):
-                raise Refused("unsupported_response", 502)
+
+            async def upload():
+                nonlocal up
+                while True:
+                    event = await _event(client, reader)
+                    if isinstance(event, h11.EndOfMessage):
+                        if event.headers:
+                            raise Refused("trailers_refused", 400)
+                        await _write(upstream, origin.send(h11.EndOfMessage()))
+                        return
+                    if not isinstance(event, h11.Data):
+                        raise Refused("malformed_body", 400)
+                    up += len(event.data)
+                    if up > _UPLOAD_LIMIT:
+                        raise Refused("upload_limit", 400)
+                    await _write(upstream, origin.send(h11.Data(data=event.data)))
+
+            response = await _upload_and_response(origin, origin_reader, upload())
             if 300 <= response.status_code <= 399:
                 raise Refused("redirect_refused")
             nominated = {
@@ -413,13 +525,14 @@ async def handle_request(
         if not exposed:
             await _refuse(writer, Refused(reason, 502))
     finally:
-        if acquired and slots is not None:
-            slots.release()
-        if global_acquired and global_slots is not None:
-            global_slots.release()
-        await _close(upstream)
-        await _close(writer)
-        _audit(route, host, port, verdict, reason, up, down, started)
+        try:
+            await _settle_writers(upstream, writer)
+        finally:
+            if acquired and slots is not None:
+                slots.release()
+            if global_acquired and global_slots is not None:
+                global_slots.release()
+            _audit(route, host, port, verdict, reason, up, down, started)
 
 
 async def serve(routes: Mapping[int, Route], host: str = "0.0.0.0") -> None:
