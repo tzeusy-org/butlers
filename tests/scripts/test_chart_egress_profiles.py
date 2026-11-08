@@ -168,6 +168,38 @@ def test_profiles_off_renders_no_profile_policy_and_keeps_the_tracker_policy():
     assert names == {"butlers-tracker-egress"}
 
 
+@pytest.mark.parametrize("tracker_enabled", [True, False])
+def test_rollback_holds_workloads_and_retains_restrictive_policy_union(tracker_enabled):
+    settings = (
+        *_EVERYTHING,
+        "egressPolicy.enabled=false",
+        f"trackerEgress.enabled={str(tracker_enabled).lower()}",
+    )
+    before = _docs(*settings)
+    held = _docs(*settings, "suspend=true")
+    deployments = [d for d in held if d["kind"] == "Deployment"]
+    cronjobs = [d for d in held if d["kind"] == "CronJob"]
+    assert deployments and cronjobs
+    assert all(d["spec"]["replicas"] == 0 for d in deployments)
+    assert all(d["spec"]["suspend"] is True for d in cronjobs)
+    # Suspend does not remove policies: even a lingering/recreated pod stays contained.
+    assert _egress_policies(held) == _egress_policies(before)
+    forbidden = [(Dest(ip="203.0.113.5"), 443), (_component("dashboard-api"), 49999)]
+    for name, labels in _pods(held).items():
+        for dest, port in forbidden:
+            assert not _admitting(held, labels, dest, port), (name, dest, port)
+    # Position the unsafe former runbook: turning profiles off widens the union,
+    # whether it restores tracker-egress or leaves the pod without an egress policy.
+    unsafe = _docs(*settings, "egressProfiles.enabled=false")
+    assert any(d["spec"]["replicas"] > 0 for d in unsafe if d["kind"] == "Deployment")
+    pod = _pods(unsafe)["butlers-up"]
+    assert all(_admitting(unsafe, pod, dest, port) for dest, port in forbidden)
+    # Existing positive routes survive in the retained configuration; hold is not a
+    # replacement allowlist or evidence that actual workloads have been drained.
+    assert _admitting(held, pod, _DNS, 53, "UDP")
+    assert _admitting(held, pod, _component("dashboard-api"), 41200)
+
+
 def test_profiles_replace_the_tracker_policy_and_every_pod_starts_denied(everything):
     policies = _egress_policies(everything)
     names = {p["metadata"]["name"] for p in policies}

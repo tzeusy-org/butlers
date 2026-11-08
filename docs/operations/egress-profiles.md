@@ -132,11 +132,46 @@ Not authorized by this source change. Each step needs its own authorization:
 
 ## Rollback
 
-Set `egressProfiles.enabled=false` and `helm upgrade`. The per-workload and default-deny
-egress policies are pruned and the tracker-egress policy renders again exactly as before,
-so the tracker deny (`trackerEgress.enabled`) is never dropped. Rollback restores the
-previous posture; it does not widen egress beyond it.
+Rollback is a separately authorized operation, not permission to restore the broad
+predecessor policy. Keep `egressProfiles.enabled=true` and
+`egressPolicy.enabled=false` throughout the hold. Flipping profiles off while workloads
+remain runnable removes default-deny and restores broad legacy egress (or no egress
+policy when both legacy switches are off). That is not a security-preserving rollback.
 
-Under profiles a held workload cannot be enabled (the render fails) and a disabled one
-renders no pods; any pod no profile names keeps the default deny. None is silently
-admitted.
+1. Stop admission and upstream producers for the affected release, including queued
+   invocations and external controllers that could create or restart pods. Preserve
+   content-free failure/audit receipts and connector cursor state; do not replay effects.
+2. Render and inspect the same release with the existing site/profile values and this
+   held overlay, then apply it only under the operation's explicit authorization:
+
+   ```yaml
+   suspend: true
+   egressProfiles:
+     enabled: true
+   egressPolicy:
+     enabled: false
+   ```
+
+   The chart's `suspend` switch sets every Deployment to zero replicas and suspends
+   CronJobs. It does not terminate already running Jobs/Pods or stop an external
+   autoscaler/controller. Drain or terminate those affected workloads under the same
+   authorization; positively verify zero affected running/pending pods, no active Jobs,
+   all CronJobs suspended and no recreator/admission path. Do not infer drainage from a
+   successful Helm command or from desired replicas alone.
+3. Retain the rendered default-deny and per-workload policies, profile/configuration
+   receipts and existing internal constraints while drainage is in progress and for the
+   entire hold. A remaining or unexpectedly recreated pod still needs containment.
+4. Keep the release held until a reviewed, separately authorized safe replacement has
+   passed policy-union and real network conformance. Do not remove restrictive policies
+   or re-enable workloads as an automatic rollback step. If containment itself cannot be
+   retained, keep admission disabled and workloads stopped; resolve that boundary before
+   any replacement or resumption.
+
+`trackerEgress` alone preserves the older tracker exclusion, not per-workload default-deny.
+Its accepted opt-in predecessor semantics and default values are unchanged by this source
+correction. The chart tests cover the held render and its policy union, not CNI behavior,
+actual drainage, stopped admission or an executed rollout/rollback.
+
+Under profiles a held workload cannot be enabled (the render fails); disabled optional
+workloads render no pods, and `suspend` scales rendered workloads down. Any pod no profile
+names keeps default-deny. None is silently admitted.

@@ -97,11 +97,17 @@ def test_a_held_profile_admits_nothing():
         "[2001:db8::1]",
         "api.example-provider.com:443",
         "under_score.example-provider.com",
+        "metadata.google.internal\n",
+        "device.tail1234.ts.net\n",
+        "api.example-provider.com\n",
+        "api.example-provider.com\r\n",
+        "api.example-provider.com\t",
+        "api.example-\nprovider.com",
     ],
 )
 def test_an_external_entry_that_is_not_an_exact_public_name_is_refused(host):
     with pytest.raises(ProfileError, match=r"external\[0\]"):
-        parse_profiles(_with(f'gateway_port = 3101\nexternal = ["{host}:443"]'))
+        parse_profiles(_with(f"gateway_port = 3101\nexternal = [{json.dumps(f'{host}:443')} ]"))
 
 
 @pytest.mark.parametrize(
@@ -125,6 +131,9 @@ def test_an_external_entry_that_is_not_an_exact_public_name_is_refused(host):
         ('internal = [{ component = "beta", port = 41100, end_port = 41000 }]', "below"),
         ('internal = [{ component = "beta", port = 41100, protocol = "SCTP" }]', "protocol"),
         ('internal = [{ component = "Beta", port = 41100 }]', "component/site name"),
+        ('internal = [{ component = "beta\\n", port = 41100 }]', "component/site name"),
+        ('sites = [{ site = "database\\n", port = 5432 }]', "component/site name"),
+        ('sites = [{ site = "data\\tbase", port = 5432 }]', "component/site name"),
         ('internal = [{ component = "beta", port = 41100, cidr = "0.0.0.0/0" }]', "unknown"),
         ('sites = [{ site = "database", port = 5432, optional = "yes" }]', "optional"),
         ('sites = [{ site = "database", port = 5432, cidr = "10.0.0.0/8" }]', "unknown"),
@@ -147,6 +156,7 @@ def test_an_invalid_workload_profile_is_refused(workload, match):
         (f'schema = "{SCHEMA}"\nruntime_widening = true\n[workloads.a]\nsummary = "a"', "unknown"),
         (f'schema = "{SCHEMA}"\n[workloads.alpha]\n', "summary"),
         ("schema = ", "TOML"),
+        (f'schema = "{SCHEMA}"\n[workloads."alpha\\n"]\nsummary = "a"', "component/site name"),
     ],
 )
 def test_an_invalid_document_is_refused(text, match):
