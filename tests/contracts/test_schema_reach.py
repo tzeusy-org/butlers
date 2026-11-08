@@ -307,6 +307,18 @@ _DYNAMIC_RELATION_RE = re.compile(
 # Dynamic entries are exact normalized relation slots, not whole-file waivers.
 SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
+        "src/butlers/migrations/public_mcp_owner.py",
+        "<dynamic:{qualified(table.source)}>",
+    ): "dynamic-local: RFC0039 D3 internal subscriber DDL/read views operate only on a closed decoded canonical manifest source; qualified validates and quotes the approved source namespace and relation, never a discovered export.",
+    (
+        "src/butlers/migrations/public_mcp_owner.py",
+        "<dynamic:{qualified(name)}>",
+    ): "dynamic-local: RFC0039 D3 effective subscriber catalog uses only fixed mcp_local/mcp_inbox tables and manifest-derived fixed mcp_read view names; qualified validates both identifiers before SQL generation.",
+    (
+        "src/butlers/migrations/public_mcp_owner.py",
+        "<dynamic:{key_array}>",
+    ): "dynamic-review: RFC0039 D3 subscriber primary-key comparison uses IS DISTINCT FROM followed by a rendered SQL text array of closed manifest key identifiers; this exact scanner slot is an array operand, not a relation or foreign read.",
+    (
         "src/butlers/migrations/public_mcp.py",
         "relationship.entity_predicate_registry",
     ): "sanctioned: RFC 0039 D2/D4 primary-only validation checks the explicit relationship allowlist against relational-kind source predicates; never adds registry rows to exposure",
