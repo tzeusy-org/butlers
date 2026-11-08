@@ -895,6 +895,9 @@ can leave a just-redacted episode public until the next sweep.
 Legacy calendar payloads without `title_source` infer a summary only from a nonblank string
 using the adapter's Python-whitespace semantics. Explicit summary provenance and owner-corrected
 titles retain precedence; location/description fallbacks stay private.
+The adapter writes `title_source = 'unattended'` for a summary on an event the owner neither
+organised nor was invited to (no `self` attendee; a no-attendee event counts only when its organizer
+is the synced, non-group calendar). The view publishes only `'summary'`, so that title stays private.
 
 ## Situational blocks and anchors (bu-r3fmja)
 

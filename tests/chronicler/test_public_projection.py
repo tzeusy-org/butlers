@@ -497,6 +497,11 @@ async def test_an_override_projects_the_retention_redaction_it_creates(
     [
         ({"title_source": "summary", "title": "Standup"}, "Standup", "Standup"),
         (
+            {"title_source": "unattended", "title": "Their offsite"},
+            "Their offsite",
+            "Calendar event",
+        ),
+        (
             {"title_source": "fallback", "location": "12 Secret Rd"},
             "12 Secret Rd",
             "Calendar event",

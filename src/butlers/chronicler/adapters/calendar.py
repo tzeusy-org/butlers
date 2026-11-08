@@ -606,10 +606,15 @@ class CalendarCompletedAdapter(ProjectionAdapter):
             or f"{schema}: calendar block"
         )
         # Location and description are the inviter's free text, so the public projection withholds
-        # a title built from them (chronicler_031).
-        payload["title_source"] = (
-            "summary" if title or self._clean_text(event_title) else "fallback"
-        )
+        # a title built from them (chronicler_031). A summary is published only for an event the
+        # owner organised or was invited to (owner decision 2026-11-08, bu-y66o00.20); one seen on
+        # someone else's shared calendar stays private.
+        if not (title or self._clean_text(event_title)):
+            payload["title_source"] = "fallback"
+        elif self._owner_attends(event_metadata):
+            payload["title_source"] = "summary"
+        else:
+            payload["title_source"] = "unattended"
 
         async with chronicler_pool.acquire() as conn:
             episode = await upsert_episode(
@@ -658,6 +663,35 @@ class CalendarCompletedAdapter(ProjectionAdapter):
         if isinstance(event_metadata.get("butler_name"), str):
             provenance["butler_name"] = event_metadata["butler_name"]
         return provenance
+
+    @staticmethod
+    def _owner_attends(event_metadata: Any) -> bool:
+        """Whether the owner organised or was invited to the event (any response).
+
+        Google marks the account's own attendee entry ``self``. An event with no attendees is the
+        owner's own only when its organizer is the synced calendar itself and that calendar is not
+        a shared group or imported one. Anything unreadable counts as not attended.
+        """
+        if isinstance(event_metadata, str):
+            try:
+                event_metadata = json.loads(event_metadata)
+            except ValueError:
+                return False
+        if not isinstance(event_metadata, dict):
+            return False
+        attendees = event_metadata.get("attendees")
+        if not isinstance(attendees, list):
+            return False
+        if attendees:
+            return any(isinstance(a, dict) and a.get("self") is True for a in attendees)
+        organizer = event_metadata.get("organizer")
+        calendar_id = event_metadata.get("calendar_id")
+        if not isinstance(organizer, str) or not isinstance(calendar_id, str):
+            return False
+        calendar_id = calendar_id.strip().casefold()
+        return organizer.strip().casefold() == calendar_id and not calendar_id.endswith(
+            ".calendar.google.com"
+        )
 
     @staticmethod
     def _maybe(row: asyncpg.Record, key: str) -> Any:
