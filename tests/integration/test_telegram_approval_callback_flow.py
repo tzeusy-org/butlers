@@ -329,9 +329,11 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
     """A notification side effect cannot be abandoned after delivery begins.
 
     This exercises the real dashboard retry and abandonment routes against
-    PostgreSQL. The delivery stub pauses after the API has begun dispatching;
-    Abandon must remain blocked on the executor's row lock until the delivery
-    result and terminal execution event are durable.
+    PostgreSQL. Approved notify runs in its owning daemon (RFC 0038 D13): the
+    API dispatches ``dispatch_approved_action`` and the owner's executor hands
+    the stored envelope to its authenticated approved-notify hop. That hop
+    pauses; Abandon must remain blocked on the executor's row lock until the
+    delivery result and terminal execution event are durable.
     """
     action_id = uuid4()
     tool_args = {
@@ -353,7 +355,11 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
     abandon_started = asyncio.Event()
     replay_started = asyncio.Event()
 
+    from butlers.core.approved_delivery import approved_notify_request
+    from butlers.modules.approvals import module as approvals_module
     from butlers.modules.approvals import operations as approvals_operations
+    from butlers.modules.approvals.approved_notify import deliver_approved_notify
+    from butlers.modules.approvals.execution_context import approval_tool_args_digest
     from butlers.modules.approvals.executor import execute_approved_action
 
     execution_attempts = 0
@@ -365,7 +371,7 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
             replay_started.set()
         return await execute_approved_action(**kwargs)
 
-    monkeypatch.setattr(approvals_router, "execute_approved_action", _observe_execution)
+    monkeypatch.setattr(approvals_module, "execute_approved_action", _observe_execution)
 
     real_abandon = approvals_operations.abandon_approved_action
 
@@ -375,44 +381,31 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
 
     monkeypatch.setattr(approvals_operations, "abandon_approved_action", _observe_abandon)
 
-    class _BlockingDeliverClient:
-        calls: list[tuple[str, dict[str, Any]]]
+    hop_calls: list[tuple[UUID, str, dict[str, Any]]] = []
 
-        def __init__(self) -> None:
-            self.calls = []
+    async def _blocking_approved_notify_hop(
+        approved_action_id: UUID, args_digest: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        # The source's authenticated hop receives exactly what its proof binds.
+        hop_calls.append((approved_action_id, args_digest, payload))
+        delivery_started.set()
+        await release_delivery.wait()
+        return {"status": "ok", "message_id": "notify-race-proof"}
 
-        async def ping(self) -> bool:
-            return True
+    owner_daemon = SimpleNamespace(
+        config=SimpleNamespace(name="relationship"),
+        _approved_notify_dispatch=_blocking_approved_notify_hop,
+    )
 
-        async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
-            from inspect import signature
+    async def _owner_executor(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        assert tool_name == "notify"
+        return await deliver_approved_notify(owner_daemon, arguments)
 
-            from butlers.tools.switchboard.contracts import parse_notify_request
-            from butlers.tools.switchboard.notification.deliver import deliver
-
-            assert tool_name == "deliver"
-            signature(deliver).bind(pool=approval_pool, **arguments)
-            parsed = parse_notify_request(arguments["notify_request"])
-            assert parsed.origin_butler == arguments["source_butler"] == "relationship"
-            assert parsed.delivery.model_dump(exclude_none=True) == tool_args
-            self.calls.append((tool_name, arguments))
-            delivery_started.set()
-            await release_delivery.wait()
-            return SimpleNamespace(
-                is_error=False,
-                content=[SimpleNamespace(text=json.dumps({"message_id": "notify-race-proof"}))],
-            )
-
-    class _NotifyMcpManager:
-        def __init__(self, client: _BlockingDeliverClient) -> None:
-            self._client = client
-
-        async def get_client(self, butler_name: str) -> _BlockingDeliverClient:
-            assert butler_name == "switchboard"
-            return self._client
-
-    delivery_client = _BlockingDeliverClient()
-    app = _protected_approvals_app(approval_pool, mcp_mgr=_NotifyMcpManager(delivery_client))
+    module = ApprovalsModule()
+    await module.on_startup(config=None, db=approval_pool)
+    module.set_tool_executor(_owner_executor)
+    owner_client = _ExecutingButlerClient(module)
+    app = _protected_approvals_app(approval_pool, mcp_mgr=_ExecutingMcpManager(owner_client))
     headers = {"X-API-Key": _DASHBOARD_API_KEY}
 
     async with (
@@ -458,7 +451,14 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
     assert replay_response.status_code == 200, replay_response.text
     assert replay_response.json()["data"]["status"] == "executed"
     assert abandon_response.status_code == 409, abandon_response.text
-    assert len(delivery_client.calls) == 1
+    assert hop_calls == [
+        (
+            action_id,
+            approval_tool_args_digest(tool_args),
+            approved_notify_request("relationship", tool_args),
+        )
+    ]
+    assert {name for name, _ in owner_client.calls} == {"dispatch_approved_action"}
 
     action = await approval_pool.fetchrow(
         "SELECT status, execution_result FROM pending_actions WHERE id = $1", action_id

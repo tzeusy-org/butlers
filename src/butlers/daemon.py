@@ -281,6 +281,9 @@ class ButlerDaemon:
         # RFC 0023 recovery remains dormant until the authenticated Messenger
         # boundary supplies this narrow runtime in a later rollout slice.
         self._approval_delivery_runtime: Any | None = None
+        # The trusted cohost installs this authenticated hop beside that runtime;
+        # an approved notify carries its single-use proof over it (RFC 0038 D13).
+        self._approved_notify_dispatch: Any | None = None
         self._approval_delivery_task: asyncio.Task | None = None
         self._approval_delivery_stop: asyncio.Event | None = None
         self.blob_store: S3BlobStore | None = None
@@ -1869,6 +1872,15 @@ class ButlerDaemon:
                     owning relationship runtime and never mutate the stored
                     action name.
                     """
+                    if tool_name == "notify":
+                        # notify() would re-check the recipient and re-park the
+                        # approved call; send its stored envelope instead, with
+                        # this daemon's single-use proof when the cohost has one.
+                        from butlers.modules.approvals.approved_notify import (
+                            deliver_approved_notify,
+                        )
+
+                        return await deliver_approved_notify(self, tool_args)
                     executable_name = _aliases.get(tool_name, tool_name)
                     original_fn = _originals.get(executable_name) or _originals.get(tool_name)
                     if original_fn is None:

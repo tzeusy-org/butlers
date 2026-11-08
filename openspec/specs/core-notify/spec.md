@@ -538,6 +538,18 @@ This requirement exists because the delivery architecture has two layers: `notif
 - **THEN** the target MUST NOT receive the owner bypass
 - **AND** delivery MUST follow the standing-rule or pending-approval path
 
+#### Scenario: Messenger route.execute honours a verified owner-approved notify
+- **WHEN** an owner-approved `notify` reaches the Messenger's `route.execute` from its owning butler's approval executor
+- **AND** the request arrived on the kernel-admitted Switchboard approval hop carrying a Switchboard attestation that the owning butler verified and consumed its single-use proof for this action
+- **AND** the attestation names the routed sender and `origin_butler`, carries no recovery correlation, and its digest equals the digest of the exact routed `notify_request`
+- **THEN** the shared approval matcher MUST treat the delivery as approved and send it once without parking a second pending action (RFC 0038 D13)
+
+#### Scenario: Messenger route.execute ignores an unverified approved-notify claim
+- **WHEN** the Messenger's `route.execute` receives a delivery whose input carries an approved-notify attestation field, a caller origin, or an action id
+- **AND** the request did not arrive on the kernel-admitted Switchboard approval hop, or the attestation is malformed, names another source, or does not cover the exact routed `notify_request`
+- **THEN** the field MUST grant no approval
+- **AND** delivery MUST follow the standing-rule or pending-approval path
+
 ### Requirement: [TARGET-STATE] Notify Response Envelope
 
 The implementation SHALL provide the behavior described by this requirement.

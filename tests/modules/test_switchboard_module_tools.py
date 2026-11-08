@@ -287,3 +287,139 @@ async def test_registered_recovery_derives_private_rendering_facts_after_authent
         content_requires_inert_links=True,
     )
     assert routed[-1]["args"]["input"]["context"]["notify_request"]["render_links_inert"] is True
+
+
+async def test_registered_deliver_forwards_approved_notify_only_after_source_verification(
+    monkeypatch,
+):
+    """RFC 0038 D13: Switchboard attests an approved notify only on the source's word.
+
+    The proof header counts only on the kernel-admitted source principal. The
+    source verifier consumes it; only then does the protected Messenger hop carry
+    an attestation. A refused or foreign proof fails closed and never degrades
+    into an ordinary, re-parkable delivery.
+    """
+    import copy
+    import uuid
+
+    from fastmcp import FastMCP
+
+    from butlers.core import approval_delivery_authority as authority
+    from butlers.core.approved_delivery import notify_request_digest
+    from butlers.modules._roster_switchboard import tools
+
+    delivery = importlib.import_module("butlers.tools.switchboard.notification.deliver")
+    action_id = uuid.uuid4()
+    request = {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {"intent": "send", "channel": "telegram", "message": "Approved words"},
+    }
+    verdicts: list[dict] = []
+    verified: list[tuple[dict, str | None]] = []
+
+    async def verify(tool, arguments, *, proof):
+        assert tool == "verify_approved_notify"
+        verified.append((copy.deepcopy(arguments["notify_request"]), proof))
+        return verdicts.pop(0)
+
+    recovery_call = AsyncMock()
+    module = SimpleNamespace(
+        _get_pool=lambda: object(),
+        _approval_recovery_call=recovery_call,
+        _approval_recovery_verifiers={
+            "relationship": authority.SourceApprovalVerifier(
+                SimpleNamespace(call=verify), "synthetic-epoch"
+            )
+        },
+    )
+    principals = {"issuer": "relationship"}
+
+    def http_request():
+        scope = {}
+        if principals["issuer"] is not None:
+            scope["butlers.approval_peer"] = authority._PeerPrincipal(
+                principals["issuer"],
+                "switchboard:approval-recovery",
+                "synthetic-epoch",
+                lambda: True,
+            )
+        return SimpleNamespace(scope=scope, headers={"x-butlers-approval-proof": "proof-1"})
+
+    monkeypatch.setattr(authority, "get_http_request", http_request)
+    monkeypatch.setattr(delivery, "receiver_route_cutover_enabled", lambda: False)
+    routed: list[dict] = []
+
+    async def route(_pool, **kwargs):
+        routed.append(kwargs)
+        return {
+            "result": {
+                "status": "ok",
+                "result": {
+                    "notify_response": {
+                        "schema_version": "notify_response.v1",
+                        "status": "ok",
+                        "delivery": {"channel": "telegram", "delivery_id": "tg-approved"},
+                    }
+                },
+            }
+        }
+
+    async def log_notification(*_args, **_kwargs):
+        return str(uuid.uuid4())
+
+    monkeypatch.setattr(delivery, "route", route)
+    monkeypatch.setattr(delivery, "log_notification", log_notification)
+    monkeypatch.setattr(delivery, "_write_outbound_message_inbox", AsyncMock(), raising=False)
+    mcp = FastMCP("registered-approved-notify")
+    tools.register_tools(mcp, module, SimpleNamespace(groups=["routing"]))
+    registered = await mcp.get_tool("deliver")
+
+    # Positive: the source verifies the exact envelope; Messenger gets the attestation.
+    verdicts.append(
+        {"allowed": True, "source_epoch": "synthetic-epoch", "action_id": str(action_id)}
+    )
+    result = await registered.fn(
+        source_butler="relationship", notify_request=copy.deepcopy(request)
+    )
+    assert result["status"] == "sent", result
+    assert verified == [(request, "proof-1")]
+    assert len(routed) == 1
+    assert routed[0]["call_fn"] is recovery_call
+    forwarded = routed[0]["args"]["input"]["context"]["notify_request"]
+    assert routed[0]["internal_context"] == {
+        "_trusted_approved_notify": {
+            "issuer": "relationship",
+            "action_id": str(action_id),
+            "notify_digest": notify_request_digest(forwarded),
+        }
+    }
+
+    # Replay / not-approved / digest mismatch: the source refuses -> fail closed.
+    verdicts.append({"allowed": False})
+    refused = await registered.fn(
+        source_butler="relationship", notify_request=copy.deepcopy(request)
+    )
+    assert refused == {
+        "status": "failed",
+        "error": "Approved notification authority rejected.",
+        "retryable": False,
+    }
+    assert len(routed) == 1
+
+    # A different source cannot spend relationship's attestation.
+    verdicts.append(
+        {"allowed": True, "source_epoch": "synthetic-epoch", "action_id": str(action_id)}
+    )
+    foreign = await registered.fn(source_butler="health", notify_request=copy.deepcopy(request))
+    assert foreign["status"] == "failed"
+    assert len(routed) == 1
+
+    # Public ingress: a header without the kernel principal is ignored entirely.
+    principals["issuer"] = None
+    calls_before = len(verified)
+    await registered.fn(source_butler="relationship", notify_request=copy.deepcopy(request))
+    assert len(verified) == calls_before
+    assert len(routed) == 2
+    assert not routed[1].get("internal_context")
+    assert routed[1].get("call_fn") is not recovery_call

@@ -437,6 +437,24 @@ Scope: v1-mandatory
 - **AND** actions in any other status, or approved actions with a non-null result, are not replayed
 - **AND** an approved action that names a goal is refused and left unchanged for the broker
 
+#### Scenario: Approved notify executes in its owning daemon with a single-use proof
+
+- **WHEN** an owner approves a parked `notify` action from the dashboard or a Telegram approval tap
+- **THEN** the dashboard API dispatches it through the owning butler's `dispatch_approved_action`, never by calling Switchboard `deliver` from the API process
+- **AND** the owning daemon's executor, while it holds the approved row with a null result, sends the stored call's canonical `notify.v1` envelope without re-running `notify()`
+- **AND** where the trusted cohost approval hop exists, the source mints an in-memory proof bound to the action id, the stored-call digest and the exact envelope digest, valid for at most ten seconds and consumed by its first verification
+- **AND** Switchboard accepts that proof only from the kernel-admitted caller that is the source, has the source verify it against the live approved, unexecuted row, and forwards an attestation over the protected Messenger hop
+- **AND** a replayed, expired, mismatched or foreign proof, or an action that is no longer approved and unexecuted, is refused and the row stays approved for retry
+- **AND** if Switchboard consumed the proof but no reply arrives before the hop deadline (which outlasts its nested verifier and Messenger calls), the action is recorded executed with an unknown outcome and is not retried, so a non-owner never receives a second message
+- **AND** this operation is separate from the `approval_request` admission, which it does not widen
+- **AND** without the trusted hop the delivery is ordinary, so Messenger's recipient gate applies and parks a native, previewable command
+
+#### Scenario: One shared matcher recognises approved execution
+
+- **WHEN** an egress gate asks whether a call is already approved
+- **THEN** it consults one shared matcher that accepts only the executor's task-bound context, a verified broker `approval_ref` lineage, or a source-verified approved-notify attestation bound to the handling task and covering the exact routed payload
+- **AND** a bare flag, a caller origin, or an action id without a proof grants nothing
+
 #### Scenario: Historic malformed command remains unchanged
 
 - **WHEN** a historic approved action has an unregistered name or incompatible stored arguments

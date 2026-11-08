@@ -134,6 +134,17 @@ def test_tool_without_registered_preview_gets_open_only() -> None:
             {"recipient": "+6591234567", "text": "On my way"},
             ("+659", "On"),
         ),
+        # Messenger parks routed replies under these native tools (bu-dhloi1.169).
+        (
+            "telegram_reply_to_message",
+            {"chat_id": "555", "message_id": 44, "text": "Running late"},
+            ("555", "In reply to: `44`", "Running"),
+        ),
+        (
+            "email_reply_to_thread",
+            {"to": "dana@x.com", "thread_id": "t-9", "subject": "Re: Hi", "body": "Hello"},
+            ("dana@x.com", "t-9", "Re: Hi", "Hello"),
+        ),
         (
             "notify",
             {"channel": "email", "recipient": "dana@x.com", "subject": "Hi", "message": "Hello"},
@@ -197,6 +208,9 @@ def test_reaction_requires_complete_native_arguments_and_no_hidden_kwargs() -> N
         ("email_send_message", {"to": [], "subject": "s", "body": "b"}),
         ("email_send_message", {"to": "a@x.com", "subject": "s", "body": "has `tick`"}),
         ("telegram_send_message", {"chat_id": "1", "text": "hi", "reply_markup": {"k": 1}}),
+        ("telegram_reply_to_message", {"chat_id": "1", "message_id": "44", "text": "hi"}),
+        ("telegram_reply_to_message", {"chat_id": "1", "message_id": True, "text": "hi"}),
+        ("email_reply_to_thread", {"to": "a@x.com", "body": "b", "subject": "s"}),
         ("telegram_react_to_message", {"chat_id": "test-chat", "message_id": 42, "emoji": "`👍`"}),
         ("notify", {"entity_id": "e1", "message": "hi"}),
     ],

@@ -8,6 +8,7 @@ preserved exactly.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -39,6 +40,12 @@ from butlers.core.approvals_hooks import (
     EmailGuardDecision,
     is_approved_tool_execution,
     park_pending_action,
+)
+from butlers.core.approved_delivery import (
+    APPROVED_NOTIFY_CONTEXT_KEY,
+    ApprovedNotifyAttestation,
+    bind_verified_approved_delivery,
+    reset_verified_approved_delivery,
 )
 from butlers.core.dashboard_turns import claim_target, mark_route_enqueued, mark_terminal
 from butlers.core.model_routing import Complexity, coerce_complexity_tier
@@ -125,6 +132,27 @@ def _raw_input_has_approval_recovery(input_payload: Any) -> bool:
         return False
     notify_request = context.get("notify_request")
     return isinstance(notify_request, dict) and notify_request.get("recovery") is not None
+
+
+def _authenticated_approved_notify(input_payload: Any) -> ApprovedNotifyAttestation | None:
+    """Return Switchboard's approved-notify attestation only from its protected hop.
+
+    The field is a plain value on any public request, so it is honoured only when
+    the kernel-admitted Switchboard principal installed this request. Coverage of
+    the exact routed envelope is checked later by the shared approval matcher.
+    """
+    if not isinstance(input_payload, dict):
+        return None
+    context = input_payload.get("context")
+    raw = context.get(APPROVED_NOTIFY_CONTEXT_KEY) if isinstance(context, dict) else None
+    if raw is None:
+        return None
+    if protected_approval_principal(audience="messenger:approval-recovery") != "switchboard":
+        return None
+    try:
+        return ApprovedNotifyAttestation.from_internal_dict(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def _preauthenticate_messenger_recovery(
@@ -630,6 +658,56 @@ async def _build_routed_delivery_command(
     raise RuntimeError(f"Registered notify channel lacks a delivery handler: {channel}")
 
 
+# Native channel tools whose registered handler accepts the materialized command
+# arguments unchanged. File sends pin redacted refs/digests (not the handler's
+# input) and have no native argument for inert-link rendering.
+_NATIVE_REPLAY_TOOLS = frozenset(
+    {
+        "telegram_send_message",
+        "telegram_reply_to_message",
+        "email_send_message",
+        "email_reply_to_thread",
+        "whatsapp_send_message",
+    }
+)
+
+
+async def _native_tool_registered(daemon: Any, tool_name: str) -> bool:
+    """True only if this daemon's MCP surface serves ``tool_name`` for replay."""
+    get_tool = getattr(getattr(daemon, "mcp", None), "get_tool", None)
+    if not callable(get_tool):
+        return False
+    try:
+        tool = get_tool(tool_name)
+        if inspect.isawaitable(tool):
+            tool = await tool
+    except Exception:
+        return False
+    return tool is not None
+
+
+async def _replayable_park_command(
+    daemon: Any, command: _RoutedDeliveryCommand, notify_request: Any
+) -> tuple[str, dict[str, Any] | None]:
+    """Return the tool name and args a recipient park stores for exact replay.
+
+    A plain send or reply parks as the registered native tool with its handler
+    arguments, so the approval card's registered preview renders and approval
+    replays that tool once. Inert-link rendering and file sends have no native
+    handler argument; they keep the routed envelope (``None`` args) and replay
+    through ``route.execute`` with every rendering fact intact. So does a send
+    whose native tool this daemon does not register (for example email without
+    ``send_tools``): its approved executor would have no handler to replay.
+    """
+    if (
+        command.tool_name in _NATIVE_REPLAY_TOOLS
+        and not notify_request.render_links_inert
+        and await _native_tool_registered(daemon, command.tool_name)
+    ):
+        return command.tool_name, json.loads(json.dumps(command.tool_args))
+    return "route.execute", None
+
+
 async def _check_routed_delivery_approval(
     *,
     daemon: Any,
@@ -715,11 +793,14 @@ async def _check_routed_delivery_approval(
 
     if command is None:
         return None
+    # Park the registered native command so its preview renders and approval
+    # replays that exact handler call (module-approvals: replayable commands).
+    park_tool_name, park_tool_args = await _replayable_park_command(daemon, command, notify_request)
     kwargs = {
         "rule_tool_name": command.tool_name,
         "rule_match_args": command.tool_args,
-        "park_tool_name": "route.execute",
-        "park_tool_args": approved_args,
+        "park_tool_name": park_tool_name,
+        "park_tool_args": park_tool_args if park_tool_args is not None else approved_args,
         "park_summary": "Messenger delivery to a recipient not uniquely identified as owner.",
         "session_id": session_id,
         "butler_name": daemon.config.name,
@@ -886,30 +967,43 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             except Exception:
                 return _approval_recovery_refusal_response()
 
-        parent_ctx = extract_trace_context(trace_context) if trace_context else None
-        tracer = trace.get_tracer("butlers")
-        with tracer.start_as_current_span("butler.tool.route.execute", context=parent_ctx) as _span:
-            tag_butler_span(_span, butler_name)
-            # Capture the accept-phase span context so the background processing
-            # task can link back to it via a SpanLink (cross-trace correlation).
-            accept_span_ctx = _span.get_span_context()
-            return await _route_execute_inner(
-                schema_version=schema_version,
-                request_context=request_context,
-                input=input,
-                subrequest=subrequest,
-                target=target,
-                source_metadata=source_metadata,
-                trace_context=trace_context,
-                parent_ctx=parent_ctx,
-                accept_span_ctx=accept_span_ctx,
-                daemon=daemon,
-                pool=pool,
-                spawner=spawner,
-                butler_name=butler_name,
-                route_metrics=route_metrics,
-                trusted_messenger_recovery=trusted_messenger_recovery,
-            )
+        # RFC 0038 D13: an owner-approved notify arrives with Switchboard's
+        # attestation. It counts only on the kernel-admitted Switchboard hop and
+        # only for this task; on public ingress it is an inert, ignored field.
+        approved_token = None
+        attestation = _authenticated_approved_notify(input) if butler_name == "messenger" else None
+        if attestation is not None:
+            approved_token = bind_verified_approved_delivery(attestation)
+        try:
+            parent_ctx = extract_trace_context(trace_context) if trace_context else None
+            tracer = trace.get_tracer("butlers")
+            with tracer.start_as_current_span(
+                "butler.tool.route.execute", context=parent_ctx
+            ) as _span:
+                tag_butler_span(_span, butler_name)
+                # Capture the accept-phase span context so the background processing
+                # task can link back to it via a SpanLink (cross-trace correlation).
+                accept_span_ctx = _span.get_span_context()
+                return await _route_execute_inner(
+                    schema_version=schema_version,
+                    request_context=request_context,
+                    input=input,
+                    subrequest=subrequest,
+                    target=target,
+                    source_metadata=source_metadata,
+                    trace_context=trace_context,
+                    parent_ctx=parent_ctx,
+                    accept_span_ctx=accept_span_ctx,
+                    daemon=daemon,
+                    pool=pool,
+                    spawner=spawner,
+                    butler_name=butler_name,
+                    route_metrics=route_metrics,
+                    trusted_messenger_recovery=trusted_messenger_recovery,
+                )
+        finally:
+            if approved_token is not None:
+                reset_verified_approved_delivery(approved_token)
 
     async def _route_execute_inner(
         schema_version: str,

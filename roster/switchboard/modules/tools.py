@@ -12,7 +12,9 @@ import uuid
 from typing import Any
 
 from butlers.core.approval_delivery_authority import (
+    approved_notify_proof_presented,
     guard_registered_approval_tool,
+    verify_switchboard_approved_notify,
     verify_switchboard_recovery,
 )
 from butlers.core.tool_call_capture import get_current_runtime_session_id
@@ -185,6 +187,37 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         notify_request: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Deliver a notification through the specified channel."""
+        is_recovery = (
+            isinstance(notify_request, dict) and notify_request.get("recovery") is not None
+        )
+        if not is_recovery and approved_notify_proof_presented():
+            # RFC 0038 D13: an owner-approved notify from its source executor.
+            # The source verifies (and consumes) its own proof; only then does the
+            # protected Messenger hop carry an attestation. Any failure refuses
+            # rather than degrading into an ordinary, re-parkable delivery.
+            attestation = (
+                await verify_switchboard_approved_notify(module, notify_request)
+                if isinstance(notify_request, dict)
+                else None
+            )
+            approved_call = getattr(module, "_approval_recovery_call", None)
+            if (
+                attestation is None
+                or attestation.issuer != source_butler
+                or not callable(approved_call)
+            ):
+                return {
+                    "status": "failed",
+                    "error": "Approved notification authority rejected.",
+                    "retryable": False,
+                }
+            return await _deliver_notification(
+                module._get_pool(),
+                source_butler=source_butler,
+                notify_request=notify_request,
+                approved_attestation=attestation,
+                call_fn=approved_call,
+            )
         verified_context = None
         recovery_call = None
         if isinstance(notify_request, dict) and notify_request.get("recovery") is not None:
