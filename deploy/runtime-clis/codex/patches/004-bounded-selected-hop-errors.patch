@@ -1,0 +1,89 @@
+--- a/codex-rs/http-client/src/gateway.rs
++++ b/codex-rs/http-client/src/gateway.rs
+@@ -136,5 +136,8 @@
+-        let response = self
+-            .client
+-            .execute(request)
+-            .await
+-            .map_err(|error| crate::HttpError::Request(error.with_url(logical.clone())))?;
++        let response = self.client.execute(request).await.map_err(|error| {
++            let error = error.with_url(logical.clone());
++            if error.is_connect() && !error.is_timeout() {
++                crate::HttpError::GatewayUnavailable(error)
++            } else {
++                crate::HttpError::Request(error)
++            }
++        })?;
+@@ -393,5 +396,8 @@
+-        assert!(error.is_connect());
+-        let crate::HttpError::Request(error) = error else {
+-            panic!("native connect category lost");
+-        };
+-        assert_eq!(error.url(), Some(&logical));
++        assert!(
++            !error.is_connect(),
++            "selected hop failures must not enter unbounded native network retries"
++        );
++        assert!(!error.is_timeout());
++        assert_eq!(error.to_string(), "selected egress gateway unavailable");
++        let mut error = error;
++        assert_eq!(error.url_mut().map(|url| url.clone()), Some(logical));
+--- a/codex-rs/http-client/src/route_aware_client_pool.rs
++++ b/codex-rs/http-client/src/route_aware_client_pool.rs
+@@ -91,0 +92,3 @@
++    // A selected hop is a routing service, not an indefinitely recoverable client network.
++    #[error("selected egress gateway unavailable")]
++    GatewayUnavailable(#[source] reqwest::Error),
+@@ -145,0 +149 @@
++            | Self::GatewayUnavailable(_)
+@@ -157,0 +162 @@
++            | Self::GatewayUnavailable(_)
+@@ -188 +193 @@
+-            Self::Request(error) => error.url_mut(),
++            Self::Request(error) | Self::GatewayUnavailable(error) => error.url_mut(),
+@@ -198,0 +204 @@
++            Self::GatewayUnavailable(error) => Self::GatewayUnavailable(error.without_url()),
+--- a/codex-rs/http-client/src/transport.rs
++++ b/codex-rs/http-client/src/transport.rs
+@@ -140 +140,2 @@
+-            error @ (RouteAwareRequestError::UnsupportedRedirectScheme(_)
++            error @ (RouteAwareRequestError::GatewayUnavailable(_)
++            | RouteAwareRequestError::UnsupportedRedirectScheme(_)
+--- a/codex-rs/http-client/src/transport_tests.rs
++++ b/codex-rs/http-client/src/transport_tests.rs
+@@ -128,0 +129,27 @@
++
++#[tokio::test]
++async fn selected_gateway_connect_failures_use_bounded_stream_retry_category() {
++    let unavailable = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
++    let address = unavailable.local_addr().unwrap();
++    drop(unavailable);
++    for routed in [false, true] {
++        let error = test_reqwest_client()
++            .get(format!("http://{address}/responses?token=url-secret"))
++            .send()
++            .await
++            .unwrap_err();
++        let selected = crate::HttpError::GatewayUnavailable(error);
++        let mapped = if routed {
++            ReqwestTransport::map_route_aware_error(selected)
++        } else {
++            ReqwestTransport::map_error(selected)
++        };
++        let TransportError::Network(message) = mapped else {
++            panic!(
++                "selected gateway failure must not enter native unbounded ConnectionFailed retries"
++            );
++        };
++        assert_eq!(message, "selected egress gateway unavailable");
++        assert!(!message.contains("url-secret"));
++    }
++}
+--- a/codex-rs/backend-client/src/client.rs
++++ b/codex-rs/backend-client/src/client.rs
+@@ -119,0 +120 @@
++            | codex_http_client::HttpError::GatewayUnavailable(_)
+--- a/codex-rs/exec-server/src/client/connection_failure.rs
++++ b/codex-rs/exec-server/src/client/connection_failure.rs
+@@ -52,0 +53 @@
++                | RouteAwareRequestError::GatewayUnavailable(_)

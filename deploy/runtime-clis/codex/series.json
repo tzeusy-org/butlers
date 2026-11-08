@@ -86,6 +86,42 @@
           "after_sha256": "439d2a007c671cad90026085a09af0d7dff2a8af59502a2b3b12345691a6287d"
         }
       ]
+    },
+    {
+      "path": "patches/004-bounded-selected-hop-errors.patch",
+      "sha256": "3ec251e537c0c32a2be6da99b9ace1b685bda8bd7a8cf4f773988c59c6d3b080",
+      "files": [
+        {
+          "path": "codex-rs/http-client/src/gateway.rs",
+          "before_sha256": "8f3b449e27dc712c8dddd75175709570e82591d0b3a27cc6b00bc289fdec16a5",
+          "after_sha256": "4d08cd5c4de6a28e80db4b6b0d670d9c6b8b69f4ad9608b33a29dff5d95f3307"
+        },
+        {
+          "path": "codex-rs/http-client/src/route_aware_client_pool.rs",
+          "before_sha256": "441683874e774d61c50a0a4ca33167eaf9a3ecbc8b7d9c6d9e15d5946272d810",
+          "after_sha256": "0163a82302cc8b21e1c5718864d4e550b0cc6f64e37cd58c4fc3edf2156b3e25"
+        },
+        {
+          "path": "codex-rs/http-client/src/transport.rs",
+          "before_sha256": "88aa391e6893205336b3412b065600bd717da8d80d59c1c7dd094d19bee666b6",
+          "after_sha256": "042b639ca046ea65de7436be373509aeb02a41bfbcc3a7f2f48bd65370cde578"
+        },
+        {
+          "path": "codex-rs/http-client/src/transport_tests.rs",
+          "before_sha256": "5ffe4f903c7fe20d91623adcdff5e1a39da9e209619747dacda07e1707eb834c",
+          "after_sha256": "acd27768ffac0558074cb652f0b5e9ca7b7af269d53bdf998dbe5d1efa427527"
+        },
+        {
+          "path": "codex-rs/backend-client/src/client.rs",
+          "before_sha256": "e1d166ceb5f6f9a433907d74dc91eaa9e3900d2a43e588c21c3e2b149bca0643",
+          "after_sha256": "aecc24382e27403a744b71ba33f6079347037b213a3152666c405af201e86e19"
+        },
+        {
+          "path": "codex-rs/exec-server/src/client/connection_failure.rs",
+          "before_sha256": "da882dacbddd99e93f88ebc08a621d7429f370161a8c920034dbe64c48c9b221",
+          "after_sha256": "386046c54f44dca7815dcbeb4247d5848001aa79b57ef4c921968a1d7c71a7b8"
+        }
+      ]
     }
   ],
   "lock_normalization": {
@@ -118,6 +154,6 @@
       "-j2"
     ]
   },
-  "source_tree_sha256": "9fd1aec92e9881a097e12b634722f2a311786869101b4de99504bc94c5f6ee77",
+  "source_tree_sha256": "c5a2068efd66e410dd897a2013bfa523796ee67cb48d15e902f9a84dd6c01fa2",
   "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches."
 }

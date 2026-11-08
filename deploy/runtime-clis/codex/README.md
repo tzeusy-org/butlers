@@ -2,7 +2,7 @@
 
 `series.json` binds upstream commit
 `ff6aec96948b70d94983af2641a6b67c94faeff5` and its public source archive.
-The three ordered patches have separate purposes:
+The four ordered patches have separate purposes:
 
 1. Normalize the 159 internal lockfile package versions from the shipped `0.0.0`
    to the source workspace's `0.159.2`. External package versions, sources,
@@ -17,6 +17,10 @@ The three ordered patches have separate purposes:
    Keep the original logical permit, key, auth headers, cookies, frame machinery,
    WebSocket configuration and cancellation/revocation lifecycle. Existing
    explicit internal-loopback connections retain their separate path.
+4. Classify a failed selected gateway connection as a gateway service failure.
+   Retain its underlying logical URL and use the standard bounded stream retry
+   path. It must not enter the native unbounded network-wait branch. Off-mode
+   connection and TLS classifications retain their original behavior.
 
 Build from the prepared source with Rust 1.95.0, the locked graph, default features
 and the target recorded in the series. The source commit is embedded explicitly:
