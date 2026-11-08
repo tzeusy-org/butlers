@@ -423,6 +423,32 @@ async def test_server_attested_owner_observation_is_measurable(
     assert upsert.await_args.kwargs["producer_endpoint_identity"] is None
 
 
+async def test_persist_false_evaluates_without_writing_expected_signals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = AsyncMock()
+    _mock_identity_producers(monkeypatch)
+    pool.fetch.return_value = [_fact(stale_contacts.owner_attestation(principal="owner"))]
+    upsert = AsyncMock(return_value=_evaluation())
+    monkeypatch.setattr(stale_contacts, "upsert_expected_signal", upsert)
+
+    signal = await stale_contacts.evaluate_stale_contact_signal(
+        pool,
+        contact_id=uuid4(),
+        entity_id=uuid4(),
+        expected_cadence=timedelta(days=14),
+        last_observed_at=datetime(2026, 8, 1, tzinfo=UTC),
+        now=datetime(2026, 9, 1, tzinfo=UTC),
+        persist=False,
+    )
+
+    upsert.assert_not_awaited()
+    pool.execute.assert_not_awaited()
+    assert signal.evaluation.producer == "owner"
+    assert signal.evaluation.state is ExpectedSignalState.ABSENT
+    assert signal.is_overdue is True
+
+
 async def test_public_interaction_metadata_cannot_assert_reserved_source() -> None:
     from butlers.tools.relationship.interactions import interaction_log
 
