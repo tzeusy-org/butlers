@@ -533,3 +533,42 @@ async def test_initialize_response_cannot_rebind_a_transport_bound_elsewhere(
 
     assert context == _OWNER_CONTEXT
     assert authority == "owner"
+
+
+async def test_runtime_session_guard_marks_first_mcp_request_stage_once() -> None:
+    """The CLI's first request to a known runtime session stamps its stage clock (bu-dhloi1.180)."""
+    from butlers.core import session_timing
+
+    session_timing._reset_for_tests()
+    session_timing.begin("timed-session", origin=0.0)
+
+    async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    guard = _McpRuntimeSessionGuard(app, butler_name="health")
+    scope = _http_scope(query_string=b"runtime_session_id=timed-session")
+    await guard(scope, _empty_receive, _discard_send)
+    first = session_timing.snapshot("timed-session")["first_mcp_request_ms"]
+    await guard(scope, _empty_receive, _discard_send)
+
+    assert session_timing.snapshot("timed-session")["first_mcp_request_ms"] == first
+
+
+async def test_runtime_session_guard_never_creates_timing_state_for_unknown_ids() -> None:
+    from butlers.core import session_timing
+
+    session_timing._reset_for_tests()
+
+    async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    guard = _McpRuntimeSessionGuard(app, butler_name="health")
+    await guard(
+        _http_scope(query_string=b"runtime_session_id=attacker-chosen"),
+        _empty_receive,
+        _discard_send,
+    )
+
+    assert session_timing.tracked_session_count() == 0

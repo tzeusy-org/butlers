@@ -43,6 +43,7 @@ from opentelemetry import trace
 from opentelemetry.context import Context
 
 from butlers.config import ButlerConfig
+from butlers.core import session_timing
 from butlers.core.audit import write_audit_entry
 from butlers.core.child_env import without_owner_auth
 from butlers.core.conversation_sessions import (
@@ -717,6 +718,9 @@ class Spawner:
         self._metrics.ensure_registered()
         self._mcp_warmup_lock = asyncio.Lock()
         self._warmed_mcp_urls: set[str] = set()
+        # url -> (tool_count, schema_bytes) from the warmup tools/list; feeds
+        # per-session stage timings (bu-dhloi1.180). Counts and sizes only.
+        self._mcp_tool_surface: dict[str, tuple[int, int]] = {}
 
         if runtime is not None:
             self._runtime = runtime
@@ -1481,6 +1485,10 @@ class Spawner:
                 if result.get("success") and isinstance(url, str) and url:
                     self._warmed_mcp_urls.add(url)
                     warmed_now += 1
+                    count = result.get("tool_count")
+                    size = result.get("tool_schema_bytes")
+                    if isinstance(count, int) and isinstance(size, int):
+                        self._mcp_tool_surface[url] = (count, size)
 
             if warmed_now:
                 logger.debug(
@@ -2463,6 +2471,8 @@ class Spawner:
                 span.set_attribute("session_id", str(session_id))
                 runtime_session_id = str(session_id)
                 ensure_runtime_session_capture(runtime_session_id)
+                session_timing.begin(runtime_session_id, origin=t0)
+                session_timing.mark(runtime_session_id, "row_created_ms")
                 set_runtime_session_routing_context(runtime_session_id, routing_context)
                 # Mark the session as real-but-not-yet-invoked so a Stop click
                 # in the remaining setup window is recognized honestly.
@@ -2561,6 +2571,16 @@ class Spawner:
                 }
 
             await self._ensure_mcp_endpoints_warmed(mcp_servers)
+            if runtime_session_id:
+                for server_cfg in mcp_servers.values():
+                    surface = self._mcp_tool_surface.get(
+                        self._normalize_mcp_warmup_url(server_cfg.get("url", "")) or ""
+                    )
+                    if surface is not None:
+                        session_timing.note_tool_surface(
+                            runtime_session_id, tool_count=surface[0], schema_bytes=surface[1]
+                        )
+                        break
 
             # ---------------------------------------------------------------------------
             # Provider-native session resume lookup (bu-ep4ks.8 follow-up, bu-bkthr)
@@ -2714,6 +2734,8 @@ class Spawner:
                         self._pending_invoke_sessions.discard(runtime_session_id)
                         raise asyncio.CancelledError()
                     runtime_invoked = True
+                    if runtime_session_id:
+                        session_timing.mark(runtime_session_id, "invoke_start_ms")
                     invoke_task = asyncio.create_task(runtime.invoke(**invoke_kwargs))
                     if runtime_session_id:
                         self._invoke_tasks_by_session[runtime_session_id] = invoke_task
@@ -2761,6 +2783,12 @@ class Spawner:
                         # record. Copy it after that task has finished, before
                         # any persistence await or worker reuse.
                         _current_served_identity = snapshot(runtime)
+                        if runtime_session_id:
+                            # Last attempt wins: a failover retry moves the end.
+                            session_timing.mark(runtime_session_id, "invoke_end_ms", overwrite=True)
+                            session_timing.note_adapter(
+                                runtime_session_id, runtime.last_process_info
+                            )
                         # Only this attempt's own entry -- a same-tier failover
                         # retry may have already overwritten the key with a new
                         # invoke_task by the time this finally runs.
