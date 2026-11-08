@@ -1,0 +1,122 @@
+{
+  "schema": "butlers.vendor-patch-series/v1",
+  "vendor": "codex",
+  "version": "0.159.2",
+  "commit": "ff6aec96948b70d94983af2641a6b67c94faeff5",
+  "archive": {
+    "url": "https://codeload.github.com/openai/codex/tar.gz/ff6aec96948b70d94983af2641a6b67c94faeff5",
+    "sha256": "8cfd92ccc784603d0ef94165f5a70bb99fd3de6e8b4bccda58580fc3f5f4961d",
+    "root": "codex-ff6aec96948b70d94983af2641a6b67c94faeff5"
+  },
+  "patches": [
+    {
+      "path": "patches/001-workspace-release-versions.patch",
+      "sha256": "5cc48c7de66491a321687007f47073b9824a31574eb0f7ff8e8c57b8b276ac3b",
+      "files": [
+        {
+          "path": "codex-rs/Cargo.lock",
+          "before_sha256": "4fab6fe99180e2b8f305bd4b33c1b4bd825e3fa4cdef1045be750843bd3d431e",
+          "after_sha256": "e85460a5c2a1f92d73ca0a40219c846f6a10d729f3186667485372c3aa82cfbf"
+        }
+      ]
+    },
+    {
+      "path": "patches/002-explicit-http-executor.patch",
+      "sha256": "89ac3bdbd30228eb6167644b42e1ace4c48506e59dc51862eb9a129ff4cfdf05",
+      "files": [
+        {
+          "path": "codex-rs/http-client/src/gateway.rs",
+          "before_sha256": null,
+          "after_sha256": "8f3b449e27dc712c8dddd75175709570e82591d0b3a27cc6b00bc289fdec16a5"
+        },
+        {
+          "path": "codex-rs/http-client/src/lib.rs",
+          "before_sha256": "7f4187bf5774ecc4dbe96c43b4a71730aa696ca2d0912789ffc16e180741294f",
+          "after_sha256": "45e1aeae7668ed329ac6585f060d4dd7c39140a05f524033620395636e9fa78b"
+        },
+        {
+          "path": "codex-rs/http-client/src/client.rs",
+          "before_sha256": "a11dd7b8ef9a207bc2d967daf39bd899f09cb1847314e29a4398af230bcfc25e",
+          "after_sha256": "d6cb5d4b7f7b3c9cc6ef79aa3b1069230639832c6ec8e81531c6000631cc845a"
+        },
+        {
+          "path": "codex-rs/http-client/src/client_builder.rs",
+          "before_sha256": "e983e4c53b568f2a14f620ec7dbe20ae4d89a636767b184cd68ec3279b12e306",
+          "after_sha256": "0a3701d493e12d329d74120e74574854909004c1819662ffc14fe1c0e5c664a8"
+        },
+        {
+          "path": "codex-rs/http-client/src/chatgpt_cloudflare_cookies.rs",
+          "before_sha256": "1fb24858abd17ce0b6da07c530e2541f5597cc82e22795c38a87a82c1371a614",
+          "after_sha256": "440a0cfda304402518fad0c04d43b64234492f0c0737453962c0e94b1fe33ea0"
+        },
+        {
+          "path": "codex-rs/http-client/src/outbound_proxy.rs",
+          "before_sha256": "5c1fb52555ea4e9546cf66dd1c4ddee2a9d6ef136ba3f51a25ceafd368d3be36",
+          "after_sha256": "77bd77931c9f5b5b32b44e08ba51886a02d8a2361d6111a9ea5c691e38f3ae44"
+        },
+        {
+          "path": "codex-rs/http-client/src/route_aware_client_pool.rs",
+          "before_sha256": "1c53cd22d10342ca74bc4424e3eb7e5a924bd1eb5bb84a36090b2bce67ca6866",
+          "after_sha256": "441683874e774d61c50a0a4ca33167eaf9a3ecbc8b7d9c6d9e15d5946272d810"
+        },
+        {
+          "path": "codex-rs/http-client/src/route_aware_client_pool/execution.rs",
+          "before_sha256": "024ed73f0afc5db847e77682ea8410dce3b1762fa5837d6df104fc725e21dd5a",
+          "after_sha256": "d4115dcbe138d57747fa88fcea068bb34a58174a9b4dbe1f32bf1248cd35c7f3"
+        }
+      ]
+    },
+    {
+      "path": "patches/003-explicit-websocket-executor.patch",
+      "sha256": "50d53da5acc262333af7cf22b261616a44f20312e7e3653977ad2a7d4a5ade2d",
+      "files": [
+        {
+          "path": "codex-rs/websocket-client/src/lib.rs",
+          "before_sha256": "2a5ec40c05bca7b10ca8af755985c6230d9009f36648096352f2c543497b392e",
+          "after_sha256": "7c75e6bf952e480a669723d31bc150833322eb545c3c716753b48b234a53ac91"
+        },
+        {
+          "path": "codex-rs/websocket-client/src/dialer.rs",
+          "before_sha256": "a97f6afb5a7ac4a66183b92ee829287ac30b463b859fb854dec04da3effaaae7",
+          "after_sha256": "17257d020be491218b85bd3a1d0e84c9dee590f28f1709457dd3812e218a46e0"
+        },
+        {
+          "path": "codex-rs/websocket-client/src/dialer_tests.rs",
+          "before_sha256": "647ef0715fd5d06e08c38b4aeaf85df37d672bdf8a0e9e1cfdff4997c8a807fd",
+          "after_sha256": "439d2a007c671cad90026085a09af0d7dff2a8af59502a2b3b12345691a6287d"
+        }
+      ]
+    }
+  ],
+  "lock_normalization": {
+    "internal_packages": 159,
+    "original_sha256": "4fab6fe99180e2b8f305bd4b33c1b4bd825e3fa4cdef1045be750843bd3d431e",
+    "output_sha256": "e85460a5c2a1f92d73ca0a40219c846f6a10d729f3186667485372c3aa82cfbf",
+    "external_graph_unchanged": true
+  },
+  "build": {
+    "rust": "1.95.0",
+    "target": "x86_64-unknown-linux-gnu",
+    "package": "codex-cli",
+    "binary": "codex",
+    "default_features": true,
+    "stable_git_commit": "ff6aec96948b70d94983af2641a6b67c94faeff5",
+    "command": [
+      "cargo",
+      "+1.95.0",
+      "build",
+      "--locked",
+      "--release",
+      "--manifest-path",
+      "codex-rs/Cargo.toml",
+      "-p",
+      "codex-cli",
+      "--bin",
+      "codex",
+      "--target",
+      "x86_64-unknown-linux-gnu",
+      "-j2"
+    ]
+  },
+  "source_tree_sha256": "9fd1aec92e9881a097e12b634722f2a311786869101b4de99504bc94c5f6ee77"
+}
