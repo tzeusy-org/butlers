@@ -175,10 +175,17 @@ def test_egress_policy_excludes_private_ranges_and_admits_the_allowlist(env: str
 @needs_helm
 def test_egress_policy_refuses_an_empty_allowlist_unless_opted_out() -> None:
     with pytest.raises(subprocess.CalledProcessError) as exc:
-        _render("dev", *_SITE, "--set", "egressPolicy.allowedCidrs=null")
+        _render(
+            "dev",
+            *_SITE,
+            "--set",
+            "egressPolicy.enabled=true",
+            "--set",
+            "egressPolicy.allowedCidrs=null",
+        )
     assert "egressPolicy.allowedCidrs is required" in exc.value.stderr
     docs = _render(
-        "dev", *_SITE, "--set", "egressPolicy.allowedCidrs=null",
+        "dev", *_SITE, "--set", "egressPolicy.enabled=true", "--set", "egressPolicy.allowedCidrs=null",
         "--set", "egressPolicy.allowNoAllowlist=true",
     )  # fmt: skip
     assert ("NetworkPolicy", "butlers-tracker-egress") in _by_kind_name(docs)
@@ -194,7 +201,14 @@ def test_egress_policy_renders_without_the_dolt_deny_in_prod() -> None:
 @needs_helm
 def test_egress_allowlist_cannot_readmit_a_denied_tracker_cidr() -> None:
     with pytest.raises(subprocess.CalledProcessError) as exc:
-        _render("dev", *_SITE, "--set", "egressPolicy.allowedCidrs={192.0.2.1/32}")
+        _render(
+            "dev",
+            *_SITE,
+            "--set",
+            "egressPolicy.enabled=true",
+            "--set",
+            "egressPolicy.allowedCidrs={192.0.2.1/32}",
+        )
     assert "would re-admit the tracker" in exc.value.stderr
 
 

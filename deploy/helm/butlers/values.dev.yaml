@@ -44,13 +44,6 @@ commonEnv:
 trackerEgress:
   enabled: true
 
-# Owner decision 2026-11-08 (domain-egress-dev-enable = B): private/tailnet egress is
-# allowlist-only in dev, smoke-tested in a rehearsal namespace. The allowlist is site
-# input (ALLOWED_TAILNET_HOSTS via scripts/k8s/site-helm-args.sh); rendering refuses
-# without it. Same hosts as scripts/egress-firewall.sh; no prod change.
-egressPolicy:
-  enabled: true
-
 # Owner-approved 2026-11-04 temporary cohosting for RFC 0023 same-PID approval
 # recovery. Actual rollout is exclusive and data-preserving; see
 # docs/operations/approval-delivery-dev-rollout.md. Split support stays opt-in.
