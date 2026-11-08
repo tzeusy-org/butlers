@@ -996,6 +996,28 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     request_context=request_context,
                 )
 
+            # The Bot API cannot message a private user by @username. Resolve it to a
+            # numeric chat id before anything parks, so the approval card, rule match
+            # and executed send all name one deliverable target (bu-dhloi1.177).
+            if (
+                channel == "telegram"
+                and intent in {"send", "insight", "confirm"}
+                and resolved_recipient is not None
+                and resolved_recipient.startswith("@")
+            ):
+                _username = resolved_recipient
+                resolved_recipient = await daemon._resolve_telegram_username_recipient(_username)
+                if resolved_recipient is None:
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"Telegram recipient {_username!r} does not resolve to a numeric "
+                            "chat id: the Bot API cannot message a user by @username. Use a "
+                            "known contact (entity_id) or the numeric chat id."
+                        ),
+                        "retryable": False,
+                    }
+
             if (
                 channel == "telegram"
                 and intent in {"send", "insight", "confirm"}

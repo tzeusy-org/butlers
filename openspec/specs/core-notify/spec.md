@@ -432,6 +432,12 @@ The `notify` tool accepts `entity_id` (UUID) and `recipient` (string) as optiona
 - **THEN** the butler daemon MUST forward the call to the Switchboard with `recipient='user@example.com'`
 - **AND** `entity_id`-based resolution MUST NOT be attempted
 
+#### Scenario: Telegram @username recipient resolves to a numeric chat id before the gate
+- **WHEN** a runtime instance calls `notify(channel='telegram', message='Hi', recipient='@alice')` with a `send`, `insight` or `confirm` intent
+- **THEN** the daemon MUST resolve `@alice` to a known contact's numeric chat id (the owner through the owner definer and the owner's chat id, any other contact through `relationship.entity_facts`) before recipient approval gating
+- **AND** the approval gate, any parked action's preview and arguments, and the executed delivery MUST all name that numeric chat id
+- **AND** if the username matches no unique contact or the contact has no numeric chat id, the call MUST return `status='error'` before any action is parked, because the Telegram Bot API cannot message a private user by username
+
 ### Requirement: Missing Channel Identifier Fallback
 When `entity_id` is provided but the entity has no `relationship.entity_facts` triple for the requested channel, the `notify` tool MUST NOT silently fail.
 If approval parking is available for the calling butler's own database pool, it

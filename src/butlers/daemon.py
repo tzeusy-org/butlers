@@ -936,6 +936,36 @@ class ButlerDaemon:
 
         return None
 
+    async def _resolve_telegram_username_recipient(self, username: str) -> str | None:
+        """Resolve a Telegram ``@username`` to the numeric chat id the Bot API needs.
+
+        The Bot API cannot message a private user by username, so a notify to one
+        must name the numeric chat id before it parks for approval (bu-dhloi1.177).
+        The owner resolves through the schema-safe owner definer plus the owner's
+        chat id; any other contact through ``relationship.entity_facts``. Returns
+        ``None`` when the username is unknown, ambiguous or maps to no numeric id.
+        """
+        from butlers.identity import resolve_channel_contact_with_owner_corroboration
+
+        pool = self.db.pool if self.db is not None else None
+        if pool is None:
+            return None
+        contact = await resolve_channel_contact_with_owner_corroboration(
+            pool, "telegram_username", username
+        )
+        if contact is None or contact.entity_id is None:
+            return None
+        if "owner" in contact.roles:
+            chat_id = await resolve_owner_entity_info(
+                pool, _DEFAULT_TELEGRAM_CHAT_CONTACT_INFO_TYPE
+            )
+        else:
+            chat_id = await self._resolve_entity_channel_identifier(
+                entity_id=contact.entity_id, channel="telegram"
+            )
+        chat_id = chat_id.strip() if isinstance(chat_id, str) else ""
+        return chat_id if chat_id.isascii() and chat_id.isdigit() else None
+
     # Maps notify channel names to the entity_facts predicate used for delivery.
     # Channels that collapse to ``has-handle`` (e.g. ``telegram``) require an
     # additional object-value filter to avoid cross-platform ambiguity — see
