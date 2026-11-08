@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import io
 import tarfile
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.exc import OperationalError
 
 from butlers.migrations import run_migrations
 from butlers.testing.migration import (
@@ -58,22 +60,53 @@ def public_mcp_cluster():
     # Synthetic disposable credential, passed only between owning processes.
     with (
         PostgresContainer("pgvector/pgvector:pg17", username="postgres", password=uuid.uuid4().hex)
-        .with_env("PGHOST", "/controller/run")
         .with_kwargs(tmpfs={"/controller/run": "rw,mode=0777"}, shm_size="256m")
         .with_command(
             "postgres -c wal_level=logical -c max_replication_slots=64 "
-            "-c max_wal_senders=32 -c max_slot_wal_keep_size=256MB "
-            "-c unix_socket_directories=/controller/run"
+            "-c max_wal_senders=32 -c max_slot_wal_keep_size=256MB"
         ) as postgres
     ):
         _put(postgres, "public_mcp_hba.conf", _HBA)
         _put(postgres, "public_mcp_ident.conf", _IDENT)
-        engine = create_engine(postgres.get_connection_url(), isolation_level="AUTOCOMMIT")
+        engine = create_engine(
+            postgres.get_connection_url(),
+            isolation_level="AUTOCOMMIT",
+            connect_args={"connect_timeout": 5},
+        )
         try:
+            # The image initializes its database using a temporary server and a
+            # client with PGHOST cleared. Leave that first server's default
+            # socket intact; configure the final peer transport only afterwards.
             with engine.connect() as conn:
                 conn.exec_driver_sql("ALTER SYSTEM SET hba_file='/tmp/public_mcp_hba.conf'")
                 conn.exec_driver_sql("ALTER SYSTEM SET ident_file='/tmp/public_mcp_ident.conf'")
-                conn.exec_driver_sql("SELECT pg_reload_conf()")
+                conn.exec_driver_sql("ALTER SYSTEM SET unix_socket_directories='/controller/run'")
+            engine.dispose()
+            # Restart the owned container, not its PID1 server via pg_ctl. The
+            # initialized volume and /tmp auth files survive; the socket tmpfs
+            # is recreated. The entrypoint now skips first-database setup.
+            postgres.get_wrapped_container().restart(timeout=10)
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    with engine.connect() as conn:
+                        actual = conn.exec_driver_sql(
+                            "SELECT current_setting('unix_socket_directories'), "
+                            "current_setting('hba_file'), current_setting('ident_file')"
+                        ).one()
+                    assert actual == (
+                        "/controller/run",
+                        "/tmp/public_mcp_hba.conf",
+                        "/tmp/public_mcp_ident.conf",
+                    ), "dedicated public MCP authentication configuration differs"
+                    break
+                except OperationalError:
+                    if time.monotonic() >= deadline:
+                        # Do not serialize connection URLs or synthetic passwords.
+                        raise RuntimeError(
+                            "dedicated public MCP restart did not become ready"
+                        ) from None
+                    time.sleep(0.1)
             yield postgres
         finally:
             engine.dispose()

@@ -1173,7 +1173,7 @@ new AS (SELECT value t FROM
 
         jsonb_array_elements({literal(target.canonical)}::jsonb->'tables'))
 SELECT (:'e_old_missing'::boolean OR :'e_slot_lost'::boolean OR
-        :'e_recovering'::boolean OR
+        :'e_old_oid'::oid=0 OR :'e_recovering'::boolean OR
         :'e_catalog_drift'::boolean OR EXISTS(
     SELECT 1 FROM old o LEFT JOIN new n ON n.t->>'source'=o.t->>'source'
     WHERE n.t IS NULL OR n.t<>o.t)) AS e_rebuild,

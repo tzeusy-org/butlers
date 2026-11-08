@@ -1016,10 +1016,13 @@ def test_actual_tcp_principals_and_no_credential_guards(copied):
         importer.dispose()
 
 
-@pytest.mark.parametrize("fault", ["missing", "physical"])
+@pytest.mark.parametrize("fault", ["missing", "physical", "missing-subscription"])
 def test_missing_slot_rebuilds_stale_data_and_invalid_slot_refuses(copied, fault):
     topology, projection, manifest = copied
     stale = uuid.uuid4()
+    unrelated = None
+    unrelated_slot = "mcp_e_survivor_" + uuid.uuid4().hex[:12]
+    unrelated_pid = None
     with projection.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
         before = conn.execute(
             text(
@@ -1034,12 +1037,38 @@ def test_missing_slot_rebuilds_stale_data_and_invalid_slot_refuses(copied, fault
         )
     )
     try:
-        with topology.admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
-            conn.exec_driver_sql("SELECT pg_drop_replication_slot('butlers_public_sub')")
-            if fault == "physical":
-                conn.exec_driver_sql(
-                    "SELECT pg_create_physical_replication_slot('butlers_public_sub')"
+        if fault == "missing-subscription":
+            unrelated = topology.admin.connect().execution_options(isolation_level="AUTOCOMMIT")
+            unrelated_pid = unrelated.execute(text("SELECT pg_backend_pid()")).scalar_one()
+            unrelated.execute(
+                text("SELECT pg_create_physical_replication_slot(:slot)"),
+                {"slot": unrelated_slot},
+            )
+            with projection.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                conn.exec_driver_sql("ALTER SUBSCRIPTION butlers_public_sub SET (slot_name=NONE)")
+                conn.exec_driver_sql("DROP SUBSCRIPTION butlers_public_sub")
+            assert _scalar(
+                topology.admin,
+                "SELECT slot_type='logical' AND plugin='pgoutput' AND database='butlers' AND wal_status<>'lost' AND active_pid IS NULL FROM pg_replication_slots WHERE slot_name='butlers_public_sub'",
+            )
+            assert (
+                _scalar(projection, "SELECT digest FROM mcp_local.manifest_applied")
+                == manifest.digest
+            )
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM pg_subscription WHERE subname='butlers_public_sub' AND subdbid=(SELECT oid FROM pg_database WHERE datname=current_database())",
                 )
+                == 0
+            )
+        else:
+            with topology.admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                conn.exec_driver_sql("SELECT pg_drop_replication_slot('butlers_public_sub')")
+                if fault == "physical":
+                    conn.exec_driver_sql(
+                        "SELECT pg_create_physical_replication_slot('butlers_public_sub')"
+                    )
         with projection.begin() as conn:
             conn.execute(
                 text(
@@ -1068,12 +1097,40 @@ def test_missing_slot_rebuilds_stale_data_and_invalid_slot_refuses(copied, fault
             )
             with topology.admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
                 conn.exec_driver_sql("SELECT pg_drop_replication_slot('butlers_public_sub')")
+        if fault == "missing-subscription":
+            # Observe the real renderer's decision before destructive statements:
+            # applied/catalog/slot are healthy, but no copy owner remains.
+            prefix = render_owner_program(manifest).split("\\if :e_rebuild\n", 1)[0]
+            classified = _run(topology, prefix + "\\echo RECOVERY :e_rebuild\n")
+            assert b"RECOVERY t" in classified.output
         _run(topology, render_owner_program(manifest))
         _wait(lambda: _ready(projection, manifest.digest))
         assert (
             _scalar(projection, "SELECT count(*) FROM finance.accounts WHERE id=:id", {"id": stale})
             == 0
         )
+        if fault == "missing-subscription":
+            assert (
+                _scalar(
+                    topology.admin,
+                    "SELECT count(*) FROM pg_replication_slots WHERE slot_name=:slot AND slot_type='physical'",
+                    {"slot": unrelated_slot},
+                )
+                == 1
+            )
+            assert (
+                _scalar(
+                    topology.admin,
+                    "SELECT count(*) FROM pg_stat_activity WHERE pid=:pid",
+                    {"pid": unrelated_pid},
+                )
+                == 1
+            )
+            assert _scalar(projection, "SELECT count(*) FROM mcp_local.rebuild_state") == 0
+            assert (
+                _scalar(projection, "SELECT digest FROM mcp_local.manifest_applied")
+                == manifest.digest
+            )
         assert (
             _scalar(
                 projection,
@@ -1082,6 +1139,13 @@ def test_missing_slot_rebuilds_stale_data_and_invalid_slot_refuses(copied, fault
             != before
         )
     finally:
+        if unrelated is not None:
+            try:
+                unrelated.execute(
+                    text("SELECT pg_drop_replication_slot(:slot)"), {"slot": unrelated_slot}
+                )
+            finally:
+                unrelated.close()
         _apply(topology, projection, manifest)
 
 
@@ -1334,10 +1398,6 @@ def test_malformed_foreign_or_conflicting_journal_refuses_without_cleanup(copied
                         )
                     elif fault == "undeclared-local":
                         conn.exec_driver_sql("SET LOCAL ROLE mcp_projection_owner")
-                        conn.exec_driver_sql(
-                            "CREATE VIEW mcp_local.unexpected AS SELECT 1 AS value"
-                        )
-                    elif fault == "undeclared-local":
                         conn.exec_driver_sql("DROP VIEW mcp_local.unexpected")
                     elif fault == "shape":
                         conn.exec_driver_sql(
