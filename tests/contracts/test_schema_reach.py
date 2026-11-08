@@ -619,6 +619,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{relation}>",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
     (
+        "src/butlers/modules/memory/tools/entities.py",
+        "<dynamic:{relation}>",
+    ): "dynamic-local: bu-y66o00.16 forget/delete retraction runs on each butler's own pool, against its own facts table named by _memory_relation or the default search-path facts; never another schema's relation",
+    (
         "src/butlers/api/routers/memory.py",
         "<dynamic:{rules_relation}>",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",

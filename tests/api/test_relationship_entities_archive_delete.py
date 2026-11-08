@@ -339,49 +339,9 @@ class TestForgetEntity:
             if call.args and isinstance(call.args[0], str)
         ]
 
-    async def test_forget_retracts_memory_gifts_loans_subject_facts(self):
-        """Forget retracts memory ``facts`` rows where the entity is the subject.
-
-        Gifts, loans, interactions, contact-notes and life-events all live in the
-        memory-module ``facts`` table keyed by ``entity_id``. A bare
-        relationship.entity_facts retraction leaves them ACTIVE and orphaned on
-        the tombstone (bu-j820n.2). Assert an UPDATE retracts ``facts`` by
-        ``entity_id``.
-        """
-        app, _, mock_conn = _make_delete_app()
-        resp = await _delete(app, _DELETE_PATH)
-        assert resp.status_code == 204
-
-        sqls = self._conn_execute_sqls(mock_conn)
-        retract_facts = [
-            s
-            for s in sqls
-            if "UPDATE facts" in s
-            and "retracted" in s
-            and "entity_id = $1" in s
-            and "object_entity_id" not in s
-        ]
-        assert retract_facts, (
-            "Expected an UPDATE retracting memory facts WHERE entity_id = $1 "
-            f"(gifts/loans/interactions). conn.execute SQLs: {sqls}"
-        )
-
-    async def test_forget_retracts_memory_edge_facts(self):
-        """Forget retracts memory edge-facts pointing AT the entity (object_entity_id)."""
-        app, _, mock_conn = _make_delete_app()
-        resp = await _delete(app, _DELETE_PATH)
-        assert resp.status_code == 204
-
-        sqls = self._conn_execute_sqls(mock_conn)
-        retract_edges = [
-            s
-            for s in sqls
-            if "UPDATE facts" in s and "retracted" in s and "object_entity_id = $1" in s
-        ]
-        assert retract_edges, (
-            "Expected an UPDATE retracting memory edge-facts WHERE "
-            f"object_entity_id = $1. conn.execute SQLs: {sqls}"
-        )
+    # The memory ``facts`` retraction, subject- and object-side and including fading
+    # facts, runs on real Postgres in
+    # roster/relationship/tests/test_forget_reaches_every_schema.py.
 
     async def test_forget_clears_linked_contacts_entity_id(self):
         """Forget removes contact_entity_map rows so no CRM lookup dangles on the tombstone.

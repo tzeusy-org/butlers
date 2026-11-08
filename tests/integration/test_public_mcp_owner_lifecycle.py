@@ -287,10 +287,13 @@ def test_view_oid_survives_real_type_and_generated_dependency_changes(copied, ki
             ),
         )
     else:
+        # Both inputs of the generated object_entity_id go: publishing `object` without
+        # them would name an entity the view could not hide.
+        dropped = {"object", "object_kind"}
         changed = replace(
             original,
-            columns=tuple(name for name in original.columns if name != "object_kind"),
-            types=tuple(pair for pair in original.types if pair[0] != "object_kind"),
+            columns=tuple(name for name in original.columns if name not in dropped),
+            types=tuple(pair for pair in original.types if pair[0] not in dropped),
         )
     target = Manifest(tuple(changed if table == original else table for table in full.tables))
     decode_applied_manifest(target.canonical)
@@ -333,7 +336,7 @@ def test_view_oid_survives_real_type_and_generated_dependency_changes(copied, ki
         if kind == "type-change":
             assert attrs["last_four"] == "text"
         else:
-            assert "object_kind" not in attrs and "object_entity_id" not in attrs
+            assert not {"object", "object_kind", "object_entity_id"} & set(attrs)
     finally:
         if kind == "type-change":
             with topology.engine.begin() as conn:
@@ -990,6 +993,146 @@ def test_filtered_families_propagate_real_iud_with_healthy_neighbors(copied):
                 await actual.execute(
                     "DELETE FROM chronicler.source_adapter_state WHERE source_name='google_health.measurements'"
                 )
+            await actual.close()
+            _barrier(topology, projection)
+
+    asyncio.run(exercise())
+
+
+def test_hiding_an_entity_hides_its_facts_edges_and_counts_until_it_returns(copied):
+    """bu-y66o00.16: no view returns a row about an entity the projection no longer holds."""
+    import asyncio
+    from typing import cast
+
+    import asyncpg
+
+    from butlers.core.entity_graph_edges import (
+        project_entity_graph_edge,
+        withhold_entity_graph_edge,
+    )
+
+    topology, projection, _ = copied
+    views = {
+        "fact": "SELECT count(*) FROM mcp_read.general__facts WHERE source_id=:id",
+        "pointing": "SELECT count(*) FROM mcp_read.general__facts WHERE source_id=:id",
+        "relation": "SELECT count(*) FROM mcp_read.relationship__entity_facts WHERE source_id=:id",
+        "edge": "SELECT count(*) FROM mcp_read.public__entity_graph_edges WHERE fields->>'object_entity_id'=:id",
+        "count": "SELECT count(*) FROM mcp_read.public__entity_graph_withheld_counts WHERE fields->>'entity_id'=:id",
+    }
+
+    def visible(rows):
+        return {name: _scalar(projection, views[name], {"id": rows[name]}) for name in views}
+
+    async def exercise():
+        url = topology.engine.url.set(drivername="postgresql").render_as_string(hide_password=False)
+        actual = await asyncpg.create_pool(url, min_size=1, max_size=1, command_timeout=15)
+        hidden = other = None
+        rows: dict[str, str] = {}
+        try:
+            hidden = await actual.fetchval(
+                "INSERT INTO public.entities(canonical_name,entity_type) VALUES ('Hidden subject','person') RETURNING id"
+            )
+            other = await actual.fetchval(
+                "INSERT INTO public.entities(canonical_name,entity_type) VALUES ('Visible neighbour','person') RETURNING id"
+            )
+            fact = await actual.fetchval(
+                "INSERT INTO general.facts(subject,entity_id,predicate,content,sensitivity,validity) VALUES ('Hidden subject',$1,'note','About the hidden subject','normal','active') RETURNING id",
+                hidden,
+            )
+            async with actual.acquire() as proxy, proxy.transaction():
+                conn = cast(asyncpg.Connection, proxy)
+                pointing = await proxy.fetchval(
+                    "INSERT INTO general.facts(subject,entity_id,object_entity_id,predicate,content,sensitivity,validity) VALUES ('Visible neighbour',$1,$2,'knows','Knows the hidden subject','normal','active') RETURNING id",
+                    other,
+                    hidden,
+                )
+                await project_entity_graph_edge(
+                    conn,
+                    source_schema="general",
+                    source_table="facts",
+                    source_id=pointing,
+                    subject_entity_id=other,
+                    predicate="knows",
+                    object_entity_id=hidden,
+                )
+                private = await proxy.fetchval(
+                    "INSERT INTO general.facts(subject,entity_id,predicate,content,sensitivity,validity) VALUES ('Hidden subject',$1,'idea','Private','pii','active') RETURNING id",
+                    hidden,
+                )
+                await withhold_entity_graph_edge(
+                    conn,
+                    source_schema="general",
+                    source_table="facts",
+                    source_id=private,
+                    subject_entity_id=hidden,
+                    sensitivity="pii",
+                )
+            relation = await actual.fetchval(
+                "INSERT INTO relationship.entity_facts(subject,predicate,object,object_kind,src) VALUES ($1,'works-at',$2,'entity','hidden-entity-control') RETURNING id",
+                other,
+                str(hidden),
+            )
+            rows = {
+                "fact": str(fact),
+                "pointing": str(pointing),
+                "relation": str(relation),
+                "edge": str(hidden),
+                "count": str(hidden),
+            }
+            _barrier(topology, projection)
+            assert visible(rows) == dict.fromkeys(views, 1)
+
+            # Archive is the reversible hide; forget, delete and unlist set the
+            # same `deleted` flag, so the entity row leaves the projection the same way.
+            await actual.execute(
+                "UPDATE public.entities SET metadata=metadata||'{\"archived\":true}' WHERE id=$1",
+                hidden,
+            )
+            _barrier(topology, projection)
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM mcp_read.public__entities WHERE source_id=:id",
+                    {"id": str(hidden)},
+                )
+                == 0
+            )
+            # The rows still replicate; only the views decline them.
+            assert (
+                _scalar(projection, "SELECT count(*) FROM general.facts WHERE id=:id", {"id": fact})
+                == 1
+            )
+            assert visible(rows) == dict.fromkeys(views, 0)
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM mcp_read.public__entities WHERE source_id=:id",
+                    {"id": str(other)},
+                )
+                == 1
+            )
+
+            await actual.execute(
+                "UPDATE public.entities SET metadata=metadata-'archived' WHERE id=$1", hidden
+            )
+            _barrier(topology, projection)
+            assert visible(rows) == dict.fromkeys(views, 1)
+        finally:
+            await actual.execute(
+                "DELETE FROM relationship.entity_facts WHERE src='hidden-entity-control'"
+            )
+            # Facts and edges point both ways between the two, so both go before either entity.
+            entities = [e for e in (hidden, other) if e]
+            await actual.execute(
+                "DELETE FROM public.entity_graph_edges "
+                "WHERE subject_entity_id=ANY($1) OR object_entity_id=ANY($1)",
+                entities,
+            )
+            await actual.execute(
+                "DELETE FROM general.facts WHERE entity_id=ANY($1) OR object_entity_id=ANY($1)",
+                entities,
+            )
+            await actual.execute("DELETE FROM public.entities WHERE id=ANY($1)", entities)
             await actual.close()
             _barrier(topology, projection)
 

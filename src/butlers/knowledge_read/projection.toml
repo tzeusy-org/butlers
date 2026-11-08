@@ -26,8 +26,8 @@ time_column = "local_date"
 [[table]]
 source = "education.facts"
 domain = "knowledge"
-columns = ["id", "subject", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
-types = { "id" = "uuid", "subject" = "text", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
+columns = ["id", "subject", "entity_id", "object_entity_id", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
+types = { "id" = "uuid", "subject" = "text", "entity_id" = "uuid", "object_entity_id" = "uuid", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
 key = ["id"]
 replica_identity = ["id", "sensitivity", "validity", "predicate"]
 tools = ["search", "fetch", "search_filtered"]
@@ -207,8 +207,8 @@ identifiers = ["source_message_id", "receipt_url", "external_ref"]
 [[table]]
 source = "general.facts"
 domain = "knowledge"
-columns = ["id", "subject", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
-types = { "id" = "uuid", "subject" = "text", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
+columns = ["id", "subject", "entity_id", "object_entity_id", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
+types = { "id" = "uuid", "subject" = "text", "entity_id" = "uuid", "object_entity_id" = "uuid", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
 key = ["id"]
 replica_identity = ["id", "sensitivity", "validity", "predicate"]
 tools = ["search", "fetch", "search_filtered"]
@@ -388,8 +388,8 @@ identifiers = ["event_id"]
 [[table]]
 source = "lifestyle.facts"
 domain = "knowledge"
-columns = ["id", "subject", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
-types = { "id" = "uuid", "subject" = "text", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
+columns = ["id", "subject", "entity_id", "object_entity_id", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
+types = { "id" = "uuid", "subject" = "text", "entity_id" = "uuid", "object_entity_id" = "uuid", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
 key = ["id"]
 replica_identity = ["id", "sensitivity", "validity", "predicate"]
 tools = ["search", "fetch", "search_filtered"]
@@ -473,8 +473,8 @@ uri = "butlers://proposal/{proposal_id}"
 [[table]]
 source = "relationship.facts"
 domain = "relationship"
-columns = ["id", "subject", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
-types = { "id" = "uuid", "subject" = "text", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
+columns = ["id", "subject", "entity_id", "object_entity_id", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
+types = { "id" = "uuid", "subject" = "text", "entity_id" = "uuid", "object_entity_id" = "uuid", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
 key = ["id"]
 replica_identity = ["id", "sensitivity", "validity", "predicate"]
 tools = ["search", "fetch", "search_filtered", "entity_profile"]
@@ -495,8 +495,8 @@ time_column = "expiry_date"
 [[table]]
 source = "travel.facts"
 domain = "travel"
-columns = ["id", "subject", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
-types = { "id" = "uuid", "subject" = "text", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
+columns = ["id", "subject", "entity_id", "object_entity_id", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
+types = { "id" = "uuid", "subject" = "text", "entity_id" = "uuid", "object_entity_id" = "uuid", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
 key = ["id"]
 replica_identity = ["id", "sensitivity", "validity", "predicate"]
 tools = ["search", "fetch", "search_filtered"]

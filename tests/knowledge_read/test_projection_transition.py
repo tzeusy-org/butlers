@@ -173,3 +173,62 @@ def test_bootstrap_and_owner_share_exact_publisher_security_and_grants():
             f"\n    -- PUBLIC_MCP_PUBLISHER_{name}_END", 1
         )[0]
         assert actual == expected
+
+
+def test_every_view_naming_an_entity_hides_rows_about_an_unpublished_one():
+    plans = {p.table.source: p for p in subscriber_plan(load_manifest())}
+    expected = {
+        "public.entity_graph_edges": ("subject_entity_id", "object_entity_id"),
+        "public.entity_graph_withheld_counts": ("entity_id",),
+        "relationship.entity_facts": ("subject", "object_entity_id"),
+        **{
+            source: ("entity_id", "object_entity_id")
+            for source in plans
+            if source.endswith(".facts")
+        },
+    }
+    assert len(expected) == 10
+    for source, plan in plans.items():
+        for column in expected.get(source, ()):
+            assert (
+                f'("{column}" IS NULL OR EXISTS (SELECT FROM public.entities AS e '
+                f'WHERE e.id = "{column}"))'
+            ) in plan.view_where
+        if source not in expected:
+            assert "public.entities" not in plan.view_where
+    assert plans["finance.transactions"].view_where == "deleted_at IS NULL"
+
+
+def test_a_fact_entry_that_cannot_name_its_entities_is_refused():
+    target = load_manifest()
+    fact = next(t for t in target.tables if t.source == "general.facts")
+    columns = tuple(c for c in fact.columns if c != "object_entity_id")
+    types = tuple((c, t) for c, t in fact.types if c != "object_entity_id")
+    narrowed = replace(fact, columns=columns, types=types)
+    manifest = Manifest(tuple(narrowed if t == fact else t for t in target.tables))
+    with pytest.raises(ManifestError, match="facts must publish object_entity_id"):
+        subscriber_plan(manifest)
+
+
+@pytest.mark.parametrize(
+    ("dropped", "refused"),
+    [({"object_kind"}, True), ({"object", "object_kind"}, False)],
+    ids=["object-without-its-kind", "neither"],
+)
+def test_entity_facts_cannot_publish_an_object_it_cannot_hide(dropped, refused):
+    target = load_manifest()
+    facts = next(t for t in target.tables if t.source == "relationship.entity_facts")
+    narrowed = replace(
+        facts,
+        columns=tuple(c for c in facts.columns if c not in dropped),
+        types=tuple(p for p in facts.types if p[0] not in dropped),
+    )
+    manifest = Manifest(tuple(narrowed if t == facts else t for t in target.tables))
+    if refused:
+        with pytest.raises(ManifestError, match="object published without its entity reference"):
+            subscriber_plan(manifest)
+    else:
+        plan = next(p for p in subscriber_plan(manifest) if p.table == narrowed)
+        assert plan.view_where == (
+            '("subject" IS NULL OR EXISTS (SELECT FROM public.entities AS e WHERE e.id = "subject"))'
+        )

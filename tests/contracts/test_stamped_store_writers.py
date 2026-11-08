@@ -85,7 +85,7 @@ NO_TEXT = {
     "src/butlers/modules/memory/storage.py::mark_helpful",
     "src/butlers/modules/memory/storage.py::retire_rule",
     "src/butlers/modules/memory/storage.py::retry_dead_letter_episode",
-    "src/butlers/modules/memory/tools/entities.py::_retract_facts_on_conn",
+    "src/butlers/modules/memory/tools/entities.py::_retract_facts_where",
     "src/butlers/modules/memory/tools/management.py::memory_reclassify",
 }
 
@@ -127,8 +127,6 @@ OTHER_TABLES = {
     "roster/relationship/tools/contacts.py::contact_merge",
     # The trip's own entity tables.
     "roster/travel/tools/bookings.py::update_itinerary",
-    # A dashboard route that only sets validity on facts.
-    "src/butlers/api/routers/memory.py::_retire_entity_facts_for_delete._retire_facts",
     # Credential tables.
     "src/butlers/api/routers/secrets_v2.py::probe_system_credential",
     "src/butlers/api/routers/secrets_v2.py::set_system_credential",
