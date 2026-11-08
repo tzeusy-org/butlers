@@ -8,6 +8,7 @@ preserved exactly.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -671,8 +672,22 @@ _NATIVE_REPLAY_TOOLS = frozenset(
 )
 
 
-def _replayable_park_command(
-    command: _RoutedDeliveryCommand, notify_request: Any
+async def _native_tool_registered(daemon: Any, tool_name: str) -> bool:
+    """True only if this daemon's MCP surface serves ``tool_name`` for replay."""
+    get_tool = getattr(getattr(daemon, "mcp", None), "get_tool", None)
+    if not callable(get_tool):
+        return False
+    try:
+        tool = get_tool(tool_name)
+        if inspect.isawaitable(tool):
+            tool = await tool
+    except Exception:
+        return False
+    return tool is not None
+
+
+async def _replayable_park_command(
+    daemon: Any, command: _RoutedDeliveryCommand, notify_request: Any
 ) -> tuple[str, dict[str, Any] | None]:
     """Return the tool name and args a recipient park stores for exact replay.
 
@@ -680,9 +695,15 @@ def _replayable_park_command(
     arguments, so the approval card's registered preview renders and approval
     replays that tool once. Inert-link rendering and file sends have no native
     handler argument; they keep the routed envelope (``None`` args) and replay
-    through ``route.execute`` with every rendering fact intact.
+    through ``route.execute`` with every rendering fact intact. So does a send
+    whose native tool this daemon does not register (for example email without
+    ``send_tools``): its approved executor would have no handler to replay.
     """
-    if command.tool_name in _NATIVE_REPLAY_TOOLS and not notify_request.render_links_inert:
+    if (
+        command.tool_name in _NATIVE_REPLAY_TOOLS
+        and not notify_request.render_links_inert
+        and await _native_tool_registered(daemon, command.tool_name)
+    ):
         return command.tool_name, json.loads(json.dumps(command.tool_args))
     return "route.execute", None
 
@@ -774,7 +795,7 @@ async def _check_routed_delivery_approval(
         return None
     # Park the registered native command so its preview renders and approval
     # replays that exact handler call (module-approvals: replayable commands).
-    park_tool_name, park_tool_args = _replayable_park_command(command, notify_request)
+    park_tool_name, park_tool_args = await _replayable_park_command(daemon, command, notify_request)
     kwargs = {
         "rule_tool_name": command.tool_name,
         "rule_match_args": command.tool_args,

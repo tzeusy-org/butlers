@@ -1716,6 +1716,7 @@ async def test_route_execute_messenger_scenarios(tmp_path: Path, monkeypatch) ->
         ),
     ],
 )
+@pytest.mark.parametrize("send_tools", [True, False], ids=["send-tools", "no-send-tools"])
 async def test_route_execute_parks_email_actions_with_native_tool_args(
     tmp_path: Path,
     intent: str,
@@ -1723,12 +1724,15 @@ async def test_route_execute_parks_email_actions_with_native_tool_args(
     notify_context: dict[str, str] | None,
     expected_tool: str,
     expected_args: dict[str, str],
+    send_tools: bool,
 ) -> None:
     """Approved route deliveries must replay with the registered email tool contract."""
     from butlers.modules.approvals.email_guard import EmailGuardDecision
 
     butler_dir = _make_butler_toml(
-        tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
+        tmp_path,
+        butler_name="messenger",
+        modules={"telegram": {}, "email": {"send_tools": send_tools}},
     )
     patches = _infra()
     _, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
@@ -1774,8 +1778,16 @@ async def test_route_execute_parks_email_actions_with_native_tool_args(
     # Spec: module-approvals "Pending Actions Store Replayable Executable Commands".
     # The park is the registered native command, never the routing envelope, so the
     # card's registered preview applies and approval replays through that tool.
-    assert call_kwargs["park_tool_name"] == expected_tool
-    assert call_kwargs["park_tool_args"] == expected_args
+    if send_tools:
+        assert call_kwargs["park_tool_name"] == expected_tool
+        assert call_kwargs["park_tool_args"] == expected_args
+    else:
+        # Without send_tools this daemon registers no native email tool, so its
+        # approved executor could never replay one: keep the routed envelope.
+        assert call_kwargs["park_tool_name"] == "route.execute"
+        assert call_kwargs["park_tool_args"]["input"]["context"]["notify_request"] == (
+            notify_request
+        )
 
     # Spec: REQ-core-notify-032; only committed typed recipient parks emit a review reference.
     refusal = result["result"]["notify_response"]

@@ -776,6 +776,7 @@ immediate execution when approval is not required.
 - **THEN** no native handler argument can carry that fact, so the pending action stores the
   exact routed `route.execute` envelope instead of a lossy native command
 - **AND** its card fails closed to Open only rather than showing a call that would not execute
+- **AND** a plain delivery whose native tool the owning daemon does not register (for example email without `send_tools`) also keeps the routed envelope, because its approved executor would have no native handler to replay
 
 #### Scenario: Immediate and deferred execution are equivalent
 

@@ -313,7 +313,11 @@ def _deliver_through(booted, monkeypatch) -> tuple[Any, list[dict[str, Any]]]:
     return delivery, routed
 
 
-_APPROVALS_MESSENGER_TOML = "[modules.telegram]\n\n[modules.email]\n\n[modules.approvals]\n"
+# Mirrors roster/messenger: email send tools are registered, so a native email
+# park has a handler for its approved replay.
+_APPROVALS_MESSENGER_TOML = (
+    "[modules.telegram]\n\n[modules.email]\nsend_tools = true\n\n[modules.approvals]\n"
+)
 
 
 @pytest.fixture(scope="module")
