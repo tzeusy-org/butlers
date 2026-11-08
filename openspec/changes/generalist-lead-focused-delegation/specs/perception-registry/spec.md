@@ -95,7 +95,7 @@ Scope: v1-mandatory
 
 #### Scenario: A perception relation is added without a backup exporter
 - **WHEN** a perception relation exists but is not covered by the private-history export manifest
-- **THEN** backup verification fails and names it; it is never silently omitted
+- **THEN** the manifest guard test fails and names it; it is never silently omitted
 
 #### Scenario: The retraction is outside the current query page
 - **WHEN** owner history or a transition reader loads a leave whose target retraction lies outside its selected page/window

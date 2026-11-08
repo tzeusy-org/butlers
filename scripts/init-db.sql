@@ -1600,7 +1600,8 @@ BEGIN
               'finalize_interface',
               'install_interface',
               'install_private_mutation',
-              'rollback_interface'
+              'rollback_interface',
+              'install_backup_interface'
           )
           AND admin_function.pronargs = 0
           AND admin_function.proowner <> v_bootstrap_owner

@@ -571,7 +571,23 @@ if ! DND_INTERFACE_PRESENT="$(PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
   exit 1
 fi
 DND_EXPORT_MODE="absent"
-if [ "${DND_INTERFACE_PRESENT}" = "t" ]; then
+if ! DND_RELATIONS_PRESENT="$(PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+    --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+    --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
+    --no-password --no-align --tuples-only --set=ON_ERROR_STOP=1 \
+    -c "SELECT to_regclass('public.dnd_generation_mutations') IS NOT NULL")"; then
+  FAILURE_REASON="pg_dump_failed"
+  echo "[backup] FAILED: could not determine whether DND history exists; not publishing" >&2
+  exit 1
+fi
+if [ "${DND_RELATIONS_PRESENT}" = "t" ] && [ "${DND_INTERFACE_PRESENT}" != "t" ]; then
+  # core_197 is applied but scripts/init-db.sql has not been re-run since the
+  # export interface shipped: the history exists and cannot be exported yet.
+  DND_EXPORT_MODE="skipped"
+  echo "[backup] NOTICE: DND mutation receipts, generation guard and DND context are NOT in this artifact:" \
+       "the dnd_generation_backup export interface is not installed; re-run scripts/init-db.sql as the" \
+       "cluster superuser (see docs/operations/backup-restore.md, 'Private history export')." >&2
+elif [ "${DND_INTERFACE_PRESENT}" = "t" ]; then
   if [ -n "${BACKUP_EXPORT_USER:-}" ]; then
     DND_EXPORT_MODE="export"
   else

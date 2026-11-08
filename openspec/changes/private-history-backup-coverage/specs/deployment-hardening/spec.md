@@ -25,8 +25,8 @@ rows already expired or superseded in the live database, for up to the configure
 backup retention (default 14 days) beyond their live expiry.
 
 Any relation registered as a perception relation SHALL be covered by the export
-manifest; a registered relation that exists without an exporter SHALL fail
-verification rather than be silently omitted.
+manifest; a registered relation that exists without an exporter SHALL fail the
+manifest guard test rather than be silently omitted.
 
 ID: REQ-deployment-hardening-014
 Source: owner decision perception-backup-boundary = A (2026-11-08); bu-cew60z; REQ-deployment-hardening-010
@@ -42,7 +42,7 @@ Scope: v1-mandatory
 
 #### Scenario: A perception relation exists without an exporter
 - **WHEN** a relation registered as perception is created while its manifest status is not exported
-- **THEN** verification fails and names the relation
+- **THEN** the manifest guard test fails and names the relation
 
 #### Scenario: Restore targets a populated database
 - **WHEN** the staged history is restored into a target that already holds DND history

@@ -256,6 +256,13 @@ rows already expired or superseded in the live database, for up to
 `BACKUP_RETAIN_DAYS` (default 14 days) after they stop being live. Backup
 retention, cadence and artifact handling are unchanged.
 
+Databases that already applied the DND migration receive the interface when
+`scripts/init-db.sql` is next re-run as the cluster superuser (the DND finalizer
+installs it). Until then the script logs the omission. The ordinary dump also
+lists the `dnd_generation_backup` schema and function definitions, as it already
+does for `dnd_generation_private`; a restore target is bootstrapped by
+`init-db.sql`, which owns them.
+
 Restore restores the exact snapshot: guard generation and timestamps are
 preserved, no counter is reseeded and no mutation is replayed.
 

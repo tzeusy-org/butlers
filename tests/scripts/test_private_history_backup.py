@@ -75,8 +75,9 @@ def test_script_names_the_export_interface_and_logs_omission_until_activation() 
     assert "GRANT butlers_backup_export" not in script
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def migrated_db_url(postgres_container) -> str:
+    """A fresh database per test: seeding tests must not see each other's rows."""
     db_url = create_migration_db(postgres_container, migration_db_name())
     command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core@head")
     return db_url
