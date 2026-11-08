@@ -451,7 +451,8 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                                e.title AS event_title,
                                e.description AS event_description,
                                e.location AS event_location,
-                               e.metadata AS event_metadata
+                               e.metadata AS event_metadata,
+                               cs.metadata ->> 'account_email' AS account_email
                         FROM {quoted}.calendar_event_instances AS i
                         LEFT JOIN {quoted}.calendar_events AS e ON e.id = i.event_id
                         INNER JOIN {quoted}.calendar_sources AS cs ON cs.id = i.source_id
@@ -473,7 +474,8 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                                e.title AS event_title,
                                e.description AS event_description,
                                e.location AS event_location,
-                               e.metadata AS event_metadata
+                               e.metadata AS event_metadata,
+                               cs.metadata ->> 'account_email' AS account_email
                         FROM {quoted}.calendar_event_instances AS i
                         LEFT JOIN {quoted}.calendar_events AS e ON e.id = i.event_id
                         INNER JOIN {quoted}.calendar_sources AS cs ON cs.id = i.source_id
@@ -606,10 +608,15 @@ class CalendarCompletedAdapter(ProjectionAdapter):
             or f"{schema}: calendar block"
         )
         # Location and description are the inviter's free text, so the public projection withholds
-        # a title built from them (chronicler_031).
-        payload["title_source"] = (
-            "summary" if title or self._clean_text(event_title) else "fallback"
-        )
+        # a title built from them (chronicler_031). A summary is published only for an event the
+        # owner organised or was invited to (owner decision 2026-11-08, bu-y66o00.20); one seen on
+        # someone else's shared calendar stays private.
+        if not (title or self._clean_text(event_title)):
+            payload["title_source"] = "fallback"
+        elif self._owner_attends(event_metadata, self._maybe(row, "account_email")):
+            payload["title_source"] = "summary"
+        else:
+            payload["title_source"] = "unattended"
 
         async with chronicler_pool.acquire() as conn:
             episode = await upsert_episode(
@@ -658,6 +665,38 @@ class CalendarCompletedAdapter(ProjectionAdapter):
         if isinstance(event_metadata.get("butler_name"), str):
             provenance["butler_name"] = event_metadata["butler_name"]
         return provenance
+
+    @staticmethod
+    def _owner_attends(event_metadata: Any, account_email: Any) -> bool:
+        """Whether the owner organised or was invited to the event (any response).
+
+        The owner is the synced Google account (``calendar_sources.metadata.account_email``), not
+        the calendar the event appears on: a subscribed colleague's calendar is synced too, and
+        Google's attendee ``self`` flag marks that calendar's entry. An event a butler wrote for
+        the owner counts as the owner's. Anything unreadable counts as not attended.
+        """
+        if isinstance(event_metadata, str):
+            try:
+                event_metadata = json.loads(event_metadata)
+            except ValueError:
+                return False
+        if not isinstance(event_metadata, dict):
+            return False
+        if event_metadata.get("butler_generated") is True:
+            return True
+        if not isinstance(account_email, str) or not account_email.strip():
+            return False
+        owner = account_email.strip().casefold()
+
+        def is_owner(email: Any) -> bool:
+            return isinstance(email, str) and email.strip().casefold() == owner
+
+        if is_owner(event_metadata.get("organizer")):
+            return True
+        attendees = event_metadata.get("attendees")
+        return isinstance(attendees, list) and any(
+            isinstance(a, dict) and is_owner(a.get("email")) for a in attendees
+        )
 
     @staticmethod
     def _maybe(row: asyncpg.Record, key: str) -> Any:

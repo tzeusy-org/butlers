@@ -402,7 +402,10 @@ same kind uses the same pattern:
     `source_privacy`. Evidence-layer episodes, which are raw signal, have no
     row. A calendar title built from the event's location or description
     (`src/butlers/chronicler/adapters/calendar.py`) becomes a fixed label
-    unless an override corrected it, because inviters write that text.
+    unless an override corrected it, because inviters write that text. So
+    does an event summary unless the owner organised or was invited to the
+    event, whatever their response (owner decision 2026-11-08): a summary on
+    someone else's shared calendar is that person's text.
 - **Entity flags.** [Observed] The merge pointer, the soft-delete stamp and
   the unidentified-sender marker are all `public.entities.metadata` keys
   (`merged_into`, `deleted_at` and `unidentified`;
