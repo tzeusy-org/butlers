@@ -2,16 +2,17 @@
 
 Every butler connects as ``butler_<schema>_rw`` (``Database._validate_runtime_role``
 refuses any other pairing), and ``<schema>`` comes from the butler's
-``roster/<butler>/butler.toml`` (``[butler.db] schema``, defaulting to the butler name,
-as ``butlers.config`` does). This module is the one place that turns the roster into
+``roster/<butler>/butler.toml`` (``[butler.db] schema``, else the butler name: the
+one-database default ``butlers.config`` applies; every roster butler uses the shared
+``butlers`` database). This module is the one place that turns the roster into
 role names, so a migration that grants to "every butler" cannot silently omit a
 butler added after it was written (the fleet lists written before the concierge
 existed all omit ``butler_concierge_rw``).
 
 New Alembic revisions grant through :func:`butler_roles` or :func:`runtime_roles`
 instead of spelling the fleet out. ``tests/config/test_db_authority_roles.py`` keeps
-the remaining hand-written copies (``scripts/init-db.sql`` and
-``butlers.bootstrap_prerequisite``) equal to this derivation, and
+the remaining hand-written fleet copies (the four ``scripts/init-db.sql`` arrays and
+``butlers.bootstrap_prerequisite._BUTLERS``) equal to this derivation, and
 ``tests/config/test_literal_role_list_ratchet.py`` forbids new literal fleet lists.
 
 The roster is read, never guessed: a missing roster or an unreadable manifest raises,
@@ -53,6 +54,8 @@ def _manifest_schema(manifest: Path) -> str:
     db = butler.get("db", {})
     if not isinstance(db, dict):
         raise RosterRoleError(f"butler manifest [butler.db] is not a table: {manifest}")
+    if "schema" not in db and db.get("name", "butlers") != "butlers":
+        raise RosterRoleError(f"butler outside the shared database names no schema: {manifest}")
     schema = db.get("schema", butler["name"])
     if not isinstance(schema, str):
         raise RosterRoleError(f"butler manifest schema is not a string: {manifest}")
@@ -60,9 +63,17 @@ def _manifest_schema(manifest: Path) -> str:
     return schema
 
 
-@cache
 def butler_schemas(roster_dir: Path = ROSTER_DIR) -> tuple[str, ...]:
-    """Return every roster butler's schema, sorted, read from ``butler.toml`` files."""
+    """Return every roster butler's schema, sorted, read from ``butler.toml`` files.
+
+    Cached per resolved roster path for the life of the process; a roster edited
+    mid-process is not re-read.
+    """
+    return _butler_schemas(roster_dir.resolve())
+
+
+@cache
+def _butler_schemas(roster_dir: Path) -> tuple[str, ...]:
     if not roster_dir.is_dir():
         raise RosterRoleError(f"roster directory not found: {roster_dir}")
     schemas = sorted(_manifest_schema(path) for path in roster_dir.glob("*/butler.toml"))

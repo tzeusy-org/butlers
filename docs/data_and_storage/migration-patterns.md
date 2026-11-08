@@ -131,10 +131,12 @@ derived from `roster/*/butler.toml`) or `runtime_roles()` (those plus
 roster is unreadable. A narrow, deliberate reader list (one or two named
 butlers) stays literal.
 
-`tests/config/test_literal_role_list_ratchet.py` fails on any new literal fleet
-list in a revision, and `tests/config/test_db_authority_roles.py` holds the
-hand-written copies in `scripts/init-db.sql` and `butlers.bootstrap_prerequisite`
-equal to the roster. This is the first slice of the DB authority model
+`tests/config/test_literal_role_list_ratchet.py` fails on a new literal fleet
+list in a revision: seven or more runtime roles or roster schema names in one
+tuple, list or set, or seven or more roles in one SQL string. Existing sites are
+frozen in its baseline, which only shrinks. `tests/config/test_db_authority_roles.py`
+holds the four fleet arrays in `scripts/init-db.sql` and
+`butlers.bootstrap_prerequisite._BUTLERS` equal to the roster. This is the first slice of the DB authority model
 (bu-dss7he.6); the declarative grant manifest that replaces init-db's blanket
 public-table DML comes later.
 

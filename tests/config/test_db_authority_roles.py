@@ -63,6 +63,14 @@ def test_init_db_all_runtime_roles_equal_the_roster() -> None:
     assert _init_db_array("_all_runtime_roles") == runtime_roles()
 
 
+def test_init_db_butler_schemas_equal_the_roster() -> None:
+    assert _init_db_array("_butler_schemas") == butler_schemas()
+
+
+def test_init_db_managed_schemas_equal_the_roster_plus_connectors() -> None:
+    assert _init_db_array("_managed_schemas") == (*butler_schemas(), "connectors")
+
+
 def test_bootstrap_prerequisite_butlers_equal_the_roster() -> None:
     assert bootstrap_prerequisite._BUTLERS == butler_schemas()
 
@@ -80,6 +88,7 @@ def test_schema_comes_from_the_db_section_then_the_name(tmp_path: Path) -> None:
         ('[other]\nname = "x"\n', "no \\[butler\\] name"),
         ('[butler]\nname = "x"\n[butler.db]\nschema = 3\n', "not a string"),
         ('[butler]\nname = "Bad-Name"\n', "invalid butler schema"),
+        ('[butler]\nname = "x"\n[butler.db]\nname = "other"\n', "names no schema"),
     ],
 )
 def test_unreadable_manifest_fails_loudly(tmp_path: Path, body: str, message: str) -> None:
