@@ -8,6 +8,11 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream";
 import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 
+// The pinned Node22/Bun runtimes provide this static method; older vendor DOM types predate it.
+type RuntimeSignalConstructor = typeof AbortSignal & {
+  any(signals: AbortSignal[]): AbortSignal;
+};
+
 export interface GatewayConfig {
   port: number;
 }
@@ -133,7 +138,10 @@ export function createGatewayFetch(
       },
     });
     const total = new AbortController();
-    const signal = AbortSignal.any([request.signal, total.signal]);
+    const signal = (AbortSignal as RuntimeSignalConstructor).any([
+      request.signal,
+      total.signal,
+    ]);
     const timer = setTimeout(
       () => total.abort(new Error("Selected egress deadline exceeded")),
       limits.total,
@@ -206,7 +214,9 @@ export function createGatewayFetch(
         init?.gatewayDecodeContent === false
           ? undefined
           : incoming.headers["content-encoding"];
-      const encodedHeader = Array.isArray(encoding) ? encoding.join(",") : encoding;
+      const encodedHeader = Array.isArray(encoding)
+        ? encoding.join(",")
+        : encoding;
       const codings = encodedHeader
         ? encodedHeader.split(",").map((coding) => coding.trim().toLowerCase())
         : [];
@@ -294,7 +304,10 @@ export function createGaxiosFetch(fetchImpl = egressFetch) {
   return async (input: string | URL, init?: GaxiosSelectedInit) => {
     const timeout = new AbortController();
     const signal = init?.signal
-      ? AbortSignal.any([init.signal, timeout.signal])
+      ? (AbortSignal as RuntimeSignalConstructor).any([
+          init.signal,
+          timeout.signal,
+        ])
       : timeout.signal;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const clear = () => {
