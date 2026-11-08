@@ -332,7 +332,7 @@ def render(profiles: EgressProfiles) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description="Render the egress profiles.")
     parser.add_argument("--profiles", type=Path, default=PROFILES_PATH)
     parser.add_argument("--output", type=Path, default=RENDERED_PATH)
     parser.add_argument(
