@@ -13,6 +13,7 @@ from urllib.parse import parse_qs
 
 from starlette.requests import ClientDisconnect
 
+from butlers.core import session_timing
 from butlers.core.tool_call_capture import (
     reset_current_approval_push_runtime,
     reset_current_runtime_butler_name,
@@ -231,6 +232,9 @@ class _McpRuntimeSessionGuard:
         )
         if binding is not None:
             runtime_session_id = binding.runtime_session
+        if runtime_session_id:
+            # Diagnostic stage clock only (first request wins, unknown ids are no-ops).
+            session_timing.mark(runtime_session_id, "first_mcp_request_ms")
         session_token = set_current_runtime_session_id(runtime_session_id)
         locator_token = set_current_runtime_session_locator_unbound(
             binding is None and bool(runtime_session_id)

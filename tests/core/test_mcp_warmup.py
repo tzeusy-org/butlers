@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -95,6 +96,10 @@ class TestWarmupEndpoint:
         assert isinstance(result["latency_ms"], int)
         assert result["latency_ms"] >= 0
         assert result["tool_count"] == 2
+        # bu-dhloi1.180: serialized size of the advertised tool list, for stage timings.
+        assert result["tool_schema_bytes"] == len(
+            json.dumps(tools_body["result"]["tools"], separators=(",", ":")).encode()
+        )
         assert result["error"] is None
 
         init_call = mock_client.post.await_args_list[0]
