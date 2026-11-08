@@ -13,6 +13,7 @@ import binascii
 import codecs
 import hashlib
 import time
+from dataclasses import dataclass
 
 import h11
 from websockets.exceptions import ProtocolError
@@ -58,8 +59,15 @@ def validate_request(request: h11.Request) -> tuple[bytes, list[bytes]]:
     return key, offered
 
 
-async def handshake(reader, writer, request, host, port, target) -> bytes:
-    """Return a sanitized 101 only after origin identity and handshake agree."""
+@dataclass(frozen=True, slots=True)
+class Handshake:
+    connection: h11.Connection
+    response: h11.Response | None = None
+    head: bytes | None = None
+
+
+async def handshake(reader, writer, request, host, port, target) -> Handshake:
+    """Validate 101; retain ordinary provider responses for bounded HTTP forwarding."""
     key, offered = validate_request(request)
     headers = [
         (name, value)
@@ -80,8 +88,10 @@ async def handshake(reader, writer, request, host, port, target) -> bytes:
     gateway._check_framing(head, response=True)
     connection.receive_data(head)
     response = connection.next_event()
-    if isinstance(response, h11.Response) and 300 <= response.status_code <= 399:
-        raise gateway.Refused("redirect_refused")
+    if isinstance(response, h11.Response):
+        if 300 <= response.status_code <= 399:
+            raise gateway.Refused("redirect_refused")
+        return Handshake(connection, response=response)
     if not isinstance(response, h11.InformationalResponse) or response.status_code != 101:
         raise gateway.Refused("websocket_handshake_refused", 502)
     values = response.headers
@@ -112,10 +122,13 @@ async def handshake(reader, writer, request, host, port, target) -> bytes:
         and name != b"forwarded"
     ]
     headers += [(b"connection", b"Upgrade"), (b"upgrade", b"websocket")]
-    return (
-        b"HTTP/1.1 101 Switching Protocols\r\n"
-        + b"".join(name + b": " + value + b"\r\n" for name, value in headers)
-        + b"\r\n"
+    return Handshake(
+        connection,
+        head=(
+            b"HTTP/1.1 101 Switching Protocols\r\n"
+            + b"".join(name + b": " + value + b"\r\n" for name, value in headers)
+            + b"\r\n"
+        ),
     )
 
 

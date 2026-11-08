@@ -460,59 +460,69 @@ async def handle_request(
                 raise Refused("upstream_unreachable", 502)
             if is_websocket:
                 handshake = await ws.handshake(origin_reader, upstream, request, host, port, target)
-                await _write(writer, handshake)
-                exposed = True
+                origin, response = handshake.connection, handshake.response
+                if handshake.head is not None:
+                    await _write(writer, handshake.head)
+                    exposed = True
 
-                def uploaded(count):
+                    def uploaded(count):
+                        nonlocal up
+                        up += count
+                        if up > _UPLOAD_LIMIT:
+                            raise Refused("upload_limit", 400)
+
+                    def downloaded(count):
+                        nonlocal down
+                        down += count
+                        if down > _DOWNLOAD_LIMIT:
+                            raise Refused("download_limit", 502)
+
+                    await ws.relay(
+                        reader,
+                        writer,
+                        origin_reader,
+                        upstream,
+                        upload=uploaded,
+                        download=downloaded,
+                    )
+                    verdict, reason = "allowed", "closed"
+                    return
+            else:
+                origin = h11.Connection(h11.CLIENT, max_incomplete_event_size=_HEAD_LIMIT)
+                headers = [
+                    (k, v)
+                    for k, v in request.headers
+                    if k not in _HOP_HEADERS | {b"host", b"expect"}
+                ]
+                authority = host if port == 443 else f"{host}:{port}"
+                headers += [(b"host", authority.encode()), (b"connection", b"close")]
+                if not any(k == b"content-length" for k, _ in headers):
+                    chunked = any(k == b"transfer-encoding" for k, _ in request.headers)
+                    headers.append(
+                        (b"transfer-encoding", b"chunked") if chunked else (b"content-length", b"0")
+                    )
+                await _write(
+                    upstream,
+                    origin.send(h11.Request(method=request.method, target=target, headers=headers)),
+                )
+
+                async def upload():
                     nonlocal up
-                    up += count
-                    if up > _UPLOAD_LIMIT:
-                        raise Refused("upload_limit", 400)
+                    while True:
+                        event = await _event(client, reader)
+                        if isinstance(event, h11.EndOfMessage):
+                            if event.headers:
+                                raise Refused("trailers_refused", 400)
+                            await _write(upstream, origin.send(h11.EndOfMessage()))
+                            return
+                        if not isinstance(event, h11.Data):
+                            raise Refused("malformed_body", 400)
+                        up += len(event.data)
+                        if up > _UPLOAD_LIMIT:
+                            raise Refused("upload_limit", 400)
+                        await _write(upstream, origin.send(h11.Data(data=event.data)))
 
-                def downloaded(count):
-                    nonlocal down
-                    down += count
-                    if down > _DOWNLOAD_LIMIT:
-                        raise Refused("download_limit", 502)
-
-                await ws.relay(
-                    reader, writer, origin_reader, upstream, upload=uploaded, download=downloaded
-                )
-                verdict, reason = "allowed", "closed"
-                return
-            origin = h11.Connection(h11.CLIENT, max_incomplete_event_size=_HEAD_LIMIT)
-            headers = [
-                (k, v) for k, v in request.headers if k not in _HOP_HEADERS | {b"host", b"expect"}
-            ]
-            authority = host if port == 443 else f"{host}:{port}"
-            headers += [(b"host", authority.encode()), (b"connection", b"close")]
-            if not any(k == b"content-length" for k, _ in headers):
-                chunked = any(k == b"transfer-encoding" for k, _ in request.headers)
-                headers.append(
-                    (b"transfer-encoding", b"chunked") if chunked else (b"content-length", b"0")
-                )
-            await _write(
-                upstream,
-                origin.send(h11.Request(method=request.method, target=target, headers=headers)),
-            )
-
-            async def upload():
-                nonlocal up
-                while True:
-                    event = await _event(client, reader)
-                    if isinstance(event, h11.EndOfMessage):
-                        if event.headers:
-                            raise Refused("trailers_refused", 400)
-                        await _write(upstream, origin.send(h11.EndOfMessage()))
-                        return
-                    if not isinstance(event, h11.Data):
-                        raise Refused("malformed_body", 400)
-                    up += len(event.data)
-                    if up > _UPLOAD_LIMIT:
-                        raise Refused("upload_limit", 400)
-                    await _write(upstream, origin.send(h11.Data(data=event.data)))
-
-            response = await _upload_and_response(origin, origin_reader, upload())
+                response = await _upload_and_response(origin, origin_reader, upload())
             if 300 <= response.status_code <= 399:
                 raise Refused("redirect_refused")
             nominated = {

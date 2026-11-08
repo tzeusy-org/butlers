@@ -991,3 +991,22 @@ async def test_websocket_independent_resource_limits_deny_and_settle(
         f"{limit}_limit" if limit in {"upload", "download"} else "timeout"
     )
     assert events[-1]["verdict"] == "refused"
+
+
+@pytest.mark.parametrize("status", [200, 401, 429, 500])
+async def test_websocket_nonupgrade_provider_errors_preserve_status_headers_and_stream(
+    tls_contexts, status
+):
+    origin = Origin(
+        status=status,
+        chunks=(b"provider detail",),
+        headers=[(b"retry-after", b"7"), (b"x-request-id", b"synthetic-provider-id")],
+        early=True,
+    )
+    async with running_gateway(tls_contexts, origin) as (port, _):
+        response = await exchange(port, ws_wire())
+        assert response.startswith(f"HTTP/1.1 {status} ".encode())
+        assert b"retry-after: 7" in response.lower()
+        assert b"x-request-id: synthetic-provider-id" in response.lower()
+        assert b"provider detail" in response
+        assert b"101" not in response.split(b"\r\n")[0]

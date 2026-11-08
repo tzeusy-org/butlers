@@ -128,6 +128,10 @@ change).
   fragmentation, incremental text UTF-8 and close controls. Valid frame bytes,
   including masks, ping/pong and close reasons, pass unchanged. This is a framed
   WebSocket execution route, with no generic upgraded byte-stream route.
+  A valid non101, nonredirect provider response retains its status, application
+  headers (including retry metadata) and bounded streaming body through the same
+  HTTP response path. An authentication error or rate limit therefore remains
+  distinguishable from a gateway refusal and never becomes an upgrade.
 - **Response boundary:** h11 parses complete bounded origin headers before exposure.
   Every300..399 (including304 and same-origin redirects) returns a fixed empty403
   `X-Egress-Refusal: redirect_refused`, with no Location or redirect-target dial.

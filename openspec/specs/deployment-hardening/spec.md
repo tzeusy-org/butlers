@@ -273,6 +273,12 @@ permitted. Existing HTTP/SSE behavior SHALL remain unchanged.
 - **AND** activity in either direction keeps a healthy quiet reader alive,
   payload reads stay bounded, and no HTTP error is injected after101
 
+#### Scenario: Ordinary provider responses retain authentication and retry semantics
+- **WHEN** an origin returns a valid non101, nonredirect response to a WebSocket
+  handshake, including an authentication error or rate limit
+- **THEN** the gateway preserves its status, application headers and bounded
+  streaming body through the HTTP response path without exposing101
+
 ## Source References
 - Non-Negotiable Rule 1 (User-federated: one user, one instance, full
   sovereignty) — protecting the owner's always-on personal-data deployment from
