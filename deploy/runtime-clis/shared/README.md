@@ -25,7 +25,11 @@ across both 8 MiB and 32 MiB responses. Bun 1.3.14 uses a 512 KiB slab. Its
 control fails against that discarded implementation.
 
 Body completion, cancellation and error all await the same dispatcher teardown.
-Gzip/deflate/Brotli decode once, and clone URLs retain their logical identity.
+Gzip/deflate/Brotli coding names are case insensitive. Supported coding chains
+decode in reverse application order, with at most five codings; an unsupported
+chain retains the complete wire entity. Explicit `compress: false` retains raw
+bytes. Decoder errors and cancellation settle the complete pipeline. Clone URLs
+retain their logical identity.
 The optional Gaxios 6 view preserves its Node-readable body and node-fetch
 controls. Gaxios 7 consumers use the full WHATWG response path. Actual nested
 package resolution determines the adapter; a root lock entry alone does not.

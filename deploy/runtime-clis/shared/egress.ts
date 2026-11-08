@@ -206,17 +206,32 @@ export function createGatewayFetch(
         init?.gatewayDecodeContent === false
           ? undefined
           : incoming.headers["content-encoding"];
-      const decoder =
-        encoding === "gzip" || encoding === "x-gzip"
-          ? createGunzip()
-          : encoding === "deflate"
-            ? createInflate()
-            : encoding === "br"
-              ? createBrotliDecompress()
-              : undefined;
-      if (decoder) {
-        body = decoder;
-        pipeline(incoming.body, decoder, () => {});
+      const encodedHeader = Array.isArray(encoding) ? encoding.join(",") : encoding;
+      const codings = encodedHeader
+        ? encodedHeader.split(",").map((coding) => coding.trim().toLowerCase())
+        : [];
+      if (codings.length > 5)
+        throw new TypeError(
+          "Selected egress response has too many content codings",
+        );
+      // A mixed unsupported coding retains its complete wire entity, like native fetch.
+      // Allocate only after validating the complete chain, and undo application order.
+      const decoders = codings.every((coding) =>
+        ["gzip", "x-gzip", "deflate", "br"].includes(coding),
+      )
+        ? codings
+            .reverse()
+            .map((coding) =>
+              coding === "gzip" || coding === "x-gzip"
+                ? createGunzip()
+                : coding === "deflate"
+                  ? createInflate()
+                  : createBrotliDecompress(),
+            )
+        : [];
+      if (decoders.length) {
+        body = decoders[decoders.length - 1]!;
+        pipeline([incoming.body, ...decoders], () => {});
       }
       const reader = body[Symbol.asyncIterator]();
       let cancelled = false;

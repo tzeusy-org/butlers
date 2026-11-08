@@ -5,7 +5,7 @@ import net from "node:net";
 import { once } from "node:events";
 import { lookup } from "node:dns";
 import { Readable } from "node:stream";
-import { gzipSync } from "node:zlib";
+import { brotliCompressSync, gzipSync } from "node:zlib";
 import {
   createGatewayFetch,
   createGaxiosFetch,
@@ -59,7 +59,10 @@ function selectHop(
   });
 }
 
-async function rawStreamingHop(t: import("node:test").TestContext) {
+async function rawStreamingHop(
+  t: import("node:test").TestContext,
+  coded?: { encoding: string; body: Buffer },
+) {
   let closed!: () => void;
   const settled = new Promise<void>((resolve) => {
     closed = resolve;
@@ -80,7 +83,14 @@ async function rawStreamingHop(t: import("node:test").TestContext) {
     });
     socket.once("data", () =>
       socket.write(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\nfirst",
+        coded
+          ? Buffer.concat([
+              Buffer.from(
+                `HTTP/1.1 200 OK\r\nContent-Encoding: ${coded.encoding}\r\nConnection: close\r\n\r\n`,
+              ),
+              coded.body,
+            ])
+          : "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\nfirst",
       ),
     );
   });
@@ -220,6 +230,62 @@ test("every300..399 is refused without target response or followup request", asy
       /Selected egress request refused/,
     );
   assert.equal(count, 100);
+});
+
+for (const [encoding, encode] of [
+  ["GZIP", gzipSync],
+  ["gzip, br", (value: string) => brotliCompressSync(gzipSync(value))],
+] as const) {
+  test(`content coding ${encoding} decodes in reverse application order`, async (t) => {
+    const plain = '{"synthetic":"unicode λ"}';
+    const encoded = encode(plain);
+    const { fetch } = await hop(t, (req, res) => {
+      req.resume();
+      res.writeHead(200, { "Content-Encoding": encoding });
+      res.end(encoded);
+    });
+    assert.deepEqual(
+      await (await fetch("https://origin.invalid/encoded")).json(),
+      JSON.parse(plain),
+    );
+    const raw = await createGaxiosFetch(fetch)("https://origin.invalid/raw", {
+      compress: false,
+    });
+    assert.deepEqual(
+      new Uint8Array(await raw.arrayBuffer()),
+      new Uint8Array(encoded),
+    );
+  });
+}
+
+test("stacked content decoders settle the owned socket on cancellation", async (t) => {
+  const { fetch, settled } = await rawStreamingHop(t, {
+    encoding: "gzip, br",
+    body: brotliCompressSync(gzipSync("synthetic")).subarray(0, 5),
+  });
+  const response = await fetch("https://origin.invalid/coded-cancel");
+  await bounded(response.body!.cancel());
+  await bounded(settled);
+});
+
+test("unsupported coding chains retain exact wire bytes and excessive chains refuse", async (t) => {
+  let encoding = "gzip, unsupported";
+  const bytes = gzipSync("synthetic");
+  const { fetch } = await hop(t, (req, res) => {
+    req.resume();
+    res.writeHead(200, { "Content-Encoding": encoding });
+    res.end(bytes);
+  });
+  const response = await fetch("https://origin.invalid/unsupported");
+  assert.deepEqual(
+    new Uint8Array(await response.arrayBuffer()),
+    new Uint8Array(bytes),
+  );
+  encoding = Array(6).fill("gzip").join(",");
+  await assert.rejects(
+    fetch("https://origin.invalid/excessive"),
+    /too many content codings/,
+  );
 });
 
 test("compressed streaming response decodes once and clones retain logical URL and cookie fields", async (t) => {
@@ -517,20 +583,25 @@ test("a paused consumer keeps the native incoming body bounded", async (t) => {
 });
 
 test("discard cleanup does not hide a truncated response or a broken decoder", async (t) => {
-  let compressed = false;
+  let encoding: string | undefined;
   const { fetch } = await hop(t, (req, res) => {
     req.resume();
     res.writeHead(
       200,
-      compressed ? { "Content-Encoding": "gzip" } : { "Content-Length": 100 },
+      encoding ? { "Content-Encoding": encoding } : { "Content-Length": 100 },
     );
-    res.end("broken");
+    res.end(
+      encoding === "gzip, br"
+        ? brotliCompressSync(Buffer.from("broken"))
+        : "broken",
+    );
   });
   const truncated = await fetch("https://origin.invalid/truncated");
   await assert.rejects(bounded(truncated.text()));
-  compressed = true;
-  const invalid = await fetch("https://origin.invalid/compressed");
-  await assert.rejects(bounded(invalid.text()));
+  for (encoding of ["gzip", "gzip, br"]) {
+    const invalid = await fetch("https://origin.invalid/compressed");
+    await assert.rejects(bounded(invalid.text()));
+  }
 });
 
 test("the native parser accepts ordinary headers and refuses a64KiB overflow", async (t) => {
