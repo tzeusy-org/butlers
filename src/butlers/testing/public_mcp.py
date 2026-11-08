@@ -13,6 +13,7 @@ import tarfile
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, make_url
@@ -23,6 +24,9 @@ from butlers.testing.migration import (
     create_migration_db,
     migration_bootstrap_db_url,
 )
+
+if TYPE_CHECKING:
+    from testcontainers.postgres import PostgresContainer
 
 _HBA = """local all all peer map=local
 host all butlers_projection_publisher all reject
@@ -100,7 +104,7 @@ def create_public_mcp_roles(conn, *, include_subscription_owner: bool = True) ->
 
 @dataclass
 class PublicMcpTopology:
-    container: object
+    container: PostgresContainer
     engine: Engine
     admin: Engine
     migration_role: str
