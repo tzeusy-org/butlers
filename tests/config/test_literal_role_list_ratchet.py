@@ -18,10 +18,10 @@ Narrow, deliberate reader lists (a few named butlers) stay literal: they are
 exceptions the grant manifest will carry as explicit rows, not "everyone".
 
 ``_BASELINE`` freezes the existing sites per file and ``_FROZEN_TOTAL`` pins their sum,
-so the ratchet only shrinks: a new site fails, a removed site fails until its entry is
-lowered, and raising an entry needs a visible edit to the frozen total too. (A file
-swapping one site for another at the same count is not detected.) Source-only: parses
-Python, never imports revisions.
+so the ratchet only shrinks: a new site fails, a removed site fails until its entry and
+the total are lowered, and raising an entry needs a visible edit to the frozen total
+too. (A file swapping one site for another at the same count is not detected.)
+Source-only: parses Python, never imports revisions.
 """
 
 from __future__ import annotations
@@ -200,7 +200,9 @@ def test_baseline_only_shrinks() -> None:
     current = _current_sites()
     stale = {path: n for path, n in _BASELINE.items() if current.get(path, 0) < n}
     assert not stale, f"Lower or delete these _BASELINE entries to keep the ratchet tight: {stale}"
-    assert sum(_BASELINE.values()) <= _FROZEN_TOTAL, "_BASELINE grew past its frozen total"
+    assert sum(_BASELINE.values()) == _FROZEN_TOTAL, (
+        "_BASELINE and _FROZEN_TOTAL must move together"
+    )
 
 
 def test_detector_counts_every_fleet_spelling_but_not_narrow_lists() -> None:
