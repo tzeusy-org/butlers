@@ -1,0 +1,136 @@
+{{- /*
+Declared workload egress (RFC 0038 S7, bu-dhloi1.15). Source of truth:
+deploy/egress-profiles.toml, rendered to files/egress-profiles.json by
+`make egress-profiles`. With egressProfiles.enabled this replaces the
+<release>-tracker-egress policy: egress allow rules union, so any other egress
+policy selecting these pods would re-open what a profile leaves out.
+
+Every pod starts with no egress. Each rendered workload then gets exactly one
+policy from its own profile: cluster DNS, its declared chart peers and site peers,
+and, when it declares external hosts, the shared gateway on its own port (the port
+is the workload's identity at the gateway). A rendered workload without a profile,
+or with a held one, fails the render. The tracker stays unreachable because no
+profile can name it: site CIDRs are single /32s that may not be a tracker address.
+*/ -}}
+{{- if .Values.egressProfiles.enabled }}
+{{- if .Values.egressPolicy.enabled }}
+{{- fail "egressProfiles.enabled supersedes egressPolicy: set egressPolicy.enabled=false, or its additive 0.0.0.0/0 rule stays open beside the profiles" }}
+{{- end }}
+{{- $doc := .Files.Get "files/egress-profiles.json" | fromJson }}
+{{- if ne (toString $doc.schema) "butlers-egress-profiles/v1" }}
+{{- fail "files/egress-profiles.json is missing or not butlers-egress-profiles/v1: run `make egress-profiles`" }}
+{{- end }}
+{{- $profiles := $doc.workloads }}
+{{- $sites := .Values.egressProfiles.sites | default dict }}
+{{- $denied := .Values.trackerEgress.deniedCidrs | default list }}
+{{- $release := .Release.Name }}
+# Default-deny egress for every pod, including CronJobs and any future workload.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $release }}-default-deny-egress
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+{{- range $name := include "butlers.egressWorkloads" . | fromJsonArray }}
+{{- $p := get $profiles $name }}
+{{- if not $p }}
+{{- fail (printf "workload %s renders but deploy/egress-profiles.toml has no profile for it" $name) }}
+{{- end }}
+{{- if $p.held }}
+{{- fail (printf "workload %s has a held egress profile (%s): disable it before enabling egressProfiles" $name $p.held) }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $release }}-egress-{{ $name }}
+  labels:
+    {{- include "butlers.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" $ "component" $name) | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    {{- range $p.internal }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "butlers.selector" (dict "root" $ "component" .component) | nindent 14 }}
+      ports:
+        - {protocol: {{ .protocol }}, port: {{ int .port }}{{ if gt (int .end_port) (int .port) }}, endPort: {{ int .end_port }}{{ end }}}
+    {{- end }}
+    {{- range $p.sites }}
+    {{- $site := .site }}
+    {{- $loc := get $sites $site }}
+    {{- if not $loc }}
+    {{- if not .optional }}
+    {{- fail (printf "egressProfiles.sites.%s is required by workload %s: set its namespace or /32 cidr" $site $name) }}
+    {{- end }}
+    {{- else }}
+    {{- range $key, $_ := $loc }}
+    {{- if not (has $key (list "namespace" "podLabels" "cidr")) }}
+    {{- fail (printf "egressProfiles.sites.%s: unknown key %s" $site $key) }}
+    {{- end }}
+    {{- end }}
+    {{- if eq (hasKey $loc "namespace") (hasKey $loc "cidr") }}
+    {{- fail (printf "egressProfiles.sites.%s needs exactly one of namespace or cidr" $site) }}
+    {{- end }}
+    - to:
+        {{- if hasKey $loc "cidr" }}
+        {{- $cidr := toString $loc.cidr }}
+        {{- if or (hasKey $loc "podLabels") (not (regexMatch "^(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}/32$" $cidr)) }}
+        {{- fail (printf "egressProfiles.sites.%s.cidr must be one IPv4 /32 with no podLabels" $site) }}
+        {{- end }}
+        {{- if or (has $cidr $denied) (hasPrefix "169.254." $cidr) (hasPrefix "127." $cidr) (hasPrefix "0." $cidr) }}
+        {{- fail (printf "egressProfiles.sites.%s.cidr %s is a tracker, metadata, loopback or unspecified address" $site $cidr) }}
+        {{- end }}
+        - ipBlock:
+            cidr: {{ $cidr }}
+        {{- else }}
+        {{- $ns := toString $loc.namespace }}
+        {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $ns) }}
+        {{- fail (printf "egressProfiles.sites.%s.namespace must be one valid namespace name" $site) }}
+        {{- end }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns | quote }}
+          {{- with $loc.podLabels }}
+          podSelector:
+            matchLabels:
+              {{- range $k, $v := . }}
+              {{- if not (regexMatch "^[A-Za-z0-9][-A-Za-z0-9_./]*$" $k) }}
+              {{- fail (printf "egressProfiles.sites.%s.podLabels key %q is not a label key" $site $k) }}
+              {{- end }}
+              {{ $k }}: {{ $v | quote }}
+              {{- end }}
+          {{- end }}
+        {{- end }}
+      ports:
+        - {protocol: {{ .protocol }}, port: {{ int .port }}}
+    {{- end }}
+    {{- end }}
+    {{- if $p.gateway_port }}
+    # External hosts only through the shared gateway, on this workload's port.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "butlers.selector" (dict "root" $ "component" "egress-gateway") | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: {{ int $p.gateway_port }}}
+    {{- end }}
+{{- end }}
+{{- end }}

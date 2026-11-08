@@ -150,6 +150,9 @@ spec:
     spec:
       backoffLimit: 0
       template:
+        metadata:
+          labels:
+            {{- include "butlers.selector" (dict "root" . "component" "log-cleanup") | nindent 12 }}
         spec:
           restartPolicy: Never
           containers:

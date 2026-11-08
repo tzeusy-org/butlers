@@ -198,6 +198,43 @@ SHALL NOT admit any host beyond the compose firewall's allowlist.
 - **WHEN** `egressPolicy.enabled=true` with no allowlist and no explicit opt-out
 - **THEN** rendering fails with a message naming `egressPolicy.allowedCidrs`
 
+### Requirement: Declared Per-Workload Egress Profiles
+
+The repository SHALL declare each chart workload's egress in one reviewed file,
+`deploy/egress-profiles.toml` (RFC 0038 S7): exact chart peers and ports, site-located
+peers whose port the profile owns, and exact public `hostname:port` entries reachable
+only through the shared egress gateway on the workload's own gateway port. Egress SHALL
+widen only by a reviewed change to that file; no runtime widening path exists. The
+parser SHALL refuse IP literals, wildcards, private, cluster and tailnet names, unknown
+keys and a gateway port shared by two workloads. The chart's opt-in
+`egressProfiles.enabled` SHALL replace the tracker-egress policy with default-deny
+egress for every pod plus exactly one allow policy per workload, and SHALL be disabled
+by default.
+
+#### Scenario: Every pod has exactly one egress owner
+- **WHEN** the chart renders with `egressProfiles.enabled=true`
+- **THEN** every pod is selected by the default-deny egress policy and by exactly one
+  allow policy, its own workload's, and no tracker-egress policy renders
+
+#### Scenario: A rendered workload without a usable profile refuses
+- **WHEN** an enabled workload has no profile, has a held profile, or names a required
+  site peer the deployment does not locate
+- **THEN** rendering fails naming that workload or site
+
+#### Scenario: Profiles cannot coexist with the open egress rule
+- **WHEN** `egressProfiles.enabled=true` and `egressPolicy.enabled=true`
+- **THEN** rendering fails, because the additive public rule would stay open
+
+#### Scenario: Direct private and public destinations are denied
+- **WHEN** the chart renders with profiles enabled
+- **THEN** no pod's egress union admits the tracker, link-local metadata, private or
+  public addresses directly, and a workload reaches the gateway only on its own port
+
+#### Scenario: Stale rendering fails
+- **WHEN** `deploy/egress-profiles.toml` changes without re-rendering
+  `deploy/helm/butlers/files/egress-profiles.json`
+- **THEN** the profile tests fail and name `make egress-profiles`
+
 ## Source References
 - Non-Negotiable Rule 1 (User-federated: one user, one instance, full
   sovereignty) — protecting the owner's always-on personal-data deployment from
