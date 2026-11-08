@@ -423,7 +423,7 @@ def test_proposal_status_source_roundtrip_and_payload_free_catalog(manifest_prim
     from sqlalchemy.exc import IntegrityError
 
     from alembic import command
-    from butlers.migrations import _build_alembic_config
+    from butlers.migrations import _build_alembic_config, get_chain_head
 
     engine, _, _ = manifest_primary
     manifest = load_manifest()
@@ -554,15 +554,17 @@ def test_proposal_status_source_roundtrip_and_payload_free_catalog(manifest_prim
                 validate_catalog(conn, manifest)
     finally:
         command.upgrade(cfg, "relationship@head")
+    head = get_chain_head("relationship")
     with engine.connect() as conn:
         validate_catalog(conn, manifest)
         assert (
             conn.execute(
                 text(
-                    "SELECT version_num FROM relationship.alembic_version WHERE version_num='rel_041'"
-                )
+                    "SELECT version_num FROM relationship.alembic_version WHERE version_num=:head"
+                ),
+                {"head": head},
             ).scalar_one()
-            == "rel_041"
+            == head
         )
 
 
