@@ -22,6 +22,21 @@ The command performs no download or build. It refuses archive/context/patch/outp
 drift, extraction outside its temporary tree, and an existing output. Preparation
 receipts explicitly report `build_performed: false`. Retain source archives and
 original locks alongside the separately attested build inputs and artifact set.
+A vendor can also declare separately built artifact inputs. For
+[Gemini](gemini/README.md), first build the [Google GenAI SDK](js-genai/README.md),
+then copy its exact archive into the prepared source:
+
+```sh
+python scripts/runtime_clis/materialize_inputs.py \
+  --manifest deploy/runtime-clis/gemini/artifact-inputs.json \
+  --root /path/to/prepared/gemini-source \
+  --input genai-sdk=/path/to/google-genai-1.30.0.tgz \
+  --receipt /path/to/materialized.json
+```
+
+Missing, changed, undeclared, escaping and symlinked artifacts are refused.
+Existing differing files are preserved. Materialization performs no build and
+does not replace the source preparation receipt.
 A build requires the declared toolchain, target, full locked dependencies and
 native assets. Neither a prepared source tree nor a version smoke check proves
 that a native CLI operation uses the selected executor.

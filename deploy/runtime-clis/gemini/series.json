@@ -1,0 +1,59 @@
+{
+  "schema": "butlers.vendor-patch-series/v1",
+  "vendor": "gemini",
+  "version": "0.66.0",
+  "commit": "970413207732f5d4d8c50540c7fc359c44fdaaf2",
+  "archive": {
+    "url": "https://codeload.github.com/google-gemini/gemini-cli/tar.gz/970413207732f5d4d8c50540c7fc359c44fdaaf2",
+    "sha256": "4634ef7c864630816c541e1d387965519fa9cbfb868c46fa12821b3965d6434c",
+    "root": "gemini-cli-970413207732f5d4d8c50540c7fc359c44fdaaf2"
+  },
+  "patches": [
+    {
+      "path": "patches/001-dependency-closure.patch",
+      "sha256": "7bb2858d456ad4672bec0e72bb354fa398300f8105cfac7bc8f563833323c2bd",
+      "files": [
+        {
+          "path": "package-lock.json",
+          "before_sha256": "3f18a13687dac37ec0bfc689f35490959294994e5bcc550f77b7d7b6a7271949",
+          "after_sha256": "cf16ab51d45d03c924fcd1cb6c750eddc696b9353183bbcb302df5fb2597e0cb"
+        },
+        {
+          "path": "packages/core/package.json",
+          "before_sha256": "48a38b8ab899910bfa84f29833708aa0aac6bf3a1b995f3c48520dcacf91f349",
+          "after_sha256": "27c9bc4ed235f6b011db7cf08daf029539e41ca3755b7a5eae35969c8b174434"
+        }
+      ]
+    },
+    {
+      "path": "patches/002-terminal-http-auth-executor.patch",
+      "sha256": "9b851f3df99c53604b25ffe23e7661fdc9ce2027558f3f3742cc5f75ca6a9fb1",
+      "files": [
+        {
+          "path": "packages/core/src/code_assist/oauth2.ts",
+          "before_sha256": "a3f8c55ad885656ed62144fb74e3f737117f58606a98c095f5e96f0707d9fd68",
+          "after_sha256": "0aff56def814678eaf46f935188dee4ca0f8c1b401b73648920b6385509eccb6"
+        },
+        {
+          "path": "packages/core/src/utils/butlersEgress.ts",
+          "before_sha256": null,
+          "after_sha256": "c18a9d00ac0a4766aca736dc6e56c3f3b93c77e486b7be04b2a12b4b22817301"
+        },
+        {
+          "path": "packages/core/src/utils/fetch.ts",
+          "before_sha256": "862da72e03547902dd158f53524fd4afece35d5fbbd55cba1ad7194bae47a2a6",
+          "after_sha256": "68e9ecbf39ee1e9f4e987789bca504c77737c2253ae96953ab8e90708697bb6e"
+        },
+        {
+          "path": "packages/core/src/utils/undici-private.d.ts",
+          "before_sha256": null,
+          "after_sha256": "7151fafef798eb4c5da9235547c820dbf693f096d0f0d09778bb729aaa94442c"
+        }
+      ]
+    }
+  ],
+  "source_tree_sha256": "31e71c164814b9f58d00e8c527fcdb9f2e51de2f93a03bd6f32b4c04c06bc9fd",
+  "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches.",
+  "qualification": "Source replay excludes separately verified SDK build artifact. Stock npm ci and full workspace build accepted exact SDK artifact with original nested auth graph; native Gemini API-key configured-model turn succeeded. All native tools/auth modes and immutable image closure remain separate.",
+  "shared_executor_head": "318c33d665a67fdfb984e31333941b1bebdfa05e"
+}

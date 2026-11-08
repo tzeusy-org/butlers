@@ -1,0 +1,15 @@
+{
+  "schema": "butlers.vendor-build-inputs/v1",
+  "artifacts": [
+    {
+      "name": "genai-sdk",
+      "path": "vendor/google-genai-1.30.0.tgz",
+      "sha256": "90b6c717bb129da68ef1e386eb85519331ce4405a2f00fb50a72fc53b418dba5",
+      "mode": 420,
+      "integrity": "sha512-XTJCx/k+l7z5qDyIyFM70YAe8jyyJ8x8a2FhKvEmwWyAypbqyjbx+atpBtiNYxLmcEulYr+pbgL662JmOvdtNA==",
+      "source_series": "../js-genai/series.json",
+      "source_series_sha256": "8e1aa9b4c4e60cb92562a1efa6ec9061d52c8bdcb246d8f0ed1ce129cfa4c486",
+      "source_tree_sha256": "806d397085acaaa39677f9607d947332d5f982da74f1439f948b24be75000b52"
+    }
+  ]
+}
