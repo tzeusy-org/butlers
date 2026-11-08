@@ -16,6 +16,8 @@ import threading
 from collections import defaultdict
 from typing import Any
 
+from butlers.core import session_timing
+
 MANUAL_DAY_CLOSE_TRIGGER_PREFIX = "api:day_close_refresh:"
 
 _runtime_session_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -304,6 +306,7 @@ def capture_tool_call(
 
     with _capture_lock:
         _captured_tool_calls[session_id].append(record)
+    session_timing.mark_tool_done(session_id)
 
 
 def consume_runtime_session_tool_calls(session_id: str) -> list[dict[str, Any]]:

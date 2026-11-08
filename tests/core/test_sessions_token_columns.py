@@ -156,3 +156,79 @@ class TestSessionTokenColumns:
         model_stats = summary["by_model"]["claude-sonnet-4-6"]
         assert model_stats["cached_input_tokens"] == 40_000
         assert model_stats["cache_creation_tokens"] == 8_000
+
+
+class TestSessionStageTimings:
+    """bu-dhloi1.180: content-free stage timings land in sessions.stage_timings."""
+
+    async def test_column_exists_and_roundtrips_through_session_complete(
+        self, pool_with_migrations
+    ):
+        from butlers.core import session_timing
+
+        async with pool_with_migrations.acquire() as conn:
+            col = await conn.fetchrow(
+                """
+                SELECT data_type, is_nullable FROM information_schema.columns
+                WHERE table_name = 'sessions' AND column_name = 'stage_timings'
+                """
+            )
+        assert col["data_type"] == "jsonb"
+        assert col["is_nullable"] == "YES"
+
+        session_id = await session_create(
+            pool=pool_with_migrations,
+            prompt="timed",
+            trigger_source="external",
+            request_id=str(uuid.uuid4()),
+        )
+        session_timing._reset_for_tests()
+        session_timing.begin(str(session_id), origin=0.0, now=lambda: 1.5)
+        session_timing.mark(str(session_id), "invoke_start_ms")
+        session_timing.note_tool_surface(str(session_id), tool_count=3, schema_bytes=400)
+
+        await session_complete(
+            pool_with_migrations,
+            session_id,
+            output="done",
+            tool_calls=[],
+            duration_ms=9,
+            success=True,
+        )
+
+        async with pool_with_migrations.acquire() as conn:
+            raw = await conn.fetchval(
+                "SELECT stage_timings FROM sessions WHERE id = $1", session_id
+            )
+        import json
+
+        stored = json.loads(raw) if isinstance(raw, str) else raw
+        assert stored == {
+            "invoke_start_ms": 1500,
+            "total_ms": 1500,
+            "tool_surface": {"tool_count": 3, "schema_bytes": 400, "schema_tokens_est": 100},
+        }
+
+    async def test_session_without_clock_has_null_timings(self, pool_with_migrations):
+        from butlers.core import session_timing
+
+        session_timing._reset_for_tests()
+        session_id = await session_create(
+            pool=pool_with_migrations,
+            prompt="untimed",
+            trigger_source="external",
+            request_id=str(uuid.uuid4()),
+        )
+        await session_complete(
+            pool_with_migrations,
+            session_id,
+            output=None,
+            tool_calls=[],
+            duration_ms=1,
+            success=False,
+        )
+        async with pool_with_migrations.acquire() as conn:
+            raw = await conn.fetchval(
+                "SELECT stage_timings FROM sessions WHERE id = $1", session_id
+            )
+        assert raw is None

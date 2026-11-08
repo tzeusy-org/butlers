@@ -121,3 +121,38 @@ async def test_session_create_invalid_trigger_source_raises(trigger_source: str)
             trigger_source=trigger_source,
             request_id=str(uuid.uuid4()),
         )
+
+
+async def test_session_complete_persists_live_stage_timings_and_ends_the_clock() -> None:
+    """The row is completed with the session's stage timings, content-free (bu-dhloi1.180)."""
+    from butlers.core import session_timing
+    from butlers.core.sessions import session_complete
+
+    session_timing._reset_for_tests()
+    sid = uuid.uuid4()
+    session_timing.begin(str(sid), origin=0.0, now=lambda: 2.0)
+    session_timing.mark(str(sid), "invoke_start_ms")
+    pool = fake_pool(fetchrow={"id": sid, "model": "m"}, execute="INSERT 0 1")
+
+    await session_complete(
+        pool, sid, output="SECRET-OUTPUT", tool_calls=[], duration_ms=5, success=True
+    )
+
+    params = pool.fetchrow.await_args.args[1:]
+    stage_timings = params[-1]
+    assert stage_timings == {"invoke_start_ms": 2000, "total_ms": 2000}
+    assert "SECRET" not in str(stage_timings)
+    assert session_timing.snapshot(str(sid)) is None
+
+
+async def test_session_complete_without_a_clock_writes_null_not_a_guess() -> None:
+    from butlers.core import session_timing
+    from butlers.core.sessions import session_complete
+
+    session_timing._reset_for_tests()
+    sid = uuid.uuid4()
+    pool = fake_pool(fetchrow={"id": sid, "model": "m"}, execute="INSERT 0 1")
+
+    await session_complete(pool, sid, output=None, tool_calls=[], duration_ms=5, success=False)
+
+    assert pool.fetchrow.await_args.args[-1] is None

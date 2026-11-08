@@ -124,3 +124,24 @@ def test_current_runtime_butler_name_roundtrip():
         reset_current_runtime_butler_name(token)
 
     assert get_current_runtime_butler_name() is None
+
+
+def test_capture_marks_tool_done_stage_for_the_current_session():
+    """Each captured tool call advances the session's first/last tool-done stages."""
+    from butlers.core import session_timing
+
+    session_timing._reset_for_tests()
+    session_timing.begin("sess-timing", origin=0.0)
+    ensure_runtime_session_capture("sess-timing")
+    token = set_current_runtime_session_id("sess-timing")
+    try:
+        capture_tool_call(tool_name="notify", module_name="core", input_payload={"k": "v"})
+    finally:
+        reset_current_runtime_session_id(token)
+
+    stages = session_timing.finish("sess-timing")
+    consume_runtime_session_tool_calls("sess-timing")
+
+    assert isinstance(stages["first_tool_done_ms"], int)
+    assert stages["last_tool_done_ms"] >= stages["first_tool_done_ms"]
+    assert "k" not in str(stages) and "notify" not in str(stages)

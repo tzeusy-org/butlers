@@ -869,6 +869,7 @@ async def _repoint_facts_on_pool(
 async def _retract_facts_on_conn(
     conn: Any,
     entity_uuid: uuid.UUID,
+    relation: str = "facts",
 ) -> dict[str, int]:
     """Retract every active ``facts`` row referencing *entity_uuid* on a connection.
 
@@ -883,29 +884,54 @@ async def _retract_facts_on_conn(
     The caller owns the surrounding transaction so this runs atomically with the
     ``relationship.entity_facts`` retraction and the entity tombstone.
 
+    Each retracted row's ``public.entity_graph_edges`` projection is deleted in the same
+    statement, as every other fact retraction does, so no edge outlives its source fact.
+    *relation* names the ``facts`` table; the default resolves through the connection's
+    search path.
+
     Returns a dict with ``facts_retracted`` and ``edge_facts_retracted`` counts.
     """
     # Subject-side facts (entity_id) — gifts/loans/interactions/notes/life-events.
     # Includes 'fading' facts: they are still live (not yet superseded/expired/
     # retracted) and must be retracted along with 'active' ones, or they would
     # be left dangling on the now-tombstoned entity.
-    subject_result = await conn.execute(
-        "UPDATE facts SET validity = 'retracted' "
-        "WHERE entity_id = $1 AND validity IN ('active', 'fading')",
-        entity_uuid,
-    )
-
+    subject_count = await _retract_facts_where(conn, relation, "entity_id", entity_uuid)
     # Edge facts (object_entity_id) — e.g. works_at/friend_of pointing AT the entity.
-    object_result = await conn.execute(
-        "UPDATE facts SET validity = 'retracted' "
-        "WHERE object_entity_id = $1 AND validity IN ('active', 'fading')",
+    object_count = await _retract_facts_where(conn, relation, "object_entity_id", entity_uuid)
+    return {"facts_retracted": subject_count, "edge_facts_retracted": object_count}
+
+
+async def _retract_facts_where(
+    conn: Any, relation: str, column: str, entity_uuid: uuid.UUID
+) -> int:
+    """Retract the live facts whose *column* is *entity_uuid*, with their projections.
+
+    One statement, so the retraction and its projection invalidation commit together on
+    a pool or a connection. ``public.invalidate_memory_projection`` is the one
+    disownment boundary every other retraction uses: it stales the facts'
+    ``memory_catalog`` rows and deletes their graph edges, keyed by the schema that
+    owns each row, which ``tableoid`` names whether *relation* is qualified or not.
+    """
+    return await conn.fetchval(
+        f"""
+        WITH retracted AS (
+            UPDATE {relation} SET validity = 'retracted'
+            WHERE {column} = $1 AND validity IN ('active', 'fading')
+            RETURNING id, tableoid
+        ), invalidated AS (
+            SELECT public.invalidate_memory_projection(
+                n.nspname, 'facts', array_agg(r.id), now(), TRUE, FALSE
+            )
+            FROM retracted AS r
+            JOIN pg_catalog.pg_class AS c ON c.oid = r.tableoid
+            JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+            GROUP BY n.nspname
+        )
+        SELECT (SELECT count(*) FROM retracted) AS retracted,
+               (SELECT count(*) FROM invalidated) AS schemas
+        """,
         entity_uuid,
     )
-
-    return {
-        "facts_retracted": _parse_rowcount(subject_result),
-        "edge_facts_retracted": _parse_rowcount(object_result),
-    }
 
 
 async def _unlink_contacts_on_conn(conn: Any, entity_uuid: uuid.UUID) -> int:

@@ -461,3 +461,58 @@ def test_unusable_subject_or_link_falls_back_to_the_generic_card(extra: dict[str
     text, markup = telegram_bot_module._retracted_card({"presentation_id": _STALE_ID, **extra})
     assert text == telegram_bot_module._OWNER_DELIVERY_RETRACTED_TEXT
     assert markup is None
+
+
+async def test_tap_whose_approved_send_failed_shows_a_failed_card_not_approved(
+    owner_resolver: AsyncMock,
+) -> None:
+    """bu-dhloi1.184: an approved send the provider rejected is never an Approved card."""
+    token, _ = mint_token()
+    http = _Http(
+        _response(
+            body={
+                "data": {
+                    "status": "approved",
+                    "execution_failure": {
+                        "code": "provider_rejected",
+                        "label": "ignored: card prose is local",
+                    },
+                }
+            }
+        ),
+        [],
+    )
+    connector = _connector()
+    connector._http_client = http  # type: ignore[assignment]
+
+    await connector._process_update(_update(token))
+
+    texts = [b["text"] for b in http.telegram("editMessageText")]
+    assert texts == [
+        "⚠️ Approved, but the send failed (the provider rejected it). "
+        "Open the dashboard for details."
+    ]
+
+
+async def test_failed_card_text_ignores_an_unknown_failure_code(
+    owner_resolver: AsyncMock,
+) -> None:
+    token, _ = mint_token()
+    http = _Http(
+        _response(
+            body={
+                "data": {
+                    "status": "executed",
+                    "execution_failure": {"code": "chat_id='@Butlerly' not found"},
+                }
+            }
+        ),
+        [],
+    )
+    connector = _connector()
+    connector._http_client = http  # type: ignore[assignment]
+
+    await connector._process_update(_update(token))
+
+    texts = [b["text"] for b in http.telegram("editMessageText")]
+    assert texts == ["⚠️ Approved, but the send failed. Open the dashboard for details."]

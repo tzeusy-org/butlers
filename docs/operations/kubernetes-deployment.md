@@ -145,7 +145,8 @@ ingress is the union of the policies selecting a pod, so a deny cannot subtract 
 
 | Policy | Destination | Source and port |
 | --- | --- | --- |
-| `butlers-namespace-ingress` | Every pod without a narrower policy, including daemons | Pods in the namespace, any port |
+| `butlers-namespace-ingress` | Every pod without a narrower policy | Pods in the namespace, any port |
+| `butlers-daemon-ingress` | `butlers-up` (every daemon MCP port) | Dashboard API, `butlers-control` and `butlers-up` on every daemon port; connectors on Switchboard's 41100 when it is cohosted; connectors with `waitForHealthRoutes` on Health's 41103 |
 | `butlers-host-ingress` | Dashboard API, frontend, OwnTracks | Node and namespace pods; metrics port from the scraper namespace |
 | `butlers-metrics-ingress` | Other connectors with a metrics sidecar | Scraper namespace, metrics port only |
 | `butlers-control-ingress` | `butlers-control` | Namespace pods on 41100; session-host and control health on 41199 |
@@ -159,6 +160,20 @@ still pass, `butlers-up` first because its `httpGet` probes take every daemon do
 Helm render does not prove CNI enforcement. Kubernetes exempts traffic from a pod's own node, which
 is what lets kubelet probes through. The same exemption lets host processes and `hostNetwork` pods
 reach daemon ports, so these policies do not limit anything already running on the node.
+
+Daemon MCP endpoints have no caller authentication, and `trigger` (like `route.execute`) starts
+a real session, so `butlers-daemon-ingress` is the only in-cluster boundary in front of them. It
+stops a namespace pod with no MCP client of a daemon (frontend, CronJobs, an ad-hoc debug pod)
+and limits a compromised connector to Switchboard's ingest port. It does not stop:
+
+- `kubectl port-forward` or `kubectl exec`: the kubelet connects inside the pod's network
+  namespace, where no NetworkPolicy applies. Whoever holds `pods/portforward` or `pods/exec` in
+  the namespace can call any daemon tool; keep those verbs to operators.
+- Processes on the node and `hostNetwork` pods (the node exemption above).
+- The allowed callers themselves. The dashboard API enforces owner auth on its own routes, but a
+  compromise of it, `butlers-control` or a daemon reaches every daemon port.
+- LLM sessions spawned inside `butlers-up`, which reach every daemon over loopback. RFC 0038's
+  session host and broker-signed assertions replace that boundary.
 
 ## Notification metadata repair evidence
 

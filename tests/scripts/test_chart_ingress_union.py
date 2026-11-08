@@ -26,8 +26,19 @@ _NAMESPACE = {"dev": "butlers-dev", "prod": "butlers"}
 _MONITORING_NAMESPACE = "lgtm"
 _METRICS_PORT = 9464
 _NODE_SOURCE = "10.42.0.1"
-_NARROWER_COMPONENTS = {"dashboard-api", "frontend", "connector-owntracks", "butlers-control"}
+_NARROWER_COMPONENTS = {
+    "dashboard-api",
+    "frontend",
+    "connector-owntracks",
+    "butlers-control",
+    "butlers-up",
+}
 _HOST_COMPONENTS = {"dashboard-api", "frontend", "connector-owntracks"}
+# Daemons serve MCP without caller authentication (bu-dhloi1.187), so only these
+# callers may reach butlers-up: every port for the dashboard API, Switchboard and
+# the cohosted daemons, and connector pods for the ports they name.
+_DAEMON_CALLERS = {"dashboard-api", "butlers-up", "butlers-control"}
+_HEALTH_PORT = 41103
 _CONTROL_RULES = [
     {"from": [{"podSelector": {}}], "ports": [{"protocol": "TCP", "port": 41100}]},
     {
@@ -187,6 +198,8 @@ def _peer_offence(rule: dict, peer: dict, labels: dict[str, str]) -> str | None:
     component = labels.get("app.kubernetes.io/component")
     if component == "butlers-control" and rule not in _CONTROL_RULES:
         return "not a reviewed butlers-control rule"
+    if component == "butlers-up" and set(peer) == {"podSelector"}:
+        return _daemon_peer_offence(rule, peer["podSelector"])
     if "ipBlock" in peer:
         if peer != {"ipBlock": {"cidr": f"{_NODE_SOURCE}/32"}}:
             return "ipBlock other than the node's address"
@@ -200,6 +213,34 @@ def _peer_offence(rule: dict, peer: dict, labels: dict[str, str]) -> str | None:
         scraped = labels.get("butlers.io/connector-metrics") == "true"
         return None if scraped or component in _HOST_COMPONENTS else "scraper on an unscraped pod"
     return None
+
+
+def _daemon_peer_offence(rule: dict, selector: dict) -> str | None:
+    """A namespace pod reaching butlers-up must be a named caller on explicit ports."""
+    ports = rule.get("ports") or []
+    numbers = [item.get("port") for item in ports]
+    if not ports or any(
+        set(item) != {"protocol", "port"} or not isinstance(item["port"], int) for item in ports
+    ):
+        return "daemon rule without explicit single ports"
+    if set(selector) == {"matchLabels"} and set(selector["matchLabels"]) == {
+        "app.kubernetes.io/component"
+    }:
+        caller = selector["matchLabels"]["app.kubernetes.io/component"]
+        if caller in _DAEMON_CALLERS and all(41100 <= n <= 41112 for n in numbers):
+            return None
+        return f"{caller} is not a reviewed daemon caller"
+    if set(selector) == {"matchExpressions"} and len(selector["matchExpressions"]) == 1:
+        expression = selector["matchExpressions"][0]
+        connectors_only = (
+            expression.get("key") == "app.kubernetes.io/component"
+            and expression.get("operator") == "In"
+            and expression.get("values")
+            and all(str(value).startswith("connector-") for value in expression["values"])
+        )
+        if connectors_only and numbers in ([41100], [_HEALTH_PORT]):
+            return None
+    return "not a reviewed daemon caller selector"
 
 
 def _offenders(docs: list[dict], env: str) -> list[str]:
@@ -287,6 +328,65 @@ def test_reviewed_flows_keep_working():
     assert not admitted("butlers-up", monitor, _METRICS_PORT)
 
 
+def _component(name: str) -> dict[str, str]:
+    return {"app.kubernetes.io/instance": "butlers", "app.kubernetes.io/component": name}
+
+
+@pytest.mark.parametrize("env", ["dev", "prod"])
+def test_only_named_callers_reach_daemon_mcp_ports_cohosted_switchboard(env):
+    """bu-dhloi1.187: any namespace pod could call `trigger` on any butler."""
+    docs = _docs(env)
+    ns = _NAMESPACE[env]
+    daemons = _pod_named(docs, "butlers-up")
+
+    def admitted(component: str, port: int) -> bool:
+        return bool(_admitting(docs, daemons, Source(ns, _component(component)), port, ns))
+
+    # Switchboard (41100) is cohosted: dashboard and connectors reach it.
+    for caller in ("dashboard-api", "butlers-up"):
+        assert all(admitted(caller, port) for port in range(41100, 41113)), caller
+    assert admitted("connector-gmail", 41100)
+    assert admitted("connector-owntracks", 41100)
+    # A connector reaches no domain butler, so no domain `trigger`.
+    assert not admitted("connector-gmail", 41101)
+    assert not admitted("connector-gmail", _HEALTH_PORT)
+    assert admitted("connector-google-health", _HEALTH_PORT)
+    assert not admitted("connector-google-health", 41101)
+    # Pods with no MCP client reach no daemon port at all.
+    for other in ("frontend", "backup", "log-cleanup", "unlabelled-debug-pod"):
+        assert not any(admitted(other, port) for port in range(41100, 41113)), other
+
+
+def test_only_named_callers_reach_daemon_mcp_ports_separate_switchboard():
+    docs = _docs("dev", "butlersControl.enabled=true", "sessionHost.enabled=true")
+    ns = _NAMESPACE["dev"]
+    daemons = _pod_named(docs, "butlers-up")
+
+    def admitted(component: str, port: int) -> bool:
+        return bool(_admitting(docs, daemons, Source(ns, _component(component)), port, ns))
+
+    for caller in ("dashboard-api", "butlers-up", "butlers-control"):
+        assert all(admitted(caller, port) for port in range(41101, 41113)), caller
+    # Connectors talk to Switchboard on butlers-control, never to butlers-up MCP.
+    assert not admitted("connector-gmail", 41100)
+    assert not admitted("connector-gmail", 41101)
+    assert admitted("connector-google-health", _HEALTH_PORT)
+    # Sessions reach the control plane only (RFC 0038 D3), never a daemon.
+    assert not any(admitted("session-host", port) for port in range(41100, 41113))
+
+
+def test_a_namespace_wide_allow_on_the_daemons_fails():
+    found = _offenders([*_docs("dev"), _widening({"podSelector": {}})], "dev")
+    assert found == [
+        "widening: {'podSelector': {}} -> butlers-up (butlers-up) all ports: "
+        "daemon rule without explicit single ports"
+    ]
+    rule_ports = [{"protocol": "TCP", "port": 41101}]
+    frontend = {"podSelector": {"matchLabels": {"app.kubernetes.io/component": "frontend"}}}
+    found = _offenders([*_docs("dev"), _widening(frontend, rule_ports)], "dev")
+    assert len(found) == 1 and "frontend is not a reviewed daemon caller" in found[0]
+
+
 def test_control_session_reachability_is_unchanged():
     docs = _docs("dev", "butlersControl.enabled=true")
     ns = _NAMESPACE["dev"]
@@ -314,7 +414,12 @@ def test_session_host_admits_no_ingress_from_anything():
 
 def test_no_new_allow_policy_selects_a_pod_with_a_narrower_reviewed_policy():
     docs = _docs("dev", "butlersControl.enabled=true")
-    reviewed = {"butlers-host-ingress", "butlers-control-ingress", "butlers-default-deny-ingress"}
+    reviewed = {
+        "butlers-host-ingress",
+        "butlers-control-ingress",
+        "butlers-daemon-ingress",
+        "butlers-default-deny-ingress",
+    }
     for policy in _ingress_policies(docs):
         if policy["metadata"]["name"] in reviewed:
             continue

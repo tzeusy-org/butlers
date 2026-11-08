@@ -5686,10 +5686,14 @@ async def forget_entity(
        so no CRM lookup can reach the tombstoned entity (bu-j820n.2).
     4. Tombstones the ``public.entities`` row by setting
        ``metadata->>'tombstone' = 'true'``.
+    5. Retracts the entity's memory facts in every other butler schema, after the
+       tombstone commits (bu-y66o00.16).
 
-    All steps execute inside a single database transaction so the operation is
-    atomic: either every reference is retracted/cleared and the entity is
-    tombstoned, or nothing changes.
+    Every retraction also deletes the retracted fact's ``public.entity_graph_edges``
+    row. Steps 1-4 execute inside a single database transaction: either every
+    reference is retracted/cleared and the entity is tombstoned, or nothing changes.
+    Step 5 cannot join it, since each butler's facts sit behind its own pool. If a
+    pool fails, the route returns 503 and a retry completes the forget.
 
     **Authorization**: owner-only gate (Amendment 12a) — returns HTTP 403 with
     ``{"code": "owner_required"}`` when no owner entity is registered.
@@ -5764,6 +5768,12 @@ async def forget_entity(
                 """,
                 entity_id,
             )
+    # Every other butler's memory facts sit behind its own pool and role, so they cannot
+    # share that transaction. They follow the tombstone: a merge or rebind already refuses
+    # the entity, and a retry repeats every step, so a partial run is completed, not lost.
+    from butlers.api.routers.memory import retract_entity_facts_everywhere
+
+    await retract_entity_facts_everywhere(db, entity_id, operation="Entity forget")
     return Response(status_code=204)
 
 

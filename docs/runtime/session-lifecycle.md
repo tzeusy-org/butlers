@@ -39,6 +39,30 @@ calls, duration, success/error, cost, and token counts, and sets `completed_at`.
 stripped from text fields first, because PostgreSQL text columns reject them. An unknown
 `session_id` raises `ValueError`.
 
+### Stage timings
+
+`session_complete()` also writes `sessions.stage_timings` (JSONB, nullable, `core_321`), a
+content-free breakdown of where the time went. `src/butlers/core/session_timing.py` keeps one
+in-process clock per session, started at the spawner's origin, and records millisecond offsets
+from it. Counts and sizes only, never prompts, messages, tool arguments or results.
+
+| Key | Meaning |
+| --- | --- |
+| `row_created_ms` | session row inserted (before it: prompt and context composition) |
+| `invoke_start_ms` | runtime adapter about to be invoked (setup done) |
+| `first_mcp_request_ms` | the spawned CLI's first request to the butler MCP endpoint (spawn plus CLI startup, as seen by the daemon) |
+| `first_tool_done_ms`, `last_tool_done_ms` | daemon-side completion of the first and last MCP tool call |
+| `invoke_end_ms` | adapter returned or raised (the last attempt, after any failover) |
+| `total_ms` | taken when the row is completed |
+| `adapter` | whitelisted integers the adapter measured itself (`spawn_latency_ms`, `attempt_count`, `mcp_server_count`) |
+| `tool_surface` | `tool_count`, `schema_bytes` and `schema_tokens_est` (bytes / 4) of the butler MCP `tools/list` |
+
+A stage the process did not observe is absent, and the column is NULL when the clock never ran
+(for example a session completed by another process). First-model-token time is not observable
+from the daemon and is not recorded. `duration_ms` is measured from the spawner's origin, which
+precedes the row insert, so `completed_at - started_at` is shorter than `duration_ms` by about
+`row_created_ms`.
+
 ## Healing Fingerprint
 
 When an error is fingerprinted for centralized QA tracking, `session_set_healing_fingerprint()` writes a 64-character hex SHA-256 fingerprint to the session row. This is a best-effort update that enables deduplication of healing attempts for identical failure patterns.

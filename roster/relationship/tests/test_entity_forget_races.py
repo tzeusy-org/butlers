@@ -109,9 +109,9 @@ class _PausingPool:
     def __getattr__(self, name: str) -> object:
         return getattr(self._pool, name)
 
-    async def execute(self, query: str, *args: object) -> str:
-        result = await self._pool.execute(query, *args)
-        if "validity = 'retracted'" in query:
+    async def fetchval(self, query: str, *args: object) -> object:
+        result = await self._pool.fetchval(query, *args)
+        if "SET validity = 'retracted'" in query:
             self.retired.set()
             await self.resume.wait()
         return result

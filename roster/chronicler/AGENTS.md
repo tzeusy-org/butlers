@@ -895,6 +895,12 @@ can leave a just-redacted episode public until the next sweep.
 Legacy calendar payloads without `title_source` infer a summary only from a nonblank string
 using the adapter's Python-whitespace semantics. Explicit summary provenance and owner-corrected
 titles retain precedence; location/description fallbacks stay private.
+The adapter writes `title_source = 'unattended'` for a summary on an event the owner neither
+organised nor was invited to: neither the organizer nor any attendee email is the synced account's
+`calendar_sources.metadata.account_email` (missing account: withheld). Do not use Google's attendee
+`self` or the calendar id: both name the calendar the event appears on, and a subscribed colleague's
+calendar is synced too. Butler-written events count as the owner's. The view publishes only
+`'summary'`, so an unattended title stays private.
 
 ## Situational blocks and anchors (bu-r3fmja)
 
