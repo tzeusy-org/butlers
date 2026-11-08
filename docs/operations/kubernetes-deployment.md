@@ -508,10 +508,38 @@ selected by that decision. Any later posture change needs its own authorization
 and current compatibility evidence; this documentation update authorizes no
 re-probe, kernel change, provisioning or rollout.
 
-### Egress gap
+### Egress policy (opt-in)
 
-The compose egress firewall (`scripts/egress-firewall.sh`) has no equivalent yet.
-It only ran when the launcher had passwordless sudo. The host-ingress policy
-above does not supply that parity; the separate tracker-egress policy does not
-provide the general private-network allowlist either. Egress parity remains
-tracked in `bu-viat6h.6`.
+`egressPolicy.enabled` (default `false`) gives pods the egress shape of
+`scripts/egress-firewall.sh`. It folds into the one `<release>-tracker-egress`
+NetworkPolicy, because NetworkPolicies are additive and a second policy selecting
+the same pods could not narrow it. With the flag off, rendered manifests are
+byte-identical to the previous chart.
+
+When enabled, every pod may reach:
+
+- in-cluster pods (`namespaceSelector: {}`) and DNS (kube-system, port 53);
+- each CIDR in `egressPolicy.allowedCidrs`;
+- the public internet (`0.0.0.0/0`), except the tracker CIDRs
+  (`trackerEgress.deniedCidrs`, when that deny is on) and `egressPolicy.privateCidrs`
+  (10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16).
+
+To allow a LAN or tailnet host (telemetry, Postgres, ollama, storage, Home
+Assistant), add its `/32` to `allowedCidrs`. Never commit real addresses:
+`scripts/k8s/site-helm-args.sh` maps the compose input `ALLOWED_TAILNET_HOSTS`
+(space-separated IPs) onto `egressPolicy.allowedCidrs`. Rendering with the flag on
+and an empty allowlist fails unless `egressPolicy.allowNoAllowlist=true`. A pod
+that must reach a private address that is not a pod, such as the node-hosted
+Kubernetes API, needs that address allowlisted too.
+
+Rollback: set `egressPolicy.enabled=false` and `helm upgrade`. This confines a
+compromised pod from the LAN and tailnet; it does not change ingress. Pods are
+IPv4-only on k3s, so the IPv4 ranges are complete.
+
+Verify that the cluster enforces egress policy before trusting it. k3s embeds the
+kube-router network-policy controller unless it was started with
+`--disable-network-policy`. From a pod, a connection to a non-allowlisted private
+address must time out while an allowlisted host, a public host and DNS succeed.
+
+The policy is not evidence of a live probe or a production rollout. A dev smoke is
+recorded on `bu-viat6h.6`.

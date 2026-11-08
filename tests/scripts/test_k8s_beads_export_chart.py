@@ -134,3 +134,49 @@ def test_tracker_isolation_refuses_missing_site_cidrs() -> None:
     with pytest.raises(subprocess.CalledProcessError) as exc:
         _render("dev")
     assert "trackerEgress.deniedCidrs is required" in exc.value.stderr
+
+
+_PRIVATE = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16"]
+_ALLOW = [
+    "--set",
+    "egressPolicy.enabled=true",
+    "--set",
+    "egressPolicy.allowedCidrs={198.51.100.7/32}",
+]
+
+
+@needs_helm
+@pytest.mark.parametrize("env", ["dev", "prod"])
+def test_egress_policy_excludes_private_ranges_and_admits_the_allowlist(env: str) -> None:
+    docs = _render(env, *_SITE, *_ALLOW)
+    policies = [
+        d for d in docs if d["kind"] == "NetworkPolicy" and "Egress" in d["spec"]["policyTypes"]
+    ]
+    assert [p["metadata"]["name"] for p in policies] == ["butlers-tracker-egress"]
+    assert policies[0]["spec"]["podSelector"] == {}
+    egress = policies[0]["spec"]["egress"]
+    assert {"to": [{"namespaceSelector": {}}]} in egress
+    assert {"to": [{"ipBlock": {"cidr": "198.51.100.7/32"}}]} in egress
+    dns = [r for r in egress if r.get("ports")]
+    assert [p["port"] for p in dns[0]["ports"]] == [53, 53]
+    public = [r for r in egress if r["to"][0].get("ipBlock", {}).get("cidr") == "0.0.0.0/0"]
+    assert public[0]["to"][0]["ipBlock"]["except"] == ["192.0.2.1/32", "192.0.2.2/32", *_PRIVATE]
+
+
+@needs_helm
+def test_egress_policy_refuses_an_empty_allowlist_unless_opted_out() -> None:
+    with pytest.raises(subprocess.CalledProcessError) as exc:
+        _render("dev", *_SITE, "--set", "egressPolicy.enabled=true")
+    assert "egressPolicy.allowedCidrs is required" in exc.value.stderr
+    docs = _render(
+        "dev", *_SITE, "--set", "egressPolicy.enabled=true",
+        "--set", "egressPolicy.allowNoAllowlist=true",
+    )  # fmt: skip
+    assert ("NetworkPolicy", "butlers-tracker-egress") in _by_kind_name(docs)
+
+
+@needs_helm
+def test_egress_policy_renders_without_the_dolt_deny_in_prod() -> None:
+    names = _by_kind_name(_render("prod", *_ALLOW))
+    public = names[("NetworkPolicy", "butlers-tracker-egress")]["spec"]["egress"][-1]
+    assert public["to"][0]["ipBlock"]["except"] == _PRIVATE

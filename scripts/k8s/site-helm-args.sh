@@ -17,3 +17,9 @@ if [ -n "${BEADS_DOLT_SERVER_HOST:-}" ]; then
         | awk '{print $1 "/32"}' | sort -u | paste -sd, -)"
     [ -z "${_dolt_cidrs}" ] || printf '%s\n' "--set 'trackerEgress.deniedCidrs={${_dolt_cidrs}}'"
 fi
+# Hosts the opt-in egress policy (egressPolicy.enabled) still admits; same input as
+# scripts/egress-firewall.sh. Never committed: operators supply real addresses.
+if [ -n "${ALLOWED_TAILNET_HOSTS:-}" ]; then
+    _allowed_cidrs="$(printf '%s\n' ${ALLOWED_TAILNET_HOSTS} | awk '{print $1 "/32"}' | sort -u | paste -sd, -)"
+    printf '%s\n' "--set 'egressPolicy.allowedCidrs={${_allowed_cidrs}}'"
+fi

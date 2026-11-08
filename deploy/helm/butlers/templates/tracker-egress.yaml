@@ -1,6 +1,15 @@
-{{- if .Values.trackerEgress.enabled }}
-{{- if not .Values.trackerEgress.deniedCidrs }}
+{{- /*
+With egressPolicy.enabled this one policy also mirrors scripts/egress-firewall.sh: the
+private ranges are excluded from the public rule and each allowlisted CIDR is admitted
+explicitly. NetworkPolicies are additive, so a second egress policy selecting the same
+pods could not narrow this one; keep exactly one.
+*/ -}}
+{{- if or .Values.trackerEgress.enabled .Values.egressPolicy.enabled }}
+{{- if and .Values.trackerEgress.enabled (not .Values.trackerEgress.deniedCidrs) }}
 {{- fail "trackerEgress.deniedCidrs is required when trackerEgress.enabled (scripts/k8s/site-helm-args.sh resolves it)" }}
+{{- end }}
+{{- if and .Values.egressPolicy.enabled (not .Values.egressPolicy.allowedCidrs) (not .Values.egressPolicy.allowNoAllowlist) }}
+{{- fail "egressPolicy.allowedCidrs is required when egressPolicy.enabled; set egressPolicy.allowNoAllowlist=true only to deny every private address" }}
 {{- end }}
 # The retired bridge grants no pod an exception. Retain the existing IPv4-only
 # tracker boundary independently of all product features and credentials.
@@ -17,11 +26,30 @@ spec:
   egress:
     - to:
         - namespaceSelector: {}
+    {{- if .Values.egressPolicy.enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    {{- range .Values.egressPolicy.allowedCidrs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+    {{- end }}
+    {{- end }}
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
             except:
               {{- range .Values.trackerEgress.deniedCidrs }}
               - {{ . }}
+              {{- end }}
+              {{- if .Values.egressPolicy.enabled }}
+              {{- range .Values.egressPolicy.privateCidrs }}
+              - {{ . }}
+              {{- end }}
               {{- end }}
 {{- end }}
