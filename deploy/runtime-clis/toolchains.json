@@ -21,5 +21,15 @@
     "version": "10.9.9",
     "distribution": "bundled in the verified Node archive"
   },
-  "scope": "Public immutable toolchain artifacts; no builder/image/offline runtime closure or native operation success asserted."
+  "scope": "Public immutable toolchain artifacts; no builder/image/offline runtime closure or native operation success asserted.",
+  "uv": {
+    "version": "0.12.22",
+    "url": "https://files.pythonhosted.org/packages/7a/b0/4cceeef80da0e8627bf3afb628930d5ea8e857f9c2aacbcda8598a5b82aa/uv-0.12.22-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "filename": "uv-0.12.22-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "sha256": "680769ef701922dd93426b73476073411941f51ac46991a6e5c5a6efbf68a713",
+    "platform": "linux-x86_64-glibc",
+    "binary_sha256": "96e1603cb62aebb1a804fe9866a5708ee8bba4c39d07202ad29cf256a67366c3",
+    "metadata_url": "https://pypi.org/pypi/uv/0.12.22/json",
+    "metadata_sha256": "04855831ebff2b6338e2e48f194b8c4d00691107cfcdb63479a46363a9bbae5e"
+  }
 }

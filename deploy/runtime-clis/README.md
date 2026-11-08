@@ -51,3 +51,24 @@ avoid both Bun's built-in Undici shim and the upstream package root's global
 dispatcher initialization. Fresh-process controls verify that import boundary. Vendor integration,
 native operation coverage, immutable builder/assets, final sandbox manifests and
 offline image closure require their own artifact evidence.
+
+The pinned uv distribution is recorded in `toolchains.json`. Build separate
+production and development Python environments from the frozen lock with the
+requested extras, retaining their editable install of the intended `/app/src`.
+After the complete install, seal each environment with
+`scripts/runtime_clis/python_environment.py seal --environment <venv> --project <project>
+--manifest <output>`, adding its declared `--group` and `--extra` selections.
+The seal records project/lock hashes, interpreter identity, installed distribution
+metadata and `.pth` files. It records an already built environment; it does not
+replace uv’s frozen installation or establish artifact/image provenance.
+
+At startup, use `check` or `run` with the same environment, project and immutable
+manifest. `run ... -- <butlers arguments>` validates first and executes the
+installed CLI directly with isolated Python. It invokes neither uv nor an
+installer. A changed mounted project/lock, dependency inventory, interpreter or
+editable import target refuses startup; ordinary edits to the intended source
+remain visible. Rebuild or explicitly revalidate the selected complete closure
+offline before accepting changed dependency inputs. The trusted image digest
+binds package bytes; this startup metadata check is not a replacement for that
+image attestation. Production/dev image wiring and cold-cache startup each need
+separate execution evidence.
