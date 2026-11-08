@@ -705,7 +705,7 @@ BEGIN
         2)=ANY(__PRIVATE__)
            OR split_part(src, '.', 2) LIKE 'oauth_%' OR split_part(src,
         '.', 2) LIKE '%_tokens'
-           OR domain IS DISTINCT FROM CASE
+           OR domain IS DISTINCT FROM (CASE
                WHEN src='relationship.external_fact_proposals' THEN
         'proposals'
                WHEN split_part(src, '.', 1) IN ('general', 'lifestyle',
@@ -718,7 +718,7 @@ BEGIN
                WHEN split_part(src, '.', 1) IN ('travel', 'finance',
         'health') THEN
         split_part(src, '.', 1)
-               ELSE NULL END THEN
+               ELSE NULL END) THEN
             RAISE EXCEPTION 'applied manifest source/domain refused';
         END IF;
         previous:=src;
