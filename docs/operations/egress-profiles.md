@@ -117,6 +117,17 @@ change).
   absolute public IPv4 answer set, rejects the entire set if any address is forbidden,
   then dials a validated numeric address without resolving again. Duplicate authority,
   ambiguous framing, forwarding/identity headers and unsupported upgrades refuse.
+- **WebSockets:** the distinct `/_butlers/egress/v1/wss/<host>/<port>/<path>?<query>`
+  route accepts only an HTTP/1.1 GET with a valid version13 WebSocket handshake,
+  no HTTP body, and the same exact hop Host and destination binding. It forwards
+  the original key and offered subprotocols through gateway-owned verified TLS.
+  Before exposing101 it validates origin Upgrade, Connection, Accept and selected
+  subprotocol. Every300..399 refuses exactly as on the HTTPS route. Compression
+  extensions are deliberately not negotiated: compliant clients use ordinary
+  frames. Both directions validate masking, RSV/opcodes, canonical lengths,
+  fragmentation, incremental text UTF-8 and close controls. Valid frame bytes,
+  including masks, ping/pong and close reasons, pass unchanged. This is a framed
+  WebSocket execution route, with no generic upgraded byte-stream route.
 - **Response boundary:** h11 parses complete bounded origin headers before exposure.
   Every300..399 (including304 and same-origin redirects) returns a fixed empty403
   `X-Egress-Refusal: redirect_refused`, with no Location or redirect-target dial.
@@ -132,6 +143,12 @@ change).
   against the256MiB pod limit. Known Gmail25MiB/base64, voice20MiB and notification
   document50MiB limits fit; larger configurable/model/dependency transfers require
   separate compatibility closure. Busy gives503; DNS/dial failures502. No fallback.
+  WSS shares those admission, total-time, byte and cleanup limits, with a64MiB
+  message bound and16KiB payload reads rather than whole-frame buffering. Activity
+  in either direction keeps an otherwise quiet reader alive. A close is relayed
+  with at most10s for the opposite close; EOF, malformed frames, cancellation and
+  idle/total expiry stop and join both directions before releasing admission.
+  After101, failures close the connection and never inject an HTTP error into it.
 - **Privacy:** the gateway transiently receives approved request headers/query/body.
   It is a credential-bearing execution boundary when activated. Audit contains only
   validated origin/workload, closed verdict/reason, body byte counts and duration;
@@ -147,7 +164,7 @@ proxy behavior. No ambient proxy variable forwards into selected mode.
 ## Current limits
 
 - **Vendor/runtime compatibility is incomplete.** The Python request transport does
-  not prove the four pinned CLI/auth adapters, native WS, image dependency/plugin/model
+  not prove the four pinned CLI/auth adapters, native WS parity, image dependency/plugin/model
   closure, or actual per-workload CNI/principal/outage/cursor behavior. Those are required
   subsequent stages; no opaque TLS success or permanently held required caller replaces
   them. No real rollout/credential activation is authorized by source controls.

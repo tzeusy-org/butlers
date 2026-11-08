@@ -3,7 +3,8 @@
 The gateway receives allowed HTTP requests transiently. It derives origin Host
 and verified TLS identity from one exact profile destination, and refuses every
 redirect before exposing response headers. Paths, headers, bodies and exception
-text never enter audit logs. There is no CONNECT or opaque upgraded TCP route.
+text never enter audit logs. There is no CONNECT or opaque upgraded TCP route;
+the separate WSS route validates its handshake and bounded RFC6455 frames.
 """
 
 from __future__ import annotations
@@ -120,16 +121,19 @@ def _is_ip_literal(host: str) -> bool:
     return True
 
 
-def request_origin(request: h11.Request, route: Route) -> tuple[str, int, bytes]:
+def request_origin(
+    request: h11.Request, route: Route, *, websocket: bool = False
+) -> tuple[str, int, bytes]:
     """Validate the closed internal wire target; preserve origin path/query bytes."""
     if request.http_version != b"1.1":
         raise Refused("malformed_request", 400)
     if request.method not in {b"GET", b"HEAD", b"POST", b"PUT", b"PATCH", b"DELETE", b"OPTIONS"}:
         raise Refused("unsupported_method", 405)
+    prefix = b"/_butlers/egress/v1/wss/" if websocket else _PREFIX
     target = request.target
-    if not target.startswith(_PREFIX) or b"#" in target or b"\\" in target:
+    if not target.startswith(prefix) or b"#" in target or b"\\" in target:
         raise Refused("malformed_target", 400)
-    parts = target[len(_PREFIX) :].split(b"/", 2)
+    parts = target[len(prefix) :].split(b"/", 2)
     if len(parts) != 3:
         raise Refused("malformed_target", 400)
     try:
@@ -149,8 +153,16 @@ def request_origin(request: h11.Request, route: Route) -> tuple[str, int, bytes]
         raise Refused("host_header_mismatch")
     for name, value in headers:
         if (
-            (name in _HOP_HEADERS and name not in {b"connection", b"transfer-encoding"})
-            or (name == b"connection" and value.lower() != b"close")
+            (
+                name in _HOP_HEADERS
+                and name
+                not in (
+                    {b"connection", b"upgrade"}
+                    if websocket
+                    else {b"connection", b"transfer-encoding"}
+                )
+            )
+            or (name == b"connection" and value.lower() != (b"upgrade" if websocket else b"close"))
             or name == b"forwarded"
             or name.startswith((b"x-forwarded-", b"x-egress-", b"x-butlers-"))
         ):
@@ -420,7 +432,12 @@ async def handle_request(
             request = client.next_event()
             if not isinstance(request, h11.Request):
                 raise Refused("malformed_request", 400)
-            host, port, target = request_origin(request, route)
+            from butlers.egress import websocket as ws
+
+            is_websocket = request.target.startswith(ws.PREFIX)
+            host, port, target = request_origin(request, route, websocket=is_websocket)
+            if is_websocket:
+                ws.validate_request(request)
             try:
                 addresses = await asyncio.wait_for(resolve(host, port), _CONNECT_TIMEOUT_S)
             except (OSError, TimeoutError) as exc:
@@ -441,6 +458,28 @@ async def handle_request(
                     continue
             if upstream is None or origin_reader is None:
                 raise Refused("upstream_unreachable", 502)
+            if is_websocket:
+                handshake = await ws.handshake(origin_reader, upstream, request, host, port, target)
+                await _write(writer, handshake)
+                exposed = True
+
+                def uploaded(count):
+                    nonlocal up
+                    up += count
+                    if up > _UPLOAD_LIMIT:
+                        raise Refused("upload_limit", 400)
+
+                def downloaded(count):
+                    nonlocal down
+                    down += count
+                    if down > _DOWNLOAD_LIMIT:
+                        raise Refused("download_limit", 502)
+
+                await ws.relay(
+                    reader, writer, origin_reader, upstream, upload=uploaded, download=downloaded
+                )
+                verdict, reason = "allowed", "closed"
+                return
             origin = h11.Connection(h11.CLIENT, max_incomplete_event_size=_HEAD_LIMIT)
             headers = [
                 (k, v) for k, v in request.headers if k not in _HOP_HEADERS | {b"host", b"expect"}

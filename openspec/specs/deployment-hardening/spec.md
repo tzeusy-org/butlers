@@ -241,6 +241,38 @@ by default.
   `deploy/helm/butlers/files/egress-profiles.json`
 - **THEN** the profile tests fail and name `make egress-profiles`
 
+### Requirement: Gateway request-aware secure transport
+
+The selected shared gateway SHALL execute explicit HTTPS requests and WSS
+handshakes on the profiled workload listener. Both routes SHALL bind the approved
+origin hostname/port to outbound Host and verified TLS SNI, validate the entire
+public IPv4 resolution set before dialing numeric addresses, and refuse every
+300..399 before exposing origin response metadata or content. No CONNECT,
+arbitrary upgraded byte stream, direct fallback or model-supplied identity is
+permitted. Existing HTTP/SSE behavior SHALL remain unchanged.
+
+#### Scenario: A valid profiled WebSocket retains its logical origin and protocol
+- **WHEN** a profiled workload uses the explicit WSS route with a valid GET
+  handshake, original key and offered subprotocols
+- **THEN** the gateway validates the origin101 Upgrade, Connection, Accept and
+  selected subprotocol before exposing101, and relays valid RFC6455 frame bytes
+  with masking, fragmentation, UTF-8, control and finite message/byte validation
+- **AND** no compression extension is negotiated and no generic TCP route opens
+
+#### Scenario: WebSocket refusals do not expose redirect or invalid handshake content
+- **WHEN** the origin returns any300..399, an invalid101, or an unoffered
+  subprotocol or extension
+- **THEN** the gateway refuses before exposing101, Location or origin content
+  and never dials a redirect destination
+
+#### Scenario: WebSocket lifetime retains bounded cleanup and admission
+- **WHEN** either side closes, cancels, sends an invalid frame, or exceeds an
+  inactivity, total-time, message or byte limit
+- **THEN** both directions and owned writers settle before admission releases,
+  with finite close time and content-free audit causes
+- **AND** activity in either direction keeps a healthy quiet reader alive,
+  payload reads stay bounded, and no HTTP error is injected after101
+
 ## Source References
 - Non-Negotiable Rule 1 (User-federated: one user, one instance, full
   sovereignty) — protecting the owner's always-on personal-data deployment from
