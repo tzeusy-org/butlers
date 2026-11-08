@@ -541,5 +541,12 @@ kube-router network-policy controller unless it was started with
 `--disable-network-policy`. From a pod, a connection to a non-allowlisted private
 address must time out while an allowlisted host, a public host and DNS succeed.
 
-The policy is not evidence of a live probe or a production rollout. A dev smoke is
-recorded on `bu-viat6h.6`.
+Dev enables the policy (`values.dev.yaml`, owner decision 2026-11-08). A dev deploy
+therefore needs `ALLOWED_TAILNET_HOSTS` (the same hosts as the compose firewall) or it
+refuses to render. Production stays off; no prod rollout is implied.
+
+Smoke evidence (2026-11-08, disposable `butlers-rehearsal` namespace on this k3s,
+recorded on `bu-viat6h.6`): a deny-all egress control blocked every probe, so the CNI
+enforces egress policy. With the chart policy, a node-hosted private address was
+blocked, DNS resolved and a public host was reachable; allowlisting that address made
+it reachable.

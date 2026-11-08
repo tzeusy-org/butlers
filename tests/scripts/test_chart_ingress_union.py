@@ -57,7 +57,11 @@ class Source:
 def _render(env: str, *settings: str) -> subprocess.CompletedProcess[str]:
     command = ["helm", "template", "butlers", str(_CHART), "--namespace", _NAMESPACE[env]]
     command += ["-f", str(_CHART / "values.yaml"), "-f", str(_CHART / f"values.{env}.yaml")]
-    site = ("trackerEgress.deniedCidrs={192.0.2.1/32}", "database.host=postgres.invalid")
+    site = (
+        "trackerEgress.deniedCidrs={192.0.2.1/32}",
+        "egressPolicy.allowedCidrs={198.51.100.7/32}",
+        "database.host=postgres.invalid",
+    )
     for setting in ("image.tag=t", "frontendImage.tag=t", *site, *settings):
         command += ["--set", setting]
     return subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)

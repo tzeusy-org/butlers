@@ -12,7 +12,12 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CHART = _REPO_ROOT / "deploy" / "helm" / "butlers"
 # Site CIDRs are documentation addresses, never real host or credential values.
-_SITE = ["--set", "trackerEgress.deniedCidrs={192.0.2.1/32,192.0.2.2/32}"]
+_SITE = [
+    "--set",
+    "trackerEgress.deniedCidrs={192.0.2.1/32,192.0.2.2/32}",
+    "--set",
+    "egressPolicy.allowedCidrs={198.51.100.7/32}",
+]
 
 needs_helm = pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
 
@@ -119,7 +124,7 @@ def test_dev_ships_review_jobs_on_and_one_tap_routing_off() -> None:
 
 @needs_helm
 def test_tracker_egress_policy_covers_every_pod_without_a_bridge_exception() -> None:
-    names = _by_kind_name(_render("dev", *_SITE))
+    names = _by_kind_name(_render("dev", *_SITE, "--set", "egressPolicy.enabled=false"))
     policy = names[("NetworkPolicy", "butlers-tracker-egress")]["spec"]
     assert policy["podSelector"] == {}
     assert policy["policyTypes"] == ["Egress"]
@@ -166,10 +171,10 @@ def test_egress_policy_excludes_private_ranges_and_admits_the_allowlist(env: str
 @needs_helm
 def test_egress_policy_refuses_an_empty_allowlist_unless_opted_out() -> None:
     with pytest.raises(subprocess.CalledProcessError) as exc:
-        _render("dev", *_SITE, "--set", "egressPolicy.enabled=true")
+        _render("dev", *_SITE, "--set", "egressPolicy.allowedCidrs=null")
     assert "egressPolicy.allowedCidrs is required" in exc.value.stderr
     docs = _render(
-        "dev", *_SITE, "--set", "egressPolicy.enabled=true",
+        "dev", *_SITE, "--set", "egressPolicy.allowedCidrs=null",
         "--set", "egressPolicy.allowNoAllowlist=true",
     )  # fmt: skip
     assert ("NetworkPolicy", "butlers-tracker-egress") in _by_kind_name(docs)

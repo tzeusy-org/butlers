@@ -19,6 +19,7 @@ needs_helm = pytest.mark.skipif(shutil.which("helm") is None, reason="helm not i
 # What site-helm-args.sh supplies for the retained runtime tracker boundary.
 _SITE = [
     "--set", "trackerEgress.deniedCidrs={192.0.2.1/32,192.0.2.2/32}",
+    "--set", "egressPolicy.allowedCidrs={198.51.100.7/32}",
 ]  # fmt: skip
 
 
