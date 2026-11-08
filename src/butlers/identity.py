@@ -996,9 +996,6 @@ async def resolve_owner_channel_via_definer(
     return owner_contact, bool(row["is_primary"])
 
 
-_TELEGRAM_USERNAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}")
-
-
 async def resolve_telegram_username_contact(
     pool: asyncpg.Pool, username: str
 ) -> ResolvedContact | None:
