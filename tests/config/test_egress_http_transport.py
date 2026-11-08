@@ -365,3 +365,27 @@ async def test_default_hop_caller_cancellation_closes_its_stream(tls_contexts, m
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
             assert not transport._hop._streams
+
+
+async def test_default_hop_rejects_sync_only_stream_before_any_dial(monkeypatch):
+    dials = []
+
+    class SyncOnly(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"synthetic"
+
+    async def forbidden_open(config):
+        dials.append(config.port)
+        raise OSError("owned dial sentinel")
+
+    monkeypatch.setattr(http_transport, "_open_hop", forbidden_open)
+    transport = GatewayTransport(GatewayConfig(3115))
+    request = httpx.Request("POST", f"https://{HOST}/", headers={"Host": HOST}, stream=SyncOnly())
+    try:
+        with pytest.raises(httpx.LocalProtocolError) as failure:
+            await transport.handle_async_request(request)
+        assert failure.value.request is request
+        assert "asynchronous request stream" in str(failure.value)
+        assert not dials and not transport._hop._streams
+    finally:
+        await transport.aclose()

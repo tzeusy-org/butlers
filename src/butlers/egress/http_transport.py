@@ -124,6 +124,11 @@ class _RequestHopTransport(httpx.AsyncBaseTransport):
     async def handle_async_request(self, request):
         if self._closed:
             raise httpx.TransportError("gateway transport is closed", request=request)
+        body = request.stream
+        if not isinstance(body, httpx.AsyncByteStream):
+            raise httpx.LocalProtocolError(
+                "gateway requires an asynchronous request stream", request=request
+            )
         writer = None
         stream = None
         try:
@@ -143,10 +148,12 @@ class _RequestHopTransport(httpx.AsyncBaseTransport):
             if self._closed:
                 raise httpx.TransportError("gateway transport is closed", request=request)
 
+            connected_writer = writer
+
             async def write(data):
                 try:
                     await gateway._write(
-                        writer,
+                        connected_writer,
                         data,
                         write_budget=_timeout(request, "write", gateway._IDLE_TIMEOUT_S),
                     )
@@ -168,7 +175,7 @@ class _RequestHopTransport(httpx.AsyncBaseTransport):
             async def upload():
                 sent = 0
                 try:
-                    async for chunk in request.stream:
+                    async for chunk in body:
                         # Bound each write even when an application yields a large buffer.
                         for offset in range(0, len(chunk), 16384):
                             part = chunk[offset : offset + 16384]
@@ -180,7 +187,7 @@ class _RequestHopTransport(httpx.AsyncBaseTransport):
                             await write(connection.send(h11.Data(data=part)))
                     await write(connection.send(h11.EndOfMessage()))
                 finally:
-                    await request.stream.aclose()
+                    await body.aclose()
 
             response = await gateway._upload_and_response(
                 connection,
