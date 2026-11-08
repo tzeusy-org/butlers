@@ -577,9 +577,9 @@ def test_view_fields_replicate_exact_values_and_hide_private_neighbors(copied):
             conn.execute(text("UPDATE general.facts SET sensitivity='pii' WHERE id=:fact"), ids)
             conn.execute(
                 text(
-                    "UPDATE public.entities SET metadata='{\"tombstone\":true}'::jsonb WHERE id=:entity"
+                    "UPDATE public.entities SET metadata=CAST(:metadata AS jsonb) WHERE id=:entity"
                 ),
-                ids,
+                {"entity": ids["entity"], "metadata": json.dumps({"tombstone": True})},
             )
         _barrier(topology, projection)
         assert _scalar(projection, "SELECT count(*) FROM general.facts WHERE id=:fact", ids) == 0
