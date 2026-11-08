@@ -352,6 +352,60 @@ if [[ -s "$AUDIT_DIR/inverted" ]]; then
   exit 1
 fi
 echo "[restore]   no SECURITY DEFINER function in 'public' fell to '${PG_USER}'"
+# The public-only audit cannot see a failed handoff in this fixed namespace.
+# Check the actual catalog, not only the owners declared by an untrusted dump.
+# Legacy artifacts with neither the namespace nor its declaration stay supported.
+DND_DECLARED=false
+if gunzip -c "$BACKUP_FILE" | awk '
+  /^CREATE SCHEMA dnd_generation_backup;/ { found=1 }
+  END { exit !found }'; then
+  DND_DECLARED=true
+fi
+PGPASSWORD="$PG_PASSWORD" psql --host="$PG_HOST" --port="$PG_PORT" \
+  --username="$PG_USER" --dbname="$TARGET_DB" --no-password --set=ON_ERROR_STOP=1 \
+  --set=dnd_declared="$DND_DECLARED" --quiet <<'DND_AUDIT_SQL'
+SELECT :'dnd_declared'::boolean OR to_regnamespace('dnd_generation_backup') IS NOT NULL AS dnd_audit_needed \gset
+\if :dnd_audit_needed
+DO $dnd_boundary$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname='dnd_generation_owner'
+      AND NOT r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolcreaterole
+      AND NOT r.rolcreatedb AND NOT r.rolreplication AND NOT r.rolbypassrls
+      AND NOT EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.roleid=r.oid OR m.member=r.oid))
+     OR (SELECT count(*) FROM pg_roles WHERE rolname IN ('butlers_backup_export','butlers_backup_restore')
+         AND NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper AND NOT rolcreaterole
+         AND NOT rolcreatedb AND NOT rolreplication AND NOT rolbypassrls) <> 2
+     OR NOT EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname='dnd_generation_backup'
+         AND n.nspowner=to_regrole('dnd_generation_owner') AND NOT EXISTS (
+           SELECT 1 FROM aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a
+           WHERE a.is_grantable OR NOT (a.grantee=n.nspowner OR
+             (a.grantee IN (to_regrole('butlers_backup_export'),to_regrole('butlers_backup_restore'))
+              AND a.privilege_type='USAGE'))))
+     OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='dnd_generation_backup') <> 3
+     OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='dnd_generation_backup' AND p.proowner=to_regrole('dnd_generation_owner')
+           AND p.prosecdef AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp','row_security=on']
+           AND ((p.proname='export_v1' AND p.pronargs=0 AND p.proretset AND p.prorettype=2249 AND p.provolatile='s')
+             OR (p.proname='export_schema_v1' AND p.pronargs=0 AND p.proretset AND p.prorettype=25 AND p.provolatile='s')
+             OR (p.proname='restore_v1' AND p.proargtypes='3802'::oidvector
+                 AND NOT p.proretset AND p.prorettype=2278 AND p.provolatile='v'))
+           AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+             WHERE a.is_grantable OR NOT (a.grantee=p.proowner OR
+               (a.grantee=CASE WHEN p.proname='restore_v1' THEN to_regrole('butlers_backup_restore')
+                               ELSE to_regrole('butlers_backup_export') END AND a.privilege_type='EXECUTE')))
+           AND has_function_privilege(CASE WHEN p.proname='restore_v1' THEN 'butlers_backup_restore'
+                                           ELSE 'butlers_backup_export' END,p.oid,'EXECUTE')) <> 3
+     OR NOT coalesce(has_schema_privilege('butlers_backup_export',to_regnamespace('dnd_generation_backup'),'USAGE'),false)
+     OR NOT coalesce(has_schema_privilege('butlers_backup_restore',to_regnamespace('dnd_generation_backup'),'USAGE'),false)
+  THEN
+    RAISE EXCEPTION 'DND backup authority is untrusted; restore is not certified';
+  END IF;
+END
+$dnd_boundary$;
+\endif
+DND_AUDIT_SQL
+
 # A strict scoped importer failure still cannot skip the existing ownership
 # diagnosis. Preserve that audit, then refuse certification of incomplete data.
 if [[ "$RESTORE_DATA_FAILED" == true ]]; then
