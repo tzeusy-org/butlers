@@ -15,7 +15,6 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1189,7 +1188,7 @@ async def test_dashboard_session_decides_through_its_token_and_stales_telegram(
     monkeypatch.setattr(
         approvals_router,
         "_dispatch_approved_action_outcome",
-        AsyncMock(return_value=SimpleNamespace(kind="failed", action=None)),
+        AsyncMock(return_value=approvals_router._DispatchOutcome(kind="unreachable")),
     )
     await _enable(ledger_pool)
     action_id = await _park(ledger_pool, card=True)
