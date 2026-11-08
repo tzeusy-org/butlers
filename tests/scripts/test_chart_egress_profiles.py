@@ -29,6 +29,7 @@ _TRACKER = "192.0.2.1"
 _OTLP = "198.51.100.9"
 _HOME_ASSISTANT = "198.51.100.10"
 _OFFSITE = "198.51.100.11"
+_POLICY_SITE = "10.0.0.7"
 _SITES = (
     "egressProfiles.sites.database.namespace=postgres-dev",
     f"egressProfiles.sites.otlp.cidr={_OTLP}/32",
@@ -67,7 +68,15 @@ _GATEWAY = _component("egress-gateway")
 def _render(*settings: str) -> subprocess.CompletedProcess[str]:
     command = ["helm", "template", "butlers", str(_CHART), "--namespace", _NS]
     command += ["-f", str(_CHART / "values.yaml"), "-f", str(_CHART / "values.dev.yaml")]
-    site = (f"trackerEgress.deniedCidrs={{{_TRACKER}/32}}", "database.host=postgres.invalid")
+    # Declare test topology/mode rather than inheriting the environment's dev enable.
+    # Explicit per-case settings below can select the predecessor policy instead.
+    site = (
+        "trackerEgress.enabled=true",
+        f"trackerEgress.deniedCidrs={{{_TRACKER}/32}}",
+        "egressPolicy.enabled=false",
+        f"egressPolicy.allowedCidrs={{{_POLICY_SITE}/32}}",
+        "database.host=postgres.invalid",
+    )
     for setting in ("image.tag=t", "frontendImage.tag=t", *site, *settings):
         command += ["--set", setting]
     return subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
@@ -163,9 +172,18 @@ def everything() -> list[dict]:
     return _docs(*_EVERYTHING)
 
 
-def test_profiles_off_renders_no_profile_policy_and_keeps_the_tracker_policy():
-    names = {d["metadata"]["name"] for d in _egress_policies(_docs())}
+@pytest.mark.parametrize("policy_enabled", [False, True])
+def test_profiles_off_renders_no_profile_policy_and_keeps_the_tracker_policy(policy_enabled):
+    docs = _docs(
+        "egressProfiles.enabled=false", f"egressPolicy.enabled={str(policy_enabled).lower()}"
+    )
+    names = {d["metadata"]["name"] for d in _egress_policies(docs)}
     assert names == {"butlers-tracker-egress"}
+    pod = _pods(docs)["butlers-up"]
+    assert not _admitting(docs, pod, Dest(ip=_TRACKER), 3307)
+    assert _admitting(docs, pod, Dest(ip="203.0.113.5"), 443)
+    assert _admitting(docs, pod, Dest(ip=_POLICY_SITE), 443)
+    assert bool(_admitting(docs, pod, Dest(ip="10.0.0.5"), 443)) is (not policy_enabled)
 
 
 @pytest.mark.parametrize("tracker_enabled", [True, False])
