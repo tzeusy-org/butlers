@@ -277,7 +277,8 @@ def upgrade() -> None:
                 effective_system_prompt TEXT,
                 prompt_digest       TEXT,
                 prompt_provenance   JSONB,
-                purpose_lane        TEXT
+                purpose_lane        TEXT,
+                stage_timings       JSONB
             )
         """)
 
