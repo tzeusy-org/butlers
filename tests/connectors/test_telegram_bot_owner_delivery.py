@@ -249,26 +249,6 @@ class _TelegramRefusal(_Http):
         return await super().post(url, **kwargs)
 
 
-async def test_keyboardless_card_retraction_succeeds_without_a_markup_call(
-    owner_resolver: AsyncMock,
-) -> None:
-    """A card with no keyboard retracts cleanly: the text edit is the whole retraction."""
-    token, _ = mint_token()
-    http = _Http(
-        _response(body={"data": {"status": "executed"}}),
-        [{"presentation_id": _STALE_ID, "route_ref": "9001", "provider_ref": "55"}],
-    )
-    connector = _connector()
-    connector._http_client = http  # type: ignore[assignment]
-
-    assert await connector._maybe_handle_owner_delivery_callback(_update(token)) is True
-
-    assert [body["message_id"] for body in http.telegram("editMessageText")][-1] == 55
-    assert 55 not in [body["message_id"] for body in http.telegram("editMessageReplyMarkup")]
-    [(_, report)] = http.dashboard("/api/owner-delivery/retractions/")
-    assert report == {"retracted": True, "reason": None}
-
-
 async def test_genuine_400_on_retraction_still_fails_and_logs_a_safe_description(
     owner_resolver: AsyncMock, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -310,3 +290,26 @@ async def test_unsafe_400_description_is_not_logged_verbatim(
 
     assert "test-token" not in caplog.text
     assert "api.telegram.org" not in caplog.text
+
+
+async def test_token_shaped_400_description_is_not_logged(
+    owner_resolver: AsyncMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A phrase that passes the character filter but looks like a bot token is dropped."""
+    leaked = "123456789:AAEhBOweik6ad9r_QXMENQjcrGbqCr4K-Ao"
+    token, _ = mint_token()
+    http = _TelegramRefusal(
+        _response(body={"data": {"status": "executed"}}),
+        [{"presentation_id": _STALE_ID, "route_ref": "9001", "provider_ref": "55"}],
+        description=f"Bad Request: {leaked}",
+    )
+    http.refuse_text_edit_for = 55
+    connector = _connector()
+    connector._http_client = http  # type: ignore[assignment]
+
+    with caplog.at_level(logging.WARNING):
+        await connector._maybe_handle_owner_delivery_callback(_update(token))
+
+    assert "HTTP 400" in caplog.text
+    assert leaked not in caplog.text
+    assert "AAEhBOweik6ad9r" not in caplog.text

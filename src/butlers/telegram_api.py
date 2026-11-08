@@ -227,7 +227,9 @@ def telegram_message_not_modified(response: httpx.Response) -> bool:
     )
 
 
-_SAFE_DESCRIPTION = re.compile(r"[A-Za-z0-9 ,.:'_()-]{1,120}\Z", re.ASCII)
+_SAFE_DESCRIPTION = re.compile(r"[A-Za-z0-9 ,.:;'_()-]{1,120}\Z", re.ASCII)
+# A bot token is ``<digits>:<secret>``; a description shaped like one is never a Telegram phrase.
+_TOKEN_SHAPED = re.compile(r"\d{5,}:[A-Za-z0-9_-]{20,}")
 
 
 def telegram_error_description(response: httpx.Response) -> str:
@@ -245,6 +247,7 @@ def telegram_error_description(response: httpx.Response) -> str:
         isinstance(description, str)
         and _SAFE_DESCRIPTION.fullmatch(description)
         and "http" not in description.lower()
+        and not _TOKEN_SHAPED.search(description)
     ):
         return description
     return "unparsed"

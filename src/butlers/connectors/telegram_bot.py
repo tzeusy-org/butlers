@@ -883,7 +883,7 @@ class TelegramBotConnector:
             response = exc.response if isinstance(exc, httpx.HTTPStatusError) else None
             if response is not None:
                 if response.status_code == 409:
-                    description = self._telegram_error_description(response)
+                    description = telegram_error_description(response)
                     conflict_hint = self._describe_get_updates_conflict(response)
                     self._metrics.record_source_api_call(api_method="getUpdates", status="conflict")
                     self._metrics.record_error(
@@ -921,22 +921,6 @@ class TelegramBotConnector:
                 return []
 
             raise
-
-    @staticmethod
-    def _telegram_error_description(response: httpx.Response | None) -> str | None:
-        if response is None:
-            return None
-        try:
-            payload = response.json()
-        except ValueError:
-            return None
-        if isinstance(payload, dict):
-            description = payload.get("description")
-            if isinstance(description, str):
-                description = description.strip()
-                if description:
-                    return description
-        return None
 
     @staticmethod
     def _telegram_retry_after_seconds(response: httpx.Response | None) -> float | None:
@@ -982,8 +966,8 @@ class TelegramBotConnector:
 
     @classmethod
     def _describe_get_updates_conflict(cls, response: httpx.Response | None) -> str:
-        description = cls._telegram_error_description(response)
-        if description is None:
+        description = telegram_error_description(response) if response is not None else None
+        if description is None or description == "unparsed":
             return (
                 "Telegram rejected getUpdates with 409 Conflict. "
                 "Ensure only one poller is active and webhook mode is not enabled for this token."
