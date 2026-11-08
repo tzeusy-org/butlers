@@ -307,6 +307,14 @@ _DYNAMIC_RELATION_RE = re.compile(
 # Dynamic entries are exact normalized relation slots, not whole-file waivers.
 SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
+        "src/butlers/migrations/public_mcp.py",
+        "relationship.entity_predicate_registry",
+    ): "sanctioned: RFC 0039 D2/D4 primary-only validation checks the explicit relationship allowlist against relational-kind source predicates; never adds registry rows to exposure",
+    (
+        "src/butlers/migrations/public_mcp.py",
+        '<dynamic:"{schema}".predicate_registry>',
+    ): "dynamic-local: RFC 0039 D4 validator reads the owning memory registry only for a manifest-validated snake-case approved source schema; validates explicit names without expanding exposure",
+    (
         "roster/finance/migrations/020_public_projection.py",
         "<dynamic:{quoted}.transactions>",
     ): "dynamic-local: Finance020 derives quoted from current_schema(); overlay DDL/backfill touches only its owning transactions table, including retained flat callers.",

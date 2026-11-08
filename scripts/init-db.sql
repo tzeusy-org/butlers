@@ -7369,3 +7369,139 @@ BEGIN
     END IF;
 END
 $chronicler_memory_replay$;
+
+-- RFC 0039 D4/D9 PRIMARY prerequisites only. CNPG owns the five identities
+-- and the projection database. Ordinary local/restore callers without them keep
+-- their existing behavior; this block never creates/normalizes those roles.
+DO $public_mcp_primary$
+DECLARE
+    migration_role name := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers'
+    )::name;
+    migration_oid oid;
+    relation_name text;
+    relation_oid oid;
+    expected_columns text[];
+    actual_columns text[];
+    expected_checks text[];
+    actual_checks text[];
+    runtime_role text;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname='butlers_public')
+       OR (SELECT count(*) FROM pg_roles WHERE rolname IN (
+           'butlers_projection_publisher', 'mcp_projection_owner', 'mcp_public_ro',
+           'mcp_proposals_reader', 'mcp_subscription_owner')) <> 5 THEN
+        RETURN;
+    END IF;
+    SELECT oid INTO STRICT migration_oid FROM pg_roles WHERE rolname=migration_role;
+    IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname='mcp_surface'
+               AND nspowner<>migration_oid) THEN
+        RAISE EXCEPTION 'public MCP metadata schema has an unsupported owner';
+    END IF;
+    EXECUTE format('CREATE SCHEMA IF NOT EXISTS mcp_surface AUTHORIZATION %I', migration_role);
+    -- No source reader role or public default privileges apply in this namespace.
+    IF to_regclass('mcp_surface.controls') IS NULL THEN
+        CREATE TABLE mcp_surface.controls (
+            domain text PRIMARY KEY CHECK (domain IN (
+                'all','knowledge','travel','relationship','time','finance','health','proposals')),
+            state text NOT NULL CHECK (state IN ('enabled','disabled')),
+            changed_at timestamptz NOT NULL DEFAULT now()
+        );
+        EXECUTE format('ALTER TABLE mcp_surface.controls OWNER TO %I', migration_role);
+    END IF;
+    IF to_regclass('mcp_surface.manifest_state') IS NULL THEN
+        CREATE TABLE mcp_surface.manifest_state (
+            digest text PRIMARY KEY CHECK (digest ~ '^[a-f0-9]{64}$')
+        );
+        CREATE UNIQUE INDEX manifest_state_singleton ON mcp_surface.manifest_state ((true));
+        EXECUTE format('ALTER TABLE mcp_surface.manifest_state OWNER TO %I', migration_role);
+    END IF;
+    FOREACH relation_name IN ARRAY ARRAY['controls','manifest_state'] LOOP
+        relation_oid := to_regclass(format('mcp_surface.%I',relation_name));
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE oid=relation_oid
+                       AND relkind='r' AND relowner=migration_oid) THEN
+            RAISE EXCEPTION 'public MCP metadata relation % has an unsupported owner/shape', relation_name;
+        END IF;
+        expected_columns := CASE relation_name WHEN 'controls' THEN
+            ARRAY['domain:text:true','state:text:true','changed_at:timestamp with time zone:true']
+            ELSE ARRAY['digest:text:true'] END;
+        SELECT array_agg(attname||':'||format_type(atttypid,atttypmod)||':'||attnotnull ORDER BY attnum)
+          INTO actual_columns FROM pg_attribute WHERE attrelid=relation_oid
+          AND attnum>0 AND NOT attisdropped;
+        IF actual_columns IS DISTINCT FROM expected_columns
+           OR (SELECT count(*) FROM pg_constraint WHERE conrelid=relation_oid AND contype='p')<>1
+           OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=relation_oid AND contype='p'
+                          AND conkey=ARRAY[1]::smallint[]) THEN
+            RAISE EXCEPTION 'public MCP metadata relation % has an unsupported shape', relation_name;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid=relation_oid
+                   AND attnum>0 AND NOT attisdropped AND attgenerated<>'') THEN
+            RAISE EXCEPTION 'public MCP metadata relation % has generated columns',relation_name;
+        END IF;
+        expected_checks := CASE relation_name WHEN 'controls' THEN ARRAY[
+            'CHECK ((domain = ANY (ARRAY[''all''::text, ''knowledge''::text, ''travel''::text, ''relationship''::text, ''time''::text, ''finance''::text, ''health''::text, ''proposals''::text])))',
+            'CHECK ((state = ANY (ARRAY[''enabled''::text, ''disabled''::text])))'
+        ] ELSE ARRAY['CHECK ((digest ~ ''^[a-f0-9]{64}$''::text))'] END;
+        SELECT array_agg(pg_get_constraintdef(oid) ORDER BY pg_get_constraintdef(oid))
+          INTO actual_checks FROM pg_constraint WHERE conrelid=relation_oid AND contype='c'
+          AND convalidated AND NOT connoinherit;
+        IF actual_checks IS DISTINCT FROM expected_checks
+           OR (SELECT count(*) FROM pg_constraint WHERE conrelid=relation_oid AND contype='c')
+              <>cardinality(expected_checks) THEN
+            RAISE EXCEPTION 'public MCP metadata relation % has unsupported checks',relation_name;
+        END IF;
+        IF relation_name='manifest_state' AND NOT EXISTS (
+            SELECT 1 FROM pg_index WHERE indrelid=relation_oid AND indisunique
+            AND indisvalid AND indimmediate AND indpred IS NULL
+            AND pg_get_expr(indexprs,indrelid)='true'
+        ) THEN
+            RAISE EXCEPTION 'public MCP manifest state lacks singleton identity';
+        END IF;
+        -- Refuse unrecognized grants instead of silently taking over a foreign interface.
+        IF EXISTS (SELECT 1 FROM pg_class c, LATERAL aclexplode(c.relacl) a
+                   WHERE c.oid=relation_oid AND a.grantee<>migration_oid
+                   AND a.grantee<>0 AND a.grantee NOT IN (
+                       SELECT oid FROM pg_roles WHERE rolname LIKE 'butler\_%\_rw' ESCAPE '\'
+                       OR rolname='connector_writer')) THEN
+            RAISE EXCEPTION 'public MCP metadata relation % has an unsupported ACL', relation_name;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_attribute c,LATERAL aclexplode(c.attacl) a
+                   WHERE c.attrelid=relation_oid AND a.grantee<>migration_oid
+                   AND a.grantee<>0 AND a.grantee NOT IN (
+                       SELECT oid FROM pg_roles WHERE rolname LIKE 'butler\_%\_rw' ESCAPE '\'
+                       OR rolname='connector_writer')) THEN
+            RAISE EXCEPTION 'public MCP metadata relation % has an unsupported column ACL',relation_name;
+        END IF;
+        EXECUTE format('REVOKE ALL ON mcp_surface.%I FROM PUBLIC',relation_name);
+        EXECUTE format('REVOKE ALL (%s) ON mcp_surface.%I FROM PUBLIC',
+            CASE relation_name WHEN 'controls' THEN 'domain,state,changed_at' ELSE 'digest' END,
+            relation_name);
+        FOR runtime_role IN SELECT rolname FROM pg_roles
+            WHERE rolname LIKE 'butler\_%\_rw' ESCAPE '\' OR rolname='connector_writer' LOOP
+            EXECUTE format('REVOKE ALL ON mcp_surface.%I FROM %I',relation_name,runtime_role);
+            EXECUTE format('REVOKE ALL (%s) ON mcp_surface.%I FROM %I',
+                CASE relation_name WHEN 'controls' THEN 'domain,state,changed_at' ELSE 'digest' END,
+                relation_name,runtime_role);
+        END LOOP;
+    END LOOP;
+    IF EXISTS (SELECT 1 FROM pg_namespace n, LATERAL aclexplode(n.nspacl) a
+               WHERE n.nspname='mcp_surface' AND a.grantee<>migration_oid
+               AND a.grantee<>0 AND a.grantee NOT IN (
+                   SELECT oid FROM pg_roles WHERE rolname LIKE 'butler\_%\_rw' ESCAPE '\'
+                   OR rolname='connector_writer')) THEN
+        RAISE EXCEPTION 'public MCP metadata schema has an unsupported ACL';
+    END IF;
+    REVOKE ALL ON SCHEMA mcp_surface FROM PUBLIC;
+    FOR runtime_role IN SELECT rolname FROM pg_roles
+        WHERE rolname LIKE 'butler\_%\_rw' ESCAPE '\' OR rolname='connector_writer' LOOP
+        EXECUTE format('REVOKE ALL ON SCHEMA mcp_surface FROM %I',runtime_role);
+    END LOOP;
+    GRANT USAGE ON SCHEMA mcp_surface TO butler_relationship_rw;
+    GRANT SELECT ON mcp_surface.controls TO butler_relationship_rw;
+    INSERT INTO mcp_surface.controls(domain,state)
+        SELECT domain,'enabled' FROM unnest(ARRAY[
+            'all','knowledge','travel','relationship','time','finance','health','proposals']) domain
+        ON CONFLICT DO NOTHING;
+    EXECUTE format('GRANT CREATE ON DATABASE %I TO %I',current_database(),migration_role);
+END
+$public_mcp_primary$;

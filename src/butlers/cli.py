@@ -729,6 +729,35 @@ def _migration_db_url(params: Mapping[str, object], *, db_name: str, schema: str
     return base_url
 
 
+@cli.group("public-mcp")
+def public_mcp() -> None:
+    """Manage the public read projection's explicit primary prerequisites."""
+
+
+@public_mcp.command("reconcile")
+@click.option("--database", default="butlers", show_default=True, help="Primary database name")
+def public_mcp_reconcile(database: str) -> None:
+    """Validate the packaged manifest and converge the PRIMARY publication atomically.
+
+    Run as the migration principal after bootstrap and all source migrations.
+    This does not connect to a subscriber or perform an owner step.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from butlers.db import db_params_from_env
+    from butlers.knowledge_read.manifest import ManifestError
+    from butlers.migrations.public_mcp import reconcile
+
+    try:
+        changed = reconcile(_migration_db_url(db_params_from_env(), db_name=database, schema=None))
+    except ManifestError as exc:
+        raise click.ClickException(str(exc)) from None
+    except SQLAlchemyError:
+        # Driver errors can include a URL, statement or bound data. Keep this surface closed.
+        raise click.ClickException("Primary reconcile refused: database operation failed") from None
+    click.echo("Primary projection reconciled" if changed else "Primary projection unchanged")
+
+
 async def _prepare_chronicler_memory(butlers_dir: Path, *, dry_run: bool) -> None:
     """Apply core and memory only in Chronicler's declared private schema."""
     configs = _discover_configs(butlers_dir)
