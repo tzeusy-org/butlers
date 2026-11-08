@@ -76,6 +76,32 @@ _TABLE_PROVIDERS = {
     ),
 }
 
+# This fixed schema-export reader inventories mixed-arity public functions;
+# it is not an admin ownership guard. Keep its exact function/schema/list
+# explicit, and reject drift rather than suppressing all non-admin lists.
+_CATALOG_FUNCTION_NAMES = frozenset(
+    {
+        "perception_write",
+        "perception_read",
+        "perception_timeline",
+        "perception_bind",
+        "perception_registry",
+    }
+)
+_CATALOG_FUNCTION_READERS = {
+    ("perception_private", "backup_catalog", "public"): (
+        "jsonb",
+        "sql",
+        "pg_get_functiondef(p.oid)",
+    ),
+    ("perception_backup", "export_schema_v1", "public"): (
+        "SETOF text",
+        "plpgsql",
+        "pg_get_functiondef(item.oid)",
+    ),
+}
+
+
 # Any schema whose name is an ``*_admin`` identifier anywhere in the file. Kept
 # as a whole-file token sweep rather than a targeted pattern so a newly added
 # admin schema is discovered without editing this test. Known blind spot: an
@@ -213,6 +239,39 @@ def _guard_blocks(source: str) -> list[_GuardBlock]:
         close_index = _close_paren(source, open_index)
         names = tuple(_QUOTED_NAME.findall(source[open_index + 1 : close_index]))
         assert names, f"init-db.sql:{line}: `proname IN ()` guard list is empty."
+
+        enclosing = list(_CREATE_FUNCTION.finditer(source, 0, match.start()))
+        if enclosing:
+            definition = enclosing[-1]
+            key = (*[v.lower() for v in definition.groups()], schema_filters[-1].lower())
+            provider = _CATALOG_FUNCTION_READERS.get(key)
+            if provider is not None:
+                result, language, projection = provider
+                following = _CREATE_FUNCTION.search(source, match.end())
+                declaration = source[
+                    definition.start() : following.start() if following else len(source)
+                ]
+                assert re.search(
+                    r"RETURNS\s+"
+                    + re.escape(result)
+                    + r"\s+LANGUAGE\s+"
+                    + language
+                    + r"\s+STABLE\s+SECURITY\s+DEFINER",
+                    declaration,
+                    re.IGNORECASE,
+                ), "catalog reader declaration drift"
+                assert projection in declaration, "catalog reader definition projection missing"
+                assert (
+                    len(names) == len(_CATALOG_FUNCTION_NAMES)
+                    and set(names) == _CATALOG_FUNCTION_NAMES
+                ), "catalog reader function list drift"
+                actual = {
+                    d.name
+                    for d in _function_definitions(source)
+                    if d.schema == key[2] and d.name.startswith("perception_")
+                }
+                assert actual == _CATALOG_FUNCTION_NAMES, "catalog reader API inventory drift"
+                continue
 
         tail = source[close_index : close_index + _PRONARGS_LOOKAHEAD]
         assert _PRONARGS_ZERO.search(tail), (
@@ -532,3 +591,29 @@ def test_external_table_provider_and_local_guard_refusals(monkeypatch, tmp_path)
         patch.setitem(_TABLE_PROVIDERS, "dashboard_auth", (temporary_provider, consumed))
         with pytest.raises(FileNotFoundError):
             test_table_guards_match_the_tables_defined_in_their_own_schema()
+
+
+def test_fixed_catalog_reader_refuses_foreign_list_or_declaration():
+    source = _read_sql()
+    assert len(_guard_blocks(source)) > 0
+    for (schema, function, _), (_, language, projection) in _CATALOG_FUNCTION_READERS.items():
+        start = source.index(f"CREATE OR REPLACE FUNCTION {schema}.{function}()")
+        following = _CREATE_FUNCTION.search(source, start + 1)
+        end = following.start() if following else len(source)
+        prefix, reader, suffix = source[:start], source[start:end], source[end:]
+        for old, new in (
+            ("'perception_registry'", "'foreign_registry'"),
+            (
+                f"LANGUAGE {language} STABLE SECURITY DEFINER",
+                "LANGUAGE python STABLE SECURITY DEFINER",
+            ),
+            (projection, "pg_get_functiondef(NULL)"),
+        ):
+            assert reader.count(old) == 1
+            with pytest.raises(AssertionError, match="catalog reader"):
+                _guard_blocks(prefix + reader.replace(old, new, 1) + suffix)
+    # A genuine admin guard with a damaged arity fence remains a refusal.
+    damaged = source.replace("admin_function.pronargs = 0", "admin_function.pronargs = 1", 1)
+    assert damaged != source
+    with pytest.raises(AssertionError, match="pronargs = 0"):
+        _guard_blocks(damaged)

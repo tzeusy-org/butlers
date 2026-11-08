@@ -217,14 +217,19 @@ No canonical source observation is excluded.
 The required full-backup contract includes complete DND history: every row of
 `public.dnd_generation_mutations` (including expired and superseded receipts),
 the `public.dnd_generation_guard` row, and the `signal_type = 'dnd'` rows of
-`public.user_context`. The ten perception relations listed in
-`deploy/backup/private_history_manifest.json` join the same path when
-`bu-dhloi1.9` creates them; a test fails if any of them exists while its
-manifest status is not `exported`. All ten canonical perception relations are currently
-unavailable. This is an inactive DND mechanism with partial evidence, not full-source
-completion or authority to release the human hold. An absent-table guard does not
-prove populated perception coverage, and a dark artifact omitting DND does not satisfy
-the required full backup or restore acceptance.
+`public.user_context`. The ten canonical perception relations in
+`deploy/backup/private_history_manifest.json` are exported in the same snapshot
+through the closed `perception_backup` interface. Its owner is the membership-free
+`perception_owner`; it reuses the same inert export/restore capabilities. Every
+population must have an implemented exporter, including empty configured sources.
+The exact privileged `perception_admin.bootstrap_configuration` singleton is
+bootstrap control, reconstructed by the reviewed script, rather than application
+history. An unknown perception relation still refuses coverage.
+
+The mechanism stays dark until separately authorized authentication/provisioning.
+An artifact which logs omission is not a complete private-history backup. Source
+conformance does not activate export, release operational holds or switch live
+consumers.
 
 **Mechanism.** The dump identity is never widened: it receives no grant,
 membership or EXECUTE for any of this. `scripts/init-db.sql` (the DND finalizer)
@@ -284,8 +289,28 @@ remain part of restore verification; replaying an extracted private tail is not 
 supported substitute. Disposable tests prepare bootstrap-dependent targets before
 temporary export activation and remove that activation before later bootstrap.
 
-**Retention consequence.** The artifact now holds private DND history, including
-rows already expired or superseded in the live database, for up to
+**Perception companion.** `perception_backup` has the same three fixed signatures,
+owner/config/ACL checks and no table or SQL input parameter. Its schema exporter
+accepts only the canonical ten-table catalog, closed helper/gateway bodies and
+ACLs. It fingerprints columns, defaults, constraints, indexes, policies and
+immutable triggers; it refuses unknown shape/authority before emitting DDL.
+`perception_private` and the five public projection tables are omitted from the
+ordinary dump because even definition locks require private privileges. Their
+actual definitions and all rows travel through the complete companion, not an
+ordinary-role grant or `--exclude-table-data` workaround.
+
+Schema replay creates every table before functions and foreign keys. Row replay
+orders kinds, sources, source references, DND suppression references, timeline
+assertions before retractions, receipts, slots/modes and conditions/suppressions.
+DND history is restored first. Source configuration is captured history, never
+silently reseeded. Every target population must be empty; a bootstrapped target's
+seed registry is not a fresh replay target. No immutable trigger is disabled and
+no source event is replayed through the live writer. The actual restore consumer
+independently audits the perception namespace, fixed capabilities and catalog;
+a failed owner handoff cannot be certified by successful ordinary rows.
+
+**Retention consequence.** The artifact holds private DND and perception history, including
+rows already expired, retracted or superseded in the live database, for up to
 `BACKUP_RETAIN_DAYS` (default 14 days) after they stop being live. Backup
 retention, cadence and artifact handling are unchanged.
 
@@ -864,3 +889,10 @@ downgrade tolerates complete shared absence; partial tables, altered General
 policies or retained admission/operation evidence require forward remediation.
 The empty check holds exclusive table locks so a concurrent admission cannot
 commit between inspection and removal.
+
+The perception companion carries an explicit versioned complete-coverage
+marker and start/end/staging framing. The consumer refuses a missing or
+inconsistent component before target mutation, even for empty populations.
+Restored complete history must pass the fixed full catalog validator. Older or
+dark ordinary artifacts retain inert namespace ownership checks and explicitly
+report that absent perception history is not complete private-history proof.

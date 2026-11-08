@@ -660,3 +660,11 @@ This text does not implement any reducer, switch an existing consumer, alter
 .18 mode policy, authorize deployment, or widen a grant. Perception detail and
 recall remain source-labelled; exposed/third-party views are availability-only
 and raw coordinates never enter model context.
+
+### Dark representation implementation (2026-11-09)
+
+The canonical representation and shadow API are implemented separately from this
+legacy context table in [dark perception](../../../docs/data_and_storage/perception.md).
+They carry no live reader switch or producer activation. The first-switch parity,
+unsafe-alias, authority and consumer prerequisites above remain binding; the
+canonical tables alone do not establish them.
