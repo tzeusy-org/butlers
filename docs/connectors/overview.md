@@ -390,6 +390,13 @@ write failure, which is acceptable only while the source holds the item.
 Spotify, Telegram bot polling and the batch flushes of the Telegram user and WhatsApp clients keep
 their existing behaviour until later slices.
 
+Google Drive (bu-dhloi1.224) keeps the envelopes a page produced and resends them exactly (same
+key, same event id) under the same budget, then parks them with `FilteredEventBuffer.park()`; a
+park that is not written keeps the envelope unsent. A failed batch digest joins that queue instead
+of escaping the poll loop, and `stop()` sends (or parks) it and flushes the filtered rows. The page token and the metadata cache are committed only when
+nothing read is unsent or batched, so a page is never re-read against a cache that already holds
+its new state. A removed file's key falls back to the change's own time.
+
 The [bearer material custody audit](bearer-material-custody-audit.md) records the exact
 source inventory, connector stores, inbox readers and synthetic seam evidence. Its
 full-payload, replay, logging and legacy-row findings are separate from this preview
