@@ -26,7 +26,12 @@ spec:
           args:
             - >-
               uv run --frozen --no-dev butlers db prepare-chronicler-memory --dir /app/roster
+              {{- if .Values.publicMcp.reconcile }}
+              && uv run --frozen --no-dev butlers db migrate --dir /app/roster
+              && exec uv run --frozen --no-dev butlers public-mcp reconcile --database {{ .Values.database.name }}
+              {{- else }}
               && exec uv run --frozen --no-dev butlers db migrate --dir /app/roster
+              {{- end }}
           env:
             {{- include "butlers.postgresEnv" . | nindent 12 }}
       containers:

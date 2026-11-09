@@ -277,29 +277,31 @@ reruns the deployed tag's `scripts/init-db.sql`, which is idempotent:
 - It runs as the CloudNativePG local superuser inside the `postgres-dev` primary pod, via
   `kubectl exec`, so no superuser password is involved.
 - It takes the normal connecting login from the `butlers-bws` Secret, without printing it.
-- Once the public MCP projection lands (`bu-y66o00.4`), this rerun also applies its
-  `init-db.sql` grants (RFC 0039 owner act 9).
+- This rerun also applies the public MCP projection's `init-db.sql` grants (RFC 0039 owner
+  act 9) where the CNPG projection roles and `butlers_public` exist.
 
 Without the bootstrap step, a tag whose migrations need a newer bootstrap surface fails in the
 `migrations` initContainer after the old pods are gone. `core_277` did this on 2026-10-27
 (bu-8jtq10). Prod has no privileged bootstrap configured here: `bootstrap-prod` only prints a
 reminder, and the operator runs `init-db.sql` by hand before `deploy-prod`.
 
-Once the projection lands, `deploy-*` also runs the projection's owner step (RFC 0039 owner act
-10, owner decision OD20) as a second command after `record-deploy.sh`, whatever that returned,
-and exits with the first non-zero status. It cannot run in `bootstrap-dev`: the step needs the
+`deploy-*` also runs the public MCP projection's owner step (RFC 0039 owner act 10, owner
+decision OD20) as a second command after `record-deploy.sh`, whatever that returned, and exits
+with the first non-zero status. On dev the `migrations` initContainer runs `butlers public-mcp
+reconcile` after Alembic (`publicMcp.reconcile`, true only in `values.dev.yaml`). It cannot run in `bootstrap-dev`: the step needs the
 publication that `butlers public-mcp reconcile` writes in the `migrations` initContainer. A
 release can fail after reconcile (a later rollout or the readiness wait), so the step still runs
 then; when the migrations did not reconcile, its guard refuses and changes nothing.
 `scripts/k8s/public-mcp-owner-step.sh dev <tag>` picks the `dashboard-api` pod running `<tag>`,
 captures `butlers public-mcp owner-sql` from it, and only then pipes it to `psql` as the same
 CNPG local superuser. It runs on every deploy and changes nothing when the manifest is unchanged.
-After it succeeds, the same target upgrades the public chart `deploy/helm/butlers-public-mcp` at
-the same tag. If it fails, the target prints `public-mcp owner step FAILED` and exits non-zero;
+Once the public chart `deploy/helm/butlers-public-mcp` exists (`bu-y66o00.6`, task 2.4), the
+same target upgrades it at the same tag after the step succeeds. If the step fails, the target prints `public-mcp owner step FAILED` and exits non-zero;
 nothing rolls back, and the release and its deployments row stand. After a manifest change the
 public server refuses with `projection_apply_pending` until a rerun succeeds; with an unchanged
 manifest it keeps serving and only the marker reports the failure. `PUBLIC_MCP_OWNER_STEP_dev :=
-off` in `deploy/helm/butlers/makefile` switches the step and the public chart off for a teardown.
+off` in `deploy/helm/butlers/makefile`, set in a reviewed change, switches the step off (and the
+public chart, once it exists) for a teardown.
 Prod stays manual. See [Public MCP Read Surface](public-mcp-read-surface.md).
 
 The new topology guard is dev-only. `dashboard-api`, `butlers-up` and the connectors use the

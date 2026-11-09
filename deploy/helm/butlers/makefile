@@ -6,6 +6,10 @@ LOCAL_VALUES := $(wildcard values.local.yaml)
 NAMESPACE_dev := butlers-dev
 NAMESPACE_prod := butlers
 
+# The public MCP owner step after every dev release (RFC 0039 D3, OD20). Set to off only in a
+# reviewed change (a dev teardown, task 8.1); the step then prints a notice and exits 0.
+PUBLIC_MCP_OWNER_STEP_dev := on
+
 helm_args = -n $(NAMESPACE_$(1)) -f values.yaml -f values.$(1).yaml $(if $(LOCAL_VALUES),-f values.local.yaml) \
 	--set image.tag=$(TAG) --set frontendImage.tag=$(TAG)-$(1) \
 	$(shell ../../../scripts/k8s/site-helm-args.sh)
@@ -36,10 +40,17 @@ bootstrap-%:
 	../../../scripts/k8s/bootstrap-db.sh $* $(TAG)
 
 # Wrapped so each release leaves one public.deployments row (success or failed).
+# The public MCP owner step runs after the release whatever it returned, because the
+# migrations (and reconcile) may have run before a later rollout or readiness failure; its
+# guard refuses when they did not. The recipe exits with the first non-zero status.
 deploy-%:
 	@../../../scripts/k8s/runtime-topology-preflight.sh "$(NAMESPACE_$*)" "$(TAG)" "$(RELEASE_NAME)" -- $(call helm_args,$*)
 	$(MAKE) --no-print-directory bootstrap-$* TAG="$(TAG)"
-	../../../scripts/k8s/record-deploy.sh "$(NAMESPACE_$*)" "$(TAG)" "$(RELEASE_NAME)" -- $(call helm_args,$*)
+	../../../scripts/k8s/record-deploy.sh "$(NAMESPACE_$*)" "$(TAG)" "$(RELEASE_NAME)" -- $(call helm_args,$*); \
+	rd=$$?; \
+	../../../scripts/k8s/public-mcp-owner-step.sh "$*" "$(TAG)" "$(PUBLIC_MCP_OWNER_STEP_$*)"; \
+	os=$$?; \
+	if [ $$rd -ne 0 ]; then exit $$rd; fi; exit $$os
 
 # Build + push images for the current commit, then deploy them. Migrations run
 # in dashboard-api's initContainer on every rollout. Run under `bws run`.

@@ -43,6 +43,10 @@ def fake_repo(tmp_path: Path) -> Path:
     helm_args = tmp_path / "scripts" / "k8s" / "site-helm-args.sh"
     helm_args.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     helm_args.chmod(0o755)
+    # The public MCP owner step follows the release; its own tests cover it.
+    owner_step = tmp_path / "scripts" / "k8s" / "public-mcp-owner-step.sh"
+    owner_step.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    owner_step.chmod(0o755)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     stubs = {

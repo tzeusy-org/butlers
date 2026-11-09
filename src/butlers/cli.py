@@ -801,6 +801,24 @@ def public_mcp_reconcile(database: str) -> None:
     click.echo("Primary projection reconciled" if changed else "Primary projection unchanged")
 
 
+@public_mcp.command("owner-sql")
+def public_mcp_owner_sql() -> None:
+    """Print the idempotent owner-step SQL file for the packaged manifest (RFC 0039 D3).
+
+    Run it as the CNPG superuser through `kubectl exec ... psql -U postgres -d butlers -f -`
+    (on dev, scripts/k8s/public-mcp-owner-step.sh does). It opens no connection and reads no
+    environment: the same manifest always yields the same bytes.
+    """
+    from butlers.knowledge_read import manifest
+    from butlers.migrations.public_mcp_owner import render_owner_program
+
+    try:
+        program = render_owner_program(manifest.load_manifest())
+    except manifest.ManifestError as exc:
+        raise click.ClickException(str(exc)) from None
+    click.echo(program)
+
+
 async def _prepare_chronicler_memory(butlers_dir: Path, *, dry_run: bool) -> None:
     """Apply core and memory only in Chronicler's declared private schema."""
     configs = _discover_configs(butlers_dir)

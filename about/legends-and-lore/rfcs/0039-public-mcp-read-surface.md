@@ -809,7 +809,9 @@ slot, are therefore superuser work, and they form one owner step:
     step fails the public chart is not upgraded, and the server refuses
     either way (`projection_version_mismatch` on the old image,
     `projection_apply_pending` on a new one). The values file and image
-    build of that release are task 2.4.
+    build of that release are task 2.4, which also adds this upgrade to the
+    recipe: until a public pod exists there is no shipped digest to converge,
+    so the owner step ships and runs on dev before the chart.
   - *Prod.* Prod is deferred (OD18) and stays manual: for any environment
     other than `dev` the script prints a reminder and exits 0, as
     `bootstrap-db.sh:31-35` does.
