@@ -37,7 +37,7 @@ if (sys.version_info[:3], platform.system(), platform.machine(), platform.libc_v
 ):
     raise SystemExit("runtime base differs from Python3.12.13/linux-amd64/glibc2.41")
 PYBASE
-RUN test "$(uv --version)" = "uv 0.12.22"
+RUN test "$(uv --version)" = "uv 0.12.22 (x86_64-unknown-linux-gnu)"
 
 # libportaudio2 for selected live-listener is part of the immutable base, never
 # an app/startup apt download. Both targets install exactly EXTRAS below.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -63,7 +64,11 @@ def test_base_image_installs_uv_git_and_gh_for_qa_runtime() -> None:
     system = json.loads(Path("deploy/runtime-clis/debian-system-inputs.json").read_text())
     assert {"git", "gh"} <= set(system["profiles"]["runtime"]["requested"])
     assert "--profile runtime" in text
-    assert "python -m pip install --no-cache-dir uv" in text
+    runtime = json.loads(Path("deploy/runtime-clis/runtime-inputs.json").read_text())
+    assert runtime["versions"]["uv"] == "0.12.22"
+    assert "--mount=from=runtime-artifacts" in text
+    assert "--root /" in text
+    assert "pip install" not in text
     assert "uv --version" in text
 
     # REQ-testing-048: project/lock packaging choice; these structural and
@@ -93,26 +98,28 @@ def test_base_image_installs_uv_git_and_gh_for_qa_runtime() -> None:
 def test_compose_base_freshness_uses_pinned_dockerfile_not_live_npm_latest() -> None:
     dockerfile_text = _dockerfile_base_text()
     compose_text = _compose_script_text()
-    runtime_cli_packages = [
-        "@anthropic-ai/claude-code",
-        "@google/gemini-cli",
-        "@openai/codex",
-        "opencode-ai",
-    ]
-
-    for package in runtime_cli_packages:
-        assert re.search(rf"{re.escape(package)}@\d+\.\d+\.\d+", dockerfile_text)
+    runtime = json.loads(Path("deploy/runtime-clis/runtime-inputs.json").read_text())
+    assert runtime["versions"] == {
+        "node": "v22.23.4",
+        "npm": "10.9.9",
+        "uv": "0.12.22",
+        "claude": "2.1.309",
+        "gemini": "0.66.0",
+        "codex": "0.159.2",
+        "opencode": "1.17.7",
+    }
+    assert set(runtime["components"]) == {"node", "uv", "claude", "gemini", "codex", "opencode"}
+    assert "--network=none --mount=from=runtime-artifacts" in dockerfile_text
+    assert "npm install" not in dockerfile_text
+    assert "nodesource.com" not in dockerfile_text
 
     assert "registry.npmjs.org/${pkg}/latest" not in compose_text
     assert "CLI_PKGS=" not in compose_text
 
 
 def test_codex_cli_pin_supports_gpt_6_sol_and_luna() -> None:
-    text = _dockerfile_base_text()
-    match = re.search(r"@openai/codex@(\d+)\.(\d+)\.(\d+)\s+\\", text)
-
-    assert match is not None
-    assert tuple(map(int, match.groups())) >= (0, 159, 2), (
+    runtime = json.loads(Path("deploy/runtime-clis/runtime-inputs.json").read_text())
+    assert tuple(map(int, runtime["versions"]["codex"].split("."))) >= (0, 159, 2), (
         "gpt-6-sol and gpt-6-luna require Codex CLI 0.159.2 or newer"
     )
 
@@ -176,9 +183,30 @@ def test_base_image_freshness_fingerprints_each_local_copy_input_without_dotenv(
         "scripts/runtime_clis/install_system_artifacts.py",
         "deploy/runtime-clis/debian-system-inputs.json",
         "scripts/runtime_cli_sandbox_init.c",
+        "scripts/runtime_clis/runtime_artifacts.py",
+        "deploy/runtime-clis/runtime-inputs.json",
         "scripts/generate_runtime_cli_sandbox_manifest.py",
     )
     assert ("Dockerfile.base", *docker_sources) == expected_inputs
+    cli_tree = ast.parse(Path("tests/cli/test_runtime_cli_sandbox.py").read_text())
+    cli_inputs = next(
+        node.value
+        for node in cli_tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_BASE_IMAGE_BUILD_INPUTS"
+            for target in node.targets
+        )
+    )
+    assert ast.literal_eval(cli_inputs) == expected_inputs
+    nightly = Path(".github/workflows/nightly.yml").read_text()
+    nightly_inputs = re.search(
+        r"BASE_INPUT_SHA=\$\(butlers_base_image_input_fingerprint \\\n(.*?)\)",
+        nightly,
+        re.DOTALL,
+    )
+    assert nightly_inputs is not None
+    assert tuple(nightly_inputs.group(1).replace("\\\n", "").split()) == expected_inputs
 
     for relative_path in expected_inputs:
         source = Path(relative_path)

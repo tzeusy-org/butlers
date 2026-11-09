@@ -96,6 +96,32 @@ glibc 2.41 and uv 0.12.22 identities are checked. The base also supplies system
 libraries for configured extras, including libportaudio2 for `live-listener`.
 CLI/system artifact construction remains the `Dockerfile.base` boundary.
 
+The base build requires two separately closed named contexts: `system-artifacts`
+contains the exact Debian archives; `runtime-artifacts` contains the complete
+Node/npm, UV and four CLI installations bound by
+`deploy/runtime-clis/runtime-inputs.json`. The latter retains original package
+launchers, complete installed graphs and native/model/UI assets, including the
+patched public clients. Original Claude/OpenCode postinstall work belongs to
+the artifact producer, before closure. The base verifies and copies these
+inputs under `RUN --network=none`; it never resolves npm packages, runs a
+NodeSource script or installs an unpinned UV wheel. See
+[the runtime context contract](../../deploy/runtime-clis/runtime-artifacts/README.md).
+
+```bash
+docker buildx build -f Dockerfile.base \
+  --build-context system-artifacts=/absolute/path/to/closed-system-artifacts \
+  --build-context runtime-artifacts=/absolute/path/to/closed-runtime-artifacts \
+  --load -t butlers-base:reviewed .
+```
+
+This local output tag is a build result, not the application's required immutable
+base reference. Publishing/provisioning that reference and exact image proof
+remain separate. The current six-component input identity does not certify
+OpenCode's fresh config-directory plugin install, all native auth/tools, or a
+completed OCI/application image. The nightly image caller still needs delivery
+of the matching closed runtime/Python inputs and immutable base; source input
+fingerprints alone do not supply those bytes.
+
 `Dockerfile` has two final targets, `production` (the default) and `development`.
 They build separate real `/app/.venv` directories using the complete frozen
 project dependency set: production has `--no-dev`, development has `--dev`, and

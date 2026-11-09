@@ -1,0 +1,61 @@
+{
+  "schema": "butlers.runtime-inputs/v1",
+  "target": {
+    "python": "3.12.13",
+    "platform": "linux-amd64",
+    "libc": "glibc2.41"
+  },
+  "versions": {
+    "node": "v22.23.4",
+    "npm": "10.9.9",
+    "uv": "0.12.22",
+    "claude": "2.1.309",
+    "codex": "0.159.2",
+    "gemini": "0.66.0",
+    "opencode": "1.17.7"
+  },
+  "components": {
+    "node": {
+      "tree_sha256": "f6b908b0930d9610098a37b495d2c0b9578d39f1350bb61270eea3c1339f515e"
+    },
+    "uv": {
+      "tree_sha256": "79fa356af4bd64c94f5f9d488e558a661c8fadc44f8acabdf51295665364d6b0"
+    },
+    "claude": {
+      "tree_sha256": "c430cd45c2ba69db759b141419c822d3d72e316f7802e69cf6787e812e627b57"
+    },
+    "codex": {
+      "tree_sha256": "377a00a84081b2e1f1960eeadd6895e169e5be6c58f6fda0527454d4e8c675fd"
+    },
+    "gemini": {
+      "tree_sha256": "99e2e2bc593afb4ed0fe636739460ff1531c7adaa5e1b788012f08e05d1e4f51"
+    },
+    "opencode": {
+      "tree_sha256": "2ace38c4b1716eba74212d93b48a9fe6f03fe7129b7e08a7656315c5b5fc5c0a"
+    }
+  },
+  "provenance": {
+    "source_inputs": {
+      "node_official_archive_sha256": "1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce",
+      "uv_official_wheel_sha256": "680769ef701922dd93426b73476073411941f51ac46991a6e5c5a6efbf68a713",
+      "claude_official_wrapper_sha256": "507309e76aa5e13e5f95a8964dcbaad1ff447eb004f6d6ecd67e4c55e937e03e",
+      "codex_official_wrapper_sha256": "cf1e5d7b6e317a4a1d36dbff2ebd9b3cf048ac98d06fcb6682c57248e023cad2",
+      "codex_official_platform_archive_sha256": "84a6b35fb45bdcb94cef9fcb329438045a8911f53876cc9a9a7e6f9bb1382eba",
+      "opencode_official_wrapper_sha256": "1642eca13464b2616a786c5a860edfc7daf1c40dc9cfb880d27a37a5d1c04e1a"
+    },
+    "receipts": {
+      "runtime-component-inputs/postinstall-terminal.json": "5c26c4d368e835b7e4f9c7456d920797e59d81a6a884802bfd4ef14207673f10",
+      "runtime-component-inputs/codex-assembly.json": "224a7dd4746749ed3e87f31593320ed48af40d10c656244b478806dcc704ce35",
+      "runtime-component-inputs/gemini-doc-link-relocation.json": "8772a29183dbc241034e6c47d20eab6013f87c0d04565a12ba19f838ed9d4b7d",
+      "opencode-ninepatch-final-proof/ROOT-VERIFIED.json": "a0c2fb2ebd859e3f9d088f1d5a80cdda53f03068fac7b0f1ccd60ecfdacf21ca",
+      "gemini-adc-stock-build.json": "2f98d12e300e175fe37d463e8d06abbd8d94b7b9bc6cd37838a0e74a5e8a57e2",
+      "gemini-adc-build-source-closure.json": "16a21b5eea324e81bc1e7181d9be870a716c730c6e8737b806c4a8533b9067c5",
+      "gemini-sts-materialized.json": "4411ada8ae2fb3e791f78f328f626a02c394c54fff785c16df8fd34974ca952a",
+      "codex-corrected-artifact-retention.json": "3b569772e28625a5bc3c9b4923312016f2f5eaf6fd9ebea43b69fa66527ddb77",
+      "codex-timeout-release.json": "68640ce66c169ecf4e0d0efec1136f0bc521629e8470bcaa440bd2dbfdb56f30",
+      "claude-official-artifact.json": "fed5a62282fd35a89b4bf9bfc7c418de403c13c63eaa25dc4099c8c727770a8c"
+    },
+    "scope": "Complete retained public package/installed graphs, original stock wrapper paths and native assets. Claude/OpenCode original lifecycle executed before closure. Codex replaces only main executable with corrected GNU build; musl-named original wrapper path does not assert libc. Gemini complete installed corrected monorepo/bundle; OpenCode complete installed nine-patch graph plus original platform package. Actual versions passed contained no-network child. No full auth/tools/plugin/default443/CNI/image conformance inferred.",
+    "plugin_limit": "Default OpenCode global/project config dependency installation remains a separately required closure; complete bundled graph does not prove default config plugin startup."
+  }
+}

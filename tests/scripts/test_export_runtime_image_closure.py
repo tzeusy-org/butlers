@@ -375,6 +375,8 @@ def test_host_identity_pins_provider_job_checkout_and_exact_build_fingerprint(im
                 "scripts/runtime_clis/install_system_artifacts.py "
                 "deploy/runtime-clis/debian-system-inputs.json "
                 "scripts/runtime_cli_sandbox_init.c "
+                "scripts/runtime_clis/runtime_artifacts.py "
+                "deploy/runtime-clis/runtime-inputs.json "
                 "scripts/generate_runtime_cli_sandbox_manifest.py"
             ),
         ],
@@ -644,8 +646,10 @@ def test_installed_npm_unicode_tree_format_and_dockerfile_pins_are_accepted(imag
         "bubblewrap=0.12.0-1~deb13u1\n"
     )
     dockerfile = Path("Dockerfile.base").read_text()
-    assert "@openai/codex@" + image.helper.PINS["codex"] in dockerfile
-    assert "opencode-ai@" + image.helper.PINS["opencode"] in dockerfile
+    versions = json.loads(Path("deploy/runtime-clis/runtime-inputs.json").read_text())["versions"]
+    assert versions["codex"] == image.helper.PINS["codex"]
+    assert versions["opencode"] == image.helper.PINS["opencode"]
+    assert "--mount=from=runtime-artifacts" in dockerfile
     assert "npm list -g --depth=0" in dockerfile
     report = run(image)
     record = next(item for item in report["files"] if item["source"] == image.helper.VERSIONS)

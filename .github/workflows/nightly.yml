@@ -321,6 +321,8 @@ jobs:
             scripts/runtime_clis/install_system_artifacts.py \
             deploy/runtime-clis/debian-system-inputs.json \
             scripts/runtime_cli_sandbox_init.c \
+            scripts/runtime_clis/runtime_artifacts.py \
+            deploy/runtime-clis/runtime-inputs.json \
             scripts/generate_runtime_cli_sandbox_manifest.py)
           docker build \
             --build-context "system-artifacts=${RUNNER_TEMP}/butlers-system-artifacts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
