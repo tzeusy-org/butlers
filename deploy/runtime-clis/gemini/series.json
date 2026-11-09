@@ -76,10 +76,31 @@
           "after_sha256": "0a68965c83fb626a20792b37396ad50cc7dfe4e7fc5c797d6e952fdd8a0a2a42"
         }
       ]
+    },
+    {
+      "path": "patches/004-pinned-external-account-sts.patch",
+      "sha256": "f0b6b9bfd1f90dc04c3196d88e8893deb9d7e9bfb6a413fdbc1d4da3ef15af73",
+      "files": [
+        {
+          "path": "package-lock.json",
+          "before_sha256": "cf16ab51d45d03c924fcd1cb6c750eddc696b9353183bbcb302df5fb2597e0cb",
+          "after_sha256": "5e227ba5079dd0ec83abdd4e515dae53ace96b78c38975b8283b658c9b6b95c1"
+        },
+        {
+          "path": "packages/core/package.json",
+          "before_sha256": "27c9bc4ed235f6b011db7cf08daf029539e41ca3755b7a5eae35969c8b174434",
+          "after_sha256": "32dd62a47be5cc0bc595fd8150ca0061ccda7a72725a971edb39b0d22cda17af"
+        },
+        {
+          "path": "packages/core/src/utils/butlersGoogleAuth.test.ts",
+          "before_sha256": "0a68965c83fb626a20792b37396ad50cc7dfe4e7fc5c797d6e952fdd8a0a2a42",
+          "after_sha256": "050772a92a01f40f8d719babafb81af5912baddc3051f0f6f7bfea8eb66b9a6e"
+        }
+      ]
     }
   ],
-  "source_tree_sha256": "b92a4a0357b81d05c897ffbd4e1741fff757877edbce3ead7078536ef69bdcfd",
+  "source_tree_sha256": "0d8556efa99887f9c542ecb7226f9f593b15138dea58311da68c2cfc1bb3794d",
   "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches.",
-  "qualification": "Exact cached-ADC factory correction source replay. Actual core-resolved GoogleAuth10.9.0/Gaxios7.2.0 owning factory and four synthetic dependency-level refresh controls passed; corrected full Gemini build/native CLI remains pending. Prior API-key native artifact is not the corrected artifact. All native tools/auth modes and immutable image closure remain separate.",
+  "qualification": "Exact cached-ADC R1+constructor-created external_account STS R2 source closure. Core GoogleAuth10.9.0 is a private stock-built artifact with unchanged version/dependencies; every other existing lock node stays exact. Source/contained client controls and full corrected Gemini stock build/native artifact remain separately evidenced.",
   "shared_executor_head": "318c33d665a67fdfb984e31333941b1bebdfa05e"
 }

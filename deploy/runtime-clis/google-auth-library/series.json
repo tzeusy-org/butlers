@@ -1,0 +1,39 @@
+{
+  "schema": "butlers.vendor-patch-series/v1",
+  "vendor": "google-auth-library",
+  "version": "10.9.0",
+  "commit": "1b010c501559ec8be815f870a340fc79cbe91730",
+  "archive": {
+    "url": "https://codeload.github.com/googleapis/google-cloud-node/tar.gz/1b010c501559ec8be815f870a340fc79cbe91730",
+    "sha256": "6ea44e31f9895ba1fc2f35e9e38a920f6028f59fdaf191ac54aedf7a59b5b299",
+    "root": "google-cloud-node-1b010c501559ec8be815f870a340fc79cbe91730",
+    "subdirectory": "core/packages/google-auth-library-nodejs",
+    "package_git_tree": "50275c61d665ec3c6b46c07750bed42241ba6a89"
+  },
+  "patches": [
+    {
+      "path": "patches/001-explicit-sts-fetch-and-build-lock.patch",
+      "sha256": "34b4f86c7dba4b68acb5cc6fa5c3842779dd950f8d4ac7319e5fc0975d469d76",
+      "files": [
+        {
+          "path": "src/auth/baseexternalclient.ts",
+          "before_sha256": "6fbeca79e5da687e3aca0c1763f1e16ba1f516cb130c582892e3605e581f5f79",
+          "after_sha256": "404e1372719d610f0d6f03a00baec8333ec970c25655708648791ae477b3f504"
+        },
+        {
+          "path": "src/auth/identitypoolclient.ts",
+          "before_sha256": "2e889ce803ed5bfb9e61546267c0bc7c3c9ec97df9e0fa0575d4b34dd05a04d9",
+          "after_sha256": "cb36df9cdedc3522c5c89d6ee882f603a01dd348c02dc16fde9fb29cae4a9290"
+        },
+        {
+          "path": "package-lock.json",
+          "before_sha256": null,
+          "after_sha256": "cb534b4ee2349064474abfda74848330dac64026bd6bd0e4db966571e3001159"
+        }
+      ]
+    }
+  ],
+  "source_tree_sha256": "656c79ecb519356064ce810b95e525120569d382981d4fd0c7f3a9d08a3115c3",
+  "context_contract": "Complete preimage/output bytes; zero-context hunks, patch --fuzz=0 and fixed child umask027 for new source files. Complete package paths/modes/symlinks bound.",
+  "qualification": "Complete214-entry public package subtree independently verified against Git blob identities and full official monorepo archive. Original stock npm ci/prepare/full tsc and npm pack/prepare passed with exact new build lock; all95 public package files retained, only two intended JS modules changed. Installed final Gemini/native/cert-auth coverage and immutable image remain separate."
+}
