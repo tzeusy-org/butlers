@@ -8,8 +8,8 @@ same connector process, this meant:
 
 - whichever device most recently resolved "owned" the shared heartbeat, so
   sibling devices could go silent for weeks with zero registry row (bu-e16to)
-- because webhook events are dispatched fire-and-forget onto the main loop
-  (see ``_dispatch_event_to_main_loop``), two devices' events could interleave
+- because each webhook event is processed on the main loop concurrently with
+  others (see ``_process_on_main_loop``), two devices' events could interleave
   such that a *slower* event finished processing under a *different* device's
   identity than the one it actually belonged to -- corrupting that device's
   checkpoint cursor (``cursor_store`` writes straight into

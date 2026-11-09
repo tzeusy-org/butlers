@@ -61,7 +61,7 @@ import logging
 import os
 import random
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -1715,6 +1715,30 @@ async def persist_ha_history(
 # ---------------------------------------------------------------------------
 
 
+# A live event is never re-delivered, so a transport blip gets one more try
+# before the envelope is parked. Kept short: the dispatcher awaits it inline,
+# so a longer wait would hold up the event stream behind it (bu-dhloi1.224).
+_LIVE_INGEST_ATTEMPTS = 2
+_LIVE_INGEST_RETRY_DELAY_S = 0.25
+
+
+async def _ingest_live(mcp_client: Any, envelope: dict[str, Any]) -> None:
+    """Submit *envelope*, retrying a transport failure once after a short pause.
+
+    Only ``ConnectionError`` (``CachedMCPClient``'s transport failure, which
+    ``TransientToolError`` subclasses) is retried; any other error, or a second
+    transport failure, propagates for the caller to park.
+    """
+    for attempt in range(1, _LIVE_INGEST_ATTEMPTS + 1):
+        try:
+            await mcp_client.call_tool("ingest", envelope)
+            return
+        except ConnectionError:
+            if attempt >= _LIVE_INGEST_ATTEMPTS:
+                raise
+            await asyncio.sleep(_LIVE_INGEST_RETRY_DELAY_S)
+
+
 async def emit_with_wellness_promotion(
     *,
     mcp_client: Any,
@@ -1734,6 +1758,7 @@ async def emit_with_wellness_promotion(
     emit_home_assistant: bool = True,
     classification_result: ClassifyResult | None = None,
     content_blind_errors: bool = False,
+    on_failed: Callable[[dict[str, Any], BaseException], Awaitable[None]] | None = None,
 ) -> bool:
     """Submit the ``home_assistant`` envelope and, when warranted, a second
     ``wellness`` envelope for the same event (design ADR-3).
@@ -1746,18 +1771,31 @@ async def emit_with_wellness_promotion(
     logs. Both emissions reuse the same ``external_event_id`` — the Switchboard's
     channel-inclusive dedup key keeps them independent on replay.
 
+    A caller on a stream that never re-delivers (the live dispatcher) passes
+    *on_failed*: each submission retries a transport failure once
+    (``_ingest_live``), an envelope that still fails is handed to it, scrubbed,
+    to park for replay (bu-dhloi1.224), and a failed primary no longer stops the
+    secondary channel, which would otherwise never be sent.
+
     Returns:
         ``True`` if every attempted submission succeeded (caller may advance the
-        checkpoint once); ``False`` if any submission failed transiently (caller
-        must NOT advance — replay re-emits both channels, deduped per channel).
+        checkpoint once); ``False`` if any submission failed (caller must NOT
+        advance; history recovery re-reads and re-emits both channels, deduped
+        per channel).
     """
     from butlers.connectors.home_assistant_envelope import build_wellness_envelope
 
+    submitted_all = True
     if emit_home_assistant:
         if ha_envelope is None:
             raise ValueError("ha_envelope is required when emit_home_assistant=True")
+        scrubbed: dict[str, Any] | None = None
         try:
-            await mcp_client.call_tool("ingest", scrub_ha_envelope(ha_envelope))
+            scrubbed = scrub_ha_envelope(ha_envelope)
+            if on_failed is None:
+                await mcp_client.call_tool("ingest", scrubbed)
+            else:
+                await _ingest_live(mcp_client, scrubbed)
             if metrics is not None:
                 metrics.inc_submission("home_assistant", "success")
         except Exception as exc:
@@ -1776,11 +1814,15 @@ async def emit_with_wellness_promotion(
                 )
             if metrics is not None:
                 metrics.inc_submission("home_assistant", "error")
-            # Primary failed: do not attempt the secondary channel, do not advance.
-            return False
+            if on_failed is None or scrubbed is None:
+                # Primary failed (or its scrub withheld it): do not attempt the
+                # secondary channel, do not advance.
+                return False
+            await on_failed(scrubbed, exc)
+            submitted_all = False
 
     if not promotion_enabled:
-        return True
+        return submitted_all
 
     # Classify for the secondary (wellness) channel.
     result = classification_result
@@ -1796,7 +1838,7 @@ async def emit_with_wellness_promotion(
             metrics.inc_wellness_classify(result.outcome, result.metric)
 
     if result.outcome != "promoted" or result.metric is None or result.value is None:
-        return True
+        return submitted_all
 
     wellness_envelope = build_wellness_envelope(
         endpoint_identity=endpoint_identity,
@@ -1811,8 +1853,13 @@ async def emit_with_wellness_promotion(
         new_state=new_state,
     )
 
+    scrubbed_wellness: dict[str, Any] | None = None
     try:
-        await mcp_client.call_tool("ingest", scrub_ha_envelope(wellness_envelope))
+        scrubbed_wellness = scrub_ha_envelope(wellness_envelope)
+        if on_failed is None:
+            await mcp_client.call_tool("ingest", scrubbed_wellness)
+        else:
+            await _ingest_live(mcp_client, scrubbed_wellness)
         if metrics is not None:
             metrics.inc_submission("wellness", "success")
     except Exception as exc:
@@ -1832,11 +1879,13 @@ async def emit_with_wellness_promotion(
             )
         if metrics is not None:
             metrics.inc_submission("wellness", "error")
-        # Secondary failed transiently: leave the checkpoint un-advanced so the
-        # replay re-emits both channels (the accepted primary will dedupe).
+        if on_failed is not None and scrubbed_wellness is not None:
+            await on_failed(scrubbed_wellness, exc)
+        # Secondary failed: leave the checkpoint un-advanced so a re-read
+        # re-emits both channels (the accepted primary will dedupe).
         return False
 
-    return True
+    return submitted_all
 
 
 async def _emit_history_wellness_measurement(
@@ -2221,6 +2270,17 @@ def _make_event_dispatcher(
             return transport
         return "rest_fallback" if connector._rest_fallback_active else "websocket"
 
+    def _parker(entity_id: str) -> Callable[[dict[str, Any], BaseException], Awaitable[None]]:
+        # The live stream never re-delivers an event, so a failed submission is
+        # parked durably as a replayable error row instead of dropped
+        # (bu-dhloi1.224).
+        async def park(envelope: dict[str, Any], exc: BaseException) -> None:
+            await ha_filter_persistence.park_submission_failure(
+                envelope=envelope, entity_id=entity_id, exc=exc
+            )
+
+        return park
+
     async def _dispatch(
         event_type: str, event: dict[str, Any], transport: str | None = None
     ) -> None:
@@ -2309,17 +2369,21 @@ def _make_event_dispatcher(
                 friendly_name=friendly_name,
                 domain=domain,
             )
+            scrubbed: dict[str, Any] | None = None
             try:
                 ingest_start = time.monotonic()
-                await connector._mcp_client.call_tool("ingest", scrub_ha_envelope(envelope))
+                scrubbed = scrub_ha_envelope(envelope)
+                await _ingest_live(connector._mcp_client, scrubbed)
                 connector._ha_metrics and connector._ha_metrics.observe_event_latency(
                     time.monotonic() - ingest_start
                 )
-            except Exception:
+            except Exception as exc:
                 logger.warning(
                     "ha-connector: failed to submit automation_triggered envelope",
                 )
                 connector.on_event_received(passed_all_filters=False)
+                if scrubbed is not None:
+                    await _parker(entity_id)(scrubbed, exc)
                 return
 
             connector.on_event_received(passed_all_filters=True)
@@ -2493,6 +2557,7 @@ def _make_event_dispatcher(
                         promotion_enabled=True,
                         emit_home_assistant=False,
                         classification_result=wellness_result,
+                        on_failed=_parker(entity_id),
                     )
                     if connector._ha_metrics is not None:
                         connector._ha_metrics.observe_event_latency(time.monotonic() - ingest_start)
@@ -2525,9 +2590,9 @@ def _make_event_dispatcher(
 
         # Emit on the home_assistant channel and, when the reading is
         # health-shaped, additionally on the wellness channel (ADR-3). The
-        # checkpoint is advanced once, only after BOTH submissions succeed; a
-        # transient secondary failure leaves it un-advanced so the replay
-        # re-emits both channels (deduped per channel by the Switchboard).
+        # checkpoint is advanced once, only after BOTH submissions succeed. The
+        # live stream never re-delivers an event, so each envelope that fails is
+        # parked as a replayable error row (bu-dhloi1.224).
         ingest_start = time.monotonic()
         submitted_all = await emit_with_wellness_promotion(
             mcp_client=connector._mcp_client,
@@ -2545,12 +2610,14 @@ def _make_event_dispatcher(
             metrics=connector._ha_metrics,
             promotion_enabled=config.wellness_promotion_enabled,
             classification_result=wellness_result,
+            on_failed=_parker(entity_id),
         )
         if connector._ha_metrics is not None:
             connector._ha_metrics.observe_event_latency(time.monotonic() - ingest_start)
 
         if not submitted_all:
-            # Do not advance the checkpoint; the event will be replayed.
+            # The failed envelopes were parked durably as replayable error rows.
+            # The checkpoint stays put (it only deduplicates).
             return
 
         # Persist person.* state-change events to the history evidence table

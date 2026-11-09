@@ -104,6 +104,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+class ParkNotDurableError(RuntimeError):
+    """A failed submission could not be parked durably; keep holding its source."""
+
+
 # Top-level key on a stored ``full_payload`` that annotates why the drop matters.
 # Read by the dashboard's dropped-from-people-you-know aggregate.
 DROP_CONTEXT_KEY = "drop_context"
@@ -633,36 +638,109 @@ class FilteredEventBuffer:
             error_detail: Exception message or validation error text (optional).
             received_at: Override the received timestamp (defaults to now UTC).
         """
-        ts = received_at if received_at is not None else datetime.now(UTC)
-        stored_payload, stored_error = _scrub_stored_event(full_payload, error_detail)
         self._rows.append(
-            (
-                ts,
+            self._row(
+                external_message_id=external_message_id,
+                source_channel=source_channel,
+                sender_identity=sender_identity,
+                subject_or_preview=subject_or_preview,
+                filter_reason=filter_reason,
+                full_payload=full_payload,
+                status=status,
+                error_detail=error_detail,
+                received_at=received_at,
+            )
+        )
+
+    async def park(
+        self,
+        pool: asyncpg.Pool | None,
+        *,
+        external_message_id: str,
+        source_channel: str,
+        sender_identity: str,
+        subject_or_preview: str | None,
+        full_payload: dict[str, Any],
+        error_detail: str | None = None,
+    ) -> None:
+        """Durably park one failed submission as a replayable error row.
+
+        A parked row is the only copy of an item whose source has been told it
+        was handled, so it is written at once, on its own, and the call returns
+        only once the row is committed. Callers release the source (commit a
+        cursor, acknowledge a webhook) only after this returns.
+
+        Unlike :meth:`flush`, nothing is swallowed: no *pool*, or a failed
+        write, raises :class:`ParkNotDurableError` and the row is not kept, so
+        the caller holds the source and the item is parked again on its next
+        attempt (bu-dhloi1.224).
+        """
+        if pool is None:
+            raise ParkNotDurableError("no connectors database pool to park into")
+        row = self._row(
+            external_message_id=external_message_id,
+            source_channel=source_channel,
+            sender_identity=sender_identity,
+            subject_or_preview=subject_or_preview,
+            filter_reason=self.reason_submission_error(),
+            full_payload=full_payload,
+            status="error",
+            error_detail=error_detail,
+            received_at=None,
+        )
+        try:
+            await self._write(pool, [row])
+        except Exception as exc:
+            logger.error(
+                "Failed to park a failed submission durably (connector_type=%s, endpoint=%s)",
                 self._connector_type,
                 self._endpoint_identity,
-                external_message_id,
-                source_channel,
-                sender_identity,
-                scrub_filtered_preview(
-                    subject_or_preview,
-                    connector_type=self._connector_type,
-                    sender_identity=sender_identity,
-                    full_payload=full_payload,
-                ),
-                filter_reason,
-                status,
-                # Sanitize to JSON-safe primitives (e.g. datetimes -> str via
-                # default=str), then bind the resulting dict directly (no
-                # json.dumps, no ::jsonb cast). Every asyncpg pool in this
-                # codebase registers register_jsonb_codec() (src/butlers/db.py),
-                # whose encoder already calls json.dumps() on the bound value;
-                # pre-serializing here double-encodes full_payload into a
-                # jsonb-typed STRING instead of an OBJECT (bu-dycxq — same
-                # anti-pattern as bu-cymc4/bu-x92jw). The replay-drain read
-                # path below still tolerates legacy string-shaped rows.
-                json.loads(json.dumps(stored_payload, default=str)),
-                stored_error,
+                exc_info=True,
             )
+            raise ParkNotDurableError("parked row was not written") from exc
+        await self._publish_ingestion_event(pool)
+
+    def _row(
+        self,
+        *,
+        external_message_id: str,
+        source_channel: str,
+        sender_identity: str,
+        subject_or_preview: str | None,
+        filter_reason: str,
+        full_payload: dict[str, Any],
+        status: str,
+        error_detail: str | None,
+        received_at: datetime | None,
+    ) -> tuple[Any, ...]:
+        ts = received_at if received_at is not None else datetime.now(UTC)
+        stored_payload, stored_error = _scrub_stored_event(full_payload, error_detail)
+        return (
+            ts,
+            self._connector_type,
+            self._endpoint_identity,
+            external_message_id,
+            source_channel,
+            sender_identity,
+            scrub_filtered_preview(
+                subject_or_preview,
+                connector_type=self._connector_type,
+                sender_identity=sender_identity,
+                full_payload=full_payload,
+            ),
+            filter_reason,
+            status,
+            # Sanitize to JSON-safe primitives (e.g. datetimes -> str via
+            # default=str), then bind the resulting dict directly (no
+            # json.dumps, no ::jsonb cast). Every asyncpg pool in this
+            # codebase registers register_jsonb_codec() (src/butlers/db.py),
+            # whose encoder already calls json.dumps() on the bound value;
+            # pre-serializing here double-encodes full_payload into a
+            # jsonb-typed STRING instead of an OBJECT (bu-dycxq — same
+            # anti-pattern as bu-cymc4/bu-x92jw). The replay-drain read
+            # path below still tolerates legacy string-shaped rows.
+            json.loads(json.dumps(stored_payload, default=str)),
+            stored_error,
         )
 
     async def flush(self, pool: asyncpg.Pool) -> None:
@@ -680,8 +758,11 @@ class FilteredEventBuffer:
         partition creation.
 
         Flush failures are logged as warnings and do **not** raise; unflushed
-        events are silently dropped.  This is intentional — filtered events are
-        operational visibility data and their loss is acceptable.
+        events are dropped.  That is acceptable only for rows whose source still
+        holds the item (policy-filtered visibility rows, or error rows recorded
+        while the source cursor is held).  A failed submission whose source is
+        about to be released must go through :meth:`park` instead, which writes
+        the row at once and raises unless it was committed.
 
         Args:
             pool: asyncpg pool with access to the ``connectors`` schema.
@@ -692,16 +773,7 @@ class FilteredEventBuffer:
         rows_to_flush = list(self._rows)
 
         try:
-            # Ensure the monthly partition exists before inserting.  Must run on
-            # an autocommit connection (pool.execute, not inside a transaction)
-            # so that DDL is immediately durable even if the batch INSERT below
-            # fails or is retried.
-            await pool.execute(
-                "SELECT connectors.connectors_filtered_events_ensure_partition(now())"
-            )
-
-            async with pool.acquire() as conn:
-                await conn.executemany(_INSERT_SQL, rows_to_flush)
+            await self._write(pool, rows_to_flush)
         except Exception:
             logger.warning(
                 "Failed to flush %d filtered events (connector_type=%s, endpoint=%s); "
@@ -722,6 +794,21 @@ class FilteredEventBuffer:
             self._endpoint_identity,
         )
 
+        await self._publish_ingestion_event(pool)
+
+    async def _write(self, pool: asyncpg.Pool, rows: list[tuple[Any, ...]]) -> None:
+        """INSERT *rows* in one batch; raises on any failure."""
+        # Ensure the monthly partition exists before inserting.  Must run on
+        # an autocommit connection (pool.execute, not inside a transaction)
+        # so that DDL is immediately durable even if the batch INSERT below
+        # fails or is retried.
+        await pool.execute("SELECT connectors.connectors_filtered_events_ensure_partition(now())")
+
+        async with pool.acquire() as conn:
+            await conn.executemany(_INSERT_SQL, rows)
+
+    @staticmethod
+    async def _publish_ingestion_event(pool: asyncpg.Pool) -> None:
         # These rows never reach ingest_v1(), so they have no canonical request_id.
         # The existing ingestion cache patch keys only on the event type; an empty,
         # bounded payload therefore invalidates the unified feed without inventing

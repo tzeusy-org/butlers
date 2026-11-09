@@ -78,7 +78,11 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from butlers.connector_catalog import connector_descriptor
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.filtered_event_buffer import (
+    FilteredEventBuffer,
+    ParkNotDurableError,
+    drain_replay_pending,
+)
 from butlers.connectors.home_assistant_scrub import HABearerScrubError, scrub_ha_envelope
 
 _DESCRIPTOR = connector_descriptor("home_assistant")
@@ -463,6 +467,42 @@ class HAFilterPersistence:
                 event_type=event_type,
             ),
         )
+
+    async def park_submission_failure(
+        self,
+        *,
+        envelope: dict[str, Any],
+        entity_id: str,
+        exc: BaseException,
+    ) -> bool:
+        """Durably park a live envelope whose ingest failed; True once written.
+
+        The live stream never delivers the event again, so this row is its only
+        copy (bu-dhloi1.224); it is written at once rather than buffered. *envelope*
+        must be the scrubbed envelope that was submitted; it is stored exactly,
+        idempotency key included, so a replay is the same submission. The error
+        detail is the exception class only: transport text can echo request
+        content. A push stream has nothing to hold, so a park that cannot be
+        written is logged as an error (a lost event) and reported as False.
+        """
+        event = envelope.get("event") or {}
+        try:
+            await self._buffer.park(
+                self._db_pool,
+                external_message_id=str(event.get("external_event_id") or entity_id),
+                source_channel=_DESCRIPTOR.channel,
+                sender_identity=entity_id,
+                subject_or_preview=f"HA ingest failed: {entity_id}",
+                error_detail=type(exc).__name__,
+                full_payload=FilteredEventBuffer.stored_envelope(envelope),
+            )
+        except ParkNotDurableError:
+            logger.error(
+                "HAFilterPersistence: live event for entity_id=%s could not be parked; it is lost",
+                entity_id,
+            )
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Buffer length
