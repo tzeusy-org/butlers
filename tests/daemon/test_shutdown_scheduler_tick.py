@@ -176,3 +176,37 @@ async def test_a_loop_that_already_failed_does_not_stop_shutdown(tmp_path: Path,
 
     assert events == ["client closed"]
     assert "Scheduler loop failed" in caplog.text
+
+
+async def test_a_running_tick_finishes_before_the_spawner_stops_accepting(
+    tmp_path: Path,
+) -> None:
+    """A tick claims an occurrence (advancing ``next_run_at``) before it dispatches.
+
+    If the spawner refuses triggers while that tick is still running, a prompt-mode dispatch
+    fails after the claim and the occurrence is lost until the next cron (bu-dhloi1.138).
+    """
+    events: list[str] = []
+    daemon = _daemon(tmp_path, events, budget_s=5)
+    daemon.spawner = MagicMock(
+        drain=AsyncMock(),
+        stop_accepting=MagicMock(side_effect=lambda: events.append("stop accepting")),
+    )
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def tick(*args: Any, **kwargs: Any) -> int:
+        started.set()
+        await release.wait()
+        events.append("tick finished")
+        return 0
+
+    await _running(daemon, tick, started)
+    shutdown = asyncio.create_task(lifecycle._shutdown_resources(daemon))
+    await asyncio.sleep(0.05)
+    assert events == []
+
+    release.set()
+    async with asyncio.timeout(5):
+        await shutdown
+
+    assert events == ["tick finished", "stop accepting", "client closed"]

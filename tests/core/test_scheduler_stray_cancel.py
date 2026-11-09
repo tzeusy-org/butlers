@@ -97,6 +97,32 @@ class TestTick:
         assert result == {"error": "CancelledError()"}
         assert (await _last_result(tick_pool, "next"))[1] == {"ok": True}
 
+    async def test_a_stopping_tick_claims_no_further_rows(self, tick_pool):
+        """bu-dhloi1.138: shutdown mid-tick lets the claimed row dispatch, and claims no more."""
+        await _due_job(tick_pool, "first", minutes_ago=2)
+        await _due_job(tick_pool, "second", minutes_ago=1)
+        before = await tick_pool.fetchval(
+            "SELECT next_run_at FROM scheduled_tasks WHERE name = 'second'"
+        )
+        stopping = asyncio.Event()
+        ran = []
+
+        async def dispatch(*, trigger_source, **_kwargs):
+            ran.append(trigger_source)
+            stopping.set()  # shutdown arrives while the first row is dispatching
+            return {"ok": True}
+
+        dispatched = await tick(tick_pool, dispatch, stopping=stopping)
+
+        assert ran == ["schedule:first"]
+        assert dispatched == 1
+        assert (await _last_result(tick_pool, "first"))[1] == {"ok": True}
+        row = await tick_pool.fetchrow(
+            "SELECT next_run_at, last_run_at FROM scheduled_tasks WHERE name = 'second'"
+        )
+        assert row["next_run_at"] == before
+        assert row["last_run_at"] is None
+
     async def test_a_real_cancel_of_a_running_tick_still_propagates(self, tick_pool):
         await _due_job(tick_pool, "running", minutes_ago=2)
         await _due_job(tick_pool, "never", minutes_ago=1)
@@ -280,3 +306,26 @@ async def test_a_stray_cancel_during_shutdown_does_not_keep_the_loop_alive(monke
     await asyncio.wait_for(task, timeout=5)
 
     assert ticks == 1
+
+
+@pytest.mark.unit
+async def test_the_scheduler_loop_tells_a_running_tick_to_claim_nothing_more(monkeypatch):
+    """The loop sets ``stopping`` when cancelled mid-tick, then waits for that tick."""
+    started, release = asyncio.Event(), asyncio.Event()
+    seen: list[bool] = []
+
+    async def tick_fn(*_args, stopping=None, **_kwargs):
+        assert stopping is not None and not stopping.is_set()
+        started.set()
+        await release.wait()
+        seen.append(stopping.is_set())
+        return 0
+
+    task = _start_loop(monkeypatch, tick_fn)
+    await asyncio.wait_for(started.wait(), timeout=5)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    release.set()
+    await asyncio.wait_for(task, timeout=5)
+
+    assert seen == [True]

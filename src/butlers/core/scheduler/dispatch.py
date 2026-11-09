@@ -60,6 +60,7 @@ async def tick(
     completion_hooks: dict[str, Any] | None = None,
     eligibility_pool: asyncpg.Pool | None = None,
     default_timezone: str = _DEFAULT_SCHEDULE_TIMEZONE,
+    stopping: asyncio.Event | None = None,
 ) -> int:
     """Evaluate due tasks and dispatch them.
 
@@ -147,6 +148,12 @@ async def tick(
             ``public.qa_local_schedule_policy()`` through *pool* (its own
             runtime-role pool) before the passes and again immediately before
             every deadline or cron dispatch; any refusal fails closed.
+        stopping: Set by the scheduler loop when shutdown begins. It is checked before each
+            claim (deadline, cron and event-chain), never between claim and dispatch: a row
+            seen set is left untouched with its ``next_run_at`` unchanged, and a row already
+            claimed still dispatches, while the spawner still accepts. Without it, an
+            in-flight tick would keep starting fresh sessions that the shutdown deadline
+            then kills part way.
 
     Returns:
         The number of tasks successfully dispatched (cron + deadline).
@@ -198,6 +205,15 @@ async def tick(
             dispatch_gate_reason = await _butler_dispatch_gated(eligibility_pool, butler_name)
         span.set_attribute("dispatch_gated", dispatch_gate_reason is not None)
 
+        claim_refusal = admission_refusal
+        if stopping is not None:
+            policy_refusal = admission_refusal
+
+            async def claim_refusal() -> str | None:  # pyright: ignore[reportRedeclaration]
+                if stopping.is_set():
+                    return "scheduler is stopping"
+                return await policy_refusal() if policy_refusal is not None else None
+
         if dispatch_gate_reason is not None:
             logger.info(
                 "Scheduler: skipping deadline/cron dispatch for butler %r — %s",
@@ -218,7 +234,7 @@ async def tick(
                 max_stagger_seconds=max_stagger_seconds,
                 metrics=metrics,
                 active_seasons=active_seasons,
-                admission_refusal=admission_refusal,
+                admission_refusal=claim_refusal,
                 butler_name=butler_name,
             )
             span.set_attribute("deadlines_evaluated", deadlines_evaluated)
@@ -284,8 +300,8 @@ async def tick(
 
             # Recheck before the claim so a refused task keeps its due
             # next_run_at and resumes exactly once after the hold lifts.
-            if admission_refusal is not None:
-                refusal = await admission_refusal()
+            if claim_refusal is not None:
+                refusal = await claim_refusal()
                 if refusal is not None:
                     logger.info("Scheduler: stopping cron admission before %r — %s", name, refusal)
                     break
@@ -457,7 +473,10 @@ async def tick(
         span.set_attribute("tasks_run", dispatched)
 
         # --- Pass 3: Event chain trigger detection (after cron/deadline dispatch) ---
-        chains_fired = await _tick_event_chain_pass(pool, dispatch_fn, now)
+        if stopping is not None and stopping.is_set():
+            chains_fired = 0
+        else:
+            chains_fired = await _tick_event_chain_pass(pool, dispatch_fn, now)
         span.set_attribute("chains_fired", chains_fired)
 
         # --- Pass 4: Deferred notification flush (after chain detection) ---

@@ -373,6 +373,9 @@ async def scheduler_loop(
         butler_name,
     )
 
+    # Set when cancellation arrives mid-tick, so the tick it lets finish claims no new work.
+    stopping = asyncio.Event()
+
     try:
         while True:
             await asyncio.sleep(interval)
@@ -393,6 +396,7 @@ async def scheduler_loop(
                         completion_hooks=completion_hooks,
                         eligibility_pool=eligibility_pool,
                         default_timezone=default_timezone,
+                        stopping=stopping,
                     )
                 )
                 try:
@@ -403,7 +407,9 @@ async def scheduler_loop(
                         butler_name,
                     )
                 except asyncio.CancelledError:
-                    # Cancellation arrived while tick() was running; let it finish.
+                    # Cancellation arrived while tick() was running; let it finish what it
+                    # has claimed, but claim nothing more.
+                    stopping.set()
                     logger.debug(
                         "Scheduler loop: cancelled during tick(), waiting for tick to finish"
                     )
