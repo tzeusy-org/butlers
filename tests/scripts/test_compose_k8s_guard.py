@@ -42,6 +42,9 @@ def _run_launcher(
     artifacts = tmp_path / "python-artifacts"
     artifacts.mkdir()
     (artifacts / "provenance.json").write_text("{}")
+    go_artifacts = tmp_path / "go-artifacts"
+    go_artifacts.mkdir()
+    (go_artifacts / "provenance.json").write_text("{}")
     audio_artifacts = tmp_path / "audio-python-artifacts"
     audio_artifacts.mkdir()
     (audio_artifacts / "provenance.json").write_text("{}")
@@ -147,6 +150,7 @@ def _run_launcher(
         environment.update(
             BUTLERS_BASE_IMAGE="registry.example.test/butlers/base@sha256:" + "a" * 64,
             BUTLERS_PYTHON_ARTIFACTS=str(artifacts),
+            BUTLERS_GO_ARTIFACTS=str(go_artifacts),
             BUTLERS_AUDIO_PYTHON_ARTIFACTS=str(audio_artifacts),
         )
     if grafana_anonymous is not None:
@@ -188,6 +192,7 @@ def test_app_builds_forward_closed_inputs_and_actual_target(tmp_path, args, targ
         assert argv[argv.index("--target") + 1] == target
         assert "BUTLERS_BASE_IMAGE=registry.example.test/butlers/base@sha256:" + "a" * 64 in argv
         assert "-f" not in argv  # no floating base rebuild during launch
+        assert "go-artifacts=" + str(tmp_path / "go-artifacts") in argv
     assert "python-artifacts=" + str(tmp_path / "python-artifacts") in builds[0]
     assert "EXTRAS=live-listener" not in builds[0]
     assert "python-artifacts=" + str(tmp_path / "audio-python-artifacts") in builds[1]

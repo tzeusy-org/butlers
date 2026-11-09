@@ -150,6 +150,14 @@ context's wheelhouse/constraints/cache and no host cache mount. It seals the
 installed environment only after the complete install succeeds. The final
 images copy the environment and seal, leaving the build wheelhouse/cache behind.
 The original locked Go WhatsApp bridge source build remains a separate stage.
+It requires a second named context, `go-artifacts`, produced from the complete
+public module cache by `Dockerfile.go-artifacts`. Its offline close phase checks
+the original `go.mod` and `go.sum`, all cache paths/bytes/modes, module integrity,
+`go mod tidy -diff`, and a read-only bridge compilation before publishing.
+The application revalidates that context and compiles the original bridge with
+`RUN --network=none`; neither stage executes the bridge. See the
+[Go artifact producer](../../deploy/runtime-clis/go-artifacts/README.md) for the
+pinned producer command and metadata boundary.
 
 After obtaining those verified inputs, an explicit source build is:
 
@@ -160,14 +168,15 @@ docker buildx build --target production \
   --build-arg EXTRAS=live-listener \
   --build-arg GIT_SHA="$(git rev-parse HEAD)" \
   --build-context python-artifacts=/absolute/path/to/verified-python-artifacts \
+  --build-context go-artifacts=/absolute/path/to/verified-go-artifacts \
   --load -t "butlers-app:$GIT_SHA" .
 ```
 
 Use `--target development` for the complete dev-group image and keep its tag
 separate from production. This source foundation has not yet earned actual
 production/development image or cold-start proof. `scripts/compose.sh` requires
-`BUTLERS_BASE_IMAGE` and `BUTLERS_PYTHON_ARTIFACTS`, forwarding them as the base
-argument and named context. It selects `development` in dev mode (including
+`BUTLERS_BASE_IMAGE`, `BUTLERS_PYTHON_ARTIFACTS`, and `BUTLERS_GO_ARTIFACTS`,
+forwarding them as the base argument and two named contexts. It selects `development` in dev mode (including
 `--no-hotreload`) and `production` in prod mode. Ordinary app builds select no
 extras. `--audio` additionally requires `BUTLERS_AUDIO_PYTHON_ARTIFACTS`, whose
 profile selects exactly `live-listener`, for the separate audio image. Missing
@@ -363,13 +372,14 @@ manual build-then-`up -d` ceremony with one idempotent command:
 ```bash
 butlers deploy --dir /path/to/repo --timeout 180 \
   --base-image "$BUTLERS_BASE_IMAGE" \
-  --python-artifacts "$BUTLERS_PYTHON_ARTIFACTS"
+  --python-artifacts "$BUTLERS_PYTHON_ARTIFACTS" \
+  --go-artifacts "$BUTLERS_GO_ARTIFACTS"
 ```
 
 It runs, in order:
 
 1. **Build** — forwards the explicit production target, immutable base and named artifact
-   context described above. The two build-input options also accept their corresponding
+   contexts described above. The three build-input options also accept their corresponding
    environment variables; a former no-input invocation refuses.
 2. **Prepare and migrate** — runs the merged Compose input with `run --rm migrations`. That
    one-shot first applies Chronicler's explicit private-schema prerequisite, then runs the ordinary

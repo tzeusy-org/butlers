@@ -56,6 +56,9 @@ def _run_launcher(
     artifacts = tmp_path / "python-artifacts"
     artifacts.mkdir()
     (artifacts / "provenance.json").write_text("{}")
+    go_artifacts = tmp_path / "go-artifacts"
+    go_artifacts.mkdir()
+    (go_artifacts / "provenance.json").write_text("{}")
 
     calls = tmp_path / "calls"
     state = tmp_path / "state"
@@ -155,6 +158,7 @@ printf '%s\n' "$now"
         "TEST_ATTRIBUTION": attribution,
         "BUTLERS_BASE_IMAGE": "registry.example.test/butlers/base@sha256:" + "a" * 64,
         "BUTLERS_PYTHON_ARTIFACTS": str(artifacts),
+        "BUTLERS_GO_ARTIFACTS": str(go_artifacts),
     }
     args = ["bash", scripts / "compose.sh", "--skip-oauth-check", "--skip-tailscale-check"]
     if no_hotreload:

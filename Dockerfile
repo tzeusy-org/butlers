@@ -2,7 +2,7 @@
 
 # Required immutable runtime/CLI base from the coordinated source build.
 # No local tag or invented digest is a fallback. BuildKit also requires the
-# explicitly supplied named python-artifacts context (see deployment docs).
+# explicitly supplied named python-artifacts and go-artifacts contexts.
 ARG BUTLERS_BASE_IMAGE
 
 # Retain the original WhatsApp bridge source build and dependency lock.
@@ -11,15 +11,18 @@ FROM golang:1.25.11-bookworm@sha256:bbb255b0e131db500cf0520adc97441d2260cf629c7f
 
 WORKDIR /build
 
-COPY whatsapp-bridge/go.mod whatsapp-bridge/go.sum ./
-RUN go mod download
-
+# Complete source-owned module context; this stage never fetches or resolves.
+COPY scripts/runtime_clis/go_artifacts.go /producer/go_artifacts.go
 COPY whatsapp-bridge/ ./
-RUN --mount=type=cache,target=/root/.cache/go-build \
-    go mod tidy && CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w" \
-    -o /out/whatsapp-bridge \
-    ./cmd/bridge
+ENV GOENV=off GOTOOLCHAIN=local GOVCS=off GOPROXY=off GOSUMDB=off \
+    GOMODCACHE=/opt/go-artifacts/modules
+RUN --network=none --mount=from=go-artifacts,source=.,target=/opt/go-artifacts,readonly \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go run /producer/go_artifacts.go verify --project /build --artifacts /opt/go-artifacts \
+    && go mod verify \
+    && go mod tidy -diff \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=readonly -trimpath -buildvcs=false \
+    -ldflags="-s -w" -o /out/whatsapp-bridge ./cmd/bridge
 
 # --- Shared application source (no installed environment yet) ----------------
 FROM ${BUTLERS_BASE_IMAGE} AS application-source
@@ -27,7 +30,7 @@ ARG BUTLERS_BASE_IMAGE
 ARG EXTRAS=""
 WORKDIR /app
 
-RUN /usr/local/bin/python - <<'PYBASE'
+RUN --network=none /usr/local/bin/python - <<'PYBASE'
 import os, platform, re, sys
 value = os.environ.get("BUTLERS_BASE_IMAGE", "")
 if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/[a-z0-9]+(?:[._/-][a-z0-9]+)*@sha256:[0-9a-f]{64}", value):
@@ -37,7 +40,7 @@ if (sys.version_info[:3], platform.system(), platform.machine(), platform.libc_v
 ):
     raise SystemExit("runtime base differs from Python3.12.13/linux-amd64/glibc2.41")
 PYBASE
-RUN test "$(uv --version)" = "uv 0.12.22 (x86_64-unknown-linux-gnu)"
+RUN --network=none test "$(uv --version)" = "uv 0.12.22 (x86_64-unknown-linux-gnu)"
 
 # libportaudio2 for selected live-listener is part of the immutable base, never
 # an app/startup apt download. Both targets install exactly EXTRAS below.

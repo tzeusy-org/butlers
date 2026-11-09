@@ -51,7 +51,7 @@ RUN --network=none --mount=from=system-artifacts,source=debs,target=/opt/system-
 # marker reserves the outer identities that the CLI-auth sandbox leases one at
 # a time; each invocation drops to a member of 61000-61999 before bwrap.
 COPY --from=runtime-cli-sandbox-init-builder /out/runtime-cli-sandbox-init /usr/local/libexec/butlers/runtime-cli-sandbox-init
-RUN chmod 0755 /usr/local/libexec/butlers/runtime-cli-sandbox-init \
+RUN --network=none chmod 0755 /usr/local/libexec/butlers/runtime-cli-sandbox-init \
     && mkdir -p /usr/local/share/butlers \
     && printf '%s\n' '61000-61999' > /usr/local/share/butlers/runtime-cli-sandbox-uid-range \
     && chmod 0444 /usr/local/share/butlers/runtime-cli-sandbox-uid-range
@@ -71,14 +71,14 @@ RUN --network=none --mount=from=runtime-artifacts,source=.,target=/opt/runtime-a
 # closure after the final shim install. The version-3 image asset is the sole
 # runtime authority for those exact inputs; no later layer replaces the shim.
 COPY scripts/generate_runtime_cli_sandbox_manifest.py /tmp/generate_runtime_cli_sandbox_manifest.py
-RUN python /tmp/generate_runtime_cli_sandbox_manifest.py \
+RUN --network=none python /tmp/generate_runtime_cli_sandbox_manifest.py \
         --output /usr/local/share/butlers/runtime-cli-sandbox-inputs.json \
     && chmod 0444 /usr/local/share/butlers/runtime-cli-sandbox-inputs.json \
     && rm /tmp/generate_runtime_cli_sandbox_manifest.py
 
 # Emit an auditable CLI version manifest — inspect with:
 #   docker run --rm <image> cat /opt/cli-versions.txt
-RUN mkdir -p /opt \
+RUN --network=none mkdir -p /opt \
     && node --version > /opt/cli-versions.txt \
     && npm --version >> /opt/cli-versions.txt \
     && npm list -g --depth=0 >> /opt/cli-versions.txt \

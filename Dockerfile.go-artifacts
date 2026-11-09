@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1.7
+
+# Public acquisition is confined to this producer. The application consumes its
+# complete validated output through the mandatory named go-artifacts context.
+FROM golang:1.25.11-bookworm@sha256:bbb255b0e131db500cf0520adc97441d2260cf629c7fa7e39e025ddf53995a24 AS producer
+ENV GOENV=off GOTOOLCHAIN=local GOVCS=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org GOMODCACHE=/seed/modules
+WORKDIR /source
+COPY whatsapp-bridge/ ./
+COPY scripts/runtime_clis/go_artifacts.go /producer/go_artifacts.go
+
+# go mod download all can add checksum-only records. Keep that public seed copy
+# separate from the original source and locks verified by the offline phase.
+RUN --network=default mkdir -p /seed/project /output \
+    && cp go.mod go.sum /seed/project/ \
+    && cd /seed/project \
+    && go mod download -json all
+
+RUN --network=none GOPROXY=off GOSUMDB=off \
+    go run /producer/go_artifacts.go close \
+      --project /source --cache /seed/modules --output /output/context
+
+FROM scratch AS artifacts
+COPY --from=producer /output/context/ /

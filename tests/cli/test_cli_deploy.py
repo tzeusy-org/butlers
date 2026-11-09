@@ -53,6 +53,7 @@ class TestDeployCommand:
         assert "--readiness-timeout" in result2.output
         assert "--base-image" in result2.output
         assert "--python-artifacts" in result2.output
+        assert "--go-artifacts" in result2.output
 
     @pytest.mark.parametrize("environment_options", [False, True])
     def test_closed_build_inputs_are_forwarded(self, runner, tmp_path, environment_options):
@@ -63,9 +64,17 @@ class TestDeployCommand:
             environment = {
                 "BUTLERS_BASE_IMAGE": base,
                 "BUTLERS_PYTHON_ARTIFACTS": str(tmp_path),
+                "BUTLERS_GO_ARTIFACTS": str(tmp_path),
             }
         else:
-            args += ["--base-image", base, "--python-artifacts", str(tmp_path)]
+            args += [
+                "--base-image",
+                base,
+                "--python-artifacts",
+                str(tmp_path),
+                "--go-artifacts",
+                str(tmp_path),
+            ]
         with patch("butlers.core.deploy.run_deploy", new=AsyncMock()) as mock_run:
             mock_run.return_value = DeployResult(
                 git_sha="fixture", migration_head=None, result="success"
@@ -75,6 +84,7 @@ class TestDeployCommand:
         config = mock_run.await_args.args[0]
         assert config.base_image == base
         assert config.python_artifacts == tmp_path
+        assert config.go_artifacts == tmp_path
 
     def test_success_prints_summary_and_exits_zero(self, runner, tmp_path):
         with patch("butlers.core.deploy.run_deploy", new=AsyncMock()) as mock_run:

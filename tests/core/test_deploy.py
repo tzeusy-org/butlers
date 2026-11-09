@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import socket
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -448,9 +449,13 @@ class TestBuildImage:
         artifacts = tmp_path / "python-artifacts"
         artifacts.mkdir()
         (artifacts / "provenance.json").write_text("{}")
+        go_artifacts = tmp_path / "go-artifacts"
+        go_artifacts.mkdir()
+        (go_artifacts / "provenance.json").write_text("{}")
         return _config(
             base_image="registry.example.test/butlers/base@sha256:" + "a" * 64,
             python_artifacts=artifacts,
+            go_artifacts=go_artifacts,
         )
 
     def test_success_builds_with_git_sha_arg(self, monkeypatch, tmp_path):
@@ -472,6 +477,7 @@ class TestBuildImage:
         assert cmd[cmd.index("--target") + 1] == "production"
         assert f"BUTLERS_BASE_IMAGE={config.base_image}" in cmd
         assert f"python-artifacts={config.python_artifacts}" in cmd
+        assert f"go-artifacts={config.go_artifacts}" in cmd
 
     def test_failure_raises_deploy_error_with_build_phase(self, monkeypatch, tmp_path):
         def fake_run(cmd, cwd, env, capture_output, text):
@@ -505,6 +511,26 @@ class TestBuildImage:
             python_artifacts=None if kind == "missing" else path,
         )
         with pytest.raises(DeployError, match="[Pp]ython artifact"):
+            build_image(config, "abc1234")
+
+    @pytest.mark.parametrize(
+        "kind", ["missing", "directory", "provenance", "symlink", "provenance-link"]
+    )
+    def test_missing_or_invalid_go_context_refused_before_docker(self, monkeypatch, tmp_path, kind):
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("docker was reached"))
+        config = self._build_config(tmp_path)
+        path = tmp_path / "invalid-go"
+        if kind in {"provenance", "symlink", "provenance-link"}:
+            path.mkdir()
+        if kind == "symlink":
+            (path / "provenance.json").write_text("{}")
+            link = tmp_path / "go-link"
+            link.symlink_to(path)
+            path = link
+        if kind == "provenance-link":
+            (path / "provenance.json").symlink_to(config.go_artifacts / "provenance.json")
+        config = replace(config, go_artifacts=None if kind == "missing" else path)
+        with pytest.raises(DeployError, match="Go artifact"):
             build_image(config, "abc1234")
 
 

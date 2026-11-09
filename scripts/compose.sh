@@ -520,7 +520,7 @@ for p in "${PROFILES[@]}"; do
 done
 
 # App builds consume a previously published immutable runtime base and a closed
-# Python context. Validate before any build or stack teardown; never infer a
+# Python and Go contexts. Validate before any build or stack teardown; never infer a
 # floating tag, warm host cache, or a different extras selection.
 BASE_IMAGE_REFERENCE_PATTERN='^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9]+([._/-][a-z0-9]+)*@sha256:[0-9a-f]{64}$'
 if ! [[ "${BUTLERS_BASE_IMAGE:-}" =~ $BASE_IMAGE_REFERENCE_PATTERN ]]; then
@@ -537,6 +537,16 @@ _python_artifacts_context() {
   (cd -- "$context" && pwd -P)
 }
 PYTHON_ARTIFACTS_CONTEXT=$(_python_artifacts_context "${BUTLERS_PYTHON_ARTIFACTS:-}")
+_go_artifacts_context() {
+  local context="$1"
+  if [[ -z "$context" || ! -d "$context" || -L "$context" \
+    || ! -f "$context/provenance.json" || -L "$context/provenance.json" ]]; then
+    echo "ERROR: Supply a real closed Go artifacts directory with provenance.json." >&2
+    return 1
+  fi
+  (cd -- "$context" && pwd -P)
+}
+GO_ARTIFACTS_CONTEXT=$(_go_artifacts_context "${BUTLERS_GO_ARTIFACTS:-}")
 if [[ " ${PROFILES[*]} " == *" audio "* ]]; then
   AUDIO_PYTHON_ARTIFACTS_CONTEXT=$(_python_artifacts_context "${BUTLERS_AUDIO_PYTHON_ARTIFACTS:-}")
 fi
@@ -624,6 +634,7 @@ export GIT_SHA
 echo "Building butlers-app image (tag: ${BUTLERS_APP_TAG}, sha: ${GIT_SHA})..."
 DOCKER_BUILDKIT=1 docker build --target "$APP_BUILD_TARGET" \
   --build-context "python-artifacts=${PYTHON_ARTIFACTS_CONTEXT}" \
+  --build-context "go-artifacts=${GO_ARTIFACTS_CONTEXT}" \
   --build-arg "BUTLERS_BASE_IMAGE=${BUTLERS_BASE_IMAGE}" --build-arg GIT_SHA="${GIT_SHA}" \
   -t "butlers-app:${BUTLERS_APP_TAG}" . || {
   echo "ERROR: Failed to build butlers-app image" >&2
@@ -635,6 +646,7 @@ if [[ " ${PROFILES[*]} " == *" audio "* ]]; then
   echo "Building butlers-app-audio image (tag: ${BUTLERS_APP_TAG})..."
   DOCKER_BUILDKIT=1 docker build --target "$APP_BUILD_TARGET" \
     --build-context "python-artifacts=${AUDIO_PYTHON_ARTIFACTS_CONTEXT}" \
+    --build-context "go-artifacts=${GO_ARTIFACTS_CONTEXT}" \
     --build-arg "BUTLERS_BASE_IMAGE=${BUTLERS_BASE_IMAGE}" \
     --build-arg EXTRAS=live-listener --build-arg GIT_SHA="${GIT_SHA}" \
     -t "butlers-app-audio:${BUTLERS_APP_TAG}" . || {
