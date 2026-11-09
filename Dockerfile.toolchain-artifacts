@@ -1,0 +1,12 @@
+# syntax=docker/dockerfile:1.7
+FROM python:3.12.13-slim-trixie@sha256:c2d8472b831337ab296a8ce652e1ba786e9e3034fc445dc58b50a7f5251f0003 AS producer
+COPY scripts/runtime_clis/produce_toolchain_components.py scripts/runtime_clis/fetch_uv_toolchain.py scripts/runtime_clis/runtime_artifacts.py /producer/
+COPY deploy/runtime-clis/toolchains.json deploy/runtime-clis/runtime-inputs.json /inputs/
+RUN --network=default python3 -I -B /producer/produce_toolchain_components.py \
+      --phase produce --toolchains /inputs/toolchains.json \
+      --runtime-inputs /inputs/runtime-inputs.json --output /toolchain-components
+RUN --network=none python3 -I -B /producer/produce_toolchain_components.py \
+      --phase verify --toolchains /inputs/toolchains.json \
+      --runtime-inputs /inputs/runtime-inputs.json --output /toolchain-components
+FROM scratch AS artifacts
+COPY --from=producer /toolchain-components/ /
