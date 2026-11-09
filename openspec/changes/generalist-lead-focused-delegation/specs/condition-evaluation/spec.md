@@ -51,10 +51,6 @@ Scope: v1-mandatory
 - **WHEN** an instance fires from registration, an event or a clock crossing
 - **THEN** its fire intent and every receipt carry the label snapshot registered with the envelope, joined with nothing and narrowed by nothing, and a re-registration under a different label refuses as a changed boundary
 
-#### Scenario: A registration retry sees a fresher snapshot
-- **WHEN** the same instance registers again with an unchanged boundary and a snapshot that now satisfies it
-- **THEN** registration evaluates that snapshot and commits the one unique intent; a stale snapshot never downgrades a latched leaf, and a closed instance returns its existing outcome
-
 #### Scenario: Widening is not a rearm
 - **WHEN** a request changes predicate/plan/source/effect digest, deadline or maximum rather than narrowing effective grants
 - **THEN** the existing approval cannot cover it; the rearm refuses and a genuinely new envelope must satisfy its original approval boundary
