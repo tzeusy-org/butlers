@@ -2,6 +2,9 @@
 {{- if not .Values.butlersControl.enabled }}
 {{- fail "sessionHost.enabled requires butlersControl.enabled: the session host's only reachable peer is the control session listener" }}
 {{- end }}
+{{- if eq .Values.sessionHost.pkiSecret (printf "%s-bws" .Release.Name) }}
+{{- fail "sessionHost.pkiSecret must not be the release's BWS Secret: the session host never mounts database or domain credentials" }}
+{{- end }}
 # RFC 0038 D3 session host (bu-kiuh8v.1, .15). Dark: sessionHost.enabled is false by
 # default. It installs no reviewed runtime profile, so it refuses every launch; it
 # serves the Codex credential volume to the pinned control-plane caller over mTLS on

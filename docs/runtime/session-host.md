@@ -291,7 +291,10 @@ also dark:
   - Those launches run one at a time: two runs on one document would spend a single-use
     refresh token twice. Other runtimes pass straight through and are never held.
 - `local_command` takes the dialed `host` by trusted construction (default `127.0.0.1`).
-  TLS still checks the server name and the pin.
+  TLS still checks the server name and the pin. The TCP connect and the handshake are
+  bounded together by the 3-second I/O deadline (`TimeoutError`, an `OSError`). A
+  black-holed non-loopback host therefore fails fast instead of waiting out the
+  kernel's SYN retries while `CodexAuthFencedHost` holds its lock.
 - The AST scan also fails on any live construction of `ControlSessionHost`,
   `CodexAuthFencedHost` or `session_host_clients` outside the factory module.
 
@@ -344,6 +347,14 @@ exactly:
   uninstall). There is a ClusterIP Service on `sessionHost.port`, and an ingress
   NetworkPolicy admitting only the release's butlers-control pods on that port. The
   PKI Secret is the only secret reference; the environment is still `HOME` alone.
+  Rendering fails if `sessionHost.pkiSecret` names the release's `<release>-bws`
+  Secret, so database credentials can never be mounted into the host.
+- Key mounts, on both sides. Any Secret volume carrying a TLS key (the host's
+  `tls.key` here, and the control plane's client key when it is wired) uses
+  `defaultMode` `0400` or `0600`, and its pod sets no `fsGroup`. An `fsGroup` makes
+  the projected key group-readable (`0440`), and both the host and
+  `session_host_clients` refuse a key with any `0o077` bit, so the pod would fail
+  closed. The env guard pins the host's `0400` and fails on an `fsGroup`.
 
 Provisioning the PKI (CA, workload identity, rotation, pin distribution) is a separate
 gate. Nothing in the control plane dials the host yet.

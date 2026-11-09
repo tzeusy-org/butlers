@@ -167,6 +167,10 @@ def pod_violations(
                 found.append(f"container {key} is not allowed on the session host")
     if spec.get("volumes") != _pod_volumes(release, pki_secret):
         found.append(f"volumes are not allowed on the session host: {spec.get('volumes')}")
+    # fsGroup would make the projected key group-readable (0440), which the host and the
+    # control-plane client both refuse (any 0o077 bit); defaultMode is pinned above.
+    if (spec.get("securityContext") or {}).get("fsGroup") is not None:
+        found.append("fsGroup is not allowed: it widens the PKI key's mode")
     if spec.get("automountServiceAccountToken") is not False:
         found.append("the service account token must not be mounted")
     return found
@@ -307,6 +311,31 @@ def test_the_rendered_exposure_mutations_fail() -> None:
     mutated = copy.deepcopy(deployment)
     mutated["spec"]["template"]["spec"]["initContainers"] = [{"name": "x"}]
     assert any("initContainers" in v for v in pod_violations(mutated))
+    mutated = copy.deepcopy(deployment)
+    mutated["spec"]["template"]["spec"]["securityContext"] = {"fsGroup": 1000}
+    assert any("fsGroup" in v for v in pod_violations(mutated))
+    for mode in (0o440, 0o644):
+        mutated = copy.deepcopy(deployment)
+        mutated["spec"]["template"]["spec"]["volumes"][0]["secret"]["defaultMode"] = mode
+        assert any("volumes are not allowed" in v for v in pod_violations(mutated))
+
+
+@needs_helm
+def test_the_pki_secret_can_never_be_the_bws_secret() -> None:
+    command = ["helm", "template", "butlers", str(_CHART), "-f", str(_CHART / "values.yaml")]
+    command += ["-f", str(_CHART / "values.dev.yaml")]
+    for setting in (
+        *_ENABLED,
+        "sessionHost.pkiSecret=butlers-bws",
+        "image.tag=t",
+        "frontendImage.tag=t",
+        "trackerEgress.deniedCidrs={192.0.2.1/32}",
+        "egressPolicy.allowedCidrs={198.51.100.7/32}",
+        "database.host=postgres.invalid",
+    ):
+        command += ["--set", setting]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
+    assert result.returncode != 0 and "sessionHost.pkiSecret" in result.stderr
 
 
 def test_a_second_or_missing_secret_reference_in_the_template_fails() -> None:

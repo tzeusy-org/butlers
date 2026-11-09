@@ -140,6 +140,38 @@ async def test_a_configured_bind_listens_where_the_deployment_says(tmp_path, pki
         await control.close()
 
 
+async def test_a_black_holed_host_times_out_at_connect(monkeypatch, pki):
+    """A non-loopback peer that never answers SYN is bounded, not left to the kernel."""
+    from butlers.session_host import control as control_module
+
+    _server, client, pin = pki
+    started = asyncio.Event()
+
+    async def black_hole(*args, **kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(control_module, "_IO_SECONDS", 0.2)
+    monkeypatch.setattr(control_module.asyncio, "open_connection", black_hole)
+    task = asyncio.create_task(
+        local_command(
+            41198,
+            context=client("runner"),
+            server_hostname="host.test",
+            server_sha256=pin("server"),
+            command={"version": 1, "operation": "codex_auth_status"},
+            host="192.0.2.1",
+        )
+    )
+    done, _pending = await asyncio.wait({task}, timeout=3)
+    if not done:
+        task.cancel()
+        pytest.fail("the connect was not bounded")
+    assert started.is_set()
+    assert isinstance(task.exception(), TimeoutError)
+    assert issubclass(TimeoutError, OSError)  # callers map it as an unreachable host
+
+
 @pytest.mark.parametrize(
     "bind",
     [
