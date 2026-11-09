@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 
@@ -58,17 +59,20 @@ async def _fact_count(pool, entity_id) -> int:
         {"deleted_at": "2026-11-09T00:00:00+00:00"},
         {"merged_into": str(uuid.uuid4())},
         {"tombstone": "true"},
+        {"tombstone": True},
     ],
-    ids=["deleted", "merged", "forgotten"],
+    ids=["deleted", "merged", "forgotten", "forgotten_bool"],
 )
 @pytest.mark.parametrize("as_object", [False, True], ids=["subject", "object"])
+@pytest.mark.parametrize("temporal", [False, True], ids=["property", "temporal"])
 async def test_insert_that_waited_on_the_entity_lock_refuses_a_marked_entity(
-    pool_factory, session_hook, marker, as_object
+    pool_factory, session_hook, marker, as_object, temporal
 ):
     pool, owner, _ = await pool_factory()
     session_hook(pool)
     live, doomed = await _entity(pool), await _entity(pool)
-    forward, _ = await _edge_predicates(pool)
+    forward, _ = await _edge_predicates(pool, temporal=temporal)
+    extra = {"valid_at": datetime(2026, 11, 9, tzinfo=UTC)} if temporal else {}
     subject, obj = (live, doomed) if as_object else (doomed, live)
     async with pool.acquire() as holder, pool.acquire() as waiter:
         tx = holder.transaction()
@@ -86,6 +90,7 @@ async def test_insert_that_waited_on_the_entity_lock_refuses_a_marked_entity(
                     _engine(),
                     entity_id=subject,
                     object_entity_id=obj,
+                    **extra,
                 )
             )
             await _wait_for_lock_wait(pool, pid)
