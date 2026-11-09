@@ -105,6 +105,25 @@ async def exposed(h, invocation: UUID) -> bool:
 SEARCHING = "context__search"
 
 
+def _refs(packet: str) -> str:
+    return packet[packet.index("<refs>") : packet.index("</refs>")]
+
+
+async def test_the_packet_points_at_context_search_exactly_when_it_is_served(
+    broker_db_url, sources
+):
+    async with harness(broker_db_url) as h:
+        bare = await h.lead(await h.goal(_grant(SEARCH)))
+        assert SEARCHING not in _refs(bare.prompt)
+        await configure(h, sources)
+        goal = await h.goal(_grant(SEARCH), _grant(MAIL_READ))
+        lead = await h.lead(goal, 2)
+        assert f"tool: {SEARCHING}" in _refs(lead.prompt)
+        await h.delegate(goal, lead.token, MAIL_READ.identity)
+        child = await h.launched(3)
+        assert f"tool: {SEARCHING}" in _refs(child.prompt)  # served to both depths
+
+
 async def test_the_tool_is_listed_to_both_depths_only_when_configured(broker_db_url, sources):
     async with harness(broker_db_url) as h:
         assert SEARCHING not in [t.name for t in h.tools.listed(0)]

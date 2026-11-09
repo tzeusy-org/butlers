@@ -92,6 +92,10 @@ class LedgerSummary:
     """(effect_id, capability, status) of every effect of the goal."""
     children: tuple[tuple[str, str], ...] = ()
     """(child invocation_id, status) of every child of the goal."""
+    inbox: tuple[str, ...] = ()
+    """Ids of the goal's oldest unconsumed inbox replies (the ledger lists a bounded few)."""
+    inbox_pending: int = 0
+    """How many inbox replies are unconsumed; the lead reads them with ``goal.inbox``."""
 
 
 @dataclass(frozen=True, slots=True)

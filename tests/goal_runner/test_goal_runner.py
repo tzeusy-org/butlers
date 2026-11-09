@@ -874,6 +874,26 @@ async def test_a_lapsed_lead_is_replaced_at_the_next_epoch_and_its_children_repo
         assert effects == 1
 
 
+async def test_await_tells_a_child_that_never_ran_from_one_that_failed(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEARCH))
+        lead = await h.lead(goal)
+        ended = {}
+        for count, reason in enumerate(("launch_failed", "runtime_failure"), start=2):
+            child = await h.delegate(goal, lead.token, SEARCH.identity)
+            await h.launched(count)
+            async with h.runner._txn() as ledger:
+                await ledger.end(goal, child, "failed", reason)
+            h.host.end(child)
+            ended[reason] = child
+        running = await h.delegate(goal, lead.token, SEARCH.identity)
+        for reason, child in ended.items():
+            awaited = await h.call(goal, lead.token, "goal__await", {"child_id": str(child)})
+            assert (awaited["status"], awaited["end_reason"]) == ("failed", reason)
+        awaited = await h.call(goal, lead.token, "goal__await", {"child_id": str(running)})
+        assert awaited["end_reason"] is None  # still live: no end yet
+
+
 async def test_a_retryable_failure_with_no_call_relaunches_once_at_the_next_epoch(broker_db_url):
     async with harness(broker_db_url) as h:
         goal = await h.goal(_grant(SEARCH))

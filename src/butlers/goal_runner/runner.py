@@ -285,7 +285,7 @@ class GoalRunner:
         summary = None
         async with self._txn() as ledger:
             if plan.summary:
-                summary = await ledger.summary(plan.goal_id)
+                summary = await ledger.summary(plan.goal_id, started.invocation_id)
             facts = await ledger.launch_facts(plan.goal_id, started.invocation_id)
         context = LaunchContext(
             goal_id=plan.goal_id,

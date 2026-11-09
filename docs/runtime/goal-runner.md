@@ -88,7 +88,7 @@ capability and never lists one. The runner serves these tools on the same per-go
 | Tool | Depth | Effect |
 | --- | --- | --- |
 | `goal__delegate` | lead | Admit a child with a brief, capabilities, tier and budget share |
-| `goal__await` | lead | Read a child's validated result |
+| `goal__await` | lead | Read a child's status, closed `end_reason` (`launch_failed`: it never ran) and validated result |
 | `goal__stop_child` | lead | End one child (`child_stopped`) |
 | `goal__complete` | lead | Record the outcome; the goal settles |
 | `goal__inbox` | lead | Take the owner replies joined to this goal since the last call |
@@ -171,10 +171,15 @@ from the model:
    fence or open another section.
 2. `grant` and `budget`: the invocation's own grant and what is left of its calls, turns, tokens
    and wall time. Leads also see the goal's remaining calls, tokens and seconds.
-3. `ledger`: only for a replacement or escalated lead (the effects and children, as identifiers and
-   statuses). A first lead has none, and a child never gets one.
-4. `refs`: the context tools the broker serves (runner-authored only).
-   `PacketComposer(context_tools=...)` names them; none are advertised by default.
+3. `ledger`: only for a lead that follows one that ran (recovery, escalation, relaunch): the
+   effects and children, as identifiers and statuses, and the goal's pending inbox replies as
+   `inbox_pending: <count>` and up to 20 `inbox: <id>` lines. Stating them consumes nothing and
+   joins no label; the lead reads them with `goal__inbox`, which does both. A first lead has no
+   ledger, and neither does a lead re-offered after every earlier lead ended `launch_failed`
+   (the host had no room, so none ran). A child never gets one.
+4. `refs`: the context tools the broker serves (runner-authored only). `GoalTools` points the
+   runner's `PacketComposer` at exactly the tools it serves (`context__search` when a
+   `ContextSearch` is configured); none are advertised otherwise.
 
 A child's packet carries its own brief, grant and share only: no origin, exposure, epoch,
 goal-wide budget, ledger or parent identifier. The runner uses `PacketComposer()` unless a

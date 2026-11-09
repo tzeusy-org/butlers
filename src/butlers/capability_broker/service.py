@@ -609,7 +609,9 @@ class Broker:
             if principal.depth != 0:
                 raise BrokerRefused(Reason.CAPABILITY)
             boundary = BoundaryLedger(ledger)
-            status, result, label, effects = await boundary.child_outcome(principal, child_id)
+            status, end_reason, result, label, effects = await boundary.child_outcome(
+                principal, child_id
+            )
             exhausted = await boundary.charge(principal)
             if exhausted is None:
                 await boundary.join(principal, label, "child")
@@ -617,6 +619,8 @@ class Broker:
             raise exhausted
         return {
             "status": status,
+            # Closed and content-blind: ``launch_failed`` says the child never ran.
+            "end_reason": end_reason,
             "result": result if status == "returned" else None,
             "effects": effects,
         }

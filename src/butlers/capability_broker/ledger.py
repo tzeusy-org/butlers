@@ -203,6 +203,14 @@ class BrokerLedger:
             limit,
         )
 
+    async def pending_inbox_count(self, goal_id: UUID) -> int:
+        """How many of the goal's inbox rows are unconsumed (ids are not labels: no join)."""
+        return await self.connection.fetchval(
+            "SELECT count(*) FROM switchboard.goal_inbox "
+            "WHERE goal_id = $1 AND consumed_at IS NULL",
+            goal_id,
+        )
+
     async def read_child_result(self, goal_id: UUID, lead_id: UUID, child_id: UUID) -> Label:
         """A lead reading its child's result joins the child's label (cause ``child``)."""
         if await self._lock_goal(goal_id) is None:
