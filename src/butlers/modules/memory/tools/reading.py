@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
 from butlers.core.stamp_account import account_records
 from butlers.modules.memory.content_authority import catalog_attribution
+from butlers.modules.memory.embedding import embed_async
 from butlers.modules.memory.tools._helpers import (
     _search,
     _serialize_row,
@@ -338,7 +339,7 @@ async def predicate_search(
     semantic_ranked: list[str] = []
     if embedding_engine is not None:
         try:
-            query_embedding = embedding_engine.embed(query)
+            query_embedding = await embed_async(embedding_engine, query)
             embedding_str = str(query_embedding)
             sem_params: list[Any] = [embedding_str] + scope_params
             sem_sql = (

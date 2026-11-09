@@ -26,8 +26,13 @@ spec:
           args:
             - >-
               /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db prepare-chronicler-memory --dir /app/roster
-              {{- if .Values.publicMcp.reconcile }}
               && /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db migrate --dir /app/roster
+              {{- if .Values.database.applyGrants }}
+              && /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db apply-grants --database {{ .Values.database.name }} --execute
+              {{- else }}
+              && (/usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db apply-grants --database {{ .Values.database.name }} || true)
+              {{- end }}
+              {{- if .Values.publicMcp.reconcile }}
               && top="$(/usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers --help)"
               && group=""
               && if printf '%s\n' "$top" | grep -Eq '^ +public-mcp( |$)';
@@ -35,8 +40,6 @@ spec:
               && if printf '%s\n' "$group" | grep -Eq '^ +reconcile( |$)';
               then exec /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers public-mcp reconcile --database {{ .Values.database.name }};
               else echo 'public-mcp reconcile: not in this image (a rollback); skipped' >&2; fi
-              {{- else }}
-              && exec /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db migrate --dir /app/roster
               {{- end }}
           env:
             {{- include "butlers.postgresEnv" . | nindent 12 }}

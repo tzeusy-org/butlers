@@ -427,7 +427,7 @@ def test_recipe_with_the_real_step_fails_when_the_guard_refuses(chart: Path, too
 # --- reconcile in the migrations initContainer -------------------------------------------
 
 
-def _migrations(*values: str) -> str:
+def _migrations(*values: str, sets: tuple[str, ...] = ()) -> str:
     if shutil.which("helm") is None:
         pytest.skip("helm not installed")
     chart = _REPO_ROOT / "deploy/helm/butlers"
@@ -440,6 +440,7 @@ def _migrations(*values: str) -> str:
         "database.host=pg.invalid",
         "trackerEgress.deniedCidrs={192.0.2.1/32}",
         "egressPolicy.allowedCidrs={192.0.2.2/32}",
+        *sets,
     ):
         command.extend(["--set", setting])
     rendered = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
@@ -459,6 +460,7 @@ _ENTRYPOINT_IN_IMAGE = r"""#!/bin/sh
 echo "python-entrypoint $*" >> "$CALL_LOG"
 case "$*" in
   *"db migrate"*) exit "${MIGRATE_RC:-0}" ;;
+  *"db apply-grants"*) exit "${APPLY_RC:-0}" ;;
   *"butlers public-mcp --help")
     printf '%s\n' "$PUBLIC_MCP_HELP"; [ "${PUBLIC_MCP_RC:-0}" = 0 ] || exit "$PUBLIC_MCP_RC" ;;
   *"butlers --help")
@@ -490,14 +492,14 @@ _NO_GROUP = "Commands:\n  db        Database commands.\n  up        Start butler
 def test_dev_migrations_reconcile_last_and_skip_only_an_image_without_it(
     tmp_path: Path, env: dict[str, str], reconciled: bool, status: int, stderr: str
 ) -> None:
-    """Keep the actual reconciliation chain, projecting only its fixed image launcher."""
+    """Keep the actual grant/reconciliation chain, projecting only its fixed launcher."""
     args = _migrations("values.dev.yaml")
     assert args.startswith(
         f"{_INSTALLED} butlers db prepare-chronicler-memory --dir /app/roster"
         f" && {_INSTALLED} butlers db migrate --dir /app/roster && "
     )
-    assert args.count(_INSTALLED) == 5
     assert "uv run" not in args
+    assert args.count(_INSTALLED) == 6
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "python-entrypoint").write_text(_ENTRYPOINT_IN_IMAGE, encoding="utf-8")
@@ -531,4 +533,59 @@ def test_other_environments_do_not_reconcile(values: tuple[str, ...]) -> None:
     args = _migrations(*values)
     assert "public-mcp" not in args
     assert "uv run" not in args
-    assert args.rstrip().endswith(f"exec {_INSTALLED} butlers db migrate --dir /app/roster")
+    # No reconcile, and the grant step is only the non-fatal dry run (never `--execute`).
+    assert "--execute" not in args
+    assert args.rstrip().endswith(
+        f"&& {_INSTALLED} butlers db migrate --dir /app/roster"
+        f" && ({_INSTALLED} butlers db apply-grants --database butlers || true)"
+    )
+
+
+def _run_chain(
+    tmp_path: Path, args: str, **env: str
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "python-entrypoint").write_text(_ENTRYPOINT_IN_IMAGE, encoding="utf-8")
+    (bin_dir / "python-entrypoint").chmod(0o755)
+    log = tmp_path / "calls.log"
+    log.write_text("", encoding="utf-8")
+    result = subprocess.run(
+        ["/bin/sh", "-c", args.replace(_INSTALLED, "python-entrypoint")],
+        capture_output=True, text=True, timeout=60,
+        env={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "CALL_LOG": str(log),
+            "TOP_HELP": _help(),
+            "PUBLIC_MCP_HELP": _help("public-mcp"),
+            **env,
+        },
+    )  # fmt: skip
+    return result, log.read_text(encoding="utf-8").splitlines()
+
+
+def test_dry_run_grant_step_cannot_block_the_pod_and_never_executes(tmp_path: Path) -> None:
+    args = _migrations("values.dev.yaml")
+    result, calls = _run_chain(tmp_path, args, APPLY_RC="1")
+    assert result.returncode == 0, result.stderr
+    assert not any("--execute" in call for call in calls)
+    assert calls[-1].endswith("public-mcp reconcile --database butlers")
+    order = [i for i, c in enumerate(calls) if "db migrate" in c or "apply-grants" in c]
+    assert [calls[i].split("butlers ")[-1].split(" --")[0] for i in order] == [
+        "db migrate",
+        "db apply-grants",
+    ]
+
+
+def test_enabled_grant_step_is_fail_closed_and_runs_before_reconcile(tmp_path: Path) -> None:
+    args = _migrations("values.dev.yaml", sets=("database.applyGrants=true",))
+    assert "--execute" in args
+    ok, calls = _run_chain(tmp_path / "ok", args)
+    assert ok.returncode == 0, ok.stderr
+    apply_at = next(i for i, c in enumerate(calls) if "apply-grants" in c and "--execute" in c)
+    assert apply_at < next(i for i, c in enumerate(calls) if "--help" in c)
+    assert calls[-1].endswith("public-mcp reconcile --database butlers")
+
+    failed, calls = _run_chain(tmp_path / "fail", args, APPLY_RC="1")
+    assert failed.returncode == 1
+    assert not any("--help" in c or "reconcile" in c for c in calls)

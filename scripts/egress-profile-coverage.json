@@ -6058,7 +6058,7 @@
     "deploy/helm/butlers/templates/cronjobs.yaml":
         "174eccfe628196cc18d86b6175b4284301d5adb67169e1751313505d12b19697",
     "deploy/helm/butlers/templates/dashboard-api.yaml":
-        "5e84333171f5026322a6a4d72500dd16a15013c03fd4e682a7b81195352b428c",
+        "17ef7a8bb0d543707fc0e9e821dd926978eac957e11b2dc4f7d6ef3aecd91b81",
     "deploy/helm/butlers/templates/egress-gateway.yaml":
         "46726ddc9aa6cb92b69054cca56e5772923848af373dc68022d239cf8f4544bd",
     "deploy/helm/butlers/templates/egress-profiles.yaml":
