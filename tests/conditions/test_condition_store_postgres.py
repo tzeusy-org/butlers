@@ -11,6 +11,7 @@ import asyncio
 import json
 from dataclasses import replace
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import asyncpg
 import pytest
@@ -18,6 +19,7 @@ import pytest
 from butlers.conditions import (
     ConditionEvaluator,
     ConditionsUnavailable,
+    FireIntent,
     RegistrationRefused,
     State,
 )
@@ -101,6 +103,24 @@ class TestPostgresStoreContract(StoreContract):
         with pytest.raises(RegistrationRefused):
             async with store.transaction() as tx:
                 await tx.insert_instance(replace(inst, id="i" * 129))
+
+    async def test_intent_fence_trip_is_an_outage_not_a_refusal(self):
+        # A 23514 from the core_323 intent-fence trigger is a bug, not a refused registration.
+        store, inst = await self.seeded()
+        intent = FireIntent(
+            fire_key=uuid4(),
+            instance_id=inst.id,
+            generation=inst.generation,
+            event_id=uuid4(),
+            reason="x",
+            fired_at=NOW,
+            snapshot_generation=0,
+            cursors={},
+        )
+        with pytest.raises(ConnectionError) as raised:
+            async with store.transaction() as tx:
+                await tx.insert_fire_intent(intent)
+        assert not isinstance(raised.value, RegistrationRefused)
 
     async def receipt_reasons(self, store) -> list[str]:
         rows = await self.owner.fetch("SELECT reason FROM public.condition_receipts ORDER BY id")

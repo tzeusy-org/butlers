@@ -21,7 +21,9 @@ _REVISION = re.compile(r'^revision(?:\s*:\s*str)?\s*=\s*"([^"]+)"', re.MULTILINE
 
 def test_every_core_revision_id_is_core_digits():
     ids = {}
-    for path in sorted(_CORE.glob("core_*.py")):
+    for path in sorted(_CORE.glob("*.py")):
+        if path.name == "__init__.py":
+            continue
         match = _REVISION.search(path.read_text(encoding="utf-8"))
         assert match, f"{path.name} declares no revision id"
         ids[path.name] = match.group(1)
