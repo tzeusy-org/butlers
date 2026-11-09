@@ -87,3 +87,20 @@ def test_stale_lock_wrong_checkout_or_dependency_graph_refuses(installed, tmp_pa
         (site / "butlers.pth").write_text(str(foreign.parent) + "\n")
     with pytest.raises((ValueError, subprocess.CalledProcessError)):
         validate(manifest, environment, project)
+
+
+def test_inventory_seal_and_validation_preserve_closed_editable_source_population(installed):
+    environment, project, manifest, _ = installed
+    expected = {"src/butlers/__init__.py", "pyproject.toml", "uv.lock"}
+    actual = {path.relative_to(project).as_posix() for path in project.rglob("*") if path.is_file()}
+    assert actual == expected
+    first = json.loads(manifest.read_text())
+    assert first["environment"]["source_relative"] == "src/butlers/__init__.py"
+    assert first["environment"]["distributions"][0]["name"] == "butlers"
+    for _ in range(2):
+        current = seal(environment, project, ["dev"], ["live-listener"])
+        assert current == first
+        validate(manifest, environment, project)
+        assert {
+            path.relative_to(project).as_posix() for path in project.rglob("*") if path.is_file()
+        } == expected

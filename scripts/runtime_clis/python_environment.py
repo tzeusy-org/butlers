@@ -62,7 +62,7 @@ def inventory(environment: Path, project: Path) -> dict:
     if environment.is_symlink() or not environment.is_dir():
         raise ValueError("Python environment must be a real directory")
     result = subprocess.run(
-        [str(environment / "bin/python"), "-I", "-c", INVENTORY, str(project)],
+        [str(environment / "bin/python"), "-I", "-B", "-c", INVENTORY, str(project)],
         check=True,
         capture_output=True,
         text=True,

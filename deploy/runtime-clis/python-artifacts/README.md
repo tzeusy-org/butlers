@@ -198,3 +198,7 @@ Source tests and retained-wheel extraction alone do not establish a Docker build
 public seed, four cold installations, image startup or runtime conformance.
 Canonical integration must run this actual recipe and preserve the original
 acceptance and operational gates before claiming any of those outcomes.
+
+Environment sealing and validation inspect editable import identity with Python
+`-I -B`: they do not write bytecode into the closed source snapshot. The strict
+source population remains unchanged before and after every cold profile check.
