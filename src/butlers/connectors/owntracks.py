@@ -75,6 +75,7 @@ from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
@@ -108,6 +109,9 @@ _DEFAULT_HEARTBEAT_INTERVAL_S = 120
 _DEFAULT_RETENTION_DAYS = 30
 _MIN_RETENTION_DAYS = 1
 _RETENTION_PURGE_INTERVAL_S = 6 * 60 * 60  # 6 hours
+# How long the webhook waits for a point to be ingested or parked before telling
+# the phone to resend it. Well under the OwnTracks app's request timeout.
+_WEBHOOK_PROCESS_TIMEOUT_S = 10.0
 
 # Public aliases for use by standalone OwnTracksRetentionConfig / OwnTracksRetention
 DEFAULT_RETENTION_DAYS = _DEFAULT_RETENTION_DAYS
@@ -961,6 +965,11 @@ class OwnTracksConnector:
         self._health_error: str | None = None
         self._last_ingest_ok: bool | None = None
 
+        # A point whose ingest fails is not acknowledged, so the phone keeps it
+        # and sends it again, until its attempts are spent and it is parked as a
+        # replayable error row (bu-dhloi1.224). Keyed by idempotency key.
+        self._ingest_retry = IngestRetryBudget()
+
         # Health server
         self._health_server: uvicorn.Server | None = None
         self._health_thread: Thread | None = None
@@ -1281,8 +1290,8 @@ class OwnTracksConnector:
         # create) its dedicated state bundle -- captured as a local variable
         # and threaded through the rest of this method instead of read back
         # off `self`. This is deliberate: `_process_webhook_event` coroutines
-        # are dispatched fire-and-forget per webhook POST (see
-        # `_dispatch_event_to_main_loop`), so multiple devices' events can be
+        # run on the main loop once per webhook POST (see
+        # `_process_on_main_loop`), so multiple devices' events can be
         # interleaved on the event loop. Reading a shared `self._endpoint_*`
         # attribute *after* an `await` (e.g. post-ingest, before the
         # checkpoint save) could observe a different device's identity than
@@ -1402,10 +1411,12 @@ class OwnTracksConnector:
             )
 
         # Submit to Switchboard
+        retry_key = str(envelope["control"]["idempotency_key"])
         start_t = time.perf_counter()
         status = "success"
         try:
             await self._mcp_client.call_tool("ingest", envelope)
+            self._ingest_retry.succeeded(retry_key)
             self._last_ingest_ok = True
             self._health_error = None
             logger.debug(
@@ -1417,8 +1428,32 @@ class OwnTracksConnector:
             status = "error"
             self._last_ingest_ok = False
             self._health_error = str(exc)
-            logger.warning("OwnTracksConnector: failed to submit %s event: %s", payload_type, exc)
-            raise
+            if not self._ingest_retry.failed(retry_key):
+                # Unacknowledged: the phone keeps the point and sends it again.
+                logger.warning(
+                    "OwnTracksConnector: failed to submit %s event; the device will resend it: %s",
+                    payload_type,
+                    exc,
+                )
+                raise
+            # Attempts spent: park the exact envelope (idempotency key included)
+            # as a replayable error row, then acknowledge the point.
+            device.filtered_event_buffer.record(
+                external_message_id=str(envelope["event"]["external_event_id"]),
+                source_channel=_DESCRIPTOR.channel,
+                sender_identity=device.endpoint_identity,
+                subject_or_preview=f"OwnTracks {payload_type} event",
+                filter_reason=FilteredEventBuffer.reason_submission_error(),
+                status="error",
+                error_detail=str(exc),
+                full_payload=FilteredEventBuffer.stored_envelope(envelope),
+            )
+            logger.warning(
+                "OwnTracksConnector: failed to submit %s event; attempts spent, parked "
+                "for replay: %s",
+                payload_type,
+                exc,
+            )
         finally:
             latency = time.perf_counter() - start_t
             device.metrics.record_ingest_submission(status=status, latency=latency)
@@ -1553,35 +1588,51 @@ class OwnTracksConnector:
     # FastAPI application builder (webhook + health + metrics)
     # ------------------------------------------------------------------
 
-    def _dispatch_event_to_main_loop(self, body: dict[str, Any]) -> None:
-        """Schedule ``_process_webhook_event`` on the connector's main loop.
+    async def _process_on_main_loop(self, body: dict[str, Any]) -> bool:
+        """Run ``_process_webhook_event`` on the connector's main loop; True once done.
 
         The webhook handler runs inside uvicorn's thread-local event loop, but
         the asyncpg pool and MCP client were created on the main loop and must
         only be touched from there. ``asyncio.run_coroutine_threadsafe`` hops
-        the coroutine across loops; we do not await its future, so the HTTP
-        response returns immediately. Exceptions are logged via a callback.
+        the coroutine across loops, and this waits for it up to
+        ``_WEBHOOK_PROCESS_TIMEOUT_S`` without cancelling it.
+
+        False means the point is neither ingested nor parked yet (no main loop,
+        a failure with attempts left, or still running): the webhook must not
+        acknowledge it, so the phone keeps it and sends it again (bu-dhloi1.224).
+        A resend of a point that did land is deduplicated by its idempotency key.
         """
         loop = self._main_loop
         if loop is None or loop.is_closed():
             logger.warning(
-                "OwnTracksConnector: main loop unavailable, dropping event (type=%r)",
+                "OwnTracksConnector: main loop unavailable; not acknowledging event (type=%r)",
                 body.get("_type"),
             )
-            return
+            return False
 
         future = asyncio.run_coroutine_threadsafe(self._process_webhook_event(body), loop)
-
-        def _log_if_failed(f: Any) -> None:
-            try:
-                f.result()
-            except Exception:
-                logger.exception(
-                    "OwnTracksConnector: background event processing failed (type=%r)",
-                    body.get("_type"),
-                )
-
-        future.add_done_callback(_log_if_failed)
+        # asyncio.wait never cancels what it waits on, so a slow ingest finishes.
+        done, _ = await asyncio.wait(
+            {asyncio.wrap_future(future)}, timeout=_WEBHOOK_PROCESS_TIMEOUT_S
+        )
+        if not done:
+            logger.warning(
+                "OwnTracksConnector: event processing still running after %ss; not "
+                "acknowledging it yet (type=%r)",
+                _WEBHOOK_PROCESS_TIMEOUT_S,
+                body.get("_type"),
+            )
+            return False
+        exc = done.pop().exception()
+        if exc is not None:
+            logger.warning(
+                "OwnTracksConnector: event processing failed; not acknowledging it "
+                "(type=%r error_class=%s)",
+                body.get("_type"),
+                type(exc).__name__,
+            )
+            return False
+        return True
 
     def _build_app(self) -> FastAPI:
         """Build the FastAPI application serving webhook, health, and metrics."""
@@ -1606,11 +1657,15 @@ class OwnTracksConnector:
                     detail={"error": "Missing required field: _type"},
                 )
 
-            # Dispatch processing to the main event loop (where asyncpg/MCP live)
-            # and return immediately. Awaiting inline from uvicorn's thread loop
-            # deadlocks asyncpg with "Lock bound to a different event loop", and
-            # OwnTracks mobile clients drop slow responses as SocketTimeoutException.
-            self._dispatch_event_to_main_loop(body)
+            # Process on the main event loop (where asyncpg/MCP live): running it
+            # inline on uvicorn's thread loop deadlocks asyncpg with "Lock bound to
+            # a different event loop". Wait (bounded, so the phone does not time
+            # out) and acknowledge only a point that is ingested or parked; any
+            # other answer keeps it in the phone's queue for a resend (bu-dhloi1.224).
+            if not await self._process_on_main_loop(body):
+                return JSONResponse(
+                    status_code=503, content={"error": "Not ingested yet; send it again"}
+                )
 
             # OwnTracks protocol requires 200 with empty JSON array on success
             return JSONResponse(content=[])

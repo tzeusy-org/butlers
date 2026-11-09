@@ -464,6 +464,33 @@ class HAFilterPersistence:
             ),
         )
 
+    def record_submission_failure(
+        self,
+        *,
+        envelope: dict[str, Any],
+        entity_id: str,
+        exc: BaseException,
+    ) -> None:
+        """Park a live envelope whose ingest failed as a replayable error row.
+
+        The live stream never delivers the event again, so this row is its only
+        copy (bu-dhloi1.224). *envelope* must be the scrubbed envelope that was
+        submitted; it is stored exactly, idempotency key included, so a replay
+        is the same submission. The error detail is the exception class only:
+        transport text can echo request content.
+        """
+        event = envelope.get("event") or {}
+        self._buffer.record(
+            external_message_id=str(event.get("external_event_id") or entity_id),
+            source_channel=_DESCRIPTOR.channel,
+            sender_identity=entity_id,
+            subject_or_preview=f"HA ingest failed: {entity_id}",
+            filter_reason=FilteredEventBuffer.reason_submission_error(),
+            status="error",
+            error_detail=type(exc).__name__,
+            full_payload=FilteredEventBuffer.stored_envelope(envelope),
+        )
+
     # ------------------------------------------------------------------
     # Buffer length
     # ------------------------------------------------------------------
