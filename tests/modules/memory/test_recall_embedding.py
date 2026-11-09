@@ -13,6 +13,7 @@ import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
+import asyncpg
 import pytest
 
 from butlers.modules.memory import search as _search
@@ -174,7 +175,25 @@ async def test_a_caller_supplied_embedding_is_not_recomputed(searches):
 async def test_reference_bump_failure_does_not_fail_recall(caplog):
     # A deadlock with another multi-row writer must not fail memory_context.
     pool = AsyncMock()
-    pool.execute.side_effect = RuntimeError("deadlock detected")
+    pool.execute.side_effect = asyncpg.DeadlockDetectedError("deadlock detected")
     with caplog.at_level("WARNING"):
         await _search._bump_reference_counts(pool, [{"id": uuid.uuid4(), "memory_type": "fact"}])
     assert "reference" in caplog.text.lower()
+
+
+async def test_reference_bump_only_swallows_database_errors():
+    pool = AsyncMock()
+    pool.execute.side_effect = RuntimeError("a real bug")
+    with pytest.raises(RuntimeError):
+        await _search._bump_reference_counts(pool, [{"id": uuid.uuid4(), "memory_type": "fact"}])
+
+
+async def test_reference_bump_locks_rows_in_sorted_order():
+    # Every multi-row writer takes the same order, so two bumps cannot deadlock each other.
+    ids = [uuid.UUID(int=n) for n in (9, 3, 7, 1)]
+    results = [{"id": i, "memory_type": "fact"} for i in ids]
+    results += [{"id": i, "memory_type": "rule"} for i in reversed(ids)]
+    pool = AsyncMock()
+    await _search._bump_reference_counts(pool, results)
+    _, fact_ids, rule_ids = pool.execute.await_args.args
+    assert fact_ids == sorted(ids) and rule_ids == sorted(ids)
