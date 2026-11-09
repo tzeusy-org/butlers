@@ -34,7 +34,7 @@ LEG_KIND = "trip_leg"
 _TIMELINE_DOMAINS = ("time", "travel")
 
 
-def _leg_title(leg: dict[str, Any]) -> str:
+def leg_title(leg: dict[str, Any]) -> str:
     route = " to ".join(x for x in (leg.get("departure_city"), leg.get("arrival_city")) if x)
     parts = [leg.get("type"), leg.get("carrier"), route]
     return " ".join(p for p in parts if p) or "Trip leg"
@@ -105,7 +105,7 @@ async def timeline(
                 "at": data.get("departure_at"),
                 "end": data.get("arrival_at"),
                 "kind": LEG_KIND,
-                "title": _leg_title(data),
+                "title": leg_title(data),
             }
         item["domain"] = row["domain"]
         item["source"] = context.source(kind, uri)

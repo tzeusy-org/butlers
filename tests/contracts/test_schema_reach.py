@@ -367,6 +367,42 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{view}>",
     ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
     (
+        "src/butlers/knowledge_read/describe.py",
+        "<dynamic:{state_view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
+        "src/butlers/knowledge_read/graph.py",
+        "<dynamic:{self.edge_view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
+        "src/butlers/knowledge_read/graph.py",
+        "<dynamic:{self.count_view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
+        "src/butlers/knowledge_read/search.py",
+        "<dynamic:{s.view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
+        "src/butlers/knowledge_read/search.py",
+        "<dynamic:{source.view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
+        "src/butlers/knowledge_read/search.py",
+        "<dynamic:{view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
+        "src/butlers/knowledge_read/travel.py",
+        "<dynamic:{trip_view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
+        "src/butlers/knowledge_read/travel.py",
+        "<dynamic:{leg_view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
+        "src/butlers/knowledge_read/travel.py",
+        "<dynamic:{document_view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
         "src/butlers/migrations/public_mcp_owner.py",
         "<dynamic:{qualified(table.source)}>",
     ): "dynamic-local: RFC0039 D3 internal subscriber DDL/read views operate only on a closed decoded canonical manifest source; qualified validates and quotes the approved source namespace and relation, never a discovered export.",

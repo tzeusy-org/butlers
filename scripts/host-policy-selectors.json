@@ -1049,10 +1049,10 @@
     "direct": 86,
     "direct_files": 39,
     "container": 108,
-    "supplementary": 43,
+    "supplementary": 44,
     "all_categories": {
       "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 59,
-      "NON_NAME_ENUM_OR_MODULE": 28,
+      "NON_NAME_ENUM_OR_MODULE": 29,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 35,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 9,
@@ -4454,6 +4454,32 @@
       "baseline_ids": [],
       "public_source_commit": "ac9dd9b39f972492f60468764bb2ecae1d2f4762",
       "reason": "bu-y66o00.4 Package D primary foundation: RFC 0039 D4 and OD17/OD21/OD22 govern these fixed exposure-domain/privacy distinctions. The canonical citations preserve schema/storage boundaries; this is not configurable host policy or proof of complete REQ004/subscriber delivery."
+    },
+    {
+      "id": "f39888d850c109f94cb28c62603026275153d4acc401eb56a5c56e6e4c68a192",
+      "path": "src/butlers/knowledge_read/search.py",
+      "symbol": "index_sources",
+      "kind": "alias_compare",
+      "expression": "table.domain not in INDEX_DOMAINS",
+      "occurrence": 1,
+      "line": 175,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Refuse any manifest search source outside the four searchable public read domains, so search and fetch never reach finance or health records.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-state/spec.md",
+          "requirement": "Per-Butler Schema Isolation"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "ac9dd9b39f972492f60468764bb2ecae1d2f4762",
+      "reason": "bu-y66o00.5 PR A: RFC 0039 D10 (ChatGPT compatibility) fixes search to the knowledge, relationship, time and travel exposure domains; these are public read domain names, not roster butler selection or configurable host policy."
     },
     {
       "id": "186453dc130ba8b81eeacfc5992c34d3e53bb736453bbfe932e4de88507b9bef",
