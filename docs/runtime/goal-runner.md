@@ -118,6 +118,11 @@ versioned) through `GuidanceSource`s, one per domain. It follows `context.search
 - **Trust.** Only `owner` or `owner_correction` text that is provably untainted is returned
   (excerpt on search, bounded text on load, with title and version). Anything else is a bare
   reference with its authority and taint, never its text, title or version.
+- **Closed references.** A reference reaches the model on every hit, bare ones included, so a
+  domain is a lowercase slug (`[a-z][a-z0-9_]{0,31}`, checked when `Guidance` is built) and a
+  name is `[A-Za-z0-9][A-Za-z0-9._/-]{0,127}`: no space, newline, colon or markup. A source
+  returning any other name fails, like any malformed answer; a `ref` naming one is refused
+  `RESOURCE` before the charge and before a source is asked.
 - **Read-only.** No effect row. Inlined guidance joins the reader as owner data (D6). A failing
   source is `degraded` on search; all failing, or a failing load, is `UNAVAILABLE`.
 - **Sources see no caller.** A source gets the query or name and a `GuidanceReader` (depth
@@ -172,6 +177,10 @@ namespace is reserved like `goal`: no catalog capability of that domain is liste
   `omitted` (count and reason `k` or `packet_budget`). Sources are fused by rank, never raw score,
   and shown in the order of credence. One slow or failed source makes the status `degraded`; all
   failing refuses `UNAVAILABLE`.
+- **Closed labels.** A hit's `ref` and `conflict_set` (`[A-Za-z0-9][A-Za-z0-9._:/-]`, up to 256)
+  and its region and kind (`[A-Za-z0-9][A-Za-z0-9._/-]`, up to 64) reach the model on every hit,
+  bare references included, so anything else (a space, a newline, markup) fails the whole source,
+  as does an `observed_at` that is not a zoned `datetime`.
 - **Not yet covered.** Preconditions for any production `ContextSource` adapter, which the engine
   cannot enforce from outside a source:
   - an availability-only view for exposed and third-party goals (`busy_until` or unknown); they are

@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -59,6 +60,10 @@ _CREDENCE = {name: rank for rank, name in enumerate(AUTHORITIES)}
 _FUSION_K = 60  # reciprocal-rank-fusion constant
 _NAME_CHARS = 64
 _REF_CHARS = 256
+# A hit's ref, region, kind and conflict set reach the model on every hit, bare references
+# included, so each is a closed slug: no space, newline or markup, whatever the source says.
+_REF = re.compile(rf"[A-Za-z0-9][A-Za-z0-9._:/-]{{0,{_REF_CHARS - 1}}}")
+_LABEL = re.compile(rf"[A-Za-z0-9][A-Za-z0-9._/-]{{0,{_NAME_CHARS - 1}}}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,14 +243,25 @@ class _Item:
     score: float
 
 
+def _slug(value: Any, pattern: re.Pattern[str]) -> bool:
+    return type(value) is str and pattern.fullmatch(value) is not None
+
+
 def _valid(result: Any) -> bool:
     return (
         isinstance(result, SourceResult)
         and type(result.hits) is tuple
         and all(
             isinstance(hit, SourceHit)
-            and all(type(v) is str for v in (hit.ref, hit.region, hit.kind, hit.excerpt))
-            and 0 < len(hit.ref) <= _REF_CHARS
+            and type(hit.excerpt) is str
+            and _slug(hit.ref, _REF)
+            and _slug(hit.region, _LABEL)
+            and _slug(hit.kind, _LABEL)
+            and (hit.conflict_set is None or _slug(hit.conflict_set, _REF))
+            and (
+                hit.observed_at is None
+                or (type(hit.observed_at) is datetime and hit.observed_at.tzinfo is not None)
+            )
             and (hit.category is None or hit.category in CATEGORIES)
             and (hit.tainted is None or type(hit.tainted) is bool)
             for hit in result.hits
