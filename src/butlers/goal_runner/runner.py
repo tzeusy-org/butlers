@@ -140,9 +140,18 @@ class GoalRunner:
         return task
 
     async def drain(self) -> None:
-        """Wait for every supervised invocation (tests and shutdown)."""
-        while self._tasks:
-            await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
+        """Wait for every supervised invocation (tests and shutdown).
+
+        A task leaves ``_tasks`` through its ``discard`` done-callback, which runs
+        on a later loop iteration than the one it finished in. ``gather`` of
+        tasks that are all done completes without yielding, so drain removes the
+        tasks it has waited for itself rather than waiting on that callback
+        (bu-dhloi1.227: otherwise it re-gathers them forever and never yields).
+        Tasks spawned meanwhile are waited for on the next round.
+        """
+        while waiting := tuple(self._tasks):
+            await asyncio.gather(*waiting, return_exceptions=True)
+            self._tasks.difference_update(waiting)
 
     async def _terminate(self, invocation_id: UUID) -> None:
         try:
