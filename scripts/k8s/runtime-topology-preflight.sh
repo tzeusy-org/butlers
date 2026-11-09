@@ -8,5 +8,8 @@ fi
 # Preserve existing non-dev behavior and avoid introducing host dependencies there.
 [ "$1" = butlers-dev ] || exit 0
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-exec uv run --no-sync --project "$ROOT" python -B \
+# A fresh worktree has an empty project venv, so do not rely on it (and do not sync every project
+# dependency to read two YAML documents): run in an isolated environment holding the one module the
+# script imports. Keep the pin equal to uv.lock (tests/scripts/test_k8s_runtime_topology_preflight.py).
+exec uv run --no-project --with pyyaml==6.0.3 python -B \
   "$ROOT/scripts/k8s/runtime_topology_preflight.py" "$@"
