@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 
@@ -31,6 +32,9 @@ from butlers.cli_auth.sandbox import (
 from butlers.cli_auth.session import _strip_ansi
 from butlers.credential_store import CredentialStore
 from butlers.egress.http_transport import external_async_client
+
+if TYPE_CHECKING:
+    from butlers.session_host.codex_auth import CodexAuthTarget
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +179,43 @@ async def _prepare_codex_probe_authority(
         return None
 
 
+async def _session_host_holds(target: CodexAuthTarget, expected: str) -> bool:
+    """Whether the session host's volume holds exactly ``expected``; read-only."""
+    try:
+        found = await target.read()
+    except Exception:
+        # The reply or transport error is not logged: it is the host's text.
+        logger.warning("Codex probe: session host credential volume unavailable")
+        return False
+    return found is not None and found[0] == expected
+
+
+async def _prepare_codex_probe_on_session_host(
+    codex_authority: CredentialStore | None, target: CodexAuthTarget
+) -> str | None:
+    """The authority, if the session host's volume holds exactly it (bu-kiuh8v.14).
+
+    Parent-only health never rotates, collects or installs: a volume that differs
+    from the authority (a rotation not yet collected, a stale or absent copy) is
+    reported, and the push or collect around launches reconciles it.
+    """
+    if codex_authority is None:
+        return None
+    try:
+        from butlers.core.runtimes._codex_auth_sync import (
+            _load_authoritative_codex_auth,
+            _read_valid_auth_value,
+        )
+
+        value = await _load_authoritative_codex_auth(codex_authority)
+        if value is None or _read_valid_auth_value(value) is None:
+            return None
+    except Exception:
+        logger.warning("Codex probe: system-global authority preflight failed")
+        return None
+    return value if await _session_host_holds(target, value) else None
+
+
 class AuthHealthState(StrEnum):
     """Health state of a CLI auth provider."""
 
@@ -206,32 +247,59 @@ async def probe_provider(
     prepared_codex_authority: str | None = None,
     codex_authority_prepared: bool = False,
     sandbox: DashboardCLIAuthSandbox | None = None,
+    session_host: CodexAuthTarget | None = None,
 ) -> AuthHealthResult:
-    """Run a provider's status command and determine auth health."""
+    """Run a provider's status command and determine auth health.
+
+    ``session_host`` (dark, bu-kiuh8v.14) is Codex only: the runtime copy checked
+    against the authority is the session host's credential volume, not the local
+    ``auth.json``, which is then neither read nor reconciled. Live callers pass
+    ``None``.
+    """
     if provider.name == "codex":
         if codex_authority_prepared:
             expected_codex_authority = prepared_codex_authority
             token_path = provider.token_path
-            if expected_codex_authority is None or token_path is None:
+            if expected_codex_authority is None or (session_host is None and token_path is None):
                 return AuthHealthResult(
                     provider=provider.name,
                     state=AuthHealthState.probe_failed,
                     detail="System-global Codex authority unavailable; probe was not run.",
                 )
-            try:
-                from butlers.core.runtimes._codex_auth_sync import codex_auth_file_matches_authority
-
-                authority_matches = codex_auth_file_matches_authority(
-                    token_path,
-                    expected_codex_authority,
+            if session_host is not None:
+                authority_matches = await _session_host_holds(
+                    session_host, expected_codex_authority
                 )
-            except Exception:
+            elif token_path is None:
                 authority_matches = False
+            else:
+                try:
+                    from butlers.core.runtimes._codex_auth_sync import (
+                        codex_auth_file_matches_authority,
+                    )
+
+                    authority_matches = codex_auth_file_matches_authority(
+                        token_path,
+                        expected_codex_authority,
+                    )
+                except Exception:
+                    authority_matches = False
             if not authority_matches:
                 return AuthHealthResult(
                     provider=provider.name,
                     state=AuthHealthState.probe_failed,
                     detail="System-global Codex authority changed; probe was not run.",
+                )
+        elif session_host is not None:
+            expected_codex_authority = await _prepare_codex_probe_on_session_host(
+                codex_authority, session_host
+            )
+            if expected_codex_authority is None:
+                return AuthHealthResult(
+                    provider=provider.name,
+                    state=AuthHealthState.probe_failed,
+                    detail="Session host Codex credential does not match the authority; "
+                    "probe was not run.",
                 )
         else:
             expected_codex_authority = await _prepare_codex_probe_authority(
@@ -445,14 +513,16 @@ async def probe_all(
     credential_store: CredentialStore | None = None,
     *,
     codex_authority: CredentialStore | None = None,
+    session_host: CodexAuthTarget | None = None,
 ) -> dict[str, AuthHealthResult]:
-    """Probe all registered providers concurrently."""
+    """Probe all registered providers concurrently (``session_host``: Codex only, dark)."""
     tasks = {
         name: asyncio.create_task(
             probe_provider(
                 provider,
                 credential_store,
                 codex_authority=codex_authority if provider.name == "codex" else None,
+                session_host=session_host if provider.name == "codex" else None,
             )
         )
         for name, provider in PROVIDERS.items()

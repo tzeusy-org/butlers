@@ -568,14 +568,27 @@ async def restore_tokens(
     store: CredentialStore,
     *,
     codex_authority: CredentialStore | None = None,
+    session_host: CodexAuthTarget | None = None,
 ) -> dict[str, bool]:
     """Restore all CLI auth tokens from the DB to their filesystem paths.
 
     Called on application startup. Returns a dict of provider name → success.
+
+    ``session_host`` (dark, RFC 0038 D3, bu-kiuh8v.14) retargets Codex only: the
+    authority is pushed to the session host's credential volume and the local
+    ``auth.json`` is not written. The push fails closed, leaving the volume as it
+    was, when the authority is missing or invalid, the host is unreachable, or the
+    host holds a document no fence can judge (after a control-plane restart; a
+    dashboard login recovers it). Every live caller passes ``None``.
     """
     results: dict[str, bool] = {}
 
     for provider in PROVIDERS.values():
+        if session_host is not None and provider.name == "codex":
+            results[provider.name] = await _push_codex_to_session_host(
+                codex_authority, session_host
+            )
+            continue
         key = _db_key(provider)
         try:
             content = await load_persisted_token(
@@ -640,6 +653,20 @@ async def restore_tokens(
             results[provider.name] = False
 
     return results
+
+
+async def _push_codex_to_session_host(
+    codex_authority: CredentialStore | None, session_host: CodexAuthTarget
+) -> bool:
+    if codex_authority is None:
+        logger.warning("CLI auth restore: no Codex authority for the session host")
+        return False
+    from butlers.session_host.codex_auth import push_codex_authority
+
+    pushed = await push_codex_authority(codex_authority, session_host)
+    if pushed.known:
+        logger.info("CLI auth restore: Codex authority installed on the session host")
+    return pushed.known
 
 
 def _record_codex_baseline() -> None:
