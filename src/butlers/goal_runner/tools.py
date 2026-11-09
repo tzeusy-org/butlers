@@ -9,8 +9,10 @@ a lead's tool. MCP names use the catalog's ``<namespace>__<tool>`` spelling
 (``goal__delegate``); the ``goal`` namespace is reserved, so no published
 capability can shadow a goal tool.
 
-``context.search``, ``guidance.search`` and ``guidance.load`` are not served
-yet (their contracts are separate beads).
+``context.search`` (``context__search``) is served to both depths when a
+``ContextSearch`` is configured; its ``context`` namespace is reserved the same way.
+``guidance.search`` and ``guidance.load`` are not served yet (their contracts are
+a separate bead).
 """
 
 from __future__ import annotations
@@ -23,9 +25,12 @@ from uuid import UUID
 from butlers.capability_broker.contracts import BrokerRefused, Reason
 from butlers.capability_broker.service import Broker
 
+from .context_search import TOOL as CONTEXT_SEARCH
+from .context_search import ContextSearch
 from .runner import GoalRunner
 
 NAMESPACE = "goal"
+RESERVED_NAMESPACES = (NAMESPACE, "context")
 
 _UUID = {"type": "string", "format": "uuid"}
 
@@ -33,7 +38,7 @@ _UUID = {"type": "string", "format": "uuid"}
 @dataclass(frozen=True, slots=True)
 class GoalTool:
     name: str
-    depth: int
+    depths: tuple[int, ...]
     description: str
     input_schema: dict[str, Any]
 
@@ -41,7 +46,7 @@ class GoalTool:
 _TOOLS = (
     GoalTool(
         "goal__delegate",
-        0,
+        (0,),
         "Start one focused child with a brief, requested capabilities (a subset of your "
         "grant), a model tier and a budget share. Returns the child's id.",
         {
@@ -58,7 +63,7 @@ _TOOLS = (
     ),
     GoalTool(
         "goal__await",
-        0,
+        (0,),
         "Read a child's status, typed result and effect statuses.",
         {
             "type": "object",
@@ -69,7 +74,7 @@ _TOOLS = (
     ),
     GoalTool(
         "goal__stop_child",
-        0,
+        (0,),
         "Stop one child of this goal.",
         {
             "type": "object",
@@ -80,7 +85,7 @@ _TOOLS = (
     ),
     GoalTool(
         "goal__complete",
-        0,
+        (0,),
         "Record the goal outcome and the effects it relies on, including the owner reply.",
         {
             "type": "object",
@@ -95,13 +100,13 @@ _TOOLS = (
     ),
     GoalTool(
         "goal__escalate",
-        0,
+        (0,),
         "Hand this goal to a lead on the next model tier; refused at the top of the ladder.",
         {"type": "object", "properties": {}, "additionalProperties": False},
     ),
     GoalTool(
         "goal__return",
-        1,
+        (1,),
         "Return your result in the brief's fixed schema and end.",
         {
             "type": "object",
@@ -110,6 +115,28 @@ _TOOLS = (
             "additionalProperties": False,
         },
     ),
+)
+
+_CONTEXT_SEARCH = GoalTool(
+    CONTEXT_SEARCH,
+    (0, 1),
+    "Search the memory and facts of the domains your grant covers. Returns whole items, each "
+    "with its source, reference, authority and a bounded excerpt.",
+    {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "anchors": {"type": "array", "items": _UUID},
+            "as_of": {"type": "string", "format": "date-time"},
+            "since": {"type": "string", "format": "date-time"},
+            "until": {"type": "string", "format": "date-time"},
+            "regions": {"type": "array", "items": {"type": "string"}},
+            "kinds": {"type": "array", "items": {"type": "string"}},
+            "k": {"type": "integer", "minimum": 1},
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    },
 )
 
 Handler = Callable[[UUID, str, dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -122,9 +149,10 @@ def _closed(arguments: Any, keys: set[str], required: set[str]) -> dict[str, Any
 
 
 class GoalTools:
-    def __init__(self, broker: Broker, runner: GoalRunner):
+    def __init__(self, broker: Broker, runner: GoalRunner, context: ContextSearch | None = None):
         self.broker = broker
         self.runner = runner
+        self.context = context
         self._handlers: dict[str, Handler] = {
             "goal__delegate": self._delegate,
             "goal__await": self._await,
@@ -132,19 +160,20 @@ class GoalTools:
             "goal__complete": self._complete,
             "goal__escalate": self._escalate,
             "goal__return": self._return,
+            CONTEXT_SEARCH: self._context_search,
         }
 
     @staticmethod
     def reserved(name: str) -> bool:
-        return name.startswith(NAMESPACE + "__")
+        return name.startswith(tuple(f"{ns}__" for ns in RESERVED_NAMESPACES))
 
-    @staticmethod
-    def listed(depth: int) -> tuple[GoalTool, ...]:
-        return tuple(tool for tool in _TOOLS if tool.depth == depth)
+    def listed(self, depth: int) -> tuple[GoalTool, ...]:
+        tools = _TOOLS if self.context is None else (*_TOOLS, _CONTEXT_SEARCH)
+        return tuple(tool for tool in tools if depth in tool.depths)
 
     async def call(self, goal_id: UUID, token: str, name: str, arguments: Any) -> dict[str, Any]:
         handler = self._handlers.get(name)
-        if handler is None:
+        if handler is None or (name == CONTEXT_SEARCH and self.context is None):
             raise BrokerRefused(Reason.CAPABILITY)
         return await handler(goal_id, token, arguments)
 
@@ -181,3 +210,7 @@ class GoalTools:
         args = _closed(arguments, {"result"}, {"result"})
         await self.runner.goal_return(goal_id, token, args["result"])
         return {"status": "returned"}
+
+    async def _context_search(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
+        assert self.context is not None
+        return await self.context.search(goal_id, token, arguments)

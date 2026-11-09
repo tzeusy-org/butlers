@@ -23,7 +23,8 @@ serialises with Stop.
 | `ledger.py` | `RunnerLedger`: every SQL statement the runner issues (invocations, budgets, outcomes) |
 | `delegation.py` | `parse_delegation` (closed request shape) and `child_grant` (grant intersection) |
 | `models.py` | `ModelLadders`: per-role tier ladders; `qualifies` / `next_tier` |
-| `tools.py` | `GoalTools`: the `goal__*` MCP tools, listed by invocation depth |
+| `tools.py` | `GoalTools`: the `goal__*` and `context__search` MCP tools, listed by invocation depth |
+| `context_search.py` | `ContextSearch`: the closed query, grant-scoped fan-out, fusion and the bounded envelope |
 | `contracts.py` | `SessionHost` protocol, `Launch`, `HostOutcome`, prompt-composer protocol |
 
 Migration `sw_062` (`roster/switchboard/migrations/062_goal_runner.py`) adds the per-invocation
@@ -45,8 +46,37 @@ capability and never lists one. The runner serves these tools on the same per-go
 | `goal__complete` | lead | Record the outcome; the goal settles |
 | `goal__escalate` | lead | Hand the goal to a fresh lead on the next ladder tier |
 | `goal__return` | child | Return a result validated against the brief's `result_schema` |
+| `context__search` | lead, child | Grant-scoped, read-pure recall (see below); served only when a `ContextSearch` is configured |
 
 Every goal-tool call is charged against the goal budget and the caller's invocation share.
+
+## Context search (D8, D15, S5)
+
+`context.search` (`context__search`) is served to both depths, beside the goal tools. The `context`
+namespace is reserved like `goal`: no catalog capability of that domain is listed or callable.
+
+- **Closed query.** Keys `query`, `anchors`, `as_of`, `since`, `until`, `regions`, `kinds`, `k`;
+  anything else, or any value outside `ContextSearchLimits` (query 1024 UTF-8 bytes, 16 anchors,
+  16 regions/kinds, `k` 1-20), refuses `POLICY` before anything is charged. Anchors are entity
+  UUIDs, instants must carry a zone, and a point in time (`as_of`) cannot be combined with a window.
+- **Grant-scoped.** A domain is searched only if the invocation holds an unrestricted grant on a
+  `read` capability of that domain that the catalog lists at its depth. A domain reached only
+  through resource-restricted grants is not searched, because a source cannot honour a per-resource
+  restriction. A grant that covers no source refuses `CAPABILITY` and charges nothing. A child holds
+  a subset of its lead's grant, so it sees a subset of the sources.
+- **Read-pure.** A call is charged to the goal budget and the caller's share like every goal tool
+  (`BUDGET` when spent, before any source is asked). It writes no effect row. The only other write
+  is the reader's label join for what it read (D6): a source's stamp account sets the label, and
+  hits without an owner-untainted account, or from a tainted writer, expose the reader. A source
+  that returned nothing joins nothing.
+- **Envelope.** Whole items with `ref` (`<source>:<ref>`), region, kind, a bounded excerpt,
+  `observed_at`, `authority` and `conflict_set`; `sources` (per-source `ok`, `timeout`, `failed`);
+  `omitted` (count and reason `k` or `packet_budget`). Sources are fused by rank, never raw score,
+  and shown in the order of credence. One slow or failed source makes the status `degraded`; all
+  failing refuses `UNAVAILABLE`.
+- **Not yet covered.** Owner-law `never` terms on a domain's read capability do not yet exclude its
+  source, and there is no production `ContextSource` adapter (each domain's memory and fact search
+  is a separate package). Limits are a constructor argument, not yet read from `runtime_config`.
 
 ## Delegation (D9)
 
@@ -134,13 +164,13 @@ of the ladder, or with no invocation room left, it refuses and the current lead 
 
 ## Telemetry (D17)
 
-Spans (`goal.delegate`, `goal.complete`, `goal.escalate`, `goal.stop`, `goal.recover`, `goal.resume`, and the
+Spans (`goal.context_search`, `goal.delegate`, `goal.complete`, `goal.escalate`, `goal.stop`, `goal.recover`, `goal.resume`, and the
 per-launch span) carry identifiers only: goal id, invocation id, depth, lead epoch and tier. No
 brief text, arguments or results.
 
 ## Not yet delivered
 
-- `context.search` (AC8) and `guidance.search` / `guidance.load` (M4).
+- `guidance.search` / `guidance.load` (M4), and the per-domain `ContextSource` adapters for `context.search`.
 - The production session-host adapter and runtime usage relay (depends on `bu-kiuh8v`).
 - `awaiting_approval` and parked-wait continuation (`bu-dhloi1.7`).
 - The four-section starting-context packet; `MinimalComposer` is a placeholder.
