@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, Any
 
 import anyio
 import asyncpg
-from fastmcp import Client as MCPClient
 from opentelemetry import trace
 from opentelemetry.context import Context as OtelContext
 
@@ -43,6 +42,7 @@ from butlers.core.routing_context import _routing_ctx_var
 from butlers.core.scheduler.cancel import raise_if_task_cancelled
 from butlers.core.spawner import SESSION_CANCELLED_ERROR
 from butlers.core.telemetry import tag_butler_span
+from butlers.mcp_liveness import LivenessClient as MCPClient
 from butlers.mcp_patches import apply_streamable_http_client_disconnect_patch
 from butlers.routing_guidance import (
     _build_route_runtime_context,

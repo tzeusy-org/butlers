@@ -18,8 +18,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 from fastapi import Depends
-from fastmcp import Client as MCPClient
 from fastmcp.exceptions import ToolError
+
+from butlers.mcp_liveness import LivenessClient as MCPClient
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
