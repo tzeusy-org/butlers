@@ -55,7 +55,11 @@ from pydantic import BaseModel
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.filtered_event_buffer import (
+    FilteredEventBuffer,
+    ParkNotDurableError,
+    drain_replay_pending,
+)
 from butlers.connectors.gmail_policy import _normalize_email
 from butlers.connectors.google_fleet import (
     AccountHealthStatus,
@@ -1356,7 +1360,9 @@ class GDriveAccountLoop:
 
         A failure with attempts left stops here, keeping that envelope and
         everything after it for the next cycle. A failure that spends the
-        envelope's last attempt parks it as a replayable error row and goes on.
+        envelope's last attempt parks it durably as a replayable error row and
+        goes on; a park that is not written also stops here, so the page token
+        is never committed past an item with no durable copy.
         """
         while self._unsent:
             envelope = self._unsent[0]
@@ -1373,30 +1379,46 @@ class GDriveAccountLoop:
                         type(exc).__name__,
                     )
                     return False
-                self._park(envelope, exc)
+                if not await self._park(envelope, exc):
+                    return False
             else:
                 self._ingest_retry.succeeded(key)
             self._unsent.pop(0)
         return True
 
-    def _park(self, envelope: dict[str, Any], exc: BaseException) -> None:
-        """Park an envelope whose attempts are spent as a replayable error row."""
+    async def _park(self, envelope: dict[str, Any], exc: BaseException) -> bool:
+        """Durably park an envelope whose attempts are spent; True once written.
+
+        Error detail is the exception class only: transport text can echo
+        content. False (the row was not written, or there is no pool) means the
+        envelope stays unsent and the page token stays held; the next cycle
+        sends it again, which only adds attempts.
+        """
         event_id = str(envelope["event"]["external_event_id"])
-        self._filtered_event_buffer.record(
-            external_message_id=event_id,
-            source_channel=_DESCRIPTOR.channel,
-            sender_identity=self.endpoint_identity,
-            subject_or_preview=None,
-            filter_reason=FilteredEventBuffer.reason_submission_error(),
-            status="error",
-            error_detail=str(exc),
-            full_payload=FilteredEventBuffer.stored_envelope(envelope),
-        )
+        try:
+            await self._filtered_event_buffer.park(
+                self._db_pool,
+                external_message_id=event_id,
+                source_channel=_DESCRIPTOR.channel,
+                sender_identity=self.endpoint_identity,
+                subject_or_preview=None,
+                error_detail=type(exc).__name__,
+                full_payload=FilteredEventBuffer.stored_envelope(envelope),
+            )
+        except ParkNotDurableError:
+            logger.error(
+                "Drive: attempts spent for %s (email=%s) but it could not be parked; "
+                "holding the page token",
+                event_id,
+                self.email,
+            )
+            return False
         logger.warning(
             "Drive: attempts spent for %s (email=%s); parked for replay",
             event_id,
             self.email,
         )
+        return True
 
     async def _commit_if_settled(self) -> None:
         """Commit the read position once nothing read is unsent or batched."""
@@ -1454,6 +1476,8 @@ class GDriveAccountLoop:
         committed once it is delivered.
         """
         if not self._pending_batch:
+            # An earlier digest may still be unsent (stop() lands here).
+            await self._deliver_unsent()
             await self._commit_if_settled()
             return
 
@@ -1570,11 +1594,20 @@ class GDriveAccountLoop:
                 await self._task
             except (asyncio.CancelledError, Exception):
                 pass
-        # Flush any remaining batch so changes aren't lost on shutdown
+        # Flush any remaining batch so changes aren't lost on shutdown. A digest
+        # that fails is sent again or parked durably; one that is neither keeps
+        # the page token held, so the next start re-reads its changes.
         try:
             await self._flush_batch()
         except Exception as exc:
             logger.warning("Drive: error flushing batch on stop for email=%s: %s", self.email, exc)
+        # Persist the filtered (visibility) rows recorded since the last cycle.
+        try:
+            await self._flush_filtered_events()
+        except Exception as exc:
+            logger.warning(
+                "Drive: error flushing filtered events on stop for email=%s: %s", self.email, exc
+            )
         try:
             await self._mcp_client.aclose()
         except Exception as exc:

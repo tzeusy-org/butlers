@@ -28,6 +28,7 @@ from butlers.connectors.google_drive import (
     GDriveCursor,
     _make_idempotency_key,
 )
+from tests.connectors.filtered_event_fakes import FilteredEventsPool
 
 pytestmark = pytest.mark.unit
 
@@ -85,7 +86,15 @@ def _account(
 
     account._mcp_client = MagicMock()
     account._mcp_client.call_tool = AsyncMock(side_effect=call_tool)
+    account._mcp_client.aclose = AsyncMock()
+    pool: Any = FilteredEventsPool()
+    account._db_pool = pool
     return account, sent, account._fetch_changes_page
+
+
+def _pool(account: GDriveAccountLoop) -> FilteredEventsPool:
+    pool: Any = account._db_pool
+    return pool
 
 
 def _now():
@@ -129,11 +138,70 @@ async def test_a_change_out_of_attempts_is_parked_and_the_token_moves_on() -> No
 
     failed = sent[1]
     assert sent[1:] == [failed] * attempts
-    (row,) = account._filtered_event_buffer._rows
+    (row,) = _pool(account).written  # committed before the token moved
     assert row[8] == "error"
     assert row[9]["control"]["idempotency_key"] == failed["control"]["idempotency_key"]
     assert "schema_version" not in row[9]
+    assert row[10] == "ConnectionError"  # the class, never the transport text
     assert _saved_tokens(account) == ["T2"]
+
+
+async def test_a_park_that_is_not_written_keeps_the_token_held() -> None:
+    account, sent, _ = _account(fail=[False] + [True] * 20)
+    attempts = account._ingest_retry.max_attempts
+    _pool(account).fail_writes = True
+
+    for _ in range(attempts):
+        await account._poll_once()
+
+    assert _pool(account).written == []
+    assert _saved_tokens(account) == []  # no durable copy, so the token stays at T1
+    account._save_metadata_cache_to_store.assert_not_awaited()  # type: ignore[attr-defined]
+
+    # Once the database is back, the change is parked and the token moves on.
+    _pool(account).fail_writes = False
+    for _ in range(attempts):
+        await account._poll_once()
+
+    assert len(_pool(account).written) == 1
+    assert _saved_tokens(account) == ["T2"]
+
+
+async def test_stop_parks_a_spent_digest_durably_then_commits_the_token() -> None:
+    account, sent, _ = _account(batch_window_s=1, fail=[True] * 10)
+    attempts = account._ingest_retry.max_attempts
+
+    await account._poll_once()
+    account._batch_window_opened_at = 0.0
+    await account._maybe_flush_batch()  # attempt 1
+    for _ in range(attempts - 2):
+        await account._poll_once()  # resends before reading on
+    assert _saved_tokens(account) == [] and _pool(account).written == []
+
+    await account.stop()  # last attempt: parked durably, then committed
+
+    digest = sent[0]
+    assert sent == [digest] * attempts
+    (row,) = _pool(account).written
+    assert row[9]["control"]["idempotency_key"] == digest["control"]["idempotency_key"]
+    assert _saved_tokens(account) == ["T2"]
+
+
+async def test_stop_flushes_filtered_rows() -> None:
+    account, _, _ = _account()
+    account._filtered_event_buffer.record(
+        external_message_id="f9",
+        source_channel="google_drive",
+        sender_identity=_EMAIL,
+        subject_or_preview=None,
+        filter_reason="policy",
+        full_payload={},
+    )
+
+    await account.stop()
+
+    assert len(_pool(account).written) == 1
+    assert len(account._filtered_event_buffer) == 0
 
 
 async def test_a_failed_batch_digest_is_kept_and_the_loop_survives() -> None:
