@@ -62,7 +62,7 @@ from butlers.connectors.discretion import (
     classify_ignore_kind,
 )
 from butlers.connectors.email_spans import email_untrusted_spans
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.health_socket import prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.live_listener.checkpoint import (
@@ -683,6 +683,7 @@ class LiveListenerConnector:
             self._connector_metrics.record_ingest_submission("error")
             self._connector_metrics.record_error(type(exc).__name__.lower(), "ingest_submit")
             logger.warning("live-listener: ingest submission failed for mic=%s: %s", mic, exc)
+            await self._park_failed_submission(mic, envelope, exc)
             return
 
         # Persist checkpoint after successful submission (accepted or duplicate).
@@ -712,6 +713,57 @@ class LiveListenerConnector:
             len(result.text),
             e2e_elapsed,
         )
+
+        # The Switchboard is reachable: send any replay the owner requested.
+        await self._drain_replays(mic)
+
+    async def _park_failed_submission(
+        self, mic: str, envelope: dict[str, Any], exc: BaseException
+    ) -> None:
+        """Park a forwarded utterance whose ingest failed as a replayable error row.
+
+        Live audio is never captured again, so this row is the utterance's only
+        copy (bu-dhloi1.224). It stores the exact envelope, idempotency key
+        included, which is what the connector had already chosen to send. The
+        error detail is the exception class only: transport text can echo the
+        transcript. Without a DB pool nothing can hold it, and that is logged.
+        """
+        buffer = self._filtered_event_buffers.get(mic)
+        if self._db_pool is None or buffer is None:
+            logger.error(
+                "live-listener: no DB to park a failed utterance for mic=%s; it is lost", mic
+            )
+            return
+        buffer.record(
+            external_message_id=str(envelope["event"]["external_event_id"]),
+            source_channel=_DESCRIPTOR.channel,
+            sender_identity="ambient",
+            subject_or_preview=None,
+            filter_reason=FilteredEventBuffer.reason_submission_error(),
+            status="error",
+            error_detail=type(exc).__name__,
+            full_payload=FilteredEventBuffer.stored_envelope(envelope),
+        )
+        await buffer.flush(self._db_pool)
+
+    async def _drain_replays(self, mic: str) -> None:
+        """Submit up to 10 replay-requested rows for this mic (best effort)."""
+        if self._db_pool is None:
+            return
+
+        async def submit(envelope: dict[str, Any]) -> None:
+            await self._mcp_client.call_tool("ingest", envelope)
+
+        try:
+            await drain_replay_pending(
+                pool=self._db_pool,
+                connector_type=_FILTERED_EVENTS_CONNECTOR_TYPE,
+                endpoint_identity=endpoint_identity(mic),
+                submit_fn=submit,
+                drain_logger=logger,
+            )
+        except Exception:
+            logger.warning("live-listener: replay queue drain failed for mic=%s", mic)
 
     async def _record_discretion_ignore(
         self,
