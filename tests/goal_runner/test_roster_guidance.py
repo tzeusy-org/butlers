@@ -202,6 +202,25 @@ async def test_a_document_over_the_size_bound_is_omitted_not_cut(roster, caplog)
     assert await ButlerGuidance(roster, "finance", limits).load("CLAUDE.md", READER) is None
 
 
+async def test_the_bound_is_on_the_served_text_so_session_notes_never_push_a_document_out(roster):
+    limits = RosterGuidanceLimits(document_bytes=64)
+    write(roster / "finance" / "notes.md", "# Notes to self\n" + "n" * 40 + "\n")
+    write(roster / "finance" / "CLAUDE.md", "# Finance\nok\n@notes.md\n@notes.md\n")
+    loaded = await ButlerGuidance(roster, "finance", limits).load("CLAUDE.md", READER)
+    assert loaded is not None and loaded.text == "# Finance\nok\n"  # raw ~130 bytes, served 13
+
+
+async def test_a_runaway_include_fan_out_is_omitted_before_notes_are_stripped(roster):
+    limits = RosterGuidanceLimits(document_bytes=64)
+    write(roster / "finance" / "notes.md", "# Notes to self\n" + "n" * 40 + "\n")
+    write(roster / "finance" / "fan.md", "@notes.md\n" * 4)  # each file fits; expansion 227 bytes
+    write(roster / "finance" / "CLAUDE.md", "# Finance\n" + "@fan.md\n" * 2)  # raw 465 bytes
+    served = await ButlerGuidance(roster, "finance", limits).load("CLAUDE.md", READER)
+    assert served is not None and served.text == "# Finance\n"
+    write(roster / "finance" / "CLAUDE.md", "# Finance\n" + "@fan.md\n" * 3)  # raw past 8 x 64
+    assert await ButlerGuidance(roster, "finance", limits).load("CLAUDE.md", READER) is None
+
+
 async def test_include_cycles_and_depth_past_the_bound_are_omitted(roster):
     write(roster / "finance" / "CLAUDE.md", "@a.md\n")
     write(roster / "finance" / "a.md", "@CLAUDE.md\n")

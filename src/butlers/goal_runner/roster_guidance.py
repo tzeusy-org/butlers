@@ -56,6 +56,7 @@ _HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 _WORD = re.compile(r"[a-z0-9]+")
 _SECRETISH = re.compile(r"(^\.env|secret|credential|token|password|\.pem$|\.key$)", re.I)
 _NOT_DOMAINS = frozenset({"shared"})
+_EXPANSION = 8  # raw expansion (includes, notes still in) may reach this many served bounds
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +123,14 @@ class _Reader:
                 raise _Refused("include_cycle")
             lines.append(self.expanded(target, depth + 1, seen | {path}))
         text = "\n".join(lines)
+        # The served bound applies after notes are stripped (``_served``); this only stops a
+        # fan-out of includes from growing without bound before then.
+        if len(text.encode("utf-8")) > _EXPANSION * self.limits.document_bytes:
+            raise _Refused("size")
+        return text
+
+    def served(self, text: str) -> str:
+        """The bound on what is served: a document over it is omitted, never cut."""
         if len(text.encode("utf-8")) > self.limits.document_bytes:
             raise _Refused("size")
         return text
@@ -222,7 +231,7 @@ class ButlerGuidance(_Documents):
                 logger.info("roster guidance omitted butler=%s name=%s", self.butler, name)
             return
         try:
-            text = _without_notes(self._reader.expanded(resolved))
+            text = self._reader.served(_without_notes(self._reader.expanded(resolved)))
         except _Refused as refused:
             logger.info(
                 "roster guidance omitted butler=%s name=%s reason=%s", self.butler, name, refused
@@ -242,7 +251,7 @@ class LeadPolicyGuidance(_Documents):
     def documents(self) -> dict[str, GuidanceItem]:
         try:
             path = self._reader.path(self._reader.root / LEAD_POLICY_PATH)
-            text = self._reader.expanded(path).strip() + "\n"
+            text = self._reader.served(self._reader.expanded(path).strip() + "\n")
         except _Refused:
             return {}
         return {LEAD_POLICY: _item(LEAD_POLICY, "lead policy", text)}

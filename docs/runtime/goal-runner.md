@@ -150,7 +150,9 @@ itself is unconstructed until its wiring lands).
 - **Confinement.** A name is a key in the set the adapter enumerates, never a path, so `../x` is
   just unknown (`RESOURCE`). Every file, include and symlink target is resolved and must stay
   inside the roster root; only `.md` files are read, never an env or secret-looking name. A
-  document over 64 KiB (after includes) is omitted, never served cut. Reads are fresh per call
+  document whose served text (after includes, with notes stripped) is over 64 KiB is omitted,
+  never served cut, so session notes cannot push a butler's guidance out. Each raw file read is
+  capped at 64 KiB, and the raw expansion at 8 x 64 KiB. Reads are fresh per call
   on a worker thread; nothing is cached or recorded.
 - **Search.** Term counts over the document, a name or title hit weighing three body hits;
   documents with no hit are not returned; ties break by name.
