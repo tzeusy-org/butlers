@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import asyncpg
 import pytest
 
+from butlers.db import _RuntimeRoleError
 from butlers.modules.memory import search as _search
 from butlers.modules.memory.tools import context as _context
 
@@ -172,19 +173,31 @@ async def test_a_caller_supplied_embedding_is_not_recomputed(searches):
     engine.embed.assert_not_called()
 
 
-async def test_reference_bump_failure_does_not_fail_recall(caplog):
-    # A deadlock with another multi-row writer must not fail memory_context.
+@pytest.mark.parametrize(
+    "error",
+    [
+        asyncpg.DeadlockDetectedError("deadlock detected"),
+        asyncpg.InterfaceError("connection is closed"),
+        ConnectionRefusedError("refused"),
+        TimeoutError("acquire timed out"),
+        _RuntimeRoleError("SET ROLE failed on a dropped connection"),
+    ],
+    ids=["deadlock", "interface", "connection-refused", "timeout", "runtime-role"],
+)
+async def test_reference_bump_failure_does_not_fail_recall(error, caplog):
+    # A deadlock, a dropped connection or a failed SET ROLE must not fail memory_context.
     pool = AsyncMock()
-    pool.execute.side_effect = asyncpg.DeadlockDetectedError("deadlock detected")
+    pool.execute.side_effect = error
     with caplog.at_level("WARNING"):
         await _search._bump_reference_counts(pool, [{"id": uuid.uuid4(), "memory_type": "fact"}])
     assert "reference" in caplog.text.lower()
 
 
-async def test_reference_bump_only_swallows_database_errors():
+@pytest.mark.parametrize("bug", [RuntimeError("a real bug"), TypeError("bad arg")])
+async def test_reference_bump_only_swallows_database_errors(bug):
     pool = AsyncMock()
-    pool.execute.side_effect = RuntimeError("a real bug")
-    with pytest.raises(RuntimeError):
+    pool.execute.side_effect = bug
+    with pytest.raises(type(bug)):
         await _search._bump_reference_counts(pool, [{"id": uuid.uuid4(), "memory_type": "fact"}])
 
 

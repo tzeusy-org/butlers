@@ -18,6 +18,7 @@ from butlers.core.chronicler_visibility import (
     catalog_projection_visible,
     local_fact_visibility_condition,
 )
+from butlers.db import _RuntimeRoleError
 from butlers.modules.memory.content_authority import RULE_ADMITTED_SQL
 from butlers.modules.memory.embedding import embed_async
 
@@ -775,8 +776,15 @@ async def _bump_reference_counts(pool: Pool, results: list[dict]) -> None:
             fact_ids,
             rule_ids,
         )
-    except (asyncpg.PostgresError, asyncpg.InterfaceError):
-        # Reference counts are bookkeeping, not the answer; a real bug still surfaces.
+    except (
+        asyncpg.PostgresError,
+        asyncpg.InterfaceError,
+        OSError,
+        TimeoutError,
+        _RuntimeRoleError,  # Database._setup_connection: SET ROLE failed at acquire
+    ):
+        # Reference counts are bookkeeping, not the answer. A database, connection or role
+        # failure is tolerated; a real bug (TypeError and the like) still surfaces.
         logger.warning("could not bump memory reference counts", exc_info=True)
 
 
