@@ -119,10 +119,10 @@ When a trigger arrives (either from the `trigger` MCP tool, the `route.execute` 
 Graceful shutdown proceeds in reverse order:
 
 1. Stop the MCP SSE server
-2. Stop accepting new triggers
-3. Drain in-flight runtime sessions (up to a configurable timeout)
-4. Cancel the Switchboard heartbeat task
-5. Cancel the scheduler loop. An in-progress `tick()` may finish within the shutdown budget, then it is cancelled. Jobs run inside the tick, so they keep their Switchboard client until this step ends
+2. Cancel the scheduler loop. An in-progress `tick()` may finish within the shutdown budget, then it is cancelled. The spawner still accepts triggers meanwhile, because a tick advances `next_run_at` when it claims an occurrence and dispatches after, so a refusing spawner would lose that occurrence. Jobs run inside the tick, so they keep their Switchboard client until this step ends
+3. Stop accepting new triggers
+4. Drain in-flight runtime sessions (up to a configurable timeout)
+5. Cancel the Switchboard heartbeat task
 6. Close the Switchboard MCP client connection
 7. Cancel the liveness reporter loop
 8. Shut down modules in **reverse** topological order (each module's `on_shutdown()`)
