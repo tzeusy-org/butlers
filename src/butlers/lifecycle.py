@@ -934,14 +934,17 @@ def _shutdown_budget_s(daemon: Any) -> float:
 _POOL_CLOSE_FLOOR_S = 1.0
 
 
-def _pool_close_timeout_s(daemon: Any, deadline: float) -> float:
-    """Seconds one pool close may take: what is left of the daemon's share, never under the
-    floor; ``Database.close``'s own default when the daemon shuts down alone."""
-    from butlers.db import _POOL_CLOSE_TIMEOUT_S
+async def _close_pool(daemon: Any, database: Any, deadline: float | None) -> None:
+    """Close a pool owner within the daemon's share, when it has one.
 
-    if vars(daemon).get("_shutdown_budget_s") is None:
-        return _POOL_CLOSE_TIMEOUT_S
-    return max(_POOL_CLOSE_FLOOR_S, deadline - asyncio.get_running_loop().time())
+    With a share, the close is bounded by what is left of it, never under the floor. Without
+    one (a daemon shutting down alone, or no ``deadline``) it is the owner's plain ``close()``
+    and its own default bound, exactly as before the budget existed.
+    """
+    if deadline is None or vars(daemon).get("_shutdown_budget_s") is None:
+        await database.close()
+        return
+    await database.close(max(_POOL_CLOSE_FLOOR_S, deadline - asyncio.get_running_loop().time()))
 
 
 def _step_budget_s(daemon: Any, deadline: float) -> float:
@@ -1066,7 +1069,7 @@ async def _shutdown_resources(daemon: Any) -> None:
     await _shutdown_chronicler_dependents(daemon, deadline)
 
 
-async def _shutdown_chronicler_dependents(daemon: Any, deadline: float) -> None:
+async def _shutdown_chronicler_dependents(daemon: Any, deadline: float | None = None) -> None:
     """Original dependent teardown, reached once after owned work settles."""
     # 6. Module shutdown in reverse topological order (active modules only)
     from butlers.core.approval_delivery_worker import stop_approval_delivery_worker
@@ -1101,11 +1104,11 @@ async def _shutdown_chronicler_dependents(daemon: Any, deadline: float) -> None:
 
     # 7. Close credential-layer DB pools
     if daemon._shared_credentials_db is not None:
-        await daemon._shared_credentials_db.close(_pool_close_timeout_s(daemon, deadline))
+        await _close_pool(daemon, daemon._shared_credentials_db, deadline)
         daemon._shared_credentials_db = None
 
     # 8. Close DB pool
     if daemon.db:
-        await daemon.db.close(_pool_close_timeout_s(daemon, deadline))
+        await _close_pool(daemon, daemon.db, deadline)
 
     logger.info("Butler shutdown complete")

@@ -56,14 +56,20 @@ async def test_a_spent_share_still_leaves_a_pool_the_floor(tmp_path: Path) -> No
     assert db.close.await_args.args == (1.0,)
 
 
-async def test_a_daemon_shutting_down_alone_keeps_the_default_close_timeout(
-    tmp_path: Path,
-) -> None:
-    from butlers.db import _POOL_CLOSE_TIMEOUT_S
-
+async def test_a_daemon_shutting_down_alone_calls_a_plain_close(tmp_path: Path) -> None:
     daemon = _daemon(tmp_path, share=None)
-    db = daemon.db
+    credentials, db = daemon._shared_credentials_db, daemon.db
 
     await lifecycle._shutdown_chronicler_dependents(daemon, 0.0)
 
-    assert db.close.await_args.args == (_POOL_CLOSE_TIMEOUT_S,)
+    # Exactly as before the budget existed: no argument, so a stand-in without a timeout works.
+    assert db.close.await_args.args == () and credentials.close.await_args.args == ()
+
+
+async def test_no_deadline_means_no_share_even_when_a_budget_is_set(tmp_path: Path) -> None:
+    daemon = _daemon(tmp_path, share=7.0)
+    db = daemon.db
+
+    await lifecycle._shutdown_chronicler_dependents(daemon)
+
+    assert db.close.await_args.args == ()
