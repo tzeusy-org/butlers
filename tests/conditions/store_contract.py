@@ -13,11 +13,19 @@ from uuid import uuid5
 
 import pytest
 
-from butlers.conditions import ConditionEvaluator, Instance, RegistrationRefused, Snapshot, State
+from butlers.conditions import (
+    ConditionEvaluator,
+    Instance,
+    RegistrationRefused,
+    Snapshot,
+    State,
+    Tri,
+)
 from butlers.conditions.model import FireIntent
 from butlers.conditions.service import StoreConflict
 from tests.conditions.test_conditions import (
     DECISION,
+    EFFECT_LEAF,
     EXPIRES,
     GOAL,
     GRANT,
@@ -220,3 +228,33 @@ class StoreContract:
         assert after.expires_at == before.expires_at
         with pytest.raises(RegistrationRefused):  # a different floor is a changed boundary
             await register(evaluator, DECISION, snapshot=fresh, cursors={"goal.decision": 99})
+
+    @pytest.mark.parametrize("close", ["cancel", "expire"])
+    async def test_register_retry_on_a_closed_instance_changes_nothing(self, close):
+        store = self.make_store()
+        evaluator = ConditionEvaluator(store)
+        await register(evaluator, DECISION)
+        if close == "cancel":
+            await evaluator.cancel("c1", now=NOW)
+        else:
+            await evaluator.evaluate("c1", [], now=EXPIRES + timedelta(minutes=1))
+        before = await self.instance(store, "c1")
+        assert before.state is not State.OPEN
+        fresh = Snapshot(now=NOW + timedelta(minutes=1), decisions={SUBJECT: "approved"})
+        retry = await register(evaluator, DECISION, snapshot=fresh)
+        after = await self.instance(store, "c1")
+        assert retry.intent is None and await self.intent_count(store) == 0
+        assert after == before and retry.instance.state is before.state
+
+    async def test_register_retry_keeps_a_latched_leaf_on_an_open_instance(self):
+        store = self.make_store()
+        evaluator = ConditionEvaluator(store)
+        both = {"tag": "all", "children": [DECISION, EFFECT_LEAF]}
+        await register(evaluator, both)
+        await evaluator.evaluate("c1", [decision_ev()], now=NOW)
+        before = await self.instance(store, "c1")
+        assert before.state is State.OPEN and Tri.TRUE in before.leaves.values()
+        retry = await register(evaluator, both, snapshot=Snapshot(now=NOW))
+        after = await self.instance(store, "c1")
+        assert after.leaves == before.leaves and after.version == before.version
+        assert retry.instance.state is State.OPEN and await self.intent_count(store) == 0
