@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from butlers.modules.memory.embedding import EmbeddingEngine
+from butlers.modules.memory.embedding import EmbeddingEngine, embed_async
 from butlers.modules.memory.search_vector import preprocess_text, tsvector_sql
 
 if TYPE_CHECKING:
@@ -1200,7 +1200,7 @@ async def store_episode(
     authority = await _stamp_authority(
         pool, content_authority, authority_entity_id, routing_context
     )
-    embedding = embedding_engine.embed(content)
+    embedding = await embed_async(embedding_engine, content)
     search_text = preprocess_text(content)
     ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
     expires_at = datetime.now(UTC) + timedelta(days=ttl_days)
@@ -1421,7 +1421,7 @@ async def _resolve_write_provenance_with_conn(
     placeholder_now = now or datetime.now(UTC)
     ttl_days = _DEFAULT_EPISODE_TTL_DAYS
     expires_at = placeholder_now + timedelta(days=ttl_days)
-    placeholder_embedding = embedding_engine.embed(_RUNTIME_PROVENANCE_PLACEHOLDER)
+    placeholder_embedding = await embed_async(embedding_engine, _RUNTIME_PROVENANCE_PLACEHOLDER)
     placeholder_search_text = preprocess_text(_RUNTIME_PROVENANCE_PLACEHOLDER)
     episode_id = uuid.uuid4()
     await _insert_episode_record(
@@ -1723,7 +1723,7 @@ async def store_fact(
     authority = await _stamp_authority(pool, content_authority, authority_entity_id)
     fact_id = uuid.uuid4()
     searchable = f"{subject} {predicate} {content}"
-    embedding = embedding_engine.embed(searchable)
+    embedding = await embed_async(embedding_engine, searchable)
     search_text = preprocess_text(searchable)
     decay_rate = validate_permanence(permanence)
     now = datetime.now(UTC)
@@ -2259,7 +2259,7 @@ async def store_fact(
                         _inv_subject = content  # object entity label used as subject
                         _inv_content = subject  # forward subject becomes content
                         _inv_searchable = f"{_inv_subject} {_inverse_predicate} {_inv_content}"
-                        _inv_embedding = embedding_engine.embed(_inv_searchable)
+                        _inv_embedding = await embed_async(embedding_engine, _inv_searchable)
                         _inv_search_text = preprocess_text(_inv_searchable)
                         await _insert_fact_record(
                             conn,
@@ -2524,7 +2524,7 @@ async def store_rule(
     """
     authority = await _stamp_authority(pool, content_authority, authority_entity_id)
     rule_id = uuid.uuid4()
-    embedding = embedding_engine.embed(content)
+    embedding = await embed_async(embedding_engine, content)
     search_text = preprocess_text(content)
     now = datetime.now(UTC)
     tags_json = tags or []
@@ -3889,7 +3889,7 @@ async def invert_to_anti_pattern(
             )
 
             # Re-embed the new content
-            new_embedding = embedding_engine.embed(anti_pattern_content)
+            new_embedding = await embed_async(embedding_engine, anti_pattern_content)
             search_text = preprocess_text(anti_pattern_content)
 
             # Preserve original content in metadata
