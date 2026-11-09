@@ -508,6 +508,10 @@ class TelegramBotConnector:
         self._running = False
         self._semaphore = asyncio.Semaphore(config.max_inflight)
         self._owner_delivery_sweep_task: asyncio.Task[None] | None = None
+        # One drain at a time; held for the whole listing.
+        self._owner_delivery_drain_guard = asyncio.Lock()
+        # Held per card, by the drain around each retraction and by a tap around its edit, so
+        # a tap waits for one card at most, never for the listing.
         self._owner_delivery_drain_lock = asyncio.Lock()
         # Set by a tap whose decision staled other cards; the sweep drains at once.
         self._owner_delivery_sweep_wake = asyncio.Event()
@@ -1546,9 +1550,10 @@ class TelegramBotConnector:
         such answer may be about that message alone, so the drain moves on. Two in a row stop
         it until the next sweep, unless both were 5xx and Telegram still answers ``getMe``:
         then those messages are the problem, and the cards behind them still get their turn.
-        One drain at a time: a tap and the sweep must not attempt the same card at once.
+        One drain at a time, and one card at a time against a tap's edit: the two must not
+        attempt the same card at once, but a tap never waits for the listing.
         """
-        async with self._owner_delivery_drain_lock:
+        async with self._owner_delivery_drain_guard:
             return await self._drain_owner_delivery_retractions_locked()
 
     async def _drain_owner_delivery_retractions_locked(self) -> int:
@@ -1583,40 +1588,43 @@ class TelegramBotConnector:
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict) or not isinstance(item.get("presentation_id"), str):
                 continue
-            card = (str(item.get("route_ref")), str(item.get("provider_ref")))
-            if card in self._decided_here_cards:
-                # A tap already rewrote this card with the decided status: receipt it so it
-                # leaves the listing, and leave the text alone.
-                if await self._report_retraction(
-                    base, headers, item, ok=True, reason=_RETRACTION_DECIDED_HERE
-                ):
-                    self._decided_here_cards.pop(card, None)
-                continue
-            ok, reason = await self._retract_owner_card(item)
-            if reason in _RETRACTION_NO_VERDICT:
-                token_rejected = token_rejected or reason == _RETRACTION_TOKEN_REJECTED
-                outages.append(reason)
-                if len(outages) < _RETRACTION_OUTAGES_TO_STOP_DRAIN:
+            async with self._owner_delivery_drain_lock:
+                card = (str(item.get("route_ref")), str(item.get("provider_ref")))
+                if card in self._decided_here_cards:
+                    # A tap already rewrote this card with the decided status: receipt it so it
+                    # leaves the listing, and leave the text alone.
+                    if await self._report_retraction(
+                        base, headers, item, ok=True, reason=_RETRACTION_DECIDED_HERE
+                    ):
+                        self._decided_here_cards.pop(card, None)
                     continue
-                # Only a 5xx can concern one message. A rate limit is for the whole bot, and
-                # ``getMe`` would pass under one, so it must not keep this drain going.
-                if set(outages) != {_RETRACTION_PROVIDER_5XX}:
-                    break
-                if not await self._telegram_answers():
-                    break
-                telegram_answered = True
-                outages.clear()
-                continue
-            # A card with no usable message id never reached Telegram, so it is no answer.
-            if ok or reason == "provider_error":
-                outages.clear()
-                telegram_answered = True
-            retracted += int(ok)
-            if not ok:
-                logger.warning(
-                    "Owner-delivery retraction failed for %s (%s)", item["presentation_id"], reason
-                )
-            await self._report_retraction(base, headers, item, ok=ok, reason=reason)
+                ok, reason = await self._retract_owner_card(item)
+                if reason in _RETRACTION_NO_VERDICT:
+                    token_rejected = token_rejected or reason == _RETRACTION_TOKEN_REJECTED
+                    outages.append(reason)
+                    if len(outages) < _RETRACTION_OUTAGES_TO_STOP_DRAIN:
+                        continue
+                    # Only a 5xx can concern one message. A rate limit is for the whole bot, and
+                    # ``getMe`` would pass under one, so it must not keep this drain going.
+                    if set(outages) != {_RETRACTION_PROVIDER_5XX}:
+                        break
+                    if not await self._telegram_answers():
+                        break
+                    telegram_answered = True
+                    outages.clear()
+                    continue
+                # A card with no usable message id never reached Telegram, so it is no answer.
+                if ok or reason == "provider_error":
+                    outages.clear()
+                    telegram_answered = True
+                retracted += int(ok)
+                if not ok:
+                    logger.warning(
+                        "Owner-delivery retraction failed for %s (%s)",
+                        item["presentation_id"],
+                        reason,
+                    )
+                await self._report_retraction(base, headers, item, ok=ok, reason=reason)
         # Pausing stops every retraction, so the token itself must be what Telegram refused.
         if token_rejected and not telegram_answered:
             telegram_answered = await self._telegram_answers()

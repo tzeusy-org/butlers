@@ -420,6 +420,43 @@ async def test_tap_edit_waits_for_a_running_drain_so_the_outcome_lands_last(
     assert [b["text"] for b in http.telegram("editMessageText")] == ["✅ Approved"]
 
 
+async def test_tap_edit_does_not_wait_for_a_drain_that_is_between_cards(
+    owner_resolver: AsyncMock,
+) -> None:
+    """bu-dhloi1.115: the lock is per card, so a tap never waits for the listing."""
+    import asyncio
+
+    release = asyncio.Event()
+    listing_requested = asyncio.Event()
+
+    class _SlowListing(_Http):
+        async def get(self, url: str, **kwargs: Any) -> MagicMock:
+            listing_requested.set()
+            await release.wait()  # a long listing: the drain holds its guard, not a card
+            return await super().get(url, **kwargs)
+
+    http = _SlowListing(
+        _response(),
+        [{"presentation_id": _TAPPED_ID, "route_ref": "9001", "provider_ref": "44"}],
+    )
+    connector = _connector()
+    connector._http_client = http  # type: ignore[assignment]
+    drain = asyncio.create_task(connector._drain_owner_delivery_retractions())
+    await listing_requested.wait()
+
+    await asyncio.wait_for(
+        connector._edit_approval_callback_message(_update("x")["callback_query"], "approved"), 1
+    )
+    assert [b["text"] for b in http.telegram("editMessageText")] == ["✅ Approved"]
+
+    release.set()
+    await asyncio.wait_for(drain, 1)
+    # The tapped card was decided before the drain reached it: receipted, never retracted.
+    assert [b["text"] for b in http.telegram("editMessageText")] == ["✅ Approved"]
+    [(_, report)] = http.dashboard("/api/owner-delivery/retractions/")
+    assert report["reason"] == telegram_bot_module._RETRACTION_DECIDED_HERE
+
+
 async def test_retracted_card_keeps_its_subject_and_an_open_link(
     owner_resolver: AsyncMock,
 ) -> None:

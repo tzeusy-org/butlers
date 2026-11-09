@@ -191,7 +191,7 @@ posts the token to `/actions`, edits the tapped card, then wakes the sweep, whic
 must not wait behind it; a wake during a drain runs one more pass). It also
 drains on a timer (`CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S`, default 60 seconds, polling and
 webhook modes), so a card staled by a dashboard decision, expiry or cancellation is retracted
-with no tap. One drain runs at a time. Telegram's "message is not modified" counts as retracted,
+with no tap. One drain runs at a time, and the drain locks one card at a time, so a tap never waits for the listing. Telegram's "message is not modified" counts as retracted,
 because the card already shows that end state.
 
 A card the connector itself rewrote with the decided status (an `od1:` or `apr1:` tap) is never
