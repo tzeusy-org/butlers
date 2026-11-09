@@ -30,6 +30,11 @@ database:
   poolMaxSize: 4
   apiPoolMinSize: 0
   apiPoolMaxSize: 2
+  # When true the migrations initContainer runs `butlers db apply-grants --execute`
+  # (revoke what the public grant manifest omits, grant what it lists). Off by default:
+  # enabling it changes live grants, which is an owner act. When false the initContainer
+  # only prints the plan (dry run).
+  applyGrants: false
 
 # Bitwarden Secrets Manager -> Secret `<release>-bws` via External Secrets.
 # Map of env var name -> BWS secret key. Only these keys are synced; the BWS

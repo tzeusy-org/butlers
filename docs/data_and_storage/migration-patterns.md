@@ -170,6 +170,16 @@ roles, not among them: `PROJECTION_PUBLISHER` and `publisher_relations()` state 
 publication `butlers_public_v1` does not exist. `butlers db check-grants` diffs it too, and
 skips it where the role is absent (Compose, testcontainers).
 
+`butlers db apply-grants` converges a live database to the manifest: it revokes
+whatever exceeds a row (the migration-intent ceiling) and grants only what the
+row and an `init-db.sql` replay both allow, so it narrows and never re-grants a
+privilege the bootstrap removed. The default is a dry run that prints one
+REVOKE/GRANT line per change (relation, role and privilege names only);
+`--execute` runs it in one transaction under an advisory lock and rolls back
+unless a re-plan is empty. The migrations initContainer runs the dry run on every
+deploy and `--execute` only when `database.applyGrants` is true (off by default;
+enabling it is an owner act).
+
 ### Database-global protected public boundaries
 
 Core migrations may be replayed once for each target schema even when they

@@ -682,6 +682,49 @@ def migrate(only: tuple[str, ...], butlers_dir: Path, dry_run: bool) -> None:
     asyncio.run(_migrate_all(configs, dry_run=dry_run))
 
 
+@db.command("apply-grants")
+@click.option("--database", default="butlers", show_default=True, help="Database name")
+@click.option(
+    "--execute",
+    is_flag=True,
+    help="Apply the changes. Without it the command only prints what it would revoke and grant.",
+)
+def apply_grants(database: str, execute: bool) -> None:
+    """Converge runtime-role privileges on public relations to the grant manifest.
+
+    Default is a dry run: it prints one REVOKE/GRANT line per change (relation, role and
+    privilege names only) and changes nothing. With ``--execute`` the changes run in one
+    transaction under an advisory lock and are rolled back unless the catalog then equals
+    the manifest.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from butlers.db import db_params_from_env
+    from butlers.db_authority.apply import apply_public_grants, plan_public_grants
+    from butlers.db_authority.catalog import read_public_catalog
+
+    engine = create_engine(_migration_db_url(db_params_from_env(), db_name=database, schema=None))
+    try:
+        with engine.begin() as conn:
+            if execute:
+                changes = apply_public_grants(conn)
+            else:
+                conn.exec_driver_sql("SET TRANSACTION READ ONLY")
+                changes = plan_public_grants(read_public_catalog(conn))
+    except SQLAlchemyError:
+        # Driver errors can include a URL or statement. Keep this surface closed.
+        raise click.ClickException("Grant apply refused: database operation failed") from None
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from None
+    finally:
+        engine.dispose()
+    for change in changes:
+        click.echo(change.describe())
+    verb = "applied" if execute else "would apply (dry run; pass --execute)"
+    click.echo(f"{len(changes)} grant change(s) {verb}")
+
+
 @db.command("check-grants")
 @click.option("--database", default="butlers", show_default=True, help="Database name")
 @click.option(
