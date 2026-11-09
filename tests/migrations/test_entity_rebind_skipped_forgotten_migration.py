@@ -71,3 +71,47 @@ async def test_skipped_forgotten_is_allowed_only_without_an_error_class_and_down
 
     await _run(pool, "upgrade")
     await pool.execute(_SETTLE, rebind, "skipped_forgotten", None)
+
+
+def _guarded_op(*, table_exists: bool, installed_schemas: int):
+    """An op whose bind answers the table probe and the schema-chain census."""
+    module = load_migration(_PATH, "core_326")
+    statements: list[str] = []
+    op = MagicMock()
+    op.execute.side_effect = statements.append
+    bind = op.get_bind.return_value
+
+    def answer(sql: str, *args: object) -> MagicMock:
+        result = MagicMock()
+        if "to_regclass" in sql:
+            result.scalar.return_value = table_exists
+        elif "pg_class version_table" in sql:
+            result.scalars.return_value = iter([f"s{i}" for i in range(installed_schemas)])
+        else:
+            result.scalar.return_value = True
+        return result
+
+    bind.exec_driver_sql.side_effect = answer
+    bind.dialect.identifier_preparer.quote.side_effect = lambda name: name
+    return module, op, statements
+
+
+@pytest.mark.parametrize("direction", ["upgrade", "downgrade"])
+def test_core_326_changes_nothing_while_the_shared_table_is_absent(direction: str) -> None:
+    """Another chain's core_243 downgrade can drop the shared table before this chain runs."""
+    module, op, statements = _guarded_op(table_exists=False, installed_schemas=1)
+    with patch.object(module, "op", op):
+        getattr(module, direction)()
+    assert all("ALTER TABLE" not in s and "UPDATE" not in s for s in statements)
+
+
+def test_core_326_downgrade_waits_for_the_last_schema_to_leave() -> None:
+    module, op, statements = _guarded_op(table_exists=True, installed_schemas=2)
+    with patch.object(module, "op", op):
+        module.downgrade()
+    assert all("ALTER TABLE" not in s and "UPDATE" not in s for s in statements)
+
+    module, op, statements = _guarded_op(table_exists=True, installed_schemas=1)
+    with patch.object(module, "op", op):
+        module.downgrade()
+    assert any("UPDATE public.entity_rebind_log" in s for s in statements)
