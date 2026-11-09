@@ -27,42 +27,57 @@ pytestmark = [
 ]
 
 
-# (table, column) pairs with an FK to public.entities that the reap's referenced check reads,
-# and the ones it deliberately does not, each with the reason.
+# (table, column) pairs that reference an entity: the ones the reap's referenced check reads, and
+# the ones it deliberately does not, each with the reason. Tables are named without a schema:
+# the memory ``facts`` table is relationship.facts in production and sits in public in this
+# test database, and the reap reads it only where the memory module is enabled.
 _CHECKED: set[tuple[str, str]] = {
-    ("public.facts", "entity_id"),
-    ("public.facts", "object_entity_id"),
-    ("relationship.entity_facts", "subject"),
-    ("relationship.entity_facts", "object_entity_id"),
-    ("public.entity_info", "entity_id"),
-    ("public.priority_contacts", "entity_id"),
+    ("facts", "entity_id"),
+    ("facts", "object_entity_id"),
+    # Every butler's facts, in one place the relationship role can read.
+    ("memory_catalog", "entity_id"),
+    ("memory_catalog", "object_entity_id"),
+    ("entity_facts", "subject"),
+    ("entity_facts", "object_entity_id"),
+    ("contact_entity_map", "entity_id"),
+    ("entity_info", "entity_id"),
+    ("priority_contacts", "entity_id"),
 }
-# contact_entity_map has no FK, so the query below cannot see it; it is checked and tested by name.
 _EXCUSED: set[tuple[str, str]] = {
     # Derived from facts or ledgers: they follow a fact the reap already read, or record history.
-    ("public.entity_graph_edges", "object_entity_id"),
-    ("public.entity_graph_edges", "subject_entity_id"),
-    ("public.entity_graph_withheld_counts", "entity_id"),
-    ("public.memory_catalog", "object_entity_id"),
-    ("public.entity_rebind_log", "source_entity_id"),
-    ("public.entity_rebind_log", "target_entity_id"),
-    ("relationship.fact_coverage", "subject"),
-    ("relationship.merge_reviews", "entity_a"),
-    ("relationship.merge_reviews", "entity_b"),
-    ("relationship.entity_view_marks", "entity_id"),
+    ("entity_graph_edges", "object_entity_id"),
+    ("entity_graph_edges", "subject_entity_id"),
+    ("entity_graph_withheld_counts", "entity_id"),
+    ("entity_rebind_log", "source_entity_id"),
+    ("entity_rebind_log", "target_entity_id"),
+    ("fact_coverage", "subject"),
+    ("merge_reviews", "entity_a"),
+    ("merge_reviews", "entity_b"),
+    ("entity_view_marks", "entity_id"),
     # Name the owner or an authority, never a person an email placeholder stands for.
-    ("relationship.entity_facts", "authority_entity_id"),
-    ("relationship.entity_facts", "confirmed_by_entity_id"),
-    ("relationship.fact_identity_decisions", "owner_entity_id"),
+    ("entity_facts", "authority_entity_id"),
+    ("entity_facts", "confirmed_by_entity_id"),
+    ("fact_identity_decisions", "owner_entity_id"),
+    ("fact_identity_decisions", "owner_original_entity_id"),
+    ("entity_facts", "authority_original_entity_id"),
+    ("entity_facts", "confirmed_by_original_entity_id"),
+    ("facts", "authority_entity_id"),
+    ("episodes", "authority_entity_id"),
+    ("rules", "authority_entity_id"),
+    ("custody_holds", "owner_entity_id"),
+    ("break_through_clauses", "entity_id"),
+    # Open questions put to the owner about an entity, derived from facts the reap already read.
+    ("knowledge_gaps", "entity_id"),
+    ("knowledge_gaps", "answered_authority_entity_id"),
     # Accounts and money belong to an entity the owner already identified, and live in schemas
     # a relationship role cannot read (calendar, finance, credentials).
-    ("public.calendar_event_entities", "entity_id"),
-    ("public.cost_claims", "counterparty_entity_id"),
-    ("public.google_accounts", "entity_id"),
-    ("public.steam_accounts", "entity_id"),
-    ("relationship.credentials", "entity_id"),
+    ("calendar_event_entities", "entity_id"),
+    ("cost_claims", "counterparty_entity_id"),
+    ("google_accounts", "entity_id"),
+    ("steam_accounts", "entity_id"),
+    ("credentials", "entity_id"),
     # The retired contacts table that this test database still carries.
-    ("public.contacts", "entity_id"),
+    ("contacts", "entity_id"),
 }
 
 
@@ -269,6 +284,47 @@ async def test_the_reap_leaves_a_placeholder_a_live_memory_fact_references(
     assert await _deleted_at(rel_pool, placeholder) is None
 
 
+async def _catalog_row(pool, *, subject=None, obj=None, invalid: bool = False) -> None:
+    """A fact in another butler's schema, as the relationship role sees it: a catalog row."""
+    await pool.execute(
+        "INSERT INTO public.memory_catalog (source_schema, source_table, source_id, "
+        "source_butler, entity_id, object_entity_id, invalid_at) "
+        "VALUES ('health', 'facts', gen_random_uuid(), 'health', $1, $2, "
+        "CASE WHEN $3 THEN now() END)",
+        subject,
+        obj,
+        invalid,
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("as_object", [False, True], ids=["subject", "object"])
+async def test_the_reap_leaves_a_placeholder_another_butlers_fact_references(
+    rel_pool, as_object
+) -> None:
+    """bu-dhloi1.127: facts in other butler schemas are visible only through the catalog."""
+    placeholder = await _placeholder(rel_pool)
+    other = await _entity(rel_pool, "Other")
+    if as_object:
+        await _catalog_row(rel_pool, subject=other, obj=placeholder)
+    else:
+        await _catalog_row(rel_pool, subject=placeholder)
+
+    assert await reap(rel_pool) == 0
+
+    assert await _deleted_at(rel_pool, placeholder) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_invalidated_catalog_row_does_not_keep_a_placeholder_alive(rel_pool) -> None:
+    placeholder = await _placeholder(rel_pool)
+    await _catalog_row(rel_pool, subject=placeholder, invalid=True)
+
+    assert await reap(rel_pool) >= 1
+
+    assert await _deleted_at(rel_pool, placeholder) is not None
+
+
 @pytest.mark.asyncio(loop_scope="session")
 async def test_the_reap_leaves_a_placeholder_a_contact_is_linked_to(rel_pool) -> None:
     placeholder = await _placeholder(rel_pool)
@@ -315,10 +371,17 @@ async def test_a_dead_memory_fact_does_not_keep_a_placeholder_alive(rel_pool, va
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_every_table_referencing_entities_is_checked_by_the_reap_or_excused(rel_pool) -> None:
-    """A new table with an FK to public.entities must be decided, not silently missed."""
+    """A table that references an entity must be decided, not silently missed.
+
+    Reach: base tables in the ``public`` and ``relationship`` schemas of the migrated test
+    database, found two ways: a foreign key to ``public.entities``, and any column whose name
+    ends in ``entity_id`` (which catches references with no FK, such as ``memory_catalog`` and
+    ``contact_entity_map``). Other butlers' schemas are out of reach: their facts are read through
+    ``public.memory_catalog``. A reference named some other way, with no FK, is also not found.
+    """
     rows = await rel_pool.fetch(
         """
-        SELECT DISTINCT n.nspname || '.' || c.relname AS tbl, a.attname AS col
+        SELECT DISTINCT c.relname AS tbl, a.attname AS col
         FROM pg_constraint k
         JOIN pg_class c ON c.oid = k.conrelid
         JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -326,6 +389,15 @@ async def test_every_table_referencing_entities_is_checked_by_the_reap_or_excuse
         WHERE k.contype = 'f' AND k.confrelid = 'public.entities'::regclass
           AND n.nspname IN ('public', 'relationship')
           AND c.relname !~ '(_bak_|_dropbak_)'
+        UNION
+        SELECT c.table_name, c.column_name
+        FROM information_schema.columns c
+        JOIN information_schema.tables t
+          ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+        WHERE t.table_type = 'BASE TABLE'
+          AND c.table_schema IN ('public', 'relationship')
+          AND c.column_name ~ 'entity_id$'
+          AND c.table_name !~ '(_bak_|_dropbak_)'
         """
     )
     seen = {(row["tbl"], row["col"]) for row in rows}

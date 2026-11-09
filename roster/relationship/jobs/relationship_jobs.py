@@ -3497,14 +3497,21 @@ _CLEAN_ENRICHMENT_ORPHAN = """
         WHERE pa.tool_args ->> 'subject' = e.id::text
           AND pa.status IN ('pending', 'approved', 'executed')
     )
+    AND NOT EXISTS (
+        SELECT 1 FROM public.memory_catalog mc
+        WHERE (mc.entity_id = e.id OR mc.object_entity_id = e.id)
+          AND mc.invalid_at IS NULL
+    )
     AND NOT EXISTS (SELECT 1 FROM contact_entity_map m WHERE m.entity_id = e.id)
     AND NOT EXISTS (SELECT 1 FROM public.entity_info i WHERE i.entity_id = e.id)
     AND NOT EXISTS (SELECT 1 FROM public.priority_contacts pc WHERE pc.entity_id = e.id)
 """
 
 
-# Memory facts live in this butler's schema only where the memory module is enabled, so the
-# check is added when the table is there.
+# Memory facts live in each butler's own schema, which this role cannot read, so the cross-butler
+# check is ``public.memory_catalog`` above (every schema's facts; supersede, forget, expire and
+# purge all set ``invalid_at``). This adds the relationship schema's own ``facts`` where the
+# memory module is enabled, covering a fact its catalog row has not caught up to yet.
 _NO_LIVE_MEMORY_FACT = """
     AND NOT EXISTS (
         SELECT 1 FROM facts f
@@ -3536,11 +3543,14 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
     object-entity (an approved has-email
     proposal writes such a fact, so approved/graduated entities are excluded and left
     intact), no live (pending/approved/executed) ``pending_actions`` subject, no live
-    (active/fading) memory ``facts`` row as subject or object, no ``contact_entity_map``
-    link, no ``public.entity_info`` row and no ``public.priority_contacts`` entry. Any
-    acquired reference means the entity graduated to a real entity and is left fully
-    intact. ``test_every_table_referencing_entities_is_checked_by_the_reap_or_excused`` fails
-    when a table gains a foreign key to ``public.entities`` without being decided here.
+    memory fact as subject or object (read from ``public.memory_catalog`` for every butler's
+    schema, whose ``invalid_at`` is set by supersede, forget, expire and purge, and from this
+    schema's own ``facts`` where present), no ``contact_entity_map`` link, no
+    ``public.entity_info`` row and no ``public.priority_contacts`` entry. Any acquired
+    reference means the entity graduated to a real entity and is left fully intact.
+    ``test_every_table_referencing_entities_is_checked_by_the_reap_or_excused`` fails when a
+    column named ``*entity_id`` (or an FK to ``public.entities``) appears in the public or
+    relationship schemas without being decided here; it cannot see other butlers' schemas.
 
     We *soft-delete* (set ``metadata.deleted_at`` -- the ecosystem tombstone convention,
     honored alongside ``merged_into`` by every entity query) rather than hard-DELETE, for
