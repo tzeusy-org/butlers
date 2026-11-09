@@ -133,14 +133,93 @@ async def test_loop_keeps_ticking_while_a_write_embeds():
     assert ticks >= 10  # a blocking embed would leave ~0 ticks across the 0.3s encode
 
 
-def test_storage_never_calls_the_sync_embed_directly():
-    """Every embed in storage.py goes through embed_async (covers sites needing a full DB)."""
-    tree = ast.parse(STORAGE.read_text(encoding="utf-8"))
-    sync_calls = [
-        node.lineno
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in {"embed", "embed_batch"}
-    ]
-    assert not sync_calls, f"synchronous embed calls in storage.py at lines {sync_calls}"
+def test_nothing_calls_the_sync_embed_directly():
+    """Every embed outside the engine itself goes through embed_async, in src/ and roster/."""
+    repo = Path(__file__).resolve().parents[3]
+    engine = repo / "src/butlers/modules/memory/embedding.py"
+    offenders = []
+    for root in ("src", "roster"):
+        for path in sorted((repo / root).rglob("*.py")):
+            if path == engine:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            offenders += [
+                f"{path.relative_to(repo)}:{node.lineno}"
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"embed", "embed_batch"}
+            ]
+    assert not offenders, f"synchronous embed calls: {offenders}"
+
+
+class _OrderConn:
+    """A connection that records, in order, the embed and the entity lock of a store_fact."""
+
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    def transaction(self):
+        return _NullCtx()
+
+    async def fetchrow(self, sql, *args):
+        if "predicate_registry" in sql:
+            return {
+                "is_edge": True,
+                "is_temporal": False,
+                "status": "active",
+                "superseded_by": None,
+                "expected_subject_type": None,
+                "expected_object_type": None,
+                "inverse_of": "parent_of",
+                "is_symmetric": False,
+            }
+        if "public.entities" in sql:
+            return {"id": args[0], "entity_type": "person"}
+        return None
+
+    async def fetchval(self, sql, *args):
+        return None
+
+    async def execute(self, sql, *args):
+        if "FOR KEY SHARE" in sql:
+            self.events.append("lock")
+            raise _StopAtLock
+        return "OK"
+
+
+class _StopAtLock(Exception):
+    pass
+
+
+async def test_inverse_embed_happens_before_the_entity_locks():
+    events: list[str] = []
+
+    class Recording(Engine):
+        def embed(self, text):
+            events.append(f"embed:{text}")
+            return super().embed(text)
+
+    conn = _OrderConn(events)
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=_AcquireCtx(conn))
+    child, parent = uuid.uuid4(), uuid.uuid4()
+    with pytest.raises(_StopAtLock):
+        await storage.store_fact(
+            pool,
+            "Sam",
+            "child_of",
+            "Alex",
+            cast(Any, Recording()),
+            entity_id=child,
+            object_entity_id=parent,
+        )
+    assert events[-1] == "lock"
+    assert any(e.startswith("embed:Alex parent_of Sam") for e in events), events
+
+
+async def test_provenance_placeholder_embedding_is_computed_once_per_model():
+    engine = Engine()
+    for _ in range(3):
+        await storage._provenance_placeholder_embedding(cast(Any, engine))
+    assert len(engine.calls) == 1
