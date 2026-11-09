@@ -25,6 +25,7 @@ import tomllib
 import urllib.parse
 import urllib.request
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 HELPERS = tuple(
@@ -443,8 +444,12 @@ def material_identity(root: Path) -> dict:
 def helper(project: Path, name: str):
     path = project / "scripts/runtime_clis" / f"{name}.py"
     spec = importlib.util.spec_from_file_location(f"_producer_{name}", path)
+    if spec is None:
+        raise ValueError("producer helper source is unavailable")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Execute the declared source directly: SourceFileLoader.exec_module can
+    # create a pyc inside this strictly closed snapshot even for parent imports.
+    exec(compile(path.read_bytes(), str(path), "exec", dont_inherit=True), module.__dict__)
     return module
 
 
@@ -503,6 +508,53 @@ def settle_group(pgid: int) -> dict:
         time.sleep(0.02)
 
 
+class _CommandTermination(BaseException):
+    """Unwind the owner only after its process handle is available for cleanup."""
+
+
+@contextmanager
+def command_termination():
+    previous = signal.getsignal(signal.SIGTERM)
+    requested = False
+    armed = False
+    delivered = False
+
+    def terminate(_signum, _frame):
+        nonlocal requested, delivered
+        requested = True
+        if armed and not delivered:
+            delivered = True
+            raise _CommandTermination()
+
+    def arm():
+        nonlocal armed, delivered
+        armed = True
+        if requested and not delivered:
+            delivered = True
+            raise _CommandTermination()
+
+    def disarm():
+        nonlocal armed
+        armed = False
+
+    # Respect an explicitly inherited ignore policy. Otherwise defer TERM during
+    # Popen and settlement; children inherit their ordinary unblocked signal mask.
+    if previous != signal.SIG_IGN:
+        signal.signal(signal.SIGTERM, terminate)
+    try:
+        try:
+            yield arm, disarm
+        except _CommandTermination:
+            pass
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    if requested:
+        # The command was killed/waited and its group accounted for before the
+        # original owner signal policy runs. Default TERM retains signal exit -15.
+        os.kill(os.getpid(), signal.SIGTERM)
+        raise InterruptedError("producer command cancelled by SIGTERM")
+
+
 class Operations:
     """Real process/network boundary; tests replace operations, not orchestration."""
 
@@ -527,61 +579,65 @@ class Operations:
         self.uv = (uv or Path(shutil.which("uv") or "/missing-uv")).resolve(strict=True)
 
     def run(self, argv: list[str], project: Path, *, environment=None, timeout=900) -> str:
-        self.sequence += 1
-        log = self.work / f"command-{self.sequence:02d}.log"
-        started = time.time()
-        with log.open("wb") as stream:
-            process = subprocess.Popen(
-                argv,
-                cwd=project,
-                env=environment or self.environment,
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-                start_new_session=not self.nested,
-            )
-            timed_out = False
-            try:
-                code = process.wait(timeout=timeout)
-            except BaseException:
-                timed_out = True
+        with command_termination() as (arm, disarm):
+            self.sequence += 1
+            log = self.work / f"command-{self.sequence:02d}.log"
+            started = time.time()
+            with log.open("wb") as stream:
+                process = subprocess.Popen(
+                    argv,
+                    cwd=project,
+                    env=environment or self.environment,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=not self.nested,
+                )
+                timed_out = False
                 try:
-                    if self.nested:
-                        process.kill()
-                    else:
-                        os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.wait(timeout=15)
-                raise
-            finally:
-                # Never leave a child-owned process group behind, even after parent success.
-                # Child uv/build processes share the outer supervised session.
-                # Cancellation of that owner therefore reaches the whole tree.
-                settlement = (
-                    {"deferred_to_outer_owner": os.getpgrp()}
-                    if self.nested
-                    else settle_group(process.pid)
-                )
-                write_json(
-                    log.with_suffix(".json"),
-                    {
-                        "argv": argv,
-                        "pid": process.pid,
-                        "exit": process.returncode,
-                        "started": started,
-                        "ended": time.time(),
-                        "timed_out_or_cancelled": timed_out,
-                        "parent_waited": process.returncode is not None,
-                        "owned_group": os.getpgrp() if self.nested else process.pid,
-                        "group_settlement": settlement,
-                        "log_sha256": digest(log),
-                    },
-                )
-        if settlement.get("running") or settlement.get("zombies"):
-            raise RuntimeError("owned command group did not fully settle; see receipt")
-        if code:
-            raise RuntimeError(f"producer command failed; see {log.name}")
-        return log.read_text()
+                    arm()
+                    code = process.wait(timeout=timeout)
+                except BaseException:
+                    disarm()
+                    timed_out = True
+                    try:
+                        if self.nested:
+                            process.kill()
+                        else:
+                            os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait(timeout=15)
+                    raise
+                finally:
+                    disarm()
+                    # Never leave a child-owned process group behind, even after parent success.
+                    # Child uv/build processes share the outer supervised session.
+                    # Cancellation of that owner therefore reaches the whole tree.
+                    settlement = (
+                        {"deferred_to_outer_owner": os.getpgrp()}
+                        if self.nested
+                        else settle_group(process.pid)
+                    )
+                    write_json(
+                        log.with_suffix(".json"),
+                        {
+                            "argv": argv,
+                            "pid": process.pid,
+                            "exit": process.returncode,
+                            "started": started,
+                            "ended": time.time(),
+                            "timed_out_or_cancelled": timed_out,
+                            "parent_waited": process.returncode is not None,
+                            "owned_group": os.getpgrp() if self.nested else process.pid,
+                            "group_settlement": settlement,
+                            "log_sha256": digest(log),
+                        },
+                    )
+            if settlement.get("running") or settlement.get("zombies"):
+                raise RuntimeError("owned command group did not fully settle; see receipt")
+            if code:
+                raise RuntimeError(f"producer command failed; see {log.name}")
+            return log.read_text()
 
     def target(self) -> dict:
         if (
@@ -591,7 +647,10 @@ class Operations:
             or platform.libc_ver() != ("glibc", "2.41")
         ):
             raise ValueError("producer target runtime mismatch")
-        if self.run([str(self.uv), "--version"], self.work, timeout=15).strip() != "uv 0.12.22":
+        if self.run([str(self.uv), "--version"], self.work, timeout=15).strip() not in {
+            "uv 0.12.22",
+            "uv 0.12.22 (x86_64-unknown-linux-gnu)",
+        }:
             raise ValueError("producer uv version mismatch")
         return {
             "target": TARGET,

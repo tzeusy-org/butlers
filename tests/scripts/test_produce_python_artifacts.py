@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import importlib.util
 import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -110,6 +113,74 @@ class SyntheticOperations:
         return {"status": "PASS", "variant": request["variant"], "profile": request["profile"]}
 
 
+def command_owner(work: Path) -> None:
+    operations = producer.Operations.__new__(producer.Operations)
+    operations.work, operations.sequence, operations.nested = work, 0, False
+    operations.environment = producer.isolated_environment(os.environ["HOME"])
+    child = (
+        "import os,sys,time; from pathlib import Path; "
+        "Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(20)"
+    )
+    operations.run([sys.executable, "-I", "-c", child, str(work / "child.pid")], work, timeout=25)
+
+
+def cancellation_driver(work: Path, signum: int) -> dict:
+    # This private driver owns orphan adoption only for its own inert command.
+    # A deliberately old owner can fail; still reap its actual child before exit.
+    if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
+        raise RuntimeError("cannot supervise the synthetic cancellation control")
+    child = None
+    with (work / "owner.log").open("wb") as log:
+        owner = subprocess.Popen(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                str(Path(__file__).resolve()),
+                "--command-owner",
+                str(work),
+            ],
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while not (work / "child.pid").exists():
+                if owner.poll() is not None or time.monotonic() >= deadline:
+                    raise RuntimeError("cancellation owner did not reach its command")
+                time.sleep(0.01)
+            child = int((work / "child.pid").read_text())
+            if os.getpgid(child) != child:
+                raise AssertionError("command is not in its owned session")
+            os.kill(owner.pid, signum)
+            status = owner.wait(timeout=8)
+            survived = Path(f"/proc/{child}").exists()
+            path = work / "command-01.json"
+            result = {
+                "owner_exit": status,
+                "child_survived": survived,
+                "receipt": json.loads(path.read_text()) if path.exists() else None,
+            }
+        finally:
+            if owner.poll() is None:
+                owner.kill()
+                owner.wait(timeout=5)
+            if child is not None:
+                try:
+                    os.killpg(child, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    os.waitpid(child, 0)
+                except ChildProcessError:
+                    pass
+            if Path(f"/proc/{owner.pid}").exists() or (
+                child is not None and Path(f"/proc/{child}").exists()
+            ):
+                raise AssertionError("owned cancellation driver did not settle")
+    return result
+
+
 class ProducerTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -141,6 +212,26 @@ class ProducerTests(unittest.TestCase):
         self.assertFalse((self.output / "src/butlers/untracked.py").exists())
         data.write_text("later source mutation")
         self.assertNotEqual((self.output / "src/butlers/data.json").read_bytes(), data.read_bytes())
+
+    def test_closed_snapshot_four_profile_flow_does_not_create_import_cache(self):
+        closed = self.root / "closed-source"
+        producer.snapshot(self.project, closed)
+        self.project = closed
+        before = producer.source_manifest(closed)
+        error = None
+        with patch.object(sys, "dont_write_bytecode", False):
+            try:
+                self.seed()
+                result = self.verify()
+            except ValueError as cause:
+                error = str(cause)
+            self.assertFalse(sys.dont_write_bytecode)
+        self.assertIsNone(error, f"ordinary closed source orchestration refused: {error}")
+        self.assertEqual(result["status"], "VERIFIED_FOUR_PROFILES")
+        self.assertEqual(len(self.ops.requests), 4)
+        self.assertTrue(self.output.is_dir())
+        self.assertEqual(producer.source_manifest(closed), before)
+        self.assertFalse(list(closed.rglob("__pycache__")))
 
     def test_snapshot_refuses_tampering_missing_extra_and_mode_drift(self):
         producer.snapshot(self.project, self.output)
@@ -457,6 +548,7 @@ class ProducerTests(unittest.TestCase):
         operations.sequence = 0
         operations.nested = False
         operations.environment = producer.isolated_environment(str(self.root))
+        previous_handler = signal.getsignal(signal.SIGTERM)
         with self.assertRaisesRegex(RuntimeError, "command failed"):
             operations.run([sys.executable, "-I", "-c", "raise SystemExit(7)"], self.root)
         with self.assertRaises(subprocess.TimeoutExpired):
@@ -474,7 +566,76 @@ class ProducerTests(unittest.TestCase):
             all(r["group_settlement"] == {"running": [], "zombies": []} for r in receipts)
         )
         self.assertTrue(receipts[1]["timed_out_or_cancelled"])
+        self.assertEqual(signal.getsignal(signal.SIGTERM), previous_handler)
         self.assertTrue(all(not Path(f"/proc/{r['pid']}").exists() for r in receipts))
+
+    def _assert_command_cancellation(self, signum):
+        work = self.root / "cancellation"
+        work.mkdir()
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                str(Path(__file__).resolve()),
+                "--cancellation-driver",
+                str(work),
+                str(signum),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        result = json.loads(completed.stdout)
+        self.assertFalse(result["child_survived"], result)
+        self.assertEqual(result["owner_exit"], -signum)
+        self.assertTrue(result["receipt"]["parent_waited"])
+        self.assertTrue(result["receipt"]["timed_out_or_cancelled"])
+        self.assertEqual(result["receipt"]["group_settlement"], {"running": [], "zombies": []})
+
+    @unittest.skipUnless(sys.platform == "linux", "producer command supervision uses Linux /proc")
+    def test_sigterm_owner_settles_command_before_preserving_signal_exit(self):
+        self._assert_command_cancellation(signal.SIGTERM)
+
+    @unittest.skipUnless(sys.platform == "linux", "producer command supervision uses Linux /proc")
+    def test_sigint_owner_keeps_its_existing_settled_signal_exit(self):
+        self._assert_command_cancellation(signal.SIGINT)
+
+    def test_target_accepts_pinned_official_uv_spelling_and_refuses_other_inputs(self):
+        operations = producer.Operations.__new__(producer.Operations)
+        operations.work = self.root
+        operations.uv = self.root / "synthetic-uv"
+        operations.uv.write_bytes(b"synthetic target-identity fixture")
+        with (
+            patch.object(producer.platform, "python_version", return_value="3.12.13"),
+            patch.object(producer.platform, "system", return_value="Linux"),
+            patch.object(producer.platform, "machine", return_value="x86_64"),
+            patch.object(producer.platform, "libc_ver", return_value=("glibc", "2.41")),
+            patch.object(
+                operations, "run", return_value="uv 0.12.22 (x86_64-unknown-linux-gnu)\n"
+            ) as run,
+        ):
+            error = None
+            try:
+                result = operations.target()
+            except ValueError as cause:
+                error = str(cause)
+            self.assertIsNone(error, f"pinned published uv identity refused: {error}")
+            self.assertEqual(result["target"], producer.TARGET)
+            self.assertEqual(result["uv_sha256"], producer.digest(operations.uv))
+            run.assert_called_once_with([str(operations.uv), "--version"], self.root, timeout=15)
+            run.return_value = "uv 0.12.22\n"
+            self.assertEqual(operations.target()["uv_sha256"], result["uv_sha256"])
+            for text in (
+                "uv 0.12.21 (x86_64-unknown-linux-gnu)",
+                "uv 0.12.22 (aarch64-unknown-linux-gnu)",
+                "uv 0.12.22 extra",
+                "uv 0.12.22 (x86_64-unknown-linux-gnu) extra",
+            ):
+                run.return_value = text
+                with self.assertRaisesRegex(ValueError, "uv version mismatch"):
+                    operations.target()
 
     def test_clean_environment_preserves_home_but_not_ambient_settings(self):
         with patch.dict(os.environ, {"HTTP_PROXY": "synthetic-proxy", "UV_INDEX": "not-used"}):
@@ -542,4 +703,9 @@ class ProducerTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    if len(sys.argv) > 1 and sys.argv[1] == "--command-owner":
+        command_owner(Path(sys.argv[2]))
+    elif len(sys.argv) > 1 and sys.argv[1] == "--cancellation-driver":
+        print(json.dumps(cancellation_driver(Path(sys.argv[2]), int(sys.argv[3]))))
+    else:
+        unittest.main()

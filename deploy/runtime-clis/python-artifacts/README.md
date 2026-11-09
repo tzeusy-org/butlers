@@ -35,11 +35,15 @@ python3 scripts/runtime_clis/produce_python_artifacts.py \
 The `--work` and `--backend-lock` arguments remain required for a uniform CLI but
 snapshot does not create work, read the backend lock, install packages, or check
 the target runtime. Work, output and project paths must be disjoint real paths.
-The snapshot is the named source context for Docker. Copy the producer script and
+Helper modules execute directly from their declared source without creating bytecode
+inside the snapshot; the owner does not rely on an ambient `-B` setting. The
+snapshot is the named source context for Docker. Copy the producer script and
 backend lock explicitly as image build inputs as well; they are not package data.
 
 Both remaining phases require CPython **3.12.13**, Linux x86-64, glibc **2.41**, and
-caller-supplied official uv **0.12.22**. Tool version and binary hashes are recorded;
+caller-supplied official uv **0.12.22** (bare version output or the published
+Linux x86-64 GNU suffix, with no other version/architecture/trailing text). Tool
+version and binary hashes are recorded;
 the caller remains responsible for the official binary acquisition/provenance.
 Use an empty owned backing at the existing `HOME` path. The producer preserves
 that value and constructs a minimal child environment; no ambient proxy, uv
@@ -98,7 +102,12 @@ frozen export plus Butlers. The child uses the exact parent-validated uv binary
 and records matching runtime identities. UV/build subprocesses share the outer
 supervised child session so cancellation reaches that session; command receipts
 record waited parents and process-group settlement. Surviving identities refuse
-success. Logs remain under the owned work directory on failure.
+success. Active commands defer owner SIGTERM across spawn and settlement, then
+restore and re-emit the original signal policy after killing and waiting for
+their owned session. Default SIGTERM retains exit by signal 15; existing SIGINT
+and timeout cleanup remain. An explicitly inherited ignored TERM policy stays
+ignored. SIGKILL cannot run cleanup. Logs remain under the owned work directory
+on failure.
 
 Only all four positive receipts, unchanged source/backend/producer bytes, and
 unchanged complete seed material allow one atomic output-directory rename. The
