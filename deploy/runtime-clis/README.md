@@ -55,6 +55,26 @@ offline image closure require their own artifact evidence.
 The pinned uv distribution is recorded in `toolchains.json`. Build separate
 production and development Python environments from the frozen lock with the
 requested extras, retaining their editable install of the intended `/app/src`.
+An owned public seed can be converted to the application's named
+`python-artifacts` context with:
+
+```sh
+python scripts/runtime_clis/close_python_artifacts.py \
+  --project /path/to/project --wheelhouse /path/to/verified/wheelhouse \
+  --cache /path/to/owned/uv-cache --constraints /path/to/build-constraints.txt \
+  --output /path/to/new/context --extra live-listener
+```
+
+Omit `--extra` for the ordinary application profile. The producer copies independent
+regular bytes, dereferences cache links only within their declared input root,
+and refuses escaping/cyclic links or a preexisting output. It inventories every
+input and records the exact project/lock and production/development groups/extras.
+It performs no network operation or install. The constraints file records the
+seeded build backends; it is not an unsupported `uv sync` flag or an environment
+variable enforcement claim. The image validates the complete context and then
+installs with offline/no-index access to that closed cache and wheelhouse. Each
+profile still requires its actual fresh offline installation and seal evidence.
+
 After the complete install, seal each environment with
 `scripts/runtime_clis/python_environment.py seal --environment <venv> --project <project>
 --manifest <output>`, adding its declared `--group` and `--extra` selections.
