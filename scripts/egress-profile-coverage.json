@@ -153,7 +153,7 @@
       "sha256": "f02fb9ac77ff654765ea1ef97508e0a417b115e9b56e26285721cccae8047bb2"
     },
     "deploy/runtime-clis/runtime-inputs.json": {
-      "sha256": "1b4aa9deb06bce9a942a1e3e1e86d6e0e064d43bb005079ded04c2baad4f8191"
+      "sha256": "251aa9ec0585823963b04afdff6b595766c134719994fb5f3ce3907ca19fae5a"
     },
     "deploy/runtime-clis/shared/egress.ts": {
       "sha256": "c18a9d00ac0a4766aca736dc6e56c3f3b93c77e486b7be04b2a12b4b22817301"

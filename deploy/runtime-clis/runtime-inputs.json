@@ -31,7 +31,7 @@
       "tree_sha256": "4d9a90d40b84d35db811ad5d69056137bf279bf249bf06962fcd6048ff604777"
     },
     "opencode": {
-      "tree_sha256": "5cc74a7c1a2b7f10f25b38ff425fdb3ed428594b9972276d4b2b18057b2927e0"
+      "tree_sha256": "d3e7ea26970d26e1fb576fe826e012e7875f96d89348168afadade43bc85effb"
     }
   },
   "provenance": {
@@ -44,7 +44,7 @@
         "sha256": "d3f809f55a782938d7f9e5b1634dc51c8ad67366e02517ed5b2dd72005142c0c"
       },
       "Dockerfile.gemini-artifacts": {
-        "sha256": "82ef9dacd245d204e65af38d3902985a5f7eb7ef6fad3ec5f3a7f725f93e8604"
+        "sha256": "8adaa0351bf92da4eaa25596adf4e3e7248560362487bcfe6dad18032c6ab7a3"
       },
       "Dockerfile.native-package-artifacts": {
         "sha256": "38971982f1263c202413b08f3c02452f02946d3b01233c5521ee186ecadb0a29"
@@ -190,8 +190,11 @@
       "deploy/runtime-clis/opencode/patches/0012-align-existing-workspace-build-metadata.patch": {
         "sha256": "605676dcd90f674520fb42ea02f8db447330046f77c2e734ddeae185ae249bdc"
       },
+      "deploy/runtime-clis/opencode/patches/0013-selected-upgrade-refusal-fallback.patch": {
+        "sha256": "dad8b00b3c636d32977e6532581110fadf0772839553de228a174b3783a5d256"
+      },
       "deploy/runtime-clis/opencode/series.json": {
-        "sha256": "90a57c9860440f6dc366e71cc191457b2206581643eb9ac27270284c387b4d0c"
+        "sha256": "6bb0e966e6d3f628445351f1ac1b49551b13a95306197bf82458ee2abccac191"
       },
       "deploy/runtime-clis/toolchains.json": {
         "sha256": "0a0d693219a11bf7df47561060f8467978ab1f9f9960bdd7598b205c4611c5e4"
@@ -262,7 +265,7 @@
         "version": "1.17.7",
         "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
         "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
-        "source_tree_sha256": "b04d05fe88c4c0741b25db9b230614b4f13fb26d200ae4017ad1c57dfda95d6d"
+        "source_tree_sha256": "e4149e2ef55e9bdb4c5288821074b52961b208ca3521e020ad8753fd72ef9a7c"
       }
     },
     "native_artifacts": {
@@ -273,7 +276,7 @@
         "sha256": "f01d464882507260d51f32f15dfe37565a09baa83be23df6da64f9cf55816189"
       },
       "opencode": {
-        "sha256": "0b91e3fb566d68af4d7969f35d5d073424a884fe6400faff04bd9ab737915fa2"
+        "sha256": "b950a8688d5ebd38fd3eedae9b8d392796c2906b4a4aa5737d6ccd773f9f6c02"
       }
     },
     "sdk_artifacts": {
