@@ -1715,6 +1715,30 @@ async def persist_ha_history(
 # ---------------------------------------------------------------------------
 
 
+# A live event is never re-delivered, so a transport blip gets one more try
+# before the envelope is parked. Kept short: the dispatcher awaits it inline,
+# so a longer wait would hold up the event stream behind it (bu-dhloi1.224).
+_LIVE_INGEST_ATTEMPTS = 2
+_LIVE_INGEST_RETRY_DELAY_S = 0.25
+
+
+async def _ingest_live(mcp_client: Any, envelope: dict[str, Any]) -> None:
+    """Submit *envelope*, retrying a transport failure once after a short pause.
+
+    Only ``ConnectionError`` (``CachedMCPClient``'s transport failure, which
+    ``TransientToolError`` subclasses) is retried; any other error, or a second
+    transport failure, propagates for the caller to park.
+    """
+    for attempt in range(1, _LIVE_INGEST_ATTEMPTS + 1):
+        try:
+            await mcp_client.call_tool("ingest", envelope)
+            return
+        except ConnectionError:
+            if attempt >= _LIVE_INGEST_ATTEMPTS:
+                raise
+            await asyncio.sleep(_LIVE_INGEST_RETRY_DELAY_S)
+
+
 async def emit_with_wellness_promotion(
     *,
     mcp_client: Any,
@@ -1748,7 +1772,8 @@ async def emit_with_wellness_promotion(
     channel-inclusive dedup key keeps them independent on replay.
 
     A caller on a stream that never re-delivers (the live dispatcher) passes
-    *on_failed*: each envelope whose submission fails is handed to it, scrubbed,
+    *on_failed*: each submission retries a transport failure once
+    (``_ingest_live``), an envelope that still fails is handed to it, scrubbed,
     to park for replay (bu-dhloi1.224), and a failed primary no longer stops the
     secondary channel, which would otherwise never be sent.
 
@@ -1767,7 +1792,10 @@ async def emit_with_wellness_promotion(
         scrubbed: dict[str, Any] | None = None
         try:
             scrubbed = scrub_ha_envelope(ha_envelope)
-            await mcp_client.call_tool("ingest", scrubbed)
+            if on_failed is None:
+                await mcp_client.call_tool("ingest", scrubbed)
+            else:
+                await _ingest_live(mcp_client, scrubbed)
             if metrics is not None:
                 metrics.inc_submission("home_assistant", "success")
         except Exception as exc:
@@ -1828,7 +1856,10 @@ async def emit_with_wellness_promotion(
     scrubbed_wellness: dict[str, Any] | None = None
     try:
         scrubbed_wellness = scrub_ha_envelope(wellness_envelope)
-        await mcp_client.call_tool("ingest", scrubbed_wellness)
+        if on_failed is None:
+            await mcp_client.call_tool("ingest", scrubbed_wellness)
+        else:
+            await _ingest_live(mcp_client, scrubbed_wellness)
         if metrics is not None:
             metrics.inc_submission("wellness", "success")
     except Exception as exc:
@@ -2341,7 +2372,7 @@ def _make_event_dispatcher(
             try:
                 ingest_start = time.monotonic()
                 scrubbed = scrub_ha_envelope(envelope)
-                await connector._mcp_client.call_tool("ingest", scrubbed)
+                await _ingest_live(connector._mcp_client, scrubbed)
                 connector._ha_metrics and connector._ha_metrics.observe_event_latency(
                     time.monotonic() - ingest_start
                 )

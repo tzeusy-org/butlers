@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from butlers.connectors import home_assistant
 from butlers.connectors.home_assistant import (
     HAConnector,
     HAConnectorConfig,
@@ -34,16 +35,41 @@ _TIME_FIRED = "2026-03-26T10:00:00.000000+00:00"
 _SECRET_TEXT = "upstream said: token=abc123"
 
 
-def _wire(fail_channels: set[str]) -> tuple[Any, HAConnector, HAFilterPersistence]:
+@pytest.fixture(autouse=True)
+def _no_retry_pause(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record the live retry's pauses instead of sleeping through them."""
+    pauses: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        pauses.append(delay)
+
+    monkeypatch.setattr(home_assistant.asyncio, "sleep", fake_sleep)
+    return pauses
+
+
+def _wire(
+    fail_channels: set[str],
+    *,
+    fail_times: int | None = None,
+    exc_type: type[Exception] = ConnectionError,
+) -> tuple[Any, HAConnector, HAFilterPersistence]:
+    """Wire the live dispatcher; ingest of *fail_channels* raises *exc_type*.
+
+    With *fail_times*, each failing channel fails that many times, then lands.
+    """
     connector = HAConnector(
         config=HAConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
     )
     connector._set_endpoint_identity(_BASE_URL)
+    failures: dict[str, int] = {}
 
     async def call_tool(tool: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         if tool == "ingest" and payload is not None:
-            if payload["source"]["channel"] in fail_channels:
-                raise ConnectionError(_SECRET_TEXT)
+            channel = payload["source"]["channel"]
+            if channel in fail_channels:
+                failures[channel] = failures.get(channel, 0) + 1
+                if fail_times is None or failures[channel] <= fail_times:
+                    raise exc_type(_SECRET_TEXT)
         return {"status": "accepted"}
 
     connector._mcp_client = MagicMock()
@@ -163,4 +189,63 @@ async def test_a_delivered_event_parks_nothing() -> None:
 
     await dispatch("state_changed", _WEIGHT)
 
+    assert _parked(persistence) == {}
+
+
+def _ingest_calls(connector: HAConnector) -> list[dict[str, Any]]:
+    client: Any = connector._mcp_client
+    return [c.args[1] for c in client.call_tool.call_args_list if c.args[0] == "ingest"]
+
+
+async def test_a_transport_blip_is_retried_once_after_a_short_pause_and_lands(
+    _no_retry_pause: list[float],
+) -> None:
+    dispatch, connector, persistence = _wire({"home_assistant"}, fail_times=1)
+
+    await dispatch("state_changed", _DOOR)
+
+    calls = _ingest_calls(connector)
+    assert len(calls) == 2
+    assert calls[0] == calls[1]  # the same envelope, same idempotency key
+    assert _no_retry_pause == [home_assistant._LIVE_INGEST_RETRY_DELAY_S]
+    assert home_assistant._LIVE_INGEST_RETRY_DELAY_S <= 0.5  # never holds the stream
+    assert _parked(persistence) == {}
+
+
+async def test_a_persistent_transport_failure_stops_after_two_attempts_and_parks(
+    _no_retry_pause: list[float],
+) -> None:
+    dispatch, connector, persistence = _wire({"home_assistant"})
+
+    await dispatch("state_changed", _DOOR)
+
+    assert len(_ingest_calls(connector)) == home_assistant._LIVE_INGEST_ATTEMPTS == 2
+    assert len(_no_retry_pause) == 1
+    assert _parked(persistence).keys() == {"home_assistant"}
+
+
+async def test_a_non_transport_failure_is_parked_without_a_retry(
+    _no_retry_pause: list[float],
+) -> None:
+    dispatch, connector, persistence = _wire({"home_assistant"}, exc_type=RuntimeError)
+
+    await dispatch("state_changed", _DOOR)
+
+    assert len(_ingest_calls(connector)) == 1
+    assert _no_retry_pause == []
+    row = _parked(persistence)["home_assistant"]
+    assert row[10] == "RuntimeError"
+
+
+async def test_a_failed_automation_trigger_retries_a_transport_blip() -> None:
+    dispatch, connector, persistence = _wire({"home_assistant"}, fail_times=1)
+    event = {
+        "event_type": "automation_triggered",
+        "time_fired": _TIME_FIRED,
+        "data": {"entity_id": "automation.lights_on", "name": "Lights on"},
+    }
+
+    await dispatch("automation_triggered", event)
+
+    assert len(_ingest_calls(connector)) == 2
     assert _parked(persistence) == {}

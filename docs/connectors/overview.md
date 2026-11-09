@@ -359,21 +359,19 @@ without a chat id, and retries. Live messages go through the per-chat batch buff
 batch submit still parks at once with no text; the next successful flush from any chat can then
 advance the checkpoint past it.
 
-Slice 2a (bu-dhloi1.224) covers the sources that used to lose a failed item with no record:
+Slice 2a (bu-dhloi1.224) covers live sources that used to lose a failed item with no record:
 
-- **Google Drive** keeps the envelopes a page produced and resends them exactly (same key, same
-  event id) under the same budget, then parks them. A failed batch digest joins that queue
-  instead of escaping the poll loop. The page token and the metadata cache are committed only
-  when nothing read is unsent or batched, so a page is never re-read against a cache that
-  already holds its new state. A removed file's key falls back to the change's own time.
 - **OwnTracks** answers the webhook only once the point is ingested or parked. A failure with
   attempts left answers 503, so the phone keeps the point and sends it again (deduplicated by its
-  `tst`-based key); the wait is bounded (10 s) and never cancels the ingest.
+  `tst`-based key); the wait is bounded (10 s) and never cancels the ingest. Both apps keep a
+  point queued on a 5xx answer: Android re-queues any non-2xx with backoff, and iOS drops a
+  queued message only on 2xx or 4xx.
 - **Home Assistant live** and the **live listener** are push streams that never re-deliver an
-  item, so a failed envelope is parked at once. HA parks each failed envelope (home_assistant,
-  wellness, automation_triggered) scrubbed, and a failed primary no longer stops the wellness
-  emission. Both store only the exception class as error detail, since transport text can echo
-  content. The live listener now drains replay requests after each delivered utterance.
+  item. HA retries a transport failure once after a short pause (bounded, so the event stream is
+  not held), then parks each failed envelope (home_assistant, wellness, automation_triggered)
+  scrubbed; a failed primary no longer stops the wellness emission. The live listener parks a
+  failed utterance at once and now drains replay requests after each delivered utterance. Both
+  store only the exception class as error detail, since transport text can echo content.
 
 Spotify, Telegram bot polling and the batch flushes of the Telegram user and WhatsApp clients keep
 their existing behaviour until later slices.
