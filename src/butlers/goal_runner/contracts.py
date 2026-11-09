@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
+from butlers.core.goal_admission import Grant
 from butlers.core.model_call import NotInvoked
 
 Role = Literal["lead", "child", "monitor"]
@@ -94,6 +95,39 @@ class LedgerSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class InvocationShare:
+    """The launching invocation's own limits, as its ledger row holds them (D10)."""
+
+    max_calls: int | None
+    used_calls: int
+    max_turns: int
+    max_tokens: int
+    seconds_left: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class GoalBudgetView:
+    """What the goal has left, read at launch (D10)."""
+
+    max_calls: int
+    used_calls: int
+    max_tokens: int
+    used_tokens: int
+    seconds_left: int
+
+
+@dataclass(frozen=True, slots=True)
+class LaunchFacts:
+    """Server-held facts a packet states: the invocation's grant, share and budget."""
+
+    grants: tuple[Grant, ...]
+    share: InvocationShare
+    budget: GoalBudgetView
+    result_schema: dict[str, Any] | None = None
+    """A child's fixed result schema (D9); ``None`` for a lead."""
+
+
+@dataclass(frozen=True, slots=True)
 class LaunchContext:
     """Everything a prompt composer may use for one launch."""
 
@@ -106,35 +140,10 @@ class LaunchContext:
     exposed: bool
     brief: Brief | None = None
     ledger: LedgerSummary | None = None
+    facts: LaunchFacts | None = None
 
 
 class PromptComposer(Protocol):
-    """D15 starting context. The four-section packet is its own bead."""
+    """D15 starting context: ``PacketComposer`` builds the four-section packet."""
 
     def compose(self, context: LaunchContext) -> str: ...
-
-
-class MinimalComposer:
-    """Identifiers and the child's fenced brief; no recall, no situation frame."""
-
-    def compose(self, context: LaunchContext) -> str:
-        lines = [
-            f"goal_id: {context.goal_id}",
-            f"invocation_id: {context.invocation_id}",
-            f"role: {context.role}",
-            f"origin: {context.origin}",
-        ]
-        if context.brief is not None:
-            brief = context.brief
-            lines.append("<brief>")
-            lines.append(f"objective: {brief.objective}")
-            lines.extend(f"success: {item}" for item in brief.success_conditions)
-            lines.extend(f"context_ref: {item}" for item in brief.context_refs)
-            lines.extend(f"guidance_ref: {item}" for item in brief.guidance_refs)
-            lines.append("</brief>")
-        if context.ledger is not None:
-            lines.append("<ledger>")
-            lines.extend(f"effect: {e} {c} {s}" for e, c, s in context.ledger.effects)
-            lines.extend(f"child: {c} {s}" for c, s in context.ledger.children)
-            lines.append("</ledger>")
-        return "\n".join(lines)

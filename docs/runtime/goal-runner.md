@@ -27,7 +27,8 @@ serialises with Stop.
 | `models.py` | `ModelLadders`: per-role tier ladders; `qualifies` / `next_tier` |
 | `tools.py` | `GoalTools`: the `goal__*` and `context__search` MCP tools, listed by invocation depth |
 | `context_search.py` | `ContextSearch`: the closed query, grant-scoped fan-out, fusion and the bounded envelope |
-| `contracts.py` | `SessionHost` protocol, `Launch`, `HostOutcome`, prompt-composer protocol |
+| `contracts.py` | `SessionHost` protocol, `Launch`, `HostOutcome`, `LaunchContext`, `LaunchFacts`, prompt-composer protocol |
+| `packet.py` | `PacketComposer`: the four-section starting-context packet |
 | `control_plane.py` | `GoalRuntime`: admission to launch, the periodic sweep, owner Stop; `GoalRuntimeSwitch` |
 | `staging.py` | `ControlSessionHost` (the `SessionHost` over the control channel), `ModelCredentials` |
 
@@ -123,6 +124,29 @@ namespace is reserved like `goal`: no catalog capability of that domain is liste
   - resolving an opaque reference to its text, which must be its own label-joining read;
   - owner-law `never` terms on a domain's read capability do not yet exclude its source.
   Limits are a constructor argument, not yet read from `runtime_config`.
+
+## Starting-context packet (D15)
+
+`PacketComposer` replaces the minimal prompt. Every launch gets `<goal_packet version=1>` with the
+same sections, built from the ledger rows the broker enforces (`RunnerLedger.launch_facts`), never
+from the model:
+
+1. `task` (leads: runner-authored) or `brief` (children: objective, success conditions and the
+   fixed result schema), including the brief's context and guidance references, all inside one
+   block labelled lead-written. Every lead-authored item is rendered as a JSON string literal
+   (newlines and quotes escaped) and entity-escaped, so it cannot forge a packet line, close its
+   fence or open another section.
+2. `grant` and `budget`: the invocation's own grant and what is left of its calls, turns, tokens
+   and wall time. Leads also see the goal's remaining calls, tokens and seconds.
+3. `ledger`: only for a replacement or escalated lead (the effects and children, as identifiers and
+   statuses). A first lead has none, and a child never gets one.
+4. `refs`: the context tools the broker serves (runner-authored only).
+   `PacketComposer(context_tools=...)` names them; none are advertised by default.
+
+A child's packet carries its own brief, grant and share only: no origin, exposure, epoch,
+goal-wide budget, ledger or parent identifier. The runner uses `PacketComposer()` unless a
+composer is passed. The lead's goal input, owner profile, lead policy and domain index (D15) are not
+in the packet yet: admission and ingress (M6) own them.
 
 ## Delegation (D9)
 
@@ -226,4 +250,4 @@ brief text, arguments or results.
   (the D19 dashboard change, or a control-plane service route).
 - Waking a goal whose inbox received a `joined` reply.
 - `awaiting_approval` and parked-wait continuation (`bu-dhloi1.7`).
-- The four-section starting-context packet; `MinimalComposer` is a placeholder.
+- The lead's goal input, owner profile, lead policy and domain index in the packet (M6).

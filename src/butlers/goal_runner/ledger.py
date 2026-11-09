@@ -23,7 +23,15 @@ from butlers.capability_broker.recipients import live_owner
 from butlers.capability_broker.typed import TypedSchema, parse_schema
 from butlers.core.goal_admission import Grant, decode_grants, digest, encode_grants
 
-from .contracts import GoalEnded, InvocationBudgetExhausted, LedgerSummary, Role
+from .contracts import (
+    GoalBudgetView,
+    GoalEnded,
+    InvocationBudgetExhausted,
+    InvocationShare,
+    LaunchFacts,
+    LedgerSummary,
+    Role,
+)
 from .delegation import DelegationRequest, child_grant
 
 LIVE = ("launching", "running")
@@ -883,6 +891,50 @@ class RunnerLedger:
         return LedgerSummary(
             tuple((str(e["id"]), e["capability"], e["status"]) for e in effects),
             tuple((str(c["id"]), c["status"]) for c in children),
+        )
+
+    async def launch_facts(self, goal_id: UUID, invocation_id: UUID) -> LaunchFacts:
+        """The invocation's grant and share and the goal's remaining budget, for its packet.
+
+        Read from the ledger rows the broker enforces, so the packet states exactly what a
+        call will be checked against. A child's fixed result schema comes with them (D9).
+        """
+        row = await self.connection.fetchrow(
+            "SELECT i.grant_snapshot, i.depth, i.max_calls, i.used_calls, i.max_turns, "
+            "i.max_tokens, "
+            "ceil(extract(epoch FROM i.deadline - clock_timestamp()))::bigint AS seconds_left, "
+            "r.result_schema::text AS schema_text, "
+            "b.max_calls AS goal_max_calls, b.used_calls AS goal_used_calls, "
+            "b.max_tokens AS goal_max_tokens, b.used_tokens AS goal_used_tokens, "
+            "ceil(extract(epoch FROM b.deadline - clock_timestamp()))::bigint AS goal_seconds "
+            "FROM switchboard.invocations i "
+            "JOIN switchboard.budgets b ON b.goal_id = i.goal_id "
+            "LEFT JOIN switchboard.goal_child_results r "
+            "ON (r.goal_id, r.invocation_id) = (i.goal_id, i.id) "
+            "WHERE i.goal_id = $1 AND i.id = $2",
+            goal_id,
+            invocation_id,
+        )
+        if row is None:
+            raise GoalEnded("invocation_not_found")
+        schema = None if row["schema_text"] is None else json.loads(row["schema_text"])
+        return LaunchFacts(
+            decode_grants(row["grant_snapshot"]),
+            InvocationShare(
+                row["max_calls"],
+                row["used_calls"],
+                row["max_turns"],
+                row["max_tokens"],
+                row["seconds_left"],
+            ),
+            GoalBudgetView(
+                row["goal_max_calls"],
+                row["goal_used_calls"],
+                row["goal_max_tokens"],
+                row["goal_used_tokens"],
+                row["goal_seconds"],
+            ),
+            schema,
         )
 
     # -- usage metering (D10) -------------------------------------------------

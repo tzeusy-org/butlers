@@ -36,7 +36,6 @@ from .contracts import (
     InvocationBudgetExhausted,
     Launch,
     LaunchContext,
-    MinimalComposer,
     PromptComposer,
     Role,
     SessionHost,
@@ -44,6 +43,7 @@ from .contracts import (
 from .delegation import DelegationRequest, parse_delegation
 from .ledger import Leaderless, RunnerLedger, Started
 from .models import ModelLadders, next_tier
+from .packet import PacketComposer
 
 logger = logging.getLogger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -120,7 +120,7 @@ class GoalRunner:
         self.catalog_pool = catalog_pool
         self.sink = sink if sink is not None else AttemptSink(catalog_pool)
         self.ladders = ladders or ModelLadders()
-        self.composer = composer or MinimalComposer()
+        self.composer = composer or PacketComposer()
         self.config = config or RunnerConfig()
         self.kernel = kernel
         self._tasks: set[asyncio.Task] = set()
@@ -277,9 +277,10 @@ class GoalRunner:
 
     async def _launch(self, plan: _Plan, started: Started, candidate: Candidate) -> HostOutcome:
         summary = None
-        if plan.summary:
-            async with self._txn() as ledger:
+        async with self._txn() as ledger:
+            if plan.summary:
                 summary = await ledger.summary(plan.goal_id)
+            facts = await ledger.launch_facts(plan.goal_id, started.invocation_id)
         context = LaunchContext(
             goal_id=plan.goal_id,
             invocation_id=started.invocation_id,
@@ -290,6 +291,7 @@ class GoalRunner:
             exposed=started.exposed,
             brief=plan.brief,
             ledger=summary,
+            facts=facts,
         )
         launch = Launch(
             goal_id=plan.goal_id,
