@@ -61,17 +61,16 @@ def _json_value(row: dict[str, Any]) -> Any:
 
 
 async def json_fields(
-    conn: asyncpg.Connection, domain: str, source: str, ids: Iterable[str]
+    conn: asyncpg.Connection, domain: str, source: str, ids: Iterable[str], tool: str
 ) -> dict[str, dict[str, Any]]:
     """Published JSON paths of rows of ``source``, by row id. Runs inside the caller's snapshot.
 
-    The manifest assigns ``json_fields_public`` to the records tool only, so the lookup is
-    declared under that tool; it is read-only and keyed by the exact source table and row id.
+    Read-only, keyed by the exact source table and row id.
     """
     wanted = sorted(set(ids))
     if not wanted:
         return {}
-    _, view = published(f"{domain}.{JSON_TABLE}", f"{domain}_records")
+    _, view = published(f"{domain}.{JSON_TABLE}", tool)
     rows = await conn.fetch(
         f"""SELECT fields FROM {view}
         WHERE fields->>'source_table' = $1 AND fields->>'row_id' = ANY($2::text[])
@@ -170,7 +169,7 @@ async def read_records(
         if kind == JSON_TABLE:
             return rows, {}
         return rows, await json_fields(
-            conn, domain, table.source, [r["source_id"] for r in rows[:limit]]
+            conn, domain, table.source, [r["source_id"] for r in rows[:limit]], tool
         )
 
     rows, extras = await in_snapshot(conn, read)

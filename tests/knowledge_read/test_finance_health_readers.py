@@ -197,13 +197,26 @@ def test_finance_summary_arguments_and_shape():
         assert _refused(finance_summary(FakeConn(), CONTEXT, bad)).code == "invalid_argument"
     conn = FakeConn(
         {
-            "GROUP BY currency": [
-                {"currency": "SGD", "total": "12.30", "n": 1},
-                {"currency": "USD", "total": "5.00", "n": 2},
+            "GROUP BY 1, 2 ORDER BY 1, 2": [
+                {"currency": "SGD", "direction": "debit", "total": "12.30", "n": 1},
+                {"currency": "SGD", "direction": "credit", "total": "9.00", "n": 1},
+                {"currency": "USD", "direction": "debit", "total": "5.00", "n": 2},
             ],
             "grp": [
-                {"grp": "2026-01", "currency": "SGD", "total": "12.30", "n": 1},
-                {"grp": "2026-01", "currency": "USD", "total": "5.00", "n": 2},
+                {
+                    "grp": "2026-01",
+                    "currency": "SGD",
+                    "direction": "debit",
+                    "total": "12.30",
+                    "n": 1,
+                },
+                {
+                    "grp": "2026-01",
+                    "currency": "USD",
+                    "direction": "debit",
+                    "total": "5.00",
+                    "n": 2,
+                },
             ],
         }
     )
@@ -213,11 +226,13 @@ def test_finance_summary_arguments_and_shape():
         )
     )
     assert result["totals"] == [
-        {"currency": "SGD", "total": "12.30", "count": 1},
-        {"currency": "USD", "total": "5.00", "count": 2},
+        {"currency": "SGD", "direction": "debit", "total": "12.30", "count": 1},
+        {"currency": "SGD", "direction": "credit", "total": "9.00", "count": 1},
+        {"currency": "USD", "direction": "debit", "total": "5.00", "count": 2},
     ]
     assert result["groups"][0] == {
         "key": "2026-01",
+        "direction": "debit",
         "currency": "SGD",
         "total": "12.30",
         "count": 1,
@@ -288,7 +303,13 @@ def test_health_series_refuses_unknown_metric_and_oversized_raw():
         health_series(conn, CONTEXT, {**window, "metric": "x", "bucket": "hour"})
     ).code == ("invalid_argument")
     many = [{"t": "2026-03-01T00:00:00+00:00", "value": "70", "unit": "kg"}] * 2001
-    conn = FakeConn({"DISTINCT": [{"metric": "measurement_weight"}], "measurements_public": many})
+    conn = FakeConn(
+        {
+            "DISTINCT": [{"metric": "measurement_weight"}],
+            "latest": [{"unit": "kg", "latest": None}],
+            "measurements_public": many,
+        }
+    )
     error = _refused(health_series(conn, CONTEXT, {**window, "metric": "measurement_weight"}))
     assert error.code == "too_large"
     assert "70" not in json.dumps(error.to_dict())
@@ -298,6 +319,7 @@ def test_health_series_day_bucket_returns_the_mean_in_the_unit():
     conn = FakeConn(
         {
             "DISTINCT": [{"metric": "measurement_weight"}],
+            "latest": [{"unit": "kg", "latest": None}],
             "measurements_public": [{"t": date(2026, 3, 1), "value": "70.5", "unit": "kg"}],
         }
     )
@@ -316,6 +338,22 @@ def test_health_series_day_bucket_returns_the_mean_in_the_unit():
     assert result["unit"] == "kg"
     assert result["points"] == [{"t": "2026-03-01", "value": 70.5}]
     assert result["source"]["uri"] == "butlers://health/health_series"
+    assert "units_omitted" not in result
+
+
+def test_health_series_lists_the_units_it_did_not_serve():
+    conn = FakeConn(
+        {
+            "DISTINCT": [{"metric": "measurement_weight"}],
+            "latest": [{"unit": "kg", "latest": None}, {"unit": "lb", "latest": None}],
+            "measurements_public": [{"t": date(2026, 3, 1), "value": "70.5", "unit": "kg"}],
+        }
+    )
+    window = {"metric": "measurement_weight", "start": "2026-03-01", "end": "2026-03-02"}
+    result = _run(health_series(conn, CONTEXT, {**window, "bucket": "day"}))
+    assert result["unit"] == "kg" and result["units_omitted"] == ["lb"]
+    # The data query is restricted to the newest unit.
+    assert conn.calls[-1][1][3] == "kg"
 
 
 def _profile_conn() -> FakeConn:

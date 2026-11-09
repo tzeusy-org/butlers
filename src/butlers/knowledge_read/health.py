@@ -39,8 +39,8 @@ async def health_series(
     """Numeric readings of one metric over UTC days ``start``..``end``.
 
     ``day`` and ``week`` (Monday) buckets return the arithmetic mean in the unit unchanged. If
-    the window mixes units, only the newest reading's unit is served. More than 2,000 points
-    refuse with ``too_large``.
+    the window mixes units, only the newest reading's unit is served and the others are listed
+    in ``units_omitted`` (absent otherwise). More than 2,000 points refuse with ``too_large``.
     """
     args = Arguments(arguments, {"metric", "start", "end", "bucket"})
     metric = args.text("metric", max_length=128, required=True)
@@ -54,39 +54,50 @@ async def health_series(
     window = """fields->>'metric' = $1
         AND (fields->>'measured_at')::timestamptz >= $2
         AND (fields->>'measured_at')::timestamptz < $3"""
-    same_unit = f"""COALESCE(fields->>'unit', '') = COALESCE((SELECT fields->>'unit' FROM {view}
-        WHERE {window} ORDER BY (fields->>'measured_at')::timestamptz DESC LIMIT 1), '')"""
     if bucket == "raw":
         select = """(fields->>'measured_at')::timestamptz AS t,
             fields->>'value_numeric' AS value, fields->>'unit' AS unit"""
         tail = "ORDER BY t, source_id"
     else:
-        select = """date_trunc($4::text, (fields->>'measured_at')::timestamptz AT TIME ZONE 'UTC')
+        select = """date_trunc($5::text, (fields->>'measured_at')::timestamptz AT TIME ZONE 'UTC')
             ::date AS t, avg((fields->>'value_numeric')::numeric)::text AS value,
             min(fields->>'unit') AS unit"""
         tail = "GROUP BY 1 ORDER BY 1"
 
-    async def read() -> list[asyncpg.Record]:
+    async def read() -> tuple[list[asyncpg.Record], list[asyncpg.Record]]:
         metrics = await conn.fetch(
             f"SELECT DISTINCT fields->>'metric' AS metric FROM {view} ORDER BY 1"
         )
         if metric not in {m["metric"] for m in metrics}:
             raise ReadError("invalid_argument", argument="metric")
-        extra = () if bucket == "raw" else (bucket if bucket == "week" else "day",)
-        return await conn.fetch(
-            f"SELECT {select} FROM {view} WHERE {window} AND {same_unit} {tail} "
-            f"LIMIT {SERIES_POINTS + 1}",
+        units = await conn.fetch(
+            f"""SELECT fields->>'unit' AS unit,
+                max((fields->>'measured_at')::timestamptz) AS latest
+            FROM {view} WHERE {window} GROUP BY 1 ORDER BY latest DESC, 1""",
             metric,
             lower,
             upper,
+        )
+        if not units:
+            return [], []
+        extra = () if bucket == "raw" else (bucket,)
+        rows = await conn.fetch(
+            f"SELECT {select} FROM {view} WHERE {window} "
+            f"AND COALESCE(fields->>'unit', '') = $4::text {tail} LIMIT {SERIES_POINTS + 1}",
+            metric,
+            lower,
+            upper,
+            units[0]["unit"] or "",
             *extra,
         )
+        return rows, units
 
-    rows = await in_snapshot(conn, read)
+    rows, units = await in_snapshot(conn, read)
     if len(rows) > SERIES_POINTS:
         raise ReadError("too_large", domain="health")
-    return {
-        "unit": rows[0]["unit"] if rows else None,
+    omitted = [u["unit"] for u in units[1:]]
+    result: dict[str, Any] = {
+        "unit": units[0]["unit"] if units else None,
         "points": [
             {
                 "t": r["t"].isoformat(),
@@ -96,6 +107,9 @@ async def health_series(
         ],
         "source": context.aggregate_source("health", "health_series"),
     }
+    if omitted:
+        result["units_omitted"] = omitted
+    return result
 
 
 def _text(value: Any) -> Any:
@@ -147,7 +161,7 @@ async def health_profile(
             for k in ("allergies", "providers")
             for r in found.get(k, [])[:PROFILE_LIMIT]
         ]
-        found["json"] = await json_fields(conn, "health", facts.source, ids)
+        found["json"] = await json_fields(conn, "health", facts.source, ids, "health_profile")
         return found
 
     found = await in_snapshot(conn, read)

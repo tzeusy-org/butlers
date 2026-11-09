@@ -146,11 +146,11 @@ _GROUP_KEYS = {
 async def finance_summary(
     conn: asyncpg.Connection, context: ReadContext, arguments: object
 ) -> dict[str, Any]:
-    """Debit spend per currency over UTC days ``start``..``end``, never converted.
+    """Every non-deleted transaction on UTC days ``start``..``end``, per currency, never converted.
 
-    Transfers and uncategorized rows are not spend (parity with the dashboard summary);
-    soft-deleted rows are already absent from the view. ``totals`` is per currency; ``groups``
-    is per (group key, currency). Amounts are decimal strings.
+    Debits and credits are never netted: ``totals`` is per (currency, direction) and ``groups``
+    per (group key, currency, direction). Amounts are decimal strings; soft-deleted rows are
+    already absent from the view.
     """
     args = Arguments(arguments, {"start", "end", "group_by", "currency"})
     start, end = args.day("start"), args.day("end")
@@ -166,25 +166,24 @@ async def finance_summary(
     _, view = published("finance.transactions", "finance_summary")
     lower = datetime.combine(start, time(), UTC)
     upper = datetime.combine(end + timedelta(days=1), time(), UTC)
-    where = """fields->>'direction' = 'debit'
-        AND COALESCE(fields->>'display_category', '') NOT IN ('transfer', 'uncategorized')
-        AND (fields->>'posted_at')::timestamptz >= $1
+    where = """(fields->>'posted_at')::timestamptz >= $1
         AND (fields->>'posted_at')::timestamptz < $2
         AND ($3::text IS NULL OR fields->>'currency' = $3)"""
 
     async def read() -> tuple[list[asyncpg.Record], list[asyncpg.Record]]:
         totals = await conn.fetch(
-            f"""SELECT fields->>'currency' AS currency,
+            f"""SELECT fields->>'currency' AS currency, fields->>'direction' AS direction,
                    sum((fields->>'amount')::numeric)::text AS total, count(*) AS n
-            FROM {view} WHERE {where} GROUP BY currency ORDER BY currency""",
+            FROM {view} WHERE {where} GROUP BY 1, 2 ORDER BY 1, 2""",
             lower,
             upper,
             currency,
         )
         groups = await conn.fetch(
             f"""SELECT {_GROUP_KEYS[group_by]} AS grp, fields->>'currency' AS currency,
+                   fields->>'direction' AS direction,
                    sum((fields->>'amount')::numeric)::text AS total, count(*) AS n
-            FROM {view} WHERE {where} GROUP BY 1, 2 ORDER BY 1 NULLS LAST, 2 LIMIT $4""",
+            FROM {view} WHERE {where} GROUP BY 1, 2, 3 ORDER BY 1 NULLS LAST, 2, 3 LIMIT $4""",
             lower,
             upper,
             currency,
@@ -195,10 +194,22 @@ async def finance_summary(
     totals, groups = await in_snapshot(conn, read)
     result: dict[str, Any] = {
         "totals": [
-            {"currency": r["currency"], "total": r["total"], "count": r["n"]} for r in totals
+            {
+                "currency": r["currency"],
+                "direction": r["direction"],
+                "total": r["total"],
+                "count": r["n"],
+            }
+            for r in totals
         ],
         "groups": [
-            {"key": r["grp"], "currency": r["currency"], "total": r["total"], "count": r["n"]}
+            {
+                "key": r["grp"],
+                "currency": r["currency"],
+                "direction": r["direction"],
+                "total": r["total"],
+                "count": r["n"],
+            }
             for r in groups[:SUMMARY_GROUPS]
         ],
         "source": context.aggregate_source("finance", "finance_summary"),

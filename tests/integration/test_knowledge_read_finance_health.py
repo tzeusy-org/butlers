@@ -214,20 +214,30 @@ async def test_finance_summary_obligations_and_records(projected, primary, reade
 
         window = {"start": spent.isoformat(), "end": spent.isoformat()}
         summary = await finance_summary(reader, context, {**window, "group_by": "category"})
-        assert summary["totals"] == [
-            {"currency": "SGD", "total": "20.00", "count": 2},
-            {"currency": "USD", "total": "100.05", "count": 1},
+        # Nothing is dropped or netted: transfers and credits count, per direction.
+        assert [
+            (t["currency"], t["direction"], t["total"], t["count"]) for t in summary["totals"]
+        ] == [
+            ("SGD", "credit", "900.00", 1),
+            ("SGD", "debit", "520.00", 3),
+            ("USD", "debit", "100.05", 1),
         ]
-        assert {(g["key"], g["currency"], g["total"]) for g in summary["groups"]} == {
-            ("dining", "SGD", "20.00"),
-            ("travel", "USD", "100.05"),
+        assert {
+            (g["key"], g["currency"], g["direction"], g["total"]) for g in summary["groups"]
+        } == {
+            ("dining", "SGD", "debit", "20.00"),
+            ("transfer", "SGD", "debit", "500.00"),
+            ("income", "SGD", "credit", "900.00"),
+            ("travel", "USD", "debit", "100.05"),
         }
         month = await finance_summary(reader, context, {**window, "group_by": "month"})
         assert {g["key"] for g in month["groups"]} == {spent.strftime("%Y-%m")}
         usd_only = await finance_summary(
             reader, context, {**window, "group_by": "merchant", "currency": "usd"}
         )
-        assert [(g["key"], g["total"]) for g in usd_only["groups"]] == [("Airline", "100.05")]
+        assert [(g["key"], g["direction"], g["total"]) for g in usd_only["groups"]] == [
+            ("Airline", "debit", "100.05")
+        ]
         assert "Ghost" not in json.dumps(await finance_ledger(reader, context, window))
 
         obligations = await finance_obligations(reader, context, {"horizon_days": 30})
