@@ -62,17 +62,49 @@ class _BrokerTool(Tool):
         return self.convert_result(data)
 
 
-class _GrantedTools(Provider):
-    """Lists exactly the token's grant; no cross-invocation cache."""
+class _GoalTool(Tool):
+    """A D8 goal tool; the handler re-checks the caller's depth itself."""
 
-    def __init__(self, broker: Broker):
+    _goal_tools: Any = PrivateAttr()
+
+    async def run(self, arguments: dict[str, Any]) -> ToolResult:
+        goal, token = _credentials()
+        try:
+            data = await self._goal_tools.call(goal, token, self.name, arguments)
+        except BrokerRefused as refused:
+            return self.convert_result({"status": "refused", "reason": refused.reason.value})
+        except Exception:
+            return self.convert_result({"status": "refused", "reason": Reason.UNAVAILABLE.value})
+        return self.convert_result(data)
+
+
+class _GrantedTools(Provider):
+    """Lists exactly the token's grant; no cross-invocation cache.
+
+    With goal tools wired, the invocation's depth (from its ledger row) adds
+    the lead's or the child's goal tools, and the reserved ``goal`` namespace
+    is never taken from the catalog.
+    """
+
+    def __init__(self, broker: Broker, goal_tools: Any = None):
         super().__init__()
         self._broker = broker
+        self._goal_tools = goal_tools
 
     async def _list_tools(self):
         goal, token = _credentials()
         tools = []
+        if self._goal_tools is not None:
+            principal = await self._broker.authenticate(goal, token)
+            for spec in self._goal_tools.listed(principal.depth):
+                goal_tool = _GoalTool(
+                    name=spec.name, description=spec.description, parameters=spec.input_schema
+                )
+                goal_tool._goal_tools = self._goal_tools
+                tools.append(goal_tool)
         for capability in await self._broker.list_tools(goal, token):
+            if self._goal_tools is not None and self._goal_tools.reserved(capability.identity):
+                continue
             tool = _BrokerTool(
                 name=capability.identity,
                 description=capability.description,
@@ -167,19 +199,27 @@ class GoalEndpoint:
 
 
 def create_goal_endpoint(
-    broker: Broker, *, max_bytes: int = 1024 * 1024, timeout: float = 45
+    broker: Broker,
+    *,
+    goal_tools: Any = None,
+    max_bytes: int = 1024 * 1024,
+    timeout: float = 45,
 ) -> GoalEndpoint:
-    """Build the endpoint app; starts nothing and loads no credentials."""
+    """Build the endpoint app; starts nothing and loads no credentials.
+
+    ``goal_tools`` is the runner's ``GoalTools`` (RFC 0038 D8), or ``None`` to
+    serve the grant's capabilities alone.
+    """
     mcp = FastMCP("Goal capability broker", mask_error_details=True)
-    mcp.add_provider(_GrantedTools(broker))
+    mcp.add_provider(_GrantedTools(broker, goal_tools))
     app = mcp.http_app(path="/", stateless_http=True, json_response=True)
     return GoalEndpoint(app, broker, max_bytes=max_bytes, timeout=timeout)
 
 
-def session_app(switch: BrokerSwitch, broker: Broker | None):
+def session_app(switch: BrokerSwitch, broker: Broker | None, goal_tools: Any = None):
     """The session listener's app: the goal endpoint only when switched on."""
     if switch.enabled is not True or broker is None:
         from butlers.control import session_refusal_app
 
         return session_refusal_app
-    return create_goal_endpoint(broker)
+    return create_goal_endpoint(broker, goal_tools=goal_tools)

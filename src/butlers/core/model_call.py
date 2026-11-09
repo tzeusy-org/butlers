@@ -155,6 +155,8 @@ class CallSpec:
     enforce_ceiling: bool = True
     max_relaunches: int | None = None
     """Runtime-failure relaunches allowed; ``None`` leaves only ``MAX_ATTEMPTS``."""
+    exact_tier: bool = False
+    """Refuse the canonical tier fallthrough: resolve on ``tier`` or not at all (D16)."""
     caller: str = "model_call"
     """Label that prefixes this call's log lines."""
     owner_cancelled: Callable[[], bool] | None = None
@@ -203,12 +205,14 @@ async def _resolve(
 ) -> tuple[Candidate, str, dict | None, str | None]:
     """The first candidate, its effective tier, the base receipt and any selection reason."""
     receipts: list[Any] = []
+    exact: dict[str, Any] = {"allow_tier_fallthrough": False} if spec.exact_tier else {}
     resolved = await resolve_model_with_effective_tier(
         pool,
         spec.butler_name,
         spec.tier,
         receipt_intent=spec.receipt_intent,
         receipt_sink=receipts,
+        **exact,
     )
     if resolved is None:
         tier = getattr(spec.tier, "value", spec.tier)
@@ -217,6 +221,12 @@ async def _resolve(
             f"Add an enabled entry with complexity_tier={tier!r}."
         )
     *row, effective_tier = resolved
+    requested_tier = getattr(spec.tier, "value", spec.tier)
+    if spec.exact_tier and effective_tier != requested_tier:
+        # A goal invocation runs on its ladder tier only (RFC 0038 D16): the
+        # canonical fallthrough would silently run an escalation at or below
+        # the tier it escalated from.
+        raise NoModelConfigured(f"No {requested_tier} model qualifies; fallthrough refused.")
     candidate = Candidate.from_row(tuple(row))
     base_receipt = receipts[-1].describe() if receipts else None
 
@@ -240,8 +250,17 @@ async def _resolve(
                     rerouted.model_id,
                 )
             if rerouted.catalog_entry_id != candidate.catalog_entry_id:
-                selection_reason = "spend_rule_override"
-            candidate = rerouted
+                if spec.exact_tier:
+                    # RFC 0038 D16: a rule's model may sit on any tier, so an
+                    # exact-tier call keeps its tier-resolved model.
+                    logger.info(
+                        "%s: spend rule reroute ignored for an exact-tier call; keeping model=%s",
+                        spec.caller,
+                        candidate.model_id,
+                    )
+                else:
+                    selection_reason = "spend_rule_override"
+                    candidate = rerouted
         except Exception:
             logger.warning(
                 "%s: spend routing-rule evaluation failed for butler=%s; keeping tier-resolved "

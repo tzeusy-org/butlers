@@ -8,6 +8,7 @@
 - [Scheduler Execution](scheduler-execution.md) — tick loop, cron dispatch, staggering
 - [Session Lifecycle](session-lifecycle.md) — session creation, logging, completion
 - [Model Routing](model-routing.md) — model catalog, selection, complexity classification
+- [Goal Runner](goal-runner.md) — RFC 0038 goal invocations: goal tools, delegation, budgets, Stop, recovery
 - [Tool Call Capture](tool-call-capture.md) — tool call interception and analysis
 - [Signed Confirms](signed-confirms.md) — authenticated informational choices, custody and recovery
 - [Implementation Notes](implementation-notes.md) — session routing binding, approval authority, runtime-attention reissue, QA suppression

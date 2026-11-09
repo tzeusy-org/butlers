@@ -931,6 +931,22 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         )
     },
     **{
+        ("src/butlers/goal_runner/ledger.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: D9-D11/D14 goal runner over the Switchboard-owned goal "
+            "ledger (sw_062 outcomes and invocation accounting); qualified SQL allocated to "
+            "goal_runner/ledger.py (bu-u5s4w8)"
+        )
+        for relation in (
+            "broker_refusals",
+            "budgets",
+            "effects",
+            "goal_child_results",
+            "goal_outcomes",
+            "goals",
+            "invocations",
+        )
+    },
+    **{
         ("src/butlers/capability_broker/m7_report.py", f"switchboard.{relation}"): (
             "sanctioned:RFC-0038: M7 gate report, content-blind counts over the owner-only "
             "S1 measurements view and sw_058 stores (bu-4c7nvp.1.2)"
