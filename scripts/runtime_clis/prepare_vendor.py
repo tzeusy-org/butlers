@@ -59,10 +59,32 @@ def prepare(series_path: Path, archive: Path, destination: Path) -> dict:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="vendor-prepare-", dir=destination.parent) as temporary:
         extracted = Path(temporary)
+        archive_root = checked_path(extracted, series["archive"]["root"])
+        subdirectory = series["archive"].get("subdirectory")
+        if subdirectory is not None:
+            if (
+                not subdirectory
+                or Path(subdirectory).is_absolute()
+                or ".." in Path(subdirectory).parts
+            ):
+                raise ValueError("unsafe source subdirectory")
+            root = checked_path(archive_root, subdirectory)
+            prefix = root.relative_to(extracted).as_posix() + "/"
+        else:
+            root = archive_root
+            prefix = None
         with tarfile.open(archive, "r:gz") as source:
-            source.extractall(extracted, filter="data")
-        root = checked_path(extracted, series["archive"]["root"])
-        if list(extracted.iterdir()) != [root] or not root.is_dir():
+            # The archive digest binds the complete upstream monorepo. Extract
+            # only the named complete package, retaining every package entry.
+            def members():
+                for member in source:
+                    if prefix is None or member.name.startswith(prefix):
+                        if ".." in Path(member.name).parts:
+                            raise ValueError("unsafe archive member")
+                        yield member
+
+            source.extractall(extracted, members=members(), filter="data")
+        if list(extracted.iterdir()) != [archive_root] or not root.is_dir():
             raise ValueError("archive root mismatch")
         for patch in series["patches"]:
             patch_path = checked_path(series_path.parent, patch["path"])

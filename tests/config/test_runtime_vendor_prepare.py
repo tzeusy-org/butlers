@@ -94,3 +94,32 @@ def test_existing_destination_is_preserved(package):
     with pytest.raises(ValueError, match="already exists"):
         prepare(manifest, archive, output)
     assert (output / "owned.txt").read_text() == "preserved"
+
+
+def test_exact_monorepo_subdirectory_retains_package_and_excludes_siblings(package):
+    manifest, archive, output, series = package
+    with tarfile.open(archive, "w:gz") as stream:
+        for path, content in [
+            ("sample/packages/auth/source.txt", b"before\n"),
+            ("sample/sibling/foreign.txt", b"unselected source\n"),
+        ]:
+            member = tarfile.TarInfo(path)
+            member.size = len(content)
+            member.mode = 0o644
+            stream.addfile(member, io.BytesIO(content))
+    series["archive"].update(sha256=sha(archive.read_bytes()), subdirectory="packages/auth")
+    manifest.write_text(json.dumps(series))
+    receipt = prepare(manifest, archive, output)
+    assert (output / "source.txt").read_bytes() == b"after\n"
+    assert sorted(path.name for path in output.iterdir()) == ["source.txt"]
+    assert receipt["source_tree_sha256"] == series["source_tree_sha256"]
+
+
+@pytest.mark.parametrize("subdirectory", ["../outside", "/outside", ""])
+def test_unsafe_monorepo_subdirectory_refuses_without_output(package, subdirectory):
+    manifest, archive, output, series = package
+    series["archive"]["subdirectory"] = subdirectory
+    manifest.write_text(json.dumps(series))
+    with pytest.raises(ValueError, match="unsafe source subdirectory"):
+        prepare(manifest, archive, output)
+    assert not output.exists()
