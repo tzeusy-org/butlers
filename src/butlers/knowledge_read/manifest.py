@@ -10,7 +10,8 @@ import hashlib
 import json
 import re
 import tomllib
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
+from dataclasses import field as dc_field
 from importlib.resources import files
 
 _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
@@ -182,7 +183,7 @@ class Table:
     uri: str = ""
     tools: tuple[str, ...] = ()
     # Declarative metadata only: not part of the canonical digest or table equality.
-    classes: tuple[tuple[str, str], ...] = field(default=(), compare=False)
+    classes: tuple[tuple[str, str], ...] = dc_field(default=(), compare=False)
 
     def filter_sql(self) -> str:
         return " AND ".join(
