@@ -273,6 +273,82 @@ def test_model_snapshot_refuses_noncanonical_or_changed_data(model_snapshot, dri
     assert not (root.parent / "escape").exists()
 
 
+@pytest.mark.parametrize(
+    "drift",
+    [
+        None,
+        "stock-bin-mode",
+        "bin-bytes",
+        "bin-mode",
+        "bin-link",
+        "bin-missing",
+        "other-mode",
+        "lock-mode",
+        "lock-link",
+        "lock-semantics",
+    ],
+)
+def test_only_verified_stock_bin_mode_is_restored_before_strict_identity(
+    tmp_path, monkeypatch, drift
+):
+    monkeypatch.setattr(producer, "RECIPE", SCRIPTS.parents[1])
+    root = tmp_path / "root"
+    source = root / "source"
+    launcher = source / "packages/opencode/bin/opencode"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_bytes(b"original archive launcher bytes")
+    launcher.chmod(0o755)
+    wire = source / "wire.ts"
+    wire.write_bytes(b"original auth/tool source")
+    lock_path = source / "bun.lock"
+    lock_path.write_bytes(b"original serialization")
+    expected = producer.helper("produce_codex_artifacts").inventory(source)
+    lock = {"packages": {"all": ["original", "integrity"]}, "workspaces": {"all": {}}}
+    calls = []
+    monkeypatch.setattr(producer, "ROOT", root)
+    monkeypatch.setattr(producer, "lock_identity", lambda _op: calls.append("parse") or lock)
+    lock_path.write_bytes(b"stock spelling; full semantic object unchanged")
+    launcher.chmod(0o777 if drift not in {None, "lock-mode", "lock-link"} else 0o755)
+    if drift == "bin-bytes":
+        launcher.write_bytes(b"foreign launcher")
+    elif drift == "bin-mode":
+        launcher.chmod(0o775)
+    elif drift == "bin-link":
+        launcher.unlink()
+        launcher.symlink_to(wire)
+    elif drift == "bin-missing":
+        launcher.unlink()
+    elif drift == "other-mode":
+        wire.chmod(0o777)
+    elif drift == "lock-mode":
+        lock_path.chmod(0o755)
+    elif drift == "lock-link":
+        lock_path.unlink()
+        lock_path.symlink_to(wire)
+    elif drift == "lock-semantics":
+        lock = {}
+    if drift not in {None, "stock-bin-mode"}:
+        with pytest.raises(ValueError, match="original OpenCode"):
+            producer.source_identity(
+                expected,
+                {"packages": {"all": ["original", "integrity"]}, "workspaces": {"all": {}}},
+                None,
+            )
+        assert calls == (["parse"] if drift == "lock-semantics" else [])
+        if drift in {"other-mode", "lock-semantics"}:
+            assert launcher.stat().st_mode & 0o7777 == 0o777
+        if drift in {"lock-mode", "lock-link"}:
+            assert launcher.stat().st_mode & 0o7777 == 0o755
+        return
+    producer.source_identity(expected, copy.deepcopy(lock), None)
+    assert calls == ["parse"]
+    assert launcher.read_bytes() == b"original archive launcher bytes"
+    assert launcher.stat().st_mode & 0o7777 == 0o755
+    # Repeated checking sees the exact original mode, not a second exception.
+    producer.source_identity(expected, copy.deepcopy(lock), None)
+    assert calls == ["parse", "parse"]
+
+
 @pytest.fixture
 def build_inputs(tmp_path, monkeypatch):
     monkeypatch.setattr(producer, "RECIPE", SCRIPTS.parents[1])

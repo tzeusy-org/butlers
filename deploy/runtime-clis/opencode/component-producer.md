@@ -32,7 +32,14 @@ closed preparation input, recreates the exact patched source, and repeats that
 complete install/build. Bun 1.3.14 has no install `--offline` flag; containment is
 the actual `RUN --network=none` boundary. Its stock installers may rewrite JSONC
 spelling, so every semantic field of the full original lock is compared using
-the pinned Bun parser. Every other original source path remains byte/mode bound.
+the pinned Bun parser; its original regular-file kind and mode remain bound.
+Pinned Bun also changes the installed workspace launcher at
+`packages/opencode/bin/opencode` from its archive mode `0755` to `0777`.
+After verifying that exact path's complete original payload and every other
+original path, the producer restores only that known mode change to `0755`.
+Unexpected permissions, changed launcher bytes, links and any other original
+source drift refuse before restoration. All original source paths remain
+byte/mode bound after this declared normalization.
 
 Assembly retains the entire original published package and target assets,
 replaces only the declared target executable, and executes the original

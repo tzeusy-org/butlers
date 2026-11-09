@@ -377,10 +377,41 @@ def source_identity(expected: list[dict], lock: dict, operations) -> None:
     current = {
         item["path"]: item for item in helper("produce_codex_artifacts").inventory(ROOT / "source")
     }
-    if any(current.get(item["path"]) != item for item in expected if item["path"] != "bun.lock"):
-        raise ValueError("original OpenCode source changed during stock build")
+    launcher = "packages/opencode/bin/opencode"
+    restore_launcher = False
+    for item in expected:
+        actual = current.get(item["path"])
+        if item["path"] == "bun.lock":
+            # Only serialization may change; a link or permission change is
+            # never a different spelling of the same original lock.
+            wanted = {key: value for key, value in item.items() if key != "sha256"}
+            observed = (
+                {key: value for key, value in actual.items() if key != "sha256"}
+                if actual is not None
+                else None
+            )
+        elif (
+            item["path"] == launcher
+            and item["kind"] == "file"
+            and item["mode"] == 0o755
+            and actual == {**item, "mode": 0o777}
+        ):
+            # Pinned Bun makes an installed workspace bin world-writable.
+            # Verify its complete original row before restoring archive mode;
+            # all other source paths must pass before any permission write.
+            restore_launcher = True
+            wanted = observed = item
+        else:
+            wanted, observed = item, actual
+        if wanted != observed:
+            raise ValueError("original OpenCode source changed during stock build")
     if lock_identity(operations) != lock:
         raise ValueError("complete original OpenCode lock semantics changed")
+    if restore_launcher:
+        path = ROOT / "source" / launcher
+        path.chmod(0o755)
+        if path.lstat().st_mode & 0o7777 != 0o755:
+            raise ValueError("original OpenCode launcher mode could not be restored")
 
 
 def prepare(series: dict) -> None:
