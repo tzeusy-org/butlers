@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 from butlers.core.chronicler_visibility import local_fact_visibility_condition
 from butlers.modules.memory.content_authority import catalog_attribution, is_owner_class
+from butlers.modules.memory.embedding import embed_async
 from butlers.modules.memory.knowledge_class import NOT_EVENT_CLASS_SQL
 from butlers.modules.memory.tools._helpers import _search, validate_tenant_id
 from butlers.modules.memory.tools.references import format_memory_ref
@@ -201,6 +202,7 @@ async def _fetch_fleet_knowledge(
     read_policy,
     *,
     limit: int = _FLEET_KNOWLEDGE_QUERY_LIMIT,
+    query_embedding: list[float] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch relevant cross-butler knowledge from public.memory_catalog.
 
@@ -217,11 +219,12 @@ async def _fetch_fleet_knowledge(
         logger.debug("Fleet knowledge catalog is not installed")
         return []
 
-    try:
-        query_embedding = embedding_engine.embed(trigger_prompt)
-    except Exception:
-        logger.debug("Fleet knowledge embedding failed")
-        return []
+    if query_embedding is None:
+        try:
+            query_embedding = await embed_async(embedding_engine, trigger_prompt)
+        except Exception:
+            logger.debug("Fleet knowledge embedding failed")
+            return []
 
     results = await _search.search_catalog(
         pool,
@@ -514,8 +517,10 @@ async def memory_context(
     profile_ids: set = {r.get("id") for r in profile_facts if r.get("id") is not None}
 
     # --- 2. Fetch task-relevant facts via recall (exclude profile facts) ---
-    # recall returns facts + rules sorted by composite_score DESC; the same
-    # read_policy loaded above governs this fetch too.
+    # The prompt is embedded once, off the shared event loop, and that vector serves both
+    # recall and the fleet search. recall returns facts + rules sorted by composite_score
+    # DESC; the same read_policy loaded above governs this fetch too.
+    query_embedding = await embed_async(embedding_engine, trigger_prompt)
     recall_results = await _search.recall(
         pool,
         trigger_prompt,
@@ -525,6 +530,7 @@ async def memory_context(
         tenant_id=tenant_id,
         read_policy=read_policy,
         memory_schema=memory_schema,
+        query_embedding=query_embedding,
     )
     task_facts = [
         r
@@ -570,7 +576,13 @@ async def memory_context(
     fleet_knowledge: list[dict[str, Any]] = []
     if include_fleet_knowledge:
         fleet_knowledge = await _fetch_fleet_knowledge(
-            pool, embedding_engine, trigger_prompt, butler, tenant_id, read_policy
+            pool,
+            embedding_engine,
+            trigger_prompt,
+            butler,
+            tenant_id,
+            read_policy,
+            query_embedding=query_embedding,
         )
 
     # --- Assemble sections ---
