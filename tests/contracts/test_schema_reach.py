@@ -307,6 +307,38 @@ _DYNAMIC_RELATION_RE = re.compile(
 # Dynamic entries are exact normalized relation slots, not whole-file waivers.
 SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
+        "src/butlers/knowledge_read/chronology.py",
+        "<dynamic:{episode_view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
+        "src/butlers/knowledge_read/chronology.py",
+        "<dynamic:{leg_view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
+        "src/butlers/knowledge_read/chronology.py",
+        "<dynamic:{view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
+        "src/butlers/knowledge_read/entities.py",
+        "<dynamic:{view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
+        "src/butlers/knowledge_read/entities.py",
+        "<dynamic:{edge_view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
+        "src/butlers/knowledge_read/entities.py",
+        "<dynamic:{count_view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
+        "src/butlers/knowledge_read/finance.py",
+        "<dynamic:{view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
+        "src/butlers/knowledge_read/finance.py",
+        "<dynamic:{account_view}>",
+    ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
+    (
         "src/butlers/migrations/public_mcp_owner.py",
         "<dynamic:{qualified(table.source)}>",
     ): "dynamic-local: RFC0039 D3 internal subscriber DDL/read views operate only on a closed decoded canonical manifest source; qualified validates and quotes the approved source namespace and relation, never a discovered export.",
@@ -895,6 +927,22 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
             "extraction_cache",
             "goal_child_results",
             "goal_handles",
+            "invocations",
+        )
+    },
+    **{
+        ("src/butlers/goal_runner/ledger.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: D9-D11/D14 goal runner over the Switchboard-owned goal "
+            "ledger (sw_062 outcomes and invocation accounting); qualified SQL allocated to "
+            "goal_runner/ledger.py (bu-u5s4w8)"
+        )
+        for relation in (
+            "broker_refusals",
+            "budgets",
+            "effects",
+            "goal_child_results",
+            "goal_outcomes",
+            "goals",
             "invocations",
         )
     },

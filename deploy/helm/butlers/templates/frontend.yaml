@@ -32,6 +32,9 @@ metadata:
   labels:
     {{- include "butlers.labels" . | nindent 4 }}
 spec:
+  {{- with .Values.serviceClusterIPs.frontend }}
+  clusterIP: {{ . | quote }}
+  {{- end }}
   {{- if .Values.nodePorts.frontend }}
   type: NodePort
   externalTrafficPolicy: Local

@@ -1,11 +1,17 @@
 """The exposure decision stays explicit, closed and independent of live discovery."""
 
+import tomllib
 from dataclasses import FrozenInstanceError
 from importlib.resources import files
 
 import pytest
 
-from butlers.knowledge_read.manifest import ManifestError, credential, load_manifest
+from butlers.knowledge_read.manifest import (
+    ManifestError,
+    _parse_manifest,
+    credential,
+    load_manifest,
+)
 
 
 def test_packaged_manifest_is_complete_immutable_and_derives_graph_keys():
@@ -141,7 +147,7 @@ def test_credential_guard_has_a_type_consistent_control():
     data = files("butlers.knowledge_read").joinpath("projection.toml").read_text()
     # Change both the selected column and its declared type key. The only violated
     # boundary is the credential name, not a later missing/type declaration error.
-    assert data.count('"state"') == 4
+    assert data.count('"state"') == 6
     with pytest.raises(ManifestError, match="forbidden column"):
         load_manifest(data.replace('"state"', '"password"', 2).encode())
     assert (
@@ -204,3 +210,62 @@ def test_proposals_domain_is_exactly_the_payload_free_primary_status_source():
             with pytest.raises(ManifestError, match=reason):
                 load_manifest(data)
     assert load_manifest(data).tables
+
+
+def _packaged() -> str:
+    return files("butlers.knowledge_read").joinpath("projection.toml").read_text()
+
+
+def test_every_packaged_column_has_a_publishable_class():
+    manifest = load_manifest()
+    for table in manifest.tables:
+        assert tuple(c for c, _ in table.classes) == table.columns
+        assert {k for _, k in table.classes} <= {
+            "personal_record",
+            "third_party_content",
+            "system",
+        }
+
+
+def test_column_class_is_required():
+    data = _packaged().replace('"id" = "system", ', "", 1)
+    with pytest.raises(ManifestError, match="every column needs exactly one class"):
+        load_manifest(data.encode())
+
+
+def test_unknown_column_class_is_refused():
+    data = _packaged().replace('"system"', '"public"', 1)
+    with pytest.raises(ManifestError, match="unknown class"):
+        load_manifest(data.encode())
+
+
+@pytest.mark.parametrize("klass", ["credential", "third_party_pii"])
+def test_unpublishable_column_classes_are_refused(klass):
+    data = _packaged().replace('"system"', f'"{klass}"', 1)
+    with pytest.raises(ManifestError, match="never publishable"):
+        load_manifest(data.encode())
+
+
+@pytest.mark.parametrize("value", [["x"], {"a": "b"}, 7])
+def test_non_string_column_class_is_a_manifest_error(value):
+    raw = tomllib.loads(_packaged())
+    raw["table"][0]["classes"]["id"] = value
+    with pytest.raises(ManifestError, match="unknown class"):
+        _parse_manifest(raw)
+
+
+def test_class_for_unpublished_column_is_refused_without_required_classes():
+    raw = tomllib.loads(_packaged())
+    raw["table"][0]["classes"] = {"not_a_column": "system"}
+    with pytest.raises(ManifestError, match="class for unpublished column"):
+        _parse_manifest(raw)
+
+
+def test_search_vector_class_matches_its_content_class():
+    checked = 0
+    for table in load_manifest().tables:
+        classes = dict(table.classes)
+        if "search_vector" in classes:
+            assert classes["search_vector"] == classes["content"], table.source
+            checked += 1
+    assert checked >= 6

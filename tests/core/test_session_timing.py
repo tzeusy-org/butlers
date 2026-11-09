@@ -55,6 +55,23 @@ def test_first_marks_win_and_last_marks_overwrite() -> None:
     assert snap["last_tool_done_ms"] == 3000
 
 
+def test_mark_at_records_a_reading_taken_before_the_clock_began() -> None:
+    session_timing.begin("s1", origin=10.0, now=lambda: 99.0)
+    session_timing.mark_at("s1", "memory_context_ms", 12.5)  # before begin() was called
+    session_timing.mark_at("s1", "memory_context_ms", 50.0)  # first wins
+    session_timing.mark_at("s1", "early_ms", 9.0)  # before origin clamps to zero
+
+    snap = session_timing.snapshot("s1")
+
+    assert snap == {"memory_context_ms": 2500, "early_ms": 0}
+
+
+def test_mark_at_unknown_session_is_a_noop() -> None:
+    session_timing.mark_at("never-began", "memory_context_ms", 1.0)
+
+    assert session_timing.tracked_session_count() == 0
+
+
 def test_unknown_session_marks_are_noops_and_not_registered() -> None:
     session_timing.mark("never-began", "first_mcp_request_ms")
     session_timing.mark_tool_done("never-began")

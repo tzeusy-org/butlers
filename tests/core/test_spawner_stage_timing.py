@@ -99,6 +99,9 @@ async def _run(tmp_path: Path, *, fail: bool) -> dict[str, Any]:
 
 
 _ORDER = [
+    "prompt_context_ms",
+    "memory_context_ms",
+    "blind_spot_ms",
     "row_created_ms",
     "invoke_start_ms",
     "first_mcp_request_ms",

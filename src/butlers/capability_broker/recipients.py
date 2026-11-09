@@ -55,6 +55,18 @@ async def _live_owner(connection) -> UUID | None:
     return rows[0]["id"] if len(rows) == 1 else None
 
 
+async def live_owner(connection) -> UUID | None:
+    """The one live owner entity, or ``None`` when there is none or more than one.
+
+    An owner-delivery effect records this entity as its recipient (RFC 0038
+    D11), and only an effect so recorded can be a goal's owner reply.
+    """
+    try:
+        return await _live_owner(connection)
+    except Exception:
+        return None
+
+
 def _channel(capability: Capability, args: dict[str, Any]) -> str | None:
     """The notify channel whose identifiers this call's parties are, if known."""
     if capability.name == "notify":

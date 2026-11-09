@@ -749,25 +749,43 @@ slot, are therefore superuser work, and they form one owner step:
     guard decides whether it may act: when the migrations did not
     reconcile this manifest, the publication differs from the rows the file
     embeds, the guard refuses, and that refusal is fail-closed (step 1).
-  - *Where the file is generated.* Inside a deployed `dashboard-api` pod.
-    The script selects a running `dashboard-api` pod whose image tag equals
-    `<tag>` and execs into that pod by name, running
-    `/app/.venv/bin/butlers public-mcp owner-sql`, the console-script path
-    `record-deploy.sh:37-44` already uses; when no such pod exists (the
-    release failed before the rollout, so an older pod still runs) it fails.
-    That image is the one whose migrations container reconciled, so the file
-    and the publication come from the same manifest, also on a rollback to
-    an older tag (where a local checkout could differ). The script first
+  - *Where the file is generated.* In the deployer's checkout, from the
+    reviewed git tree of `<tag>`, never from a running pod (amended
+    2026-11-09 in review: `dashboard-api` is privileged with a writable
+    root filesystem, so code in it could replace the generator and have the
+    next deploy run its SQL as the superuser). `<tag>` must be an exact
+    prefix of a commit id in that checkout (not a branch). The script
+    exports that commit's tree with `git archive` into a temporary
+    directory and runs `uv run --project <tree> --frozen --no-dev butlers
+    public-mcp owner-sql` there, as `bootstrap-db.sh:39` reads `init-db.sql`
+    with `git show <tag>:`. The tag's tree is the image's source, so the
+    file and the publication still come from the same manifest, also on a
+    rollback to an older tag, and the working tree's state does not matter.
+    The script also requires a running `dashboard-api` pod of the release
+    whose image tag equals `<tag>` exactly, so the release rolled out; when
+    none exists (the release failed before the rollout) it fails. It
     captures the whole output in a shell variable under `set -euo pipefail`,
-    as `bootstrap-db.sh:39` captures `init-db.sql`, and only after the
-    generator exited 0 pipes it with `printf '%s\n'` into the superuser
-    `psql` in the CNPG primary, selected by label as `bootstrap-db.sh:40-45`
-    selects it, with `ON_ERROR_STOP=1`. A generator that dies midway
-    therefore feeds psql nothing. The file holds no secret, so nothing is
-    written to disk. Trusting the pod is a residual risk (D9).
-  - *Older tags.* Before generating, the script asks the same pod for its
-    command listing in a separate call (`butlers --help`, then `butlers
-    public-mcp --help` when `public-mcp` is listed) and treats the image as
+    checks it against a psql meta-command allowlist, and only then pipes it
+    with `printf '%s\n'` into the superuser `psql` in the CNPG primary,
+    selected by label as `bootstrap-db.sh:40-45` selects it, with
+    `ON_ERROR_STOP=1`. A generator that dies midway therefore feeds psql
+    nothing. The file holds no secret, so nothing is written to the
+    checkout.
+  - *Meta-command allowlist.* psql meta-commands reach a shell on the
+    primary (`\!`, backticks in `\set` or `\if`, `\o |cmd`). Scanning the
+    file as psql's lexer does, a backslash outside a standard string or a
+    dollar quote is admitted only at column 0 of a line that is exactly
+    `\set NAME WORD`, `\connect butlers`, `\connect butlers_public`,
+    `\gset`, `\if :name`, `\else` or `\endif`. A backtick anywhere, an
+    escape string, a backslash in a comment or quoted identifier, and an
+    unterminated quote refuse the file before psql runs. psql rescans an
+    unquoted `:name` interpolation for meta-commands, and `\gset` fills
+    variables from database content, so outside quotes only the quoted
+    `:'name'` and `:"name"` forms (and `::` casts) are admitted; `:name` is
+    admitted only on the `\if :name` line.
+  - *Older tags.* Before generating, the script runs the tag's command
+    listing in a separate call (`butlers --help`, then `butlers
+    public-mcp --help` when `public-mcp` is listed) and treats the tag as
     older only when no exact `owner-sql` entry appears. Only then does it
     print a notice and exit 0 (a rollback to a tag before the command
     shipped). A failed listing call, and any non-zero exit of the
@@ -809,7 +827,9 @@ slot, are therefore superuser work, and they form one owner step:
     step fails the public chart is not upgraded, and the server refuses
     either way (`projection_version_mismatch` on the old image,
     `projection_apply_pending` on a new one). The values file and image
-    build of that release are task 2.4.
+    build of that release are task 2.4, which also adds this upgrade to the
+    recipe: until a public pod exists there is no shipped digest to converge,
+    so the owner step ships and runs on dev before the chart.
   - *Prod.* Prod is deferred (OD18) and stays manual: for any environment
     other than `dev` the script prints a reminder and exits 0, as
     `bootstrap-db.sh:31-35` does.
@@ -1547,22 +1567,20 @@ not what the role can read. Four controls follow:
    leave headroom for the subscription's slot, its table-sync slots and one
    more.
 
-**Residual risk: the dev owner step trusts the deployed `dashboard-api`.**
-[Observed] On dev the superuser SQL of the owner step is emitted by a running
-`dashboard-api` container (D3), which runs as root with a writable root
-filesystem and privileged (`deploy/helm/butlers/templates/dashboard-api.yaml:95-100`,
-`deploy/helm/butlers/values.yaml:135`; the Dockerfiles set no `USER`),
-whereas `bootstrap-db.sh` reads its reviewed SQL from git
-(`scripts/k8s/bootstrap-db.sh:39`). The holders are not widened: whoever
-runs the deploy can already exec into the primary, and a privileged pod
-already reaches node root. But the integrity of the superuser SQL now rests
-on the deployed image and pod, and setting `dashboardApi.privileged=false`
-would not remove that trust. The tag check and the captured output (D3)
-narrow it to the pod of the deployed tag and a complete file. The
-alternative, generating from the tag locally (`git worktree add --detach
-<tmp> <tag>` plus `uv run --project <tmp> butlers public-mcp owner-sql`),
-gives the same rollback consistency without trusting a live pod; it was not
-chosen because the pod's image is the one whose migrations reconciled.
+**Residual risk: the dev owner step trusts the deployer's checkout.**
+[Observed] The superuser SQL of the owner step is rendered from the git tree
+of the deployed tag in the deployer's checkout (D3), as `bootstrap-db.sh`
+reads `init-db.sql` from git (`scripts/k8s/bootstrap-db.sh:39`). It is not
+taken from the running `dashboard-api` container, which runs as root with a
+writable root filesystem and privileged
+(`deploy/helm/butlers/templates/dashboard-api.yaml`,
+`deploy/helm/butlers/values.yaml`; the Dockerfiles set no `USER`), so code in
+that pod cannot reach the superuser path. That generation was the first
+design and was replaced in review (2026-11-09). The holders are not widened:
+whoever runs the deploy can already exec into the primary. The integrity of
+the SQL rests on the git objects of the tag and on the dependencies `uv`
+installs for that tree from its lockfile; the meta-command allowlist (D3)
+keeps a defect there from reaching a shell on the primary.
 
 **Residual risk: superuser-equivalent access to the instance.** Whoever can
 `kubectl exec` into a `postgres-<env>` instance pod can already run `psql -U
@@ -2439,8 +2457,9 @@ carries no normative text of its own.
     once after each slot invalidation. On dev this runs automatically
     (OD20): `make deploy-dev` runs `scripts/k8s/public-mcp-owner-step.sh dev
     <tag>` after the release on every deploy, whatever the release
-    returned, generating the file in the deployed tag's `dashboard-api` pod
-    and piping the captured file to the superuser `psql`; its guard refuses
+    returned, rendering the file from the deployed tag's git tree in the
+    deployer's checkout and piping the captured, allowlisted file to the
+    superuser `psql`; its guard refuses
     when the migrations did not reconcile, a failure fails the deploy
     loudly and rolls nothing back, and after a successful step the same
     deploy upgrades the public chart to the same tag (D3). After a slot invalidation on dev the owner may run

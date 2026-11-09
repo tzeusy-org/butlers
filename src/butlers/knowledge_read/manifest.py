@@ -11,6 +11,7 @@ import json
 import re
 import tomllib
 from dataclasses import dataclass, replace
+from dataclasses import field as dc_field
 from importlib.resources import files
 
 _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
@@ -77,6 +78,12 @@ _BREADTH = tuple(
         "payment_method",
     )
 )
+# Per-column data class (bu-y66o00.13). Every published column must declare one.
+# credential and third_party_pii are never publishable; the rest are allowed.
+COLUMN_CLASSES = frozenset(
+    {"credential", "personal_record", "third_party_pii", "third_party_content", "system"}
+)
+_REFUSED_CLASSES = frozenset({"credential", "third_party_pii"})
 _DOMAINS = {"knowledge", "travel", "relationship", "time", "finance", "health", "proposals", ""}
 _PRIVATE_TABLES = {
     "butler_secrets",
@@ -175,6 +182,8 @@ class Table:
     derived: str | None = None
     uri: str = ""
     tools: tuple[str, ...] = ()
+    # Declarative metadata only: not part of the canonical digest or table equality.
+    classes: tuple[tuple[str, str], ...] = dc_field(default=(), compare=False)
 
     def filter_sql(self) -> str:
         return " AND ".join(
@@ -237,10 +246,10 @@ def load_manifest(data: bytes | None = None) -> Manifest:
         )
     except (UnicodeError, tomllib.TOMLDecodeError) as exc:
         raise ManifestError("manifest: invalid TOML/encoding") from exc
-    return _parse_manifest(raw)
+    return _parse_manifest(raw, require_classes=True)
 
 
-def _parse_manifest(raw: object) -> Manifest:
+def _parse_manifest(raw: object, *, require_classes: bool = False) -> Manifest:
     """One semantic validator for packaged TOML and already-applied JSON."""
     if not isinstance(raw, dict):
         raise ManifestError("manifest: expected object")
@@ -263,6 +272,7 @@ def _parse_manifest(raw: object) -> Manifest:
         "replica_identity",
         "uri",
         "tools",
+        "classes",
     }
     for item in raw["table"]:
         if (
@@ -343,7 +353,8 @@ def _parse_manifest(raw: object) -> Manifest:
             raise ManifestError(f"{source}: finance/health key must be single column")
         identity = _strings(item.get("replica_identity"), source + " identity")
         if not set(key) <= set(identity) or not set(identity) <= set(cols):
-            raise ManifestError(f"{source}: incomplete identity columns")
+            missing = sorted((set(key) - set(identity)) | (set(identity) - set(cols)))
+            raise ManifestError(f"{source}: incomplete identity columns {missing}")
         uri = item.get("uri", "")
         tools = _strings(item.get("tools", []), source + " tools", nonempty=False)
         if not isinstance(uri, str) or (uri and not uri.startswith("butlers://")):
@@ -355,9 +366,13 @@ def _parse_manifest(raw: object) -> Manifest:
             raise ManifestError(f"{source}: time column omitted")
         filters = item.get("row_filter", {})
         if not isinstance(filters, dict) or not set(filters) <= set(cols):
-            raise ManifestError(f"{source}: filter column omitted")
+            raise ManifestError(
+                f"{source}: filter column omitted {sorted(set(filters) - set(cols))}"
+            )
         if not set(filters) <= set(identity):
-            raise ManifestError(f"{source}: filter omitted from identity")
+            raise ManifestError(
+                f"{source}: filter omitted from identity {sorted(set(filters) - set(identity))}"
+            )
         normalized = []
         for column, values in sorted(filters.items()):
             if (
@@ -417,6 +432,18 @@ def _parse_manifest(raw: object) -> Manifest:
             not isinstance(derived, str) or derived not in {"edges", "counts"}
         ):
             raise ManifestError(f"{source}: invalid derived filter")
+        classes = item.get("classes")
+        if classes is None and not require_classes:
+            classes = {}
+        elif not isinstance(classes, dict) or (require_classes and set(classes) != set(cols)):
+            raise ManifestError(f"{source}: every column needs exactly one class")
+        for column, klass in classes.items():
+            if not isinstance(klass, str) or klass not in COLUMN_CLASSES:
+                raise ManifestError(f"{source}.{column}: unknown class {klass!r}")
+            if klass in _REFUSED_CLASSES:
+                raise ManifestError(f"{source}.{column}: class {klass} is never publishable")
+        if not set(classes) <= set(cols):
+            raise ManifestError(f"{source}: class for unpublished column")
         tables.append(
             Table(
                 source,
@@ -432,6 +459,7 @@ def _parse_manifest(raw: object) -> Manifest:
                 derived,
                 uri,
                 tools,
+                tuple((c, classes[c]) for c in cols if c in classes),
             )
         )
     if len({t.source for t in tables}) != len(tables):

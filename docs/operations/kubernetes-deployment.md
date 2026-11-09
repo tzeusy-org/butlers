@@ -135,10 +135,21 @@ tailscale serve --bg --set-path /owntracks-dev   http://localhost:32086/owntrack
 
 NodePorts listen on every node address, unlike compose's `127.0.0.1` bindings. The
 `butlers-host-ingress` NetworkPolicy therefore admits only the node itself and pods in the
-namespace. Host-originated connections reach pods from the `cni0` address `10.42.0.1`. That
-address is both the policy's allowed source and `dashboardAuth.trustedProxyPeers`; it plays the
-role the Docker bridge gateway played under compose. The NodePort Services use
-`externalTrafficPolicy: Local`, so remote clients keep their own source IP and are refused.
+namespace. Host-originated connections reach pods on the same node from the `cni0` address
+`10.42.0.1`, and pods on another node from the host's `flannel.1` address `10.42.0.0`
+(`hostIngress.extraSourceCidrs`). Both are allowed sources and both belong in
+`dashboardAuth.trustedProxyPeers`; they play the role the Docker bridge gateway played under
+compose. The NodePort Services use `externalTrafficPolicy: Local`, so remote clients keep their
+own source IP and are refused.
+
+A `Local` NodePort answers only on a node that hosts the pod. If the pod is scheduled onto
+another node, `localhost:<nodePort>` on the `tailscale serve` host refuses connections and the
+route returns 502. Point `tailscale serve` at the Service ClusterIP instead (for example
+`http://<frontend ClusterIP>:80/butlers-dev`), which kube-proxy routes to the pod on any node;
+the flannel source above is what makes that cross-node hop admissible. A ClusterIP lasts only
+as long as its Service, so to keep the route valid across a Service recreate, fix the addresses
+in the gitignored `values.local.yaml` (`serviceClusterIPs.frontend`, `serviceClusterIPs.dashboardApi`);
+they are empty in committed values.
 
 Every other pod is covered too. `butlers-default-deny-ingress` selects all pods, and allowed
 ingress is the union of the policies selecting a pod, so a deny cannot subtract an allow.
@@ -269,29 +280,32 @@ reruns the deployed tag's `scripts/init-db.sql`, which is idempotent:
 - It runs as the CloudNativePG local superuser inside the `postgres-dev` primary pod, via
   `kubectl exec`, so no superuser password is involved.
 - It takes the normal connecting login from the `butlers-bws` Secret, without printing it.
-- Once the public MCP projection lands (`bu-y66o00.4`), this rerun also applies its
-  `init-db.sql` grants (RFC 0039 owner act 9).
+- This rerun also applies the public MCP projection's `init-db.sql` grants (RFC 0039 owner
+  act 9) where the CNPG projection roles and `butlers_public` exist.
 
 Without the bootstrap step, a tag whose migrations need a newer bootstrap surface fails in the
 `migrations` initContainer after the old pods are gone. `core_277` did this on 2026-10-27
 (bu-8jtq10). Prod has no privileged bootstrap configured here: `bootstrap-prod` only prints a
 reminder, and the operator runs `init-db.sql` by hand before `deploy-prod`.
 
-Once the projection lands, `deploy-*` also runs the projection's owner step (RFC 0039 owner act
-10, owner decision OD20) as a second command after `record-deploy.sh`, whatever that returned,
-and exits with the first non-zero status. It cannot run in `bootstrap-dev`: the step needs the
+`deploy-*` also runs the public MCP projection's owner step (RFC 0039 owner act 10, owner
+decision OD20) as a second command after `record-deploy.sh`, whatever that returned, and exits
+with the first non-zero status. On dev the `migrations` initContainer runs `butlers public-mcp
+reconcile` after Alembic (`publicMcp.reconcile`, true only in `values.dev.yaml`). It cannot run in `bootstrap-dev`: the step needs the
 publication that `butlers public-mcp reconcile` writes in the `migrations` initContainer. A
 release can fail after reconcile (a later rollout or the readiness wait), so the step still runs
 then; when the migrations did not reconcile, its guard refuses and changes nothing.
-`scripts/k8s/public-mcp-owner-step.sh dev <tag>` picks the `dashboard-api` pod running `<tag>`,
-captures `butlers public-mcp owner-sql` from it, and only then pipes it to `psql` as the same
-CNPG local superuser. It runs on every deploy and changes nothing when the manifest is unchanged.
-After it succeeds, the same target upgrades the public chart `deploy/helm/butlers-public-mcp` at
-the same tag. If it fails, the target prints `public-mcp owner step FAILED` and exits non-zero;
+`scripts/k8s/public-mcp-owner-step.sh dev <tag>` requires the `dashboard-api` pod running exactly
+`<tag>`, renders `butlers public-mcp owner-sql` from the git tree of `<tag>` in this checkout
+(never from the privileged pod), refuses any psql meta-command outside a short allowlist, and only
+then pipes it to `psql` as the same CNPG local superuser. It runs on every deploy and changes nothing when the manifest is unchanged.
+Once the public chart `deploy/helm/butlers-public-mcp` exists (`bu-y66o00.6`, task 2.4), the
+same target upgrades it at the same tag after the step succeeds. If the step fails, the target prints `public-mcp owner step FAILED` and exits non-zero;
 nothing rolls back, and the release and its deployments row stand. After a manifest change the
 public server refuses with `projection_apply_pending` until a rerun succeeds; with an unchanged
 manifest it keeps serving and only the marker reports the failure. `PUBLIC_MCP_OWNER_STEP_dev :=
-off` in `deploy/helm/butlers/makefile` switches the step and the public chart off for a teardown.
+off` in `deploy/helm/butlers/makefile`, set in a reviewed change, switches the step off (and the
+public chart, once it exists) for a teardown.
 Prod stays manual. See [Public MCP Read Surface](public-mcp-read-surface.md).
 
 The new topology guard is dev-only. `dashboard-api`, `butlers-up` and the connectors use the

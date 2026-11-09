@@ -77,6 +77,19 @@ publicUrl:
 hostIngress:
   # Source address of host-originated traffic on single-node k3s (cni0).
   nodeSourceCidr: 10.42.0.1/32
+  # Further single-host sources. The tailscale-serve host reaches a pod on
+  # another node via flannel.1, so its source is the host's flannel.1 address
+  # (10.42.0.0), not cni0. Each entry must be a /32.
+  extraSourceCidrs:
+    - 10.42.0.0/32
+
+# Optional fixed Service ClusterIPs, so a host `tailscale serve` route that
+# targets one survives the Service being recreated. Leave empty to let the
+# cluster assign; set the site's addresses in the gitignored values.local.yaml
+# (they must be free addresses inside the cluster's service CIDR).
+serviceClusterIPs:
+  frontend: ""
+  dashboardApi: ""
 
 nodePorts:
   frontend: 0
@@ -145,6 +158,13 @@ dashboardApi:
     enabled: false
     urlSecretRef: {name: "", key: ""}
     intervalSeconds: 600
+
+# Public MCP read surface (RFC 0039). reconcile converges publication butlers_public_v1 and
+# mcp_surface.manifest_state in the migrations initContainer, after Alembic, as the same
+# migration login. It refuses unless init-db.sql created mcp_surface, which needs the CNPG
+# projection roles and the butlers_public database, so it is on only where those exist (dev).
+publicMcp:
+  reconcile: false
 
 frontend:
   resources:

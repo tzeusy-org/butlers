@@ -2367,6 +2367,9 @@ class Spawner:
             )
             system_prompt = resolved_system_prompt.prompt
 
+            # Pre-row stage readings (the session clock starts at row creation).
+            pre_row_marks: dict[str, float] = {}
+
             # Fetch situational context preamble (fail-open)
             context_preamble_ctx = await fetch_situational_context_preamble(
                 self._pool, self._config.name
@@ -2383,6 +2386,7 @@ class Spawner:
             routing_ctx: str | None = None
             if self._config.name == "switchboard":
                 routing_ctx = await fetch_routing_instructions(self._pool, self._config.name)
+            pre_row_marks["prompt_context_ms"] = time.monotonic()
 
             memory_ctx: str | None = None
             memory_enabled = _memory_module_enabled(self._config)
@@ -2397,6 +2401,7 @@ class Spawner:
                     final_prompt,
                     token_budget=_memory_context_token_budget(self._config),
                 )
+            pre_row_marks["memory_context_ms"] = time.monotonic()
 
             blind_spot_preamble_enabled = True
             if self._runtime_config_accessor is not None:
@@ -2416,6 +2421,7 @@ class Spawner:
                 self._config,
                 enabled=blind_spot_preamble_enabled,
             )
+            pre_row_marks["blind_spot_ms"] = time.monotonic()
 
             _composed_prompt_digest = compose_prompt_digest(
                 system_prompt,
@@ -2473,6 +2479,8 @@ class Spawner:
                 runtime_session_id = str(session_id)
                 ensure_runtime_session_capture(runtime_session_id)
                 session_timing.begin(runtime_session_id, origin=t0)
+                for pre_stage, pre_reading in pre_row_marks.items():
+                    session_timing.mark_at(runtime_session_id, pre_stage, pre_reading)
                 session_timing.mark(runtime_session_id, "row_created_ms")
                 set_runtime_session_routing_context(runtime_session_id, routing_context)
                 # Mark the session as real-but-not-yet-invoked so a Stop click

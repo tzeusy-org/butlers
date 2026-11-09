@@ -37,6 +37,7 @@ from .contracts import (
     mint_token,
     token_hash,
 )
+from .recipients import live_owner
 
 # Effects a repeated call must not duplicate (D12): committed or unknown, plus
 # anything still in flight that could become either.
@@ -197,10 +198,13 @@ class BrokerLedger:
         """A lead reading its child's result joins the child's label (cause ``child``)."""
         if await self._lock_goal(goal_id) is None:
             raise BrokerRefused(Reason.GOAL)
+        # Children of a replaced lead report to its successor (D14), so any
+        # child of the goal is readable by any of the goal's leads.
         child = await self.connection.fetchrow(
-            "SELECT label_version, label_instr, label_data, label_sens "
-            "FROM switchboard.invocations "
-            "WHERE goal_id = $1 AND id = $2 AND parent_invocation_id = $3",
+            "SELECT c.label_version, c.label_instr, c.label_data, c.label_sens "
+            "FROM switchboard.invocations c JOIN switchboard.invocations l "
+            "ON l.goal_id = c.goal_id AND l.id = $3 AND l.depth = 0 "
+            "WHERE c.goal_id = $1 AND c.id = $2 AND c.depth = 1",
             goal_id,
             child_id,
             lead_id,
@@ -336,7 +340,7 @@ class BrokerLedger:
         Budget exhaustion is *returned*, not raised, so the caller commits the
         goal's ``budget_exhausted`` transition before refusing.
         """
-        exhausted = await self._budget_exhausted(principal.goal_id)
+        exhausted = await self._budget_exhausted(principal)
         if exhausted is not None:
             return exhausted
         effect_id = None
@@ -355,54 +359,81 @@ class BrokerLedger:
             # A dispatched call commits its intent before any byte leaves the
             # broker; a parked one stays requested until the domain parks it.
             status = "dispatched" if decision.disposition is Disposition.DISPATCH else "requested"
+            # D11: an owner delivery records the owner as its recipient; only
+            # such an effect can be a goal's owner reply.
+            owner = None
+            if capability.effect_class == "communicate" and recipient == "owner":
+                owner = await live_owner(self.connection)
             await self.connection.execute(
                 "INSERT INTO switchboard.effects "
-                "(id, goal_id, invocation_id, capability, args_digest, status) "
-                "VALUES ($1, $2, $3, $4, $5, $6)",
+                "(id, goal_id, invocation_id, capability, args_digest, status, recipient_entity) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7)",
                 effect_id,
                 principal.goal_id,
                 principal.invocation_id,
                 capability.identity,
                 args_digest,
                 status,
+                owner,
             )
-        await self._charge(principal.goal_id)
+        await self._charge(principal)
         return Reservation(
             principal, capability, decision, uuid4(), effect_id, args_digest, recipient
         )
 
-    async def _budget_exhausted(self, goal_id: UUID) -> BrokerRefused | None:
+    async def _budget_exhausted(self, principal: Principal) -> BrokerRefused | None:
+        """D10, fail closed: the goal's calls and deadline, then the invocation's share.
+
+        Goal exhaustion ends the goal ``budget_exhausted``. A child whose own D9
+        share (calls or wall time) is spent is refused, and the goal runs on.
+        """
         budget = await self.connection.fetchrow(
             "SELECT max_calls, used_calls, reserved_calls, deadline > clock_timestamp() AS live "
             "FROM switchboard.budgets WHERE goal_id = $1 FOR UPDATE",
-            goal_id,
+            principal.goal_id,
         )
         if budget is None:
             raise BrokerRefused(Reason.UNAVAILABLE)
         if (
-            not budget["live"]
+            budget["live"] is not True
             or budget["used_calls"] + budget["reserved_calls"] >= budget["max_calls"]
         ):
             await self.connection.execute(
                 "UPDATE switchboard.goals SET status = 'budget_exhausted', updated_at = now() "
                 "WHERE id = $1 AND status = 'running'",
-                goal_id,
+                principal.goal_id,
             )
+            return BrokerRefused(Reason.BUDGET)
+        share = await self.connection.fetchrow(
+            "SELECT max_calls IS NULL OR used_calls < max_calls AS calls_left, "
+            "deadline IS NULL OR deadline > clock_timestamp() AS time_left "
+            "FROM switchboard.invocations WHERE goal_id = $1 AND id = $2",
+            principal.goal_id,
+            principal.invocation_id,
+        )
+        if share is None or share["calls_left"] is not True or share["time_left"] is not True:
             return BrokerRefused(Reason.BUDGET)
         return None
 
-    async def _charge(self, goal_id: UUID) -> None:
+    async def _charge(self, principal: Principal) -> None:
+        """One call against the goal budget and the calling invocation's count (D14)."""
         await self.connection.execute(
             "UPDATE switchboard.budgets SET used_calls = used_calls + 1, updated_at = now() "
             "WHERE goal_id = $1",
-            goal_id,
+            principal.goal_id,
+        )
+        await self.connection.execute(
+            "UPDATE switchboard.invocations SET used_calls = used_calls + 1, updated_at = now() "
+            "WHERE goal_id = $1 AND id = $2",
+            principal.goal_id,
+            principal.invocation_id,
         )
 
-    async def charge_call(self, goal_id: UUID) -> BrokerRefused | None:
+    async def charge_call(self, principal: Principal) -> BrokerRefused | None:
         """A goal tool call (D8) draws one call from the D10 budget, like any call."""
-        exhausted = await self._budget_exhausted(goal_id)
+        exhausted = await self._budget_exhausted(principal)
         if exhausted is None:
-            await self._charge(goal_id)
+            await self._charge(principal)
         return exhausted
 
     # -- settlement -------------------------------------------------------------

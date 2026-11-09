@@ -191,7 +191,12 @@ def test_an_empty_argument_is_refused_before_helm_runs(
     scripts.mkdir(parents=True)
     shutil.copy2(_REPO_ROOT / "deploy/helm/butlers/makefile", chart / "makefile")
     shutil.copy2(_REPO_ROOT / "scripts/k8s/record-deploy.sh", scripts / "record-deploy.sh")
-    for name in ("bootstrap-db.sh", "site-helm-args.sh", "runtime-topology-preflight.sh"):
+    for name in (
+        "bootstrap-db.sh",
+        "site-helm-args.sh",
+        "runtime-topology-preflight.sh",
+        "public-mcp-owner-step.sh",
+    ):
         stub = scripts / name
         stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         stub.chmod(0o755)

@@ -9,6 +9,11 @@
 #
 # Does not run `make secrets-dev`: butlers-dev takes its Secrets from BWS through
 # External Secrets (values.dev.yaml localSecrets.source=bws).
+#
+# `make deploy-dev` reruns init-db.sql, releases (the migrations initContainer runs Alembic and
+# `butlers public-mcp reconcile`), then runs the public MCP owner step
+# (scripts/k8s/public-mcp-owner-step.sh, RFC 0039 D3, OD20) whatever the release returned.
+# A failed step prints `public-mcp owner step FAILED` and fails the deploy; nothing rolls back.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

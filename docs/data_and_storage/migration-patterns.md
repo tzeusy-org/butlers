@@ -136,9 +136,39 @@ list in a revision: seven or more runtime roles or roster schema names in one
 tuple, list or set, or seven or more roles in one SQL string. Existing sites are
 frozen in its baseline, which only shrinks. `tests/config/test_db_authority_roles.py`
 holds the four fleet arrays in `scripts/init-db.sql` and
-`butlers.bootstrap_prerequisite._BUTLERS` equal to the roster. This is the first slice of the DB authority model
-(bu-dss7he.6); the declarative grant manifest that replaces init-db's blanket
-public-table DML comes later.
+`butlers.bootstrap_prerequisite._BUTLERS` equal to the roster.
+
+### Public grant manifest
+
+`butlers.db_authority.grants.PUBLIC_RELATIONS` has one row per `public`
+relation stating each runtime role's table privileges. A migration that creates
+a `public` table, view or partitioned parent adds its row in the same PR;
+partitions follow their parent. Most rows are still `LEGACY_FLEET_DML`, the
+blanket DML `scripts/init-db.sql` grants: an unreviewed inheritance waiting for
+a per-table decision, not an approval. Boundary rows (DND fencing, the
+runtime-attention outbox, cost claims, consolidation runs, `state`) are spelled
+out with a reason so a deny-by-default rebuild cannot widen them.
+
+Rows record migration intent: what a freshly migrated database grants. Where an
+`init-db.sql` replay re-widens (or otherwise changes) a relation, its row also
+carries the replay result and is listed in `REPLAY_WIDENED`. A migration that
+narrows a `public` table must therefore add a boundary or replay-widened row, not
+leave the legacy blanket in place.
+
+`tests/integration/test_db_authority_grants_catalog.py` diffs a migrated
+database against the manifest, before and after an `init-db.sql` replay.
+`butlers db check-grants` runs the same read-only, content-blind diff against
+a real database (`--database`, default `butlers`) and exits non-zero on any
+difference. A deployed database has been through init-db replays, so pass
+`--after-init-db-replay` to compare with the replay result. The manifest is not yet
+applied: converging grants to it under the migrate initContainer, and removing
+init-db's blanket grants, are the next slices of bu-dss7he.6.
+
+The CNPG-managed `butlers_projection_publisher` (RFC 0039 D9) is declared beside the runtime
+roles, not among them: `PROJECTION_PUBLISHER` and `publisher_relations()` state that it holds
+`SELECT` on exactly the `public` tables of the projection manifest, and nothing once
+publication `butlers_public_v1` does not exist. `butlers db check-grants` diffs it too, and
+skips it where the role is absent (Compose, testcontainers).
 
 ### Database-global protected public boundaries
 

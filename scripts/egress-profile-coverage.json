@@ -6058,7 +6058,7 @@
     "deploy/helm/butlers/templates/cronjobs.yaml":
         "174eccfe628196cc18d86b6175b4284301d5adb67169e1751313505d12b19697",
     "deploy/helm/butlers/templates/dashboard-api.yaml":
-        "677dd6e47ce1a10d7de3feb1921fce7a1ffbbf84c632a00bba97f8354bcbe6da",
+        "5e84333171f5026322a6a4d72500dd16a15013c03fd4e682a7b81195352b428c",
     "deploy/helm/butlers/templates/egress-gateway.yaml":
         "46726ddc9aa6cb92b69054cca56e5772923848af373dc68022d239cf8f4544bd",
     "deploy/helm/butlers/templates/egress-profiles.yaml":
@@ -6068,9 +6068,9 @@
     "deploy/helm/butlers/templates/externalsecret.yaml":
         "6d3d001e0f8891c6a9469d8a3f0f058b52deefa619b99b8de96d16db29aa8b8f",
     "deploy/helm/butlers/templates/frontend.yaml":
-        "eb386b8e09abf7266a1bcac2c6e366e9fbb000e713c72de049929b33f9ea60d8",
+        "b0e580a6affd00a1d9d929ee04c6a58b64dce0ca7789f5c2c7dbca74d6d388bd",
     "deploy/helm/butlers/templates/networkpolicy.yaml":
-        "02923ffff6843926f8c38d07dbc75b661430626f6d106db9c4d7c6954a97bcaa",
+        "6aa1ca4f158d1a61c0f21d2f67b10b0ab446f2cdd7188fc9426edc72e0774bdc",
     "deploy/helm/butlers/templates/pvc.yaml":
         "1f1d1883011f76f59a4175544361ce6af8874399081857c36929196f712459f3",
     "deploy/helm/butlers/templates/session-host.yaml":

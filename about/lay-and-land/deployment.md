@@ -170,10 +170,11 @@ prints one idempotent SQL file that is piped through
 `kubectl exec -i -n postgres-<env> <instance> -- psql -X -U postgres -d butlers -f -`, the same
 path as `scripts/init-db.sql`. On dev, `make deploy-dev` does this on every deploy (OD20): after
 `bootstrap-dev` and after `record-deploy.sh`, whatever it returned (its guard refuses when the
-migrations did not reconcile), `scripts/k8s/public-mcp-owner-step.sh` captures the file from the
-`dashboard-api` pod running the deployed tag and pipes it to the superuser `psql` in the primary;
-a failure fails the deploy loudly and rolls nothing back, and after a success the same target
-upgrades the public chart at the same tag. Elsewhere the owner runs it. It pre-creates the slot with
+migrations did not reconcile), `scripts/k8s/public-mcp-owner-step.sh` renders the file from the deployed tag's
+git tree in the deployer's checkout (never from the privileged `dashboard-api` pod), checks it
+against a psql meta-command allowlist and pipes it to the superuser `psql` in the primary;
+a failure fails the deploy loudly and rolls nothing back, and once the public chart exists
+(`bu-y66o00.6`) a success also upgrades it at the same tag. Elsewhere the owner runs it. It pre-creates the slot with
 `pg_create_logical_replication_slot(..., 'pgoutput')`, creates the subscription with
 `create_slot = false` on the local socket and hands it to `mcp_subscription_owner`, refreshes it,
 purges and re-copies after a narrowing, and records the applied digest. It must run at the

@@ -1137,6 +1137,46 @@ def resolve_allowed_sensitivities(max_sensitivity: str) -> list[str]:
     return list(CATALOG_SENSITIVITY_LEVELS[: ceiling + 1])
 
 
+def _lazy_visibility_top_n_sql(
+    *,
+    score_expr: str,
+    score_alias: str,
+    direction: str,
+    conditions: list[str],
+    limit_idx: int,
+    output_expr: str,
+) -> str:
+    """Rank catalog rows cheaply, then run the visibility function only until N pass.
+
+    ``chronicler_catalog_row_visible`` is a per-row PL/pgSQL call (about 0.5 ms each). In
+    a plain ``WHERE`` it runs for every candidate row before the top-N sort, which cost
+    ~4 s per context fetch on a 15k-row catalog (bu-dhloi1.190). Here the cheap predicates
+    and ordering run first over ``(id, score)`` only; the function then filters that
+    ordered stream and ``LIMIT`` stops it after N visible rows. ``MATERIALIZED`` is
+    required: it stops the planner from pushing the volatile function back into the scan.
+    The visible set and its order are unchanged.
+    """
+    visible_check = catalog_projection_visible("memory_catalog")
+    cheap = " AND ".join(c for c in conditions if c != visible_check)
+    return f"""
+        WITH ranked AS MATERIALIZED (
+            SELECT memory_catalog.id, {score_expr} AS {score_alias}
+            FROM public.memory_catalog AS memory_catalog
+            WHERE {cheap}
+            ORDER BY {score_alias} {direction}
+        ), visible AS MATERIALIZED (
+            SELECT memory_catalog.id, memory_catalog.{score_alias}
+            FROM ranked AS memory_catalog
+            WHERE {visible_check}
+            LIMIT ${limit_idx}
+        )
+        SELECT catalog.*, {output_expr}
+        FROM visible
+        JOIN public.memory_catalog AS catalog ON catalog.id = visible.id
+        ORDER BY visible.{score_alias} {direction}
+    """
+
+
 async def _catalog_semantic_search(
     pool: Pool,
     query_embedding: list[float],
@@ -1165,14 +1205,14 @@ async def _catalog_semantic_search(
     params.append(limit)
     limit_idx = len(params)
 
-    where = "WHERE " + " AND ".join(conditions)
-    sql = f"""
-        SELECT *, 1 - (embedding <=> $1) AS similarity
-        FROM public.memory_catalog AS memory_catalog
-        {where}
-        ORDER BY embedding <=> $1
-        LIMIT ${limit_idx}
-    """
+    sql = _lazy_visibility_top_n_sql(
+        score_expr="memory_catalog.embedding <=> $1",
+        score_alias="distance",
+        direction="ASC",
+        conditions=conditions,
+        limit_idx=limit_idx,
+        output_expr="1 - visible.distance AS similarity",
+    )
     rows = await pool.fetch(sql, *params)
     return [dict(r) for r in rows]
 
@@ -1208,16 +1248,16 @@ async def _catalog_keyword_search(
     params.append(limit)
     limit_idx = len(params)
 
-    where = "WHERE " + " AND ".join(conditions)
-    sql = f"""
-        SELECT *,
-               ts_rank(search_vector,
-                       plainto_tsquery('{_CATALOG_TS_CONFIG}', $1)) AS rank
-        FROM public.memory_catalog AS memory_catalog
-        {where}
-        ORDER BY rank DESC
-        LIMIT ${limit_idx}
-    """
+    sql = _lazy_visibility_top_n_sql(
+        score_expr=(
+            f"ts_rank(memory_catalog.search_vector, plainto_tsquery('{_CATALOG_TS_CONFIG}', $1))"
+        ),
+        score_alias="rank",
+        direction="DESC",
+        conditions=conditions,
+        limit_idx=limit_idx,
+        output_expr="visible.rank AS rank",
+    )
     rows = await pool.fetch(sql, *params)
     return [dict(r) for r in rows]
 
