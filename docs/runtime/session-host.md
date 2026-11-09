@@ -1,9 +1,11 @@
 # Dark session-host foundation
 
-`butlers.session_host` is a private, unmounted library for RFC0038 D3 sandboxing
-and authenticated local dispatch. It has no production entrypoint, deployment,
-provider profile or imports from the existing daemon, runner or adapters. Importing
-it starts no listener or process. It does not make any runtime/model tuple eligible.
+`butlers.session_host` is a private library for RFC0038 D3 sandboxing and
+authenticated local dispatch. Its process entrypoint (`butlers session-host`) and
+off-by-default Compose/Helm manifests are described under
+[The host process and its manifests](#the-host-process-and-its-manifests). It has no
+provider profile and no imports from the existing daemon, runner or adapters.
+Importing it starts no listener or process. It does not make any runtime/model tuple eligible.
 This foundation implements part of `bu-kiuh8v`; that parent remains incomplete.
 
 ## Trust and launch contract
@@ -24,8 +26,11 @@ checks the exact caller leaf pin before reading a command. The local client chec
 the server chain, hostname and exact leaf pin before sending credential bytes.
 Only a trusted constructor supplies these identities; no deployment PKI is inferred.
 
-`LocalControl.start()` binds only `127.0.0.1` on an ephemeral port. This is a dark
-prototype control channel, not a production listener or a dashboard endpoint.
+`LocalControl.start()` binds `127.0.0.1` on an ephemeral port unless its trusted
+constructor passes `bind_host` (an IP literal) and `bind_port`. A non-loopback bind
+is allowed only behind the same mTLS with the pinned caller and server leaves, plus a
+NetworkPolicy that admits butlers-control alone; there is no sidecar. It is a dark
+control channel, never a dashboard endpoint.
 One connection carries one JSON object, prefixed by its four-byte big-endian
 length. The aggregate limit is 280 KiB and the read/write deadlines are 3 seconds, except that
 a `launch` reply is awaited until the invocation settles (see below).
@@ -307,10 +312,45 @@ Startup restore and the dashboard health probe take the same keyword-only
   - The prepared path, used after a login test, re-reads the volume against the
     prepared authority.
 
+### The host process and its manifests
+
+`butlers session-host` (`session_host/entrypoint.py`, bu-kiuh8v.15) runs one host
+until SIGTERM or SIGINT. It imports neither the daemon nor the goal runner.
+
+- `--pki-dir` holds `tls.crt`, `tls.key`, `client-ca.crt`, `server.sha256` and
+  `caller.sha256`. Each file is at most 64 KiB; the key must not be readable by group
+  or others; the pins are 64 hex characters. Any defect refuses as
+  `session_host_pki_unavailable` before anything listens, with no path in the refusal.
+- `--staging-root` must be empty (a fresh tmpfs or emptyDir), and `--credentials-root`
+  is the Codex volume. Each is created `0700`, or must already be a directory owned by
+  the host's uid; otherwise `session_host_storage_unavailable`. Without
+  `--credentials-root`, every Codex auth operation refuses.
+- `--bind-host` defaults to `127.0.0.1` and `--port` to an ephemeral port.
+- It installs no runtime profile, so every launch refuses. `--broker-origin` is
+  required, but no runtime reaches it yet.
+
+The manifests are off by default and pinned by
+`tests/scripts/test_session_host_env_guard.py`, which compares storage and exposure
+exactly:
+
+- Compose: the `session-host` profile on the `control-session` network, port 41198,
+  nothing published. The PKI directory is `SESSION_HOST_PKI_DIR`, mounted read-only.
+  It defaults to the keyless `deploy/session-host/pki-unprovisioned`, so an
+  unprovisioned host refuses to start. The `session_host_credentials` volume holds the
+  Codex copy and staging is a `0700` tmpfs.
+- Helm (`sessionHost.enabled`, which requires `butlersControl.enabled`): one Deployment
+  that mounts the `sessionHost.pkiSecret` Secret read-only (mode `0400`), a Memory
+  emptyDir for staging, and the `<release>-session-host-credentials` PVC (kept on
+  uninstall). There is a ClusterIP Service on `sessionHost.port`, and an ingress
+  NetworkPolicy admitting only the release's butlers-control pods on that port. The
+  PKI Secret is the only secret reference; the environment is still `HOME` alone.
+
+Provisioning the PKI (CA, workload identity, rotation, pin distribution) is a separate
+gate. Nothing in the control plane dials the host yet.
+
 Remaining before the switch, which is a live change:
 
-- A session-host entrypoint and a mounted credential volume in Compose/Helm. The host
-  binds loopback only today, while the control plane dials it from another pod.
+- Provisioning the session-host PKI and the control plane's client identity.
 - Calling `session_host_clients` and `CodexAuthFencedHost` from the control plane.
 - Moving `runtime_codex` out of butlers-up, which is the switch itself while butlers-up
   runs Codex.

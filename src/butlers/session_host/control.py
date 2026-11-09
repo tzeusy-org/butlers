@@ -14,6 +14,7 @@ import base64
 import fcntl
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import math
@@ -290,6 +291,8 @@ class LocalControl:
         broker_origin: str,
         credentials: CredentialVolume | None = None,
         max_concurrent: int = _DEFAULT_CONCURRENT,
+        bind_host: str = "127.0.0.1",
+        bind_port: int = 0,
     ) -> None:
         if (
             type(max_concurrent) is not int
@@ -297,6 +300,16 @@ class LocalControl:
             or not 1 <= max_concurrent <= _MAX_CONCURRENT
         ):
             raise Refused("invalid_control_identity")
+        # The bind is the trusted host owner's: an IP literal and a port, never a name.
+        # Loopback by default; the session-host pod alone binds its pod address, where
+        # mTLS with the pinned caller and the deployment's network policy both apply.
+        try:
+            ipaddress.ip_address(bind_host)
+        except ValueError:
+            raise Refused("invalid_control_identity") from None
+        if type(bind_port) is not int or not 0 <= bind_port <= 65535:
+            raise Refused("invalid_control_identity")
+        self._bind = (bind_host, bind_port)
         self._max_concurrent = max_concurrent
         self._caller = _pin(caller_sha256)
         self._credentials = credentials
@@ -322,8 +335,7 @@ class LocalControl:
             raise Refused("control_unavailable")
         self._server = await asyncio.start_server(
             self._handle,
-            "127.0.0.1",
-            0,
+            *self._bind,
             ssl=self._context,
             ssl_handshake_timeout=_IO_SECONDS,
             ssl_shutdown_timeout=1,

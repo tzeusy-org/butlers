@@ -1019,21 +1019,36 @@ services:
         = '{"status":"unavailable"}503'
     networks: [control-session]
 
-  # RFC 0038 D3 session host skeleton (bu-kiuh8v.1). Dark: off unless the
+  # RFC 0038 D3 session host (bu-kiuh8v.1, .15). Dark: off unless the
   # `session-host` profile is named, no published or exposed port, no database,
-  # domain or connector credential, and no volume. It sits only on the internal
-  # control-session network, so it has no route out at all until the SNI egress
-  # proxy lands; no session-host entrypoint exists yet, so it idles. The
-  # environment composition is pinned by tests/scripts/test_session_host_env_guard.py.
+  # domain or connector credential. It sits only on the internal control-session
+  # network, so it has no route out at all until the SNI egress proxy lands. It
+  # installs no reviewed runtime profile, so it refuses every launch; it serves the
+  # Codex credential volume to the pinned control-plane caller over mTLS on 41198.
+  # Its two volumes: the PKI directory (tls.crt, tls.key, client-ca.crt,
+  # server.sha256, caller.sha256; never committed, provisioned out of band) and the
+  # credential volume. Without provisioned PKI it refuses to start. The composition
+  # is pinned by tests/scripts/test_session_host_env_guard.py.
   session-host:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
     profiles: [session-host]
-    entrypoint: ["sleep", "infinity"]
-    command: []
+    entrypoint: ["uv", "run", "--frozen", "--no-dev", "butlers", "session-host"]
+    command:
+      - --pki-dir=/run/session-host/pki
+      - --staging-root=/var/lib/session-host/staging
+      - --credentials-root=/var/lib/session-host/credentials/codex
+      - --broker-origin=https://broker.invalid
+      - --bind-host=0.0.0.0
+      - --port=41198
     environment:
       HOME: /root
+    volumes:
+      - "${SESSION_HOST_PKI_DIR:-./deploy/session-host/pki-unprovisioned}:/run/session-host/pki:ro"
+      - session_host_credentials:/var/lib/session-host/credentials
+    tmpfs:
+      - /var/lib/session-host/staging:mode=0700
     networks: [control-session]
-    restart: unless-stopped
+    restart: on-failure:3
 
 # ── Runtime-probe control keys ──────────────────────────────────────────
 # REQ-core-credentials-002.  A host path is configuration, not key material;
@@ -1065,6 +1080,8 @@ volumes:
   uv_cache:
   runtime_claude:
   runtime_codex:
+  # The session host's Codex credential volume (dark; bu-kiuh8v.15).
+  session_host_credentials:
   runtime_opencode:
   runtime_gemini:
   wa_bridge_socket:

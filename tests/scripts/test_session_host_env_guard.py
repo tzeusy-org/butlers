@@ -58,6 +58,42 @@ _FORBIDDEN_TEMPLATE_TOKENS = (
     "secretName",
     "externalsecret",
 )
+# The one reviewed secret reference: the host's own PKI (bu-kiuh8v.15). Every other
+# occurrence of a forbidden token still fails.
+_PKI_SECRET_LINE = "secretName: {{ .Values.sessionHost.pkiSecret }}"
+
+# The reviewed storage and listener (bu-kiuh8v.15). Each is compared exactly, so an
+# added volume, mount or port is a deliberate edit here.
+_PORT = 41198
+_COMPOSE_VOLUMES = [
+    "${SESSION_HOST_PKI_DIR:-./deploy/session-host/pki-unprovisioned}:/run/session-host/pki:ro",
+    "session_host_credentials:/var/lib/session-host/credentials",
+]
+_COMPOSE_TMPFS = ["/var/lib/session-host/staging:mode=0700"]
+_POD_PORTS = [{"name": "control", "containerPort": _PORT, "protocol": "TCP"}]
+_POD_MOUNTS = [
+    {"name": "pki", "mountPath": "/run/session-host/pki", "readOnly": True},
+    {"name": "staging", "mountPath": "/var/lib/session-host/staging"},
+    {"name": "credentials", "mountPath": "/var/lib/session-host/credentials"},
+]
+
+
+def _pod_volumes(release: str, pki_secret: str) -> list[dict]:
+    return [
+        {"name": "pki", "secret": {"secretName": pki_secret, "defaultMode": 0o400}},
+        {"name": "staging", "emptyDir": {"medium": "Memory", "sizeLimit": "256Mi"}},
+        {
+            "name": "credentials",
+            "persistentVolumeClaim": {"claimName": f"{release}-session-host-credentials"},
+        },
+    ]
+
+
+def template_token_violations(text: str) -> list[str]:
+    """Forbidden plumbing in the template source, apart from the one PKI reference."""
+    found = [] if text.count(_PKI_SECRET_LINE) <= 1 else ["a second PKI secret reference"]
+    scanned = text.replace(_PKI_SECRET_LINE, "")
+    return found + [t for t in _FORBIDDEN_TEMPLATE_TOKENS if t.lower() in scanned.lower()]
 
 
 def _classify(names: list[str]) -> list[str]:
@@ -86,18 +122,14 @@ def compose_violations(service: dict | None) -> list[str]:
     found = _classify(_compose_env_names(service.get("environment")))
     # ``extends`` inherits another service's environment, secrets and volumes, which this
     # scan of the service's own keys would not see. The repo uses none, so refuse it.
-    for key in (
-        "extends",
-        "env_file",
-        "secrets",
-        "configs",
-        "volumes",
-        "volumes_from",
-        "ports",
-        "expose",
-    ):
+    for key in ("extends", "env_file", "secrets", "configs", "volumes_from", "ports", "expose"):
         if service.get(key):
             found.append(f"{key} is not allowed on the session host")
+    # The control plane reaches the host over the control-session network, so nothing
+    # is published; storage is exactly the PKI mount, the credential volume and staging.
+    for key, reviewed in (("volumes", _COMPOSE_VOLUMES), ("tmpfs", _COMPOSE_TMPFS)):
+        if service.get(key) != reviewed:
+            found.append(f"{key} is not allowed on the session host: {service.get(key)}")
     if service.get("networks") != ["control-session"]:
         found.append(f"networks must be exactly [control-session]: {service.get('networks')}")
     if service.get("profiles") != [_SERVICE]:
@@ -107,13 +139,20 @@ def compose_violations(service: dict | None) -> list[str]:
     return found
 
 
-def pod_violations(deployment: dict | None) -> list[str]:
+def pod_violations(
+    deployment: dict | None, *, release: str = "butlers", pki_secret: str = "session-host-pki"
+) -> list[str]:
     """Why a rendered Deployment breaks the session-host composition rules."""
     if deployment is None:
         return [f"{_SERVICE} Deployment is missing from the enabled render"]
     spec = deployment["spec"]["template"]["spec"]
     found = []
-    for container in [*spec.get("containers", []), *spec.get("initContainers", [])]:
+    containers = spec.get("containers", [])
+    if spec.get("initContainers"):
+        found.append("initContainers are not allowed on the session host")
+    if len(containers) != 1:
+        found.append(f"the session host runs exactly one container: {len(containers)}")
+    for container in [*containers, *spec.get("initContainers", [])]:
         env = container.get("env", [])
         found += _classify([item["name"] for item in env])
         found += [
@@ -121,13 +160,55 @@ def pod_violations(deployment: dict | None) -> list[str]:
             for item in env
             if "valueFrom" in item
         ]
-        for key in ("envFrom", "ports", "volumeMounts"):
-            if container.get(key):
+        if container.get("envFrom"):
+            found.append("container envFrom is not allowed on the session host")
+        for key, reviewed in (("ports", _POD_PORTS), ("volumeMounts", _POD_MOUNTS)):
+            if container.get(key) != reviewed:
                 found.append(f"container {key} is not allowed on the session host")
-    if spec.get("volumes"):
-        found.append("volumes are not allowed on the session host")
+    if spec.get("volumes") != _pod_volumes(release, pki_secret):
+        found.append(f"volumes are not allowed on the session host: {spec.get('volumes')}")
     if spec.get("automountServiceAccountToken") is not False:
         found.append("the service account token must not be mounted")
+    return found
+
+
+def exposure_violations(docs: list[dict], *, release: str = "butlers") -> list[str]:
+    """Why the enabled render exposes the session host beyond the control plane's port."""
+    found = []
+    services = [d for d in docs if d["kind"] == "Service"]
+    for service in services:
+        spec = service["spec"]
+        ports = [(p.get("port"), p.get("targetPort")) for p in spec.get("ports", [])]
+        if spec.get("type", "ClusterIP") != "ClusterIP" or ports != [(_PORT, "control")]:
+            found.append(f"the Service exposes more than the control port: {spec}")
+    policies = [d for d in docs if d["kind"] == "NetworkPolicy"]
+    reviewed_ingress = [
+        {
+            "from": [
+                {
+                    "podSelector": {
+                        "matchLabels": {
+                            "app.kubernetes.io/instance": release,
+                            "app.kubernetes.io/component": "butlers-control",
+                        }
+                    }
+                }
+            ],
+            "ports": [{"protocol": "TCP", "port": _PORT}],
+        }
+    ]
+    admits_only_control = [
+        p
+        for p in policies
+        if p["spec"].get("policyTypes") == ["Ingress"]
+        and p["spec"].get("ingress") == reviewed_ingress
+        and p["spec"]["podSelector"]["matchLabels"].get("app.kubernetes.io/component") == _SERVICE
+    ]
+    if services and len(admits_only_control) != 1:
+        found.append("a Service needs the ingress policy admitting butlers-control only")
+    for policy in policies:
+        if policy not in admits_only_control:
+            found.append(f"unreviewed session-host policy: {policy['metadata']['name']}")
     return found
 
 
@@ -170,7 +251,7 @@ def test_compose_session_host_is_present_clean_and_off_by_default(compose_servic
 def test_helm_template_pulls_in_no_credential_plumbing() -> None:
     text = _TEMPLATE.read_text(encoding="utf-8")
     assert text.strip(), "the session-host template is empty; the scan would pass vacuously"
-    assert [t for t in _FORBIDDEN_TEMPLATE_TOKENS if t.lower() in text.lower()] == []
+    assert template_token_violations(text) == []
 
 
 @needs_helm
@@ -179,8 +260,60 @@ def test_helm_session_host_is_dark_by_default_and_clean_when_enabled() -> None:
     assert _session_host_docs(_render()) == []
     docs = _session_host_docs(_render(*_ENABLED))
     deployments = [d for d in docs if d["kind"] == "Deployment"]
-    assert [d["kind"] for d in docs] == ["Deployment"], "no Service or other object is expected"
+    assert sorted(d["kind"] for d in docs) == [
+        "Deployment",
+        "NetworkPolicy",
+        "PersistentVolumeClaim",
+        "Service",
+    ], "only the host, its control Service, credential volume and ingress policy"
     assert pod_violations(deployments[0] if deployments else None) == []
+    assert exposure_violations(docs) == []
+
+
+@needs_helm
+def test_the_rendered_exposure_mutations_fail() -> None:
+    docs = _session_host_docs(_render(*_ENABLED))
+    service = next(d for d in docs if d["kind"] == "Service")
+    policy = next(d for d in docs if d["kind"] == "NetworkPolicy")
+    deployment = next(d for d in docs if d["kind"] == "Deployment")
+
+    wider = copy.deepcopy(service)
+    wider["spec"]["type"] = "NodePort"
+    assert exposure_violations([wider, policy]) != []
+    extra = copy.deepcopy(service)
+    extra["spec"]["ports"].append({"port": 22, "targetPort": 22})
+    assert exposure_violations([extra, policy]) != []
+    assert exposure_violations([service]) != []  # no admitting policy
+    for open_from in ([{}], [{"namespaceSelector": {}}], [{"podSelector": {}}]):
+        loose = copy.deepcopy(policy)
+        loose["spec"]["ingress"][0]["from"] = open_from
+        assert exposure_violations([service, loose]) != []
+
+    mutated = copy.deepcopy(deployment)
+    pod = mutated["spec"]["template"]["spec"]
+    pod["volumes"].append({"name": "codex", "hostPath": {"path": "/root/.codex"}})
+    assert any("volumes are not allowed" in v for v in pod_violations(mutated))
+    mutated = copy.deepcopy(deployment)
+    mutated["spec"]["template"]["spec"]["volumes"][0]["secret"]["secretName"] = "bws-secret"
+    assert any("volumes are not allowed" in v for v in pod_violations(mutated))
+    mutated = copy.deepcopy(deployment)
+    container = mutated["spec"]["template"]["spec"]["containers"][0]
+    container["volumeMounts"].append({"name": "pki", "mountPath": "/root/.codex"})
+    assert any("volumeMounts" in v for v in pod_violations(mutated))
+    mutated = copy.deepcopy(deployment)
+    container = mutated["spec"]["template"]["spec"]["containers"][0]
+    container["ports"].append({"containerPort": 41100})
+    assert any("ports" in v for v in pod_violations(mutated))
+    mutated = copy.deepcopy(deployment)
+    mutated["spec"]["template"]["spec"]["initContainers"] = [{"name": "x"}]
+    assert any("initContainers" in v for v in pod_violations(mutated))
+
+
+def test_a_second_or_missing_secret_reference_in_the_template_fails() -> None:
+    text = _TEMPLATE.read_text(encoding="utf-8")
+    assert template_token_violations(text + "\n        secretName: butlers-bws\n") == ["secretName"]
+    assert template_token_violations(text + f"\n  {_PKI_SECRET_LINE}\n") != []
+    assert template_token_violations(text + "\n  envFrom: []\n") == ["envFrom"]
 
 
 @needs_helm
