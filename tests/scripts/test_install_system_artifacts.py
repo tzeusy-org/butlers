@@ -118,8 +118,9 @@ def test_public_fetcher_publishes_only_complete_verified_inputs(inputs, monkeypa
                 data += b"extra"
             return io.BytesIO(data)
 
-    def opener(proxy):
+    def opener(proxy, redirect_policy):
         assert proxy.proxies == {}
+        assert isinstance(redirect_policy, module.urllib.request.HTTPErrorProcessor)
         return PublicInputs()
 
     monkeypatch.setattr(module.urllib.request, "build_opener", opener)
@@ -139,3 +140,87 @@ def test_public_fetcher_publishes_only_complete_verified_inputs(inputs, monkeypa
                 artifacts / item["filename"]
             ).read_bytes()
         assert json.loads((output / "provenance.json").read_text())["archive_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("status", "destination"),
+    [
+        (200, None),
+        (300, "/debian/pool/main/next.deb"),
+        (301, "https://deb.debian.org/debian/pool/main/next.deb"),
+        (302, "http://127.0.0.1/next.deb"),
+        (303, "http://169.254.169.254/next.deb"),
+        (307, "http://deb.debian.org/debian/pool/main/next.deb"),
+        (308, "https://foreign.invalid/next.deb"),
+        (399, "https://foreign.invalid/next.deb"),
+    ],
+)
+def test_public_fetcher_refuses_redirects_before_following(
+    inputs, monkeypatch, status, destination
+):
+    import io
+    import socket
+    import urllib.request
+    import urllib.response
+    from email.message import Message
+
+    _, artifacts, manifest, value = inputs
+    spec = importlib.util.spec_from_file_location(
+        "_redirect_fetch_system_artifacts", Path("scripts/runtime_clis/fetch_system_artifacts.py")
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for item in value["debs"]:
+        item["url"] = "https://deb.debian.org/debian/pool/main/f/fixture/" + item["filename"]
+    manifest.write_text(json.dumps(value))
+    requests = []
+    responses = []
+
+    class SyntheticTransport(urllib.request.BaseHandler):
+        handler_order = 100
+
+        def https_open(self, request):
+            requests.append(request.full_url)
+            headers = Message()
+            if destination:
+                headers["Location"] = destination
+            # Even a redirect with the exact pinned payload must be refused.
+            name = next(
+                (item["filename"] for item in value["debs"] if item["url"] == request.full_url),
+                value["debs"][0]["filename"],
+            )
+            data = (artifacts / name).read_bytes()
+            code = status if len(requests) == 1 else 200
+            response = urllib.response.addinfourl(io.BytesIO(data), headers, request.full_url, code)
+            response.msg = "synthetic"
+            responses.append(response)
+            return response
+
+        http_open = https_open
+
+    original_opener = urllib.request.build_opener
+
+    def opener(*handlers):
+        return original_opener(*handlers, SyntheticTransport())
+
+    def forbid_network(*args, **kwargs):
+        pytest.fail("synthetic fetch attempted a real socket")
+
+    monkeypatch.setattr(module.urllib.request, "build_opener", opener)
+    monkeypatch.setattr(socket, "socket", forbid_network)
+    output = manifest.parent / "redirect-context"
+    if destination:
+        with pytest.raises(ValueError, match="redirects are forbidden"):
+            module.fetch(manifest, output)
+        assert requests == [value["debs"][0]["url"]]
+        assert not output.exists()
+        assert not list(output.parent.glob("system-artifacts-*"))
+    else:
+        module.fetch(manifest, output)
+        assert requests == [item["url"] for item in value["debs"]]
+        for item in value["debs"]:
+            assert (output / "debs" / item["filename"]).read_bytes() == (
+                artifacts / item["filename"]
+            ).read_bytes()
+    assert responses and all(response.closed for response in responses)

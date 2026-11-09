@@ -3,6 +3,7 @@
 
 This prepares build inputs; it never installs or executes package content.
 Proxies, credentials and package-manager configuration are not consulted.
+Every redirect is refused before another destination can be opened.
 """
 
 from __future__ import annotations
@@ -14,6 +15,16 @@ import tempfile
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+
+class _RefuseRedirects(urllib.request.HTTPErrorProcessor):
+    def http_response(self, request, response):
+        if 300 <= response.status < 400:
+            response.close()
+            raise ValueError("system artifact redirects are forbidden")
+        return super().http_response(request, response)
+
+    https_response = http_response
 
 
 def fetch(manifest: Path, output: Path) -> None:
@@ -41,7 +52,7 @@ def fetch(manifest: Path, output: Path) -> None:
             raise ValueError("system artifact must use its pinned public Debian URL")
         urls.append(urllib.parse.urlunsplit(("https", url.netloc, url.path, "", "")))
     output.parent.mkdir(parents=True, exist_ok=True)
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RefuseRedirects())
     with tempfile.TemporaryDirectory(prefix="system-artifacts-", dir=output.parent) as temporary:
         context = Path(temporary) / "context"
         debs = context / "debs"

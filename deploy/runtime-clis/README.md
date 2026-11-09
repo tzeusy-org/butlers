@@ -67,7 +67,8 @@ docker build --build-context system-artifacts=/path/to/new/system-artifacts \
 ```
 
 The fetcher uses only the manifest's public Debian locations over HTTPS, with no
-proxy or credential discovery, and publishes only the complete verified set.
+proxy or credential discovery. Every 3xx response is closed and refused before
+following its destination; only the complete verified set is published.
 The offline installer
 refuses missing, extra, changed or symlinked archives and a different starting
 package inventory before invoking APT. It passes only pinned local archive paths,
