@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import platform
+import posixpath
 import re
 import shutil
 import tarfile
@@ -430,6 +431,175 @@ def build_commands(operations) -> None:
     )
 
 
+def dependency_roots(lock: dict) -> list[str]:
+    """Bind every installed dependency directory to an original workspace."""
+    workspaces = lock["workspaces"]
+    if not isinstance(workspaces, dict) or "" not in workspaces:
+        raise ValueError("complete dependency workspace inventory required")
+    roots = []
+    for workspace in workspaces:
+        if (
+            not isinstance(workspace, str)
+            or workspace.startswith("/")
+            or "\\" in workspace
+            or any(ord(char) < 32 for char in workspace)
+            or any(part in {".", "..", "node_modules"} for part in workspace.split("/"))
+            or workspace
+            and posixpath.normpath(workspace) != workspace
+        ):
+            raise ValueError("dependency workspace path differs")
+        roots.append((workspace + "/" if workspace else "") + "node_modules")
+    return sorted(roots)
+
+
+def dependency_identity(record: dict, lock: dict) -> None:
+    """Only complete dependency trees may cross the public/offline boundary."""
+    allowed = dependency_roots(lock)
+    if not isinstance(record, dict) or set(record) != {
+        "schema",
+        "workspaces",
+        "roots",
+        "entries",
+        "target",
+        "installed",
+    }:
+        raise ValueError("complete installed dependency declaration required")
+    roots = record["roots"]
+    if (
+        record["schema"] != "butlers.opencode-installed-dependencies/v1"
+        or record["target"] != {"platform": "linux-amd64", "libc": "glibc2.41", "bun": "1.3.14"}
+        or roots != sorted(set(roots))
+        or "node_modules" not in roots
+        or any(root not in allowed for root in roots)
+        or record["workspaces"] != sorted(lock["workspaces"])
+    ):
+        raise ValueError("installed dependency roots differ")
+    artifact = ROOT / "dependencies"
+    if artifact.is_symlink() or not artifact.is_dir() or artifact.stat().st_mode & 0o7777 != 0o755:
+        raise ValueError("installed dependency artifact requires a real canonical directory")
+    transport = helper("produce_codex_artifacts")
+    entries = transport.inventory(artifact)
+    if set(record["installed"]) != set(roots):
+        raise ValueError("complete installed dependency source inventories required")
+    for root in roots:
+        wanted = [
+            dict(item, mode=0o755 if item["kind"] == "directory" or item["mode"] & 0o111 else 0o644)
+            if item["kind"] != "link"
+            else item
+            for item in record["installed"][root]
+        ]
+        if transport.inventory(artifact / root) != wanted:
+            raise ValueError("installed dependency normalization lost original payloads")
+    if entries != record["entries"]:
+        raise ValueError("complete installed dependency inventory differs")
+    ancestors = {
+        parent.as_posix() for root in roots for parent in Path(root).parents if str(parent) != "."
+    }
+    for item in entries:
+        path = item["path"]
+        in_dependency = any(path == root or path.startswith(root + "/") for root in roots)
+        if not in_dependency and not (path in ancestors and item["kind"] == "directory"):
+            raise ValueError("nondependency source or build output in dependency artifact")
+        if (item["kind"] == "directory" and item["mode"] != 0o755) or (
+            item["kind"] == "file" and item["mode"] not in {0o644, 0o755}
+        ):
+            raise ValueError("unsafe installed dependency permissions")
+        if item["kind"] == "link":
+            target = item["target"]
+            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
+            if (
+                not target
+                or target.startswith("/")
+                or "\\" in target
+                or any(ord(char) < 32 for char in target)
+                or resolved == ".."
+                or resolved.startswith("../")
+            ):
+                raise ValueError("installed dependency link escapes complete source")
+    kinds = {item["path"]: item["kind"] for item in entries}
+    if any(kinds.get(root) != "directory" for root in roots):
+        raise ValueError("installed dependency root must be a real directory")
+
+
+def capture_dependencies(lock: dict) -> dict:
+    source = ROOT / "source"
+    allowed = dependency_roots(lock)
+    roots = []
+    for parent, directories, _files in os.walk(source, followlinks=False):
+        if "node_modules" not in directories:
+            continue
+        path = Path(parent) / "node_modules"
+        root = path.relative_to(source).as_posix()
+        if path.is_symlink() or root not in allowed:
+            raise ValueError("undeclared installed dependency directory")
+        roots.append(root)
+        directories.remove("node_modules")
+    if "node_modules" not in roots:
+        raise ValueError("complete installed root dependencies required")
+    transport = helper("produce_codex_artifacts")
+    installed = {root: transport.inventory(source / root) for root in sorted(roots)}
+    artifact = ROOT / "dependencies"
+    artifact.mkdir(mode=0o755)
+    for root in sorted(roots):
+        target = artifact / root
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source / root, target, symlinks=True, copy_function=shutil.copy2)
+    # Preserve every executable payload while removing inherited host directory
+    # bits and incidental write permissions from this portable artifact.
+    for path in [artifact, *artifact.rglob("*")]:
+        if path.is_symlink():
+            continue
+        if path.is_dir():
+            path.chmod(0o755)
+        elif path.is_file():
+            if path.stat().st_mode & 0o6000:
+                raise ValueError("unsafe installed dependency file permissions")
+            path.chmod(0o755 if path.stat().st_mode & 0o111 else 0o644)
+        else:
+            raise ValueError("unexpected installed dependency entry")
+    record = {
+        "schema": "butlers.opencode-installed-dependencies/v1",
+        "target": {"platform": "linux-amd64", "libc": "glibc2.41", "bun": "1.3.14"},
+        "workspaces": sorted(lock["workspaces"]),
+        "roots": sorted(roots),
+        "installed": installed,
+        "entries": transport.inventory(artifact),
+    }
+    dependency_identity(record, lock)
+    if any(transport.inventory(source / root) != entries for root, entries in installed.items()):
+        raise ValueError("installed dependency source changed while closing artifact")
+    return record
+
+
+def restore_dependencies(record: dict, lock: dict) -> None:
+    dependency_identity(record, lock)
+    source = ROOT / "source"
+    # Preflight every destination before copying; never merge into an ambient
+    # install or permit a workspace parent to redirect a dependency write.
+    for root in record["roots"]:
+        target = source / root
+        if target.exists() or target.is_symlink():
+            raise ValueError("fresh source already contains installed dependencies")
+        if any(
+            parent.is_symlink() or not parent.is_dir()
+            for parent in target.parents
+            if parent != source and parent.is_relative_to(source)
+        ):
+            raise ValueError("dependency destination is not a real original workspace")
+    for root in record["roots"]:
+        shutil.copytree(
+            ROOT / "dependencies" / root, source / root, symlinks=True, copy_function=shutil.copy2
+        )
+    for root in record["roots"]:
+        if helper("produce_codex_artifacts").inventory(source / root) != helper(
+            "produce_codex_artifacts"
+        ).inventory(ROOT / "dependencies" / root):
+            raise ValueError("restored installed dependency inventory differs")
+        for path in (source / root).rglob("*"):
+            if path.is_symlink() and not path.resolve().is_relative_to(source.resolve()):
+                raise ValueError("restored dependency link escapes original source")
+
+
 def public_seed(operations) -> None:
     manifest, series, models = declarations()
     identity(manifest)
@@ -457,6 +627,7 @@ def public_seed(operations) -> None:
     prepare_build_tools()
     build_commands(operations)
     source_identity(original, lock, operations)
+    dependencies = capture_dependencies(lock)
     if before != pins() or plugin_input(manifest) != plugin_entries:
         raise ValueError("OpenCode producer inputs changed during public seed")
     write_json(
@@ -466,6 +637,7 @@ def public_seed(operations) -> None:
             "recipe": before,
             "source": original,
             "lock": lock,
+            "dependencies": dependencies,
             "plugin": plugin_entries,
             "inputs": {
                 name: transport.inventory(ROOT / name)
@@ -578,10 +750,12 @@ def build(operations) -> None:
     ):
         raise ValueError("closed OpenCode public preparation differs")
     models_identity(models)
+    dependency_identity(seed["dependencies"], seed["lock"])
     shutil.rmtree(ROOT / "source")
     prepare(series)
     if transport.inventory(ROOT / "source") != seed["source"]:
         raise ValueError("fresh complete OpenCode source differs")
+    restore_dependencies(seed["dependencies"], seed["lock"])
     prepare_build_tools()
     build_commands(operations)
     source_identity(seed["source"], seed["lock"], operations)

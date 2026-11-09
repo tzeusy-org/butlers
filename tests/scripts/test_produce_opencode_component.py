@@ -373,7 +373,7 @@ def build_inputs(tmp_path, monkeypatch):
         "status": "NONFINAL",
         "recipe": recipe,
         "source": transport.inventory(template),
-        "lock": {"all": "3124 original packages"},
+        "lock": {"workspaces": {"": {}}, "packages": {"all": "3124 original packages"}},
         "plugin": plugin,
         "inputs": {"bun-cache": transport.inventory(cache)},
         "source_archive_sha256": producer.digest(root / "source.tgz"),
@@ -400,11 +400,21 @@ def build_inputs(tmp_path, monkeypatch):
 
     monkeypatch.setattr(producer, "prepare", prepare)
     monkeypatch.setattr(producer, "prepare_build_tools", lambda: calls.append("tools"))
-    monkeypatch.setattr(
-        producer, "build_commands", lambda _operations: calls.append("full-stock-build")
-    )
+
+    def full_stock_build(_operations):
+        dependency = root / "source/node_modules/complete/index.js"
+        assert dependency.is_file(), "fresh stock build requires the declared installed graph"
+        assert dependency.read_bytes() == b"complete installed public dependency"
+        calls.append("full-stock-build")
+
+    monkeypatch.setattr(producer, "build_commands", full_stock_build)
     monkeypatch.setattr(producer, "source_identity", lambda *_args: calls.append("source-lock"))
     monkeypatch.setattr(producer, "assemble", lambda *_args: calls.append("assemble"))
+    dependency = root / "source/node_modules/complete/index.js"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_bytes(b"complete installed public dependency")
+    seed["dependencies"] = producer.capture_dependencies(seed["lock"])
+    producer.write_json(root / "seed.json", seed)
     return root, recipe, seed, calls
 
 
@@ -676,3 +686,126 @@ def test_postinstall_may_only_change_declared_launcher_and_compiled_target(
     with pytest.raises(ValueError, match="original installed OpenCode payload"):
         producer.assemble(manifest, series, seed, None)
     assert not producer.OUTPUT.exists()
+
+
+@pytest.fixture
+def dependency_artifact(tmp_path, monkeypatch):
+    monkeypatch.setattr(producer, "ROOT", tmp_path)
+    monkeypatch.setattr(producer, "RECIPE", SCRIPTS.parents[1])
+    source = tmp_path / "source"
+    (source / "packages/cli").mkdir(parents=True)
+    (source / "packages/cli/wire.ts").write_text("original source")
+    (source / "packages/cli/dist").mkdir()
+    (source / "packages/cli/dist/ui.js").write_text("old compiled UI, never carried")
+    package = source / "node_modules/.bun/native-package/node_modules/native-package"
+    package.mkdir(parents=True)
+    (package / "package.json").write_text('{"name":"native-package","version":"1.0.0"}')
+    (package / "native-asset").write_bytes(b"complete native asset")
+    (package / "native-asset").chmod(0o751)
+    (source / "node_modules/native-package").symlink_to(
+        ".bun/native-package/node_modules/native-package", target_is_directory=True
+    )
+    (source / "node_modules/fixture-cli").symlink_to("../packages/cli", target_is_directory=True)
+    local = source / "packages/cli/node_modules"
+    local.mkdir()
+    (local / "native-package").symlink_to(
+        "../../../node_modules/native-package", target_is_directory=True
+    )
+    lock = {
+        "workspaces": {"": {}, "packages/cli": {}},
+        "packages": {"native-package": ["full-identity"]},
+    }
+    record = producer.capture_dependencies(lock)
+    return tmp_path, source, package, lock, record
+
+
+def test_complete_installed_dependency_artifact_restores_only_dependencies(dependency_artifact):
+    root, source, package, lock, record = dependency_artifact
+    producer.dependency_identity(record, lock)
+    assert record["roots"] == ["node_modules", "packages/cli/node_modules"]
+    copied = root / "dependencies/node_modules/.bun/native-package/node_modules/native-package"
+    assert copied.joinpath("native-asset").read_bytes() == b"complete native asset"
+    assert copied.joinpath("native-asset").stat().st_mode & 0o7777 == 0o755
+    assert (
+        copied.joinpath("native-asset").stat().st_ino
+        != package.joinpath("native-asset").stat().st_ino
+    )
+    assert not (root / "dependencies/packages/cli/wire.ts").exists()
+    assert not (root / "dependencies/packages/cli/dist").exists()
+    shutil.rmtree(source)
+    (source / "packages/cli").mkdir(parents=True)
+    (source / "packages/cli/wire.ts").write_text("fresh original source")
+    producer.restore_dependencies(record, lock)
+    assert (
+        source / "node_modules/native-package/native-asset"
+    ).read_bytes() == b"complete native asset"
+    assert (source / "node_modules/fixture-cli").resolve() == source / "packages/cli"
+    assert (source / "packages/cli/wire.ts").read_text() == "fresh original source"
+    assert not (source / "packages/cli/dist").exists()
+    assert (
+        source / "node_modules/.bun/native-package/node_modules/native-package/native-asset"
+    ).stat().st_ino != copied.joinpath("native-asset").stat().st_ino
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "bytes",
+        "mode",
+        "missing",
+        "extra",
+        "roots",
+        "workspace",
+        "target",
+        "absolute-link",
+        "escaping-link",
+        "build-output",
+    ],
+)
+def test_installed_dependency_artifact_refuses_drift_before_source_writes(
+    dependency_artifact, drift
+):
+    root, source, _package, lock, record = dependency_artifact
+    artifact = root / "dependencies"
+    file = artifact / "node_modules/.bun/native-package/node_modules/native-package/native-asset"
+    if drift == "bytes":
+        file.write_bytes(b"wrong payload")
+    elif drift == "mode":
+        file.chmod(0o644)
+    elif drift == "missing":
+        file.unlink()
+    elif drift == "extra":
+        (artifact / "node_modules/undeclared").write_bytes(b"foreign")
+    elif drift == "roots":
+        record["roots"].append("packages/unreviewed/node_modules")
+    elif drift == "workspace":
+        lock["workspaces"]["packages/unreviewed"] = {}
+    elif drift == "target":
+        record["target"]["bun"] = "neighbor-version"
+    else:
+        if drift == "build-output":
+            (artifact / "compiled-ui.js").write_bytes(b"old build output")
+        else:
+            link = artifact / "node_modules/fixture-cli"
+            link.unlink()
+            link.symlink_to("/outside" if drift == "absolute-link" else "../../outside")
+        record["entries"] = producer.helper("produce_codex_artifacts").inventory(artifact)
+    original = (source / "packages/cli/wire.ts").read_bytes()
+    with pytest.raises(ValueError, match="dependenc"):
+        producer.restore_dependencies(record, lock)
+    assert (source / "packages/cli/wire.ts").read_bytes() == original
+
+
+@pytest.mark.parametrize("drift", ["existing", "parent-link"])
+def test_dependency_restore_preflights_all_destinations(dependency_artifact, drift):
+    root, source, _package, lock, record = dependency_artifact
+    shutil.rmtree(source / "node_modules")
+    shutil.rmtree(source / "packages/cli/node_modules")
+    if drift == "existing":
+        (source / "packages/cli/node_modules").mkdir()
+    else:
+        (source / "packages/cli").rename(root / "outside-workspace")
+        (source / "packages/cli").symlink_to(root / "outside-workspace", target_is_directory=True)
+    with pytest.raises(ValueError, match="dependenc"):
+        producer.restore_dependencies(record, lock)
+    assert not (source / "node_modules").exists()

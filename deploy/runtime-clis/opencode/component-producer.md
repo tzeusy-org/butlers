@@ -13,7 +13,16 @@ catalogue and every provider logo. It runs ordinary `bun install
 --single`. The stock script retains its normal platform installs, native assets,
 embedded web UI, workers, compile settings and version smoke. No lifecycle,
 plugin, model, authentication or tool feature is removed. `OPENCODE_RELEASE` is
-absent. This preparation is explicitly NONFINAL.
+absent. This preparation is explicitly NONFINAL. It also closes every installed
+`node_modules` tree at the root and original workspaces as an explicit,
+independent dependency artifact. The record binds every original workspace,
+complete source inventory, normalized payload mode, literal relative link and
+Linux/amd64, glibc 2.41, Bun 1.3.14 target. Directory modes become `0755`; regular
+payloads become `0755` when executable or `0644` otherwise, preserving native
+executables while removing inherited host permission bits. Every copied payload
+is compared with its producing installed tree before preparation completes.
+Only dependency directories cross this boundary: source files, compiled UI and
+CLI build outputs are not carried by the dependency artifact.
 
 Native dependency lifecycles which spawn the bare `node-gyp` command use a
 builder-owned symlink to the original executable bundled in the verified full
@@ -28,8 +37,16 @@ before atomic staging. It makes no live model request and accepts no replacement
 from the mutable upstream API. The full original catalogue remains embedded.
 
 The build phase requires a real networkless namespace/layer, verifies every
-closed preparation input, recreates the exact patched source, and repeats that
-complete install/build. Bun 1.3.14 has no install `--offline` flag; containment is
+closed preparation input, recreates the exact patched source, restores only the
+verified complete dependency directories, and repeats the unchanged full
+`bun install --frozen-lockfile` and stock build commands. Every destination is
+preflighted before restoration; ambient installed directories and symlinked
+workspace parents refuse. The root and dependency lifecycles retain Bun's normal
+semantics: the public phase proves their original cold installation, while the
+offline phase may naturally reuse unchanged installed dependencies. This is not
+cold Bun installation evidence. UI and CLI compilation run afresh from original
+source. Python's four cold profiles and final cold runtime startup remain
+separate requirements. Bun 1.3.14 has no install `--offline` flag; containment is
 the actual `RUN --network=none` boundary. Its stock installers may rewrite JSONC
 spelling, so every semantic field of the full original lock is compared using
 the pinned Bun parser; its original regular-file kind and mode remain bound.

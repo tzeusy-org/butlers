@@ -24,7 +24,8 @@ WORKDIR /opt/opencode-build
 RUN --network=default --mount=type=tmpfs,target=/root \
     python3 -I -B /recipe/scripts/runtime_clis/produce_opencode_component.py --phase public-seed
 
-# Fresh source and ordinary full install/build from the closed public caches.
+# Fresh source and ordinary full install/build from the complete declared
+# installed dependency artifact and public caches; no compiled UI/CLI reuse.
 # Bun has no --offline install flag: the actual layer has no external route.
 RUN --network=none --mount=type=tmpfs,target=/root \
     python3 -I -B /recipe/scripts/runtime_clis/produce_opencode_component.py --phase build
