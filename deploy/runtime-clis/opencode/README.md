@@ -135,6 +135,40 @@ limits, recovery, nonretryable authorization errors and the SDK connection-error
 conversion seam. Their direct schedule-step checks use no watchdog to establish
 the bound; compiled-CLI outage parity remains a separate required check.
 
+The tenth patch supplies the exact default `@opencode-ai/plugin@1.17.7`
+dependency without a registry request in selected request-v1 mode. It resolves
+only `../default-plugin` beside the original installed `bin/opencode.exe`;
+standalone platform binaries and off-mode retain their original path. Only the
+unchanged single default dependency request and a fresh package layout (no
+package.json, package-lock.json or node_modules) qualify. Existing/custom plugin
+projects retain normal npm behavior, and other config files are preserved.
+
+The eight-field `butlers.opencode-default-plugin/v1` metadata binds Node 22.23.4,
+npm 10.9.9, the actual separate npm lock, complete sorted file/directory/link
+inventory and reviewed producer provenance. The closed root dependency set is
+plugin 1.17.7 plus `@opentui/core`, `@opentui/keymap` and `@opentui/solid`, each
+exactly 0.3.4, supplying the published TUI export's peers. It admits no other
+root dependency or version range. This separate graph's actual transitives are
+not asserted equal to the unchanged upstream monorepo's 3124-package lock.
+
+Core npm uses the existing validated gateway configuration without importing the
+application layer. Under its existing install flock it validates the whole seed,
+canonical modes, hashes, closed relative links, lock/catalog/package/export
+coverage and complete destination plan before copying real bytes and links with
+exclusive creation. The ordinary install completeness check then observes that
+real graph. Applicable missing/malformed/drifted seeds refuse with no registry
+fallback. No ambient seed override, parent search, global dispatcher or HOME
+change is introduced. Caught copy failures clean only this attempt's newly
+created paths; this does not certify crash-atomic multi-file installation.
+
+Owning contained Bun/Effect controls exercise actual `Npm.install`, source-package
+identity, copied plugin exports, independent files, privacy-neutral config
+preservation, full-seed/destination refusals, concurrent flock ownership and
+caught write failure. The four existing npm controls retain real local-package
+reification and .npmrc omit behavior. Synthetic seed fixtures establish source
+behavior only: the producer must still supply and validate the complete public
+plugin/SDK/TUI graph, actual imports, native operation and final image closure.
+
 This is an off-by-default source foundation. Four-CLI, image, CNI, inventory,
 operational credential custody and activation acceptance remain separate and
 incomplete. It does not expose an alternate operator path or activate egress.

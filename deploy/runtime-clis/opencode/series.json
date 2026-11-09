@@ -267,8 +267,29 @@
           "after_sha256": "ab47ba594bb53894602467c0e2e1ad1ec944f5afb653c8a51dcca4583a882be8"
         }
       ]
+    },
+    {
+      "path": "patches/0010-seed-default-plugin-from-installed-artifact.patch",
+      "sha256": "5fd2e4e8779c711dce3624d40a8e27f818e48090df3c3668f86072e5544de066",
+      "files": [
+        {
+          "path": "packages/core/src/default-plugin-seed.ts",
+          "before_sha256": null,
+          "after_sha256": "692d686060d051e221843e724306a77a1e2b695caf24d548b5d0824dff15bb7d"
+        },
+        {
+          "path": "packages/core/src/npm.ts",
+          "before_sha256": "f3e7ed9d8bd246e23a0982e292641921cd0c4b8b829aaf8ae1b6724055b21877",
+          "after_sha256": "5943bdaabd42fc817e2d0e2969dedeb4b18fa196175c46f693f80db019ed4c5f"
+        },
+        {
+          "path": "packages/core/test/default-plugin-seed.test.ts",
+          "before_sha256": null,
+          "after_sha256": "9bfcf152aadfe625fbb9e038acd1ad8282e0a394717a70f362dfb325aec4a9af"
+        }
+      ]
     }
   ],
-  "source_tree_sha256": "fef963b0c265a417c0be6f88adce2f9bb2bdd485292b538123601eb479d8b986",
+  "source_tree_sha256": "48d39c0392302b092b21d90b6beb613c7f212601f0413b83081ebef7dde57c9b",
   "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches."
 }
