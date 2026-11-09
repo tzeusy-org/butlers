@@ -259,3 +259,13 @@ def test_class_for_unpublished_column_is_refused_without_required_classes():
     raw["table"][0]["classes"] = {"not_a_column": "system"}
     with pytest.raises(ManifestError, match="class for unpublished column"):
         _parse_manifest(raw)
+
+
+def test_search_vector_class_matches_its_content_class():
+    checked = 0
+    for table in load_manifest().tables:
+        classes = dict(table.classes)
+        if "search_vector" in classes:
+            assert classes["search_vector"] == classes["content"], table.source
+            checked += 1
+    assert checked >= 6

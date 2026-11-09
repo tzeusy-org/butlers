@@ -9,6 +9,7 @@ version = 1
 #   credential, third_party_pii
 #                        recognised but never publishable: the loader refuses them, so a
 #                        column in these classes must be dropped, not relabelled
+# Merchant and payee columns are third_party_content: P2P payments put a person's name in them.
 
 [[table]]
 source = "chronicler.episodes_public"
@@ -76,7 +77,7 @@ source = "finance.bills"
 domain = "finance"
 columns = ["id", "payee", "amount", "currency", "due_date", "frequency", "status", "payment_method", "account_id", "source_message_id", "statement_period_start", "statement_period_end", "paid_at", "created_at", "updated_at", "reconciled_transaction_id", "autopay", "predicted", "payee_key", "destination_fingerprint", "destination_verdict", "payee_source"]
 types = { "id" = "uuid", "payee" = "text", "amount" = "numeric(14,2)", "currency" = "character(3)", "due_date" = "date", "frequency" = "text", "status" = "text", "payment_method" = "text", "account_id" = "uuid", "source_message_id" = "text", "statement_period_start" = "date", "statement_period_end" = "date", "paid_at" = "timestamp with time zone", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone", "reconciled_transaction_id" = "uuid", "autopay" = "boolean", "predicted" = "boolean", "payee_key" = "text", "destination_fingerprint" = "text", "destination_verdict" = "text", "payee_source" = "text" }
-classes = { "id" = "system", "payee" = "personal_record", "amount" = "personal_record", "currency" = "system", "due_date" = "system", "frequency" = "system", "status" = "system", "payment_method" = "personal_record", "account_id" = "system", "source_message_id" = "system", "statement_period_start" = "system", "statement_period_end" = "system", "paid_at" = "system", "created_at" = "system", "updated_at" = "system", "reconciled_transaction_id" = "system", "autopay" = "system", "predicted" = "system", "payee_key" = "system", "destination_fingerprint" = "system", "destination_verdict" = "system", "payee_source" = "system" }
+classes = { "id" = "system", "payee" = "third_party_content", "amount" = "personal_record", "currency" = "system", "due_date" = "system", "frequency" = "system", "status" = "system", "payment_method" = "personal_record", "account_id" = "system", "source_message_id" = "system", "statement_period_start" = "system", "statement_period_end" = "system", "paid_at" = "system", "created_at" = "system", "updated_at" = "system", "reconciled_transaction_id" = "system", "autopay" = "system", "predicted" = "system", "payee_key" = "system", "destination_fingerprint" = "system", "destination_verdict" = "system", "payee_source" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records", "finance_obligations"]
@@ -150,7 +151,7 @@ source = "finance.merchant_mappings"
 domain = "finance"
 columns = ["id", "raw_pattern", "normalized_merchant", "category", "confidence", "learned_from_count", "source", "is_active", "created_at", "updated_at"]
 types = { "id" = "uuid", "raw_pattern" = "text", "normalized_merchant" = "text", "category" = "text", "confidence" = "double precision", "learned_from_count" = "integer", "source" = "text", "is_active" = "boolean", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone" }
-classes = { "id" = "system", "raw_pattern" = "personal_record", "normalized_merchant" = "personal_record", "category" = "personal_record", "confidence" = "system", "learned_from_count" = "system", "source" = "system", "is_active" = "system", "created_at" = "system", "updated_at" = "system" }
+classes = { "id" = "system", "raw_pattern" = "third_party_content", "normalized_merchant" = "third_party_content", "category" = "personal_record", "confidence" = "system", "learned_from_count" = "system", "source" = "system", "is_active" = "system", "created_at" = "system", "updated_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records"]
@@ -186,7 +187,7 @@ source = "finance.recurring_groups"
 domain = "finance"
 columns = ["id", "merchant", "avg_amount", "estimated_frequency", "next_expected_date", "last_seen_date", "created_at", "updated_at", "currency", "is_active"]
 types = { "id" = "uuid", "merchant" = "text", "avg_amount" = "numeric(14,2)", "estimated_frequency" = "text", "next_expected_date" = "date", "last_seen_date" = "date", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone", "currency" = "character(3)", "is_active" = "boolean" }
-classes = { "id" = "system", "merchant" = "personal_record", "avg_amount" = "personal_record", "estimated_frequency" = "personal_record", "next_expected_date" = "system", "last_seen_date" = "system", "created_at" = "system", "updated_at" = "system", "currency" = "system", "is_active" = "system" }
+classes = { "id" = "system", "merchant" = "third_party_content", "avg_amount" = "personal_record", "estimated_frequency" = "personal_record", "next_expected_date" = "system", "last_seen_date" = "system", "created_at" = "system", "updated_at" = "system", "currency" = "system", "is_active" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records"]
@@ -198,7 +199,7 @@ source = "finance.subscriptions"
 domain = "finance"
 columns = ["id", "service", "amount", "currency", "frequency", "next_renewal", "status", "auto_renew", "payment_method", "account_id", "source_message_id", "created_at", "updated_at", "cancellation_url", "notice_period_days", "cancel_by", "cancellation_url_source", "status_source", "renewal_source", "price_source", "service_source", "date_epoch", "price_epoch", "value_revision"]
 types = { "id" = "uuid", "service" = "text", "amount" = "numeric(14,2)", "currency" = "character(3)", "frequency" = "text", "next_renewal" = "date", "status" = "text", "auto_renew" = "boolean", "payment_method" = "text", "account_id" = "uuid", "source_message_id" = "text", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone", "cancellation_url" = "text", "notice_period_days" = "integer", "cancel_by" = "date", "cancellation_url_source" = "text", "status_source" = "text", "renewal_source" = "text", "price_source" = "text", "service_source" = "text", "date_epoch" = "bigint", "price_epoch" = "bigint", "value_revision" = "bigint" }
-classes = { "id" = "system", "service" = "personal_record", "amount" = "personal_record", "currency" = "system", "frequency" = "system", "next_renewal" = "personal_record", "status" = "system", "auto_renew" = "personal_record", "payment_method" = "personal_record", "account_id" = "system", "source_message_id" = "system", "created_at" = "system", "updated_at" = "system", "cancellation_url" = "personal_record", "notice_period_days" = "system", "cancel_by" = "system", "cancellation_url_source" = "system", "status_source" = "system", "renewal_source" = "system", "price_source" = "system", "service_source" = "system", "date_epoch" = "system", "price_epoch" = "system", "value_revision" = "system" }
+classes = { "id" = "system", "service" = "third_party_content", "amount" = "personal_record", "currency" = "system", "frequency" = "system", "next_renewal" = "personal_record", "status" = "system", "auto_renew" = "personal_record", "payment_method" = "personal_record", "account_id" = "system", "source_message_id" = "system", "created_at" = "system", "updated_at" = "system", "cancellation_url" = "third_party_content", "notice_period_days" = "system", "cancel_by" = "system", "cancellation_url_source" = "system", "status_source" = "system", "renewal_source" = "system", "price_source" = "system", "service_source" = "system", "date_epoch" = "system", "price_epoch" = "system", "value_revision" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records", "finance_obligations"]
@@ -223,7 +224,7 @@ source = "finance.transactions"
 domain = "finance"
 columns = ["id", "account_id", "source_message_id", "posted_at", "merchant", "description", "amount", "currency", "direction", "category", "payment_method", "receipt_url", "external_ref", "created_at", "updated_at", "deleted_at", "external_id", "transaction_date", "normalized_description", "normalized_merchant", "subcategory", "tags", "category_source", "is_category_locked", "type", "is_recurring", "recurring_group_id", "is_duplicate", "duplicate_of", "import_batch_id", "source", "notes", "version", "display_merchant", "display_category"]
 types = { "id" = "uuid", "account_id" = "uuid", "source_message_id" = "text", "posted_at" = "timestamp with time zone", "merchant" = "text", "description" = "text", "amount" = "numeric(14,2)", "currency" = "character(3)", "direction" = "text", "category" = "text", "payment_method" = "text", "receipt_url" = "text", "external_ref" = "text", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone", "deleted_at" = "timestamp with time zone", "external_id" = "text", "transaction_date" = "date", "normalized_description" = "text", "normalized_merchant" = "text", "subcategory" = "text", "tags" = "text[]", "category_source" = "text", "is_category_locked" = "boolean", "type" = "text", "is_recurring" = "boolean", "recurring_group_id" = "uuid", "is_duplicate" = "boolean", "duplicate_of" = "uuid", "import_batch_id" = "uuid", "source" = "text", "notes" = "text", "version" = "integer", "display_merchant" = "text", "display_category" = "text" }
-classes = { "id" = "system", "account_id" = "system", "source_message_id" = "system", "posted_at" = "system", "merchant" = "personal_record", "description" = "third_party_content", "amount" = "personal_record", "currency" = "system", "direction" = "system", "category" = "personal_record", "payment_method" = "personal_record", "receipt_url" = "personal_record", "external_ref" = "system", "created_at" = "system", "updated_at" = "system", "deleted_at" = "system", "external_id" = "system", "transaction_date" = "system", "normalized_description" = "third_party_content", "normalized_merchant" = "personal_record", "subcategory" = "personal_record", "tags" = "personal_record", "category_source" = "system", "is_category_locked" = "system", "type" = "system", "is_recurring" = "system", "recurring_group_id" = "system", "is_duplicate" = "system", "duplicate_of" = "personal_record", "import_batch_id" = "system", "source" = "system", "notes" = "personal_record", "version" = "system", "display_merchant" = "personal_record", "display_category" = "personal_record" }
+classes = { "id" = "system", "account_id" = "system", "source_message_id" = "system", "posted_at" = "system", "merchant" = "third_party_content", "description" = "third_party_content", "amount" = "personal_record", "currency" = "system", "direction" = "system", "category" = "personal_record", "payment_method" = "personal_record", "receipt_url" = "third_party_content", "external_ref" = "system", "created_at" = "system", "updated_at" = "system", "deleted_at" = "system", "external_id" = "system", "transaction_date" = "system", "normalized_description" = "third_party_content", "normalized_merchant" = "third_party_content", "subcategory" = "personal_record", "tags" = "personal_record", "category_source" = "system", "is_category_locked" = "system", "type" = "system", "is_recurring" = "system", "recurring_group_id" = "system", "is_duplicate" = "system", "duplicate_of" = "personal_record", "import_batch_id" = "system", "source" = "system", "notes" = "personal_record", "version" = "system", "display_merchant" = "third_party_content", "display_category" = "personal_record" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records", "finance_ledger", "finance_summary"]
@@ -236,7 +237,7 @@ source = "general.facts"
 domain = "knowledge"
 columns = ["id", "subject", "entity_id", "object_entity_id", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
 types = { "id" = "uuid", "subject" = "text", "entity_id" = "uuid", "object_entity_id" = "uuid", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
-classes = { "id" = "system", "subject" = "personal_record", "entity_id" = "system", "object_entity_id" = "system", "predicate" = "system", "content" = "personal_record", "valid_at" = "system", "sensitivity" = "system", "validity" = "system", "content_authority" = "system", "search_vector" = "personal_record" }
+classes = { "id" = "system", "subject" = "personal_record", "entity_id" = "system", "object_entity_id" = "system", "predicate" = "system", "content" = "third_party_content", "valid_at" = "system", "sensitivity" = "system", "validity" = "system", "content_authority" = "system", "search_vector" = "third_party_content" }
 key = ["id"]
 replica_identity = ["id", "sensitivity", "validity", "predicate"]
 tools = ["search", "fetch", "search_filtered"]
@@ -501,7 +502,7 @@ source = "relationship.entity_facts"
 domain = "relationship"
 columns = ["id", "subject", "predicate", "object", "object_kind", "conf", "verified", "validity", "content_authority", "created_at"]
 types = { "id" = "uuid", "subject" = "uuid", "predicate" = "text", "object" = "text", "object_kind" = "text", "conf" = "double precision", "verified" = "boolean", "validity" = "text", "created_at" = "timestamp with time zone", "content_authority" = "text" }
-classes = { "id" = "system", "subject" = "personal_record", "predicate" = "system", "object" = "personal_record", "object_kind" = "system", "conf" = "system", "verified" = "system", "validity" = "system", "content_authority" = "system", "created_at" = "system" }
+classes = { "id" = "system", "subject" = "personal_record", "predicate" = "system", "object" = "third_party_content", "object_kind" = "system", "conf" = "system", "verified" = "system", "validity" = "system", "content_authority" = "system", "created_at" = "system" }
 key = ["id"]
 replica_identity = ["id", "validity", "predicate"]
 tools = ["entity_profile"]
@@ -526,7 +527,7 @@ source = "relationship.facts"
 domain = "relationship"
 columns = ["id", "subject", "entity_id", "object_entity_id", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
 types = { "id" = "uuid", "subject" = "text", "entity_id" = "uuid", "object_entity_id" = "uuid", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
-classes = { "id" = "system", "subject" = "personal_record", "entity_id" = "system", "object_entity_id" = "system", "predicate" = "system", "content" = "personal_record", "valid_at" = "system", "sensitivity" = "system", "validity" = "system", "content_authority" = "system", "search_vector" = "personal_record" }
+classes = { "id" = "system", "subject" = "personal_record", "entity_id" = "system", "object_entity_id" = "system", "predicate" = "system", "content" = "third_party_content", "valid_at" = "system", "sensitivity" = "system", "validity" = "system", "content_authority" = "system", "search_vector" = "third_party_content" }
 key = ["id"]
 replica_identity = ["id", "sensitivity", "validity", "predicate"]
 tools = ["search", "fetch", "search_filtered", "entity_profile"]
