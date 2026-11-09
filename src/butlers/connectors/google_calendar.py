@@ -67,6 +67,7 @@ from butlers.connectors.google_fleet import (
 )
 from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
@@ -896,6 +897,11 @@ class CalendarConnectorRuntime:
             connector_type=_CONNECTOR_TYPE,
             endpoint_identity=config.endpoint_identity,
         )
+        # A failed ingest keeps the sync token where it is, so the next cycle
+        # reads the event again, until the event's attempts are spent and it is
+        # parked as a replayable error row (bu-dhloi1.149).
+        self._ingest_retry = IngestRetryBudget()
+        self._hold_sync_token = False
 
     def _record_source_api_success(self) -> None:
         """Clear source-API health failures after a successful Google call."""
@@ -1038,15 +1044,22 @@ class CalendarConnectorRuntime:
 
         # Process changed events
         ingested_count = 0
+        self._hold_sync_token = False
         for event in events:
-            if not self._running:
+            if not self._running or self._hold_sync_token:
                 break
             ingested = await self._process_event(event)
             if ingested:
                 ingested_count += 1
 
-        # Advance checkpoint only after processing
-        if next_sync_token and next_sync_token != self._sync_token:
+        # Advance checkpoint only after processing, and never past an event
+        # whose ingest failed and is waiting for a retry.
+        if self._hold_sync_token:
+            logger.info(
+                "Calendar: keeping syncToken for email=%s until a failed event is retried",
+                self._config.email,
+            )
+        elif next_sync_token and next_sync_token != self._sync_token:
             self._sync_token = next_sync_token
             await self._save_sync_token(next_sync_token)
 
@@ -1287,12 +1300,21 @@ class CalendarConnectorRuntime:
             if start_dt and now <= start_dt <= window_end:
                 self._upcoming_events[event_id] = (event, start_dt)
 
+        self._hold_sync_token = False
         if ingest_events:
             for event in all_events:
-                if not self._running:
+                if not self._running or self._hold_sync_token:
                     break
                 await self._process_event(event)
 
+        if self._hold_sync_token:
+            # The old token stays, so the next cycle repeats this full sync.
+            logger.info(
+                "Calendar: full sync kept the old syncToken for email=%s; a failed "
+                "event waits for a retry",
+                self._config.email,
+            )
+            return
         if next_sync_token:
             self._sync_token = next_sync_token
             await self._save_sync_token(next_sync_token)
@@ -1483,11 +1505,19 @@ class CalendarConnectorRuntime:
         return await self._submit_envelope(event_id, envelope, summary)
 
     async def _submit_envelope(self, event_id: str, envelope: dict[str, Any], preview: str) -> bool:
-        """Submit an ingest.v1 envelope to the Switchboard."""
+        """Submit an ingest.v1 envelope to the Switchboard.
+
+        A failure with attempts left sets ``_hold_sync_token`` so the cycle
+        keeps its sync token and reads the event again. A failure that spends
+        the event's last attempt parks the exact envelope as a replayable
+        error row, and the cycle moves on.
+        """
+        retry_key = str((envelope.get("control") or {}).get("idempotency_key") or event_id)
         try:
             async with self._semaphore:
                 await self._submit_to_ingest_api(envelope)
 
+            self._ingest_retry.succeeded(retry_key)
             self._metrics.record_ingest_submission("success")
             self._last_ingest_submit = time.time()
             logger.debug(
@@ -1509,7 +1539,18 @@ class CalendarConnectorRuntime:
             # envelope's sender.identity is exactly that resolved value ("unknown" when the
             # event had no organizer); fall back to "" only if the envelope lacks a sender.
             sender_identity = envelope.get("sender", {}).get("identity", "")
-            # Record in filtered buffer for replay
+            if not self._ingest_retry.failed(retry_key):
+                self._hold_sync_token = True
+                logger.warning(
+                    "Calendar: failed to ingest event %s for email=%s; keeping the "
+                    "syncToken for a retry: %s",
+                    event_id,
+                    self._config.email,
+                    exc,
+                )
+                return False
+            # Attempts spent: park the exact envelope (idempotency key included)
+            # as a replayable error row, so the cycle can move on without losing it.
             self._filtered_event_buffer.record(
                 external_message_id=event_id,
                 source_channel=_DESCRIPTOR.channel,
@@ -1518,17 +1559,7 @@ class CalendarConnectorRuntime:
                 filter_reason=FilteredEventBuffer.reason_submission_error(),
                 status="error",
                 error_detail=str(exc),
-                full_payload=FilteredEventBuffer.full_payload(
-                    channel=_DESCRIPTOR.channel,
-                    provider=_DESCRIPTOR.provider,
-                    endpoint_identity=self._config.endpoint_identity,
-                    external_event_id=event_id,
-                    external_thread_id=None,
-                    observed_at=datetime.now(UTC).isoformat(),
-                    sender_identity=sender_identity,
-                    raw=envelope.get("payload", {}).get("raw", {}),
-                    normalized_text=envelope.get("payload", {}).get("normalized_text"),
-                ),
+                full_payload=FilteredEventBuffer.stored_envelope(envelope),
             )
             logger.warning(
                 "Calendar: failed to ingest event %s for email=%s: %s",

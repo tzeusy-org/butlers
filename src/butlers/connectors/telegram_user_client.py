@@ -69,6 +69,7 @@ from butlers.connectors.discretion import (
 )
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.connectors.owner_outbound_events import (
@@ -371,6 +372,12 @@ class TelegramUserClientConnector:
         self._semaphore = asyncio.Semaphore(config.max_inflight)
         self._last_message_id: int | None = None
         self._persisted_update_state: dict[str, Any] | None = None
+        # A message that fails to ingest waits here for a bounded retry, and
+        # the checkpoint stays below it until it goes through or is parked as a
+        # replayable error row (bu-dhloi1.149). Keyed "<chat_id>:<message_id>".
+        self._ingest_retry = IngestRetryBudget()
+        self._retry_pending: dict[str, Any] = {}
+        self._done_max_id: int | None = None
 
         # DB pool for cursor read/write to switchboard.connector_registry.
         self._cursor_pool = cursor_pool
@@ -814,6 +821,8 @@ class TelegramUserClientConnector:
                     db_interval if db_interval is not None else self._config.flush_interval_s
                 )
                 await self._scan_and_flush(effective_interval)
+                # Messages whose ingest failed get their next attempt here.
+                await self._retry_pending_messages()
         except asyncio.CancelledError:
             logger.debug("Flush scanner cancelled")
             raise
@@ -1093,10 +1102,9 @@ class TelegramUserClientConnector:
             await self._flush_and_drain()
 
             # h. Advance checkpoint to max(msg.id for msg in buffered_messages).
-            max_id = max(m.id for m in buffered_messages)
-            if self._last_message_id is None or max_id > self._last_message_id:
-                self._last_message_id = max_id
-                await self._save_checkpoint()
+            # Through _advance_checkpoint, so a batch never moves the checkpoint
+            # past a single message still waiting for a retry.
+            await self._advance_checkpoint(max(m.id for m in buffered_messages))
 
         except Exception as exc:
             # Identifiers only: the exception message and traceback can echo message text,
@@ -1360,6 +1368,7 @@ class TelegramUserClientConnector:
         """
         async with self._semaphore:
             replay_spans = telethon_message_spans(message, "") or None
+            envelope: dict[str, Any] | None = None
             try:
                 # Extract message ID for checkpoint tracking
                 message_id = getattr(message, "id", None)
@@ -1533,13 +1542,15 @@ class TelegramUserClientConnector:
                 # Submit to Switchboard ingest
                 await self._submit_to_ingest(envelope)
 
+                retry_key = self._retry_key(message)
+                self._ingest_retry.succeeded(retry_key)
+                self._retry_pending.pop(retry_key, None)
+
                 # Flush after successful processing (drain replay-pending rows too)
                 await self._flush_and_drain()
 
                 # Update checkpoint
-                if self._last_message_id is None or message_id > self._last_message_id:
-                    self._last_message_id = message_id
-                    await self._save_checkpoint()
+                await self._advance_checkpoint(message_id)
 
             except Exception as exc:
                 logger.exception(
@@ -1549,6 +1560,17 @@ class TelegramUserClientConnector:
                         "endpoint_identity": self._config.endpoint_identity,
                     },
                 )
+                # Never checkpoint past a failed message (bu-dhloi1.149): keep it
+                # for a bounded retry, with the checkpoint held below it. Once its
+                # attempts are spent, park it as a replayable error row below.
+                retry_key = self._retry_key(message)
+                if isinstance(getattr(message, "id", None), int) and not (
+                    self._ingest_retry.failed(retry_key)
+                ):
+                    self._retry_pending[retry_key] = message
+                    await self._flush_and_drain()
+                    return
+                self._retry_pending.pop(retry_key, None)
                 # Record error event in the filtered event buffer
                 msg_id_str = str(getattr(message, "id", "unknown"))
                 try:
@@ -1561,28 +1583,64 @@ class TelegramUserClientConnector:
                     error_sender = self._extract_sender_identity(message)
                 except Exception:
                     error_sender = "unknown"
+                # The exact envelope that was tried, idempotency key included, when
+                # one was built; otherwise the message as Telethon gave it.
                 self._filtered_event_buffer.record(
                     external_message_id=msg_id_str,
                     source_channel=self._config.channel,
                     sender_identity=error_sender,
                     subject_or_preview=None,
                     filter_reason=FilteredEventBuffer.reason_submission_error(),
-                    full_payload=FilteredEventBuffer.full_payload(
-                        channel=self._config.channel,
-                        provider=self._config.provider,
-                        endpoint_identity=self._config.endpoint_identity,
-                        external_event_id=msg_id_str,
-                        external_thread_id=None,
-                        observed_at=datetime.now(UTC).isoformat(),
-                        sender_identity=error_sender,
-                        raw=raw_for_error,
-                        in_reply_to_ref=telethon_in_reply_to_ref(message),
-                        untrusted_spans=replay_spans,
+                    full_payload=(
+                        FilteredEventBuffer.stored_envelope(envelope)
+                        if envelope is not None
+                        else FilteredEventBuffer.full_payload(
+                            channel=self._config.channel,
+                            provider=self._config.provider,
+                            endpoint_identity=self._config.endpoint_identity,
+                            external_event_id=msg_id_str,
+                            external_thread_id=None,
+                            observed_at=datetime.now(UTC).isoformat(),
+                            sender_identity=error_sender,
+                            raw=raw_for_error,
+                            in_reply_to_ref=telethon_in_reply_to_ref(message),
+                            untrusted_spans=replay_spans,
+                        )
                     ),
                     status="error",
                     error_detail=str(exc),
                 )
                 await self._flush_and_drain()
+                parked_id = getattr(message, "id", None)
+                if isinstance(parked_id, int):
+                    await self._advance_checkpoint(parked_id)
+
+    def _retry_key(self, message: Any) -> str:
+        """``<chat_id>:<message_id>``: Telegram message ids are only unique per chat."""
+        return f"{self._extract_chat_id(message) or 'unknown'}:{getattr(message, 'id', None)}"
+
+    async def _advance_checkpoint(self, message_id: int) -> None:
+        """Move the checkpoint up to ``message_id``, but never past a pending retry.
+
+        A restart re-reads everything above the checkpoint, so holding it below
+        the lowest message still waiting for a retry keeps that message from
+        being skipped if the process dies before the retry lands.
+        """
+        if self._done_max_id is None or message_id > self._done_max_id:
+            self._done_max_id = message_id
+        target = self._done_max_id
+        pending = [getattr(m, "id", None) for m in self._retry_pending.values()]
+        pending_ids = [p for p in pending if isinstance(p, int)]
+        if pending_ids:
+            target = min(target, min(pending_ids) - 1)
+        if self._last_message_id is None or target > self._last_message_id:
+            self._last_message_id = target
+            await self._save_checkpoint()
+
+    async def _retry_pending_messages(self) -> None:
+        """Retry each message waiting after a failed ingest (one attempt each)."""
+        for message in list(self._retry_pending.values()):
+            await self._process_message(message)
 
     @staticmethod
     def _build_ingestion_envelope(message: object) -> IngestionEnvelope:

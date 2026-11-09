@@ -339,6 +339,16 @@ followed by uncertain status persistence may be delivered again with the same ev
 existing ingest deduplication. This is not an exactly-once transport guarantee or a live routing
 switch.
 
+Gmail backfill, Calendar sync, ActivityWatch live polling and the Telegram user client never move
+their cursor past an item whose ingest submission failed (bu-dhloi1.149, slice 1). Each item gets a
+bounded number of attempts (`IngestRetryBudget`, default 3, held in memory, so a restart resets
+it). Until the budget is spent the connector holds its position: Gmail backfill stops the job at
+the current page, Calendar keeps its sync token, ActivityWatch checkpoints just before the failed
+event, and the Telegram user client retries from its flush loop while capping the checkpoint below
+the pending message. Once spent, the connector writes a replayable `status='error'` filtered-event
+row whose `full_payload` is the envelope it tried to send, including `control.idempotency_key`, and
+moves on. Other connectors keep their existing behaviour.
+
 The [bearer material custody audit](bearer-material-custody-audit.md) records the exact
 source inventory, connector stores, inbox readers and synthetic seam evidence. Its
 full-payload, replay, logging and legacy-row findings are separate from this preview

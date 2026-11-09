@@ -25,6 +25,7 @@ import pytest
 
 import butlers.connectors.owner_outbound_events as owner_outbound_events
 import butlers.connectors.telegram_user_client as telegram_user_client
+from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.connectors.telegram_user_client import (
     TelegramUserClientConnector,
     TelegramUserClientConnectorConfig,
@@ -814,11 +815,16 @@ async def test_error_status_retains_full_raw_payload(
     connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
     connector._discretion_dispatcher = None
     connector._normalize_to_ingest_v1 = AsyncMock(  # type: ignore[method-assign]
-        return_value={"schema_version": "ingest.v1"}
+        return_value={
+            "schema_version": "ingest.v1",
+            "payload": {"raw": {"id": 9, "message": "hi"}},
+        }
     )
     connector._submit_to_ingest = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
     connector._filtered_event_buffer.record = MagicMock()  # type: ignore[method-assign]
     connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+    # Park on the first failure, so the error row is written now (bu-dhloi1.149).
+    connector._ingest_retry = IngestRetryBudget(1)
 
     msg = _make_message(msg_id=9, chat_id=100, sender_id=999, text="hi")
     await connector._process_message(msg)
@@ -1179,6 +1185,8 @@ async def test_forwarded_message_is_one_forwarded_span(
     ]
     parse_ingest_envelope(env)
 
+    # Park on the first submission failure, so its error row is written now.
+    connector._ingest_retry = IngestRetryBudget(1)
     # Exercise the real single-message policy, discretion and error producers.
     for stage in ("connector", "global", "discretion", "submission"):
         connector._filtered_event_buffer._rows.clear()
@@ -1211,10 +1219,13 @@ async def test_forwarded_message_is_one_forwarded_span(
         assert row[8] == ("error" if stage == "submission" else "filtered")
         stored = row[9]
         assert stored["sender"]["identity"] == "999"
+        # A parked submission stores the envelope it tried to send, text intact
+        # (bu-dhloi1.149); filtered rows keep only the privacy-tier placeholder.
+        text_len = len(msg.message) if stage == "submission" else len("[no text]")
         assert stored["payload"]["untrusted_spans"][0] == {
             "kind": "forwarded",
             "start": 0,
-            "end": len("[no text]"),
+            "end": text_len,
             "origin_identity": "555",
             "origin_display_name": "Mallory",
         }
@@ -1343,6 +1354,8 @@ async def test_provider_quotes_survive_single_batch_and_filtered_replay(connecto
     parse_ingest_envelope(batch)
 
     # Real policy/error producer loses text on purpose but must retain exposure.
+    # Park on the first submission failure, so its error row is written now.
+    connector._ingest_retry = IngestRetryBudget(1)
     for stage in ("connector", "global", "submission"):
         connector._filtered_event_buffer._rows.clear()
         allow = SimpleNamespace(allowed=True, action="pass_through")
@@ -1368,9 +1381,13 @@ async def test_provider_quotes_survive_single_batch_and_filtered_replay(connecto
             await connector._process_message(msg)
         stored = connector._filtered_event_buffer._rows[-1][9]
         _sanitize_replay_payload(stored)
-        assert stored["payload"]["untrusted_spans"] == [
-            {"kind": "quoted", "start": 0, "end": len("[no text]")}
-        ]
+        if stage == "submission":
+            # A parked submission stores the envelope it tried to send (bu-dhloi1.149).
+            assert stored["payload"]["untrusted_spans"] == env["payload"]["untrusted_spans"]
+        else:
+            assert stored["payload"]["untrusted_spans"] == [
+                {"kind": "quoted", "start": 0, "end": len("[no text]")}
+            ]
         assert stored["event"]["in_reply_to_ref"] == "200:7"
 
     # Known quote with missing/malformed boundaries is conservative, not dropped.
