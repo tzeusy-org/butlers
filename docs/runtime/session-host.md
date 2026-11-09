@@ -205,6 +205,16 @@ The control plane's side is `session_host/codex_auth.py`:
 - `push_codex_authority` installs the authority's exact document. It fails closed,
   leaving the volume unchanged, when the authority is missing, invalid or
   unreachable, or when the volume changes during the install.
+- Push never rolls back a rotation. Codex refresh tokens are single-use. The caller
+  passes the previous push's fence (`PushedAuthority`).
+  - When the host holds a document other than the one last pushed, push first
+    stores that document into the authority. This is conditional on the authority
+    being unchanged, as the local reconcile flushes a rotated `auth.json`.
+  - Only if that write loses, because a newer login exists, does the authority
+    replace the host's document.
+  - Without a fence, an unknown host document cannot be judged, so push fails
+    closed. Persisting the fence across control-plane restarts is switch-time
+    wiring. Until then, a dashboard login recovers it.
 - `collect_codex_rotation` stores a changed document back to the authority. It does
   this only when the authority still holds the value that was pushed, so a newer
   dashboard login always wins. This matches today's `_codex_auth_sync` fencing.

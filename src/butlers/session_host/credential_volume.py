@@ -63,6 +63,22 @@ class CredentialVolume:
             raise Refused("credential_volume_unavailable")
         self.root = root
         self._lock = threading.Lock()
+        self._sweep()
+
+    def _sweep(self) -> None:
+        """Remove temporaries an interrupted install left; never the document."""
+        directory = self._directory()
+        try:
+            for name in os.listdir(directory):
+                if name.startswith(f".{self.CODEX_AUTH}.") and name.endswith(".tmp"):
+                    try:
+                        os.unlink(name, dir_fd=directory)
+                    except OSError:
+                        pass
+        except OSError:
+            raise Refused("credential_volume_unavailable") from None
+        finally:
+            os.close(directory)
 
     def _directory(self) -> int:
         try:

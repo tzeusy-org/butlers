@@ -348,6 +348,81 @@ async def test_a_rotation_loses_to_a_newer_dashboard_login(volume):
     assert authority.value == codex_document("new-login")
 
 
+async def test_an_uncollected_rotation_is_flushed_never_rolled_back(volume):
+    """Review r4511269508: push V1, rotate on the host, skip collect, push again."""
+    authority, target = Authority(codex_document("one")), VolumeTarget(volume)
+    first = await push_codex_authority(authority, target)
+    volume.install(codex_document("rotated").encode(), expected_sha256=first.installed_sha256)
+    second = await push_codex_authority(authority, target, first)
+    # The single-use refresh token on the host survives, and the authority has it.
+    assert volume.status() == sha(codex_document("rotated"))
+    assert authority.value == codex_document("rotated") and authority.writes == 1
+    assert second.known and second.installed_sha256 == sha(codex_document("rotated"))
+    # The new fence is coherent: nothing left to collect, and the next push is a no-op.
+    assert await collect_codex_rotation(authority, target, second) is False
+    assert await push_codex_authority(authority, target, second) == second
+
+
+async def test_a_newer_login_still_replaces_an_uncollected_rotation(volume):
+    authority, target = Authority(codex_document("one")), VolumeTarget(volume)
+    first = await push_codex_authority(authority, target)
+    volume.install(codex_document("rotated").encode(), expected_sha256=first.installed_sha256)
+    authority.value = codex_document("new-login")
+    second = await push_codex_authority(authority, target, first)
+    assert second.known and volume.status() == sha(codex_document("new-login"))
+    assert authority.value == codex_document("new-login") and authority.writes == 0
+
+
+async def test_a_newer_login_replaces_an_unchanged_host_document(volume):
+    authority, target = Authority(codex_document("one")), VolumeTarget(volume)
+    first = await push_codex_authority(authority, target)
+    authority.value = codex_document("new-login")
+    second = await push_codex_authority(authority, target, first)
+    assert second.known and volume.status() == sha(codex_document("new-login"))
+
+
+@pytest.mark.parametrize("fence", ["none", "unknown"])
+async def test_an_unfenced_host_document_fails_closed(volume, fence):
+    authority, target = Authority(codex_document("one")), VolumeTarget(volume)
+    volume.install(codex_document("unknown").encode(), expected_sha256=None)
+    previous = None if fence == "none" else await push_codex_authority(Authority(None), target)
+    pushed = await push_codex_authority(authority, target, previous)
+    assert not pushed.known
+    assert volume.status() == sha(codex_document("unknown"))
+    assert authority.value == codex_document("one") and authority.writes == 0
+
+
+async def test_a_flush_refuses_a_host_that_moves_between_status_and_read(volume):
+    class Moving(VolumeTarget):
+        async def read(self):
+            found = await super().read()
+            self.volume.install(codex_document("moved").encode(), expected_sha256=found[1])
+            return await super().read()
+
+    authority, target = Authority(codex_document("one")), VolumeTarget(volume)
+    first = await push_codex_authority(authority, target)
+    volume.install(codex_document("rotated").encode(), expected_sha256=first.installed_sha256)
+    assert not (await push_codex_authority(authority, Moving(volume), first)).known
+    assert authority.value == codex_document("one") and authority.writes == 0
+
+
+async def test_the_fence_keeps_credential_material_out_of_repr(volume):
+    authority = Authority(codex_document("repr-marker"))
+    pushed = await push_codex_authority(authority, VolumeTarget(volume))
+    assert pushed.known and "repr-marker" not in repr(pushed)
+
+
+def test_a_volume_sweeps_temporaries_an_interrupted_install_left(tmp_path):
+    root = tmp_path / "sweep"
+    root.mkdir(mode=0o700)
+    root.chmod(0o700)
+    (root / ".codex-auth.json.1.2.tmp").write_bytes(b"partial")
+    (root / CredentialVolume.CODEX_AUTH).write_text(codex_document())
+    volume = CredentialVolume(root)
+    assert sorted(p.name for p in root.iterdir()) == [CredentialVolume.CODEX_AUTH]
+    assert volume.status() == sha(codex_document())
+
+
 async def test_no_rotation_is_collected_without_a_known_snapshot(volume):
     authority, target = Authority(None), VolumeTarget(volume)
     snapshot = await push_codex_authority(authority, target)
@@ -469,15 +544,59 @@ def test_the_live_login_paths_default_to_todays_behavior():
 
 def test_no_live_module_constructs_a_session_host_auth_target():
     """While the session host is dark, only its own package and tests build one."""
-    constructors = {"SessionHostCodexAuth", "CredentialVolume"}
+    assert _live_constructions(_REPO / "src" / "butlers") == []
+
+
+_TARGETS = {"SessionHostCodexAuth", "CredentialVolume"}
+
+
+def _live_constructions(root: Path) -> list[str]:
+    """Calls outside ``session_host/`` that build a target or arm LocalControl.
+
+    Follows ``from … import X as Y`` aliases, and counts ``LocalControl(...,
+    credentials=...)`` since that serves the credential operations.
+    """
     found = []
-    for path in (_REPO / "src" / "butlers").rglob("*.py"):
-        if "session_host" in path.parts:
+    for path in root.rglob("*.py"):
+        if "session_host" in path.relative_to(root).parts:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        names, controls = set(_TARGETS), {"LocalControl"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name in _TARGETS:
+                        names.add(alias.asname or alias.name)
+                    elif alias.name == "LocalControl":
+                        controls.add(alias.asname or alias.name)
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-                if name in constructors:
-                    found.append(f"{path.relative_to(_REPO)}:{node.lineno}")
-    assert found == []
+                armed = name in controls and any(
+                    k.arg in ("credentials", None) for k in node.keywords
+                )
+                if name in names or armed:
+                    found.append(f"{path.relative_to(root)}:{node.lineno}")
+    return found
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from butlers.session_host.codex_auth import SessionHostCodexAuth\n"
+        "SessionHostCodexAuth(send)\n",
+        "from butlers.session_host.codex_auth import SessionHostCodexAuth as Host\nHost(send)\n",
+        "import butlers.session_host.credential_volume as v\nv.CredentialVolume(root)\n",
+        "from butlers.session_host.control import LocalControl as C\nC(credentials=volume)\n",
+        "from butlers.session_host.control import LocalControl\nLocalControl(**options)\n",
+    ],
+)
+def test_the_construction_scan_catches_each_shape(tmp_path, source):
+    (tmp_path / "live.py").write_text(source)
+    assert _live_constructions(tmp_path) == ["live.py:2"]
+
+
+def test_the_construction_scan_ignores_an_unarmed_control(tmp_path):
+    source = "from butlers.session_host.control import LocalControl\nLocalControl(owner=o)\n"
+    (tmp_path / "live.py").write_text(source)
+    assert _live_constructions(tmp_path) == []

@@ -11,6 +11,8 @@ The two sync steps keep today's fencing (``_codex_auth_sync``):
 * :func:`push_codex_authority` installs the authority's exact document before a
   runtime needs it, by compare-and-set on the volume, and fails closed (no
   fallback, no blanking) when the authority is missing, invalid or unreachable.
+  Fenced by the previous push, it first flushes an uncollected host rotation
+  to the authority, so a single-use refresh token is never rolled back.
 * :func:`collect_codex_rotation` stores a document the runtime refreshed on the
   host back to the authority, only if the authority still holds the value that
   was pushed, so a newer dashboard login always wins.
@@ -26,7 +28,7 @@ import hashlib
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from butlers.core.runtimes._codex_auth_sync import (
@@ -125,33 +127,88 @@ class SessionHostCodexAuth:
 
 @dataclass(frozen=True)
 class PushedAuthority:
-    """What one push established: the fence a later rotation must still match."""
+    """What one push established: the fence a later push or rotation must match.
+
+    The caller keeps the latest one and hands it to the next
+    :func:`push_codex_authority`. ``authority_value`` is credential material
+    and stays out of ``repr``.
+    """
 
     known: bool
-    authority_value: str | None = None
+    authority_value: str | None = field(default=None, repr=False)
     installed_sha256: str | None = None
 
 
-async def push_codex_authority(authority: Any, target: CodexAuthTarget) -> PushedAuthority:
-    """Install the authority's exact document on the session host, or fail closed."""
+_UNKNOWN = PushedAuthority(known=False)
+
+
+def _sha(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+async def push_codex_authority(
+    authority: Any, target: CodexAuthTarget, previous: PushedAuthority | None = None
+) -> PushedAuthority:
+    """Make the host hold the authority's document without losing a rotation.
+
+    Codex refresh tokens are single-use, so a rotation the runtime made on the
+    host must never be overwritten by the document it replaced. ``previous``
+    is the fence from the last push. When the host holds a document other
+    than that push's, it is a rotation nobody collected: it is stored into the
+    authority first, conditional on the authority still holding what was
+    pushed, as today's local reconcile flushes a rotated ``auth.json``. Only
+    if that conditional write loses (a newer login exists) does the authority
+    replace it. Without a fence an unknown host document cannot be judged,
+    so the push fails closed and changes nothing.
+    """
     try:
         value = await _load_authoritative_codex_auth(authority)
     except Exception:
         logger.warning("session host codex auth: authority unavailable; volume left unchanged")
-        return PushedAuthority(known=False)
+        return _UNKNOWN
     if value is None or _read_valid_auth_value(value) is None:
         logger.warning("session host codex auth: no valid authority; volume left unchanged")
-        return PushedAuthority(known=False)
-    digest = hashlib.sha256(value.encode()).hexdigest()
+        return _UNKNOWN
     try:
         current = await target.status()
-        if current != digest and not await target.install(value, current):
+        if current == _sha(value):
+            return PushedAuthority(known=True, authority_value=value, installed_sha256=current)
+        if current is not None:
+            if previous is None or not previous.known or previous.authority_value is None:
+                logger.warning("session host codex auth: unfenced host document; left unchanged")
+                return _UNKNOWN
+            if current != previous.installed_sha256:
+                found = await target.read()
+                if found is None or found[1] != current:
+                    logger.warning("session host codex auth: volume moved during flush")
+                    return _UNKNOWN
+                rotated = found[0]
+                if _read_valid_auth_value(rotated) is None:
+                    return _UNKNOWN
+                if await _store_rotation_if_authority_unchanged(
+                    authority,
+                    expected_store_value=previous.authority_value,
+                    rotated_value=rotated,
+                ):
+                    logger.info("session host codex auth: host rotation persisted before launch")
+                    return PushedAuthority(
+                        known=True, authority_value=rotated, installed_sha256=current
+                    )
+                # A newer login won; its document replaces the stale lineage.
+                value = await _load_authoritative_codex_auth(authority)
+                if value is None or _read_valid_auth_value(value) is None:
+                    return _UNKNOWN
+                if current == _sha(value):
+                    return PushedAuthority(
+                        known=True, authority_value=value, installed_sha256=current
+                    )
+        if not await target.install(value, current):
             logger.warning("session host codex auth: volume changed during install")
-            return PushedAuthority(known=False)
+            return _UNKNOWN
     except Exception:
-        logger.warning("session host codex auth: install failed safely")
-        return PushedAuthority(known=False)
-    return PushedAuthority(known=True, authority_value=value, installed_sha256=digest)
+        logger.warning("session host codex auth: push failed safely")
+        return _UNKNOWN
+    return PushedAuthority(known=True, authority_value=value, installed_sha256=_sha(value))
 
 
 async def collect_codex_rotation(
