@@ -472,7 +472,7 @@ types = { "id" = "uuid", "canonical_name" = "character varying", "entity_type" =
 classes = { "id" = "system", "canonical_name" = "personal_record", "entity_type" = "system", "aliases" = "personal_record", "roles" = "system", "merged_into" = "system", "deleted" = "system", "unidentified" = "system", "placeholder_name" = "system" }
 key = ["id"]
 replica_identity = ["id", "deleted", "unidentified", "placeholder_name"]
-tools = ["entity_lookup", "entity_profile", "search", "fetch", "search_filtered"]
+tools = ["entity_lookup", "entity_profile", "graph_neighbors", "graph_path", "search", "fetch", "search_filtered"]
 uri = "butlers://relationship/entity/{id}"
 row_filter = { "deleted" = [false], "unidentified" = [false], "placeholder_name" = [false] }
 
@@ -486,6 +486,7 @@ key = ["id"]
 replica_identity = ["id", "sensitivity", "publish_key"]
 tools = ["graph_neighbors", "graph_path", "entity_profile"]
 time_column = "created_at"
+uri = "butlers://relationship/edge/{id}"
 derived = "edges"
 
 [[table]]
@@ -547,6 +548,7 @@ key = ["id"]
 replica_identity = ["id"]
 tools = ["trips", "search", "fetch", "search_filtered"]
 time_column = "expiry_date"
+uri = "butlers://travel/document/{id}"
 
 [[table]]
 source = "travel.facts"
@@ -583,3 +585,4 @@ key = ["id"]
 replica_identity = ["id"]
 tools = ["trips", "search", "fetch", "search_filtered"]
 time_column = "start_date"
+uri = "butlers://travel/trip/{id}"

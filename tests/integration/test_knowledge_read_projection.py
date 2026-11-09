@@ -25,9 +25,13 @@ from butlers.knowledge_read.core import (
     projection_disabled_domains,
     read_context,
 )
+from butlers.knowledge_read.describe import describe
 from butlers.knowledge_read.entities import entity_lookup, entity_profile
 from butlers.knowledge_read.finance import finance_ledger
+from butlers.knowledge_read.graph import graph_neighbors, graph_path
 from butlers.knowledge_read.manifest import load_manifest
+from butlers.knowledge_read.search import fetch, search, search_filtered
+from butlers.knowledge_read.travel import trips
 from butlers.migrations.public_mcp import reconcile_connection
 from butlers.migrations.public_mcp_owner import render_owner_program
 from butlers.testing.public_mcp import public_mcp_topology
@@ -802,6 +806,13 @@ async def test_replicated_controls_and_reads_are_pure(projected, primary, reader
                 {"start": "2026-01-01", "end": "2026-12-31", "bucket": "month", "group_by": "kind"},
             )
             await finance_ledger(reader, context, {"start": "2026-01-01", "end": "2026-12-31"})
+            await search(reader, context, {"query": "Purity coffee"})
+            await search_filtered(reader, context, {"query": "Purity", "limit": 5})
+            await fetch(reader, context, {"id": f"butlers://relationship/fact/{fact}"})
+            await graph_neighbors(reader, context, {"entity_id": person, "hops": 2})
+            await graph_path(reader, context, {"from_id": person, "to_id": person})
+            await trips(reader, context, {})
+            await describe(reader, context, {})
         assert versions(projection, projected_tables) == before
         with topology.engine.connect() as conn:
             assert conn.execute(text(counters_sql), {"id": fact}).one() == counters
@@ -950,3 +961,420 @@ async def test_owner_shadowed_catalog_names_cannot_admit_a_planted_extension(pro
         superuser("DROP SCHEMA IF EXISTS mcp_ext CASCADE")
         healed = topology.execute(program)
         assert healed.exit_code == 0, repr(healed.output)[-4000:]
+
+
+async def _general_edge(conn, subject, obj, predicate="knows", *, withheld=False):
+    """A ``general`` memory fact and its graph edge (or withheld stub), as the writer does."""
+    from butlers.core.entity_graph_edges import (
+        project_entity_graph_edge,
+        withhold_entity_graph_edge,
+    )
+
+    fact = await conn.fetchval(
+        "INSERT INTO general.facts(subject,predicate,content,sensitivity,validity) "
+        "VALUES ($1,$2,$3,$4,'active') RETURNING id",
+        f"{subject}:{obj}:{uuid.uuid4()}",
+        predicate,
+        f"{predicate} edge",
+        "pii" if withheld else "normal",
+    )
+    if withheld:
+        await withhold_entity_graph_edge(
+            conn,
+            source_schema="general",
+            source_table="facts",
+            source_id=fact,
+            subject_entity_id=uuid.UUID(subject),
+            sensitivity="pii",
+        )
+    else:
+        await project_entity_graph_edge(
+            conn,
+            source_schema="general",
+            source_table="facts",
+            source_id=fact,
+            subject_entity_id=uuid.UUID(subject),
+            predicate=predicate,
+            object_entity_id=uuid.UUID(obj),
+        )
+    return fact
+
+
+async def test_search_and_fetch_keep_the_chatgpt_shape_and_never_reach_finance(
+    projected, primary, reader
+):
+    """REQ-public-mcp-surface-003/004: exact shapes, no finance item, a 16 KiB cut, proposals."""
+    from butlers.knowledge_read.search import FETCH_TEXT_BYTES, fetch, search
+
+    person = await _entity(primary, "Quillonar Vargastead", aliases=["Quill V"])
+    long_fact = await primary.fetchval(
+        "INSERT INTO relationship.facts(subject,predicate,content,entity_id,sensitivity,"
+        "validity,valid_at) VALUES ('Quillonar','note',$1,$2,'normal','active',now()) "
+        "RETURNING id",
+        "Quillonar Vargastead ramen notes " + "é" * 12000,
+        uuid.UUID(person),
+    )
+    transaction = await primary.fetchval(
+        "INSERT INTO finance.transactions(posted_at,merchant,amount,currency,direction,category)"
+        " VALUES (now(),'Zephyrinequa Outfitters',9.99,'SGD','debit','shopping') RETURNING id"
+    )
+    trip = await primary.fetchval(
+        "INSERT INTO travel.trips(name,destination,start_date,end_date,status) VALUES "
+        "('Quillonar Lisbon trip','Lisbon','2026-05-01','2026-05-04','planned') RETURNING id"
+    )
+    proposal = uuid.uuid4()
+    await primary.execute(
+        "INSERT INTO relationship.external_fact_proposals(proposal_id,state,decided_at,note,"
+        "evidence_url) VALUES ($1,'applied',now(),'proposal-note-marker',"
+        "'https://evidence.invalid/marker')",
+        proposal,
+    )
+    try:
+        _barrier(projected)
+        context = await _context(reader)
+        found = await search(reader, context, {"query": "Quillonar Vargastead"})
+        assert set(found) == {"results"}
+        assert 0 < len(found["results"]) <= 20
+        assert all(set(r) == {"id", "title", "url"} for r in found["results"])
+        ids = [r["id"] for r in found["results"]]
+        assert f"butlers://relationship/entity/{person}" in ids
+        assert f"butlers://relationship/fact/{long_fact}" in ids
+        assert f"butlers://travel/trip/{trip}" in ids
+        assert all("?" not in r["url"] for r in found["results"])
+
+        assert await search(reader, context, {"query": "Zephyrinequa Outfitters"}) == {
+            "results": []
+        }
+        travel_off = await _context(reader, disabled=frozenset({"travel"}))
+        quiet = await search(reader, travel_off, {"query": "Quillonar Vargastead"})
+        assert f"butlers://travel/trip/{trip}" not in [r["id"] for r in quiet["results"]]
+        assert f"butlers://relationship/entity/{person}" in [r["id"] for r in quiet["results"]]
+        for bad in ("", "x" * 257):
+            assert (await _refused(search(reader, context, {"query": bad}))).code == (
+                "invalid_argument"
+            )
+
+        entity = await fetch(reader, context, {"id": f"butlers://relationship/entity/{person}"})
+        assert set(entity) == {"id", "title", "text", "url", "metadata"}
+        assert set(entity["metadata"]) == {"domain", "kind", "source", "valid_at", "truncated"}
+        assert entity["title"] == "Quillonar Vargastead" and "Quill V" in entity["text"]
+        assert entity["metadata"]["source"]["uri"] == f"butlers://relationship/entity/{person}"
+        assert entity["metadata"]["truncated"] is False
+
+        long = await fetch(reader, context, {"id": f"butlers://relationship/fact/{long_fact}"})
+        assert len(long["text"].encode()) <= FETCH_TEXT_BYTES
+        assert long["metadata"]["truncated"] is True
+        assert long["text"].startswith("Quillonar Vargastead ramen notes")
+
+        finance_uri = f"butlers://finance/transactions/{transaction}"
+        assert (await _refused(fetch(reader, context, {"id": finance_uri}))).code == "not_found"
+        unknown = f"butlers://relationship/entity/{uuid.uuid4()}"
+        assert (await _refused(fetch(reader, context, {"id": unknown}))).code == "not_found"
+        disabled = await _refused(
+            fetch(reader, travel_off, {"id": f"butlers://travel/trip/{trip}"})
+        )
+        assert (disabled.code, disabled.domain) == ("domain_disabled", "travel")
+
+        state = await fetch(reader, context, {"id": f"proposal:{proposal}"})
+        assert set(state) == {"id", "title", "text", "url", "metadata"}
+        assert (state["title"], state["text"]) == ("Proposal", "applied")
+        assert state["metadata"]["state"] == "applied"
+        assert state["metadata"]["decided_at"] is not None
+        assert "marker" not in json.dumps(state)
+        gone = await _refused(fetch(reader, context, {"id": f"proposal:{uuid.uuid4()}"}))
+        assert gone.code == "not_found"
+    finally:
+        await primary.execute(
+            "DELETE FROM relationship.external_fact_proposals WHERE proposal_id=$1", proposal
+        )
+        await primary.execute("DELETE FROM travel.trips WHERE id=$1", trip)
+        await primary.execute("DELETE FROM finance.transactions WHERE id=$1", transaction)
+        await primary.execute("DELETE FROM relationship.facts WHERE id=$1", long_fact)
+        await primary.execute("DELETE FROM public.entities WHERE id=$1", uuid.UUID(person))
+        _barrier(projected)
+
+
+async def test_search_filtered_filters_pages_and_names_degraded_domains(projected, primary, reader):
+    """REQ-public-mcp-surface-006 and -005 (lagging) over the published index."""
+    from butlers.knowledge_read.search import search_filtered
+
+    facts = [
+        await primary.fetchval(
+            "INSERT INTO general.facts(subject,predicate,content,sensitivity,validity,valid_at)"
+            " VALUES ($1,'note',$2,'normal','active',$3) RETURNING id",
+            f"filtered-{n}",
+            f"Marmorkatze filtered note {n}",
+            datetime(2026, 6, n + 1, tzinfo=UTC),
+        )
+        for n in range(3)
+    ]
+    trip = await primary.fetchval(
+        "INSERT INTO travel.trips(name,destination,start_date,end_date,status) VALUES "
+        "('Marmorkatze trip','Bergen','2026-06-02','2026-06-03','planned') RETURNING id"
+    )
+    try:
+        _barrier(projected)
+        context = await _context(reader)
+        everything = await search_filtered(reader, context, {"query": "Marmorkatze"})
+        assert {i["kind"] for i in everything["items"]} == {"fact", "trip"}
+        assert everything["sources_degraded"] == []
+        item = everything["items"][0]
+        assert set(item) == {"id", "title", "snippet", "domain", "kind", "url", "source"}
+
+        knowledge = await search_filtered(
+            reader, context, {"query": "Marmorkatze", "domains": ["knowledge"], "limit": 2}
+        )
+        assert [i["domain"] for i in knowledge["items"]] == ["knowledge", "knowledge"]
+        assert knowledge["next_cursor"] is not None
+        rest = await search_filtered(
+            reader,
+            context,
+            {
+                "query": "Marmorkatze",
+                "domains": ["knowledge"],
+                "limit": 2,
+                "cursor": knowledge["next_cursor"],
+            },
+        )
+        paged = {i["id"] for i in knowledge["items"] + rest["items"]}
+        assert paged == {f"butlers://knowledge/fact/{f}" for f in facts}
+        assert rest["next_cursor"] is None
+        rebound = await _refused(
+            search_filtered(
+                reader,
+                context,
+                {"query": "other", "domains": ["knowledge"], "cursor": knowledge["next_cursor"]},
+            )
+        )
+        assert rebound.code == "invalid_argument"
+
+        window = await search_filtered(
+            reader,
+            context,
+            {"query": "Marmorkatze", "since": "2026-06-02", "until": "2026-06-03"},
+        )
+        assert {i["id"] for i in window["items"]} == {
+            f"butlers://knowledge/fact/{facts[1]}",
+            f"butlers://travel/trip/{trip}",
+        }
+        only_trips = await search_filtered(
+            reader, context, {"query": "Marmorkatze", "kinds": ["trip"]}
+        )
+        assert [i["id"] for i in only_trips["items"]] == [f"butlers://travel/trip/{trip}"]
+
+        travel_off = await _context(reader, disabled=frozenset({"travel"}))
+        named = await search_filtered(
+            reader, travel_off, {"query": "Marmorkatze", "domains": ["travel"]}
+        )
+        assert named["items"] == []
+        assert named["sources_degraded"] == [{"domain": "travel", "reason": "disabled"}]
+
+        lagging = await read_context(
+            reader, sub="github|1", cursor_key=KEY, now=context.as_of + timedelta(minutes=6)
+        )
+        late = await search_filtered(reader, lagging, {"query": "Marmorkatze"})
+        assert late["items"] and all(i["source"]["as_of"] for i in late["items"])
+        assert late["sources_degraded"] == [
+            {"domain": d, "reason": "lagging"}
+            for d in ("knowledge", "relationship", "time", "travel")
+        ]
+    finally:
+        await primary.execute("DELETE FROM travel.trips WHERE id=$1", trip)
+        await primary.execute("DELETE FROM general.facts WHERE id = ANY($1)", facts)
+        _barrier(projected)
+
+
+async def test_graph_neighbors_and_path_match_the_walk_contract(projected, primary, reader):
+    """REQ-public-mcp-surface-007 graph clause: REQ-entity-graph-003/005/006/009 parity."""
+    names = ("Graph Alder", "Graph Birch", "Graph Cedar", "Graph Dogwood", "Graph Elm")
+    alder, birch, cedar, dogwood, elm = [await _entity(primary, n) for n in names]
+    facts = []
+    try:
+        async with primary.acquire() as conn, conn.transaction():
+            facts.append(await _general_edge(conn, alder, birch))
+            facts.append(await _general_edge(conn, cedar, birch, "works_at"))
+            facts.append(await _general_edge(conn, cedar, dogwood))
+            facts.append(await _general_edge(conn, dogwood, alder, "knows"))  # a cycle
+            for _ in range(3):
+                facts.append(await _general_edge(conn, alder, None, withheld=True))
+        _barrier(projected)
+        context = await _context(reader)
+        one = await graph_neighbors(reader, context, {"entity_id": alder})
+        assert {n["entity_id"]: n["hop"] for n in one["nodes"]} == {birch: 1, dogwood: 1}
+        assert one["withheld"] == 3
+        receipt = next(e for e in one["edges"] if birch in (e["object_entity_id"],))
+        assert set(receipt) == {
+            "id",
+            "subject_entity_id",
+            "predicate",
+            "object_entity_id",
+            "source",
+        }
+        assert receipt["source"]["uri"] == f"butlers://relationship/edge/{receipt['id']}"
+        assert "withheld edge" not in json.dumps(one)
+
+        two = await graph_neighbors(reader, context, {"entity_id": alder, "hops": 2})
+        assert {n["entity_id"]: n["hop"] for n in two["nodes"]} == {
+            birch: 1,
+            dogwood: 1,
+            cedar: 2,
+        }
+        assert alder not in {n["entity_id"] for n in two["nodes"]}
+        knows = await graph_neighbors(
+            reader, context, {"entity_id": alder, "hops": 2, "predicates": ["knows"]}
+        )
+        assert {n["entity_id"] for n in knows["nodes"]} == {birch, dogwood, cedar}
+        assert {e["predicate"] for e in knows["edges"]} == {"knows"}
+        capped = await graph_neighbors(reader, context, {"entity_id": alder, "hops": 2, "limit": 2})
+        assert [n["hop"] for n in capped["nodes"]] == [1, 1] and capped["truncated"] is True
+
+        knowledge_off = await _context(reader, disabled=frozenset({"knowledge"}))
+        dropped = await graph_neighbors(reader, knowledge_off, {"entity_id": alder})
+        assert dropped["nodes"] == [] and dropped["edges"] == [] and dropped["withheld"] == 0
+
+        path = await graph_path(reader, context, {"from_id": birch, "to_id": dogwood})
+        assert len(path["path"]) == 2
+        steps = path["path"]
+        assert birch in (steps[0]["subject_entity_id"], steps[0]["object_entity_id"])
+        assert dogwood in (steps[-1]["subject_entity_id"], steps[-1]["object_entity_id"])
+        assert await graph_path(reader, context, {"from_id": birch, "to_id": birch}) == {"path": []}
+        assert await graph_path(reader, context, {"from_id": birch, "to_id": elm}) == {"path": None}
+        short = await graph_path(
+            reader, context, {"from_id": birch, "to_id": dogwood, "max_hops": 1}
+        )
+        assert short == {"path": None}
+        assert await graph_path(reader, knowledge_off, {"from_id": birch, "to_id": dogwood}) == {
+            "path": None
+        }
+        missing = await _refused(
+            graph_path(reader, context, {"from_id": birch, "to_id": str(uuid.uuid4())})
+        )
+        assert missing.code == "not_found"
+        too_far = await _refused(
+            graph_path(reader, context, {"from_id": birch, "to_id": elm, "max_hops": 5})
+        )
+        assert too_far.code == "invalid_argument"
+    finally:
+        await primary.execute("DELETE FROM general.facts WHERE id = ANY($1)", facts)
+        for entity in (alder, birch, cedar, dogwood, elm):
+            await primary.execute(
+                "DELETE FROM public.entity_graph_edges WHERE subject_entity_id=$1 "
+                "OR object_entity_id=$1",
+                uuid.UUID(entity),
+            )
+            await primary.execute("DELETE FROM public.entities WHERE id=$1", uuid.UUID(entity))
+        _barrier(projected)
+
+
+async def test_trips_expose_expiry_not_document_numbers(projected, primary, reader):
+    """REQ-public-mcp-surface-008 trips clause."""
+    trip = await primary.fetchval(
+        "INSERT INTO travel.trips(name,destination,start_date,end_date,status) VALUES "
+        "('Trips reader trip','Kyoto','2026-07-01','2026-07-05','active') RETURNING id"
+    )
+    other = await primary.fetchval(
+        "INSERT INTO travel.trips(name,destination,start_date,end_date,status) VALUES "
+        "('Trips reader old','Porto','2025-07-01','2025-07-05','completed') RETURNING id"
+    )
+    try:
+        leg = await primary.fetchval(
+            "INSERT INTO travel.legs(trip_id,type,carrier,departure_city,departure_at,"
+            "arrival_city,arrival_at,confirmation_number) VALUES ($1,'flight','JL','Tokyo',"
+            "'2026-07-01T01:00:00+00:00','Kyoto','2026-07-01T03:00:00+00:00','CONF-TRIP-77')"
+            " RETURNING id",
+            trip,
+        )
+        document = await primary.fetchval(
+            "INSERT INTO travel.documents(trip_id,type,blob_ref,expiry_date,metadata) VALUES "
+            "($1,'visa','blob://doc-marker','2027-01-31','{\"number\":\"DOCNO-MARKER-5\"}')"
+            " RETURNING id",
+            trip,
+        )
+        _barrier(projected)
+        context = await _context(reader)
+        result = await trips(reader, context, {"trip_id": str(trip)})
+        (only,) = result["trips"]
+        assert (only["name"], only["status"], only["destination"]) == (
+            "Trips reader trip",
+            "active",
+            "Kyoto",
+        )
+        assert only["source"]["uri"] == f"butlers://travel/trip/{trip}"
+        assert [leg_["id"] for leg_ in only["legs"]] == [str(leg)]
+        assert only["legs"][0]["carrier"] == "JL"
+        assert only["documents"] == [
+            {
+                "id": str(document),
+                "type": "visa",
+                "expiry_date": "2027-01-31",
+                "source": context.source("document", f"butlers://travel/document/{document}"),
+            }
+        ]
+        text_ = json.dumps(result)
+        assert "CONF-TRIP-77" not in text_ and "MARKER" not in text_
+        active = await trips(reader, context, {"status": "active"})
+        assert str(trip) in {t["id"] for t in active["trips"]}
+        assert str(other) not in {t["id"] for t in active["trips"]}
+        assert (await _refused(trips(reader, context, {"status": "booked"}))).code == (
+            "invalid_argument"
+        )
+        gone = await _refused(trips(reader, context, {"trip_id": str(uuid.uuid4())}))
+        assert gone.code == "not_found"
+        off = await _context(reader, disabled=frozenset({"travel"}))
+        assert (await _refused(trips(reader, off, {}))).code == "domain_disabled"
+    finally:
+        await primary.execute("DELETE FROM travel.trips WHERE id = ANY($1)", [trip, other])
+        _barrier(projected)
+
+
+async def test_describe_reports_switches_freshness_and_the_replicated_digest(
+    projected, primary, reader
+):
+    """REQ-public-mcp-surface-006 describe clause."""
+    from butlers.knowledge_read.describe import TOOLS, describe
+
+    context = await _context(reader, disabled=frozenset({"health"}))
+    described = await describe(reader, context, {})
+    assert set(described) == {
+        "server_version",
+        "manifest_digest",
+        "domains",
+        "as_of",
+        "tools",
+        "columns",
+    }
+    assert described["manifest_digest"] == load_manifest().digest
+    assert described["domains"]["health"] == "disabled"
+    assert {d: s for d, s in described["domains"].items() if d != "health"} == {
+        d: "enabled" for d in described["domains"] if d != "health"
+    }
+    assert described["tools"] == list(TOOLS) and len(TOOLS) == 19
+    assert "publish_key" not in described["columns"]["public.entity_graph_edges"]
+    assert "deleted" not in described["columns"]["public.entities"]
+    assert (await _refused(describe(reader, context, {"x": 1}))).code == "invalid_argument"
+
+    stale = await read_context(
+        reader,
+        sub="github|1",
+        cursor_key=KEY,
+        disabled_domains=frozenset({"finance"}),
+        now=context.as_of + timedelta(minutes=20),
+    )
+    late = await describe(reader, stale, {})
+    assert late["domains"]["finance"] == "disabled"
+    assert {s for d, s in late["domains"].items() if d != "finance"} == {"stale"}
+    assert (await _refused(trips(reader, stale, {}))).code == "projection_stale"
+
+    # The replicated owner switch is a layer describe reads for itself.
+    try:
+        with projected[0].engine.begin() as conn:
+            conn.execute(
+                text("UPDATE mcp_surface.controls SET state='disabled' WHERE domain='travel'")
+            )
+        _barrier(projected)
+        switched = await describe(reader, await _context(reader), {})
+        assert switched["domains"]["travel"] == "disabled"
+    finally:
+        with projected[0].engine.begin() as conn:
+            conn.execute(text("UPDATE mcp_surface.controls SET state='enabled'"))
+        _barrier(projected)

@@ -76,6 +76,7 @@ class ReadContext:
 
     ``cursor_key`` is the host's process-lifetime random key, so a restart invalidates every
     cursor. ``disabled_domains`` is the union of every kill-switch layer the host can see.
+    ``dashboard_base`` is the configured dashboard origin that ``url`` deep links start with.
     """
 
     sub: str
@@ -83,6 +84,7 @@ class ReadContext:
     now: datetime
     cursor_key: bytes = field(repr=False)
     disabled_domains: frozenset[str] = frozenset()
+    dashboard_base: str = ""
 
     @property
     def freshness(self) -> str:
@@ -117,6 +119,10 @@ class ReadContext:
             "content_authority": content_authority,
         }
 
+    def link(self, path: str) -> str:
+        """A dashboard deep link: the configured base plus a fixed path, never a query (D10)."""
+        return self.dashboard_base.rstrip("/") + path
+
     def aggregate_source(self, domain: str, tool: str) -> dict[str, str | None]:
         return {"kind": tool, "uri": f"butlers://{domain}/{tool}", "as_of": _iso(self.as_of)}
 
@@ -128,6 +134,7 @@ async def read_context(
     cursor_key: bytes,
     disabled_domains: frozenset[str] = frozenset(),
     now: datetime | None = None,
+    dashboard_base: str = "",
 ) -> ReadContext:
     """Read the replication time once (D17) and bind it to this request."""
     as_of = await conn.fetchval("SELECT mcp_read.replication_as_of()")
@@ -137,6 +144,7 @@ async def read_context(
         now=now or datetime.now(UTC),
         cursor_key=cursor_key,
         disabled_domains=frozenset(disabled_domains),
+        dashboard_base=dashboard_base,
     )
 
 
@@ -163,6 +171,11 @@ def published(source: str, tool: str) -> tuple[Table, str]:
                 raise LookupError(f"{source} is not a source of {tool}")
             return table, "mcp_read." + source.replace(".", "__")
     raise LookupError(f"{source} is not published")
+
+
+def tables_for(tool: str) -> tuple[Table, ...]:
+    """Every manifest entry assigned to ``tool``, in manifest order."""
+    return tuple(t for t in _manifest().tables if tool in t.tools)
 
 
 def record_uri(table: Table, row_id: str) -> tuple[str, str]:
@@ -265,6 +278,12 @@ class Arguments:
             raise ReadError("invalid_argument", argument=name)
         return self._keep(name, value)
 
+    def optional_uuid(self, name: str) -> str | None:
+        """:meth:`uuid` for an argument that may be absent."""
+        if self._get(name, False) is None:
+            return self._keep(name, None)
+        return self.uuid(name)
+
     def uuid(self, name: str) -> str:
         value = self._get(name, True)
         try:
@@ -287,6 +306,12 @@ class Arguments:
             raise ReadError("invalid_argument", argument=name)
         self._keep(name, parsed.isoformat())
         return parsed
+
+    def optional_instant(self, name: str) -> datetime | None:
+        """:meth:`instant` for an argument that may be absent."""
+        if self._get(name, False) is None:
+            return self._keep(name, None)
+        return self.instant(name)
 
     def instant(self, name: str) -> datetime:
         """An ISO 8601 date or offset-qualified date-time; a bare date is UTC midnight."""
