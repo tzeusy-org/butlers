@@ -80,3 +80,11 @@ The owning upstream HTTP suite also has six literal TLS classification/fallback
 failures in this host configuration. The pristine pinned upstream source with
 the same lock normalization reproduces those same six failures; they remain
 failures and are neither removed nor treated as a passing native suite.
+
+The compiler supplement includes pinned Debian `patch` 2.8-2 alongside the
+three OpenSSL development/runtime archives. The unchanged source preparer
+executes this tool; it is a build dependency, not a replacement patch engine.
+The complete four-archive install is bound to the declared original compiler
+profile and measured output dpkg status. A contained independent-root control
+runs that local installer and the actual four-patch preparer; absence of the
+tool fails rather than selecting a different source or toolchain.

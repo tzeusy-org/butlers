@@ -1,5 +1,6 @@
 """Public-input and closure boundaries; these tests never compile a vendor CLI."""
 
+import ast
 import hashlib
 import importlib.util
 import io
@@ -15,6 +16,29 @@ SOURCE = Path(__file__).resolve().parents[2] / "scripts/runtime_clis/produce_cod
 SPEC = importlib.util.spec_from_file_location("_test_codex_artifact_producer", SOURCE)
 producer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(producer)
+
+
+def test_declared_compiler_profile_supplies_the_actual_preparer_patch_command():
+    root = SOURCE.parents[2]
+    preparation = ast.parse((root / "scripts/runtime_clis/prepare_vendor.py").read_text())
+    commands = {
+        node.args[0].elts[0].value
+        for node in ast.walk(preparation)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "subprocess"
+        and node.func.attr == "run"
+        and node.args
+        and isinstance(node.args[0], ast.List)
+        and node.args[0].elts
+        and isinstance(node.args[0].elts[0], ast.Constant)
+    }
+    assert "patch" in commands  # Position this boundary on the real preparer.
+    supplement = json.loads((root / "deploy/runtime-clis/codex/compiler-inputs.json").read_text())
+    admitted = set(supplement["profiles"]["compiler"]["debs"])
+    packages = {item["package"] for item in supplement["debs"] if item["filename"] in admitted}
+    assert "patch" in packages, "the Docker compiler closure must supply its real preparer tool"
 
 
 def archive(path, entries):
@@ -149,12 +173,12 @@ def test_compiler_supplement_keeps_original_profiles_separate():
     predecessor = root / supplemental["predecessor"]["path"]
     assert producer.digest(predecessor) == supplemental["predecessor"]["sha256"]
     assert set(supplemental["profiles"]) == {"compiler"}
-    assert {x["package"] for x in supplemental["debs"]} == {
-        "libssl-dev",
-        "libssl3t64",
-        "openssl-provider-legacy",
+    assert {x["package"]: x["version"] for x in supplemental["debs"]} == {
+        "libssl-dev": "3.5.7-1~deb13u3",
+        "libssl3t64": "3.5.7-1~deb13u3",
+        "openssl-provider-legacy": "3.5.7-1~deb13u3",
+        "patch": "2.8-2",
     }
-    assert {x["version"] for x in supplemental["debs"]} == {"3.5.7-1~deb13u3"}
 
 
 def test_compiler_environment_excludes_ambient_transport_and_loader_overrides():
