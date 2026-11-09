@@ -20,7 +20,9 @@ On dev the `migrations` initContainer also runs `butlers public-mcp reconcile` a
 (`publicMcp.reconcile: true` in `values.dev.yaml`; off by default, because reconcile refuses
 without the CNPG projection prerequisites). After `record-deploy.sh`, whatever it returned,
 `deploy-dev` runs `scripts/k8s/public-mcp-owner-step.sh`, the public MCP owner step (RFC 0039
-D3, OD20), and exits with the first non-zero status. `PUBLIC_MCP_OWNER_STEP_dev := off` in this
+D3, OD20), and exits with the first non-zero status. The step renders its superuser SQL from the
+git tree of `TAG` in this checkout, so the tag must be a local commit. An image without
+`public-mcp reconcile` (a rollback) skips reconcile with a notice. `PUBLIC_MCP_OWNER_STEP_dev := off` in this
 makefile, set in a reviewed change, skips the step. See
 [Public MCP Read Surface](../../../docs/operations/public-mcp-read-surface.md).
 

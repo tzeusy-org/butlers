@@ -256,7 +256,9 @@ SELECT rolconfig FROM pg_roles WHERE rolname = 'mcp_public_ro';  -- {statement_t
 ### 3b. Deploy the `butlers` chart: reconcile
 
 **Now on dev.** The migrations initContainer of `dashboard-api` (what RFC 0039 calls the
-migration Job) runs Alembic, then `butlers public-mcp reconcile` as the migration user. The chart
+migration Job) runs Alembic, then `butlers public-mcp reconcile` as the migration user. An image
+without that command (a rollback to a tag before it) skips it with a notice instead of failing the
+rollout; the owner step's guard then refuses, which is fail-closed. The chart
 value `publicMcp.reconcile` turns this on; it is true only in `values.dev.yaml`, because reconcile
 refuses where `init-db.sql` has not created `mcp_surface` (no CNPG projection roles or
 `butlers_public`). Reconcile makes publication `butlers_public_v1` equal the manifest and writes the
@@ -290,9 +292,14 @@ owner step".
    readiness. Its exit status is kept, not acted on yet.
 3. `scripts/k8s/public-mcp-owner-step.sh dev <tag>`, whatever step 2 returned. A release can fail
    after reconcile has run (a later rollout or the readiness wait), so the step must still purge
-   a narrowing. It picks the running `dashboard-api` pod whose image tag is `<tag>` (and fails if
-   none is), checks the pod's command listing for `owner-sql`, captures the whole file from that
-   pod, and only then pipes it to the superuser `psql` in the primary. Nothing is written to disk.
+   a narrowing. It requires a running `dashboard-api` pod whose image tag is exactly `<tag>` (and
+   fails if none is), then renders the file from the git tree of `<tag>` in the deployer's
+   checkout (`git archive` into a temporary directory, `uv run --project <tree> butlers public-mcp
+   owner-sql`), never from the pod, which is privileged and writable. It checks the tree's command
+   listing for `owner-sql`, captures the whole file, refuses it if a psql meta-command outside the
+   allowlist or a backtick appears (`scripts/k8s/public_mcp_sql_guard.py`), and only then pipes it
+   to the superuser `psql` in the primary. Nothing is written to the checkout. The tag must be a
+   commit in the checkout, so fetch before deploying a tag built elsewhere.
    When the migrations did not reconcile this manifest, the file's guard refuses and changes
    nothing (D3 step 1).
 4. **Lands with `bu-y66o00.6`** (task 2.4): after step 3 exits 0, the public chart
@@ -465,10 +472,11 @@ values. The publisher has no credential at all (OD14). `kubectl exec`, attach an
 instance pods, pod creation, Secret read and `Cluster` writes in `postgres-<env>`, and node access
 are already superuser-equivalent (D9, residual risk), so they stay with the owner.
 
-On dev the owner step's superuser SQL is emitted by the deployed `dashboard-api` pod (3c), so it
-trusts that image and pod, which run privileged; setting `dashboardApi.privileged=false` would not
-remove that trust. The tag check and the captured output narrow it to the deployed tag's pod and
-a complete file (RFC 0039 D9, residual risk).
+On dev the owner step's superuser SQL is rendered from the deployed tag's git tree in the
+deployer's checkout (3c), not taken from the privileged `dashboard-api` pod, so code in that pod
+cannot reach the superuser path. The SQL trusts the tag's git objects and the dependencies `uv`
+installs for them; the meta-command allowlist keeps `\!` and backticks off it (RFC 0039 D9,
+residual risk).
 
 ## Related
 

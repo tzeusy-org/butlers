@@ -292,9 +292,10 @@ reconcile` after Alembic (`publicMcp.reconcile`, true only in `values.dev.yaml`)
 publication that `butlers public-mcp reconcile` writes in the `migrations` initContainer. A
 release can fail after reconcile (a later rollout or the readiness wait), so the step still runs
 then; when the migrations did not reconcile, its guard refuses and changes nothing.
-`scripts/k8s/public-mcp-owner-step.sh dev <tag>` picks the `dashboard-api` pod running `<tag>`,
-captures `butlers public-mcp owner-sql` from it, and only then pipes it to `psql` as the same
-CNPG local superuser. It runs on every deploy and changes nothing when the manifest is unchanged.
+`scripts/k8s/public-mcp-owner-step.sh dev <tag>` requires the `dashboard-api` pod running exactly
+`<tag>`, renders `butlers public-mcp owner-sql` from the git tree of `<tag>` in this checkout
+(never from the privileged pod), refuses any psql meta-command outside a short allowlist, and only
+then pipes it to `psql` as the same CNPG local superuser. It runs on every deploy and changes nothing when the manifest is unchanged.
 Once the public chart `deploy/helm/butlers-public-mcp` exists (`bu-y66o00.6`, task 2.4), the
 same target upgrades it at the same tag after the step succeeds. If the step fails, the target prints `public-mcp owner step FAILED` and exits non-zero;
 nothing rolls back, and the release and its deployments row stand. After a manifest change the

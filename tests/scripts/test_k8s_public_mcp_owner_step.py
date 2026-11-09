@@ -1,6 +1,8 @@
 """scripts/k8s/public-mcp-owner-step.sh and its deploy-% wiring (RFC 0039 D3, OD20).
 
-A stubbed `kubectl` plays the dashboard-api pod and the CNPG primary. Nothing reaches a cluster.
+Stubs play the cluster (`kubectl`: the dashboard-api pods and the CNPG primary), the checkout
+(`git`: the tag's commit and tree) and the renderer (`uv run --project <tree> butlers ...`).
+Nothing reaches a cluster. The real meta-command guard runs on the rendered file.
 """
 
 from __future__ import annotations
@@ -18,30 +20,56 @@ from butlers.cli import cli
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO_ROOT / "scripts/k8s/public-mcp-owner-step.sh"
+_GUARD = _REPO_ROOT / "scripts/k8s/public_mcp_sql_guard.py"
 _SQL = "\\set ON_ERROR_STOP on\nSELECT 'owner step fixture';"
 _TAG = "abc123def456"
+_COMMIT = _TAG + "0" * 28
 _IMAGE = f"registry.invalid/butlers-app:{_TAG}"
 
 # Each call is logged; the response comes from the environment the test sets.
 _KUBECTL = r"""#!/usr/bin/env bash
 echo "kubectl $*" >> "$CALL_LOG"
 case "$*" in
-  *"get pods -l app.kubernetes.io/component=dashboard-api"*)
+  *"get pods -l app.kubernetes.io/component=dashboard-api,app.kubernetes.io/instance=butlers "*)
     printf '%b' "$PODS"; exit "${PODS_RC:-0}" ;;
   *"get pod -l cnpg.io/cluster=postgres-dev,cnpg.io/instanceRole=primary"*)
     printf '%s\n' $PRIMARIES ;;
-  *"-c dashboard-api -- /app/.venv/bin/butlers public-mcp owner-sql"*)
-    [ "${GEN_RC:-0}" = 0 ] || { echo "Usage: butlers public-mcp [OPTIONS]" >&2; exit "$GEN_RC"; }
-    printf '%s\n' "$SQL" ;;
-  *"-c dashboard-api -- /app/.venv/bin/butlers public-mcp --help"*)
-    printf '%s\n' "$HELP_PUBLIC_MCP" ;;
-  *"-c dashboard-api -- /app/.venv/bin/butlers --help"*)
-    printf '%s\n' "$HELP"; exit "${HELP_RC:-0}" ;;
   *"-c postgres -- psql"*)
     cat > "$STDIN_LOG"
     [ "${PSQL_RC:-0}" = 0 ] || { echo "ERROR:  public MCP digest refused" >&2; exit "$PSQL_RC"; }
     ;;
+  *"-c dashboard-api"*)
+    # A compromised pod: whatever it prints must never reach psql.
+    printf '%s\n' "\\! touch $STDIN_LOG.pwned" ;;
   *) echo "unexpected kubectl call: $*" >&2; exit 99 ;;
+esac
+"""
+# The tag's commit and its tree: a marker file proves the renderer ran on the archived tree.
+_GIT = r"""#!/usr/bin/env bash
+echo "git $*" >> "$CALL_LOG"
+case "$*" in
+  *"rev-parse --verify --quiet "*"^{commit}"*)
+    [ -n "${COMMIT:-}" ] || exit 1; echo "$COMMIT" ;;
+  *"archive --format=tar $COMMIT"*)
+    [ "${ARCHIVE_RC:-0}" = 0 ] || exit "$ARCHIVE_RC"
+    tar -C "$TREE" -cf - . ;;
+  *) echo "unexpected git call: $*" >&2; exit 99 ;;
+esac
+"""
+_UV = r"""#!/usr/bin/env bash
+echo "uv $*" >> "$CALL_LOG"
+[ "$1 $2" = "run --project" ] && [ -f "$3/TREE_OF_TAG" ] || { echo "not the tag tree" >&2; exit 98; }
+[ -z "${UV_PROJECT_ENVIRONMENT:-}${VIRTUAL_ENV:-}" ] || { echo "inherited venv" >&2; exit 97; }
+shift 3
+args="$*" rest="${args#--frozen --no-dev --quiet butlers }"
+[ "$args" = "--frozen --no-dev --quiet butlers $rest" ] || exit 96
+case "$rest" in
+  "--help") printf '%s\n' "$HELP"; exit "${HELP_RC:-0}" ;;
+  "public-mcp --help") printf '%s\n' "$HELP_PUBLIC_MCP" ;;
+  "public-mcp owner-sql")
+    [ "${GEN_RC:-0}" = 0 ] || { echo "Usage: butlers public-mcp [OPTIONS]" >&2; exit "$GEN_RC"; }
+    printf '%s\n' "$SQL" ;;
+  *) exit 95 ;;
 esac
 """
 
@@ -56,24 +84,26 @@ def _help(*args: str) -> str:
 def tools(tmp_path: Path) -> Path:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    kubectl = bin_dir / "kubectl"
-    kubectl.write_text(_KUBECTL, encoding="utf-8")
-    kubectl.chmod(0o755)
+    for name, body in (("kubectl", _KUBECTL), ("git", _GIT), ("uv", _UV)):
+        stub = bin_dir / name
+        stub.write_text(body, encoding="utf-8")
+        stub.chmod(0o755)
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "TREE_OF_TAG").write_text("", encoding="utf-8")
     return tmp_path
 
 
-def _run(root: Path, *args: str, **env: str) -> tuple[int, str, list[str]]:
-    log = root / "calls.log"
-    log.write_text("", encoding="utf-8")
-    stdin_log = root / "stdin.log"
-    stdin_log.unlink(missing_ok=True)
-    environment = {
+def _environment(root: Path, **env: str) -> dict[str, str]:
+    return {
         "PATH": f"{root / 'bin'}:{os.environ['PATH']}",
-        "CALL_LOG": str(log),
-        "STDIN_LOG": str(stdin_log),
-        # Wrong tag, then a terminating pod on the right tag, then the one to use.
+        "CALL_LOG": str(root / "calls.log"),
+        "STDIN_LOG": str(root / "stdin.log"),
+        "TREE": str(root / "tree"),
+        "COMMIT": _COMMIT,
+        # Wrong tag, then a terminating pod on the right tag, then the one that rolled out.
         "PODS": (
-            f"api-old <none> registry.invalid/butlers-app:0000000000aa\\n"
+            "api-old <none> registry.invalid/butlers-app:0000000000aa\\n"
             f"api-going 2026-11-09T00:00:00Z {_IMAGE}\\n"
             f"api-new <none> {_IMAGE}\\n"
         ),
@@ -83,9 +113,15 @@ def _run(root: Path, *args: str, **env: str) -> tuple[int, str, list[str]]:
         "SQL": _SQL,
         **env,
     }
+
+
+def _run(root: Path, *args: str, **env: str) -> tuple[int, str, list[str]]:
+    log = root / "calls.log"
+    log.write_text("", encoding="utf-8")
+    (root / "stdin.log").unlink(missing_ok=True)
     result = subprocess.run(
         ["bash", str(_SCRIPT), *args],
-        capture_output=True, text=True, env=environment, cwd=root,
+        capture_output=True, text=True, env=_environment(root, **env), cwd=root,
     )  # fmt: skip
     return result.returncode, result.stderr, log.read_text(encoding="utf-8").splitlines()
 
@@ -95,21 +131,56 @@ def _psql_fed(root: Path) -> str | None:
     return path.read_text(encoding="utf-8") if path.exists() else None
 
 
-def test_dev_pipes_the_tag_pods_owner_sql_into_the_primary_as_superuser(tools: Path) -> None:
-    code, stderr, calls = _run(tools, "dev", _TAG, "on")
+def test_dev_renders_the_tags_tree_and_pipes_it_to_the_primary_as_superuser(
+    tools: Path,
+) -> None:
+    code, stderr, calls = _run(tools, "dev", _TAG, "on", "butlers")
     assert code == 0, stderr
+    assert calls[0] == f"git -C {_REPO_ROOT} rev-parse --verify --quiet {_TAG}^{{commit}}"
+    assert "--field-selector=status.phase=Running --no-headers" in calls[1]
+    assert calls[2] == f"git -C {_REPO_ROOT} archive --format=tar {_COMMIT}"
+    renders = [call.split(" butlers ", 1)[1] for call in calls if call.startswith("uv ")]
+    assert renders == ["--help", "public-mcp --help", "public-mcp owner-sql"]
     execs = [call for call in calls if " exec " in call]
-    assert [call.split(" -- ", 1)[1] for call in execs] == [
-        "/app/.venv/bin/butlers --help",
-        "/app/.venv/bin/butlers public-mcp --help",
-        "/app/.venv/bin/butlers public-mcp owner-sql",
-        "psql -X -q -v ON_ERROR_STOP=1 -d butlers -f -",
-    ]
-    assert all(" exec api-new -c dashboard-api " in call for call in execs[:3])
-    assert execs[3].startswith("kubectl -n postgres-dev exec -i pod/postgres-dev-1 -c postgres")
-    assert "--field-selector=status.phase=Running --no-headers" in calls[0]
+    assert len(execs) == 1
+    assert execs[0] == (
+        "kubectl -n postgres-dev exec -i pod/postgres-dev-1 -c postgres -- "
+        "psql -X -q -v ON_ERROR_STOP=1 -d butlers -f -"
+    )
     assert _psql_fed(tools) == _SQL + "\n"
     assert " secret" not in "\n".join(calls)
+
+
+def test_the_program_never_comes_from_a_pod(tools: Path) -> None:
+    """B1: a compromised dashboard-api pod cannot supply the superuser SQL."""
+    code, stderr, calls = _run(tools, "dev", _TAG, "on", "butlers")
+    assert code == 0, stderr
+    assert not any("-c dashboard-api" in call for call in calls)
+    assert "\\!" not in (_psql_fed(tools) or "")
+
+
+def test_the_renderer_ignores_an_inherited_virtualenv(tools: Path) -> None:
+    code, stderr, _calls = _run(
+        tools, "dev", _TAG, "on", "butlers", UV_PROJECT_ENVIRONMENT="/shared/venv",
+        VIRTUAL_ENV="/shared/venv",
+    )  # fmt: skip
+    assert code == 0, stderr
+
+
+@pytest.mark.parametrize(
+    "planted",
+    ["\\! touch /tmp/pwned", "\\set ON_ERROR_STOP `id`", "\\if `id`", "SELECT 1; \\! id"],
+)
+def test_a_planted_meta_command_in_the_rendered_file_feeds_psql_nothing(
+    tools: Path, planted: str
+) -> None:
+    code, stderr, calls = _run(
+        tools, "dev", _TAG, "on", "butlers", SQL=_SQL + "\n" + planted + "\nSELECT 2;"
+    )
+    assert code == 1
+    assert "public-mcp owner step FAILED" in stderr and "allowlist" in stderr
+    assert _psql_fed(tools) is None
+    assert not any("-c postgres" in call for call in calls)
 
 
 @pytest.mark.parametrize(
@@ -120,7 +191,7 @@ def test_dev_pipes_the_tag_pods_owner_sql_into_the_primary_as_superuser(tools: P
         (("prod", _TAG), "manually"),
     ],
 )
-def test_off_switch_and_other_environments_exit_zero_without_kubectl(
+def test_off_switch_and_other_environments_exit_zero_without_any_call(
     tools: Path, args: tuple[str, ...], notice: str
 ) -> None:
     code, stderr, calls = _run(tools, *args)
@@ -131,9 +202,21 @@ def test_off_switch_and_other_environments_exit_zero_without_kubectl(
 
 @pytest.mark.parametrize(
     ("args", "code"),
-    [(("dev", _TAG, "maybe"), 1), (("dev", ""), 2), (("dev",), 2), (("", _TAG), 2)],
+    [
+        (("dev", _TAG, "maybe"), 1),
+        # An explicitly empty switch is refused, not read as on.
+        (("dev", _TAG, ""), 1),
+        (("dev", _TAG, "on", ""), 1),
+        (("dev", _TAG, "on", "Bad_Release"), 1),
+        (("dev", "main", "on"), 1),
+        (("dev", "ABC123DEF456", "on"), 1),
+        (("dev", "abc12", "on"), 1),
+        (("dev", ""), 2),
+        (("dev",), 2),
+        (("", _TAG), 2),
+    ],
 )
-def test_bad_arguments_fail_before_kubectl(tools: Path, args: tuple[str, ...], code: int) -> None:
+def test_bad_arguments_fail_before_any_call(tools: Path, args: tuple[str, ...], code: int) -> None:
     status, stderr, calls = _run(tools, *args)
     assert status == code
     assert "public-mcp owner step FAILED" in stderr
@@ -143,10 +226,18 @@ def test_bad_arguments_fail_before_kubectl(tools: Path, args: tuple[str, ...], c
 @pytest.mark.parametrize(
     ("env", "reason"),
     [
+        ({"COMMIT": ""}, "is not a commit"),
+        ({"COMMIT": "fff123def456" + "0" * 28}, "resolves to"),
         ({"PODS": "api-old <none> registry.invalid/butlers-app:0000000000aa\\n"}, "carries tag"),
         ({"PODS": f"api-going 2026-11-09T00:00:00Z {_IMAGE}\\n"}, "carries tag"),
+        # Exact tag only: a longer or a shorter tag on the only pod does not match.
+        ({"PODS": f"api-x <none> {_IMAGE}0\\n"}, "carries tag"),
+        ({"PODS": f"api-x <none> {_IMAGE[:-1]}\\n"}, "carries tag"),
+        ({"PODS": f"api-x <none> registry.invalid/butlers-app:0{_TAG}\\n"}, "carries tag"),
+        ({"PODS": f"api-x <none> {_TAG}\\n"}, "carries tag"),
         ({"PODS": ""}, "carries tag"),
         ({"PODS_RC": "1"}, "could not list"),
+        ({"ARCHIVE_RC": "1"}, "could not export"),
         ({"HELP_RC": "1"}, "listing failed"),
         ({"GEN_RC": "2"}, "generation failed"),
         ({"SQL": ""}, "printed nothing"),
@@ -157,7 +248,7 @@ def test_bad_arguments_fail_before_kubectl(tools: Path, args: tuple[str, ...], c
 def test_every_failure_before_psql_is_loud_and_feeds_psql_nothing(
     tools: Path, env: dict[str, str], reason: str
 ) -> None:
-    code, stderr, calls = _run(tools, "dev", _TAG, "on", **env)
+    code, stderr, calls = _run(tools, "dev", _TAG, "on", "butlers", **env)
     assert code == 1
     assert "public-mcp owner step FAILED" in stderr and reason in stderr
     assert _psql_fed(tools) is None
@@ -166,7 +257,7 @@ def test_every_failure_before_psql_is_loud_and_feeds_psql_nothing(
 
 def test_a_guard_stop_or_failed_statement_exits_non_zero(tools: Path) -> None:
     """Every stop in the file is RAISE EXCEPTION, so psql exits 3 under ON_ERROR_STOP."""
-    code, stderr, _calls = _run(tools, "dev", _TAG, "on", PSQL_RC="3")
+    code, stderr, _calls = _run(tools, "dev", _TAG, "on", "butlers", PSQL_RC="3")
     assert code == 1
     assert "public-mcp owner step FAILED" in stderr
     assert "digest refused" in stderr
@@ -187,11 +278,11 @@ def test_a_guard_stop_or_failed_statement_exits_non_zero(tools: Path) -> None:
         ),
     ],
 )
-def test_an_image_without_owner_sql_is_a_notice_not_a_failure(
+def test_a_tag_without_owner_sql_is_a_notice_not_a_failure(
     tools: Path, help_text: str, public_mcp_help: str
 ) -> None:
     code, stderr, calls = _run(
-        tools, "dev", _TAG, "on", HELP=help_text, HELP_PUBLIC_MCP=public_mcp_help
+        tools, "dev", _TAG, "on", "butlers", HELP=help_text, HELP_PUBLIC_MCP=public_mcp_help
     )
     assert code == 0, stderr
     assert "has no 'butlers public-mcp owner-sql'" in stderr
@@ -258,7 +349,7 @@ def test_recipe_runs_the_owner_step_after_the_release_with_the_switch(chart: Pat
         "bootstrap-db.sh",
         "record-deploy.sh",
         "public-mcp-owner-step.sh",
-        f"public-mcp-owner-step.sh dev {_TAG} on",
+        f"public-mcp-owner-step.sh dev {_TAG} on butlers",
     ]
 
 
@@ -279,22 +370,16 @@ def test_committed_switch_is_on_and_passed_through_when_overridden(chart: Path) 
     makefile = (_REPO_ROOT / "deploy/helm/butlers/makefile").read_text(encoding="utf-8")
     assert "\nPUBLIC_MCP_OWNER_STEP_dev := on\n" in makefile
     _code, calls = _deploy(chart, "PUBLIC_MCP_OWNER_STEP_dev=off")
-    assert calls[-1] == f"public-mcp-owner-step.sh dev {_TAG} off"
+    assert calls[-1] == f"public-mcp-owner-step.sh dev {_TAG} off butlers"
 
 
 def test_recipe_with_the_real_step_fails_when_the_guard_refuses(chart: Path, tools: Path) -> None:
     """Stubbed migrations that did not reconcile: the file's guard stops psql, the deploy fails."""
-    shutil.copy2(_SCRIPT, chart.parents[2] / "scripts/k8s/public-mcp-owner-step.sh")
-    env = {
-        "PATH": f"{tools / 'bin'}:{os.environ['PATH']}",
-        "STDIN_LOG": str(tools / "stdin.log"),
-        "PODS": f"api-new <none> {_IMAGE}\\n",
-        "PRIMARIES": "pod/postgres-dev-1",
-        "HELP": _help(),
-        "HELP_PUBLIC_MCP": _help("public-mcp"),
-        "SQL": _SQL,
-        "PSQL_RC": "3",
-    }
+    scripts = chart.parents[2] / "scripts/k8s"
+    shutil.copy2(_SCRIPT, scripts / "public-mcp-owner-step.sh")
+    shutil.copy2(_GUARD, scripts / "public_mcp_sql_guard.py")
+    env = _environment(tools, PSQL_RC="3")
+    del env["CALL_LOG"]
     code, _calls = _deploy(chart, **env)
     assert code == 1
     assert _psql_fed(tools) == _SQL + "\n"
@@ -332,13 +417,59 @@ def _migrations(*values: str) -> str:
     return init["args"][0]
 
 
-def test_dev_migrations_reconcile_last_after_every_chain() -> None:
-    steps = [step.strip() for step in _migrations("values.dev.yaml").split("&&")]
-    assert steps == [
-        "uv run --frozen --no-dev butlers db prepare-chronicler-memory --dir /app/roster",
-        "uv run --frozen --no-dev butlers db migrate --dir /app/roster",
-        "exec uv run --frozen --no-dev butlers public-mcp reconcile --database butlers",
-    ]
+_UV_IN_IMAGE = r"""#!/bin/sh
+echo "uv $*" >> "$CALL_LOG"
+case "$*" in
+  *"db migrate"*) exit "${MIGRATE_RC:-0}" ;;
+  *"public-mcp --help"*) [ -n "$PUBLIC_MCP_HELP" ] || exit 2; printf '%s\n' "$PUBLIC_MCP_HELP" ;;
+esac
+exit 0
+"""
+
+
+@pytest.mark.parametrize(
+    ("public_mcp_help", "migrate_rc", "reconciled", "status"),
+    [
+        (None, "0", True, 0),
+        # An image before #5621 has no `public-mcp` group (exit 2) or no `reconcile` yet.
+        ("", "0", False, 0),
+        ("Commands:\n  reconcile-draft  Not it.", "0", False, 0),
+        (None, "1", False, 1),
+    ],
+)
+def test_dev_migrations_reconcile_last_and_skip_an_image_without_it(
+    tmp_path: Path, public_mcp_help: str | None, migrate_rc: str, reconciled: bool, status: int
+) -> None:
+    """The rendered initContainer command, run with a stubbed image `uv`."""
+    args = _migrations("values.dev.yaml")
+    assert args.startswith(
+        "uv run --frozen --no-dev butlers db prepare-chronicler-memory --dir /app/roster"
+        " && uv run --frozen --no-dev butlers db migrate --dir /app/roster && "
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "uv").write_text(_UV_IN_IMAGE, encoding="utf-8")
+    (bin_dir / "uv").chmod(0o755)
+    log = tmp_path / "calls.log"
+    log.write_text("", encoding="utf-8")
+    result = subprocess.run(
+        ["/bin/sh", "-c", args],
+        capture_output=True, text=True, timeout=60,
+        env={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "CALL_LOG": str(log),
+            "MIGRATE_RC": migrate_rc,
+            "PUBLIC_MCP_HELP": _help("public-mcp") if public_mcp_help is None else public_mcp_help,
+        },
+    )  # fmt: skip
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert result.returncode == status, result.stderr
+    reconcile = "uv run --frozen --no-dev butlers public-mcp reconcile --database butlers"
+    assert (calls[-1] == reconcile) is reconciled
+    if migrate_rc == "0" and not reconciled:
+        assert "not in this image" in result.stderr
+    if migrate_rc != "0":
+        assert not any("public-mcp" in call for call in calls)
 
 
 @pytest.mark.parametrize("values", [(), ("values.prod.yaml",)])

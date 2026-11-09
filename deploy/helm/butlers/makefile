@@ -48,7 +48,7 @@ deploy-%:
 	$(MAKE) --no-print-directory bootstrap-$* TAG="$(TAG)"
 	../../../scripts/k8s/record-deploy.sh "$(NAMESPACE_$*)" "$(TAG)" "$(RELEASE_NAME)" -- $(call helm_args,$*); \
 	rd=$$?; \
-	../../../scripts/k8s/public-mcp-owner-step.sh "$*" "$(TAG)" "$(PUBLIC_MCP_OWNER_STEP_$*)"; \
+	../../../scripts/k8s/public-mcp-owner-step.sh "$*" "$(TAG)" "$(PUBLIC_MCP_OWNER_STEP_$*)" "$(RELEASE_NAME)"; \
 	os=$$?; \
 	if [ $$rd -ne 0 ]; then exit $$rd; fi; exit $$os
 
