@@ -29,6 +29,15 @@ consumes `ConditionEvaluator.consume_fire`; it never evaluates predicates itself
   cursors cannot re-fire on its event. The advancing `cursors` are high-water marks for
   receipts and resume only; within a generation latching makes reordering safe. Expiry wins: an
   instance at or past `expires_at` expires before any event or clock fire is considered.
+- Labels (RFC 0038 S1/S4): `register` takes the wait envelope's `Label` snapshot (required; a
+  non-`Label` refuses). It is stored with the instance (`core_324`), is part of the immutable
+  boundary, and is the only label the fire intent and every receipt carry. Nothing joins a wider
+  label into a fire and nothing narrows it; `ConditionEvent` carries no label today, so there is
+  nothing to launder. The runner joins the intent's label into the epoch and inbox row it
+  creates. In PostgreSQL the label is CHECK-validated (`public.condition_label_valid`),
+  immutable once written, and a receipt or fire intent whose label differs from its instance's
+  is refused (23514, an outage-path bug, never `RegistrationRefused`). Rows older than `core_324`
+  took the unknown label.
 - One fire intent exists per instance generation (`Instance.fire_key`); the instance row, the
   receipt and the intent commit in one store transaction. `FireIntent.event_id` is the
   causing event's UUID, or a stable synthetic UUID for registration and clock fires, so the

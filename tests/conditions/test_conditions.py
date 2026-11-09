@@ -23,7 +23,10 @@ from butlers.conditions import (
 )
 from butlers.conditions.memory import InMemoryConditionStore
 from butlers.conditions.predicate import PredicateError, validate
+from butlers.core.goal_labels import Label
 
+#: A non-trivial registered label snapshot, so a default or dropped label cannot pass.
+LABEL = Label(frozenset({"owner"}), frozenset({"owner", "domain:calendar"}), frozenset({"routine"}))
 NS = UUID("11111111-1111-1111-1111-111111111111")
 GOAL = str(uuid5(NS, "goal"))
 SUBJECT = str(uuid5(NS, "subject"))
@@ -95,7 +98,7 @@ async def register(evaluator, predicate, *, snapshot=None, instance_id="c1", **k
         goal_id=GOAL,
         snapshot=snapshot or Snapshot(now=NOW),
         expires_at=EXPIRES,
-        **kw,
+        **{"label": LABEL, **kw},
     )
 
 
@@ -370,6 +373,7 @@ class TestRefusal:
                 predicate=DECISION,
                 grant=grant,
                 goal_id=GOAL,
+                label=LABEL,
                 snapshot=Snapshot(now=NOW),
                 expires_at=EXPIRES,
             )
@@ -381,6 +385,7 @@ class TestRefusal:
                 predicate=DECISION,
                 grant=GRANT,
                 goal_id=str(uuid5(NS, "x")),
+                label=LABEL,
                 snapshot=Snapshot(now=NOW),
                 expires_at=EXPIRES,
             )
@@ -390,6 +395,7 @@ class TestRefusal:
                 predicate=DECISION,
                 grant=GRANT,
                 goal_id=GOAL,
+                label=LABEL,
                 snapshot=Snapshot(now=NOW),
                 expires_at=NOW + timedelta(days=400),
             )
@@ -399,6 +405,7 @@ class TestRefusal:
                 predicate=DECISION,
                 grant=GRANT,
                 goal_id=GOAL,
+                label=LABEL,
                 snapshot=Snapshot(now=NOW),
                 expires_at=NOW,
             )
@@ -605,3 +612,47 @@ class TestReplayFloorIsImmutable:
         await register(evaluator, DECISION, cursors={"goal.decision": 4})
         with pytest.raises(RegistrationRefused):
             await register(evaluator, DECISION, cursors={"goal.decision": 9})
+
+
+class TestLabels:
+    """RFC 0038 S4: evaluation joins labels; the registered snapshot is immutable (bu-dhloi1.196)."""
+
+    async def test_registration_fire_carries_the_registered_label(self, evaluator, store):
+        out = await register(
+            evaluator, DECISION, snapshot=Snapshot(now=NOW, decisions={SUBJECT: "approved"})
+        )
+        assert out.instance.label == LABEL
+        assert out.intent is not None and out.intent.label == LABEL
+        assert out.receipt.label == LABEL
+
+    async def test_event_fire_carries_the_registered_label(self, evaluator, store):
+        await register(evaluator, DECISION)
+        out = await evaluator.evaluate("c1", [decision_ev()], now=NOW)
+        assert out.intent is not None and out.intent.label == LABEL
+        assert {r.label for r in store.receipts} == {LABEL}
+
+    async def test_clock_fire_expiry_and_cancel_receipts_carry_the_label(self, evaluator, store):
+        await register(evaluator, AT, instance_id="a")
+        await evaluator.evaluate("a", [], now=NOW + timedelta(minutes=31))
+        await register(evaluator, DECISION, instance_id="b")
+        await evaluator.evaluate("b", [], now=EXPIRES + timedelta(minutes=1))
+        await register(evaluator, DECISION, instance_id="c")
+        await evaluator.cancel("c", now=NOW)
+        assert len(store.receipts) >= 6 and {r.label for r in store.receipts} == {LABEL}
+        assert all(i.label == LABEL for i in store.intents.values())
+
+    async def test_reregistering_with_a_different_label_refuses(self, evaluator):
+        await register(evaluator, DECISION)
+        wider = LABEL.join(Label.unknown())
+        with pytest.raises(RegistrationRefused):
+            await register(evaluator, DECISION, label=wider)
+        narrower = Label(frozenset({"owner"}), frozenset({"owner"}), frozenset())
+        with pytest.raises(RegistrationRefused):
+            await register(evaluator, DECISION, label=narrower)
+
+    async def test_reregistering_with_the_same_label_is_a_retry(self, evaluator):
+        first = await register(evaluator, DECISION)
+        again = await register(
+            evaluator, DECISION, label=Label(LABEL.instr, LABEL.data, LABEL.sens)
+        )
+        assert again.instance == first.instance

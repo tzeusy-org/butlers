@@ -9,6 +9,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from butlers.core.goal_labels import Label
 from butlers.perception.model import canonical
 
 
@@ -111,6 +112,10 @@ class Instance:
     )  # advancing high-water, receipts/resume
     floor: Mapping[str, int] = field(default_factory=dict)  # immutable exclusive replay floor
     version: int = 0
+    # S1 label snapshot taken at registration. Immutable and part of the boundary; a fire and
+    # every receipt carry exactly this label, never a wider or narrower one. Unknown by default
+    # so an unlabelled path is never authoritative.
+    label: Label = field(default_factory=Label.unknown)
 
     @property
     def fire_key(self) -> UUID:
@@ -135,6 +140,7 @@ class FireIntent:
     snapshot_generation: int
     cursors: Mapping[str, int]
     claimed_by: str | None = None
+    label: Label = field(default_factory=Label.unknown)  # the instance's registered snapshot
 
     @property
     def occurrence(self) -> str:
@@ -155,3 +161,4 @@ class Receipt:
     at: datetime
     snapshot_generation: int = 0
     clock: ClockReading | None = None
+    label: Label = field(default_factory=Label.unknown)  # the instance's registered snapshot

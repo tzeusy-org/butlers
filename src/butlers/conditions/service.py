@@ -27,6 +27,7 @@ from butlers.conditions.model import (
     State,
     Tri,
 )
+from butlers.core.goal_labels import Label
 
 MAX_LIFETIME = timedelta(days=90)
 DEPENDENCY = "system.dep.conditions"
@@ -139,6 +140,7 @@ def _boundary(inst: Instance) -> tuple:
         inst.expires_at,
         tuple(inst.source_boundary),
         tuple(sorted(inst.floor.items())),
+        inst.label,
     )
 
 
@@ -176,12 +178,20 @@ class ConditionEvaluator:
         predicate: object,
         grant: Grant,
         goal_id: str,
+        label: Label,
         snapshot: Snapshot,
         expires_at: datetime,
         generation: int = 1,
         cursors: dict[str, int] | None = None,
     ) -> Outcome:
-        """Validate, evaluate current state (no lost wake), persist, fire if already true."""
+        """Validate, evaluate current state (no lost wake), persist, fire if already true.
+
+        ``label`` is the S1 label snapshot of the registering wait envelope. It is stored with
+        the instance, is part of its immutable boundary, and is the only label the fire intent
+        and every receipt ever carry: a fire joins nothing wider and launders nothing.
+        """
+        if not isinstance(label, Label):
+            raise RegistrationRefused("a registered label snapshot is required")
         canonical = check_registration(
             predicate,
             grant,
@@ -203,6 +213,7 @@ class ConditionEvaluator:
             leaves=initial_leaves(canonical, snapshot),
             cursors=dict(cursors or {}),
             floor=dict(cursors or {}),
+            label=label,
         )
         inst = replace(inst, result=combine(canonical, dict(inst.leaves)))
 
@@ -354,6 +365,7 @@ class ConditionEvaluator:
             fired_at=snap.now,
             snapshot_generation=snap.generation,
             cursors=dict(inst.cursors),
+            label=inst.label,
         )
 
     def _receipt(
@@ -371,4 +383,5 @@ class ConditionEvaluator:
             at=snap.now,
             snapshot_generation=snap.generation,
             clock=self.clock,
+            label=inst.label,
         )

@@ -59,7 +59,7 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   `butler_<schema>_rw` to its own `owning_schema` rows; triggers enforce immutability,
   generation fences and append-only history for every role. See
   [Owner delivery](../api_and_protocols/owner-delivery.md).
-- **`public.condition_*`** -- Goal-condition store (core_323, dark): instances, per-source
+- **`public.condition_*`** -- Goal-condition store (core_323, labels core_324, dark): instances, per-source
   cursors, append-only receipts and unique fire intents for `butlers.conditions`. In `public`
   because RFC 0038 S3 makes condition instances shared coordination projections. Only
   `butler_switchboard_rw` is granted anything, and non-FORCE RLS keeps every other role out even

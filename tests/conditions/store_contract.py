@@ -23,12 +23,14 @@ from butlers.conditions import (
 )
 from butlers.conditions.model import FireIntent
 from butlers.conditions.service import StoreConflict
+from butlers.core.goal_labels import Label
 from tests.conditions.test_conditions import (
     DECISION,
     EFFECT_LEAF,
     EXPIRES,
     GOAL,
     GRANT,
+    LABEL,
     NOW,
     NS,
     SUBJECT,
@@ -56,6 +58,9 @@ class StoreContract:
     async def receipt_reasons(self, store) -> list[str]:
         raise NotImplementedError
 
+    async def receipt_labels(self, store) -> list[Label]:
+        raise NotImplementedError
+
     async def seeded(self):
         store = self.make_store()
         await register(ConditionEvaluator(store), DECISION)
@@ -71,6 +76,7 @@ class StoreContract:
             fired_at=NOW,
             snapshot_generation=0,
             cursors={},
+            label=inst.label,
         )
 
     async def fire(self, store, inst: Instance) -> None:
@@ -131,6 +137,7 @@ class StoreContract:
                 predicate=DECISION,
                 grant=replace(GRANT, goal_id=goal_id),
                 goal_id=goal_id,
+                label=LABEL,
                 snapshot=Snapshot(now=NOW),
                 expires_at=EXPIRES,
             )
@@ -258,3 +265,27 @@ class StoreContract:
         after = await self.instance(store, "c1")
         assert after.leaves == before.leaves and after.version == before.version
         assert retry.instance.state is State.OPEN and await self.intent_count(store) == 0
+
+    # -- labels (bu-dhloi1.196) --------------------------------------------------------------
+
+    async def test_registered_label_round_trips_on_the_instance(self):
+        store, inst = await self.seeded()
+        assert inst.label == LABEL
+        assert (await self.instance(store, "c1")).label == LABEL
+
+    async def test_fire_intent_and_receipts_carry_the_registered_label(self):
+        store = self.make_store()
+        evaluator = ConditionEvaluator(store)
+        await register(evaluator, DECISION)
+        fired = await evaluator.evaluate("c1", [decision_ev()], now=NOW)
+        assert fired.intent is not None
+        claimed = await evaluator.consume_fire("c1", "runner")
+        assert claimed is not None and claimed.label == LABEL
+        labels = await self.receipt_labels(store)
+        assert len(labels) >= 2 and set(labels) == {LABEL}
+
+    async def test_a_label_differing_from_the_registered_one_is_a_changed_boundary(self):
+        store, _ = await self.seeded()
+        with pytest.raises(RegistrationRefused):
+            await register(ConditionEvaluator(store), DECISION, label=LABEL.join(Label.unknown()))
+        assert (await self.instance(store, "c1")).label == LABEL

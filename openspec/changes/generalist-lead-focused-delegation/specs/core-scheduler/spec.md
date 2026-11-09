@@ -225,6 +225,10 @@ Scope: v1-mandatory
 - **WHEN** a registered at leaf is crossed before expiry
 - **THEN** one late fire intent is emitted under the shared event/cursor fence, not one per missed tick
 
+#### Scenario: A time fire carries the envelope label
+- **WHEN** a registered at leaf fires on a time occurrence
+- **THEN** the intent carries the registered envelope label; the clock occurrence contributes no label of its own and cannot widen or narrow it
+
 #### Scenario: A transition is too old for a real-time wake
 - **WHEN** a replayed transition is more than10 minutes old
 - **THEN** historical evidence remains but it cannot fire a real-time transition leaf
