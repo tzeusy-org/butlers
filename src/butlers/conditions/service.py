@@ -30,6 +30,7 @@ from butlers.conditions.model import (
 
 MAX_LIFETIME = timedelta(days=90)
 DEPENDENCY = "system.dep.conditions"
+CONFLICT_RETRIES = 5
 
 
 class ConditionsUnavailable(RuntimeError):
@@ -40,25 +41,36 @@ class RegistrationRefused(ValueError):
     """The request is outside its grant, boundary or the closed language."""
 
 
+class StoreConflict(RuntimeError):
+    """A CAS or commit lost a race; the service re-reads and returns the winner's outcome."""
+
+
 class ConditionTx(Protocol):
     async def get_instance(self, instance_id: str) -> Instance | None:
         """Read with a row lock (``FOR UPDATE``) held to commit."""
 
-    async def insert_instance(self, instance: Instance) -> Instance:
-        """Idempotent by id; same digest returns the stored row, different digest raises."""
+    async def insert_instance(self, instance: Instance) -> tuple[Instance, bool]:
+        """``INSERT .. ON CONFLICT DO NOTHING``: ``(stored row, inserted?)``.
+
+        The flag, never object equality, says whether this call created the row.
+        """
+        ...
 
     async def save_instance(self, instance: Instance, expected_version: int) -> None:
-        """CAS on version; raise on mismatch."""
+        """CAS on version; raise ``StoreConflict`` on mismatch (also at commit)."""
+        ...
 
     async def append_receipt(self, receipt: Receipt) -> None: ...
 
     async def insert_fire_intent(self, intent: FireIntent) -> FireIntent:
         """Unique per fire_key; a second insert returns the original."""
+        ...
 
     async def get_fire_intent(self, fire_key: UUID) -> FireIntent | None: ...
 
     async def claim_fire_intent(self, fire_key: UUID, consumer: str) -> FireIntent | None:
         """First consumer wins; the same consumer re-reads its claim; others get None."""
+        ...
 
 
 class ConditionStore(Protocol):
@@ -112,6 +124,18 @@ def check_registration(
     return canonical
 
 
+def _boundary(inst: Instance) -> tuple:
+    """The immutable part of an instance; a re-registration must match it exactly."""
+    return (
+        inst.predicate_digest,
+        inst.grant_digest,
+        inst.goal_id,
+        inst.generation,
+        inst.expires_at,
+        tuple(inst.source_boundary),
+    )
+
+
 class ConditionEvaluator:
     def __init__(
         self,
@@ -125,15 +149,19 @@ class ConditionEvaluator:
         self.clock = clock
 
     async def _guard(self, coro_factory):
-        try:
-            result = await coro_factory()
-        except (ConditionsUnavailable, RegistrationRefused, KeyError):
-            raise
-        except (OSError, TimeoutError, ConnectionError) as exc:
-            if self.reporter is not None:
-                await self.reporter.report(DEPENDENCY, "down", type(exc).__name__)
-            raise ConditionsUnavailable("conditions store unavailable") from exc
-        return result
+        for attempt in range(CONFLICT_RETRIES):
+            try:
+                return await coro_factory()
+            except StoreConflict:
+                if attempt == CONFLICT_RETRIES - 1:
+                    raise ConditionsUnavailable("conditions store conflict not resolved") from None
+            except (ConditionsUnavailable, RegistrationRefused, KeyError):
+                raise
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                if self.reporter is not None:
+                    await self.reporter.report(DEPENDENCY, "down", type(exc).__name__)
+                raise ConditionsUnavailable("conditions store unavailable") from exc
+        raise AssertionError("unreachable")  # pragma: no cover
 
     async def register(
         self,
@@ -168,23 +196,20 @@ class ConditionEvaluator:
 
         async def run() -> Outcome:
             async with self.store.transaction() as tx:
-                stored = await tx.insert_instance(inst)
-                if stored is not inst and stored != inst:
-                    if (stored.predicate_digest, stored.grant_digest, stored.generation) != (
-                        inst.predicate_digest,
-                        inst.grant_digest,
-                        inst.generation,
-                    ):
+                stored, inserted = await tx.insert_instance(inst)
+                if not inserted:
+                    if _boundary(stored) != _boundary(inst):
                         raise RegistrationRefused("immutable condition instance changed")
                     return await self._existing(tx, stored, snapshot.now)
                 if inst.result is Tri.TRUE:
                     fired = replace(inst, state=State.FIRED, version=1)
                     await tx.save_instance(fired, 0)
+                    event_id = fired.synthetic_event_id("registration")
                     intent = await tx.insert_fire_intent(
-                        self._intent(fired, "registration", "fired:registration", snapshot)
+                        self._intent(fired, event_id, "fired:registration", snapshot)
                     )
                     receipt = self._receipt(
-                        fired, "register", "fired:registration", "registration", snapshot
+                        fired, "register", "fired:registration", str(event_id), snapshot
                     )
                     await tx.append_receipt(receipt)
                     return Outcome(fired, receipt, intent)
@@ -222,7 +247,8 @@ class ConditionEvaluator:
                         self._intent(result.instance, result.trigger, result.reason, snap)
                     )
                 kind = "expire" if result.instance.state is State.EXPIRED else "evaluate"
-                receipt = self._receipt(result.instance, kind, result.reason, result.trigger, snap)
+                trigger = str(result.trigger) if result.trigger else None
+                receipt = self._receipt(result.instance, kind, result.reason, trigger, snap)
                 await tx.append_receipt(receipt)
                 return Outcome(result.instance, receipt, intent)
 
@@ -264,17 +290,17 @@ class ConditionEvaluator:
             inst,
             "evaluate",
             reason or f"existing:{inst.state}",
-            intent.trigger if intent else None,
+            str(intent.event_id) if intent else None,
             Snapshot(now=now),
         )
         return Outcome(inst, receipt, intent)
 
-    def _intent(self, inst: Instance, trigger: str, reason: str, snap: Snapshot) -> FireIntent:
+    def _intent(self, inst: Instance, event_id: UUID, reason: str, snap: Snapshot) -> FireIntent:
         return FireIntent(
             fire_key=inst.fire_key,
             instance_id=inst.id,
             generation=inst.generation,
-            trigger=trigger,
+            event_id=event_id,
             reason=reason,
             fired_at=snap.now,
             snapshot_generation=snap.generation,

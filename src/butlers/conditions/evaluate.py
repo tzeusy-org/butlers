@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from uuid import UUID
 
 from butlers.conditions.model import ConditionEvent, Instance, Snapshot, State, Tri
 from butlers.conditions.predicate import SOURCE_CLOCK, Leaf, leaves
@@ -98,7 +99,7 @@ class Advance:
     instance: Instance
     changed: bool
     reason: str
-    trigger: str | None = None
+    trigger: UUID | None = None  # the fire-event UUID when this advance fired
 
 
 def advance(
@@ -108,42 +109,51 @@ def advance(
     *,
     unmeasurable: frozenset[str] = frozenset(),
 ) -> Advance:
-    """Apply events and time to an open instance; closed instances never change."""
+    """Apply time then events to an open instance; closed instances never change.
+
+    Expiry wins over every fire. Events at or below the instance's durable per-source cursor
+    are an exclusive replay bound and never touch a leaf.
+    """
     if inst.state is not State.OPEN:
         return Advance(inst, False, f"closed:{inst.state}")
+    if now >= inst.expires_at:
+        expired = replace(inst, state=State.EXPIRED, version=inst.version + 1)
+        return Advance(expired, True, "expired")
     leaf_list = list(leaves(inst.predicate))
     values = dict(inst.leaves)
     cursors = dict(inst.cursors)
-    trigger: str | None = None
+    trigger: UUID | None = None
     reason = "pending"
-    for ev in sorted(events, key=lambda e: (e.position, e.id)):
-        if ev.source not in inst.source_boundary or ev.at >= inst.expires_at:
-            continue  # undeclared source or post-expiry evidence never contributes
-        cursors[ev.source] = max(cursors.get(ev.source, -1), ev.position)
-        for leaf in leaf_list:
-            values[leaf.path] = _event_leaf(leaf, values[leaf.path], ev, now)
-        if combine(inst.predicate, values) is Tri.TRUE:
-            trigger, reason = ev.id, "fired:event"
-            break
-    if trigger is None:
-        for leaf in leaf_list:
-            values[leaf.path] = _clock_leaf(leaf, values[leaf.path], now, unmeasurable)
-        if now < inst.expires_at and combine(inst.predicate, values) is Tri.TRUE:
-            trigger, reason = f"clock:{inst.id}:{inst.generation}", "fired:clock"
-            late = [
-                leaf
-                for leaf in leaf_list
-                if leaf.tag == "at" and now - instant(leaf.body["instant"]) > LATE_AT_GRACE
-            ]
-            if late:
-                reason = "fired:clock_late"
-    result = combine(inst.predicate, values)
-    state = inst.state
-    if trigger is not None:
-        state = State.FIRED
-    elif now >= inst.expires_at:
-        state, reason = State.EXPIRED, "expired"
-    new = replace(inst, leaves=values, cursors=cursors, result=result, state=state)
+    # Apply the clock first so an event completing the predicate is the recorded cause.
+    for leaf in leaf_list:
+        values[leaf.path] = _clock_leaf(leaf, values[leaf.path], now, unmeasurable)
+    if combine(inst.predicate, values) is Tri.TRUE:
+        trigger, reason = inst.synthetic_event_id("clock"), "fired:clock"
+        if any(
+            leaf.tag == "at" and now - instant(leaf.body["instant"]) > LATE_AT_GRACE
+            for leaf in leaf_list
+        ):
+            reason = "fired:clock_late"
+    else:
+        for ev in sorted(events, key=lambda e: (e.position, e.id)):
+            floor = inst.cursors.get(ev.source)
+            if ev.source not in inst.source_boundary or ev.at >= inst.expires_at:
+                continue  # undeclared source or post-expiry evidence never contributes
+            if floor is not None and ev.position <= floor:
+                continue  # replay of an interval an earlier generation/run already consumed
+            cursors[ev.source] = max(cursors.get(ev.source, -1), ev.position)
+            for leaf in leaf_list:
+                values[leaf.path] = _event_leaf(leaf, values[leaf.path], ev, now)
+            if combine(inst.predicate, values) is Tri.TRUE:
+                trigger, reason = UUID(ev.id), "fired:event"
+                break
+    new = replace(
+        inst,
+        leaves=values,
+        cursors=cursors,
+        result=combine(inst.predicate, values),
+        state=State.FIRED if trigger is not None else inst.state,
+    )
     changed = (new.leaves, new.cursors, new.result, new.state) != (
         inst.leaves,
         inst.cursors,

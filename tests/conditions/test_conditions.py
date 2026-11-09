@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid5
 
@@ -14,6 +15,7 @@ from butlers.conditions import (
     ConditionEvaluator,
     ConditionEvent,
     ConditionsUnavailable,
+    FireIntent,
     Grant,
     RegistrationRefused,
     Snapshot,
@@ -23,6 +25,7 @@ from butlers.conditions import (
 )
 from butlers.conditions.memory import InMemoryConditionStore
 from butlers.conditions.predicate import PredicateError, validate
+from butlers.conditions.service import StoreConflict
 
 NS = UUID("11111111-1111-1111-1111-111111111111")
 GOAL = str(uuid5(NS, "goal"))
@@ -140,7 +143,7 @@ class TestLeafMatrix:
         await register(evaluator, leaf)
         out = await evaluator.evaluate("c1", [fire()], now=NOW)
         assert out.instance.state is State.FIRED and out.intent is not None
-        assert out.intent.trigger == fire().id
+        assert str(out.intent.event_id) == fire().id
 
     async def test_no_fire_on_non_matching_event(self, evaluator, name):
         leaf, _, miss, _ = LEAVES[name]
@@ -219,10 +222,18 @@ class TestTransitionHorizon:
         edge = transition_ev(at=NOW - timedelta(minutes=10))
         assert (await evaluator.evaluate("c1", [edge], now=NOW)).intent is not None
 
-    @pytest.mark.parametrize("flag", ["late", "retracted", "record"])
-    async def test_late_or_retracted_never_fires(self, evaluator, flag):
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: transition_ev(late=True),
+            lambda: transition_ev(retracted=True),
+            lambda: transition_ev(record=True),
+        ],
+        ids=["late", "retracted", "record"],
+    )
+    async def test_late_or_retracted_never_fires(self, evaluator, make):
         await register(evaluator, TRANSITION)
-        out = await evaluator.evaluate("c1", [transition_ev(**{flag: True})], now=NOW)
+        out = await evaluator.evaluate("c1", [make()], now=NOW)
         assert out.instance.state is State.OPEN
 
 
@@ -395,7 +406,7 @@ class TestExactlyOneFire:
             *(e.evaluate("c1", [decision_ev()], now=NOW) for e in evaluators)
         )
         assert len(store.intents) == 1
-        assert {o.intent.fire_key for o in outs} == {next(iter(store.intents))}
+        assert {o.intent and o.intent.fire_key for o in outs} == {next(iter(store.intents))}
         assert sum(1 for r in store.receipts if r.reason == "fired:event") == 1
 
     async def test_crash_after_commit_replays_same_intent(self, store):
@@ -406,8 +417,9 @@ class TestExactlyOneFire:
         restarted = ConditionEvaluator(store)
         replay = await restarted.evaluate("c1", [decision_ev()], now=NOW)
         assert replay.intent == outcome.intent and len(store.intents) == 1
-        assert (await restarted.consume_fire("c1", "runner-a")).claimed_by == "runner-a"
-        assert (await restarted.consume_fire("c1", "runner-a")).claimed_by == "runner-a"
+        for _ in range(2):
+            claim = await restarted.consume_fire("c1", "runner-a")
+            assert claim is not None and claim.claimed_by == "runner-a"
         assert await restarted.consume_fire("c1", "runner-b") is None
 
     async def test_rollback_loses_nothing(self, store):
@@ -420,7 +432,7 @@ class TestExactlyOneFire:
             ctx = original()
 
             class Ctx:
-                async def __aenter__(self_inner):
+                async def __aenter__(self):
                     tx = await ctx.__aenter__()
                     real = tx.append_receipt
 
@@ -431,7 +443,7 @@ class TestExactlyOneFire:
                     tx.append_receipt = boom
                     return tx
 
-                async def __aexit__(self_inner, *exc):
+                async def __aexit__(self, *exc):
                     return await ctx.__aexit__(*exc)
 
             return Ctx()
@@ -502,3 +514,142 @@ class TestClock:
     def test_non_utc_instant_refused(self):
         with pytest.raises(ValueError):
             resolve_clock(datetime(2026, 1, 1))
+
+
+class TestCursorBound:
+    async def test_rearm_with_prior_cursor_does_not_refire_on_old_event(self, evaluator):
+        await register(evaluator, TRANSITION, instance_id="g1")
+        first = await evaluator.evaluate("g1", [transition_ev(position=5)], now=NOW)
+        g2 = await register(
+            evaluator,
+            TRANSITION,
+            instance_id="g2",
+            generation=2,
+            cursors=dict(first.instance.cursors),
+        )
+        replay = await evaluator.evaluate("g2", [transition_ev(position=5)], now=NOW)
+        assert g2.instance.state is State.OPEN and replay.instance.state is State.OPEN
+        fresh = await evaluator.evaluate("g2", [transition_ev(position=6)], now=NOW)
+        assert fresh.instance.state is State.FIRED
+
+    async def test_event_below_registration_cursor_is_ignored(self, evaluator):
+        await register(evaluator, DECISION, cursors={"goal.decision": 10})
+        out = await evaluator.evaluate("c1", [decision_ev(position=3)], now=NOW)
+        assert out.instance.state is State.OPEN
+        edge = await evaluator.evaluate("c1", [decision_ev(position=11)], now=NOW)
+        assert edge.instance.state is State.FIRED
+
+
+class TestExpiryWins:
+    async def test_event_delivered_after_expiry_never_fires(self, evaluator, store):
+        await register(evaluator, DECISION)
+        out = await evaluator.evaluate(
+            "c1", [decision_ev(at=NOW)], now=EXPIRES + timedelta(hours=5)
+        )
+        assert out.instance.state is State.EXPIRED and not store.intents
+
+
+class TestFireEventIdentity:
+    async def test_event_fire_carries_event_uuid_and_occurrence(self, evaluator):
+        await register(evaluator, DECISION)
+        ev = decision_ev()
+        out = await evaluator.evaluate("c1", [ev], now=NOW)
+        assert out.intent is not None
+        assert str(out.intent.event_id) == ev.id
+        assert out.intent.occurrence == f"gen:1:event:{ev.id}"
+
+    async def test_registration_and_clock_fires_mint_stable_uuids(self, evaluator):
+        snap = Snapshot(now=NOW, decisions={SUBJECT: "approved"})
+        reg = await register(evaluator, DECISION, snapshot=snap, instance_id="r")
+        assert reg.intent is not None and isinstance(reg.intent.event_id, UUID)
+        await register(evaluator, AT, instance_id="a")
+        clock = await evaluator.evaluate("a", [], now=NOW + timedelta(hours=1))
+        assert clock.intent is not None and clock.intent.event_id != reg.intent.event_id
+        again = await evaluator.evaluate("a", [], now=NOW + timedelta(hours=1))
+        assert again.intent == clock.intent
+
+    async def test_stale_at_leaf_does_not_steal_event_attribution(self, evaluator):
+        await register(evaluator, {"tag": "all", "children": [DECISION, AT]})
+        ev = decision_ev(at=NOW + timedelta(minutes=45))
+        out = await evaluator.evaluate("c1", [ev], now=NOW + timedelta(minutes=45))
+        assert out.intent is not None and str(out.intent.event_id) == ev.id
+
+
+class StoreContract:
+    """Store-level guards. A SQL store reuses this suite by overriding ``make_store``."""
+
+    def make_store(self):
+        return InMemoryConditionStore()
+
+    async def seeded(self):
+        store = self.make_store()
+        ev = ConditionEvaluator(store)
+        await register(ev, DECISION)
+        return store, store.instances["c1"]
+
+    async def test_insert_instance_reports_whether_it_inserted(self):
+        store = self.make_store()
+        ev = ConditionEvaluator(store)
+        await register(ev, DECISION)
+        inst = store.instances["c1"]
+        async with store.transaction() as tx:
+            stored, inserted = await tx.insert_instance(inst)
+        assert not inserted and stored.id == "c1"
+        async with store.transaction() as tx:
+            _, inserted = await tx.insert_instance(replace(inst, id="c2"))
+        assert inserted
+
+    async def test_second_fire_intent_returns_the_original(self):
+        store, inst = await self.seeded()
+        first = FireIntent(
+            fire_key=inst.fire_key,
+            instance_id="c1",
+            generation=1,
+            event_id=uuid5(NS, "a"),
+            reason="fired:event",
+            fired_at=NOW,
+            snapshot_generation=0,
+            cursors={},
+        )
+        async with store.transaction() as tx:
+            await tx.insert_fire_intent(first)
+        async with store.transaction() as tx:
+            second = await tx.insert_fire_intent(replace(first, event_id=uuid5(NS, "b")))
+        assert second.event_id == first.event_id
+
+    async def test_stale_version_save_raises(self):
+        store, inst = await self.seeded()
+        async with store.transaction() as tx:
+            await tx.save_instance(replace(inst, version=1), 0)
+        with pytest.raises(StoreConflict):
+            async with store.transaction() as tx:
+                await tx.save_instance(replace(inst, version=1), 0)
+
+    async def test_interleaved_transactions_lose_exactly_one(self):
+        store, inst = await self.seeded()
+        a, b = store.transaction(), store.transaction()
+        ta, tb = await a.__aenter__(), await b.__aenter__()
+        read_a, read_b = await ta.get_instance("c1"), await tb.get_instance("c1")
+        assert read_a is not None and read_a.state is State.OPEN
+        assert read_b is not None and read_b.state is State.OPEN
+        fired = replace(inst, state=State.FIRED, version=1)
+        await ta.save_instance(fired, 0)
+        await tb.save_instance(fired, 0)
+        await a.__aexit__(None, None, None)
+        with pytest.raises(StoreConflict):
+            await b.__aexit__(None, None, None)
+        assert store.instances["c1"].version == 1
+
+    async def test_racing_evaluators_through_interleaving_store_fire_once(self):
+        store, _ = await self.seeded()
+        evaluators = [ConditionEvaluator(store) for _ in range(8)]
+        outs = await asyncio.gather(
+            *(e.evaluate("c1", [decision_ev()], now=NOW) for e in evaluators)
+        )
+        assert len(store.intents) == 1
+        assert len({o.intent.fire_key for o in outs if o.intent}) == 1
+        assert sum(1 for r in store.receipts if r.reason == "fired:event") == 1
+
+
+class TestInMemoryStoreContract(StoreContract):
+    pass

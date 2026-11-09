@@ -18,9 +18,19 @@ consumes `ConditionEvaluator.consume_fire`; it never evaluates predicates itself
   unmeasurable source is `unknown`, never `false`. Transition leaves ignore events that are
   late, retracted, retraction records, or older than 10 minutes. An `at` leaf crossed by a
   clock jump fires once (`fired:clock_late`) if the instance has not expired.
+- Events at or below an instance's per-source cursor are an exclusive replay bound: a rearm
+  that passes the prior generation's cursors cannot re-fire on its event. Expiry wins: an
+  instance at or past `expires_at` expires before any event or clock fire is considered.
 - One fire intent exists per instance generation (`Instance.fire_key`); the instance row, the
-  receipt and the intent commit in one store transaction. `consume_fire` lets the first
-  consumer claim it; the same consumer may re-read its claim after a crash.
+  receipt and the intent commit in one store transaction. `FireIntent.event_id` is the
+  causing event's UUID, or a stable synthetic UUID for registration and clock fires, so the
+  runner builds `gen:<generation>:event:<uuid>` (`FireIntent.occurrence`) without inventing
+  an id. `consume_fire` lets the first consumer claim it; the same consumer may re-read its
+  claim after a crash.
+- The store contract (`ConditionTx`): `insert_instance` returns `(row, inserted)`, never
+  inferred from equality; `save_instance` is a version CAS; both and the unique `fire_key`
+  raise or return the winner on a lost race (`StoreConflict`, retried by the service).
+  `StoreContract` in `tests/conditions/test_conditions.py` is the suite a SQL store reuses.
 - `resolve_clock` picks the owner clock, then the configured home zone, then UTC. There is no
   built-in zone default.
 - A store outage raises `ConditionsUnavailable` and calls the optional `DependencyReporter`

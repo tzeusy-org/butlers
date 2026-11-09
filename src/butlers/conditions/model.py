@@ -67,6 +67,10 @@ class ConditionEvent:
     retracted: bool = False
     record: bool = False  # a retraction record itself, never a transition
 
+    def __post_init__(self) -> None:
+        if str(UUID(self.id)) != self.id:
+            raise ValueError("condition event id must be a canonical UUID")
+
 
 @dataclass(frozen=True)
 class ClockReading:
@@ -110,18 +114,29 @@ class Instance:
         """One fire intent per instance generation, whatever event wins the race."""
         return uuid5(NAMESPACE_URL, f"butlers:condition-fire:{self.id}:{self.generation}")
 
+    def synthetic_event_id(self, kind: str) -> UUID:
+        """Stable fire-event UUID for fires no source event caused (registration, clock)."""
+        return uuid5(
+            NAMESPACE_URL, f"butlers:condition-fire-event:{self.id}:{self.generation}:{kind}"
+        )
+
 
 @dataclass(frozen=True)
 class FireIntent:
     fire_key: UUID
     instance_id: str
     generation: int
-    trigger: str  # stable event identity or ``registration`` / ``clock``
+    event_id: UUID  # the causing source event, or a synthetic fire-event UUID
     reason: str
     fired_at: datetime
     snapshot_generation: int
     cursors: Mapping[str, int]
     claimed_by: str | None = None
+
+    @property
+    def occurrence(self) -> str:
+        """RFC 0038 condition_fire occurrence: ``gen:<generation>:event:<fire-event UUID>``."""
+        return f"gen:{self.generation}:event:{self.event_id}"
 
 
 @dataclass(frozen=True)

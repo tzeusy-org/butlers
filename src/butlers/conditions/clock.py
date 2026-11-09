@@ -28,6 +28,6 @@ def resolve_clock(
         raise ValueError("resolve_clock requires a UTC instant")
     if owner is not None and _valid(owner.zone):
         return owner
-    if _valid(home_zone):
+    if home_zone is not None and _valid(home_zone):
         return ClockReading(zone=home_zone, basis="home", source="home_zone", observed_at=now)
     return ClockReading(zone="UTC", basis="utc_fallback", source="utc", observed_at=now)
