@@ -2026,8 +2026,10 @@ async def store_fact(
             # Lock order: entities before facts, as merge, rebind, forget and delete take
             # them. A supersede that took its fact first would then wait on the entity for
             # the insert's foreign key, in a cycle with any of them. FOR KEY SHARE is that
-            # foreign key's own lock, so writers never wait on each other here.
-            if fact_valid_at is None and entity_id is not None:
+            # foreign key's own lock, so writers never wait on each other here. A temporal
+            # fact takes no fact-row lock, but its insert still waits on the entity for that
+            # key, so it takes the lock first too and is judged by the same refusal.
+            if entity_id is not None:
                 _locked = await conn.fetch(
                     "SELECT id, metadata FROM public.entities WHERE id = ANY($1::uuid[]) "
                     "ORDER BY id FOR KEY SHARE",
