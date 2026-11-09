@@ -226,6 +226,11 @@ includes all 235 providers and 8939 models; their configured API values are dyna
 not a list of granted hosts. Build catalogue/logo downloads are build inputs, not
 runtime route declarations. Workload/module topology changes also invalidate the
 reviewed reachability map. Keep the canonical parser's rendered JSON synchronized.
+The Dashboard readiness canary is an actual internal outbound resolver, bound to
+`FleetReadiness._route_canary` and its roster-selected Switchboard target. Its
+metadata records the Dashboard workload and existing control peer; it grants no
+additional route.
+
 There is deliberately no automatic inventory refresh or classification command.
 
 The guard reports compatibility gaps separately from structural completeness:

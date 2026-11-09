@@ -158,6 +158,7 @@ external = [
   "auth.openai.com:443",
 ]
 dynamic = [
+  { source = "src/butlers/api/readiness.py:FleetReadiness._route_canary", reason = "Supervised Dashboard readiness streams to the roster-selected Switchboard target; only the existing internal control peer is admitted" },
   { source = "local:claude", reason = "Supported API-base and MCP configuration are named in the source inventory; opaque native auth/tool destinations remain unproven and gain no route" },
   { source = "vendor:codex", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
   { source = "vendor:gemini", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },

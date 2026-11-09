@@ -772,6 +772,10 @@
     "dashboard-api": {
       "dynamic": [
         {
+          "reason": "Supervised Dashboard readiness streams to the roster-selected Switchboard target; only the existing internal control peer is admitted",
+          "source": "src/butlers/api/readiness.py:FleetReadiness._route_canary"
+        },
+        {
           "reason": "Supported API-base and MCP configuration are named in the source inventory; opaque native auth/tool destinations remain unproven and gain no route",
           "source": "local:claude"
         },

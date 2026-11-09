@@ -1956,11 +1956,18 @@
         "config": null,
         "count": 1
       },
-      "class": "reference",
-      "workloads": [],
-      "reason": "Reference/validation/returned URL spelling, not a terminal outbound base; reviewed at the named owning scope.",
+      "class": "dynamic",
+      "workloads": [
+        "dashboard-api"
+      ],
+      "reason": "Dashboard supervised readiness performs client.stream GET to the Switchboard host/port selected by expected_from_roster(configs) in FleetReadiness.__init__. This actual internal outbound resolver gains no destination beyond the existing butlers-control peer.",
       "sites": [],
-      "resolver": null
+      "resolver": {
+        "path": "src/butlers/api/readiness.py",
+        "symbol": "FleetReadiness._route_canary",
+        "source": "src/butlers/api/readiness.py:FleetReadiness._route_canary",
+        "sha256": "2f0f0ca2d0c43ad9324fd83e30ed7fb24f67bcad2e2ca77b3e15bbb762d0db4c"
+      }
     },
     "src/butlers/api/routers/blob_storage.py::<module>::config::d8e5e0b34670684dea7f8e35ef98862ded0f6e03e44eef987207736093ac963b": {
       "observed": {

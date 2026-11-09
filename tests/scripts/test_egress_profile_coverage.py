@@ -295,3 +295,32 @@ def test_vendor_resolution_families_are_named_bound_and_deny_by_default(change):
     else:
         rows["opencode:catalog"]["catalogue"]["models"] = 1
     assert coverage.vendor_resolvers(ROOT, rows, profiles)[0]
+
+
+def test_dashboard_readiness_canary_is_bound_to_its_outbound_resolver_and_workload():
+    import tomllib
+
+    inventory = json.loads((ROOT / coverage.INVENTORY).read_text())
+    rows = [
+        row
+        for row in inventory["declarations"].values()
+        if row["observed"]["path"] == "src/butlers/api/readiness.py"
+        and row["observed"]["scope"] == "FleetReadiness._route_canary"
+        and row["observed"]["kind"] == "url"
+    ]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["class"] == "dynamic"
+    assert row["workloads"] == ["dashboard-api"]
+    source = "src/butlers/api/readiness.py:FleetReadiness._route_canary"
+    assert row["resolver"] == {
+        "path": "src/butlers/api/readiness.py",
+        "symbol": "FleetReadiness._route_canary",
+        "source": source,
+        "sha256": coverage.resolver_digest(
+            ROOT, "src/butlers/api/readiness.py", "FleetReadiness._route_canary"
+        ),
+    }
+    profile = tomllib.loads((ROOT / coverage.PROFILES).read_text())["workloads"]["dashboard-api"]
+    assert len([item for item in profile["dynamic"] if item["source"] == source]) == 1
+    assert {"component": "butlers-control", "port": 41100} in profile["internal"]
