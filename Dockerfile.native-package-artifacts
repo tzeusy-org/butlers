@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1.7
+FROM python:3.12.13-slim-trixie@sha256:c2d8472b831337ab296a8ce652e1ba786e9e3034fc445dc58b50a7f5251f0003 AS producer
+
+COPY scripts/runtime_clis/install_system_artifacts.py /recipe/scripts/runtime_clis/install_system_artifacts.py
+COPY deploy/runtime-clis/debian-system-inputs.json /recipe/deploy/runtime-clis/debian-system-inputs.json
+RUN --network=none --mount=from=system-artifacts,source=debs,target=/inputs/system,readonly \
+    python3 -I -B /recipe/scripts/runtime_clis/install_system_artifacts.py \
+      --manifest /recipe/deploy/runtime-clis/debian-system-inputs.json \
+      --artifacts /inputs/system --profile runtime
+
+COPY --from=toolchain-artifacts /components/node/ /inputs/toolchains/components/node/
+COPY --from=codex-artifacts / /inputs/codex/
+COPY scripts/runtime_clis/produce_native_packages.py scripts/runtime_clis/runtime_artifacts.py scripts/runtime_clis/produce_codex_artifacts.py /recipe/scripts/runtime_clis/
+COPY deploy/runtime-clis/toolchains.json deploy/runtime-clis/runtime-inputs.json /recipe/deploy/runtime-clis/
+COPY deploy/runtime-clis/codex/series.json /recipe/deploy/runtime-clis/codex/series.json
+COPY deploy/runtime-clis/native-package-artifacts/build-inputs.json /recipe/deploy/runtime-clis/native-package-artifacts/build-inputs.json
+COPY Dockerfile.native-package-artifacts /recipe/Dockerfile.native-package-artifacts
+WORKDIR /opt/native-packages
+
+# Anonymous acquisition is NONFINAL. The original package bytes and complete
+# target archives are retained; it executes no proprietary native operation.
+RUN --network=default --mount=type=tmpfs,target=/root \
+    python3 -I -B /recipe/scripts/runtime_clis/produce_native_packages.py --phase public-seed
+
+# The exact original Claude postinstall runs here. Missing inputs cannot cause
+# it to fetch a replacement, because the layer has no external route.
+RUN --network=none --mount=type=tmpfs,target=/root \
+    python3 -I -B /recipe/scripts/runtime_clis/produce_native_packages.py --phase build
+
+FROM scratch AS artifacts
+COPY --from=producer /artifacts/native-packages/ /

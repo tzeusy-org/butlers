@@ -5952,6 +5952,8 @@
     }
   },
   "bundles": {
+    "deploy/runtime-clis/native-package-artifacts/build-inputs.json":
+        "52d9fb4ea28c0d49f56dd404280a358ccb85f729ada259e12fb1d72f37419e32",
     "deploy/runtime-clis/codex/build-inputs.json":
         "8886263cf441af7834f9a1e3f4d24cbd1c4c0474bf6e789f43c96ba9ed215b84",
     "deploy/runtime-clis/codex/compiler-inputs.json":
