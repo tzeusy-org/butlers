@@ -67,6 +67,17 @@ credentials, echoed values, off-mode identity and the existing UTF-8 byte cap.
 These are isolated source-bound fixture controls; full installed callers, stock
 build and operational conformance remain separate requirements.
 
+The eighth patch completes selected diagnostic JSON-string handling. Whole
+JSON string tokens are decoded only to mask known request-secret echoes, then
+re-encoded without retaining escaped quotes, backslashes, controls or Unicode.
+Complete sensitive string fields also handle escaped field names. Standard
+known serializer spellings remain masked in incomplete diagnostic bodies; short
+known values redact as whole strings without broad substring scrubbing. Native
+off-mode behavior and the post-redaction UTF-8 byte cap remain unchanged.
+The genuine Effect/schema and WebSocket owning files now pass 48 cases, with all
+36 prior cases retained. This is bounded source/runtime-fixture evidence, not
+stock built-artifact, installed caller or operational conformance.
+
 The lockfile retains all 3,122 original package records. The two added aliases
 are the pinned shared Undici and the already-existing exact ws source/SRI. No
 plugin, model, optional native asset or lifecycle script is removed.
