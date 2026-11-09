@@ -492,3 +492,23 @@ and restores require the explicit host reconciliation/revocation procedure.
 Never downgrade a reachable instance to an empty-key legacy image. Proxy setup,
 migration, restart and live owner enrollment are separate operational steps,
 not side effects of specification adoption or a successful build.
+
+### Exact-image workflow conformance
+
+The existing `Nightly Tests` workflow accepts the optional boolean
+`exact_image_only`. Its default is `false`: scheduled runs and ordinary manual
+runs retain every Nightly job. Explicitly selecting `true` runs only
+`exact-image-sandbox`, including the full source-owned context producers, base
+and four application variants, installed runtime export, and existing kernel
+sandbox controls. It does not deploy or change chart values.
+
+After the branch's complete context inputs and artifact identities are coherent,
+run that exact branch with:
+
+```bash
+gh workflow run nightly.yml --ref <branch> -f exact_image_only=true
+```
+
+Bind the resulting run's actual head and terminal exact-image job result before
+crediting conformance. This selector does not establish a Docker build result,
+current source CI, protected merge-group success, or readiness by itself.

@@ -98,7 +98,10 @@ def test_coverage_prerequisite_gates_fail_closed() -> None:
     ):
         job = jobs[name]
         assert job["needs"] == prerequisites
-        assert job["if"] == "always()"
+        assert job["if"] == (
+            "${{ always() && (github.event_name != 'workflow_dispatch' "
+            "|| !inputs.exact_image_only) }}"
+        )
         gate = _workflow_step(job=job, name="Require every coverage prerequisite")
         assert job["steps"][0] == gate
         for failed in (None, *prerequisites, "unknown-job"):
@@ -122,6 +125,53 @@ def test_coverage_prerequisite_gates_fail_closed() -> None:
             timeout=10,
         )
         assert result.returncode != 0
+
+
+@pytest.mark.parametrize(
+    "event,exact_only,expected",
+    [
+        ("schedule", True, True),
+        ("workflow_dispatch", False, True),
+        ("workflow_dispatch", True, False),
+    ],
+)
+def test_exact_image_dispatch_is_explicit_and_preserves_default_nightly(
+    event: str,
+    exact_only: bool,
+    expected: bool,
+) -> None:
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())
+    jobs = workflow["jobs"]
+    assert "if" not in jobs["exact-image-sandbox"]
+    assert "needs" not in jobs["exact-image-sandbox"]
+    for name, job in jobs.items():
+        if name == "exact-image-sandbox":
+            continue
+        expression = job.get("if")
+        selection = "github.event_name != 'workflow_dispatch' || !inputs.exact_image_only"
+        required = (
+            "${{ always() && (" + selection + ") }}"
+            if name in {"coverage-preflight", "coverage-report"}
+            else "${{ " + selection + " }}"
+        )
+        assert expression == required, name
+        # Evaluate the exact small expression above, including always() fan-ins;
+        # a schedule must keep all jobs even if an unrelated input is truthy.
+        evaluated = expression[3:-2].strip().replace("always()", "True")
+        evaluated = evaluated.replace("github.event_name", repr(event))
+        evaluated = evaluated.replace("!inputs.exact_image_only", str(not exact_only))
+        evaluated = evaluated.replace("||", "or").replace("&&", "and")
+        assert eval(evaluated, {"__builtins__": {}}, {}) is expected, name
+
+    # PyYAML's YAML 1.1 loader represents the workflow's `on` key as True.
+    triggers = workflow[True]
+    assert triggers["workflow_dispatch"]["inputs"]["exact_image_only"] == {
+        "description": "Run only the complete exact-image conformance job",
+        "type": "boolean",
+        "default": False,
+        "required": False,
+    }
+    assert triggers["schedule"] == [{"cron": "0 2 * * *"}]
 
 
 def _historical_controls_coverage_receipt(tmp_path: Path) -> dict:
