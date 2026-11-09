@@ -3438,7 +3438,7 @@ export interface EntityRebindReceipt {
   rebind_id: string;
   target_schema: string;
   references_rebound: number;
-  status: "active" | "failed" | "pending" | "skipped_no_table";
+  status: "active" | "failed" | "pending" | "skipped_no_table" | "skipped_forgotten";
   error_class: string | null;
   completed_at: string | null;
 }

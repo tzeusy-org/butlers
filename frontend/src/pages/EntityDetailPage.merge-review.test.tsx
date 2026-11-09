@@ -216,6 +216,7 @@ describe("EntityDetailPage — merge-review entry points", () => {
         { rebind_id: "rebind-1", target_schema: "relationship", references_rebound: 4, status: "active", error_class: null, completed_at: "2026-09-21T00:00:00Z" },
         { rebind_id: "rebind-1", target_schema: "finance", references_rebound: 0, status: "failed", error_class: "SerializationError", completed_at: "2026-09-21T00:00:01Z" },
         { rebind_id: "rebind-1", target_schema: "travel", references_rebound: 0, status: "pending", error_class: null, completed_at: null },
+        { rebind_id: "rebind-1", target_schema: "health", references_rebound: 0, status: "skipped_forgotten", error_class: null, completed_at: "2026-09-21T00:00:02Z" },
       ],
     });
 
@@ -223,6 +224,7 @@ describe("EntityDetailPage — merge-review entry points", () => {
     expect(cohort?.textContent).toContain("relationship4 rebound");
     expect(cohort?.textContent).toContain("financeFailed · SerializationError");
     expect(cohort?.textContent).toContain("travelNot yet reported");
+    expect(cohort?.textContent).toContain("healthForgotten, not moved");
     expect(cohort?.querySelectorAll("[data-status='pending']")).toHaveLength(1);
   });
 

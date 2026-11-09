@@ -176,7 +176,9 @@ function RebindReceiptCohort({ receipts }: { receipts: EntityRebindReceipt[] }) 
                 ? `Failed${receipt.error_class ? ` · ${receipt.error_class}` : ""}`
                 : receipt.status === "pending"
                   ? "Not yet reported"
-                  : "No local table";
+                  : receipt.status === "skipped_forgotten"
+                    ? "Forgotten, not moved"
+                    : "No local table";
           return (
             <li key={`${receipt.rebind_id}:${receipt.target_schema}`} className="flex items-center gap-1">
               <span className="text-xs text-foreground">{receipt.target_schema}</span>

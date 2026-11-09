@@ -76,6 +76,13 @@ async def _repoint_facts(conn: Any, source: UUID, target: UUID) -> int:
     return sum(counts.values())
 
 
+async def _retract_forgotten_source(conn: Any, source: UUID) -> int:
+    """Retract the source's live facts here, as a forget of that identity would."""
+    from butlers.modules.memory.tools.entities import _retract_facts_on_conn
+
+    return sum((await _retract_facts_on_conn(conn, source)).values())
+
+
 async def _repoint_calendar(conn: Any, source: UUID, target: UUID) -> int:
     deleted = await conn.execute(
         """
@@ -278,8 +285,37 @@ async def _rebind_entity_references_on_conn(
         try:
             # The savepoint keeps the transaction usable if resolution fails; its
             # lock on the survivor outlives it, until the receipt commits.
-            async with conn.transaction():
-                survivor = await _resolve_survivor(conn, target_entity_id)
+            survivor: UUID | None = None
+            try:
+                async with conn.transaction():
+                    survivor = await _resolve_survivor(conn, target_entity_id)
+            except EntityRebindTargetForgotten:
+                pass
+            if survivor is None:
+                # No survivor can hold these references, and a forgotten identity must not
+                # keep data reachable through a merged-away one: this schema forgets the
+                # source's live facts through its own forget path and settles as skipped.
+                step = _retract_forgotten_source.__name__
+                retracted, _ = await _run_optional_table_step(
+                    conn,
+                    lambda step_conn: _retract_forgotten_source(step_conn, source_entity_id),
+                )
+                logger.info(
+                    "Entity rebind skipped, target forgotten: rebind_id=%s schema=%s retracted=%s",
+                    rebind_id,
+                    target_schema,
+                    retracted,
+                )
+                return await _write_receipt(
+                    conn,
+                    rebind_id=rebind_id,
+                    source=source_entity_id,
+                    target=target_entity_id,
+                    target_schema=target_schema,
+                    references_rebound=total,
+                    status="skipped_forgotten",
+                    error_class=None,
+                )
 
             for operation in (_repoint_facts, _repoint_calendar, _repoint_episodes):
                 step = operation.__name__

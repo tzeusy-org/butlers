@@ -139,9 +139,11 @@ retries a `failed` receipt once 15 minutes have passed since its last attempt.
 A receipt keeps the target it opened with, but its references move to whichever
 entity that target's `merged_into` chain now ends at, so a merge settled in the
 meantime cannot strand them on a tombstone. If that entity has been forgotten,
-nothing moves and the receipt stays `failed` with `EntityRebindTargetForgotten`,
-retrying and logging every 15 minutes until someone decides what happens to the
-references. The failure log names the receipt, schema, step, error class and
+nothing moves: forgetting cascades along `merged_into`, so the schema retracts the
+live facts that reference the merged-away source through its own forget
+retraction, and the receipt settles as `skipped_forgotten` and is never retried.
+Each schema changes only its own rows. The accepted cost is that a merge made by
+mistake lets forgetting one person also erase the other's merged data. The failure log names the receipt, schema, step, error class and
 SQLSTATE, never the driver's message, which can carry key values from `facts`.
 PostgreSQL row security permits only Relationship to create a cohort
 and permits each runtime role to settle only the receipt bound to its own
