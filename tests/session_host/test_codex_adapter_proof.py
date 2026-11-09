@@ -547,7 +547,7 @@ def test_a_plan_option_the_reader_does_not_know_refuses():
 
 def test_exactly_the_planned_mounts_pass():
     planned = codex_proof.planned_mounts(_PLAN)
-    assert codex_proof.unplanned_mounts(planned_view(), planned, _HOST) == []
+    assert codex_proof.unplanned_mounts(planned_view(), planned, _HOST, _HOST_DEV) == []
 
 
 @pytest.mark.parametrize(
@@ -590,6 +590,13 @@ def test_exactly_the_planned_mounts_pass():
             swap("/invocation/prompt", options="rw,nosuid"),
             "/invocation/prompt (tmpfs /bindfileuSe1Iw//deleted rw)",
         ),
+        # Review r4511338813: a host tmpfs file named null bound at /dev/null has
+        # the node's name and root; only the observer's /dev device may supply it.
+        (
+            swap("/dev/null", device=_HOST_SHM, fstype="tmpfs"),
+            f"/dev/null (tmpfs /null) not from /dev: {_HOST_SHM}",
+        ),
+        (swap("/dev/tty", device="0:777"), "/dev/tty (tmpfs /tty) not from /dev: 0:777"),
         # A host device at a node name the plan does not make.
         (
             lambda v: v + [mount("/dev/pts/0", "/0", "devpts", device=_HOST_DEV)],
@@ -600,7 +607,13 @@ def test_exactly_the_planned_mounts_pass():
 def test_any_mount_outside_the_plan_is_a_finding(change, finding):
     planned = codex_proof.planned_mounts(_PLAN)
     host = _HOST | {"0:24"}
-    assert finding in codex_proof.unplanned_mounts(change(planned_view()), planned, host)
+    assert finding in codex_proof.unplanned_mounts(change(planned_view()), planned, host, _HOST_DEV)
+
+
+def test_without_an_observer_dev_no_node_is_exempt():
+    planned = codex_proof.planned_mounts(_PLAN)
+    found = codex_proof.unplanned_mounts(planned_view(), planned, _HOST, None)
+    assert {f.split(" ", 1)[0] for f in found} == {"/dev/null", "/dev/tty"}
 
 
 def test_a_planned_writable_data_mount_must_be_writable():
@@ -608,8 +621,8 @@ def test_a_planned_writable_data_mount_must_be_writable():
     planned = codex_proof.planned_mounts(plan)
     assert planned["/invocation/prompt"] == "data-rw"
     view = swap("/invocation/prompt", options="rw")(planned_view())
-    assert codex_proof.unplanned_mounts(view, planned, _HOST) == []
-    assert codex_proof.unplanned_mounts(planned_view(), planned, _HOST) != []
+    assert codex_proof.unplanned_mounts(view, planned, _HOST, _HOST_DEV) == []
+    assert codex_proof.unplanned_mounts(planned_view(), planned, _HOST, _HOST_DEV) != []
 
 
 def test_replace_mount_swaps_the_planned_mount_and_its_perms():

@@ -20,6 +20,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -257,12 +258,14 @@ MUTATIONS = {
         {"add_bwrap": ["--ro-bind", "$HOSTCRED", "/invocation"]},
         "filesystem_isolation",
     ),
-    # Planned mounts replaced in place by host ones of the same shape. A host
-    # tmpfs at /tmp is tmpfs rooted at "/", like the planned one; a host tmpfs
-    # file named like bwrap's data file has the planned root. Only the device
-    # shows they came from the host.
+    # Planned mounts replaced in place by host tmpfs material. A directory of
+    # this run's own under /dev/shm stands in for the whole host tmpfs (whose
+    # live entries are not ours to expose), so that row is caught by its root;
+    # the unit rows carry a whole host tmpfs at /tmp. A host tmpfs file named
+    # like bwrap's data file has the planned type and root: only its device
+    # shows it came from the host.
     "host-tmpfs-in-place-of-tmp": (
-        {"replace_mount": {"/tmp": ["--bind", "$HOSTSHM", "/tmp"]}},
+        {"replace_mount": {"/tmp": ["--bind", "$HOSTSHMDIR", "/tmp"]}},
         "filesystem_isolation",
     ),
     "host-tmpfs-file-in-place-of-staged": (
@@ -1046,7 +1049,10 @@ def replace_mount(argv: list[str], target: str, parts: list[str]) -> None:
 
 
 def unplanned_mounts(
-    mounts: list[dict[str, str]], planned: dict[str, str], host_devices: frozenset[str]
+    mounts: list[dict[str, str]],
+    planned: dict[str, str],
+    host_devices: frozenset[str],
+    node_device: str | None,
 ) -> list[str]:
     """Every mount that is not exactly the plan's, and every planned mount missing.
 
@@ -1055,7 +1061,9 @@ def unplanned_mounts(
     file named like bwrap's data file has the same root. ``host_devices`` is
     every ``major:minor`` mounted on the observer's side. A mount bwrap makes
     gets a new anonymous device, so any domain mount on one of those devices
-    came from the host. Only the planned ``/dev`` node binds may, and do.
+    came from the host. Only the planned ``/dev`` node binds may, and only
+    from ``node_device``, the observer's own ``/dev``: a host file named
+    ``null`` bound at ``/dev/null`` has the right name and root, not device.
     """
     findings: list[str] = []
     seen: dict[str, int] = {}
@@ -1083,6 +1091,9 @@ def unplanned_mounts(
             parent = next((d for d in devs if point.startswith(d + "/")), None)
             name = point[len(parent) + 1 :] if parent else ""
             node = name in _DEV_NODES and root == f"/{name}"
+            if node and (node_device is None or mount["device"] != node_device):
+                findings.append(f"{point} ({fstype} {root}) not from /dev: {mount['device']}")
+                continue
             ok = (name == "pts" and fstype == "devpts") or node
         if not ok:
             mode = f" {access}" if kind in ("data", "data-rw") else ""
@@ -1183,11 +1194,15 @@ def observe_isolation(
     foreign = sorted({p for p in processes if p not in _PROCESS_IMAGES})
     mounts = read_mounts(pid)
     # The observer's own mount table is the host side of the boundary.
-    host_devices = frozenset(m["device"] for m in read_mounts(os.getpid()))
+    host = read_mounts(os.getpid())
+    host_devices = frozenset(m["device"] for m in host)
+    # bwrap's --dev binds its nodes from the /dev it was started under. The
+    # last mount listed at a point is the one on top.
+    node_device = next((m["device"] for m in reversed(host) if m["mountpoint"] == "/dev"), None)
     return {
         "measured": True,
         "mount_count": len(mounts),
-        "unplanned_mounts": unplanned_mounts(mounts, planned, host_devices)[:32],
+        "unplanned_mounts": unplanned_mounts(mounts, planned, host_devices, node_device)[:32],
         "missing_paths": sorted(_REQUIRED_PATHS - set(visible)),
         "unexpected_paths": unexpected[:32],
         "canary_seen": canary_seen[:32],
@@ -1238,14 +1253,12 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
     host_credentials = work / "host-credentials"
     host_credentials.mkdir(mode=0o700)
     (host_credentials / "auth.json").write_text('{"OPENAI_API_KEY": "host-store-not-a-key"}')
-    # A host tmpfs, whole: only the rows that name it touch it, and whatever the
-    # launch leaves there is removed afterwards.
-    host_shm = Path("/dev/shm")
-    uses_shm = "$HOSTSHM" in json.dumps(scenario)
-    shm_before = set(os.listdir(host_shm)) if uses_shm else set()
-    host_shm_file = host_shm / f"bindfile{uuid.uuid4().hex}"
-    if "$HOSTSHMFILE" in json.dumps(scenario):
-        host_shm_file.write_text("synthetic prompt")
+    # Host tmpfs material, only for the rows that name it: a fresh directory
+    # and a file of this run's own under /dev/shm, never /dev/shm itself, whose
+    # other entries (live PostgreSQL and browser segments) are not ours. Only
+    # what this run created is removed.
+    named = json.dumps(scenario)
+    host_shm: dict[str, Path] = {}
 
     class ProofDomain(BubblewrapDomain):
         async def _info(self, descriptor: int) -> int:
@@ -1310,8 +1323,8 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
                 for name, value in (
                     ("$PEER", str(peer["material"].directory)),
                     ("$HOSTCRED", str(host_credentials)),
-                    ("$HOSTSHMFILE", str(host_shm_file)),
-                    ("$HOSTSHM", str(host_shm)),
+                    ("$HOSTSHMFILE", str(host_shm.get("file", "$HOSTSHMFILE"))),
+                    ("$HOSTSHMDIR", str(host_shm.get("dir", "$HOSTSHMDIR"))),
                 ):
                     part = part.replace(name, value)
                 return part
@@ -1383,6 +1396,15 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
 
     asyncio.create_subprocess_exec = spawn  # type: ignore[assignment]
     try:
+        if "$HOSTSHMDIR" in named:
+            host_shm["dir"] = Path(tempfile.mkdtemp(prefix="butlers-proof-", dir="/dev/shm"))
+        if "$HOSTSHMFILE" in named:
+            # Named like bwrap's data file; tempfile's names may hold "_".
+            path = Path("/dev/shm") / f"bindfile{uuid.uuid4().hex}"
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            host_shm["file"] = path
+            with os.fdopen(descriptor, "w") as handle:
+                handle.write("synthetic prompt")
         output = asyncio.run(owner.run(request, lambda: domain))
     except Exception as error:
         outcome["exit"] = f"{type(error).__name__}:{error}"
@@ -1396,14 +1418,11 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
         peer["process"].kill()
         peer["process"].wait()
         peer["material"].discard()
-        host_shm_file.unlink(missing_ok=True)
-        for name in set(os.listdir(host_shm)) - shm_before if uses_shm else ():
-            leftover = host_shm / name
-            if leftover.lstat().st_uid == os.geteuid():
-                if leftover.is_dir() and not leftover.is_symlink():
-                    shutil.rmtree(leftover, ignore_errors=True)
-                else:
-                    leftover.unlink(missing_ok=True)
+        # Only what this run created, never anything else under /dev/shm.
+        if "file" in host_shm:
+            host_shm["file"].unlink(missing_ok=True)
+        if "dir" in host_shm:
+            shutil.rmtree(host_shm["dir"], ignore_errors=True)
     outcome["proof_error"] = getattr(domain, "proof_error", None)
     if stderr_path.exists():
         outcome["stderr_tail"] = stderr_path.read_text(errors="replace")[-1500:]

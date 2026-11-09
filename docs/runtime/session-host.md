@@ -563,7 +563,11 @@ tmpfs rooted at `/`, just like `--tmpfs /tmp`. A host tmpfs file named like bwra
 data file has the planned root. So the check also compares devices. Every mount
 bwrap makes gets a new anonymous `major:minor`. Any domain mount whose device also
 appears in the observer's own `/proc/self/mountinfo` came from the host. The only
-exemption is the planned `/dev` node binds.
+exemption is the planned `/dev` node binds, and only from the observer's own `/dev`
+device. A host file named `null` bound at `/dev/null` has the right name and root,
+but not that device. One false negative remains: a source filesystem that is absent
+from the observer's mountinfo, such as one reached through another namespace's
+`/proc/<pid>/root`, does not show up as a host device.
 
 A bind from the host anywhere, a planned mount point with a foreign source or a
 host device, a second mount over a planned point, or a missing planned mount fails
@@ -588,14 +592,16 @@ measured view, not because the launch broke:
 - mount a host directory, at its own path or under `/tmp` (`/etc` at `/tmp/etc`);
 - mount a host credential store under `/tmp`;
 - mount a host directory over `/invocation`;
-- replace `--tmpfs /tmp` with `--bind /dev/shm /tmp`, a whole host tmpfs;
+- replace `--tmpfs /tmp` with a bind of a fresh directory under `/dev/shm`;
 - replace a staged file with a host tmpfs file named like bwrap's data file;
 - stage a file with `--bind-data`, which is writable, instead of `--ro-bind-data`;
 - drop `--unshare-pid`.
 
-The `/dev/shm` rows expose that host tmpfs to the synthetic runtime for one launch.
-Natively, that is the host's shared memory. In the exact-image payload, it is the
-container's own. The proof removes what the launch leaves there.
+The `/dev/shm` rows bind only a directory and a file that the run creates itself,
+never `/dev/shm`, which holds live entries such as PostgreSQL segments. Afterwards
+the run removes exactly those two. The `/tmp` row is caught by its root, and the
+file row only by its device. A whole host tmpfs at `/tmp`, which is the review's
+`--bind /dev/shm /tmp`, is covered by a unit row.
 
 That is this host's bwrap and kernel. `tests/session_host/exact_image_codex_proof.py`
 runs the same clean launches and every mutation row inside the rebuilt production
