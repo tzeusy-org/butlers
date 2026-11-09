@@ -30,6 +30,7 @@ from asyncpg.pool import PoolConnectionProxy
 
 from butlers.conditions.model import FireIntent, Instance, Receipt, State, Tri
 from butlers.conditions.service import RegistrationRefused, StoreConflict
+from butlers.core.goal_labels import Label
 
 # PostgreSQL's generated names for the inline id/goal_id length CHECKs in core_323.
 _ID_LENGTH_CHECKS = frozenset({"condition_instances_id_check", "condition_instances_goal_id_check"})
@@ -37,16 +38,23 @@ _ID_LENGTH_CHECKS = frozenset({"condition_instances_id_check", "condition_instan
 _INSTANCE_COLUMNS = (
     "id, goal_id, predicate::text AS predicate, predicate_digest, grant_digest, "
     "source_boundary, starts_at, expires_at, generation, state, result, "
-    "leaves::text AS leaves, floor::text AS floor, version"
+    "leaves::text AS leaves, floor::text AS floor, version, "
+    "label_version, label_instr, label_data, label_sens"
 )
 _INTENT_COLUMNS = (
     "fire_key, instance_id, generation, event_id, reason, fired_at, snapshot_generation, "
-    "cursors::text AS cursors, claimed_by"
+    "cursors::text AS cursors, claimed_by, label_version, label_instr, label_data, label_sens"
 )
 
 
 def _text(value: Mapping[str, Any]) -> str:
     return json.dumps(dict(value), sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _label(row: asyncpg.Record) -> Label:
+    return Label.from_row(
+        row["label_version"], row["label_instr"], row["label_data"], row["label_sens"]
+    )
 
 
 def _intent(row: asyncpg.Record) -> FireIntent:
@@ -60,6 +68,7 @@ def _intent(row: asyncpg.Record) -> FireIntent:
         snapshot_generation=row["snapshot_generation"],
         cursors=json.loads(row["cursors"]),
         claimed_by=row["claimed_by"],
+        label=_label(row),
     )
 
 
@@ -91,6 +100,7 @@ class _SqlTx:
             cursors=await self._cursors(row["id"]),
             floor=json.loads(row["floor"]),
             version=row["version"],
+            label=_label(row),
         )
 
     async def get_instance(self, instance_id: str) -> Instance | None:
@@ -105,9 +115,10 @@ class _SqlTx:
             inserted = await self.c.fetchval(
                 "INSERT INTO public.condition_instances (id, goal_id, predicate, "
                 "predicate_digest, grant_digest, source_boundary, starts_at, expires_at, "
-                "generation, state, result, leaves, floor, version) VALUES ($1, $2, "
-                "$3::text::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12::text::jsonb, "
-                "$13::text::jsonb, $14) ON CONFLICT (id) DO NOTHING RETURNING id",
+                "generation, state, result, leaves, floor, version, label_version, label_instr, "
+                "label_data, label_sens) VALUES ($1, $2, $3::text::jsonb, $4, $5, $6, $7, $8, "
+                "$9, $10, $11, $12::text::jsonb, $13::text::jsonb, $14, $15, $16, $17, $18) "
+                "ON CONFLICT (id) DO NOTHING RETURNING id",
                 instance.id,
                 instance.goal_id,
                 _text(instance.predicate),
@@ -122,6 +133,7 @@ class _SqlTx:
                 _text({k: v.value for k, v in instance.leaves.items()}),
                 _text(instance.floor),
                 instance.version,
+                *instance.label.to_row(),
             )
         except asyncpg.CheckViolationError as exc:
             # Only the register path's own id-length CHECKs are a refused row; any other
@@ -172,8 +184,9 @@ class _SqlTx:
             clock = _text({**asdict(receipt.clock), "observed_at": receipt.clock.observed_at})
         await self.c.execute(
             "INSERT INTO public.condition_receipts (instance_id, generation, kind, result, "
-            "state, reason, trigger_event_id, cursors, at, snapshot_generation, clock) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb, $9, $10, $11::text::jsonb)",
+            "state, reason, trigger_event_id, cursors, at, snapshot_generation, clock, "
+            "label_version, label_instr, label_data, label_sens) VALUES ($1, $2, $3, $4, $5, "
+            "$6, $7, $8::text::jsonb, $9, $10, $11::text::jsonb, $12, $13, $14, $15)",
             receipt.instance_id,
             receipt.generation,
             receipt.kind,
@@ -185,13 +198,15 @@ class _SqlTx:
             receipt.at,
             receipt.snapshot_generation,
             clock,
+            *receipt.label.to_row(),
         )
 
     async def insert_fire_intent(self, intent: FireIntent) -> FireIntent:
         await self.c.execute(
             "INSERT INTO public.condition_fire_intents (fire_key, instance_id, generation, "
-            "event_id, reason, fired_at, snapshot_generation, cursors) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb) ON CONFLICT DO NOTHING",
+            "event_id, reason, fired_at, snapshot_generation, cursors, label_version, label_instr, "
+            "label_data, label_sens) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb, $9, "
+            "$10, $11, $12) ON CONFLICT DO NOTHING",
             intent.fire_key,
             intent.instance_id,
             intent.generation,
@@ -200,6 +215,7 @@ class _SqlTx:
             intent.fired_at,
             intent.snapshot_generation,
             _text(intent.cursors),
+            *intent.label.to_row(),
         )
         stored = await self.get_fire_intent(intent.fire_key)
         if stored is None:

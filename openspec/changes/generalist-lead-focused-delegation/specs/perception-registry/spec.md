@@ -97,6 +97,10 @@ Scope: v1-mandatory
 - **WHEN** a perception relation exists but is not covered by the private-history export manifest
 - **THEN** the manifest guard test fails and names it; it is never silently omitted
 
+#### Scenario: A late or retracted transition reaches the evaluator
+- **WHEN** the evaluator is handed a transition that is late, retracted, a retraction record or older than 10 minutes
+- **THEN** no transition leaf fires on it and its history remains recorded; the retraction record never fires
+
 #### Scenario: The retraction is outside the current query page
 - **WHEN** owner history or a transition reader loads a leave whose target retraction lies outside its selected page/window
 - **THEN** the consistent target relation still marks it retracted; history retains the link/late metadata and live evaluation skips it without replaying or undoing effects

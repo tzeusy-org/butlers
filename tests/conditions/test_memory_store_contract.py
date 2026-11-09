@@ -22,6 +22,9 @@ class TestInMemoryStoreContract(StoreContract):
     async def instance_count(self, store) -> int:
         return len(store.instances)
 
+    async def receipt_labels(self, store):
+        return [r.label for r in store.receipts]
+
     async def receipt_reasons(self, store) -> list[str]:
         return [r.reason for r in store.receipts]
 

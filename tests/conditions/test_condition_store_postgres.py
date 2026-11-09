@@ -24,6 +24,7 @@ from butlers.conditions import (
     State,
 )
 from butlers.conditions.sql import PostgresConditionStore
+from butlers.core.goal_labels import Label
 from butlers.testing.migration import (
     create_migrated_test_db,
     migration_bootstrap_db_url,
@@ -121,6 +122,39 @@ class TestPostgresStoreContract(StoreContract):
             async with store.transaction() as tx:
                 await tx.insert_fire_intent(intent)
         assert not isinstance(raised.value, RegistrationRefused)
+
+    async def receipt_labels(self, store) -> list[Label]:
+        rows = await self.owner.fetch(
+            "SELECT label_version, label_instr, label_data, label_sens "
+            "FROM public.condition_receipts ORDER BY id"
+        )
+        return [Label.from_row(*r.values()) for r in rows]
+
+    async def test_intent_label_may_widen_but_never_narrow_the_instances_label(self):
+        store, inst = await self.seeded()
+        await self.fire(store, inst)
+        narrower = Label(frozenset({"owner"}), frozenset({"owner"}), frozenset())
+        with pytest.raises(ConnectionError) as raised:  # a bug, so the outage path
+            async with store.transaction() as tx:
+                await tx.insert_fire_intent(replace(self.intent_for(inst), label=narrower))
+        assert not isinstance(raised.value, RegistrationRefused)
+        assert await self.intent_count(store) == 0
+        wider = inst.label.join(Label.unknown())
+        async with store.transaction() as tx:
+            stored = await tx.insert_fire_intent(replace(self.intent_for(inst), label=wider))
+        assert stored.label == wider and await self.intent_count(store) == 1
+
+    async def test_receipt_label_may_widen_but_never_narrow_the_instances_label(self):
+        store, inst = await self.seeded()
+        evaluator = ConditionEvaluator(store)
+        out = await evaluator.evaluate("c1", [], now=NOW)
+        receipt = out.receipt
+        narrower = Label(frozenset({"owner"}), frozenset({"owner"}), frozenset())
+        with pytest.raises(ConnectionError):
+            async with store.transaction() as tx:
+                await tx.append_receipt(replace(receipt, label=narrower))
+        async with store.transaction() as tx:
+            await tx.append_receipt(replace(receipt, label=inst.label.join(Label.unknown())))
 
     async def receipt_reasons(self, store) -> list[str]:
         rows = await self.owner.fetch("SELECT reason FROM public.condition_receipts ORDER BY id")
@@ -288,6 +322,41 @@ class TestRoleFenceAndGuards:
         with pytest.raises(asyncpg.PostgresError):
             await self.owner.execute(
                 "UPDATE public.condition_instances SET state = 'open', version = version + 1"
+            )
+
+    async def test_stored_label_is_immutable_even_for_the_owner(self):
+        await self._seed()
+        for assignment in ("label_sens = '{}', version = version + 1", "label_data = '{world}'"):
+            with pytest.raises(asyncpg.PostgresError):
+                await self.owner.execute(f"UPDATE public.condition_instances SET {assignment}")
+
+    @pytest.mark.parametrize(
+        "column, value",
+        [
+            ("label_version", "2"),
+            ("label_sens", "'{astrology}'"),
+            ("label_instr", "'{}'"),
+            ("label_data", "'{not a principal}'"),
+            ("label_data", "'{owner,owner}'"),
+        ],
+    )
+    async def test_label_columns_refuse_a_malformed_label(self, column, value):
+        await self._seed()
+        label = {
+            "label_version": "1",
+            "label_instr": "'{owner}'",
+            "label_data": "'{owner}'",
+            "label_sens": "'{}'",
+        } | {column: value}
+        with pytest.raises(asyncpg.CheckViolationError):
+            await self.owner.execute(
+                "INSERT INTO public.condition_instances (id, goal_id, predicate, "
+                "predicate_digest, grant_digest, source_boundary, starts_at, expires_at, "
+                "generation, result, leaves, floor, label_version, label_instr, label_data, "
+                "label_sens) SELECT 'm1', goal_id, predicate, predicate_digest, grant_digest, "
+                "source_boundary, starts_at, expires_at, generation, result, leaves, floor, "
+                f"{label['label_version']}, {label['label_instr']}, {label['label_data']}, "
+                f"{label['label_sens']} FROM public.condition_instances WHERE id = 'c1'"
             )
 
     async def test_fire_intent_requires_its_fired_instance(self):
