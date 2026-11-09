@@ -183,3 +183,26 @@ config. The 51 prior owning cases remain, for 53 passing source-bound cases.
 The real separate 141-package seed also passes the actual Npm.install seam with
 7,934 payload records checked and registry reification trapped. These are contained
 source/graph controls; the corrected compiled CLI and final image remain separate.
+
+
+## Workspace build metadata alignment
+
+Patch twelve aligns metadata that pinned Bun otherwise re-resolves even with a
+frozen text lock. It removes the redundant development declaration of
+`@opencode-ai/script`; the identical `workspace:*` production requirement remains
+available in both production and development. It also removes two unscoped trust
+names (`node-pty`, `tree-sitter`) absent from every locked and installed package
+identity, and the obsolete `@ff-labs/fff-bun@0.9.3` patch declaration. The actual
+locked `@ff-labs/fff-bun@0.9.4`, every active trust/patch relationship and all
+original patch payload files remain unchanged.
+
+All 3,124 package records remain byte-identical. All thirty workspace rows remain
+identical except that one duplicate development edge; all production requirements
+and original root/native lifecycle commands remain intact. The first eleven
+patches and runtime sources are unchanged. The new upstream metadata contract
+checks the complete package-record digest and active identities. Actual pinned
+Bun controls distinguish original, root-only, duplicate-only and combined changes
+under a network namespace without external routes. The combined diagnostic
+succeeds; the others refuse. Bun's dry-run still executes root lifecycle commands,
+so those controls are diagnostics, not a full install/UI/native build or final
+component proof. Fresh source-owned complete build conformance remains required.

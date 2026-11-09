@@ -304,8 +304,34 @@
           "after_sha256": "b7aeb5ab02798cb942d82ee7fcc4c6826d2b18e2defdfdeb413f00c1cd582e50"
         }
       ]
+    },
+    {
+      "path": "patches/0012-align-existing-workspace-build-metadata.patch",
+      "sha256": "605676dcd90f674520fb42ea02f8db447330046f77c2e734ddeae185ae249bdc",
+      "files": [
+        {
+          "path": "bun.lock",
+          "before_sha256": "4e0de3f502c8724ada6625848c8e67730056513e404eb0425b7b19beb4ed5ef4",
+          "after_sha256": "20c06fab459c60afbb94a5671053bb330f9ad05aac1a1c3d2f4daf82d61234a2"
+        },
+        {
+          "path": "package.json",
+          "before_sha256": "2b6f5a92faeec9ce05407c0cb85336e21dac09d0211dd5d38e9222b54fb01762",
+          "after_sha256": "8c1415fb1d22d6def171517b49c3d93ee489ae61ed1b7b4049a12c68134ead09"
+        },
+        {
+          "path": "packages/opencode/package.json",
+          "before_sha256": "11885098e460e65b0e8c519c664c9795c0446b6e691fa1438eaecca87a066804",
+          "after_sha256": "cb168f9e3cdc60cbe895caeac007890f539692d60ea0a554f69fc1379e6ae45a"
+        },
+        {
+          "path": "script/workspace-metadata.test.ts",
+          "before_sha256": null,
+          "after_sha256": "4a5c3bcb457ab1c2c68f3ef6f7f24d56655ea60704cce95ed632a192b591b8d7"
+        }
+      ]
     }
   ],
-  "source_tree_sha256": "b6c5f8dec7460555610bfaa9fc2a9bfe578f763babdfbc800efca1fbb19f6cd7",
+  "source_tree_sha256": "b04d05fe88c4c0741b25db9b230614b4f13fb26d200ae4017ad1c57dfda95d6d",
   "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches."
 }

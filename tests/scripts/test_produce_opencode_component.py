@@ -21,7 +21,7 @@ SPEC.loader.exec_module(producer)
 def test_actual_declarations_bind_complete_original_sources_and_four_root_seed(monkeypatch):
     monkeypatch.setattr(producer, "RECIPE", SCRIPTS.parents[1])
     manifest, series, models = producer.declarations()
-    assert len(series["patches"]) == 11
+    assert len(series["patches"]) == 12
     assert manifest["default_plugin"]["complete_lock_packages"] == 141
     assert len(models["logos"]) == 235
     assert models["catalogue"]["models"] == 8939
