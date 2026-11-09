@@ -433,7 +433,7 @@ def _parse_manifest(raw: object, *, require_classes: bool = False) -> Manifest:
         elif not isinstance(classes, dict) or (require_classes and set(classes) != set(cols)):
             raise ManifestError(f"{source}: every column needs exactly one class")
         for column, klass in classes.items():
-            if klass not in COLUMN_CLASSES:
+            if not isinstance(klass, str) or klass not in COLUMN_CLASSES:
                 raise ManifestError(f"{source}.{column}: unknown class {klass!r}")
             if klass in _REFUSED_CLASSES:
                 raise ManifestError(f"{source}.{column}: class {klass} is never publishable")

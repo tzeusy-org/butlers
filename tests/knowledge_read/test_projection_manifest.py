@@ -1,11 +1,17 @@
 """The exposure decision stays explicit, closed and independent of live discovery."""
 
+import tomllib
 from dataclasses import FrozenInstanceError
 from importlib.resources import files
 
 import pytest
 
-from butlers.knowledge_read.manifest import ManifestError, credential, load_manifest
+from butlers.knowledge_read.manifest import (
+    ManifestError,
+    _parse_manifest,
+    credential,
+    load_manifest,
+)
 
 
 def test_packaged_manifest_is_complete_immutable_and_derives_graph_keys():
@@ -238,3 +244,18 @@ def test_unpublishable_column_classes_are_refused(klass):
     data = _packaged().replace('"system"', f'"{klass}"', 1)
     with pytest.raises(ManifestError, match="never publishable"):
         load_manifest(data.encode())
+
+
+@pytest.mark.parametrize("value", [["x"], {"a": "b"}, 7])
+def test_non_string_column_class_is_a_manifest_error(value):
+    raw = tomllib.loads(_packaged())
+    raw["table"][0]["classes"]["id"] = value
+    with pytest.raises(ManifestError, match="unknown class"):
+        _parse_manifest(raw)
+
+
+def test_class_for_unpublished_column_is_refused_without_required_classes():
+    raw = tomllib.loads(_packaged())
+    raw["table"][0]["classes"] = {"not_a_column": "system"}
+    with pytest.raises(ManifestError, match="class for unpublished column"):
+        _parse_manifest(raw)
