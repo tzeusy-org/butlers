@@ -140,3 +140,57 @@ previously verified wheel/exports establish selection, not acquisition, cold
 installation, Docker isolation, image startup or full source15 acceptance. Those
 remain mandatory current-artifact gates. No activation, credential, deployment,
 owner-smoke or deferred static-key authority is supplied by this producer.
+
+
+## Docker caller recipe
+
+`Dockerfile.python-artifacts` supplies the source-owned acquisition and verification
+caller. Prepare a fresh closed source context from the actual checkout, then pass
+that context by name (parent directories must already exist):
+
+```sh
+python3 scripts/runtime_clis/produce_python_artifacts.py \
+  --phase snapshot --project "$PWD" --work /owned/unused-snapshot-work \
+  --output /owned/python-source \
+  --backend-lock deploy/runtime-clis/python-artifacts/build-lock.toml
+
+docker buildx build --file Dockerfile.python-artifacts \
+  --build-context python-source=/owned/python-source --target artifacts \
+  --output type=local,dest=/owned/python-artifacts .
+```
+
+The named `python-source` input is required; there is no optional checkout or
+ambient source fallback. The recipe uses the exact Linux/amd64
+`python:3.12.13-slim-trixie` child at digest
+`c2d8472b831337ab296a8ce652e1ba786e9e3034fc445dc58b50a7f5251f0003`.
+The executor must provide its existing root-user `HOME=/root`. Each active phase
+checks that value and mounts an empty builder-owned tmpfs there; the recipe never
+assigns HOME, mounts a host home/configuration, or grants credential access. A
+builder with different HOME semantics must refuse until its caller is reconciled.
+
+The public-input stage calls `fetch_uv_toolchain.py` with only the reviewed `uv`
+object in `toolchains.json`. It fetches that one exact official public wheel with
+no proxy discovery or redirect follow-up, verifies whole archive and executable
+hashes, and preserves the complete wheel plus all twelve payload files under
+`/opt/uv`. Both original executables, metadata, licenses and SBOM are retained.
+Only ordinary Unix regular files with the observed canonical modes are accepted;
+archive/expanded-byte/count bounds, full preflight and no-replace atomic publication
+prevent an incomplete or unsafe toolchain. Content-only provenance binds the
+normalized uv declaration and every payload path, mode and hash. Metadata URL/hash
+are declared acquisition provenance, not a claim of a new metadata fetch. No pip,
+package lifecycle, uv execution or installation occurs in this acquisition stage.
+The later producer finds the pinned executable at
+`/opt/uv/wheel/uv-0.12.22.data/scripts/uv` and hashes it before use.
+
+The `seed` stage explicitly uses `RUN --network=default` for NONFINAL preparation;
+it asserts that final `/artifacts/python` still does not exist. The `verified`
+stage uses `RUN --network=none` with the identical source/work/backend/toolchain
+paths for the existing four independent offline checks. No unsupported uv sync
+flag or privileged namespace operation is added. Only that successful stage can
+supply the final scratch `artifacts` target, containing `default/`,
+`live-listener/` and `verification.json` at its root.
+
+Source tests and retained-wheel extraction alone do not establish a Docker build,
+public seed, four cold installations, image startup or runtime conformance.
+Canonical integration must run this actual recipe and preserve the original
+acceptance and operational gates before claiming any of those outcomes.
