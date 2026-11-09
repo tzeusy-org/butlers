@@ -115,3 +115,19 @@ def test_missing_role_is_reported_not_skipped() -> None:
         catalog.privileges, catalog.parents, catalog.present_roles - {"butler_concierge_rw"}
     )
     assert diff_public_catalog(catalog) == ["role missing from catalog: butler_concierge_rw"]
+
+
+def test_replay_widened_rows_record_intent_and_the_replay_result() -> None:
+    from butlers.db_authority.grants import REPLAY_WIDENED
+
+    assert {"ambient_projections", "runtime_attention_operator_control", "cost_claims"} <= (
+        REPLAY_WIDENED
+    )
+    intent = expected_privileges("ambient_projections")
+    replayed = expected_privileges("ambient_projections", after_init_db_replay=True)
+    assert set(intent.values()) == {frozenset({"SELECT"})}
+    assert set(replayed.values()) == {LEGACY_FLEET_DML.fleet}
+    # Rows without a replay override read the same either way.
+    assert expected_privileges("user_context") == expected_privileges(
+        "user_context", after_init_db_replay=True
+    )

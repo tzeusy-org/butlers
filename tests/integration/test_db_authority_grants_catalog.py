@@ -35,7 +35,37 @@ pytestmark = [
 ]
 
 
-def _diff(db_url: str) -> list[str]:
+# The core chain runs here without a schema, so its per-butler tables land in ``public``;
+# in a deployment each butler schema owns them. They are not public relations.
+_PER_BUTLER_CORE_TABLES = frozenset(
+    {
+        "alembic_version",
+        "butler_logs",
+        "calendar_action_log",
+        "calendar_event_entities",
+        "calendar_event_instances",
+        "calendar_event_proposals",
+        "calendar_events",
+        "calendar_sources",
+        "calendar_sync_cursors",
+        "corrections",
+        "deferred_notifications",
+        "delivery_preferences",
+        "event_chains",
+        "metric_baselines",
+        "metric_deviation_episodes",
+        "route_inbox",
+        "runtime_config",
+        "scheduled_tasks",
+        "seasonal_periods",
+        "session_process_logs",
+        "sessions",
+        "sessions_friction",
+    }
+)
+
+
+def _diff(db_url: str, *, after_init_db_replay: bool) -> list[str]:
     engine = create_engine(db_url)
     try:
         with engine.connect() as conn:
@@ -43,7 +73,17 @@ def _diff(db_url: str) -> list[str]:
     finally:
         engine.dispose()
     assert catalog.privileges, "no public relations were read"
-    return diff_public_catalog(catalog, absent_ok=WA_BRIDGE_RELATIONS)
+    problems = diff_public_catalog(
+        catalog, absent_ok=WA_BRIDGE_RELATIONS, after_init_db_replay=after_init_db_replay
+    )
+    return [
+        p
+        for p in problems
+        if not (
+            p.startswith("relation not in manifest: ")
+            and p.removeprefix("relation not in manifest: ") in _PER_BUTLER_CORE_TABLES
+        )
+    ]
 
 
 def _replay_init_db(postgres_container, db_name: str, migration_user: str) -> None:
@@ -73,10 +113,10 @@ def test_public_grants_equal_manifest_before_and_after_bootstrap_replay(
         chains=["core", "switchboard"],
         schemas={"switchboard": "switchboard"},
     )
-    fresh = _diff(db_url)
+    fresh = _diff(db_url, after_init_db_replay=False)
 
     _replay_init_db(postgres_container, db_name, str(urlparse(db_url).username))
-    replayed = _diff(db_url)
+    replayed = _diff(db_url, after_init_db_replay=True)
     assert not fresh and not replayed, "\n".join(
         ["FRESH:", *fresh, "AFTER INIT-DB REPLAY:", *replayed]
     )

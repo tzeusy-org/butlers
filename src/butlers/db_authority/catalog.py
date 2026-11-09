@@ -78,11 +78,13 @@ def diff_public_catalog(
     roles: tuple[str, ...] | None = None,
     *,
     absent_ok: Iterable[str] = (),
+    after_init_db_replay: bool = False,
 ) -> list[str]:
     """Return one line per difference between the catalog and the manifest; empty is a match.
 
     ``absent_ok`` names manifest relations the database may legitimately lack (a test
     database without the WhatsApp bridge, say); every other absent row is reported.
+    ``after_init_db_replay`` compares against the grants an ``init-db.sql`` replay leaves.
     """
     roles = roles or runtime_roles()
     problems = [f"role missing from catalog: {r}" for r in roles if r not in catalog.present_roles]
@@ -92,7 +94,7 @@ def diff_public_catalog(
         if row not in PUBLIC_RELATIONS:
             problems.append(f"relation not in manifest: {relation}")
             continue
-        expected = expected_privileges(row, roles)
+        expected = expected_privileges(row, roles, after_init_db_replay=after_init_db_replay)
         for role in roles:
             if role not in catalog.present_roles:
                 continue

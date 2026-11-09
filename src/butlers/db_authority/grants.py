@@ -45,8 +45,12 @@ class RelationGrant:
     fleet: frozenset[str]
     by_role: Mapping[str, frozenset[str]] = field(default_factory=dict)
     reason: str = ""
+    after_init_db_replay: RelationGrant | None = None
+    """What replaying ``scripts/init-db.sql`` leaves instead, when it overrides this row."""
 
-    def privileges(self, role: str) -> frozenset[str]:
+    def privileges(self, role: str, *, after_init_db_replay: bool = False) -> frozenset[str]:
+        if after_init_db_replay and self.after_init_db_replay is not None:
+            return self.after_init_db_replay.privileges(role)
         return self.by_role.get(role, self.fleet)
 
 
@@ -77,7 +81,6 @@ WA_BRIDGE_RELATIONS = frozenset(
 )
 
 _LEGACY_FLEET_DML_RELATIONS = (
-    "ambient_projections",
     "approvals_policy",
     "atmosphere_feed_status",
     "atmosphere_readings",
@@ -106,8 +109,6 @@ _LEGACY_FLEET_DML_RELATIONS = (
     "core_265_message_backup",
     "core_265_turn_backup",
     "custody_holds",
-    "dashboard_conversation_turn_sessions",
-    "dashboard_conversation_turns",
     "dashboard_conversations",
     "dashboard_job_health",
     "dashboard_job_transitions",
@@ -124,7 +125,6 @@ _LEGACY_FLEET_DML_RELATIONS = (
     "entities",
     "entities_canonical_name_bak_core_130",
     "entity_graph_edges",
-    "entity_graph_withheld_counts",
     "entity_info",
     "entity_rebind_log",
     "expected_signals",
@@ -133,7 +133,6 @@ _LEGACY_FLEET_DML_RELATIONS = (
     "fleet_cases",
     "flight_status_feed_status",
     "google_accounts",
-    "ha_person_mapping_receipts",
     "healing_attempt_sessions",
     "healing_attempts",
     "healing_dispatch_events",
@@ -143,7 +142,6 @@ _LEGACY_FLEET_DML_RELATIONS = (
     "insight_candidates",
     "insight_cooldowns",
     "insight_engagement",
-    "insight_feedback",
     "insight_settings",
     "memory_catalog",
     "memory_compaction_log",
@@ -153,13 +151,6 @@ _LEGACY_FLEET_DML_RELATIONS = (
     "model_round_robin_counters",
     "model_served_usage",
     "owner_conditions",
-    "owner_delivery_presentations",
-    "owner_delivery_receipts",
-    "owner_delivery_rollout",
-    "owner_delivery_source_map",
-    "owner_delivery_subjects",
-    "owner_delivery_tokens",
-    "owner_places",
     "owner_scheduling_preferences",
     "pending_confirms",
     "permissions",
@@ -173,12 +164,7 @@ _LEGACY_FLEET_DML_RELATIONS = (
     "qa_findings",
     "qa_investigation_events",
     "qa_patrols",
-    "qa_publication_exports",
-    "qa_publication_operations",
-    "qa_publication_refusals",
     "qa_repo_config",
-    "runtime_attention_operator_control",
-    "runtime_probe_control_receipts",
     "secret_probe_log",
     "spend_ceiling",
     "spend_rules",
@@ -200,6 +186,86 @@ _LEGACY_FLEET_DML_RELATIONS = (
 _SWITCHBOARD = "butler_switchboard_rw"
 _OWNER_ONLY = "private to its NOLOGIN owner; reached only through definer interfaces"
 
+_CONNECTOR = "connector_writer"
+_CONCIERGE = "butler_concierge_rw"
+_SELECT = frozenset({"SELECT"})
+
+# core_239 removes DELETE from the fleet, but a fresh database leaves connector_writer DML;
+# an init-db replay then narrows the connector to the fleet row.
+_COST_CLAIM = RelationGrant(
+    frozenset({"SELECT", "INSERT", "UPDATE"}),
+    {_CONNECTOR: _DML},
+    "core_239: no fleet DELETE, FORCE RLS",
+    after_init_db_replay=RelationGrant(frozenset({"SELECT", "INSERT", "UPDATE"})),
+)
+
+
+def _replay_widened(
+    fleet: frozenset[str], by_role: Mapping[str, frozenset[str]], reason: str
+) -> RelationGrant:
+    """A row a migration narrowed and an ``init-db.sql`` replay re-widens to blanket DML."""
+    return RelationGrant(fleet, by_role, reason, after_init_db_replay=LEGACY_FLEET_DML)
+
+
+_NO_CONNECTOR = {_CONNECTOR: _NONE}
+
+# Rows where migrations narrow the fleet below init-db's blanket DML. They record the
+# state a freshly migrated database holds; replaying init-db.sql re-widens every one to
+# LEGACY_FLEET_DML (the bu-yfd9v1 class), which is why the apply step must converge.
+_REPLAY_WIDENED: dict[str, RelationGrant] = {
+    "ambient_projections": _replay_widened(_SELECT, {}, "migration: read-only to runtime roles"),
+    "dashboard_conversation_turn_sessions": _replay_widened(
+        _NONE, {_CONCIERGE: _DML}, "migration: dashboard conversation store, concierge only"
+    ),
+    "dashboard_conversation_turns": _replay_widened(
+        _NONE, {_CONCIERGE: _DML}, "migration: dashboard conversation store, concierge only"
+    ),
+    "entity_graph_withheld_counts": _replay_widened(
+        _SELECT, _NO_CONNECTOR, "migration: read-only; no connector access"
+    ),
+    "ha_person_mapping_receipts": _replay_widened(
+        _NONE,
+        {_CONCIERGE: _DML, _SWITCHBOARD: frozenset({"SELECT", "INSERT"})},
+        "migration: receipts written by the Switchboard, concierge full",
+    ),
+    "insight_feedback": _replay_widened(_NONE, {_SWITCHBOARD: _DML}, "migration: Switchboard only"),
+    **{
+        name: _replay_widened(_DML, _NO_CONNECTOR, "migration: owner delivery; no connector access")
+        for name in (
+            "owner_delivery_presentations",
+            "owner_delivery_receipts",
+            "owner_delivery_rollout",
+            "owner_delivery_source_map",
+            "owner_delivery_subjects",
+            "owner_delivery_tokens",
+        )
+    },
+    "owner_places": _replay_widened(
+        _NONE,
+        {_CONCIERGE: _DML, "butler_chronicler_rw": _SELECT, "butler_travel_rw": _SELECT},
+        "migration: concierge full; chronicler and travel read",
+    ),
+    "qa_publication_exports": _replay_widened(
+        _SELECT,
+        {"butler_qa_rw": frozenset({"SELECT", "INSERT"})},
+        "migration: QA butler appends; others read",
+    ),
+    "qa_publication_operations": _replay_widened(
+        _SELECT,
+        {"butler_qa_rw": frozenset({"SELECT", "INSERT", "UPDATE"})},
+        "migration: QA butler writes; others read",
+    ),
+    "qa_publication_refusals": _replay_widened(
+        _SELECT,
+        {"butler_qa_rw": frozenset({"SELECT", "INSERT"})},
+        "migration: QA butler appends; others read",
+    ),
+    "runtime_attention_operator_control": _replay_widened(_NONE, {}, "migration: " + _OWNER_ONLY),
+    "runtime_probe_control_receipts": _replay_widened(
+        _NONE, {_CONCIERGE: _DML}, "migration: concierge only"
+    ),
+}
+
 _BOUNDARIES: dict[str, RelationGrant] = {
     "break_through_clauses": RelationGrant(_NONE, reason=_OWNER_ONLY),
     "consolidation_runs": RelationGrant(
@@ -207,15 +273,9 @@ _BOUNDARIES: dict[str, RelationGrant] = {
         {"connector_writer": frozenset({"SELECT"})},
         reason="core_119: append-only run ledger; connectors only read",
     ),
-    "cost_claim_events": RelationGrant(
-        frozenset({"SELECT", "INSERT", "UPDATE"}), reason="core_239: no DELETE, FORCE RLS"
-    ),
-    "cost_claim_resolutions": RelationGrant(
-        frozenset({"SELECT", "INSERT", "UPDATE"}), reason="core_239: no DELETE, FORCE RLS"
-    ),
-    "cost_claims": RelationGrant(
-        frozenset({"SELECT", "INSERT", "UPDATE"}), reason="core_239: no DELETE, FORCE RLS"
-    ),
+    "cost_claim_events": _COST_CLAIM,
+    "cost_claim_resolutions": _COST_CLAIM,
+    "cost_claims": _COST_CLAIM,
     "dnd_generation_guard": RelationGrant(
         frozenset({"SELECT"}), reason="DND generation fence: read-only outside its owner"
     ),
@@ -253,15 +313,32 @@ def _build() -> Mapping[str, RelationGrant]:
         if name in rows:
             raise ValueError(f"relation is both legacy and a boundary: {name}")
         rows[name] = grant
+    for name, grant in _REPLAY_WIDENED.items():
+        if name in rows:
+            raise ValueError(f"relation is both legacy and replay-widened: {name}")
+        rows[name] = grant
     return MappingProxyType(dict(sorted(rows.items())))
 
 
 PUBLIC_RELATIONS: Mapping[str, RelationGrant] = _build()
 
+REPLAY_WIDENED = frozenset(
+    name for name, grant in PUBLIC_RELATIONS.items() if grant.after_init_db_replay is not None
+)
+"""Relations whose fresh-database grants an ``init-db.sql`` replay changes."""
+
 
 def expected_privileges(
-    relation: str, roles: tuple[str, ...] | None = None
+    relation: str, roles: tuple[str, ...] | None = None, *, after_init_db_replay: bool = False
 ) -> dict[str, frozenset[str]]:
-    """Return each runtime role's manifest privileges on one ``public`` relation."""
+    """Return each runtime role's manifest privileges on one ``public`` relation.
+
+    The default is the migration intent a freshly migrated database holds.
+    ``after_init_db_replay`` returns what a replay of ``init-db.sql`` leaves, which differs
+    on :data:`REPLAY_WIDENED` rows.
+    """
     grant = PUBLIC_RELATIONS[relation]
-    return {role: grant.privileges(role) for role in (roles or runtime_roles())}
+    return {
+        role: grant.privileges(role, after_init_db_replay=after_init_db_replay)
+        for role in (roles or runtime_roles())
+    }
