@@ -149,10 +149,18 @@ a per-table decision, not an approval. Boundary rows (DND fencing, the
 runtime-attention outbox, cost claims, consolidation runs, `state`) are spelled
 out with a reason so a deny-by-default rebuild cannot widen them.
 
+Rows record migration intent: what a freshly migrated database grants. Where an
+`init-db.sql` replay re-widens (or otherwise changes) a relation, its row also
+carries the replay result and is listed in `REPLAY_WIDENED`. A migration that
+narrows a `public` table must therefore add a boundary or replay-widened row, not
+leave the legacy blanket in place.
+
 `tests/integration/test_db_authority_grants_catalog.py` diffs a migrated
 database against the manifest, before and after an `init-db.sql` replay.
 `butlers db check-grants` runs the same read-only, content-blind diff against
-a real database and exits non-zero on any difference. The manifest is not yet
+a real database (`--database`, default `butlers`) and exits non-zero on any
+difference. A deployed database has been through init-db replays, so pass
+`--after-init-db-replay` to compare with the replay result. The manifest is not yet
 applied: converging grants to it under the migrate initContainer, and removing
 init-db's blanket grants, are the next slices of bu-dss7he.6.
 

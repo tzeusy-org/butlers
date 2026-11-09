@@ -684,12 +684,20 @@ def migrate(only: tuple[str, ...], butlers_dir: Path, dry_run: bool) -> None:
 
 @db.command("check-grants")
 @click.option("--database", default="butlers", show_default=True, help="Database name")
-def check_grants(database: str) -> None:
+@click.option(
+    "--after-init-db-replay",
+    is_flag=True,
+    help="Compare with the grants an init-db.sql replay leaves (a deployed database has been "
+    "through one) instead of the freshly migrated intent.",
+)
+def check_grants(database: str, after_init_db_replay: bool) -> None:
     """Diff runtime-role privileges on public relations against the grant manifest.
 
     Read-only and content-blind: reads catalog privileges (relation and role names),
     never rows. Exits non-zero and prints one line per difference when the database
-    and ``butlers.db_authority.grants`` disagree.
+    and ``butlers.db_authority.grants`` disagree. The default compares with migration
+    intent; a database that init-db.sql has since re-widened differs on the
+    ``REPLAY_WIDENED`` rows unless ``--after-init-db-replay`` is given.
     """
     from sqlalchemy import create_engine
     from sqlalchemy.exc import SQLAlchemyError
@@ -707,7 +715,9 @@ def check_grants(database: str) -> None:
         raise click.ClickException("Grant check refused: database operation failed") from None
     finally:
         engine.dispose()
-    problems = diff_public_catalog(catalog, absent_ok=WA_BRIDGE_RELATIONS)
+    problems = diff_public_catalog(
+        catalog, absent_ok=WA_BRIDGE_RELATIONS, after_init_db_replay=after_init_db_replay
+    )
     for problem in problems:
         click.echo(problem)
     if problems:

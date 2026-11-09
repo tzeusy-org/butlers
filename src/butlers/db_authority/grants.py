@@ -2,8 +2,10 @@
 
 One row per ``public`` relation says which table privileges each runtime role
 (:func:`butlers.db_authority.roles.runtime_roles`) holds. It is the inventory the
-deny-by-default model starts from (bu-dss7he.6 slice S2): today it records the
-effective grants the deployed database already has, so checking it changes nothing.
+deny-by-default model starts from (bu-dss7he.6 slice S2): it records what a freshly migrated
+database grants (migration intent), so checking it changes nothing. A database that
+``init-db.sql`` has since replayed is wider on the :data:`REPLAY_WIDENED` rows, which also
+carry the grants a replay leaves.
 Narrowing a relation is a later, reviewed edit to its row.
 
 Most relations still carry :data:`LEGACY_FLEET_DML` -- the blanket
