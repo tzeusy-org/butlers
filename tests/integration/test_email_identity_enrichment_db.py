@@ -55,7 +55,13 @@ _ASSERT_FACT_PATCH = "butlers.tools.relationship.relationship_assert_fact.relati
 @pytest.fixture
 async def identity_pool(db):
     """The real chains the code under test touches, with approval admission enabled."""
-    pool = await db("core", "relationship", "approvals", schemas={"relationship": "relationship"})
+    pool = await db(
+        "core",
+        "relationship",
+        "approvals",
+        schemas={"relationship": "relationship"},
+        schema="relationship",
+    )
     await pool.execute(
         "UPDATE public.approvals_policy "
         "SET quiet_start_hour = NULL, quiet_end_hour = NULL, timezone = 'UTC' WHERE id = 1"

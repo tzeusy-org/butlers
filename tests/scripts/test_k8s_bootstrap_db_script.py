@@ -243,7 +243,8 @@ def test_deploy_target_bootstraps_the_deployed_tag_before_helm(fake_repo: Path) 
         ("fresh", "cohost", None, None, [], True),
         ("same-cohost", "cohost", up, None, [pod(up)], True),
         ("same-topology-stale", "cohost", same_stale, None, [pod(up)], False),
-        ("same-topology-missing-counter", "cohost", same_missing, None, [pod(up)], False),
+        # bu-dhloi1.156: Kubernetes omits a zero counter; a stuck rollout must stay redeployable.
+        ("same-topology-stuck-rollout", "cohost", same_missing, None, [pod(up)], True),
         ("leftover-stopped-control", "cohost", up, zero_control, [pod(up)], True),
         ("same-split", "split", domains, control, [pod(domains), pod(control)], True),
         ("legacy-live-cohost", "cohost", legacy_up, None, [pod(legacy_up)], True),

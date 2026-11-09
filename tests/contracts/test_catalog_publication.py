@@ -873,7 +873,7 @@ async def test_actual_shutdown_continues_after_catalog_retirement_outcome(
     module = SimpleNamespace(name="native", on_shutdown=module_close)
     daemon._modules = [module]
 
-    async def db_close():
+    async def db_close(timeout: float = 10.0):  # noqa: ASYNC109
         events.append("db")
 
     daemon.db = SimpleNamespace(pool=pool, close=db_close)
@@ -936,7 +936,7 @@ async def test_repeated_shutdown_joins_retained_owner_after_retirement(tmp_path)
         entered.set()
         await release.wait()
 
-    async def db_close():
+    async def db_close(timeout: float = 10.0):  # noqa: ASYNC109
         calls.append("db")
 
     daemon._modules = [SimpleNamespace(name="native", on_shutdown=module_close)]

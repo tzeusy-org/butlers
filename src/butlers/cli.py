@@ -9,9 +9,9 @@ import signal
 import socket
 import sys
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 
@@ -1177,6 +1177,68 @@ async def _record_deployment_boot(daemons: list, *, configured_count: int) -> No
         logger.warning("Failed to record deployment ledger row (best-effort)", exc_info=True)
 
 
+_SHUTDOWN_BUDGET_ENV = "BUTLERS_SHUTDOWN_BUDGET_S"
+
+
+class _ShutdownPlan:
+    """One shutdown budget for every daemon in the process, if ``BUTLERS_SHUTDOWN_BUDGET_S`` is set.
+
+    ``butlers up`` unwinds its daemons one at a time. Each used to get its own full
+    ``shutdown_timeout_s``, so one slow daemon could spend a pod's whole termination grace and
+    leave the rest to be SIGKILLed with no module shutdown or pool close. With the budget set
+    (the Helm chart sets it beside the pod's grace period), it counts from when shutdown begins
+    and each daemon gets an equal share of what is left among the daemons still to go, capped by
+    its own timeout, so time a daemon does not use passes to the next.
+
+    With it unset (a local ``butlers up``, compose) nothing is shared and each daemon keeps its
+    own full timeout, as before.
+    """
+
+    def __init__(self, daemons: list[Any], *, clock: Callable[[], float] | None = None) -> None:
+        self._daemons = daemons
+        self._clock = clock or asyncio.get_running_loop().time
+        self._deadline: float | None = None
+        self._pending: int | None = None
+
+    def _budget_s(self) -> float | None:
+        raw = os.environ.get(_SHUTDOWN_BUDGET_ENV)
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning("Ignoring non-numeric %s=%r", _SHUTDOWN_BUDGET_ENV, raw)
+            return None
+
+    def begin(self) -> None:
+        """Start the clock; later calls change nothing. A no-op without a budget."""
+        budget = self._budget_s()
+        if budget is not None and self._deadline is None:
+            self._deadline = self._clock() + budget
+
+    @staticmethod
+    def _timeout_of(daemon: Any) -> float:
+        timeout = getattr(getattr(daemon, "config", None), "shutdown_timeout_s", None)
+        return float(timeout) if isinstance(timeout, int | float) else 30.0
+
+    def next_budget(self, daemon: Any) -> float | None:
+        """Seconds this daemon's shutdown may take, or ``None`` for its own full timeout."""
+        self.begin()
+        if self._deadline is None:
+            return None
+        if self._pending is None:
+            self._pending = len(self._daemons)
+        remaining = max(0.0, self._deadline - self._clock())
+        share = remaining / max(self._pending, 1)
+        self._pending -= 1
+        return min(self._timeout_of(daemon), share)
+
+
+async def _shutdown_in_share(daemon: Any, plan: _ShutdownPlan) -> None:
+    daemon._shutdown_budget_s = plan.next_budget(daemon)
+    await daemon.shutdown()
+
+
 async def _start_all(configs: dict[str, Path]) -> None:
     """Start all butler daemons in a single event loop."""
     from contextlib import AsyncExitStack
@@ -1188,9 +1250,11 @@ async def _start_all(configs: dict[str, Path]) -> None:
 
     # Set up signal handling
     shutdown_event = asyncio.Event()
+    plan = _ShutdownPlan(daemons)
 
     def _signal_handler() -> None:
         click.echo("\nShutting down...")
+        plan.begin()  # the budget counts from the signal, not from reaching each daemon
         shutdown_event.set()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -1210,7 +1274,7 @@ async def _start_all(configs: dict[str, Path]) -> None:
                 try:
                     await daemon.start()
                     daemons.append(daemon)
-                    cleanup.push_async_callback(daemon.shutdown)
+                    cleanup.push_async_callback(_shutdown_in_share, daemon, plan)
                     click.echo(f"  started: {name}")
                     started = True
                 except BaseException as exc:

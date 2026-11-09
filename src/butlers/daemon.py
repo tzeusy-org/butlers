@@ -27,10 +27,9 @@ The ButlerDaemon manages the lifecycle of a butler:
 On startup failure, already-initialized modules get on_shutdown() called.
 
 Graceful shutdown: (a) stops advertising route acceptance, (b) stops the MCP server,
-(c) stops accepting new triggers,
-(d) drains in-flight runtime sessions up to a configurable timeout,
+(c) cancels scheduler loop (waits for in-progress tick() to finish),
+(d) stops accepting new triggers, drains in-flight runtime sessions up to a configurable timeout,
 (e) cancels switchboard heartbeat, (f) closes Switchboard MCP client,
-(g) cancels scheduler loop (waits for in-progress tick() to finish),
 (h) cancels liveness reporter loop, (i) shuts down modules in reverse topological order,
 (j) closes DB pool.
 """
@@ -255,6 +254,8 @@ class ButlerDaemon:
         self._started_at: float | None = None
         self._accepting_connections = False
         self._shutting_down = False
+        # Set by `butlers up` to this daemon's share of the process shutdown budget.
+        self._shutdown_budget_s: float | None = None
         self._boot_instance_id = uuid.UUID(generate_uuid7_string())
         self._boot_epoch: int | None = None
         self._boot_registration_task: asyncio.Task | None = None
@@ -2274,10 +2275,10 @@ class ButlerDaemon:
         1. Stop MCP server
         2. Stop durable buffer (drain queue, cancel workers)
         2b. Cancel in-flight route_inbox background tasks
+        2c. Cancel internal scheduler loop (wait for in-progress tick() to finish)
         3. Stop accepting new triggers and drain in-flight runtime sessions
         4. Cancel switchboard heartbeat
         5. Close Switchboard MCP client
-        5b. Cancel internal scheduler loop (wait for in-progress tick() to finish)
         6. Module on_shutdown in reverse topological order
         7. Close DB pool
 

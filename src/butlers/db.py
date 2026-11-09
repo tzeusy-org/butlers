@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
+import socket
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -98,6 +100,51 @@ def _jsonb_decoder(data: bytes) -> object:
     return json.loads(data[1:])
 
 
+# A partitioned peer is detected by the kernel on both ends. A savepoint ROLLBACK TO or a COMMIT
+# that follows a client deadline carries no client timer (a second one recreates asyncpg's shared
+# cancel future bug), so without these a dead link would hold the connection until the OS default
+# of about two hours. The client socket is armed below; the server's backend, which keeps the open
+# transaction and its row locks, gets the same values as startup parameters (USERSET, PostgreSQL
+# 12+; ignored on a unix socket).
+TCP_KEEPIDLE_S = 30
+TCP_KEEPINTVL_S = 10
+TCP_KEEPCNT = 3
+TCP_USER_TIMEOUT_MS = 60_000
+TCP_LIVENESS_SERVER_SETTINGS = {
+    "tcp_keepalives_idle": str(TCP_KEEPIDLE_S),
+    "tcp_keepalives_interval": str(TCP_KEEPINTVL_S),
+    "tcp_keepalives_count": str(TCP_KEEPCNT),
+    "tcp_user_timeout": str(TCP_USER_TIMEOUT_MS),
+}
+
+
+def _arm_tcp_liveness(conn: asyncpg.Connection) -> None:
+    """Arm keepalives and a user timeout on a TCP connection; best effort, never fatal.
+
+    A unix socket, an option the platform lacks or a transport without a socket is left as it
+    was. A hung but reachable backend is not detected by this (the kernel still ACKs), and no
+    pool sets a ``statement_timeout`` to bound it.
+    """
+    try:
+        sock = conn._transport.get_extra_info("socket")  # noqa: SLF001 - asyncpg exposes no accessor
+        if sock is None or sock.family not in (socket.AF_INET, socket.AF_INET6):
+            return
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        for name, value in (
+            ("TCP_KEEPIDLE", TCP_KEEPIDLE_S),
+            ("TCP_KEEPINTVL", TCP_KEEPINTVL_S),
+            ("TCP_KEEPCNT", TCP_KEEPCNT),
+        ):
+            option = getattr(socket, name, None)
+            if option is not None:
+                sock.setsockopt(socket.IPPROTO_TCP, option, value)
+        user_timeout = getattr(socket, "TCP_USER_TIMEOUT", None)
+        if user_timeout is not None:
+            sock.setsockopt(socket.IPPROTO_TCP, user_timeout, TCP_USER_TIMEOUT_MS)
+    except (OSError, AttributeError):
+        logger.warning("Could not arm TCP liveness options on a database connection")
+
+
 async def register_jsonb_codec(conn: asyncpg.Connection) -> None:
     """Register a JSONB type codec on an asyncpg connection.
 
@@ -122,6 +169,8 @@ async def register_jsonb_codec(conn: asyncpg.Connection) -> None:
     )
 
 
+# Seconds a pool gets to close before it is terminated (see ``Database.close``).
+_POOL_CLOSE_TIMEOUT_S = 10.0
 _VALID_SSL_MODES = {"disable", "prefer", "allow", "require", "verify-ca", "verify-full"}
 _SSL_UPGRADE_CONNECTION_LOST = "unexpected connection_lost() call"
 _SCHEMA_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -363,10 +412,11 @@ class Database:
 
     def _server_settings(self) -> dict[str, str] | None:
         """Return asyncpg server settings for this database context."""
+        settings = dict(TCP_LIVENESS_SERVER_SETTINGS)
         search_path = schema_search_path(self.schema)
-        if search_path is None:
-            return None
-        return {"search_path": search_path}
+        if search_path is not None:
+            settings["search_path"] = search_path
+        return settings
 
     async def _verify_role_exists(self, conn: asyncpg.Connection) -> bool:
         """Check if the configured role exists in pg_roles."""
@@ -481,6 +531,7 @@ class Database:
         the underlying TCP connection is created.
         """
         await register_jsonb_codec(conn)
+        _arm_tcp_liveness(conn)
 
     async def provision(self) -> None:
         """Create the database if it doesn't exist.
@@ -634,12 +685,26 @@ class Database:
         logger.info("Connection pool created for: %s", self.db_name)
         return self.pool
 
-    async def close(self) -> None:
-        """Close the connection pool."""
+    async def close(self, timeout: float = _POOL_CLOSE_TIMEOUT_S) -> None:  # noqa: ASYNC109
+        """Close the connection pool, terminating it if it will not close within ``timeout``.
+
+        ``Pool.close()`` waits for every connection to be released, and one stuck in a query
+        never is, so an unbounded wait here could hold shutdown until the pod is SIGKILLed.
+        ``terminate()`` drops the connections without waiting.
+        """
         if self.pool:
-            await self.pool.close()
-            self.pool = None
-            logger.info("Connection pool closed for: %s", self.db_name)
+            pool, self.pool = self.pool, None
+            try:
+                await asyncio.wait_for(pool.close(), timeout=timeout)
+            except TimeoutError:
+                logger.warning(
+                    "Connection pool for %s did not close within %.0fs; terminating it",
+                    self.db_name,
+                    timeout,
+                )
+                pool.terminate()
+            else:
+                logger.info("Connection pool closed for: %s", self.db_name)
 
     # -- Pool proxy methods ------------------------------------------------
     # Modules receive a Database instance but need to call asyncpg pool

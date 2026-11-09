@@ -6122,10 +6122,10 @@
       "sha256": "e163a20ff26700605813561399421bbd8df97f25ebefa717fbf15a2faf3e8c67"
     },
     "deploy/helm/butlers/templates/butlers-control.yaml": {
-      "sha256": "7c464148f4fc163bc9d088f5215fb465fb0fc62ef22b332e241030edf804d9ac"
+      "sha256": "dd9ed7085f268328756c936f7b4b0d804e34207b530aa19e42aac331cb1cea92"
     },
     "deploy/helm/butlers/templates/butlers-up.yaml": {
-      "sha256": "0f8e9cfc9acb3fa99481f378717ccccbae29177fccfa93f3b55485796fc57181"
+      "sha256": "6abc4f118a7ec0c099c2827e10155e555e34c62d507fb3e911c477e6c1aa2aa7"
     },
     "deploy/helm/butlers/templates/connector-podmonitor.yaml": {
       "sha256": "d910cfcf8a4ae5b79dc712e8f050fde764ef37f10d462dd63a2041d391d5c03a"

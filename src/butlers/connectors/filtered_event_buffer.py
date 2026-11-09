@@ -77,11 +77,14 @@ Historical rows without these optional fields cannot recover facts never stored.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
+from time import monotonic as _monotonic
 from typing import TYPE_CHECKING, Any
 
 from butlers.conversation_identity import (
@@ -100,6 +103,11 @@ if TYPE_CHECKING:
     import asyncpg
 
 logger = logging.getLogger(__name__)
+
+
+class ParkNotDurableError(RuntimeError):
+    """A failed submission could not be parked durably; keep holding its source."""
+
 
 # Top-level key on a stored ``full_payload`` that annotates why the drop matters.
 # Read by the dashboard's dropped-from-people-you-know aggregate.
@@ -125,30 +133,73 @@ INSERT INTO connectors.filtered_events (
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 """
 
-# SQL for the replay drain loop.
-# Locks up to 10 replay_pending rows with skip-locked concurrency safety,
-# then updates each to replay_complete or replay_failed after submission.
 # A stored full_payload carrying this key has no real content to submit; its
 # value is the reason. Replay refuses the row with that reason (bu-dhloi1.149).
 REPLAY_UNAVAILABLE_KEY = "replay_unavailable"
 
-_REPLAY_SELECT_SQL = """\
-SELECT id, received_at, external_message_id, full_payload
-FROM connectors.filtered_events
-WHERE connector_type = $1
-  AND endpoint_identity = $2
-  AND status = 'replay_pending'
-ORDER BY received_at ASC
-LIMIT 10
-FOR UPDATE SKIP LOCKED
+# SQL for the replay drain loop (bu-dhloi1.225): claim up to 10 rows in one
+# statement, submit with no transaction held, then record each outcome in its own
+# statement. A claim is a per-drain ``claim_token`` plus ``claimed_at``; a claim
+# older than the lease belongs to a drain that died, and any drain may take it.
+
+# Status of a claimed row while its submission is in flight.
+REPLAY_IN_FLIGHT_STATUS = "replay_pending"
+
+# Seconds a claim stays exclusive. Each submit is bounded well inside it.
+REPLAY_LEASE_S = 300.0
+REPLAY_SUBMIT_TIMEOUT_S = 60.0
+
+# One statement, so the claim is its own short transaction. Takes unclaimed
+# pending rows and claims whose lease ran out.
+_REPLAY_CLAIM_SQL = f"""\
+UPDATE connectors.filtered_events AS fe
+SET status = '{REPLAY_IN_FLIGHT_STATUS}',
+    claim_token = $3,
+    claimed_at = now()
+FROM (
+    SELECT id, received_at
+    FROM connectors.filtered_events
+    WHERE connector_type = $1
+      AND endpoint_identity = $2
+      AND (
+        (status = 'replay_pending' AND claim_token IS NULL)
+        OR (
+          status = '{REPLAY_IN_FLIGHT_STATUS}'
+          AND claim_token IS NOT NULL
+          AND claimed_at < now() - make_interval(secs => $4)
+        )
+      )
+    ORDER BY received_at ASC
+    LIMIT 10
+    FOR UPDATE SKIP LOCKED
+) AS claimed
+WHERE fe.id = claimed.id AND fe.received_at = claimed.received_at
+RETURNING fe.id, fe.received_at, fe.external_message_id, fe.full_payload
 """
 
-_REPLAY_UPDATE_SQL = """\
+# Records the outcome only while the row still carries this drain's token; a
+# claim another drain reclaimed after the lease is left to that drain.
+_REPLAY_UPDATE_SQL = f"""\
 UPDATE connectors.filtered_events
 SET status = $1,
     error_detail = $2,
-    replay_completed_at = now()
+    replay_completed_at = now(),
+    claim_token = NULL,
+    claimed_at = NULL
 WHERE id = $3 AND received_at = $4
+  AND status = '{REPLAY_IN_FLIGHT_STATUS}' AND claim_token = $5
+"""
+
+# Hands every row this drain still holds back to the queue. The connector and
+# endpoint lead the drain index, so the release does not scan the table.
+_REPLAY_RELEASE_SQL = f"""\
+UPDATE connectors.filtered_events
+SET status = 'replay_pending',
+    claim_token = NULL,
+    claimed_at = NULL
+WHERE claim_token = $1
+  AND connector_type = $2 AND endpoint_identity = $3
+  AND status = '{REPLAY_IN_FLIGHT_STATUS}'
 """
 
 # ---------------------------------------------------------------------------
@@ -251,23 +302,40 @@ async def drain_replay_pending(
     endpoint_identity: str,
     submit_fn: Callable[[dict[str, Any]], Awaitable[None]],
     drain_logger: logging.Logger | None = None,
+    *,
+    lease_s: float = REPLAY_LEASE_S,
+    submit_timeout_s: float = REPLAY_SUBMIT_TIMEOUT_S,
 ) -> None:
     """Process up to 10 replay_pending rows from connectors.filtered_events.
 
-    For each row:
-    - Deserialise full_payload from JSONB.
-    - Wrap in an ingest.v1 envelope (adds schema_version).
-    - Submit via *submit_fn*.
-    - Mark status=replay_complete on success or replay_failed on error.
+    Three steps, none of which holds a transaction across submission
+    (bu-dhloi1.225):
 
-    Uses ``FOR UPDATE SKIP LOCKED`` so concurrent drains skip actively locked
-    rows. The SELECT and all UPDATEs share a single
-    connection and transaction so the row locks are held until every status
-    update commits — defeating the race window that would otherwise exist
-    between connection-per-update calls. Submission and status commit are not
-    exactly-once delivery: an uncertain commit can cause resubmission with the
-    same event identity for ingest deduplication. Failed submissions require an
-    explicit replay request before another drain attempts them.
+    1. Claim: one ``UPDATE ... FOR UPDATE SKIP LOCKED ... RETURNING`` statement
+       stamps up to 10 rows with this drain's ``claim_token`` and ``claimed_at``.
+       It takes unclaimed ``replay_pending`` rows, and claims older than
+       *lease_s* (their drain died). A competing drain skips live claims.
+    2. Submit: each row's full_payload is deserialised, wrapped in an ingest.v1
+       envelope (adds schema_version) and passed to *submit_fn* with no
+       transaction or pooled connection held, bounded by *submit_timeout_s*.
+    3. Record: one short ``UPDATE`` per row sets ``replay_complete`` on success
+       or ``replay_failed`` with the error on failure, and clears the claim,
+       only while the row still carries this drain's token.
+
+    A row whose payload carries ``REPLAY_UNAVAILABLE_KEY`` is refused before
+    submission and recorded ``replay_failed`` with ``not replayable: <reason>``.
+
+    The batch is bounded by the lease: before each submission, if the time since
+    the claim plus *submit_timeout_s* would reach *lease_s*, the drain releases
+    the rows it still holds and stops, so no other drain can reclaim a row this
+    one is still about to submit. A later drain picks them up.
+
+    If the drain is cancelled or fails part-way, it releases every row it still
+    holds back to ``replay_pending`` (best effort; a crash is covered by the
+    lease). The row whose submission was interrupted is released too, so it may
+    be submitted again; ingest deduplicates it by its event identity. Failed
+    submissions require an explicit replay request before another drain
+    attempts them.
 
     Args:
         pool: asyncpg pool with access to the ``connectors`` schema.
@@ -276,115 +344,184 @@ async def drain_replay_pending(
         submit_fn: Async callable that accepts an ingest.v1 envelope dict and
             submits it to the ingestion pipeline.  Raises on failure.
         drain_logger: Optional logger to use; defaults to this module's logger.
+        lease_s: Seconds a claim stays exclusive to this drain.
+        submit_timeout_s: Deadline for one submission; must be shorter than the lease.
     """
+    if not 0 < submit_timeout_s < lease_s:
+        raise ValueError("submit_timeout_s must be positive and shorter than lease_s")
     _log = drain_logger if drain_logger is not None else logger
+    token = uuid.uuid4()
 
+    # Read before the claim statement, so elapsed time never undercounts its lease.
+    claim_started = _monotonic()
     try:
         async with pool.acquire() as conn:
-            async with conn.transaction():
-                rows = await conn.fetch(
-                    _REPLAY_SELECT_SQL,
-                    connector_type,
-                    endpoint_identity,
-                )
-
-                if not rows:
-                    return
-
-                _log.debug("replay drain: processing %d replay_pending rows", len(rows))
-
-                for row in rows:
-                    row_id = row["id"]
-                    received_at = row["received_at"]
-                    external_message_id = row["external_message_id"]
-                    raw_payload = row["full_payload"]
-
-                    # Deserialise JSONB (asyncpg may return str or dict depending on codec)
-                    if isinstance(raw_payload, str):
-                        try:
-                            payload_dict: dict[str, Any] = json.loads(raw_payload)
-                        except Exception as exc:
-                            _log.warning(
-                                "replay drain: failed to parse full_payload for id=%s "
-                                "(error_class=%s raised_at=%s)",
-                                row_id,
-                                type(exc).__name__,
-                                _raise_site(exc),
-                            )
-                            await conn.execute(
-                                _REPLAY_UPDATE_SQL,
-                                "replay_failed",
-                                str(exc),
-                                row_id,
-                                received_at,
-                            )
-                            continue
-                    else:
-                        payload_dict = dict(raw_payload)
-
-                    # A row parked without real content (e.g. a Gmail message that
-                    # never fetched) would replay as a hollow event; refuse it.
-                    unavailable = payload_dict.get(REPLAY_UNAVAILABLE_KEY)
-                    if unavailable:
-                        _log.warning(
-                            "replay drain: id=%s is not replayable; marking replay_failed",
-                            row_id,
-                        )
-                        await conn.execute(
-                            _REPLAY_UPDATE_SQL,
-                            "replay_failed",
-                            f"not replayable: {unavailable}",
-                            row_id,
-                            received_at,
-                        )
-                        continue
-
-                    # Sanitize stored payload: older rows may have None values for
-                    # fields that IngestEnvelopeV1 requires as non-None.
-                    _sanitize_replay_payload(payload_dict)
-
-                    # Build ingest.v1 envelope by adding schema_version
-                    envelope: dict[str, Any] = {"schema_version": "ingest.v1", **payload_dict}
-
-                    try:
-                        await submit_fn(envelope)
-                        await conn.execute(
-                            _REPLAY_UPDATE_SQL,
-                            "replay_complete",
-                            None,
-                            row_id,
-                            received_at,
-                        )
-                        _log.info(
-                            "replay drain: replayed message %s (id=%s)",
-                            external_message_id,
-                            row_id,
-                        )
-                    except Exception as exc:
-                        error_msg = str(exc)
-                        _log.warning(
-                            "replay drain: failed to replay message %s (id=%s) "
-                            "(error_class=%s raised_at=%s)",
-                            external_message_id,
-                            row_id,
-                            type(exc).__name__,
-                            _raise_site(exc),
-                        )
-                        await conn.execute(
-                            _REPLAY_UPDATE_SQL,
-                            "replay_failed",
-                            error_msg,
-                            row_id,
-                            received_at,
-                        )
+            rows = await conn.fetch(
+                _REPLAY_CLAIM_SQL,
+                connector_type,
+                endpoint_identity,
+                token,
+                lease_s,
+            )
     except Exception as exc:
-        # No exc_info: an UPDATE failing inside a replay ``except`` chains the replay
-        # exception as __context__, and the formatted traceback would print its text.
         _log.warning(
-            "replay drain: failed to query replay_pending rows (error_class=%s raised_at=%s)",
+            "replay drain: failed to claim replay_pending rows (error_class=%s raised_at=%s)",
             type(exc).__name__,
             _raise_site(exc),
         )
+        return
+
+    if not rows:
+        return
+
+    _log.debug("replay drain: claimed %d replay_pending rows", len(rows))
+
+    release = (pool, token, connector_type, endpoint_identity, _log)
+    try:
+        # RETURNING does not keep the claim subquery's order.
+        for row in sorted(rows, key=lambda r: r["received_at"]):
+            if _monotonic() - claim_started + submit_timeout_s >= lease_s:
+                # Past this point another drain could reclaim the row mid-submit.
+                _log.info(
+                    "replay drain: lease budget spent; releasing the remaining claims "
+                    "for a later drain"
+                )
+                await _release_claims(*release)
+                return
+            status, error_detail = await _replay_one(row, submit_fn, _log, submit_timeout_s)
+            await _record_outcome(pool, row, status, error_detail, token, _log)
+    except BaseException:
+        await _release_claims(*release)
+        raise
+
+
+async def _record_outcome(
+    pool: asyncpg.Pool,
+    row: Mapping[str, Any],
+    status: str,
+    error_detail: str | None,
+    token: uuid.UUID,
+    _log: logging.Logger,
+) -> None:
+    """Record one row's outcome while this drain still holds its claim."""
+    row_id = row["id"]
+    try:
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                _REPLAY_UPDATE_SQL,
+                status,
+                error_detail,
+                row_id,
+                row["received_at"],
+                token,
+            )
+    except Exception as exc:
+        # No exc_info: an UPDATE failing after a replay failure chains the replay
+        # exception as __context__, and the formatted traceback would print its text.
+        _log.warning(
+            "replay drain: failed to record the outcome for id=%s; its claim lapses "
+            "after the lease and a later drain retries it (error_class=%s raised_at=%s)",
+            row_id,
+            type(exc).__name__,
+            _raise_site(exc),
+        )
+        return
+    if result == "UPDATE 0":
+        _log.info(
+            "replay drain: id=%s is no longer claimed by this drain; leaving it",
+            row_id,
+        )
+    elif status == "replay_complete":
+        _log.info(
+            "replay drain: replayed message %s (id=%s)",
+            row["external_message_id"],
+            row_id,
+        )
+
+
+async def _release_claims(
+    pool: asyncpg.Pool,
+    token: uuid.UUID,
+    connector_type: str,
+    endpoint_identity: str,
+    _log: logging.Logger,
+) -> None:
+    """Best effort: hand this drain's remaining claims back to the queue."""
+    try:
+        async with asyncio.timeout(5):
+            async with pool.acquire() as conn:
+                await conn.execute(_REPLAY_RELEASE_SQL, token, connector_type, endpoint_identity)
+    except BaseException as exc:  # noqa: BLE001 - the lease covers a failed release
+        _log.warning(
+            "replay drain: failed to release unsubmitted claims; they lapse after "
+            "the lease (error_class=%s)",
+            type(exc).__name__,
+        )
+
+
+async def _replay_one(
+    row: Mapping[str, Any],
+    submit_fn: Callable[[dict[str, Any]], Awaitable[None]],
+    _log: logging.Logger,
+    submit_timeout_s: float,
+) -> tuple[str, str | None]:
+    """Submit one claimed row; return its outcome ``(status, error_detail)``."""
+    row_id = row["id"]
+    raw_payload = row["full_payload"]
+
+    # Deserialise JSONB (asyncpg may return str or dict depending on codec)
+    if isinstance(raw_payload, str):
+        try:
+            payload_dict: dict[str, Any] = json.loads(raw_payload)
+        except Exception as exc:
+            _log.warning(
+                "replay drain: failed to parse full_payload for id=%s "
+                "(error_class=%s raised_at=%s)",
+                row_id,
+                type(exc).__name__,
+                _raise_site(exc),
+            )
+            return "replay_failed", str(exc)
+    else:
+        payload_dict = dict(raw_payload)
+
+    # A row parked without real content (e.g. a Gmail message that never
+    # fetched) would replay as a hollow event; refuse it (bu-dhloi1.149).
+    unavailable = payload_dict.get(REPLAY_UNAVAILABLE_KEY)
+    if unavailable:
+        _log.warning("replay drain: id=%s is not replayable; marking replay_failed", row_id)
+        return "replay_failed", f"not replayable: {unavailable}"
+
+    # Sanitize stored payload: older rows may have None values for
+    # fields that IngestEnvelopeV1 requires as non-None.
+    _sanitize_replay_payload(payload_dict)
+
+    # Build ingest.v1 envelope by adding schema_version
+    envelope: dict[str, Any] = {"schema_version": "ingest.v1", **payload_dict}
+
+    try:
+        # Bounds one submission. The drain starts a submission only while this
+        # deadline still ends inside the lease, so no other drain can reclaim it.
+        async with asyncio.timeout(submit_timeout_s):
+            await submit_fn(envelope)
+    except TimeoutError:
+        _log.warning(
+            "replay drain: replay of message %s (id=%s) timed out after %ss",
+            row["external_message_id"],
+            row_id,
+            submit_timeout_s,
+        )
+        return "replay_failed", f"replay submit timed out after {submit_timeout_s}s"
+    except Exception as exc:
+        _log.warning(
+            "replay drain: failed to replay message %s (id=%s) (error_class=%s raised_at=%s)",
+            row["external_message_id"],
+            row_id,
+            type(exc).__name__,
+            _raise_site(exc),
+        )
+        return "replay_failed", str(exc)
+    return "replay_complete", None
 
 
 # Fixed marker stored in place of text when the bearer detector fails.
@@ -501,36 +638,109 @@ class FilteredEventBuffer:
             error_detail: Exception message or validation error text (optional).
             received_at: Override the received timestamp (defaults to now UTC).
         """
-        ts = received_at if received_at is not None else datetime.now(UTC)
-        stored_payload, stored_error = _scrub_stored_event(full_payload, error_detail)
         self._rows.append(
-            (
-                ts,
+            self._row(
+                external_message_id=external_message_id,
+                source_channel=source_channel,
+                sender_identity=sender_identity,
+                subject_or_preview=subject_or_preview,
+                filter_reason=filter_reason,
+                full_payload=full_payload,
+                status=status,
+                error_detail=error_detail,
+                received_at=received_at,
+            )
+        )
+
+    async def park(
+        self,
+        pool: asyncpg.Pool | None,
+        *,
+        external_message_id: str,
+        source_channel: str,
+        sender_identity: str,
+        subject_or_preview: str | None,
+        full_payload: dict[str, Any],
+        error_detail: str | None = None,
+    ) -> None:
+        """Durably park one failed submission as a replayable error row.
+
+        A parked row is the only copy of an item whose source has been told it
+        was handled, so it is written at once, on its own, and the call returns
+        only once the row is committed. Callers release the source (commit a
+        cursor, acknowledge a webhook) only after this returns.
+
+        Unlike :meth:`flush`, nothing is swallowed: no *pool*, or a failed
+        write, raises :class:`ParkNotDurableError` and the row is not kept, so
+        the caller holds the source and the item is parked again on its next
+        attempt (bu-dhloi1.224).
+        """
+        if pool is None:
+            raise ParkNotDurableError("no connectors database pool to park into")
+        row = self._row(
+            external_message_id=external_message_id,
+            source_channel=source_channel,
+            sender_identity=sender_identity,
+            subject_or_preview=subject_or_preview,
+            filter_reason=self.reason_submission_error(),
+            full_payload=full_payload,
+            status="error",
+            error_detail=error_detail,
+            received_at=None,
+        )
+        try:
+            await self._write(pool, [row])
+        except Exception as exc:
+            logger.error(
+                "Failed to park a failed submission durably (connector_type=%s, endpoint=%s)",
                 self._connector_type,
                 self._endpoint_identity,
-                external_message_id,
-                source_channel,
-                sender_identity,
-                scrub_filtered_preview(
-                    subject_or_preview,
-                    connector_type=self._connector_type,
-                    sender_identity=sender_identity,
-                    full_payload=full_payload,
-                ),
-                filter_reason,
-                status,
-                # Sanitize to JSON-safe primitives (e.g. datetimes -> str via
-                # default=str), then bind the resulting dict directly (no
-                # json.dumps, no ::jsonb cast). Every asyncpg pool in this
-                # codebase registers register_jsonb_codec() (src/butlers/db.py),
-                # whose encoder already calls json.dumps() on the bound value;
-                # pre-serializing here double-encodes full_payload into a
-                # jsonb-typed STRING instead of an OBJECT (bu-dycxq — same
-                # anti-pattern as bu-cymc4/bu-x92jw). The replay-drain read
-                # path below still tolerates legacy string-shaped rows.
-                json.loads(json.dumps(stored_payload, default=str)),
-                stored_error,
+                exc_info=True,
             )
+            raise ParkNotDurableError("parked row was not written") from exc
+        await self._publish_ingestion_event(pool)
+
+    def _row(
+        self,
+        *,
+        external_message_id: str,
+        source_channel: str,
+        sender_identity: str,
+        subject_or_preview: str | None,
+        filter_reason: str,
+        full_payload: dict[str, Any],
+        status: str,
+        error_detail: str | None,
+        received_at: datetime | None,
+    ) -> tuple[Any, ...]:
+        ts = received_at if received_at is not None else datetime.now(UTC)
+        stored_payload, stored_error = _scrub_stored_event(full_payload, error_detail)
+        return (
+            ts,
+            self._connector_type,
+            self._endpoint_identity,
+            external_message_id,
+            source_channel,
+            sender_identity,
+            scrub_filtered_preview(
+                subject_or_preview,
+                connector_type=self._connector_type,
+                sender_identity=sender_identity,
+                full_payload=full_payload,
+            ),
+            filter_reason,
+            status,
+            # Sanitize to JSON-safe primitives (e.g. datetimes -> str via
+            # default=str), then bind the resulting dict directly (no
+            # json.dumps, no ::jsonb cast). Every asyncpg pool in this
+            # codebase registers register_jsonb_codec() (src/butlers/db.py),
+            # whose encoder already calls json.dumps() on the bound value;
+            # pre-serializing here double-encodes full_payload into a
+            # jsonb-typed STRING instead of an OBJECT (bu-dycxq — same
+            # anti-pattern as bu-cymc4/bu-x92jw). The replay-drain read
+            # path below still tolerates legacy string-shaped rows.
+            json.loads(json.dumps(stored_payload, default=str)),
+            stored_error,
         )
 
     async def flush(self, pool: asyncpg.Pool) -> None:
@@ -548,8 +758,11 @@ class FilteredEventBuffer:
         partition creation.
 
         Flush failures are logged as warnings and do **not** raise; unflushed
-        events are silently dropped.  This is intentional — filtered events are
-        operational visibility data and their loss is acceptable.
+        events are dropped.  That is acceptable only for rows whose source still
+        holds the item (policy-filtered visibility rows, or error rows recorded
+        while the source cursor is held).  A failed submission whose source is
+        about to be released must go through :meth:`park` instead, which writes
+        the row at once and raises unless it was committed.
 
         Args:
             pool: asyncpg pool with access to the ``connectors`` schema.
@@ -560,16 +773,7 @@ class FilteredEventBuffer:
         rows_to_flush = list(self._rows)
 
         try:
-            # Ensure the monthly partition exists before inserting.  Must run on
-            # an autocommit connection (pool.execute, not inside a transaction)
-            # so that DDL is immediately durable even if the batch INSERT below
-            # fails or is retried.
-            await pool.execute(
-                "SELECT connectors.connectors_filtered_events_ensure_partition(now())"
-            )
-
-            async with pool.acquire() as conn:
-                await conn.executemany(_INSERT_SQL, rows_to_flush)
+            await self._write(pool, rows_to_flush)
         except Exception:
             logger.warning(
                 "Failed to flush %d filtered events (connector_type=%s, endpoint=%s); "
@@ -590,6 +794,21 @@ class FilteredEventBuffer:
             self._endpoint_identity,
         )
 
+        await self._publish_ingestion_event(pool)
+
+    async def _write(self, pool: asyncpg.Pool, rows: list[tuple[Any, ...]]) -> None:
+        """INSERT *rows* in one batch; raises on any failure."""
+        # Ensure the monthly partition exists before inserting.  Must run on
+        # an autocommit connection (pool.execute, not inside a transaction)
+        # so that DDL is immediately durable even if the batch INSERT below
+        # fails or is retried.
+        await pool.execute("SELECT connectors.connectors_filtered_events_ensure_partition(now())")
+
+        async with pool.acquire() as conn:
+            await conn.executemany(_INSERT_SQL, rows)
+
+    @staticmethod
+    async def _publish_ingestion_event(pool: asyncpg.Pool) -> None:
         # These rows never reach ingest_v1(), so they have no canonical request_id.
         # The existing ingestion cache patch keys only on the event type; an empty,
         # bounded payload therefore invalidates the unified feed without inventing

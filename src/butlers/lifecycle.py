@@ -893,8 +893,9 @@ async def _run_shutdown(daemon: Any) -> None:
 async def _stop_scheduler_loop(daemon: Any, deadline: float) -> None:
     """Let an in-progress tick finish until ``deadline``, then cancel it.
 
-    A job still running at the deadline is abandoned: its ``next_run_at`` already advanced,
-    so that occurrence is lost, as it would be if the pod were killed. A tick that ignores
+    Runs before the spawner stops accepting, so a finishing tick can still dispatch what it
+    claimed. A job still running at the deadline is abandoned: its ``next_run_at`` already
+    advanced, so that occurrence is lost, as it would be if the pod were killed. A tick that ignores
     its cancel is left behind so it cannot hold shutdown.
     """
     task = daemon._scheduler_loop_task
@@ -915,14 +916,51 @@ async def _stop_scheduler_loop(daemon: Any, deadline: float) -> None:
         logger.error("Scheduler loop failed before shutdown", exc_info=task.exception())
 
 
+def _shutdown_budget_s(daemon: Any) -> float:
+    """Seconds this daemon's shutdown may take.
+
+    ``butlers up`` sets ``daemon._shutdown_budget_s`` to the daemon's share of the process's
+    shutdown budget, so one slow daemon cannot spend the pod's whole grace period. Otherwise
+    the daemon's own configured timeout applies.
+    """
+    share = vars(daemon).get("_shutdown_budget_s")
+    if share is not None:
+        return share
+    return daemon.config.shutdown_timeout_s if daemon.config else 30.0
+
+
+#: A pool close never gets less than this, so a share that is nearly spent still lets a healthy
+#: pool close instead of being terminated at once.
+_POOL_CLOSE_FLOOR_S = 1.0
+
+
+async def _close_pool(daemon: Any, database: Any, deadline: float | None) -> None:
+    """Close a pool owner within the daemon's share, when it has one.
+
+    With a share, the close is bounded by what is left of it, never under the floor. Without
+    one (a daemon shutting down alone, or no ``deadline``) it is the owner's plain ``close()``
+    and its own default bound, exactly as before the budget existed.
+    """
+    if deadline is None or vars(daemon).get("_shutdown_budget_s") is None:
+        await database.close()
+        return
+    await database.close(max(_POOL_CLOSE_FLOOR_S, deadline - asyncio.get_running_loop().time()))
+
+
+def _step_budget_s(daemon: Any, deadline: float) -> float:
+    """Seconds one drain step may take: the daemon's whole timeout when it shuts down alone,
+    and what is left of its share when ``butlers up`` set one, so steps cannot add up past it."""
+    if vars(daemon).get("_shutdown_budget_s") is None:
+        return _shutdown_budget_s(daemon)
+    return max(0.0, deadline - asyncio.get_running_loop().time())
+
+
 async def _shutdown_resources(daemon: Any) -> None:
     """Existing resource teardown, also reached after catalog close refusal."""
 
     refresh_owner = vars(daemon).get("_chronicler_refresh_service")
     finance_owner = vars(daemon).get("_finance_warning_control_owner")
-    deadline = asyncio.get_running_loop().time() + (
-        daemon.config.shutdown_timeout_s if daemon.config else 30.0
-    )
+    deadline = asyncio.get_running_loop().time() + _shutdown_budget_s(daemon)
     if refresh_owner is not None:
         refresh_owner.closed = True
 
@@ -945,7 +983,7 @@ async def _shutdown_resources(daemon: Any) -> None:
 
     # 2. Stop durable buffer — drain remaining queue then cancel workers/scanner
     if daemon._buffer is not None:
-        shutdown_timeout = daemon.config.shutdown_timeout_s if daemon.config else 30.0
+        shutdown_timeout = _step_budget_s(daemon, deadline)
         await daemon._buffer.stop(drain_timeout_s=shutdown_timeout)
         daemon._buffer = None
 
@@ -961,11 +999,21 @@ async def _shutdown_resources(daemon: Any) -> None:
         await asyncio.gather(*daemon._route_inbox_tasks, return_exceptions=True)
         daemon._route_inbox_tasks.clear()
 
+    # 2c. Stop the scheduler loop before the spawner stops accepting, and before the client
+    # closes. A tick advances ``next_run_at`` when it claims an occurrence and dispatches after,
+    # so a spawner that refuses mid-tick fails the dispatch and loses the occurrence until the
+    # next cron (bu-dhloi1.138). A job-mode job also runs inside the tick, not in the spawner's
+    # in-flight set, so draining does not wait for it. Cancelling the loop sets the tick's
+    # ``stopping`` event, so the tick finishes what it claimed and claims nothing more. Other
+    # admitters (the startup route-inbox recovery task, QA background tasks) are still live here;
+    # they are not scheduler claims and hit the spawner's own refusal after step 3.
+    await _stop_scheduler_loop(daemon, deadline)
+
     # 3. Stop accepting new triggers and drain in-flight runtime sessions
     daemon._accepting_connections = False
     if daemon.spawner is not None:
         daemon.spawner.stop_accepting()
-        timeout = daemon.config.shutdown_timeout_s if daemon.config else 30.0
+        timeout = _step_budget_s(daemon, deadline)
         await daemon.spawner.drain(timeout=timeout)
 
     # 4. Cancel switchboard heartbeat
@@ -976,10 +1024,6 @@ async def _shutdown_resources(daemon: Any) -> None:
         except asyncio.CancelledError:
             pass
         daemon._switchboard_heartbeat_task = None
-
-    # 5. Stop the scheduler loop before closing the client: a job-mode job runs inside the
-    # tick, not in the spawner's in-flight set, so draining did not wait for it.
-    await _stop_scheduler_loop(daemon, deadline)
 
     # 5b. Close Switchboard MCP client
     await daemon._disconnect_switchboard()
@@ -1014,7 +1058,7 @@ async def _shutdown_resources(daemon: Any) -> None:
         # One retained tail fences ALL physical-pool owners, not two independent closers.
         async def finish():
             await asyncio.gather(*(owner.settle() for owner in owners))
-            await _shutdown_chronicler_dependents(daemon)
+            await _shutdown_chronicler_dependents(daemon, deadline)
 
         existing = vars(daemon).get("_chronicler_cleanup_task")
         if existing is None:
@@ -1022,10 +1066,10 @@ async def _shutdown_resources(daemon: Any) -> None:
             daemon._chronicler_cleanup_task = task
             task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
         raise TimeoutError("Owned request cleanup incomplete; resources retained")
-    await _shutdown_chronicler_dependents(daemon)
+    await _shutdown_chronicler_dependents(daemon, deadline)
 
 
-async def _shutdown_chronicler_dependents(daemon: Any) -> None:
+async def _shutdown_chronicler_dependents(daemon: Any, deadline: float | None = None) -> None:
     """Original dependent teardown, reached once after owned work settles."""
     # 6. Module shutdown in reverse topological order (active modules only)
     from butlers.core.approval_delivery_worker import stop_approval_delivery_worker
@@ -1060,11 +1104,11 @@ async def _shutdown_chronicler_dependents(daemon: Any) -> None:
 
     # 7. Close credential-layer DB pools
     if daemon._shared_credentials_db is not None:
-        await daemon._shared_credentials_db.close()
+        await _close_pool(daemon, daemon._shared_credentials_db, deadline)
         daemon._shared_credentials_db = None
 
     # 8. Close DB pool
     if daemon.db:
-        await daemon.db.close()
+        await _close_pool(daemon, daemon.db, deadline)
 
     logger.info("Butler shutdown complete")

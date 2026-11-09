@@ -332,12 +332,19 @@ admission resolves it. Replay removes stored `drop_context` metadata while prese
 envelope fields. Object and legacy-string JSONB rows are both supported. Older rows that never
 stored a marker or reference cannot recover it; there is no historical backfill.
 
-The authorized replay API still queues only under the connector's replay-safety policy. Drains
-retain their `FOR UPDATE SKIP LOCKED`/status transaction: a competing drain skips actively locked
-rows, and a failed submit remains `replay_failed` until an explicit replay request. Submission
-followed by uncertain status persistence may be delivered again with the same event identity for
-existing ingest deduplication. This is not an exactly-once transport guarantee or a live routing
-switch.
+The authorized replay API still queues only under the connector's replay-safety policy. A drain
+never holds a transaction across submission (bu-dhloi1.225). It claims up to 10 rows in one
+`FOR UPDATE SKIP LOCKED` statement that stamps a per-drain `claim_token` and `claimed_at` (core_325),
+so a competing drain skips them. It then submits each row with no transaction or connection held,
+within a deadline (60 s) shorter than the claim lease (300 s), and records the outcome in a second
+short statement that applies only while the row still carries its token. It starts a submission
+only while that deadline still ends inside the lease; otherwise it releases the rows it still holds
+for a later drain, so no other drain can reclaim a row this one may yet submit. A drain that is cancelled
+or fails part-way releases the rows it still holds back to `replay_pending`; a drain that dies
+leaves claims that any later drain reclaims once the lease lapses. Either way a row may be
+submitted again with the same event identity, for existing ingest deduplication. A failed submit
+stays `replay_failed` until an explicit replay request. This is not an exactly-once transport
+guarantee or a live routing switch.
 
 Gmail backfill, Calendar sync, ActivityWatch live polling and the Telegram user client's
 per-message path never move their cursor past an item whose ingest submission failed
@@ -357,7 +364,31 @@ message.
 The Telegram user client holds only on its per-message path: backfill, the fallback for messages
 without a chat id, and retries. Live messages go through the per-chat batch buffer, and a failed
 batch submit still parks at once with no text; the next successful flush from any chat can then
-advance the checkpoint past it. Other connectors keep their existing behaviour.
+advance the checkpoint past it.
+
+Slice 2a (bu-dhloi1.224) covers live sources that used to lose a failed item with no record.
+When a source is released as soon as its item is parked, the parked row is that item's only
+copy, so these sites park with `FilteredEventBuffer.park()`. It writes the row at once and
+raises `ParkNotDurableError` unless the row was committed. `flush()` still drops rows on a
+write failure, which is acceptable only while the source holds the item.
+
+- **OwnTracks** answers the webhook only once the point is ingested or parked. A failure with
+  attempts left answers 503, so the phone keeps the point and sends it again (deduplicated by its
+  `tst`-based key); the wait is bounded (10 s) and never cancels the ingest. A park that is not
+  written (or no database) also answers 503. The replay drain runs in the background, outside
+  the wait. Both apps keep a
+  point queued on a 5xx answer: Android re-queues any non-2xx with backoff, and iOS drops a
+  queued message only on 2xx or 4xx.
+- **Home Assistant live** and the **live listener** are push streams that never re-deliver an
+  item. HA retries a transport failure once after a short pause (bounded, so the event stream is
+  not held), then parks each failed envelope (home_assistant, wellness, automation_triggered)
+  scrubbed; a failed primary no longer stops the wellness emission. The live listener parks a
+  failed utterance at once and now drains replay requests on a 60 s timer. A push stream has
+  nothing to hold, so a park that cannot be written is logged as a lost event. Both
+  store only the exception class as error detail, since transport text can echo content.
+
+Spotify, Telegram bot polling and the batch flushes of the Telegram user and WhatsApp clients keep
+their existing behaviour until later slices.
 
 The [bearer material custody audit](bearer-material-custody-audit.md) records the exact
 source inventory, connector stores, inbox readers and synthetic seam evidence. Its

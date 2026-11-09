@@ -479,8 +479,12 @@ async def test_a_supersede_waits_for_a_forget_that_holds_the_entity(rel_pool) ->
         )
 
     assert not isinstance(result, BaseException), repr(result)
-    assert not isinstance(new, BaseException), repr(new)
+    # The writer waited out the forget on the entity lock and is refused, not admitted.
+    assert isinstance(new, memory_storage.EntityUnavailableError), repr(new)
     assert await rel_pool.fetchval("SELECT validity FROM facts WHERE id = $1", old) == "retracted"
+    assert (
+        await rel_pool.fetchval("SELECT count(*) FROM facts WHERE entity_id = $1", forgotten) == 1
+    )
 
 
 class _PausingBeforeFactInsert:

@@ -819,6 +819,76 @@ _DROP_SHARED_DATES_SQL = """
 """
 
 
+async def _merge_priority_contact(
+    conn: asyncpg.Connection,
+    source_id: uuid.UUID,
+    target_id: uuid.UUID,
+    source_entity_id: Any,
+    target_entity_id: Any,
+) -> None:
+    """Move the source's ``public.priority_contacts`` entry onto the target (bu-dhloi1.135).
+
+    The table keys a row by ``contact_id``, which holds an entity id for rows written since
+    core_131 and the legacy contact id before, and anchors it by ``entity_id``; consumers join
+    by ``entity_id``. Nothing in the entity merge or the rebind touches this table, so a source
+    row is any row keyed by the source contact, or by or anchored to the source entity when the
+    contacts have different entities (a sibling contact's legacy key and a leftover from before
+    this fix included). A priority entry is a flag: if the target already holds one the source's
+    are dropped, so a target that was a priority contact stays one and the source's entry is
+    absorbed; otherwise the oldest source row becomes the target's, keyed like a new row, so
+    the target gains the entry. The cascade audit trigger was retired in core_205, and no audit
+    row is written for a flag that moves with the person it names.
+    """
+    source_keys = [source_id]
+    target_keys = [target_id]
+    if target_entity_id is not None:
+        target_keys.append(target_entity_id)
+    moved_entity = (
+        source_entity_id
+        if source_entity_id is not None and source_entity_id != target_entity_id
+        else None
+    )
+    if moved_entity is not None:
+        source_keys.append(moved_entity)
+    # A source row, by key or by anchor; the same test selects, holds back and moves.
+    is_source = "(pc.contact_id = ANY($1::uuid[]) OR ($4::uuid IS NOT NULL AND pc.entity_id = $4))"
+    args = (source_keys, target_keys, target_entity_id, moved_entity)
+    try:
+        async with conn.transaction():
+            # Drop every source row when the target already holds an entry, else all but the
+            # oldest; then the survivor, if any, becomes the target's.
+            await conn.execute(
+                f"""
+                DELETE FROM public.priority_contacts pc
+                WHERE {is_source}
+                  AND (
+                    EXISTS (
+                        SELECT 1 FROM public.priority_contacts t
+                        WHERE NOT (t.contact_id = ANY($1::uuid[])
+                                   OR ($4::uuid IS NOT NULL AND t.entity_id = $4))
+                          AND (t.contact_id = ANY($2::uuid[])
+                               OR ($3::uuid IS NOT NULL AND t.entity_id = $3))
+                    )
+                    OR pc.contact_id <> (
+                        SELECT o.contact_id FROM public.priority_contacts o
+                        WHERE o.contact_id = ANY($1::uuid[])
+                           OR ($4::uuid IS NOT NULL AND o.entity_id = $4)
+                        ORDER BY o.added_at, o.contact_id LIMIT 1
+                    )
+                  )
+                """,  # noqa: S608
+                *args,
+            )
+            await conn.execute(
+                f"UPDATE public.priority_contacts pc SET contact_id = $5, entity_id = $3 "  # noqa: S608
+                f"WHERE {is_source} AND $2::uuid[] IS NOT NULL",  # $2 is only the delete's
+                *args,
+                target_entity_id if target_entity_id is not None else target_id,
+            )
+    except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
+        pass  # not present in this schema variant
+
+
 def _removed_entity_refusal(contact_id: uuid.UUID) -> str:
     return (
         f"Contact {contact_id} cannot be merged because its entity has been removed "
@@ -845,7 +915,8 @@ async def contact_merge(
 
     The target contact survives; the source is collapsed away. The child records in
     ``_CONTACT_CHILD_TABLES`` are re-pointed to the target, apart from a group, label
-    or date the target already holds, the source ``contact_entity_map`` row is removed,
+    or date the target already holds, the source priority-contact entry is moved or
+    dropped by :func:`_merge_priority_contact`, the source ``contact_entity_map`` row is removed,
     and the surviving entity's profile is reconciled with the source profile.
 
     Every write happens in ONE transaction: the merge either commits whole or
@@ -940,6 +1011,14 @@ async def contact_merge(
                     target_id,
                     source_id,
                 )
+
+            await _merge_priority_contact(
+                cast(asyncpg.Connection, conn),
+                source_id,
+                target_id,
+                uuid.UUID(str(src_entity_id)) if src_entity_id is not None else None,
+                uuid.UUID(str(tgt_entity_id)) if tgt_entity_id is not None else None,
+            )
 
             # Collapse the source contact onto the surviving entity: remove the
             # now-redundant source bridge row (children already re-pointed above).

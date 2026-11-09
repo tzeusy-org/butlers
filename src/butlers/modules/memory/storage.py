@@ -48,6 +48,28 @@ from butlers.modules.memory.content_authority import (
 logger = logging.getLogger(__name__)
 
 
+class EntityUnavailableError(ValueError):
+    """Raised when a fact write names an entity that is gone, deleted or merged away."""
+
+
+def _refuse_dead_entities(rows: Any, wanted: set[Any]) -> None:
+    """Refuse when a locked entity row is missing, soft-deleted or merge-tombstoned."""
+    seen: dict[Any, Any] = {r["id"]: r["metadata"] for r in rows}
+    for eid in sorted(wanted, key=str):
+        if eid not in seen:
+            raise EntityUnavailableError(f"entity {eid!r} no longer exists")
+        meta = seen[eid]
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        meta = meta or {}
+        if meta.get("deleted_at") or meta.get("tombstone") in (True, "true"):
+            raise EntityUnavailableError(f"entity {eid!r} was deleted")
+        if meta.get("merged_into"):
+            raise EntityUnavailableError(
+                f"entity {eid!r} was merged into {meta['merged_into']!r}; write to the survivor"
+            )
+
+
 class StaleSupersessionTargetError(ValueError):
     """Raised when an optimistic supersession target is no longer current."""
 
@@ -2006,11 +2028,14 @@ async def store_fact(
             # the insert's foreign key, in a cycle with any of them. FOR KEY SHARE is that
             # foreign key's own lock, so writers never wait on each other here.
             if fact_valid_at is None and entity_id is not None:
-                await conn.execute(
-                    "SELECT id FROM public.entities WHERE id = ANY($1::uuid[]) "
+                _locked = await conn.fetch(
+                    "SELECT id, metadata FROM public.entities WHERE id = ANY($1::uuid[]) "
                     "ORDER BY id FOR KEY SHARE",
                     sorted({entity_id, object_entity_id} - {None}, key=str),
                 )
+                # The validation above ran before this lock, so a delete or merge that
+                # held the row meanwhile has committed by now. Judge the locked rows.
+                _refuse_dead_entities(_locked, {entity_id, object_entity_id} - {None})
 
             # Mirrored writes reserve both closure pairs before taking fact-row
             # locks. Reciprocal writers must share one lock order, not first lock

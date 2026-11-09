@@ -28,10 +28,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
 from butlers.core.stamp_account import parse_report
+from butlers.mcp_liveness import LivenessClient as Client
 
 from .assertions import ASSERTION_HEADER
 from .contracts import BrokerRefused, Reason, Reservation
