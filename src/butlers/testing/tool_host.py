@@ -58,7 +58,7 @@ class _GivenDatabase:
         self.pool = pool
         self.db_name = "db-free"
 
-    async def close(self) -> None:
+    async def close(self, timeout: float = 10.0) -> None:  # noqa: ASYNC109
         return None
 
 
