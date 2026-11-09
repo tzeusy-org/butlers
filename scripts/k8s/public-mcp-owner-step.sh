@@ -35,15 +35,6 @@ fail() {
 }
 ENV_NAME="$1" TAG="$2" SWITCH="${3-on}" RELEASE="${4-butlers}"
 
-case "$SWITCH" in
-  on) ;;
-  off)
-    echo "public-mcp owner step: PUBLIC_MCP_OWNER_STEP_$ENV_NAME is off; skipped" >&2
-    exit 0
-    ;;
-  *) fail "switch must be on or off, not '$SWITCH'" ;;
-esac
-
 case "$ENV_NAME" in
   dev)
     APP_NAMESPACE=butlers-dev
@@ -56,6 +47,16 @@ case "$ENV_NAME" in
     exit 0
     ;;
 esac
+# The switch is checked only for an automated environment: other environments pass an empty one.
+case "$SWITCH" in
+  on) ;;
+  off)
+    echo "public-mcp owner step: PUBLIC_MCP_OWNER_STEP_$ENV_NAME is off; skipped" >&2
+    exit 0
+    ;;
+  *) fail "switch must be on or off, not '$SWITCH'" ;;
+esac
+
 [[ "$RELEASE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || fail "invalid release name '$RELEASE'"
 DB_NAME="${BUTLERS_DB_NAME:-butlers}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

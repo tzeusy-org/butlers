@@ -778,7 +778,11 @@ slot, are therefore superuser work, and they form one owner step:
     `\set NAME WORD`, `\connect butlers`, `\connect butlers_public`,
     `\gset`, `\if :name`, `\else` or `\endif`. A backtick anywhere, an
     escape string, a backslash in a comment or quoted identifier, and an
-    unterminated quote refuse the file before psql runs.
+    unterminated quote refuse the file before psql runs. psql rescans an
+    unquoted `:name` interpolation for meta-commands, and `\gset` fills
+    variables from database content, so outside quotes only the quoted
+    `:'name'` and `:"name"` forms (and `::` casts) are admitted; `:name` is
+    admitted only on the `\if :name` line.
   - *Older tags.* Before generating, the script runs the tag's command
     listing in a separate call (`butlers --help`, then `butlers
     public-mcp --help` when `public-mcp` is listed) and treats the tag as

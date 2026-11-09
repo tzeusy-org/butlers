@@ -297,7 +297,8 @@ owner step".
    checkout (`git archive` into a temporary directory, `uv run --project <tree> butlers public-mcp
    owner-sql`), never from the pod, which is privileged and writable. It checks the tree's command
    listing for `owner-sql`, captures the whole file, refuses it if a psql meta-command outside the
-   allowlist or a backtick appears (`scripts/k8s/public_mcp_sql_guard.py`), and only then pipes it
+   allowlist, a backtick or an unquoted `:name` variable appears
+   (`scripts/k8s/public_mcp_sql_guard.py`), and only then pipes it
    to the superuser `psql` in the primary. Nothing is written to the checkout. The tag must be a
    commit in the checkout, so fetch before deploying a tag built elsewhere.
    When the migrations did not reconcile this manifest, the file's guard refuses and changes

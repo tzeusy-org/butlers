@@ -9,6 +9,8 @@ NAMESPACE_prod := butlers
 # The public MCP owner step after every dev release (RFC 0039 D3, OD20). Set to off only in a
 # reviewed change (a dev teardown, task 8.1); the step then prints a notice and exits 0.
 PUBLIC_MCP_OWNER_STEP_dev := on
+# Prod is deferred and manual (OD18); the script prints a reminder there whatever this says.
+PUBLIC_MCP_OWNER_STEP_prod := off
 
 helm_args = -n $(NAMESPACE_$(1)) -f values.yaml -f values.$(1).yaml $(if $(LOCAL_VALUES),-f values.local.yaml) \
 	--set image.tag=$(TAG) --set frontendImage.tag=$(TAG)-$(1) \

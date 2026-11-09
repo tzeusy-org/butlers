@@ -189,6 +189,9 @@ def test_a_planted_meta_command_in_the_rendered_file_feeds_psql_nothing(
         (("dev", _TAG, "off"), "is off"),
         (("prod", _TAG, "on"), "manually"),
         (("prod", _TAG), "manually"),
+        # The recipe passes the undefined-for-prod switch as an explicit empty argument.
+        (("prod", _TAG, "", "butlers"), "manually"),
+        (("prod", _TAG, "off", "butlers"), "manually"),
     ],
 )
 def test_off_switch_and_other_environments_exit_zero_without_any_call(
@@ -364,6 +367,30 @@ def test_recipe_runs_the_step_after_a_failed_release_and_keeps_the_first_failure
     code, calls = _deploy(chart, RECORD_RC=record_rc, OWNER_RC=owner_rc)
     assert code == expected
     assert "public-mcp-owner-step.sh" in calls
+
+
+def test_deploy_prod_runs_the_real_step_as_a_reminder_and_exits_zero(
+    chart: Path, tools: Path
+) -> None:
+    """Prod is deferred (OD18): the release status stands and the step only reminds."""
+    scripts = chart.parents[2] / "scripts/k8s"
+    shutil.copy2(_SCRIPT, scripts / "public-mcp-owner-step.sh")
+    env = _environment(tools)
+    del env["CALL_LOG"]
+    log = chart / "calls.log"
+    log.write_text("", encoding="utf-8")
+    result = subprocess.run(
+        ["make", "--no-print-directory", "deploy-prod", f"TAG={_TAG}"],
+        cwd=chart, capture_output=True, text=True,
+        env={**os.environ, **env, "CALL_LOG": str(log)},
+    )  # fmt: skip
+    assert result.returncode == 0, result.stderr
+    assert "not automated for 'prod'" in result.stderr
+    calls = log.read_text(encoding="utf-8")
+    assert "record-deploy.sh" in calls
+    assert "kubectl" not in calls and "git " not in calls and "uv " not in calls
+    makefile = (_REPO_ROOT / "deploy/helm/butlers/makefile").read_text(encoding="utf-8")
+    assert "\nPUBLIC_MCP_OWNER_STEP_prod := off\n" in makefile
 
 
 def test_committed_switch_is_on_and_passed_through_when_overridden(chart: Path) -> None:

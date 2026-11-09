@@ -12,6 +12,11 @@ comment, so this scans the file the way psql's lexer does and admits a backslash
   `\\set NAME WORD`, `\\connect butlers`, `\\connect butlers_public`, `\\gset`, `\\if :name`,
   `\\else`, `\\endif`.
 
+psql also rescans an unquoted `:name` interpolation for meta-commands, and `\\gset` fills
+variables from database content, so outside quotes a colon followed by a variable character is
+refused. Only `:'name'` and `:"name"` (quoted, never rescanned), `::` casts and a colon before
+anything else (`:=`, `[1 : 2]`) pass, and `:name` only on the column-0 `\\if :name` line.
+
 Anything else is refused: a backtick anywhere, an escape string (E'...'), a backslash in a
 comment or a quoted identifier, an unterminated quote or comment, and an empty file. Stdlib
 only; it reads stdin and prints only the refused line number and form, never the file.
@@ -29,6 +34,8 @@ _ALLOWED = re.compile(
 )
 _DOLLAR = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_$]")
+# psql's variable_char, plus `{` for `:{?name}`; any non-ASCII byte also counts.
+_VARIABLE = re.compile(r"[A-Za-z0-9_{]|[^\x00-\x7f]")
 
 
 class Refused(Exception):
@@ -86,6 +93,14 @@ def check(text: str) -> None:
             if j < 0:
                 raise Refused(line(), "unterminated dollar quote")
             i = j + len(match.group(0))
+        elif c == ":":
+            following = text[i + 1 : i + 2]
+            if following == ":":  # a cast; skip both so `::name` is not read as `:name`
+                i += 2
+            elif following and _VARIABLE.match(following):
+                raise Refused(line(), "unquoted psql variable (use :'name' or :\"name\")")
+            else:
+                i += 1
         elif text.startswith("--", i):
             end = text.find("\n", i)
             end = n if end < 0 else end

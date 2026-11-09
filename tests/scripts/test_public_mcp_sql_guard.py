@@ -86,6 +86,41 @@ def test_backslashes_inside_string_and_dollar_quotes_are_data(text: str):
 @pytest.mark.parametrize(
     "text",
     [
+        "SELECT :e_old_canonical;\n",
+        "SELECT :x::text;\n",
+        "SELECT 1 WHERE a = :v1;\n",
+        "SELECT :_x;\n",
+        "SELECT :{?x};\n",
+        "SELECT :\u00e9t\u00e9;\n",
+        "SELECT set_config('k', :e_old_oids, false);\n",
+    ],
+)
+def test_an_unquoted_psql_variable_is_refused(text: str):
+    """psql rescans an unquoted :name for meta-commands; \\gset fills it from the database."""
+    result = _guard(text)
+    assert result.returncode != 0
+    assert "unquoted psql variable" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "SELECT x::text, y::regclass, :'e_old_canonical', :\"e_name\";\n",
+        "SELECT set_config('k', :'e_old_oids', false);\n",
+        "DO $x$ DECLARE v int; BEGIN v := 1; PERFORM :e_inside_dollar; END $x$;\n",
+        "SELECT ':e_in_string' AS s; -- :e_in_comment\n",
+        "SELECT /* :e_in_block */ arr[1 : 2], ts AT TIME ZONE 'UTC';\n",
+        "SELECT 1 AS e_x\n\\gset\n\\if :e_x\n\\endif\n",
+    ],
+)
+def test_quoted_variables_casts_and_colons_in_quotes_are_admitted(text: str):
+    result = _guard(text)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         "SELECT 'unterminated;\n",
         "DO $x$ BEGIN END;\n",
         "SELECT /* open;\n",
