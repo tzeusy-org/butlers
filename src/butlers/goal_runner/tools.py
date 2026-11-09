@@ -1,7 +1,8 @@
 """The D8 goal tools, as the broker's goal endpoint serves them.
 
 They are not domain capabilities. The lead holds ``goal.delegate``,
-``goal.await``, ``goal.stop_child``, ``goal.complete`` and ``goal.escalate``;
+``goal.await``, ``goal.stop_child``, ``goal.complete``, ``goal.escalate`` and
+``goal.inbox``;
 a child holds only ``goal.return``. Each is listed by the calling invocation's
 depth, read from its ledger row under the goal lock, and each handler checks
 that depth again in its own transaction, so a child can neither list nor call
@@ -99,6 +100,13 @@ _TOOLS = (
         },
     ),
     GoalTool(
+        "goal__inbox",
+        (0,),
+        "Take the owner's replies to this goal's prompts that arrived since your last call. "
+        "Each reply is delivered once; call it between steps while you wait on an answer.",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+    ),
+    GoalTool(
         "goal__escalate",
         (0,),
         "Hand this goal to a lead on the next model tier; refused at the top of the ladder.",
@@ -159,6 +167,7 @@ class GoalTools:
             "goal__stop_child": self._stop_child,
             "goal__complete": self._complete,
             "goal__escalate": self._escalate,
+            "goal__inbox": self._inbox,
             "goal__return": self._return,
             CONTEXT_SEARCH: self._context_search,
         }
@@ -205,6 +214,10 @@ class GoalTools:
         _closed(arguments, set(), set())
         tier = await self.runner.escalate(goal_id, token)
         return {"status": "escalated", "tier": tier}
+
+    async def _inbox(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
+        _closed(arguments, set(), set())
+        return await self.broker.goal_inbox(goal_id, token)
 
     async def _return(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
         args = _closed(arguments, {"result"}, {"result"})

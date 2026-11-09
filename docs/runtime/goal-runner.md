@@ -74,11 +74,28 @@ capability and never lists one. The runner serves these tools on the same per-go
 | `goal__await` | lead | Read a child's validated result |
 | `goal__stop_child` | lead | End one child (`child_stopped`) |
 | `goal__complete` | lead | Record the outcome; the goal settles |
+| `goal__inbox` | lead | Take the owner replies joined to this goal since the last call |
 | `goal__escalate` | lead | Hand the goal to a fresh lead on the next ladder tier |
 | `goal__return` | child | Return a result validated against the brief's `result_schema` |
 | `context__search` | lead, child | Grant-scoped, read-pure recall (see below); served only when a `ContextSearch` is configured |
 
 Every goal-tool call is charged against the goal budget and the caller's invocation share.
+
+### Joined replies (inbox)
+
+An owner reply that admission joins to a goal lands in `switchboard.goal_inbox`. A joined goal is
+always `running` (a settling goal takes no joins, and D11 has no `waiting` state yet), so its
+reader is the live lead, or the lead the sweep starts next after a lapse, resume or escalation.
+The session host cannot push input into a live session, so the lead pulls replies between tool
+calls with `goal__inbox` (`Broker.goal_inbox`):
+
+- Each unconsumed row is consumed once, oldest first (at most 20 per call), through
+  `consume_inbox`. The row's label joins the calling lead (cause `inbox`) in the same transaction,
+  so the lead is exposed before it learns of the reply.
+- The caller's token fences the epoch. A superseded, Stopped or ended lead fails authentication
+  and consumes nothing, so its rows wait for the successor lead. A child cannot call it.
+- A reply carries references only (`inbox_id`, `source_ref`, `reply_effect_id`, `received_at`).
+  The inbox stores no message body, so reading the reply text is a separate read.
 
 ## Context search (D8, D15, S5)
 
@@ -224,6 +241,7 @@ brief text, arguments or results.
   isolated `butlers-control` process (`bu-jnhxc5`).
 - Calling `GoalRuntime.admit` from ingress, confirms and obligations, and an owner Stop surface
   (the D19 dashboard change, or a control-plane service route).
-- Waking a goal whose inbox received a `joined` reply.
+- Waking a `waiting` goal on a joined reply or condition (RFC 0038 S2; there is no `waiting`
+  state yet), and the reply text itself: `goal__inbox` returns references only.
 - `awaiting_approval` and parked-wait continuation (`bu-dhloi1.7`).
 - The four-section starting-context packet; `MinimalComposer` is a placeholder.

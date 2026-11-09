@@ -829,6 +829,101 @@ async def test_a_consumed_reply_carrying_outside_content_exposes_its_reader(brok
         )
 
 
+async def _joined_reply(w, goal, reply_effect_id, *label) -> UUID:
+    """A reply admission joined to *goal*: its decision and inbox row (as F3 writes them)."""
+    decision, inbox_id = uuid4(), uuid4()
+    await w.owner.execute(
+        "INSERT INTO switchboard.admission_decisions (id, attempt_id, source_key, "
+        "source_ref, source_kind, goal_id, result, reason, delivery_ref, "
+        "reply_effect_id) VALUES ($1, $2, $3, $4, 'message', $5, 'joined', "
+        "'reply_joined', 'delivery', $6)",
+        decision,
+        uuid4(),
+        f"message:{decision}",
+        f"ref:{decision}",
+        goal,
+        reply_effect_id,
+    )
+    columns, values = "", []
+    if label:
+        columns = ", label_version, label_instr, label_data, label_sens"
+        values = [1, *label]
+    await w.owner.execute(
+        "INSERT INTO switchboard.goal_inbox (id, goal_id, decision_id, source_key, "
+        f"source_ref, delivery_ref, reply_effect_id{columns}) VALUES ($1, $2, $3, $4, "
+        f"$5, 'delivery', $6{''.join(f', ${n}' for n in range(7, 7 + len(values)))})",
+        inbox_id,
+        goal,
+        decision,
+        f"message:{decision}",
+        f"ref:{decision}",
+        reply_effect_id,
+        *values,
+    )
+    return inbox_id
+
+
+async def test_goal_inbox_delivers_each_joined_reply_once_to_the_calling_lead(broker_db_url):
+    async with world(broker_db_url) as w:
+        goal = await w.goal(_grant(SEND))
+        lead, token = await w.invocation(goal, _grant(SEND))
+        prompt = await w.broker.call(goal, token, SEND.identity, _owner_send("question"))
+        assert await w.broker.goal_inbox(goal, token) == {"replies": []}
+
+        first = await _joined_reply(w, goal, prompt.effect_id)
+        second = await _joined_reply(
+            w, goal, prompt.effect_id, ["owner", "world"], ["owner", "world"], ["health"]
+        )
+        delivered = (await w.broker.goal_inbox(goal, token))["replies"]
+
+        assert [r["inbox_id"] for r in delivered] == [str(first), str(second)]
+        assert delivered[0]["source_ref"] == f"ref:{await _decision(w, first)}"
+        assert {r["reply_effect_id"] for r in delivered} == {str(prompt.effect_id)}
+        assert await w.broker.goal_inbox(goal, token) == {"replies": []}  # exactly once
+        consumed = await w.owner.fetch(
+            "SELECT consumed_at FROM switchboard.goal_inbox WHERE goal_id = $1", goal
+        )
+        assert all(row["consumed_at"] is not None for row in consumed)
+        # The forwarded reply's label joined the reader before it saw the reply (S1).
+        row = await _label(w, lead)
+        assert (row["exposure_cause"], row["label_sens"]) == ("inbox", ["health"])
+
+
+async def _decision(w, inbox_id) -> UUID:
+    return await w.owner.fetchval(
+        "SELECT decision_id FROM switchboard.goal_inbox WHERE id = $1", inbox_id
+    )
+
+
+async def test_goal_inbox_is_lead_only_and_fenced_by_the_lead_epoch(broker_db_url):
+    async with world(broker_db_url) as w:
+        goal = await w.goal(_grant(SEND))
+        lead, token = await w.invocation(goal, _grant(SEND))
+        prompt = await w.broker.call(goal, token, SEND.identity, _owner_send("question"))
+        _, child_token = await w.invocation(goal, _grant(SEND), depth=1, parent=lead)
+        reply = await _joined_reply(w, goal, prompt.effect_id)
+
+        child = await _refused(w.broker.goal_inbox(goal, child_token))
+        assert child.reason is Reason.CAPABILITY
+
+        # A successor lead epoch fences the old lead: it consumes nothing.
+        await w.owner.execute(
+            "UPDATE switchboard.invocations SET status = 'failed' WHERE id = $1", lead
+        )
+        _, successor_token = await w.invocation(goal, _grant(SEND), epoch=1)
+        stale = await _refused(w.broker.goal_inbox(goal, token))
+        assert stale.reason in (Reason.AUTHENTICATION, Reason.EPOCH)
+        assert (
+            await w.owner.fetchval(
+                "SELECT consumed_at FROM switchboard.goal_inbox WHERE id = $1", reply
+            )
+            is None
+        )
+
+        delivered = (await w.broker.goal_inbox(goal, successor_token))["replies"]
+        assert [r["inbox_id"] for r in delivered] == [str(reply)]
+
+
 async def test_a_stamped_read_exposes_its_reader_unless_owner_untainted(broker_db_url):
     async with world(broker_db_url) as w:
         goal = await w.goal(_grant(RECALL))
