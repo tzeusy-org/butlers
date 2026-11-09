@@ -1,11 +1,22 @@
 # RFC 0039 D4: the sole explicit v1 exposure decision. No runtime catalog expansion.
 version = 1
 
+# Per-column `classes` (bu-y66o00.13): every published column declares exactly one class.
+#   personal_record      the owner's own life or records (publishable under OD21)
+#   third_party_content  text written by other people (inviter calendar text, bank
+#                        descriptions, researched pages), not structured facts about them
+#   system               ids, timestamps, enums, provenance and flags
+#   credential, third_party_pii
+#                        recognised but never publishable: the loader refuses them, so a
+#                        column in these classes must be dropped, not relabelled
+# Merchant and payee columns are third_party_content: P2P payments put a person's name in them.
+
 [[table]]
 source = "chronicler.episodes_public"
 domain = "time"
 columns = ["id", "started_at", "ended_at", "kind", "title", "category", "effective_privacy", "tombstoned"]
 types = { "id" = "uuid", "started_at" = "timestamp with time zone", "ended_at" = "timestamp with time zone", "kind" = "text", "title" = "text", "category" = "text", "effective_privacy" = "text", "tombstoned" = "boolean" }
+classes = { "id" = "system", "started_at" = "system", "ended_at" = "system", "kind" = "system", "title" = "personal_record", "category" = "personal_record", "effective_privacy" = "system", "tombstoned" = "system" }
 key = ["id"]
 replica_identity = ["id", "effective_privacy", "tombstoned"]
 tools = ["timeline", "search", "fetch", "search_filtered"]
@@ -18,6 +29,7 @@ source = "chronicler.rollups_public"
 domain = "time"
 columns = ["local_date", "group_kind", "group_key", "minutes"]
 types = { "local_date" = "date", "group_kind" = "text", "group_key" = "text", "minutes" = "integer" }
+classes = { "local_date" = "system", "group_kind" = "system", "group_key" = "system", "minutes" = "system" }
 key = ["local_date", "group_kind", "group_key"]
 replica_identity = ["local_date", "group_kind", "group_key"]
 tools = ["time_use"]
@@ -28,6 +40,7 @@ source = "education.facts"
 domain = "knowledge"
 columns = ["id", "subject", "entity_id", "object_entity_id", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
 types = { "id" = "uuid", "subject" = "text", "entity_id" = "uuid", "object_entity_id" = "uuid", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
+classes = { "id" = "system", "subject" = "personal_record", "entity_id" = "system", "object_entity_id" = "system", "predicate" = "system", "content" = "personal_record", "valid_at" = "system", "sensitivity" = "system", "validity" = "system", "content_authority" = "system", "search_vector" = "personal_record" }
 key = ["id"]
 replica_identity = ["id", "sensitivity", "validity", "predicate"]
 tools = ["search", "fetch", "search_filtered"]
@@ -40,6 +53,7 @@ source = "finance.accounts"
 domain = "finance"
 columns = ["id", "institution", "type", "name", "last_four", "currency", "created_at", "updated_at", "is_active", "last_synced_at"]
 types = { "id" = "uuid", "institution" = "text", "type" = "text", "name" = "text", "last_four" = "character(4)", "currency" = "character(3)", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone", "is_active" = "boolean", "last_synced_at" = "timestamp with time zone" }
+classes = { "id" = "system", "institution" = "personal_record", "type" = "system", "name" = "personal_record", "last_four" = "personal_record", "currency" = "system", "created_at" = "system", "updated_at" = "system", "is_active" = "system", "last_synced_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records", "finance_ledger", "finance_summary"]
@@ -51,6 +65,7 @@ source = "finance.balance_snapshots"
 domain = "finance"
 columns = ["id", "account_id", "balance", "currency", "as_of_date", "source", "created_at"]
 types = { "id" = "uuid", "account_id" = "uuid", "balance" = "numeric(14,2)", "currency" = "character(3)", "as_of_date" = "date", "source" = "text", "created_at" = "timestamp with time zone" }
+classes = { "id" = "system", "account_id" = "system", "balance" = "personal_record", "currency" = "system", "as_of_date" = "system", "source" = "system", "created_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records"]
@@ -62,6 +77,7 @@ source = "finance.bills"
 domain = "finance"
 columns = ["id", "payee", "amount", "currency", "due_date", "frequency", "status", "payment_method", "account_id", "source_message_id", "statement_period_start", "statement_period_end", "paid_at", "created_at", "updated_at", "reconciled_transaction_id", "autopay", "predicted", "payee_key", "destination_fingerprint", "destination_verdict", "payee_source"]
 types = { "id" = "uuid", "payee" = "text", "amount" = "numeric(14,2)", "currency" = "character(3)", "due_date" = "date", "frequency" = "text", "status" = "text", "payment_method" = "text", "account_id" = "uuid", "source_message_id" = "text", "statement_period_start" = "date", "statement_period_end" = "date", "paid_at" = "timestamp with time zone", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone", "reconciled_transaction_id" = "uuid", "autopay" = "boolean", "predicted" = "boolean", "payee_key" = "text", "destination_fingerprint" = "text", "destination_verdict" = "text", "payee_source" = "text" }
+classes = { "id" = "system", "payee" = "third_party_content", "amount" = "personal_record", "currency" = "system", "due_date" = "system", "frequency" = "system", "status" = "system", "payment_method" = "personal_record", "account_id" = "system", "source_message_id" = "system", "statement_period_start" = "system", "statement_period_end" = "system", "paid_at" = "system", "created_at" = "system", "updated_at" = "system", "reconciled_transaction_id" = "system", "autopay" = "system", "predicted" = "system", "payee_key" = "system", "destination_fingerprint" = "system", "destination_verdict" = "system", "payee_source" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records", "finance_obligations"]
@@ -74,6 +90,7 @@ source = "finance.budgets"
 domain = "finance"
 columns = ["id", "category", "period", "amount", "currency", "warn_threshold", "alert_threshold", "is_active", "notes", "created_at", "updated_at"]
 types = { "id" = "uuid", "category" = "text", "period" = "text", "amount" = "numeric(14,2)", "currency" = "character(3)", "warn_threshold" = "numeric(4,3)", "alert_threshold" = "numeric(4,3)", "is_active" = "boolean", "notes" = "text", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone" }
+classes = { "id" = "system", "category" = "personal_record", "period" = "system", "amount" = "personal_record", "currency" = "system", "warn_threshold" = "personal_record", "alert_threshold" = "personal_record", "is_active" = "system", "notes" = "personal_record", "created_at" = "system", "updated_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records"]
@@ -85,6 +102,7 @@ source = "finance.categories"
 domain = "finance"
 columns = ["id", "name", "display_name", "parent_id", "is_tax_relevant", "tax_category", "is_system", "icon", "sort_order", "created_at", "updated_at"]
 types = { "id" = "uuid", "name" = "text", "display_name" = "text", "parent_id" = "uuid", "is_tax_relevant" = "boolean", "tax_category" = "text", "is_system" = "boolean", "icon" = "text", "sort_order" = "integer", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone" }
+classes = { "id" = "system", "name" = "personal_record", "display_name" = "personal_record", "parent_id" = "system", "is_tax_relevant" = "system", "tax_category" = "personal_record", "is_system" = "system", "icon" = "system", "sort_order" = "system", "created_at" = "system", "updated_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records"]
@@ -96,6 +114,7 @@ source = "finance.claim_match_bindings"
 domain = "finance"
 columns = ["claim_id", "transaction_id", "bound_at"]
 types = { "claim_id" = "uuid", "transaction_id" = "uuid", "bound_at" = "timestamp with time zone" }
+classes = { "claim_id" = "system", "transaction_id" = "system", "bound_at" = "system" }
 key = ["claim_id"]
 replica_identity = ["claim_id"]
 tools = ["finance_records"]
@@ -107,6 +126,7 @@ source = "finance.facts"
 domain = "finance"
 columns = ["id", "subject", "predicate", "content", "search_vector", "importance", "confidence", "decay_rate", "permanence", "source_butler", "source_episode_id", "supersedes_id", "validity", "scope", "reference_count", "created_at", "last_referenced_at", "last_confirmed_at", "entity_id", "object_entity_id", "valid_at", "tenant_id", "request_id", "retention_class", "sensitivity", "idempotency_key", "observed_at", "invalid_at", "content_authority", "authority_entity_id", "endorsed_at", "endorsed_by", "taint_goal_id", "taint_invocation_id", "dropped_at"]
 types = { "id" = "uuid", "subject" = "text", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "importance" = "double precision", "confidence" = "double precision", "decay_rate" = "double precision", "permanence" = "text", "source_butler" = "text", "source_episode_id" = "uuid", "supersedes_id" = "uuid", "validity" = "text", "scope" = "text", "reference_count" = "integer", "created_at" = "timestamp with time zone", "last_referenced_at" = "timestamp with time zone", "last_confirmed_at" = "timestamp with time zone", "entity_id" = "uuid", "object_entity_id" = "uuid", "valid_at" = "timestamp with time zone", "tenant_id" = "text", "request_id" = "text", "retention_class" = "text", "sensitivity" = "text", "idempotency_key" = "text", "observed_at" = "timestamp with time zone", "invalid_at" = "timestamp with time zone", "content_authority" = "text", "authority_entity_id" = "uuid", "endorsed_at" = "timestamp with time zone", "endorsed_by" = "uuid", "taint_goal_id" = "uuid", "taint_invocation_id" = "uuid", "dropped_at" = "timestamp with time zone" }
+classes = { "id" = "system", "subject" = "personal_record", "predicate" = "system", "content" = "personal_record", "search_vector" = "personal_record", "importance" = "system", "confidence" = "system", "decay_rate" = "system", "permanence" = "system", "source_butler" = "system", "source_episode_id" = "system", "supersedes_id" = "system", "validity" = "system", "scope" = "system", "reference_count" = "system", "created_at" = "system", "last_referenced_at" = "system", "last_confirmed_at" = "system", "entity_id" = "system", "object_entity_id" = "system", "valid_at" = "system", "tenant_id" = "system", "request_id" = "system", "retention_class" = "system", "sensitivity" = "system", "idempotency_key" = "system", "observed_at" = "system", "invalid_at" = "system", "content_authority" = "system", "authority_entity_id" = "system", "endorsed_at" = "system", "endorsed_by" = "system", "taint_goal_id" = "system", "taint_invocation_id" = "system", "dropped_at" = "system" }
 key = ["id"]
 replica_identity = ["id", "sensitivity", "validity", "predicate"]
 tools = ["finance_records"]
@@ -120,6 +140,7 @@ source = "finance.json_fields_public"
 domain = "finance"
 columns = ["id", "source_table", "row_id", "path", "value_text", "value_numeric", "value_type"]
 types = { "id" = "text", "source_table" = "text", "row_id" = "text", "path" = "text", "value_text" = "text", "value_numeric" = "numeric", "value_type" = "text" }
+classes = { "id" = "system", "source_table" = "system", "row_id" = "system", "path" = "system", "value_text" = "personal_record", "value_numeric" = "personal_record", "value_type" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records"]
@@ -130,6 +151,7 @@ source = "finance.merchant_mappings"
 domain = "finance"
 columns = ["id", "raw_pattern", "normalized_merchant", "category", "confidence", "learned_from_count", "source", "is_active", "created_at", "updated_at"]
 types = { "id" = "uuid", "raw_pattern" = "text", "normalized_merchant" = "text", "category" = "text", "confidence" = "double precision", "learned_from_count" = "integer", "source" = "text", "is_active" = "boolean", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone" }
+classes = { "id" = "system", "raw_pattern" = "third_party_content", "normalized_merchant" = "third_party_content", "category" = "personal_record", "confidence" = "system", "learned_from_count" = "system", "source" = "system", "is_active" = "system", "created_at" = "system", "updated_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records"]
@@ -141,6 +163,7 @@ source = "finance.obligation_ledger"
 domain = "finance"
 columns = ["id", "subscription_id", "period", "warn_by", "unknown_door", "price_change_amount", "price_change_direction", "created_at", "updated_at"]
 types = { "id" = "uuid", "subscription_id" = "uuid", "period" = "date", "warn_by" = "date", "unknown_door" = "boolean", "price_change_amount" = "numeric(14,2)", "price_change_direction" = "text", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone" }
+classes = { "id" = "system", "subscription_id" = "system", "period" = "system", "warn_by" = "system", "unknown_door" = "system", "price_change_amount" = "personal_record", "price_change_direction" = "system", "created_at" = "system", "updated_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records"]
@@ -152,6 +175,8 @@ source = "finance.payment_destinations"
 domain = "finance"
 columns = ["id", "payee_key", "kind", "fingerprint", "last4", "first_seen_at", "last_seen_at", "seen_count"]
 types = { "id" = "uuid", "payee_key" = "text", "kind" = "text", "fingerprint" = "text", "last4" = "text", "first_seen_at" = "timestamp with time zone", "last_seen_at" = "timestamp with time zone", "seen_count" = "integer" }
+# last4: owner decision 2026-11-09: published under OD17; reviewed as possible third-party identifiers
+classes = { "id" = "system", "payee_key" = "system", "kind" = "system", "fingerprint" = "system", "last4" = "personal_record", "first_seen_at" = "system", "last_seen_at" = "system", "seen_count" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records"]
@@ -163,6 +188,7 @@ source = "finance.recurring_groups"
 domain = "finance"
 columns = ["id", "merchant", "avg_amount", "estimated_frequency", "next_expected_date", "last_seen_date", "created_at", "updated_at", "currency", "is_active"]
 types = { "id" = "uuid", "merchant" = "text", "avg_amount" = "numeric(14,2)", "estimated_frequency" = "text", "next_expected_date" = "date", "last_seen_date" = "date", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone", "currency" = "character(3)", "is_active" = "boolean" }
+classes = { "id" = "system", "merchant" = "third_party_content", "avg_amount" = "personal_record", "estimated_frequency" = "personal_record", "next_expected_date" = "system", "last_seen_date" = "system", "created_at" = "system", "updated_at" = "system", "currency" = "system", "is_active" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records"]
@@ -174,6 +200,7 @@ source = "finance.subscriptions"
 domain = "finance"
 columns = ["id", "service", "amount", "currency", "frequency", "next_renewal", "status", "auto_renew", "payment_method", "account_id", "source_message_id", "created_at", "updated_at", "cancellation_url", "notice_period_days", "cancel_by", "cancellation_url_source", "status_source", "renewal_source", "price_source", "service_source", "date_epoch", "price_epoch", "value_revision"]
 types = { "id" = "uuid", "service" = "text", "amount" = "numeric(14,2)", "currency" = "character(3)", "frequency" = "text", "next_renewal" = "date", "status" = "text", "auto_renew" = "boolean", "payment_method" = "text", "account_id" = "uuid", "source_message_id" = "text", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone", "cancellation_url" = "text", "notice_period_days" = "integer", "cancel_by" = "date", "cancellation_url_source" = "text", "status_source" = "text", "renewal_source" = "text", "price_source" = "text", "service_source" = "text", "date_epoch" = "bigint", "price_epoch" = "bigint", "value_revision" = "bigint" }
+classes = { "id" = "system", "service" = "third_party_content", "amount" = "personal_record", "currency" = "system", "frequency" = "system", "next_renewal" = "personal_record", "status" = "system", "auto_renew" = "personal_record", "payment_method" = "personal_record", "account_id" = "system", "source_message_id" = "system", "created_at" = "system", "updated_at" = "system", "cancellation_url" = "third_party_content", "notice_period_days" = "system", "cancel_by" = "system", "cancellation_url_source" = "system", "status_source" = "system", "renewal_source" = "system", "price_source" = "system", "service_source" = "system", "date_epoch" = "system", "price_epoch" = "system", "value_revision" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records", "finance_obligations"]
@@ -186,6 +213,7 @@ source = "finance.transaction_corrections"
 domain = "finance"
 columns = ["id", "transaction_id", "field_name", "old_value", "new_value", "reason", "source", "created_by", "created_at"]
 types = { "id" = "uuid", "transaction_id" = "uuid", "field_name" = "text", "old_value" = "text", "new_value" = "text", "reason" = "text", "source" = "text", "created_by" = "text", "created_at" = "timestamp with time zone" }
+classes = { "id" = "system", "transaction_id" = "system", "field_name" = "personal_record", "old_value" = "personal_record", "new_value" = "personal_record", "reason" = "personal_record", "source" = "system", "created_by" = "system", "created_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records"]
@@ -197,6 +225,7 @@ source = "finance.transactions"
 domain = "finance"
 columns = ["id", "account_id", "source_message_id", "posted_at", "merchant", "description", "amount", "currency", "direction", "category", "payment_method", "receipt_url", "external_ref", "created_at", "updated_at", "deleted_at", "external_id", "transaction_date", "normalized_description", "normalized_merchant", "subcategory", "tags", "category_source", "is_category_locked", "type", "is_recurring", "recurring_group_id", "is_duplicate", "duplicate_of", "import_batch_id", "source", "notes", "version", "display_merchant", "display_category"]
 types = { "id" = "uuid", "account_id" = "uuid", "source_message_id" = "text", "posted_at" = "timestamp with time zone", "merchant" = "text", "description" = "text", "amount" = "numeric(14,2)", "currency" = "character(3)", "direction" = "text", "category" = "text", "payment_method" = "text", "receipt_url" = "text", "external_ref" = "text", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone", "deleted_at" = "timestamp with time zone", "external_id" = "text", "transaction_date" = "date", "normalized_description" = "text", "normalized_merchant" = "text", "subcategory" = "text", "tags" = "text[]", "category_source" = "text", "is_category_locked" = "boolean", "type" = "text", "is_recurring" = "boolean", "recurring_group_id" = "uuid", "is_duplicate" = "boolean", "duplicate_of" = "uuid", "import_batch_id" = "uuid", "source" = "text", "notes" = "text", "version" = "integer", "display_merchant" = "text", "display_category" = "text" }
+classes = { "id" = "system", "account_id" = "system", "source_message_id" = "system", "posted_at" = "system", "merchant" = "third_party_content", "description" = "third_party_content", "amount" = "personal_record", "currency" = "system", "direction" = "system", "category" = "personal_record", "payment_method" = "personal_record", "receipt_url" = "third_party_content", "external_ref" = "system", "created_at" = "system", "updated_at" = "system", "deleted_at" = "system", "external_id" = "system", "transaction_date" = "system", "normalized_description" = "third_party_content", "normalized_merchant" = "third_party_content", "subcategory" = "personal_record", "tags" = "personal_record", "category_source" = "system", "is_category_locked" = "system", "type" = "system", "is_recurring" = "system", "recurring_group_id" = "system", "is_duplicate" = "system", "duplicate_of" = "personal_record", "import_batch_id" = "system", "source" = "system", "notes" = "personal_record", "version" = "system", "display_merchant" = "third_party_content", "display_category" = "personal_record" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["finance_records", "finance_ledger", "finance_summary"]
@@ -209,6 +238,7 @@ source = "general.facts"
 domain = "knowledge"
 columns = ["id", "subject", "entity_id", "object_entity_id", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
 types = { "id" = "uuid", "subject" = "text", "entity_id" = "uuid", "object_entity_id" = "uuid", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
+classes = { "id" = "system", "subject" = "personal_record", "entity_id" = "system", "object_entity_id" = "system", "predicate" = "system", "content" = "third_party_content", "valid_at" = "system", "sensitivity" = "system", "validity" = "system", "content_authority" = "system", "search_vector" = "third_party_content" }
 key = ["id"]
 replica_identity = ["id", "sensitivity", "validity", "predicate"]
 tools = ["search", "fetch", "search_filtered"]
@@ -221,6 +251,7 @@ source = "health.calendar_event_instances"
 domain = "health"
 columns = ["id", "event_id", "source_id", "origin_instance_ref", "timezone", "starts_at", "ends_at", "status", "is_exception", "origin_updated_at", "created_at", "updated_at"]
 types = { "id" = "uuid", "event_id" = "uuid", "source_id" = "uuid", "origin_instance_ref" = "text", "timezone" = "text", "starts_at" = "timestamp with time zone", "ends_at" = "timestamp with time zone", "status" = "text", "is_exception" = "boolean", "origin_updated_at" = "timestamp with time zone", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone" }
+classes = { "id" = "system", "event_id" = "system", "source_id" = "system", "origin_instance_ref" = "system", "timezone" = "system", "starts_at" = "system", "ends_at" = "system", "status" = "system", "is_exception" = "system", "origin_updated_at" = "system", "created_at" = "system", "updated_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["health_records"]
@@ -233,6 +264,7 @@ source = "health.calendar_events"
 domain = "health"
 columns = ["id", "source_id", "origin_ref", "title", "description", "location", "timezone", "starts_at", "ends_at", "all_day", "status", "visibility", "recurrence_rule", "etag", "origin_updated_at", "created_at", "updated_at", "source_butler", "source_session_id", "body"]
 types = { "id" = "uuid", "source_id" = "uuid", "origin_ref" = "text", "title" = "text", "description" = "text", "location" = "text", "timezone" = "text", "starts_at" = "timestamp with time zone", "ends_at" = "timestamp with time zone", "all_day" = "boolean", "status" = "text", "visibility" = "text", "recurrence_rule" = "text", "etag" = "text", "origin_updated_at" = "timestamp with time zone", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone", "source_butler" = "text", "source_session_id" = "text", "body" = "text" }
+classes = { "id" = "system", "source_id" = "system", "origin_ref" = "system", "title" = "third_party_content", "description" = "third_party_content", "location" = "third_party_content", "timezone" = "system", "starts_at" = "system", "ends_at" = "system", "all_day" = "system", "status" = "system", "visibility" = "system", "recurrence_rule" = "system", "etag" = "system", "origin_updated_at" = "system", "created_at" = "system", "updated_at" = "system", "source_butler" = "system", "source_session_id" = "system", "body" = "third_party_content" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["health_records"]
@@ -245,6 +277,7 @@ source = "health.calendar_sources"
 domain = "health"
 columns = ["id", "source_key", "source_kind", "lane", "provider", "calendar_id", "butler_name", "display_name", "writable", "created_at", "updated_at"]
 types = { "id" = "uuid", "source_key" = "text", "source_kind" = "text", "lane" = "text", "provider" = "text", "calendar_id" = "text", "butler_name" = "text", "display_name" = "text", "writable" = "boolean", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone" }
+classes = { "id" = "system", "source_key" = "system", "source_kind" = "system", "lane" = "system", "provider" = "system", "calendar_id" = "system", "butler_name" = "system", "display_name" = "personal_record", "writable" = "system", "created_at" = "system", "updated_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["health_records"]
@@ -257,6 +290,7 @@ source = "health.conditions"
 domain = "health"
 columns = ["id", "name", "status", "diagnosed_at", "notes", "created_at", "updated_at"]
 types = { "id" = "uuid", "name" = "text", "status" = "text", "diagnosed_at" = "timestamp with time zone", "notes" = "text", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone" }
+classes = { "id" = "system", "name" = "personal_record", "status" = "system", "diagnosed_at" = "system", "notes" = "personal_record", "created_at" = "system", "updated_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["health_records"]
@@ -268,6 +302,7 @@ source = "health.conditions_public"
 domain = "health"
 columns = ["id", "name", "status", "diagnosed_at", "notes"]
 types = { "id" = "uuid", "name" = "text", "status" = "text", "diagnosed_at" = "text", "notes" = "text" }
+classes = { "id" = "system", "name" = "personal_record", "status" = "system", "diagnosed_at" = "system", "notes" = "personal_record" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["health_records", "health_profile"]
@@ -278,6 +313,7 @@ source = "health.facts"
 domain = "health"
 columns = ["id", "subject", "predicate", "content", "search_vector", "importance", "confidence", "decay_rate", "permanence", "source_butler", "source_episode_id", "supersedes_id", "validity", "scope", "reference_count", "created_at", "last_referenced_at", "last_confirmed_at", "entity_id", "object_entity_id", "valid_at", "tenant_id", "request_id", "retention_class", "sensitivity", "idempotency_key", "observed_at", "invalid_at", "content_authority", "authority_entity_id", "endorsed_at", "endorsed_by", "taint_goal_id", "taint_invocation_id", "dropped_at"]
 types = { "id" = "uuid", "subject" = "text", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "importance" = "double precision", "confidence" = "double precision", "decay_rate" = "double precision", "permanence" = "text", "source_butler" = "text", "source_episode_id" = "uuid", "supersedes_id" = "uuid", "validity" = "text", "scope" = "text", "reference_count" = "integer", "created_at" = "timestamp with time zone", "last_referenced_at" = "timestamp with time zone", "last_confirmed_at" = "timestamp with time zone", "entity_id" = "uuid", "object_entity_id" = "uuid", "valid_at" = "timestamp with time zone", "tenant_id" = "text", "request_id" = "text", "retention_class" = "text", "sensitivity" = "text", "idempotency_key" = "text", "observed_at" = "timestamp with time zone", "invalid_at" = "timestamp with time zone", "content_authority" = "text", "authority_entity_id" = "uuid", "endorsed_at" = "timestamp with time zone", "endorsed_by" = "uuid", "taint_goal_id" = "uuid", "taint_invocation_id" = "uuid", "dropped_at" = "timestamp with time zone" }
+classes = { "id" = "system", "subject" = "personal_record", "predicate" = "system", "content" = "personal_record", "search_vector" = "personal_record", "importance" = "system", "confidence" = "system", "decay_rate" = "system", "permanence" = "system", "source_butler" = "system", "source_episode_id" = "system", "supersedes_id" = "system", "validity" = "system", "scope" = "system", "reference_count" = "system", "created_at" = "system", "last_referenced_at" = "system", "last_confirmed_at" = "system", "entity_id" = "system", "object_entity_id" = "system", "valid_at" = "system", "tenant_id" = "system", "request_id" = "system", "retention_class" = "system", "sensitivity" = "system", "idempotency_key" = "system", "observed_at" = "system", "invalid_at" = "system", "content_authority" = "system", "authority_entity_id" = "system", "endorsed_at" = "system", "endorsed_by" = "system", "taint_goal_id" = "system", "taint_invocation_id" = "system", "dropped_at" = "system" }
 key = ["id"]
 replica_identity = ["id", "sensitivity", "validity", "predicate"]
 tools = ["health_records", "health_profile"]
@@ -291,6 +327,7 @@ source = "health.json_fields_public"
 domain = "health"
 columns = ["id", "source_table", "row_id", "path", "value_text", "value_numeric", "value_type"]
 types = { "id" = "text", "source_table" = "text", "row_id" = "text", "path" = "text", "value_text" = "text", "value_numeric" = "numeric", "value_type" = "text" }
+classes = { "id" = "system", "source_table" = "system", "row_id" = "system", "path" = "system", "value_text" = "personal_record", "value_numeric" = "personal_record", "value_type" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["health_records"]
@@ -301,6 +338,7 @@ source = "health.meals"
 domain = "health"
 columns = ["id", "type", "description", "eaten_at", "notes", "created_at"]
 types = { "id" = "uuid", "type" = "text", "description" = "text", "eaten_at" = "timestamp with time zone", "notes" = "text", "created_at" = "timestamp with time zone" }
+classes = { "id" = "system", "type" = "system", "description" = "personal_record", "eaten_at" = "system", "notes" = "personal_record", "created_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["health_records"]
@@ -312,6 +350,7 @@ source = "health.measurements_public"
 domain = "health"
 columns = ["id", "metric", "value_numeric", "unit", "measured_at"]
 types = { "id" = "text", "metric" = "text", "value_numeric" = "numeric", "unit" = "text", "measured_at" = "timestamp with time zone" }
+classes = { "id" = "system", "metric" = "system", "value_numeric" = "personal_record", "unit" = "system", "measured_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["health_records", "health_series"]
@@ -323,6 +362,7 @@ source = "health.medication_doses"
 domain = "health"
 columns = ["id", "medication_id", "taken_at", "skipped", "notes", "created_at"]
 types = { "id" = "uuid", "medication_id" = "uuid", "taken_at" = "timestamp with time zone", "skipped" = "boolean", "notes" = "text", "created_at" = "timestamp with time zone" }
+classes = { "id" = "system", "medication_id" = "system", "taken_at" = "system", "skipped" = "system", "notes" = "personal_record", "created_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["health_records"]
@@ -334,6 +374,7 @@ source = "health.medications"
 domain = "health"
 columns = ["id", "name", "dosage", "frequency", "active", "notes", "created_at", "updated_at"]
 types = { "id" = "uuid", "name" = "text", "dosage" = "text", "frequency" = "text", "active" = "boolean", "notes" = "text", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone" }
+classes = { "id" = "system", "name" = "personal_record", "dosage" = "personal_record", "frequency" = "system", "active" = "system", "notes" = "personal_record", "created_at" = "system", "updated_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["health_records"]
@@ -345,6 +386,7 @@ source = "health.medications_public"
 domain = "health"
 columns = ["id", "name", "dosage", "frequency", "schedule", "active", "notes", "recorded_at"]
 types = { "id" = "uuid", "name" = "text", "dosage" = "text", "frequency" = "text", "schedule" = "text[]", "active" = "boolean", "notes" = "text", "recorded_at" = "timestamp with time zone" }
+classes = { "id" = "system", "name" = "personal_record", "dosage" = "personal_record", "frequency" = "system", "schedule" = "system", "active" = "system", "notes" = "personal_record", "recorded_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["health_records", "health_profile"]
@@ -356,6 +398,7 @@ source = "health.research"
 domain = "health"
 columns = ["id", "title", "content", "source_url", "condition_id", "created_at", "updated_at"]
 types = { "id" = "uuid", "title" = "text", "content" = "text", "source_url" = "text", "condition_id" = "uuid", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone" }
+classes = { "id" = "system", "title" = "third_party_content", "content" = "third_party_content", "source_url" = "third_party_content", "condition_id" = "system", "created_at" = "system", "updated_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["health_records"]
@@ -367,6 +410,7 @@ source = "health.symptoms"
 domain = "health"
 columns = ["id", "name", "severity", "condition_id", "occurred_at", "notes", "created_at"]
 types = { "id" = "uuid", "name" = "text", "severity" = "integer", "condition_id" = "uuid", "occurred_at" = "timestamp with time zone", "notes" = "text", "created_at" = "timestamp with time zone" }
+classes = { "id" = "system", "name" = "personal_record", "severity" = "system", "condition_id" = "system", "occurred_at" = "system", "notes" = "personal_record", "created_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["health_records"]
@@ -378,6 +422,7 @@ source = "health.visit_briefs"
 domain = "health"
 columns = ["event_id", "event_start", "period_start", "delivered_at", "created_at", "updated_at"]
 types = { "event_id" = "text", "event_start" = "timestamp with time zone", "period_start" = "timestamp with time zone", "delivered_at" = "timestamp with time zone", "created_at" = "timestamp with time zone", "updated_at" = "timestamp with time zone" }
+classes = { "event_id" = "system", "event_start" = "personal_record", "period_start" = "system", "delivered_at" = "system", "created_at" = "system", "updated_at" = "system" }
 key = ["event_id"]
 replica_identity = ["event_id"]
 tools = ["health_records"]
@@ -390,6 +435,7 @@ source = "lifestyle.facts"
 domain = "knowledge"
 columns = ["id", "subject", "entity_id", "object_entity_id", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
 types = { "id" = "uuid", "subject" = "text", "entity_id" = "uuid", "object_entity_id" = "uuid", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
+classes = { "id" = "system", "subject" = "personal_record", "entity_id" = "system", "object_entity_id" = "system", "predicate" = "system", "content" = "personal_record", "valid_at" = "system", "sensitivity" = "system", "validity" = "system", "content_authority" = "system", "search_vector" = "personal_record" }
 key = ["id"]
 replica_identity = ["id", "sensitivity", "validity", "predicate"]
 tools = ["search", "fetch", "search_filtered"]
@@ -402,6 +448,7 @@ source = "mcp_surface.controls"
 domain = ""
 columns = ["domain", "state", "changed_at"]
 types = { "domain" = "text", "state" = "text", "changed_at" = "timestamp with time zone" }
+classes = { "domain" = "system", "state" = "system", "changed_at" = "system" }
 key = ["domain"]
 replica_identity = ["domain"]
 tools = ["describe"]
@@ -411,6 +458,7 @@ source = "mcp_surface.manifest_state"
 domain = ""
 columns = ["digest"]
 types = { "digest" = "text" }
+classes = { "digest" = "system" }
 key = ["digest"]
 replica_identity = ["digest"]
 tools = ["describe"]
@@ -420,6 +468,8 @@ source = "public.entities"
 domain = "relationship"
 columns = ["id", "canonical_name", "entity_type", "aliases", "roles", "merged_into", "deleted", "unidentified", "placeholder_name"]
 types = { "id" = "uuid", "canonical_name" = "character varying", "entity_type" = "character varying", "aliases" = "text[]", "roles" = "text[]", "merged_into" = "uuid", "deleted" = "boolean", "unidentified" = "boolean", "placeholder_name" = "boolean" }
+# aliases, canonical_name: owner decision 2026-11-09: published under OD17; reviewed as possible third-party identifiers
+classes = { "id" = "system", "canonical_name" = "personal_record", "entity_type" = "system", "aliases" = "personal_record", "roles" = "system", "merged_into" = "system", "deleted" = "system", "unidentified" = "system", "placeholder_name" = "system" }
 key = ["id"]
 replica_identity = ["id", "deleted", "unidentified", "placeholder_name"]
 tools = ["entity_lookup", "entity_profile", "search", "fetch", "search_filtered"]
@@ -431,6 +481,7 @@ source = "public.entity_graph_edges"
 domain = "relationship"
 columns = ["id", "subject_entity_id", "predicate", "object_entity_id", "sensitivity", "created_at", "publish_key"]
 types = { "id" = "uuid", "subject_entity_id" = "uuid", "predicate" = "text", "object_entity_id" = "uuid", "sensitivity" = "text", "created_at" = "timestamp with time zone", "publish_key" = "text" }
+classes = { "id" = "system", "subject_entity_id" = "system", "predicate" = "system", "object_entity_id" = "system", "sensitivity" = "system", "created_at" = "system", "publish_key" = "system" }
 key = ["id"]
 replica_identity = ["id", "sensitivity", "publish_key"]
 tools = ["graph_neighbors", "graph_path", "entity_profile"]
@@ -442,6 +493,7 @@ source = "public.entity_graph_withheld_counts"
 domain = "relationship"
 columns = ["entity_id", "source_key", "withheld"]
 types = { "entity_id" = "uuid", "source_key" = "text", "withheld" = "integer" }
+classes = { "entity_id" = "system", "source_key" = "system", "withheld" = "system" }
 key = ["entity_id", "source_key"]
 replica_identity = ["entity_id", "source_key"]
 tools = ["graph_neighbors", "graph_path", "entity_profile"]
@@ -452,6 +504,7 @@ source = "relationship.entity_facts"
 domain = "relationship"
 columns = ["id", "subject", "predicate", "object", "object_kind", "conf", "verified", "validity", "content_authority", "created_at"]
 types = { "id" = "uuid", "subject" = "uuid", "predicate" = "text", "object" = "text", "object_kind" = "text", "conf" = "double precision", "verified" = "boolean", "validity" = "text", "created_at" = "timestamp with time zone", "content_authority" = "text" }
+classes = { "id" = "system", "subject" = "personal_record", "predicate" = "system", "object" = "third_party_content", "object_kind" = "system", "conf" = "system", "verified" = "system", "validity" = "system", "content_authority" = "system", "created_at" = "system" }
 key = ["id"]
 replica_identity = ["id", "validity", "predicate"]
 tools = ["entity_profile"]
@@ -464,6 +517,7 @@ source = "relationship.external_fact_proposals"
 domain = "proposals"
 columns = ["proposal_id", "state", "decided_at"]
 types = { "proposal_id" = "uuid", "state" = "text", "decided_at" = "timestamp with time zone" }
+classes = { "proposal_id" = "system", "state" = "system", "decided_at" = "system" }
 key = ["proposal_id"]
 replica_identity = ["proposal_id"]
 tools = ["fetch"]
@@ -475,6 +529,7 @@ source = "relationship.facts"
 domain = "relationship"
 columns = ["id", "subject", "entity_id", "object_entity_id", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
 types = { "id" = "uuid", "subject" = "text", "entity_id" = "uuid", "object_entity_id" = "uuid", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
+classes = { "id" = "system", "subject" = "personal_record", "entity_id" = "system", "object_entity_id" = "system", "predicate" = "system", "content" = "third_party_content", "valid_at" = "system", "sensitivity" = "system", "validity" = "system", "content_authority" = "system", "search_vector" = "third_party_content" }
 key = ["id"]
 replica_identity = ["id", "sensitivity", "validity", "predicate"]
 tools = ["search", "fetch", "search_filtered", "entity_profile"]
@@ -487,6 +542,7 @@ source = "travel.documents"
 domain = "travel"
 columns = ["id", "trip_id", "type", "expiry_date"]
 types = { "id" = "uuid", "trip_id" = "uuid", "type" = "text", "expiry_date" = "date" }
+classes = { "id" = "system", "trip_id" = "system", "type" = "system", "expiry_date" = "personal_record" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["trips", "search", "fetch", "search_filtered"]
@@ -497,6 +553,7 @@ source = "travel.facts"
 domain = "travel"
 columns = ["id", "subject", "entity_id", "object_entity_id", "predicate", "content", "valid_at", "sensitivity", "validity", "content_authority", "search_vector"]
 types = { "id" = "uuid", "subject" = "text", "entity_id" = "uuid", "object_entity_id" = "uuid", "predicate" = "text", "content" = "text", "search_vector" = "tsvector", "validity" = "text", "valid_at" = "timestamp with time zone", "sensitivity" = "text", "content_authority" = "text" }
+classes = { "id" = "system", "subject" = "personal_record", "entity_id" = "system", "object_entity_id" = "system", "predicate" = "system", "content" = "personal_record", "valid_at" = "system", "sensitivity" = "system", "validity" = "system", "content_authority" = "system", "search_vector" = "personal_record" }
 key = ["id"]
 replica_identity = ["id", "sensitivity", "validity", "predicate"]
 tools = ["search", "fetch", "search_filtered"]
@@ -509,6 +566,7 @@ source = "travel.legs"
 domain = "travel"
 columns = ["id", "trip_id", "type", "carrier", "departure_city", "departure_at", "arrival_city", "arrival_at"]
 types = { "id" = "uuid", "trip_id" = "uuid", "type" = "text", "carrier" = "text", "departure_city" = "text", "departure_at" = "timestamp with time zone", "arrival_city" = "text", "arrival_at" = "timestamp with time zone" }
+classes = { "id" = "system", "trip_id" = "system", "type" = "system", "carrier" = "personal_record", "departure_city" = "personal_record", "departure_at" = "system", "arrival_city" = "personal_record", "arrival_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["trips", "search", "fetch", "search_filtered"]
@@ -519,6 +577,7 @@ source = "travel.trips"
 domain = "travel"
 columns = ["id", "name", "destination", "start_date", "end_date", "status"]
 types = { "id" = "uuid", "name" = "text", "destination" = "text", "start_date" = "date", "end_date" = "date", "status" = "text" }
+classes = { "id" = "system", "name" = "personal_record", "destination" = "personal_record", "start_date" = "system", "end_date" = "system", "status" = "system" }
 key = ["id"]
 replica_identity = ["id"]
 tools = ["trips", "search", "fetch", "search_filtered"]
