@@ -10,55 +10,50 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from butlers.connectors import filtered_event_buffer as feb
+from butlers.testing.fake_pool import AsyncCtx, FakePool, fake_pool
 
 pytestmark = pytest.mark.unit
 
 _ENDPOINT = "gmail:user:alice@example.com"
 
 
-class _FakeConn:
-    def __init__(self, pool: _FakePool) -> None:
-        self.pool = pool
+class _Pool:
+    """The shared fake pool, plus ordered calls and what is held right now."""
 
-    @asynccontextmanager
-    async def transaction(self):
-        self.pool.open_transactions += 1
-        try:
-            yield
-        finally:
-            self.pool.open_transactions -= 1
+    def __init__(self, rows: list[dict[str, Any]], execute_result: str = "UPDATE 1") -> None:
+        self.pool: FakePool = fake_pool(fetch=rows, execute=execute_result)
+        self._log = MagicMock()
+        self._log.attach_mock(self.pool.fetch, "fetch")
+        self._log.attach_mock(self.pool.execute, "execute")
+        self._transactions: list[AsyncCtx] = []
+        self.pool.connection.transaction = MagicMock(side_effect=self._transaction)
 
-    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
-        self.pool.calls.append(("fetch", sql, args))
-        return self.pool.rows
+    def __getattr__(self, name: str) -> Any:
+        # The drain under test sees the shared kit's acquire/fetch/execute.
+        return getattr(self.pool, name)
 
-    async def execute(self, sql: str, *args: Any) -> str:
-        self.pool.calls.append(("execute", sql, args))
-        return self.pool.execute_result
+    def _transaction(self) -> AsyncCtx:
+        ctx = AsyncCtx(None)
+        self._transactions.append(ctx)
+        return ctx
 
+    @property
+    def calls(self) -> list[tuple[str, str, tuple[Any, ...]]]:
+        return [(name, args[0], tuple(args[1:])) for name, args, _ in self._log.mock_calls]
 
-class _FakePool:
-    def __init__(self, rows: list[dict[str, Any]]) -> None:
-        self.rows = rows
-        self.calls: list[tuple[str, str, tuple[Any, ...]]] = []
-        self.open_transactions = 0
-        self.held_connections = 0
-        self.execute_result = "UPDATE 1"
+    @property
+    def open_transactions(self) -> int:
+        return sum(ctx.enter_count - ctx.exit_count for ctx in self._transactions)
 
-    @asynccontextmanager
-    async def acquire(self):
-        self.held_connections += 1
-        try:
-            yield _FakeConn(self)
-        finally:
-            self.held_connections -= 1
+    @property
+    def held_connections(self) -> int:
+        return self.pool.acquire.call_count - self.pool.release.await_count
 
 
 def _row(row_id: int, text: str = "hi") -> dict[str, Any]:
@@ -74,7 +69,7 @@ def _row(row_id: int, text: str = "hi") -> dict[str, Any]:
 
 
 async def test_submit_runs_after_the_claim_with_no_transaction_or_connection_held() -> None:
-    pool = _FakePool([_row(1), _row(2)])
+    pool = _Pool([_row(1), _row(2)])
     seen: list[tuple[int, int, int]] = []
 
     async def submit(envelope: dict) -> None:
@@ -87,7 +82,7 @@ async def test_submit_runs_after_the_claim_with_no_transaction_or_connection_hel
 
 
 async def test_claim_stamps_a_fresh_token_and_takes_lapsed_leases() -> None:
-    pool = _FakePool([_row(1)])
+    pool = _Pool([_row(1)])
     await feb.drain_replay_pending(pool, "gmail", _ENDPOINT, AsyncMock())  # type: ignore[arg-type]
     await feb.drain_replay_pending(pool, "gmail", _ENDPOINT, AsyncMock())  # type: ignore[arg-type]
 
@@ -102,7 +97,7 @@ async def test_claim_stamps_a_fresh_token_and_takes_lapsed_leases() -> None:
 
 @pytest.mark.parametrize(("fails", "status"), [(False, "replay_complete"), (True, "replay_failed")])
 async def test_outcome_is_recorded_only_under_this_drains_token(fails: bool, status: str) -> None:
-    pool = _FakePool([_row(1)])
+    pool = _Pool([_row(1)])
 
     async def submit(envelope: dict) -> None:
         if fails:
@@ -120,7 +115,7 @@ async def test_outcome_is_recorded_only_under_this_drains_token(fails: bool, sta
 
 
 async def test_cancel_mid_batch_releases_this_drains_claims_and_propagates() -> None:
-    pool = _FakePool([_row(1), _row(2), _row(3)])
+    pool = _Pool([_row(1), _row(2), _row(3)])
 
     async def submit(envelope: dict) -> None:
         if envelope["event"]["external_event_id"] == "msg-2":
@@ -142,7 +137,7 @@ async def test_cancel_mid_batch_releases_this_drains_claims_and_propagates() -> 
 
 
 async def test_a_submit_past_its_deadline_fails_inside_the_lease() -> None:
-    pool = _FakePool([_row(1)])
+    pool = _Pool([_row(1)])
 
     async def submit(envelope: dict) -> None:
         await asyncio.sleep(5)
@@ -164,7 +159,7 @@ async def test_a_submit_past_its_deadline_fails_inside_the_lease() -> None:
 async def test_the_drain_stops_before_a_submit_that_could_outlast_its_lease(monkeypatch) -> None:
     # Ten rows at a 60 s deadline can exceed a 300 s lease; past it, a reclaimer
     # could submit a row this drain is about to submit (r4512166981).
-    pool = _FakePool([_row(1), _row(2), _row(3)])
+    pool = _Pool([_row(1), _row(2), _row(3)])
     now = [1000.0]
     monkeypatch.setattr(feb, "_monotonic", lambda: now[0])
     submitted: list[str] = []
@@ -195,7 +190,7 @@ async def test_the_drain_stops_before_a_submit_that_could_outlast_its_lease(monk
 async def test_a_not_replayable_row_is_refused_before_submit_and_its_claim_cleared() -> None:
     row = _row(1)
     row["full_payload"][feb.REPLAY_UNAVAILABLE_KEY] = "gmail fetch failed: HTTP 404"
-    pool = _FakePool([row])
+    pool = _Pool([row])
     submit = AsyncMock()
 
     await feb.drain_replay_pending(pool, "gmail", _ENDPOINT, submit)  # type: ignore[arg-type]
@@ -217,7 +212,7 @@ def test_the_submit_deadline_must_be_shorter_than_the_lease() -> None:
     with pytest.raises(ValueError):
         asyncio.run(
             feb.drain_replay_pending(
-                _FakePool([]),  # type: ignore[arg-type]
+                _Pool([]),  # type: ignore[arg-type]
                 "gmail",
                 _ENDPOINT,
                 AsyncMock(),
@@ -228,8 +223,7 @@ def test_the_submit_deadline_must_be_shorter_than_the_lease() -> None:
 
 
 async def test_a_lost_claim_is_logged_and_left_alone(caplog) -> None:
-    pool = _FakePool([_row(1)])
-    pool.execute_result = "UPDATE 0"
+    pool = _Pool([_row(1)], execute_result="UPDATE 0")
 
     with caplog.at_level("INFO", logger=feb.logger.name):
         await feb.drain_replay_pending(pool, "gmail", _ENDPOINT, AsyncMock())  # type: ignore[arg-type]
