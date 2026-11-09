@@ -62,7 +62,7 @@ import logging
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -1163,6 +1163,7 @@ all_candidates AS (
         mc.max_output_tokens,
         COALESCE(bmo.complexity_tier, mc.complexity_tier) AS effective_tier,
         COALESCE(bmo.priority, mc.priority) AS effective_priority,
+        bmo.priority IS NOT NULL AS owner_pinned,
         t.ord AS tier_ord,
         COALESCE(qoc.quota_ok, true) AS quota_ok
     FROM public.model_catalog mc
@@ -1197,6 +1198,7 @@ all_candidates AS (
         mc.max_output_tokens,
         COALESCE(bmo.complexity_tier, mc.complexity_tier) AS effective_tier,
         COALESCE(bmo.priority, mc.priority) AS effective_priority,
+        bmo.priority IS NOT NULL AS owner_pinned,
         t.ord AS tier_ord,
         COALESCE(qoc.quota_ok, true) AS quota_ok,
         bo.catalog_entry_id IS NOT NULL AS breaker_open,
@@ -1243,6 +1245,7 @@ candidates AS (
         ac.session_timeout_s,
         ac.effective_tier,
         ac.effective_priority,
+        ac.owner_pinned,
         ac.quota_ok,
         ROW_NUMBER() OVER (ORDER BY ac.created_at ASC, ac.id ASC) - 1 AS rn,
         COUNT(*) OVER () AS total
@@ -1270,7 +1273,7 @@ evidence AS (
 )
 SELECT
     c.runtime_type, c.model_id, c.extra_args, c.id, c.session_timeout_s, c.effective_tier,
-    c.effective_priority,
+    c.effective_priority, c.owner_pinned,
     c.rn, c.total,
     e.success_count, e.failure_count, e.p50_duration_ms, e.p95_duration_ms, e.last_attempt_at,
     c.quota_ok
@@ -1323,8 +1326,8 @@ evidence AS (
 SELECT
     ac.runtime_type, ac.model_id, ac.extra_args, ac.id, ac.session_timeout_s,
     ac.capabilities, ac.max_context_tokens, ac.max_output_tokens,
-    ac.effective_tier, ac.effective_priority, ac.tier_ord, ac.quota_ok, ac.breaker_open,
-    ac.allowance_blocked,
+    ac.effective_tier, ac.effective_priority, ac.owner_pinned, ac.tier_ord, ac.quota_ok,
+    ac.breaker_open, ac.allowance_blocked,
     e.success_count, e.failure_count, e.p50_duration_ms, e.p95_duration_ms,
     e.last_attempt_at
 FROM all_candidates ac
@@ -1655,6 +1658,25 @@ def _score_row(row: asyncpg.Record, pricing: PricingConfig | None) -> RoutingSco
     return compute_routing_score(evidence, _reference_cost_usd(pricing, row["model_id"]))
 
 
+def _row_owner_pinned(row: Any) -> bool:
+    """Whether a butler override row set this candidate's priority (absent column: no)."""
+    try:
+        return bool(row["owner_pinned"])
+    except (KeyError, IndexError):
+        return False
+
+
+def _is_owner_even_split(rows: Sequence[Any]) -> bool:
+    """True when every candidate of a multi-way tie is pinned by a butler override.
+
+    The owner set equal priorities on purpose, so the tie is a split they asked for, not an
+    accident for evidence to break. A tie that includes any catalog-default candidate is not:
+    the owner decided nothing about it. Breaker-open and unverified entries never reach here
+    (the candidate SQL drops them), so exclusion on evidence of breakage stays intact.
+    """
+    return len(rows) > 1 and all(_row_owner_pinned(row) for row in rows)
+
+
 def _select_resolved_row(
     rows: list[asyncpg.Record], rr_counter: int | None = None
 ) -> asyncpg.Record:
@@ -1680,8 +1702,9 @@ def _select_resolved_row(
     pricing = _get_cached_pricing()
     scored = [(row, _score_row(row, pricing)) for row in rows]
 
+    # An owner-pinned tie is an even split the owner chose; evidence must not collapse it.
     eligible = [(row, s) for row, s in scored if s.score is not None]
-    if len(eligible) >= 2:
+    if len(eligible) >= 2 and not _is_owner_even_split(rows):
         best_row, _ = max(eligible, key=lambda pair: pair[1].score)
         return best_row
 
@@ -2112,6 +2135,7 @@ class CandidateOutcome(enum.StrEnum):
 WINNER_REASON_SOLE_CANDIDATE = "sole_candidate"
 WINNER_REASON_EVIDENCE_SCORE = "evidence_score"
 WINNER_REASON_ROUND_ROBIN = "round_robin"
+WINNER_REASON_OWNER_EVEN_SPLIT = "owner_even_split"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2238,6 +2262,8 @@ def _describe_legacy_resolution(
     scored = {row["id"]: _score_row(row, pricing) for row in rows}
     if len(rows) == 1:
         winner_reason = WINNER_REASON_SOLE_CANDIDATE
+    elif _is_owner_even_split(rows):
+        winner_reason = WINNER_REASON_OWNER_EVEN_SPLIT
     elif sum(score.score is not None for score in scored.values()) >= 2:
         winner_reason = WINNER_REASON_EVIDENCE_SCORE
     else:
@@ -2540,6 +2566,10 @@ def _rank_candidates(
     """
     if len(top) == 1:
         return top[0], WINNER_REASON_SOLE_CANDIDATE
+
+    if _is_owner_even_split(top):
+        assert rr_counter is not None, "_rank_candidates: rr_counter required for an even split"
+        return top[rr_counter % len(top)], WINNER_REASON_OWNER_EVEN_SPLIT
 
     scored = [(row, scores[row["id"]]) for row in top if scores.get(row["id"]) is not None]
     eligible = [(row, s) for row, s in scored if s.score is not None]
