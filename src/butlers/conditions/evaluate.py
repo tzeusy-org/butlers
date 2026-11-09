@@ -17,6 +17,8 @@ from butlers.perception.model import instant
 
 REALTIME_HORIZON = timedelta(minutes=10)
 LATE_AT_GRACE = timedelta(seconds=60)
+# A transition event stamped further ahead of ``now`` than this is not evidence yet.
+FUTURE_EVENT_SKEW = timedelta(seconds=60)
 
 
 def combine(node: dict, values: dict[str, Tri], prefix: str = "") -> Tri:
@@ -141,6 +143,8 @@ def advance(
                 continue  # undeclared source or post-expiry evidence never contributes
             if floor is not None and ev.position <= floor:
                 continue  # replay of an interval an earlier generation/run already consumed
+            if ev.tag == "transition" and ev.at - now > FUTURE_EVENT_SKEW:
+                continue  # not yet true: neither evidence nor consumed, so a redelivery counts
             cursors[ev.source] = max(cursors.get(ev.source, -1), ev.position)
             for leaf in leaf_list:
                 values[leaf.path] = _event_leaf(leaf, values[leaf.path], ev, now)

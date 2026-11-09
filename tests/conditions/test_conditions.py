@@ -219,6 +219,25 @@ class TestTransitionHorizon:
         edge = transition_ev(at=NOW - timedelta(minutes=10))
         assert (await evaluator.evaluate("c1", [edge], now=NOW)).intent is not None
 
+    async def test_future_dated_event_is_ignored_and_does_not_move_the_cursor(self, evaluator):
+        await register(evaluator, TRANSITION)
+        future = transition_ev(at=NOW + timedelta(hours=1))
+        out = await evaluator.evaluate("c1", [future], now=NOW)
+        assert out.instance.state is State.OPEN and out.intent is None
+        assert out.instance.cursors == {}
+
+    async def test_future_dated_event_counts_once_the_clock_reaches_it(self, evaluator):
+        await register(evaluator, TRANSITION)
+        future = transition_ev(at=NOW + timedelta(minutes=5))
+        assert (await evaluator.evaluate("c1", [future], now=NOW)).intent is None
+        later = await evaluator.evaluate("c1", [future], now=NOW + timedelta(minutes=5))
+        assert later.intent is not None
+
+    async def test_small_clock_skew_is_tolerated(self, evaluator):
+        await register(evaluator, TRANSITION)
+        skewed = transition_ev(at=NOW + timedelta(seconds=30))
+        assert (await evaluator.evaluate("c1", [skewed], now=NOW)).intent is not None
+
     @pytest.mark.parametrize(
         "make",
         [

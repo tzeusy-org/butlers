@@ -12,11 +12,17 @@ consumes `ConditionEvaluator.consume_fire`; it never evaluates predicates itself
   this evaluator accept the same predicates. There are no text expressions or model calls.
 - `register` refuses before any write when a leaf names an identity or source outside the
   caller-derived `Grant`, or when expiry is not finite (at most 90 days). It evaluates the
-  current `Snapshot`, so an already-true condition fires at registration (no lost wake).
+  current `Snapshot`, so an already-true condition fires at registration (no lost wake). A retry
+  of the same instance (same boundary) evaluates its fresher snapshot too: a leaf the snapshot
+  shows `true` latches, the instance may fire once (`fired:registration`, same one intent), and
+  nothing is ever downgraded or re-floored. A different boundary still refuses.
 - `evaluate` takes trusted `ConditionEvent`s and an explicit `now`. Leaves latch, so
   replay, duplicates and reordering are idempotent. Results are three-valued; an
   unmeasurable source is `unknown`, never `false`. Transition leaves ignore events that are
-  late, retracted, retraction records, or older than 10 minutes. An `at` leaf crossed by a
+  late, retracted, retraction records, or older than 10 minutes. A transition event stamped more
+  than 60 seconds ahead of `now` is ignored, not refused, and does not move the cursor: a
+  batch of trusted events cannot be rejected whole, and a redelivery counts once the clock
+  reaches it. An `at` leaf crossed by a
   clock jump fires once (`fired:clock_late`) if the instance has not expired.
 - Events at or below the instance's immutable per-source replay floor (the cursors given at
   registration, part of its boundary) are ignored: a rearm that passes the prior generation's

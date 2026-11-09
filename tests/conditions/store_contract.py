@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import timedelta
 from uuid import uuid5
 
 import pytest
@@ -22,6 +23,7 @@ from tests.conditions.test_conditions import (
     GRANT,
     NOW,
     NS,
+    SUBJECT,
     decision_ev,
     register,
 )
@@ -164,3 +166,57 @@ class StoreContract:
         assert await self.intent_count(store) == 1
         assert len({o.intent.fire_key for o in outs if o.intent}) == 1
         assert (await self.receipt_reasons(store)).count("fired:event") == 1
+
+    # -- register retry evaluates the caller's fresher snapshot (bu-dhloi1.198) ----------------
+
+    async def test_register_retry_fires_when_the_fresher_snapshot_is_true(self):
+        store = self.make_store()
+        evaluator = ConditionEvaluator(store)
+        first = await register(evaluator, DECISION)
+        assert first.intent is None
+        fresh = Snapshot(now=NOW + timedelta(minutes=1), decisions={SUBJECT: "approved"})
+        retry = await register(evaluator, DECISION, snapshot=fresh)
+        assert retry.instance.state is State.FIRED and retry.intent is not None
+        assert await self.intent_count(store) == 1
+        assert "fired:registration" in await self.receipt_reasons(store)
+
+    async def test_register_retry_never_double_fires(self):
+        store = self.make_store()
+        evaluator = ConditionEvaluator(store)
+        await register(evaluator, DECISION)
+        fresh = Snapshot(now=NOW + timedelta(minutes=1), decisions={SUBJECT: "approved"})
+        one = await register(evaluator, DECISION, snapshot=fresh)
+        two = await register(evaluator, DECISION, snapshot=fresh)
+        assert two.intent == one.intent and await self.intent_count(store) == 1
+
+    async def test_racing_register_retries_fire_once(self):
+        store = self.make_store()
+        await register(ConditionEvaluator(store), DECISION)
+        fresh = Snapshot(now=NOW + timedelta(minutes=1), decisions={SUBJECT: "approved"})
+        outs = await asyncio.gather(
+            *(register(ConditionEvaluator(store), DECISION, snapshot=fresh) for _ in range(4))
+        )
+        assert await self.intent_count(store) == 1
+        assert len({o.intent.fire_key for o in outs if o.intent}) == 1
+
+    async def test_register_retry_with_a_stale_snapshot_never_downgrades(self):
+        store = self.make_store()
+        evaluator = ConditionEvaluator(store)
+        await register(evaluator, DECISION)
+        await evaluator.evaluate("c1", [decision_ev()], now=NOW)
+        retry = await register(evaluator, DECISION, snapshot=Snapshot(now=NOW))
+        assert retry.instance.state is State.FIRED and await self.intent_count(store) == 1
+
+    async def test_register_retry_keeps_the_floor_and_boundary(self):
+        store = self.make_store()
+        evaluator = ConditionEvaluator(store)
+        await register(evaluator, DECISION, cursors={"goal.decision": 7})
+        before = await self.instance(store, "c1")
+        fresh = Snapshot(now=NOW + timedelta(minutes=1), decisions={SUBJECT: "approved"})
+        await register(evaluator, DECISION, snapshot=fresh, cursors={"goal.decision": 7})
+        after = await self.instance(store, "c1")
+        assert after.floor == before.floor == {"goal.decision": 7}
+        assert after.predicate_digest == before.predicate_digest
+        assert after.expires_at == before.expires_at
+        with pytest.raises(RegistrationRefused):  # a different floor is a changed boundary
+            await register(evaluator, DECISION, snapshot=fresh, cursors={"goal.decision": 99})
