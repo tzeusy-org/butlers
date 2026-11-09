@@ -1378,3 +1378,57 @@ async def test_describe_reports_switches_freshness_and_the_replicated_digest(
         with projected[0].engine.begin() as conn:
             conn.execute(text("UPDATE mcp_surface.controls SET state='enabled'"))
         _barrier(projected)
+
+
+async def test_graph_tools_start_from_the_published_survivor_of_a_merge(projected, primary, reader):
+    """A merged start or endpoint walks from its survivor; a hidden survivor is not_found."""
+    survivor = await _entity(primary, "Graph Merge Survivor Fenwick")
+    merged = await _entity(
+        primary, "Graph Merge Merged Fenwyck", metadata={"merged_into": survivor}
+    )
+    neighbour = await _entity(primary, "Graph Merge Neighbour Garnet")
+    facts = []
+    try:
+        async with primary.acquire() as conn, conn.transaction():
+            facts.append(await _general_edge(conn, survivor, neighbour))
+        _barrier(projected)
+        context = await _context(reader)
+        walked = await graph_neighbors(reader, context, {"entity_id": merged})
+        assert walked["entity"]["entity_id"] == survivor
+        assert [n["entity_id"] for n in walked["nodes"]] == [neighbour]
+        path = await graph_path(reader, context, {"from_id": merged, "to_id": neighbour})
+        assert [(e["subject_entity_id"], e["object_entity_id"]) for e in path["path"]] == [
+            (survivor, neighbour)
+        ]
+        reverse = await graph_path(reader, context, {"from_id": neighbour, "to_id": merged})
+        assert len(reverse["path"]) == 1
+        assert await graph_path(reader, context, {"from_id": merged, "to_id": survivor}) == {
+            "path": []
+        }
+
+        await primary.execute(
+            "UPDATE public.entities SET metadata=metadata||jsonb_build_object('deleted_at',now()) "
+            "WHERE id=$1",
+            uuid.UUID(survivor),
+        )
+        _barrier(projected)
+        context = await _context(reader)
+        for call in (
+            graph_neighbors(reader, context, {"entity_id": merged}),
+            graph_path(reader, context, {"from_id": merged, "to_id": neighbour}),
+            graph_path(reader, context, {"from_id": neighbour, "to_id": merged}),
+        ):
+            assert (await _refused(call)).code == "not_found"
+        # Positive control: the neighbour itself is still published and walkable.
+        alone = await graph_neighbors(reader, context, {"entity_id": neighbour})
+        assert alone["entity"]["entity_id"] == neighbour and alone["nodes"] == []
+    finally:
+        await primary.execute("DELETE FROM general.facts WHERE id = ANY($1)", facts)
+        for entity in (merged, survivor, neighbour):
+            await primary.execute(
+                "DELETE FROM public.entity_graph_edges WHERE subject_entity_id=$1 "
+                "OR object_entity_id=$1",
+                uuid.UUID(entity),
+            )
+            await primary.execute("DELETE FROM public.entities WHERE id=$1", uuid.UUID(entity))
+        _barrier(projected)

@@ -6,6 +6,11 @@ nearest hop, never revisits the start, and a path is an ordered list of real edg
 ``null``, never a guess. The published edge view already holds only ``normal`` live edges
 between published entities (REQ-public-mcp-projection-012); withheld stubs are counts in their
 own view and never a hop. An edge or count whose fact source's domain is disabled is dropped.
+
+The start entity (and each ``graph_path`` endpoint) resolves to its published survivor, as
+``entity_profile`` does; a merge chain that leaves the projection is ``not_found``. A node
+reached through an edge onto a merged entity is reported under the merged id, exactly as the
+primary walk reports it: edges keep the anchors they were asserted with (REQ-entity-graph-009).
 """
 
 from __future__ import annotations

@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
+import asyncpg
 import pytest
 
 from butlers.knowledge_read.core import ReadContext, ReadError, tables_for
@@ -200,6 +201,45 @@ def test_described_columns_match_the_views_the_owner_program_builds():
         plan.table.source: sorted(f.name for f in plan.read_fields)
         for plan in subscriber_plan(load_manifest())
     }
+
+
+@pytest.mark.parametrize(
+    "item_id",
+    ["proposal:nope", "proposal:" + ID, f"butlers://finance/transactions/{ID}", "x"],
+)
+async def test_fetch_refuses_staleness_before_judging_the_id(item_id):
+    stale = _context(as_of=NOW - timedelta(minutes=16))
+    assert (await _code(fetch, {"id": item_id}, stale))[0] == "projection_stale"
+
+
+class _Cancelling:
+    """A connection whose statement the server's statement_timeout cancels."""
+
+    def is_in_transaction(self):
+        return True
+
+    async def fetch(self, *args, **kwargs):
+        raise asyncpg.QueryCanceledError("canceling statement due to statement timeout")
+
+    fetchrow = fetchval = fetch
+
+
+@pytest.mark.parametrize(
+    ("reader", "arguments"),
+    [
+        (search, {"query": "x"}),
+        (search_filtered, {"query": "x"}),
+        (fetch, {"id": f"butlers://relationship/entity/{ID}"}),
+        (graph_neighbors, {"entity_id": ID}),
+        (graph_path, {"from_id": ID, "to_id": ID}),
+        (trips, {}),
+        (describe, {}),
+    ],
+)
+async def test_a_cancelled_statement_is_unavailable(reader, arguments):
+    with pytest.raises(ReadError) as caught:
+        await reader(_Cancelling(), _context(), arguments)
+    assert caught.value.code == "unavailable"
 
 
 def test_deep_links_are_the_base_plus_a_fixed_path():

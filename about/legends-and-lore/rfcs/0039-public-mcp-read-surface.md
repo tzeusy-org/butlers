@@ -1745,9 +1745,17 @@ tool: `kind` is a closed enum generated from the manifest, the filters are
 fixed, and they return only published columns and paths of one table per
 call.
 
+**Graph merges.** `graph_neighbors` and `graph_path` resolve the start entity
+and each path endpoint to its published survivor, as `entity_profile` does; a
+merge chain that leaves the projection is `not_found`. Traversal does not
+rewrite edges: a node reached through an edge onto a merged entity is reported
+under the merged id, the anchor the edge was asserted with, exactly as the
+primary `entity_graph_walk` reports it (REQ-entity-graph-009).
+
 **Performance budget** [Inferred; measure before tuning]: p95 ≤ 500 ms for
 lookups and pages at current volumes; `statement_timeout` 2 s; per-tool cost
-bounded by the limits above.
+bounded by the limits above. A statement the timeout cancels is
+`unavailable` (D17).
 
 ### D11. Search is lexical in v1
 

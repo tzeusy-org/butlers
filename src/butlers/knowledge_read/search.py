@@ -272,6 +272,7 @@ async def _fetch_proposal(
     conn: asyncpg.Connection, context: ReadContext, item_id: str
 ) -> dict[str, Any]:
     """A proposal's state and decision time only: never its payload, note or submitter."""
+    _refuse_stale(context)
     try:
         proposal_id = str(uuid.UUID(item_id.removeprefix("proposal:")))
     except ValueError:
@@ -313,6 +314,8 @@ async def fetch(
     """
     args = Arguments(arguments, {"id"})
     item_id = args.text("id", max_length=256, required=True)
+    # D17 precedence: staleness refuses before any id is judged unknown.
+    _refuse_stale(context)
     if item_id.startswith("proposal:"):
         return await _fetch_proposal(conn, context, item_id)
     candidates = [

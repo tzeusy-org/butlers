@@ -195,11 +195,18 @@ def source_domains() -> dict[str, str]:
 
 
 async def in_snapshot(conn: asyncpg.Connection, read: Callable[[], Any]) -> Any:
-    """Run every query of one call in one read-only repeatable-read snapshot."""
-    if conn.is_in_transaction():
-        return await read()
-    async with conn.transaction(isolation="repeatable_read", readonly=True):
-        return await read()
+    """Run every query of one call in one read-only repeatable-read snapshot.
+
+    A query the host's ``statement_timeout`` cancels is ``unavailable`` (D17), never a raw
+    driver error: the 2 s budget bounds every reader that reads through here.
+    """
+    try:
+        if conn.is_in_transaction():
+            return await read()
+        async with conn.transaction(isolation="repeatable_read", readonly=True):
+            return await read()
+    except asyncpg.QueryCanceledError:
+        raise ReadError("unavailable") from None
 
 
 def fields(value: str | dict | None) -> dict[str, Any]:
