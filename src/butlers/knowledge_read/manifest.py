@@ -353,7 +353,8 @@ def _parse_manifest(raw: object, *, require_classes: bool = False) -> Manifest:
             raise ManifestError(f"{source}: finance/health key must be single column")
         identity = _strings(item.get("replica_identity"), source + " identity")
         if not set(key) <= set(identity) or not set(identity) <= set(cols):
-            raise ManifestError(f"{source}: incomplete identity columns")
+            missing = sorted((set(key) - set(identity)) | (set(identity) - set(cols)))
+            raise ManifestError(f"{source}: incomplete identity columns {missing}")
         uri = item.get("uri", "")
         tools = _strings(item.get("tools", []), source + " tools", nonempty=False)
         if not isinstance(uri, str) or (uri and not uri.startswith("butlers://")):
@@ -365,9 +366,13 @@ def _parse_manifest(raw: object, *, require_classes: bool = False) -> Manifest:
             raise ManifestError(f"{source}: time column omitted")
         filters = item.get("row_filter", {})
         if not isinstance(filters, dict) or not set(filters) <= set(cols):
-            raise ManifestError(f"{source}: filter column omitted")
+            raise ManifestError(
+                f"{source}: filter column omitted {sorted(set(filters) - set(cols))}"
+            )
         if not set(filters) <= set(identity):
-            raise ManifestError(f"{source}: filter omitted from identity")
+            raise ManifestError(
+                f"{source}: filter omitted from identity {sorted(set(filters) - set(identity))}"
+            )
         normalized = []
         for column, values in sorted(filters.items()):
             if (

@@ -14,7 +14,13 @@ from dataclasses import dataclass
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Connection
 
-from butlers.db_authority.grants import PUBLIC_RELATIONS, TABLE_PRIVILEGES, expected_privileges
+from butlers.db_authority.grants import (
+    PROJECTION_PUBLISHER,
+    PUBLIC_RELATIONS,
+    TABLE_PRIVILEGES,
+    expected_privileges,
+    publisher_relations,
+)
 from butlers.db_authority.roles import runtime_roles
 
 _PRIVILEGE_COLUMNS = ",\n".join(
@@ -109,6 +115,34 @@ def diff_public_catalog(
         f"manifest relation absent from catalog: {name}"
         for name in PUBLIC_RELATIONS
         if name not in present_rows and name not in allowed
+    )
+    return problems
+
+
+def diff_publisher_catalog(catalog: PublicCatalog, *, published: bool) -> list[str]:
+    """Diff the projection publisher's ``public`` privileges against its declaration.
+
+    ``catalog`` comes from ``read_public_catalog(conn, (PROJECTION_PUBLISHER,))``. The role is
+    CNPG-managed, so where it does not exist (Compose, testcontainers) there is nothing to
+    compare. ``published`` says whether publication ``butlers_public_v1`` exists: the sync
+    grants ``SELECT`` on its tables only, so before it exists the publisher holds nothing.
+    """
+    if PROJECTION_PUBLISHER not in catalog.present_roles:
+        return []
+    declared = publisher_relations() if published else frozenset()
+    problems = []
+    seen = set()
+    for (relation, role), held in sorted(catalog.privileges.items()):
+        if role != PROJECTION_PUBLISHER:
+            continue
+        row = catalog.parents.get(relation, relation)
+        seen.add(row)
+        wanted = frozenset({"SELECT"}) if row in declared else frozenset()
+        if held != wanted:
+            problems.append(f"{relation} {role}: manifest {_fmt(wanted)} catalog {_fmt(held)}")
+    problems.extend(
+        f"publisher relation absent from catalog: {relation}"
+        for relation in sorted(declared - seen)
     )
     return problems
 

@@ -131,3 +131,72 @@ def test_replay_widened_rows_record_intent_and_the_replay_result() -> None:
     assert expected_privileges("user_context") == expected_privileges(
         "user_context", after_init_db_replay=True
     )
+
+
+# --- The projection publisher is a declared principal outside the runtime fleet ---
+
+
+def _publisher_catalog(rows: dict[str, frozenset[str]], parents=None, *, present=True):
+    from butlers.db_authority.grants import PROJECTION_PUBLISHER
+
+    return PublicCatalog(
+        {(rel, PROJECTION_PUBLISHER): privs for rel, privs in rows.items()},
+        dict(parents or {}),
+        frozenset({PROJECTION_PUBLISHER}) if present else frozenset(),
+    )
+
+
+def test_publisher_is_declared_outside_the_runtime_fleet() -> None:
+    from butlers.db_authority.grants import PROJECTION_PUBLISHER, publisher_relations
+    from butlers.knowledge_read.manifest import load_manifest
+
+    assert PROJECTION_PUBLISHER == "butlers_projection_publisher"
+    assert PROJECTION_PUBLISHER not in _ROLES
+    published = {
+        t.source.split(".", 1)[1] for t in load_manifest().tables if t.source.startswith("public.")
+    }
+    assert publisher_relations() == published
+    assert published == {"entities", "entity_graph_edges", "entity_graph_withheld_counts"}
+    assert published <= PUBLIC_RELATIONS.keys()
+
+
+def test_publisher_holds_select_on_exactly_the_published_public_tables() -> None:
+    from butlers.db_authority.catalog import diff_publisher_catalog
+    from butlers.db_authority.grants import publisher_relations
+
+    rows = {rel: frozenset() for rel in PUBLIC_RELATIONS}
+    rows.update({rel: frozenset({"SELECT"}) for rel in publisher_relations()})
+    assert diff_publisher_catalog(_publisher_catalog(rows), published=True) == []
+    # Before reconcile creates the publication, it holds nothing at all.
+    assert (
+        diff_publisher_catalog(_publisher_catalog({"entities": frozenset()}), published=False) == []
+    )
+
+
+def test_publisher_widening_or_narrowing_is_named() -> None:
+    from butlers.db_authority.catalog import diff_publisher_catalog
+    from butlers.db_authority.grants import publisher_relations
+
+    rows = {rel: frozenset({"SELECT"}) for rel in publisher_relations()}
+    rows["audit_log"] = frozenset({"SELECT"})
+    rows["entities"] = frozenset({"SELECT", "UPDATE"})
+    del rows["entity_graph_edges"]
+    assert diff_publisher_catalog(_publisher_catalog(rows), published=True) == [
+        "audit_log butlers_projection_publisher: manifest - catalog SELECT",
+        "entities butlers_projection_publisher: manifest SELECT catalog SELECT,UPDATE",
+        "publisher relation absent from catalog: entity_graph_edges",
+    ]
+
+
+def test_publisher_grants_before_publication_exists_are_refused() -> None:
+    from butlers.db_authority.catalog import diff_publisher_catalog
+
+    assert diff_publisher_catalog(
+        _publisher_catalog({"entities": frozenset({"SELECT"})}), published=False
+    ) == ["entities butlers_projection_publisher: manifest - catalog SELECT"]
+
+
+def test_publisher_absent_is_not_a_difference_where_cnpg_roles_do_not_exist() -> None:
+    from butlers.db_authority.catalog import diff_publisher_catalog
+
+    assert diff_publisher_catalog(_publisher_catalog({}, present=False), published=True) == []

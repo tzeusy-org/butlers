@@ -1640,3 +1640,266 @@ def test_malformed_foreign_or_conflicting_journal_refuses_without_cleanup(copied
         with topology.admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
             conn.exec_driver_sql("DROP SUBSCRIPTION mcp_e_foreign")
         _apply(topology, projection, manifest)
+
+
+def _canary_hits(projection, needle):
+    """Every projection relation (tables, views) whose rows mention ``needle``; names only."""
+    hits = []
+    with projection.connect() as conn:
+        relations = conn.execute(
+            text(
+                "SELECT n.nspname,c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+                "WHERE c.relkind IN ('r','p','v','m') AND n.nspname NOT LIKE 'pg\\_%' "
+                "AND n.nspname<>'information_schema' ORDER BY 1,2"
+            )
+        ).all()
+        for schema, relation in relations:
+            found = conn.execute(
+                text(f'SELECT count(*) FROM "{schema}"."{relation}" t WHERE t::text LIKE :p'),
+                {"p": f"%{needle}%"},
+            ).scalar_one()
+            if found:
+                hits.append(f"{schema}.{relation}")
+    return hits
+
+
+def _full_resync(topology, projection, manifest):
+    """Drop the slot behind a disabled subscription so the owner step truncates and re-copies."""
+    with projection.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.exec_driver_sql("ALTER SUBSCRIPTION butlers_public_sub DISABLE")
+    _wait(
+        lambda: _scalar(
+            topology.admin,
+            "SELECT active_pid IS NULL FROM pg_replication_slots WHERE slot_name='butlers_public_sub'",
+        )
+    )
+    with topology.admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.exec_driver_sql("SELECT pg_drop_replication_slot('butlers_public_sub')")
+    _run(topology, render_owner_program(manifest))
+    _wait(lambda: _ready(projection, manifest.digest))
+
+
+def test_canaries_in_excluded_sources_are_absent_after_a_full_sync(copied):
+    """Drift check 4 (RFC 0039 D4, D15): fake secrets planted in excluded sources never arrive."""
+    topology, projection, manifest = copied
+    stamp = uuid.uuid4().hex
+    tag = {k: f"{stamp}-{k}" for k in (
+        "secret", "entity_info", "pii_fact", "contact_fact", "api_token", "portal_password",
+        "source_value", "control",
+    )}  # fmt: skip
+    ids = {}
+    try:
+        with topology.engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO public.butler_secrets(secret_key,secret_value) VALUES (:k,:v)"),
+                {"k": "canary-" + stamp, "v": tag["secret"]},
+            )
+            ids["entity"] = conn.execute(
+                text(
+                    "INSERT INTO public.entities(canonical_name,entity_type,metadata) "
+                    "VALUES ('Canary person','person',CAST(:m AS jsonb)) RETURNING id"
+                ),
+                {"m": json.dumps({"source_channel": "x", "source_value": tag["source_value"]})},
+            ).scalar_one()
+            conn.execute(
+                text(
+                    "INSERT INTO public.entity_info(entity_id,type,value,secured) "
+                    "VALUES (:e,'canary',:v,true)"
+                ),
+                {"e": ids["entity"], "v": tag["entity_info"]},
+            )
+            ids["pii"] = conn.execute(
+                text(
+                    "INSERT INTO general.facts(subject,predicate,content,sensitivity,validity) "
+                    "VALUES ('Canary','note',:c,'pii','active') RETURNING id"
+                ),
+                {"c": tag["pii_fact"]},
+            ).scalar_one()
+            ids["control"] = conn.execute(
+                text(
+                    "INSERT INTO general.facts(subject,predicate,content,sensitivity,validity) "
+                    "VALUES ('Canary control','note',:c,'normal','active') RETURNING id"
+                ),
+                {"c": tag["control"]},
+            ).scalar_one()
+            ids["contact"] = conn.execute(
+                text(
+                    "INSERT INTO relationship.entity_facts(subject,predicate,object,object_kind,src) "
+                    "VALUES (:e,'contact_phone',:o,'literal','canary') RETURNING id"
+                ),
+                {"e": ids["entity"], "o": tag["contact_fact"]},
+            ).scalar_one()
+            ids["account"] = conn.execute(
+                text(
+                    "INSERT INTO finance.accounts(institution,name,type,currency) "
+                    "VALUES ('Canary','Canary account','checking','USD') RETURNING id"
+                )
+            ).scalar_one()
+            ids["category"] = "canary-" + stamp
+            conn.execute(
+                text("INSERT INTO finance.categories(name,display_name) VALUES (:n,'Canary')"),
+                {"n": ids["category"]},
+            )
+            ids["transaction"] = conn.execute(
+                text(
+                    "INSERT INTO finance.transactions(account_id,posted_at,merchant,amount,currency,"
+                    "direction,category,metadata) VALUES (:a,clock_timestamp(),'Canary merchant',1,"
+                    "'USD','debit',:c,CAST(:m AS jsonb)) RETURNING id"
+                ),
+                {
+                    "a": ids["account"],
+                    "c": ids["category"],
+                    "m": json.dumps({"api_token": tag["api_token"]}),
+                },
+            ).scalar_one()
+            ids["health"] = conn.execute(
+                text(
+                    "INSERT INTO health.facts(subject,predicate,content,sensitivity,validity,metadata) "
+                    "VALUES ('Canary','measurement_weight','70','normal','active',CAST(:m AS jsonb)) "
+                    "RETURNING id"
+                ),
+                {"m": json.dumps({"portal_password": tag["portal_password"], "value": {"ok": 1}})},
+            ).scalar_one()
+        _full_resync(topology, projection, manifest)
+        # The scan is not vacuous: the one published neighbor is found, by name.
+        assert _canary_hits(projection, tag["control"]) != []
+        assert "general.facts" in _canary_hits(projection, tag["control"])
+        leaked = {
+            label: _canary_hits(projection, value)
+            for label, value in tag.items()
+            if label != "control"
+        }
+        assert {label: hits for label, hits in leaked.items() if hits} == {}
+        # Red 1: the detector names the relation when a canary is in the projection.
+        planted = uuid.uuid4()
+        with projection.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO finance.accounts(id,institution,type,currency,name) "
+                    "VALUES (:i,'Synthetic','checking','USD',:n)"
+                ),
+                {"i": planted, "n": tag["secret"]},
+            )
+        try:
+            assert "finance.accounts" in _canary_hits(projection, tag["secret"])
+        finally:
+            with projection.begin() as conn:
+                conn.execute(text("DELETE FROM finance.accounts WHERE id=:i"), {"i": planted})
+        assert _canary_hits(projection, tag["secret"]) == []
+        # Red 2: a manifest edit that would publish pii facts is refused before any sync.
+        facts = next(t for t in manifest.tables if t.source == "general.facts")
+        widened = replace(
+            facts,
+            filters=tuple(
+                (c, ("normal", "pii") if c == "sensitivity" else v) for c, v in facts.filters
+            ),
+        )
+        bad = replace(manifest, tables=tuple(widened if t is facts else t for t in manifest.tables))
+        with pytest.raises(ManifestError, match="unsafe privacy filter"):
+            _reconcile(topology, bad)
+    finally:
+        with topology.engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM public.butler_secrets WHERE secret_key=:k"),
+                {"k": "canary-" + stamp},
+            )
+            for sql, key in (
+                ("DELETE FROM health.facts WHERE id=:v", "health"),
+                ("DELETE FROM finance.transactions WHERE id=:v", "transaction"),
+                ("DELETE FROM finance.categories WHERE name=:v", "category"),
+                ("DELETE FROM finance.accounts WHERE id=:v", "account"),
+                ("DELETE FROM relationship.entity_facts WHERE id=:v", "contact"),
+                ("DELETE FROM general.facts WHERE id=:v", "control"),
+                ("DELETE FROM general.facts WHERE id=:v", "pii"),
+                ("DELETE FROM public.entities WHERE id=:v", "entity"),
+            ):
+                if key in ids:
+                    conn.execute(text(sql), {"v": ids[key]})
+        _apply(topology, projection, manifest)
+        _barrier(topology, projection)
+
+
+def test_primary_isolation_grants_stats_connection_limit_and_credential_custody(copied):
+    """Task 1.8, primary half: grants, stats role, connection limit, who holds a password."""
+    from butlers.db_authority.catalog import diff_publisher_catalog, read_public_catalog
+    from butlers.db_authority.grants import PROJECTION_PUBLISHER
+
+    topology, projection, manifest = copied
+    readers = ("mcp_public_ro", "mcp_proposals_reader")
+    acl = (
+        "SELECT d.datname,a.grantee,a.privilege_type FROM pg_database d, "
+        "LATERAL aclexplode(COALESCE(d.datacl, acldefault('d', d.datdba))) a"
+    )
+    with topology.admin.connect() as conn:
+        grants = conn.execute(text(acl)).all()
+        oids = dict(
+            conn.execute(
+                text("SELECT rolname,oid FROM pg_roles WHERE rolname=ANY(:r)"), {"r": list(readers)}
+            ).all()
+        )
+        # CONNECT on the projection is not open to PUBLIC; the readers hold it only there.
+        assert not [
+            g for g in grants if g[0] == "butlers_public" and g[1] == 0 and g[2] == "CONNECT"
+        ]
+        for role, oid in oids.items():
+            assert {d for d, grantee, p in grants if grantee == oid and p == "CONNECT"} <= {
+                "butlers_public"
+            }, role
+            assert not conn.execute(
+                text("SELECT pg_has_role(:r,'pg_read_all_stats','MEMBER')"), {"r": role}
+            ).scalar_one()
+        # Custody: both readers hold a SCRAM verifier and different ones; the publisher none.
+        verifiers = conn.execute(
+            text(
+                "SELECT rolname,rolpassword LIKE 'SCRAM-SHA-256$%' FROM pg_authid WHERE rolname=ANY(:r)"
+            ),
+            {"r": list(readers)},
+        ).all()
+        assert dict(verifiers) == dict.fromkeys(readers, True)
+        assert (
+            conn.execute(
+                text("SELECT count(DISTINCT rolpassword) FROM pg_authid WHERE rolname=ANY(:r)"),
+                {"r": list(readers)},
+            ).scalar_one()
+            == 2
+        )
+        assert conn.execute(
+            text("SELECT rolpassword IS NULL FROM pg_authid WHERE rolname=:p"),
+            {"p": PROJECTION_PUBLISHER},
+        ).scalar_one()
+        assert (
+            conn.execute(
+                text("SELECT rolconnlimit FROM pg_roles WHERE rolname='mcp_public_ro'")
+            ).scalar_one()
+            == 10
+        )
+        # The publisher's table privileges are exactly its declaration.
+        assert (
+            diff_publisher_catalog(
+                read_public_catalog(conn, (PROJECTION_PUBLISHER,)), published=True
+            )
+            == []
+        )
+    # Red: an extra publisher grant is named, then removed.
+    with topology.admin.begin() as conn:
+        conn.exec_driver_sql(f"GRANT SELECT ON public.audit_log TO {PROJECTION_PUBLISHER}")
+    try:
+        with topology.admin.connect() as conn:
+            assert diff_publisher_catalog(
+                read_public_catalog(conn, (PROJECTION_PUBLISHER,)), published=True
+            ) == [f"audit_log {PROJECTION_PUBLISHER}: manifest - catalog SELECT"]
+    finally:
+        with topology.admin.begin() as conn:
+            conn.exec_driver_sql(f"REVOKE SELECT ON public.audit_log FROM {PROJECTION_PUBLISHER}")
+    # The limit is enforced: ten sessions fit, the eleventh is refused.
+    engine = topology.reader_engine("mcp_public_ro")
+    held = []
+    try:
+        for _ in range(10):
+            held.append(engine.connect())
+        with pytest.raises(DBAPIError, match="too many connections for role"):
+            engine.connect()
+    finally:
+        for conn in held:
+            conn.close()
+        engine.dispose()
