@@ -1,9 +1,11 @@
 # Goal Runner
 
-> **Status:** first package of RFC 0038 M3 (bead `bu-u5s4w8`). The runner, goal tools, delegation,
-> budgets, Stop and recovery exist and are tested against Postgres. They are **not yet wired** to
-> admission/ingress (M6), and the session host is a protocol whose production adapter is still
-> open (see [Not yet delivered](#not-yet-delivered)).
+> **Status:** RFC 0038 M3 (bead `bu-u5s4w8`) plus the M6 control-plane seams (`bu-dhloi1.206`).
+> The runner, goal tools, delegation, budgets, Stop and recovery exist and are tested against
+> Postgres. `GoalRuntime` joins admission, periodic supervision and owner Stop to the runner, and
+> `ControlSessionHost` stages each launch's model credential over the session-host control
+> channel. All of it stays **dark** behind `GoalRuntimeSwitch` (default off): nothing constructs a
+> runtime yet, and no ingress calls it (see [Not yet delivered](#not-yet-delivered)).
 >
 > **Design contract:** [RFC 0038](../../about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md)
 > D8 (goal tools), D9 (delegation), D10 (budgets), D11 (state machines), D14 (Stop, recovery,
@@ -26,6 +28,34 @@ serialises with Stop.
 | `tools.py` | `GoalTools`: the `goal__*` and `context__search` MCP tools, listed by invocation depth |
 | `context_search.py` | `ContextSearch`: the closed query, grant-scoped fan-out, fusion and the bounded envelope |
 | `contracts.py` | `SessionHost` protocol, `Launch`, `HostOutcome`, prompt-composer protocol |
+| `control_plane.py` | `GoalRuntime`: admission to launch, the periodic sweep, owner Stop; `GoalRuntimeSwitch` |
+| `staging.py` | `ControlSessionHost` (the `SessionHost` over the control channel), `ModelCredentials` |
+
+## Control-plane wiring (M6, dark)
+
+- **Admission to launch.** `GoalRuntime.admit(source, attempt_id)` calls
+  `GoalAdmission.admit_submission` and starts an `admitted` goal's lead. Admission is idempotent
+  per attempt and a duplicate start opens nothing, so a retried submission is safe. A `joined`
+  reply is delivered to the goal inbox by admission and starts nothing. Admission commits before
+  the start, so a process that dies in between leaves the goal `admitted` with no lead: the sweep
+  starts any such goal older than `resume_grace_seconds`.
+- **Supervision.** `GoalRuntime.start()` runs `supervise_once` every `supervise_every` seconds
+  (default 15). A failed sweep is logged and the next one runs. The switchboard daemon starts it
+  at startup (step 16d) when trusted construction set `daemon.goal_runtime` and its switch is on,
+  and `close()` runs at shutdown (step 2d, after the scheduler loop stops): supervision stops
+  and in-flight launches are abandoned, not terminated. Their leases lapse and the next runtime's sweep fences and replaces them.
+- **Owner Stop.** `GoalRuntime.stop(goal_id)` is the single entry to `GoalRunner.stop_goal`. It
+  returns `StopResult("stopped", n)` when this call fenced the goal, else `"not_running"`
+  (terminal or unknown goal; anything of it still live is still fenced).
+- **Credential staging (D3).** `ControlSessionHost.launch` resolves the launch's one model
+  credential from the credential store at launch time (`ModelCredentials`; both reviewed
+  session-host profiles use `cli-auth/openai`) and sends it with the launch command; nothing else
+  of the store is read or sent. A runtime with no reviewed profile, or a missing credential, raises
+  `CredentialUnavailable`, a `NotInvoked` refusal: the goal fails with no model run, and the
+  breaker never counts it. Any reply but a bare `completed` is a reported runtime failure.
+  `terminate` sends `revoke`. A launch whose send fails (including a reply lost to the channel's
+  read timeout) is revoked before it is reported `session_host_unavailable`, so the host frees
+  the credential and its active slot.
 
 Migration `sw_062` (`roster/switchboard/migrations/062_goal_runner.py`) adds the per-invocation
 budget share, deadline, model binding, relaunch lineage and closed `end_reason` to
@@ -187,7 +217,13 @@ brief text, arguments or results.
 ## Not yet delivered
 
 - `guidance.search` / `guidance.load` (M4), and the per-domain `ContextSource` adapters for `context.search`.
-- The production session-host adapter and runtime usage relay (depends on `bu-kiuh8v`).
+- The deployed session host and runtime usage relay (`bu-kiuh8v`). Its control listener today runs
+  one invocation at a time, answers only `completed`/`refused` (no failure class or usage), and
+  its client reads replies with a 3 s timeout, shorter than any launch.
+- Constructing the runtime in the control plane: a live `Broker` needs the signing key and the
+  isolated `butlers-control` process (`bu-jnhxc5`).
+- Calling `GoalRuntime.admit` from ingress, confirms and obligations, and an owner Stop surface
+  (the D19 dashboard change, or a control-plane service route).
+- Waking a goal whose inbox received a `joined` reply.
 - `awaiting_approval` and parked-wait continuation (`bu-dhloi1.7`).
 - The four-section starting-context packet; `MinimalComposer` is a placeholder.
-- Wiring to admission and ingress (M6), and per-invocation model credential staging.

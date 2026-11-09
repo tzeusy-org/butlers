@@ -269,6 +269,9 @@ class ButlerDaemon:
         self.switchboard_client: MCPClient | None = None
         self._pipeline: MessagePipeline | None = None
         self._buffer: Any = None  # DurableBuffer instance (switchboard only)
+        # RFC 0038 M6 goal runtime (GoalRuntime). Dark: set only by trusted
+        # control-plane construction; started when its switch is on.
+        self.goal_runtime: Any = None
         # Pool for daemon audit writes to public.audit_log. Set during startup.
         self._audit_pool: asyncpg.Pool | None = None
         self._shared_credentials_db: Database | None = None

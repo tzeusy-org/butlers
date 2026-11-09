@@ -494,6 +494,11 @@ class GoalRunner:
 
     async def stop(self, goal_id: UUID) -> int:
         """Owner Stop: fence in one transaction, terminate, cancel parked effects."""
+        stopped, terminated = await self.stop_goal(goal_id)
+        return terminated if stopped else 0
+
+    async def stop_goal(self, goal_id: UUID) -> tuple[bool, int]:
+        """Owner Stop; ``(whether this call stopped the goal, live invocations ended)``."""
         with _tracer.start_as_current_span(
             "goal.stop", record_exception=False, set_status_on_exception=False
         ) as span:
@@ -503,7 +508,17 @@ class GoalRunner:
             await self._terminate_all(live)
             if stopped:
                 await self._cancel_parked(goal_id)
-            return len(live) if stopped else 0
+            return stopped, len(live)
+
+    async def abandon(self) -> None:
+        """Shutdown: cancel every supervised invocation's supervision, then wait for it.
+
+        The invocations are not terminated here: their leases stop renewing and
+        lapse, and the next runner's sweep fences and replaces them (D14).
+        """
+        for task in tuple(self._tasks):
+            task.cancel()
+        await self.drain()
 
     async def _cancel_parked(self, goal_id: UUID) -> None:
         try:
@@ -514,7 +529,12 @@ class GoalRunner:
             logger.warning("goal runner parked-effect cancel unavailable goal=%s", goal_id)
 
     async def supervise_once(self) -> None:
-        """One sweep: lapsed leases, deadlines, ended goals, settling goals."""
+        """One sweep: unlaunched admissions, lapsed leases, deadlines, ended and settling goals."""
+        async with self._txn() as ledger:
+            unlaunched = await ledger.unlaunched(self.config.resume_grace_seconds)
+        for goal_id in unlaunched:
+            # A duplicate of a start still in flight is a no-op (lead_wanted).
+            self.start_goal(goal_id)
         async with self._txn() as ledger:
             lapsed = await ledger.lapsed()
         for goal_id, invocation_id in lapsed:
