@@ -32,6 +32,7 @@ from butlers.core.model_call import AttemptOutcome, AttemptSink, CallSpec, Candi
 from .contracts import (
     Brief,
     GoalEnded,
+    HostAtCapacity,
     HostOutcome,
     InvocationBudgetExhausted,
     Launch,
@@ -65,6 +66,9 @@ class RunnerConfig:
     # How long a running goal may sit without a live lead before the sweep
     # resumes it; an in-process successor opens well inside this.
     resume_grace_seconds: float = 90
+    # How long a goal may wait for room on the session host, from its first lead
+    # the host turned away; the sweep offers the launch again until then.
+    busy_defer_seconds: float = 900
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +84,8 @@ class _Plan:
     summary: bool = False
     relaunch_of: UUID | None = None
     """A sweep-resumed relaunch: it is the failed lead's one relaunch (D14)."""
+    relaunch_spent: bool = False
+    """Replaces a relaunch the host had no room for: it is that relaunch, so none follows."""
 
 
 class _HostedAttempt:
@@ -231,6 +237,11 @@ class GoalRunner:
             attempts.append(started.invocation_id)
             adapter.last_process_info = {"runtime_type": candidate.runtime_type}
             outcome = await self._launch(plan, started, candidate)
+            if isinstance(outcome.failure, HostAtCapacity):
+                # Nothing ran: no failure to count, nothing to charge, no relaunch.
+                async with self._txn() as ledger:
+                    await ledger.defer(plan.goal_id, started.invocation_id)
+                raise outcome.failure
             if outcome.usage:
                 # The host's settled counts (D10), charged before the relaunch decision,
                 # so a run that spent the budget is never relaunched.
@@ -255,7 +266,7 @@ class GoalRunner:
             tier=plan.tier,
             exact_tier=True,
             # A sweep-resumed relaunch already is the failed lead's one relaunch.
-            max_relaunches=0 if plan.relaunch_of is not None else 1,
+            max_relaunches=0 if plan.relaunch_of is not None or plan.relaunch_spent else 1,
             redact_failures=True,
             usage_purpose="goal",
             caller="goal_runner",
@@ -276,6 +287,11 @@ class GoalRunner:
                     plan.role,
                     unopened[-1],
                 )
+                return
+            if isinstance(error, HostAtCapacity):
+                # The invocation ended launch_failed; a lead's goal stays running
+                # for the sweep to launch again (bounded), a child's is its lead's.
+                logger.info("goal runner launch deferred goal=%s role=%s", plan.goal_id, plan.role)
                 return
             await self._after_failure(plan, attempts, error)
             return
@@ -605,6 +621,18 @@ class GoalRunner:
         plan: _Plan | None = None
         if item.end_reason == "lease_lapsed":
             plan = _Plan(item.goal_id, item.role, tier, 0, summary=True)
+        elif item.end_reason == "launch_failed":
+            # The host had no room: offer the same lead again until the bound.
+            waited = item.deferred_seconds or 0.0
+            if waited <= self.config.busy_defer_seconds:
+                plan = _Plan(
+                    item.goal_id,
+                    item.role,
+                    tier,
+                    0,
+                    summary=True,
+                    relaunch_spent=item.relaunch_spent,
+                )
         elif item.end_reason == "escalated":
             target = await next_tier(self.catalog_pool, self.ladders, item.role, tier)
             if target is not None:

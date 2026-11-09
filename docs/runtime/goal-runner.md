@@ -63,8 +63,9 @@ serialises with Stop.
     (cached input is part of input) to the invocation and goal budgets through `record_usage`
     before deciding on a relaunch, so a run that spent its budget is never relaunched.
   - `refused` with `reason: host_busy` (the host at its concurrency bound, the id not burned) is
-    offered again with the same invocation id, with backoff; a host that stays busy raises
-    `SessionHostBusy`, a `NotInvoked` refusal. A bare `refused` is non-retryable
+    offered again with the same invocation id, with backoff (2, 4, 8 s); a host that stays busy
+    raises `SessionHostBusy`, a `HostAtCapacity` refusal the runner defers (see Stop, recovery and relaunch). A
+    bare `refused` is non-retryable
     `session_host_refused`.
   - Anything else, including `usage` the host itself would not send (a non-`int` or `bool` count,
     a negative or over-2^53 one, an unknown key), is `session_host_malformed_reply`; no reply
@@ -248,6 +249,16 @@ Budgets fail closed and are charged atomically inside the broker's per-call tran
   `budget_exhausted` after a lead's turns or tokens ran out, otherwise `failed`. The failure class
   is not persisted, so a sweep relaunch cannot apply the retryable classifier: it applies the two
   ledger rules only.
+- **A host with no room defers the launch.** When the session host stays at its concurrency bound
+  through every re-offer (`HostAtCapacity`), nothing ran: the invocation ends `failed` with
+  `launch_failed`, its invocation goes back to the budget, the kernel records a `suppressed`
+  attempt (never a runtime failure, never a relaunch), and nothing is charged. A child's lead
+  keeps running and sees the child failed. A lead's goal stays `running`, and the sweep above
+  offers the same role and tier again at the next epoch, until `busy_defer_seconds` (default
+  900) have passed since the first lead in the unbroken run the host turned away; after that the
+  goal ends `failed`. A lead that replaces a turned-away relaunch is that relaunch, so it gets
+  none of its own. Stop during a deferral wins: a stopped goal is never resumed, and a Stop during
+  the re-offers keeps the invocation's `stopped` end.
 
 ## Roles, tiers and ladders (D16)
 

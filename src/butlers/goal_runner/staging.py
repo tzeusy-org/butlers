@@ -27,7 +27,7 @@ from uuid import UUID
 
 from butlers.core.model_call import NotInvoked
 
-from .contracts import HostOutcome, Launch
+from .contracts import HostAtCapacity, HostOutcome, Launch
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +76,11 @@ class SessionHostTimeout(SessionHostFailed, TimeoutError):
     """
 
 
-class SessionHostBusy(NotInvoked, RuntimeError):
+class SessionHostBusy(HostAtCapacity):
     """Every offer of the launch met a host at its concurrency bound; nothing started.
 
-    A ``NotInvoked`` refusal, like ``CredentialUnavailable``: no model ran.
+    A ``NotInvoked`` refusal, like ``CredentialUnavailable``: no model ran. The
+    runner defers the launch rather than failing the goal (``HostAtCapacity``).
     """
 
 

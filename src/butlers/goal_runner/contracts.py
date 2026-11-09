@@ -33,6 +33,15 @@ class InvocationBudgetExhausted(NotInvoked, RuntimeError):
     """
 
 
+class HostAtCapacity(NotInvoked, RuntimeError):
+    """The session host had no room for the launch, so nothing of it ran.
+
+    A transient refusal, not a failure of the goal: the runner ends the
+    invocation ``launch_failed``, returns its invocation to the budget and leaves
+    a lead's goal for the supervise sweep to launch again (bu-dhloi1.265).
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class Launch:
     """One finite invocation for the session host (RFC 0038 D3)."""

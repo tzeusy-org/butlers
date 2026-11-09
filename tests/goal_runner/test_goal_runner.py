@@ -32,6 +32,7 @@ from butlers.core.model_call import AttemptSink
 from butlers.core.model_routing import CeilingStatus, QuotaStatus, SpendRoutingResult
 from butlers.goal_runner.contracts import HostOutcome, Launch
 from butlers.goal_runner.runner import GoalRunner, RunnerConfig
+from butlers.goal_runner.staging import SessionHostBusy
 from butlers.goal_runner.tools import GoalTools
 from tests.capability_broker.test_broker_ledger import (
     NOTIFY,
@@ -1070,6 +1071,145 @@ async def test_a_lead_past_its_turns_ends_its_goal_budget_exhausted(broker_db_ur
         await h.runner.supervise_once()
         assert await h.goal_status(goal) == "budget_exhausted"
         assert len(h.host.launches) == 1
+
+
+# -- a session host at its concurrency bound defers a launch (bu-dhloi1.265) -----
+
+
+def _busy() -> HostOutcome:
+    return HostOutcome(failure=SessionHostBusy("session_host_busy"))
+
+
+async def _deferred(h: Harness, launch: Launch) -> None:
+    """The busy launch's supervision is over: its invocation ended, nothing else."""
+    await until(lambda: _equals(_status(h, launch.invocation_id), "failed"))
+    await until(lambda: len(h.runner._tasks) == 0)
+
+
+async def test_a_lead_the_host_had_no_room_for_leaves_its_goal_for_the_sweep(broker_db_url):
+    async with harness(broker_db_url, config=_RESUMING) as h:
+        goal = await h.goal(_grant(SEARCH))
+        h.host.script = [_busy()]
+        busy = await h.lead(goal)
+        await _deferred(h, busy)
+        row = await h.row(busy.invocation_id)
+        assert (row["end_reason"], row["token_hash"]) == ("launch_failed", None)
+        assert await h.goal_status(goal) == "running"  # not failed: resumable
+        budget = await h.budget(goal)
+        assert (budget["used_invocations"], budget["used_tokens"]) == (0, 0)  # nothing charged
+        assert h.sink.outcomes == ["suppressed"]  # never a runtime failure, never relaunched
+        assert len(h.host.launches) == 1
+        await h.runner.supervise_once()  # the host has room now
+        lead = await h.launched(2)
+        row = await h.row(lead.invocation_id)
+        assert (row["status"], row["lead_epoch"], row["model_tier"]) == ("running", 1, "workhorse")
+        assert (await h.budget(goal))["used_invocations"] == 1
+
+
+async def test_a_lead_deferred_past_its_bound_ends_its_goal(broker_db_url):
+    config = RunnerConfig(
+        renew_every=3600, lead_max_tokens=500, resume_grace_seconds=0, busy_defer_seconds=0
+    )
+    async with harness(broker_db_url, config=config) as h:
+        goal = await h.goal(_grant(SEARCH))
+        h.host.script = [_busy(), _busy()]
+        busy = await h.lead(goal)
+        await _deferred(h, busy)
+        await h.runner.supervise_once()
+        assert await h.goal_status(goal) == "failed"
+        await until(lambda: len(h.runner._tasks) == 0)
+        assert len(h.host.launches) == 1
+
+
+async def test_deferral_is_bounded_from_the_first_busy_lead_not_the_last(broker_db_url):
+    config = RunnerConfig(
+        renew_every=3600, lead_max_tokens=500, resume_grace_seconds=0, busy_defer_seconds=60
+    )
+    async with harness(broker_db_url, config=config) as h:
+        goal = await h.goal(_grant(SEARCH))
+        h.host.script = [_busy(), _busy()]
+        first = await h.lead(goal)
+        await _deferred(h, first)
+        await h.runner.supervise_once()
+        second = await h.launched(2)
+        await _deferred(h, second)
+        # The goal has waited on the host since its first busy lead; age that one.
+        await h.w.owner.execute(
+            "UPDATE switchboard.invocations SET created_at = now() - interval '61 seconds' "
+            "WHERE id = $1",
+            first.invocation_id,
+        )
+        await h.runner.supervise_once()
+        assert await h.goal_status(goal) == "failed"
+        await until(lambda: len(h.runner._tasks) == 0)
+        assert len(h.host.launches) == 2
+
+
+async def test_a_busy_relaunch_is_replaced_but_never_earns_a_second_relaunch(broker_db_url):
+    async with harness(broker_db_url, config=_RESUMING) as h:
+        goal = await h.goal(_grant(SEARCH))
+        # The lead fails (no call): its one relaunch finds the host busy.
+        h.host.script = [HostOutcome(failure=_retryable()), _busy()]
+        first = await h.lead(goal)
+        relaunch = await h.launched(2)
+        await _deferred(h, relaunch)
+        assert (await h.row(relaunch.invocation_id))["relaunch_of"] == first.invocation_id
+        assert await h.goal_status(goal) == "running"
+        h.host.script = [HostOutcome(failure=_retryable())]  # the replacement fails too
+        await h.runner.supervise_once()
+        await h.launched(3)
+        await until(lambda: _equals(h.goal_status(goal), "failed"))
+        await h.runner.supervise_once()
+        await until(lambda: len(h.runner._tasks) == 0)
+        assert len(h.host.launches) == 3  # the relaunch ran once; nothing after it
+
+
+async def test_stop_during_a_deferral_wins(broker_db_url):
+    async with harness(broker_db_url, config=_RESUMING) as h:
+        goal = await h.goal(_grant(SEARCH))
+        h.host.script = [_busy()]
+        busy = await h.lead(goal)
+        await _deferred(h, busy)
+        await h.runner.stop(goal)
+        await h.runner.supervise_once()
+        assert await h.goal_status(goal) == "stopped"
+        await until(lambda: len(h.runner._tasks) == 0)
+        assert len(h.host.launches) == 1
+
+
+async def test_stop_while_the_host_is_still_being_offered_the_launch_wins(broker_db_url):
+    async with harness(broker_db_url, config=_RESUMING) as h:
+        goal = await h.goal(_grant(SEARCH))
+
+        async def stopped_while_busy(launch: Launch) -> HostOutcome:
+            await h.runner.stop(goal)
+            return _busy()
+
+        h.host.script = [stopped_while_busy]
+        busy = await h.lead(goal)
+        await until(lambda: len(h.runner._tasks) == 0)
+        row = await h.row(busy.invocation_id)
+        assert (row["status"], row["end_reason"]) == ("stopped", "stopped")
+        await h.runner.supervise_once()
+        assert await h.goal_status(goal) == "stopped"
+        await until(lambda: len(h.runner._tasks) == 0)
+        assert len(h.host.launches) == 1
+
+
+async def test_a_child_the_host_had_no_room_for_never_fails_its_lead(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEARCH))
+        h.host.script = [None, _busy()]
+        lead = await h.lead(goal)
+        child = await h.delegate(goal, lead.token, SEARCH.identity, calls=2)
+        await until(lambda: _equals(_status(h, child), "failed"))
+        assert (await h.row(child))["end_reason"] == "launch_failed"
+        assert (await h.row(lead.invocation_id))["status"] == "running"
+        assert await h.goal_status(goal) == "running"
+        assert (await h.budget(goal))["used_invocations"] == 1  # the child drew nothing
+        assert len(h.host.launches) == 2  # no relaunch of a launch that never ran
+        awaited = await h.call(goal, lead.token, "goal__await", {"child_id": str(child)})
+        assert awaited["status"] == "failed"
 
 
 async def test_a_leaderless_goal_inside_the_grace_is_left_to_its_runner(broker_db_url):
