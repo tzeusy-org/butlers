@@ -198,8 +198,29 @@
           "after_sha256": "f44bc55069a1d59407a828886695cc5eddfdf9de5caf655fece821a74eb9e951"
         }
       ]
+    },
+    {
+      "path": "patches/0006-complete-selected-websocket-diagnostics.patch",
+      "sha256": "27198fc160d0d685768ef5b3bb43e59a8cb893d89a9d7192519a078a8706884d",
+      "files": [
+        {
+          "path": "packages/llm/src/route/executor.ts",
+          "before_sha256": "807463d2f2d60965fbaf89740020dc8014ebed4b8f27bbb5559c69dfd5d0c325",
+          "after_sha256": "51158f37986fc078e600711d4742a258cbd5757e583f113dd9f8a722afbe524f"
+        },
+        {
+          "path": "packages/llm/src/route/transport/websocket.ts",
+          "before_sha256": "044dd6f39adc28c4bcaeed1d4e1d18a0c02b8c2c728aec0b43799341a53b4298",
+          "after_sha256": "7eec49668d2f64db9e61b6a4bfd2872f920a7c7a4160806a1e3be771c660a1e4"
+        },
+        {
+          "path": "packages/llm/test/gateway-websocket-errors.test.ts",
+          "before_sha256": "32b1dbbb3f87d44aa01d5a759f4a6f0ba246c17d2aa4f011ede8bca561d3b448",
+          "after_sha256": "f3d09b66ea71819942b8beb73646da6af10bb382f31d802c9dd4e05675c76861"
+        }
+      ]
     }
   ],
-  "source_tree_sha256": "2751b333bd24117dfaee9d4288773a53f37307539ea7be7fcae7991b22dae6d1",
+  "source_tree_sha256": "786ecd8b0e57f54e7d36babfde5ab47153dda0352208d5ed5a596748a903a48d",
   "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches."
 }

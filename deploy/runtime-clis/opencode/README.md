@@ -45,6 +45,18 @@ otherwise caused pinned Bun to propose a different source/checksum and reject a
 frozen install. The resolved package record, archive integrity and every other
 locked package remain unchanged. No newer dependency source is adopted.
 
+The sixth patch completes selected-mode typed diagnostics for constructor and
+JSON preparation failures, absent/late handshakes, closed or closing sockets,
+post-open events and rejected sends. Each uses the HTTP request-secret redactors
+for logical URLs and error messages; native off-mode errors retain their original
+identity. Sanitized provider bodies are additionally capped at 64 KiB of UTF-8
+bytes after redaction, preserving the benign prefix without an incomplete final
+code point. `bodyTruncated` records either the input or sanitized-output limit.
+The exact Effect/schema fixture covers these error families and selected healthy
+frames alongside native off-mode, HTTP, redirect, deadline and cancellation
+survivors. This is bounded source/runtime-fixture evidence, not full installed
+caller or stock CLI/build conformance.
+
 The lockfile retains all 3,122 original package records. The two added aliases
 are the pinned shared Undici and the already-existing exact ws source/SRI. No
 plugin, model, optional native asset or lifecycle script is removed.
@@ -78,14 +90,16 @@ bun run packages/opencode/script/build.ts --single
 Use the original target's native dependencies and complete embedded UI. Do not
 add `--skip-embed-web-ui`, substitute an empty model set, drop plugins/tools,
 ignore lifecycle scripts or count the cheap helper probes as a native build.
-The unchanged build script retains its native asset installation steps; a full
-frozen install/reproducible installed-output check is still pending. Validate
+The unchanged build script retains its native asset installation steps; a
+reproducible installed-output check is still pending. Validate
 actual device/OAuth/refresh, legacy pool HTTP fallback and core Effect HTTP/WS,
 selected/off-mode startup, frame/close/cancellation, native tools and outage/no
-fallback on the compiled CLI. The new seven-case error-boundary file ran with actual pinned Effect/schema,
-Bun and twelve lock-bound mandatory dependencies in an isolated network namespace.
-It covers selected failure redaction, bounded/truncated bodies, redirect refusal,
-native off-mode frames and the existing HTTP executor's diagnostics. This is a
+fallback on the compiled CLI. The extended twenty-case error-boundary file and
+nine retained WebSocket controls ran with actual pinned Effect/schema, Bun and
+twelve lock-bound mandatory dependencies in an isolated network namespace.
+They cover selected failure identity across error paths, post-sanitize encoded
+byte limits, redirect refusal, native off-mode frames, cancellation and the
+existing HTTP executor's diagnostics. This is a
 partial runtime fixture, not the complete installed graph or native CLI. The
 original Effect-layer fetch control and whole legacy/caller suites still require
 the complete installed graph.
