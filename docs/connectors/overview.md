@@ -348,8 +348,11 @@ ActivityWatch checkpoints just before the failed event, and the Telegram user cl
 its flush loop while capping the checkpoint below the pending message. Once spent, the connector
 writes a replayable `status='error'` filtered-event row whose `full_payload` is the envelope it
 tried to send, including `control.idempotency_key`, and moves on. A Gmail backfill message whose
-fetch kept failing has no envelope; its row is a stub with no text that records the message id.
-Replay submits that stub as stored; it does not re-fetch the message.
+fetch kept failing has no envelope, so there is nothing real to replay: its error row stays
+visible with the Gmail message id, thread id and last error, and its `full_payload` carries
+`replay_unavailable`. The replay drain refuses such a row as `replay_failed` with a
+`not replayable: ...` reason instead of submitting a hollow event. Replay never re-fetches a
+message.
 
 The Telegram user client holds only on its per-message path: backfill, the fallback for messages
 without a chat id, and retries. Live messages go through the per-chat batch buffer, and a failed

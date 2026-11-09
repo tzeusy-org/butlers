@@ -193,6 +193,60 @@ async def test_gmail_backfill_parks_an_item_whose_retries_are_spent(evaluated) -
     assert row[_PAYLOAD]["payload"]["normalized_text"] == "text m2"
 
 
+async def test_gmail_fetch_failure_parks_a_visible_row_that_replay_refuses(evaluated) -> None:
+    """A message that never fetched has nothing real to replay (bu-dhloi1.149)."""
+    from butlers.connectors.filtered_event_buffer import drain_replay_pending
+
+    runtime = _gmail_runtime(AsyncMock())
+
+    async def fetch(mid: str) -> dict:
+        if mid == "m2":
+            raise RuntimeError("gmail 503")
+        return {"id": mid}
+
+    runtime._fetch_message = AsyncMock(side_effect=fetch)  # type: ignore[method-assign]
+    page = [{"id": "m1", "threadId": "t1"}, {"id": "m2", "threadId": "t2"}]
+    for attempt in range(runtime._backfill_ingest_retry.max_attempts):
+        runtime._fetch_backfill_message_page = AsyncMock(  # type: ignore[method-assign]
+            return_value=(page, None)
+        )
+        await runtime._execute_backfill_job(_job())
+        if attempt < runtime._backfill_ingest_retry.max_attempts - 1:
+            # Still holding: not completed, nothing parked.
+            assert _reports(runtime)[-1].get("status") != "completed"
+            assert len(runtime._filtered_event_buffer) == 0
+
+    assert _reports(runtime)[-1]["status"] == "completed"
+    (row,) = runtime._filtered_event_buffer._rows
+    assert (row[_ID], row[_STATUS]) == ("m2", "error")
+    assert row[10] == "gmail 503"  # error_detail keeps the last error
+    stored = row[_PAYLOAD]
+    assert stored["event"]["external_event_id"] == "m2"
+    assert stored["event"]["external_thread_id"] == "t2"
+    assert "normalized_text" not in stored["payload"]
+    assert stored["replay_unavailable"]
+
+    # Replay refuses it with a reason instead of submitting a hollow event.
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            {"id": 7, "received_at": row[0], "external_message_id": "m2", "full_payload": stored}
+        ]
+    )
+    conn.transaction = MagicMock(return_value=AsyncMock())
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=conn)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    pool = MagicMock()
+    pool.acquire.return_value = ctx
+    submit = AsyncMock()
+    await drain_replay_pending(pool, "gmail", "gmail:user:test@example.com", submit)
+    submit.assert_not_awaited()
+    status, detail = conn.execute.await_args.args[1:3]
+    assert status == "replay_failed"
+    assert detail.startswith("not replayable:")
+
+
 # ── Google Calendar sync ──────────────────────────────────────────────────
 
 

@@ -83,7 +83,11 @@ from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.blob_store import connector_blob_store
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.email_spans import email_untrusted_spans
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.filtered_event_buffer import (
+    REPLAY_UNAVAILABLE_KEY,
+    FilteredEventBuffer,
+    drain_replay_pending,
+)
 from butlers.connectors.gmail_policy import (
     INGESTION_TIER_FULL,
     INGESTION_TIER_METADATA,
@@ -638,15 +642,20 @@ class GmailConnectorRuntime:
         self._backfill_ingest_retry = IngestRetryBudget()
 
     def _park_backfill_message(
-        self, message_id: str, envelope: dict[str, Any] | None, exc: Exception
+        self,
+        message_id: str,
+        thread_id: str | None,
+        envelope: dict[str, Any] | None,
+        exc: Exception,
     ) -> None:
-        """Keep a backfill message whose retries are spent as a replayable error row.
+        """Keep a backfill message whose retries are spent as a visible error row.
 
-        The row carries the exact envelope that was tried, idempotency key
-        included, when one was built. Otherwise the message itself could not be
-        fetched, and the row is a stub with no text that records the message id
-        for diagnosis. Replay submits the stored payload as-is; it does not
-        re-fetch the message.
+        When an envelope was built, the row carries it exactly as tried,
+        idempotency key included, and replays it. Otherwise (the message never
+        fetched) there is nothing real to replay: the row records the Gmail
+        message id, thread id and last error for diagnosis, and replay refuses
+        it with a reason rather than submitting a hollow event. Replay never
+        re-fetches the message.
         """
         if envelope is not None:
             sender = str((envelope.get("sender") or {}).get("identity") or "unknown")
@@ -658,10 +667,13 @@ class GmailConnectorRuntime:
                 provider=self._config.connector_provider,
                 endpoint_identity=self._config.connector_endpoint_identity,
                 external_event_id=message_id,
-                external_thread_id=None,
+                external_thread_id=thread_id,
                 observed_at=datetime.now(UTC).isoformat(),
                 sender_identity=sender,
-                raw={"message_id": message_id},
+                raw={"message_id": message_id, "thread_id": thread_id},
+            )
+            payload[REPLAY_UNAVAILABLE_KEY] = (
+                "the Gmail message never fetched, so no content was stored"
             )
         self._filtered_event_buffer.record(
             external_message_id=message_id,
@@ -1536,8 +1548,9 @@ class GmailConnectorRuntime:
                             # Never move past a failed message (bu-dhloi1.149): stop the
                             # job with its cursor on this page, so the next poll reads
                             # the page again. Once the message's attempts are spent,
-                            # park it as a replayable error row and move on. A message
-                            # deleted since the page was listed has nothing to ingest.
+                            # park it as a visible error row and move on (replayable
+                            # only if an envelope was built). A message deleted since
+                            # the page was listed has nothing to ingest.
                             if (
                                 isinstance(exc, httpx.HTTPStatusError)
                                 and exc.response.status_code == 404
@@ -1562,12 +1575,14 @@ class GmailConnectorRuntime:
                             else:
                                 logger.warning(
                                     "Backfill: message %s (job %s) failed every retry; "
-                                    "parked for replay: %s",
+                                    "parked as an error row: %s",
                                     message_id,
                                     job.job_id,
                                     exc,
                                 )
-                                self._park_backfill_message(message_id, envelope, exc)
+                                self._park_backfill_message(
+                                    message_id, msg_stub.get("threadId"), envelope, exc
+                                )
                                 rows_skipped += 1
 
                     progress_counter += 1

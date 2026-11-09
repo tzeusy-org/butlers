@@ -128,6 +128,10 @@ INSERT INTO connectors.filtered_events (
 # SQL for the replay drain loop.
 # Locks up to 10 replay_pending rows with skip-locked concurrency safety,
 # then updates each to replay_complete or replay_failed after submission.
+# A stored full_payload carrying this key has no real content to submit; its
+# value is the reason. Replay refuses the row with that reason (bu-dhloi1.149).
+REPLAY_UNAVAILABLE_KEY = "replay_unavailable"
+
 _REPLAY_SELECT_SQL = """\
 SELECT id, received_at, external_message_id, full_payload
 FROM connectors.filtered_events
@@ -317,6 +321,23 @@ async def drain_replay_pending(
                             continue
                     else:
                         payload_dict = dict(raw_payload)
+
+                    # A row parked without real content (e.g. a Gmail message that
+                    # never fetched) would replay as a hollow event; refuse it.
+                    unavailable = payload_dict.get(REPLAY_UNAVAILABLE_KEY)
+                    if unavailable:
+                        _log.warning(
+                            "replay drain: id=%s is not replayable; marking replay_failed",
+                            row_id,
+                        )
+                        await conn.execute(
+                            _REPLAY_UPDATE_SQL,
+                            "replay_failed",
+                            f"not replayable: {unavailable}",
+                            row_id,
+                            received_at,
+                        )
+                        continue
 
                     # Sanitize stored payload: older rows may have None values for
                     # fields that IngestEnvelopeV1 requires as non-None.
