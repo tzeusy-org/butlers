@@ -44,6 +44,12 @@ versions and their native/header payloads, then loads `node-pty` with the pinned
 Node executable and verifies its native interface. An npm success that dropped
 this optional target package cannot publish a complete component.
 
+Both Docker phases mount the whole declared Node component read-only at
+`/opt/node`, including npm and its bundled build helpers. Lifecycle scripts can
+use those tools and headers but cannot add generated files to the verified
+toolchain. The component identity checks remain strict; generated toolchain
+files are neither excluded nor accepted as a new Node distribution.
+
 The first retained producer run exited successfully after node-gyp's separate
 header extraction failed and npm removed that optional package. That run proves
 its recorded commands and copied payload only; it does not prove preservation
