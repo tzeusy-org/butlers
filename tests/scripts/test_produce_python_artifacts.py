@@ -344,6 +344,14 @@ class ProducerTests(unittest.TestCase):
         self.assertIn("hatchling==1.33.0\n", constraints)
         self.assertIn("editables==0.6\n", constraints)
 
+    def test_seed_exports_use_uv_pylock_filenames(self):
+        self.seed()
+        exports = [command for command, _, _ in self.ops.commands if "export" in command]
+        self.assertEqual(
+            [Path(command[command.index("--output-file") + 1]).name for command in exports],
+            [f"pylock.{variant}-{profile}.toml" for variant, profile in producer.PROFILES],
+        )
+
     def test_all_four_positive_receipts_before_atomic_independent_publication(self):
         self.seed()
         receipt = self.verify()

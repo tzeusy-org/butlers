@@ -809,7 +809,7 @@ def public_seed(project: Path, work: Path, output: Path, lock: Path, operations=
     constraints.write_text("".join(f"{p['name']}=={p['version']}\n" for p in backend["packages"]))
     inventories = {}
     for variant, profile in PROFILES:
-        export = work / f"{variant}-{profile}.toml"
+        export = work / f"pylock.{variant}-{profile}.toml"
         extras = [] if variant == "default" else ["live-listener"]
         ops.run(
             [
