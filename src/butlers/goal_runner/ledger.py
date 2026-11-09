@@ -800,6 +800,22 @@ class RunnerLedger:
             == "launching"
         )
 
+    async def unlaunched(self, grace_seconds: float) -> list[UUID]:
+        """Admitted goals no lead was ever opened for, admitted over ``grace_seconds`` ago.
+
+        Admission commits before the runner starts the goal, so a process that
+        dies between the two leaves the goal admitted with no invocation; the
+        start right after admission opens well inside the grace (bu-dhloi1.206).
+        """
+        rows = await self.connection.fetch(
+            "SELECT g.id FROM switchboard.goals g WHERE g.status = 'admitted' "
+            "AND g.created_at <= clock_timestamp() - make_interval(secs => $1::float8) "
+            "AND NOT EXISTS (SELECT 1 FROM switchboard.invocations i "
+            "WHERE i.goal_id = g.id AND i.depth = 0) ORDER BY g.id",
+            grace_seconds,
+        )
+        return [row["id"] for row in rows]
+
     async def leaderless(self, grace_seconds: float) -> list[Leaderless]:
         """Running or recovering goals whose latest lead ended over ``grace_seconds`` ago.
 

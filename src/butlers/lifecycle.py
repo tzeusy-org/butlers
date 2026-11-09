@@ -666,6 +666,17 @@ async def _startup_background_services(daemon: Any, state: StartupState) -> None
     # 16c. Start internal scheduler loop
     daemon._scheduler_loop_task = asyncio.create_task(daemon._scheduler_loop())
 
+    # 16d. RFC 0038 M6: periodic goal supervision (lease lapse, deadlines,
+    # fencing, parked-cancellation retry, settling, unlaunched admissions).
+    # Dark: only a runtime that trusted construction attached, with its switch on.
+    _start_goal_runtime(daemon)
+
+
+def _start_goal_runtime(daemon: Any) -> None:
+    runtime = getattr(daemon, "goal_runtime", None)
+    if runtime is not None and runtime.switch.enabled:
+        runtime.start()
+
 
 async def _startup_readiness(daemon: Any, state: StartupState) -> None:
     """Start legacy reporting and gate acceptance on committed boot registration."""
@@ -1008,6 +1019,15 @@ async def _shutdown_resources(daemon: Any) -> None:
     # admitters (the startup route-inbox recovery task, QA background tasks) are still live here;
     # they are not scheduler claims and hit the spawner's own refusal after step 3.
     await _stop_scheduler_loop(daemon, deadline)
+
+    # 2d. Stop goal supervision and abandon in-flight launches; their leases
+    # lapse and the next runtime's sweep fences and recovers them (D14).
+    runtime = getattr(daemon, "goal_runtime", None)
+    if runtime is not None:
+        try:
+            await runtime.close()
+        except Exception:
+            logger.exception("Error while closing the goal runtime")
 
     # 3. Stop accepting new triggers and drain in-flight runtime sessions
     daemon._accepting_connections = False
