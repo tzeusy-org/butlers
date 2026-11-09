@@ -28,7 +28,7 @@ TargetEntityTombstonedError = entity_merge_mod.TargetEntityTombstonedError
 # Contact columns a merge deliberately does not re-point.
 _NOT_REPOINTED = {
     ("contact_entity_map", "contact_id"),  # the source's bridge row is deleted instead
-    ("priority_contacts", "contact_id"),  # not moved: flagged in bu-dhloi1.123's PR
+    ("priority_contacts", "contact_id"),  # keyed by entity too: _merge_priority_contact moves it
 }
 
 pytestmark = [
@@ -591,3 +591,82 @@ async def test_every_contact_child_table_exists_and_every_contact_column_is_acco
     }
 
     assert set(contacts_mod._CONTACT_CHILD_TABLES) | _NOT_REPOINTED == at_head
+    assert _NOT_REPOINTED <= at_head  # an exception for a dropped column is itself stale
+
+
+async def _priority(pool, contact_id, entity_id=None) -> None:
+    await pool.execute(
+        "INSERT INTO public.priority_contacts (contact_id, entity_id, added_by) "
+        "VALUES ($1, $2, 'test')",
+        contact_id,
+        entity_id,
+    )
+
+
+async def _priority_rows(pool, *ids) -> list[tuple]:
+    rows = await pool.fetch(
+        "SELECT contact_id, entity_id FROM public.priority_contacts "
+        "WHERE contact_id = ANY($1::uuid[]) OR entity_id = ANY($1::uuid[]) ORDER BY added_at",
+        list(ids),
+    )
+    return [(row["contact_id"], row["entity_id"]) for row in rows]
+
+
+@pytest.mark.parametrize("keyed_by", ["entity", "legacy_contact"])
+async def test_a_source_priority_entry_moves_to_the_target(rel_pool, keyed_by):
+    """bu-dhloi1.135: the source's entry must not stay on the merged-away identity."""
+    source_entity, target_entity, _fact_id, source, target = await _pair(rel_pool)
+    await _priority(rel_pool, source_entity if keyed_by == "entity" else source, source_entity)
+
+    await contacts_mod.contact_merge(rel_pool, source, target)
+
+    assert await _priority_rows(rel_pool, source, source_entity, target, target_entity) == [
+        (target_entity, target_entity)
+    ]
+
+
+@pytest.mark.parametrize("target_keyed_by", ["entity", "legacy_contact"])
+async def test_a_priority_entry_both_contacts_hold_merges_to_one(rel_pool, target_keyed_by):
+    source_entity, target_entity, _fact_id, source, target = await _pair(rel_pool)
+    await _priority(rel_pool, source_entity, source_entity)
+    await _priority(
+        rel_pool, target_entity if target_keyed_by == "entity" else target, target_entity
+    )
+
+    await contacts_mod.contact_merge(rel_pool, source, target)
+
+    rows = await _priority_rows(rel_pool, source, source_entity, target, target_entity)
+    assert len(rows) == 1 and rows[0][1] == target_entity
+
+
+async def test_a_target_only_priority_entry_is_untouched(rel_pool):
+    source_entity, target_entity, _fact_id, source, target = await _pair(rel_pool)
+    await _priority(rel_pool, target_entity, target_entity)
+
+    await contacts_mod.contact_merge(rel_pool, source, target)
+
+    assert await _priority_rows(rel_pool, target_entity) == [(target_entity, target_entity)]
+
+
+async def test_two_contacts_of_one_entity_keep_one_priority_entry(rel_pool):
+    entity = await _entity(rel_pool, "Shared")
+    source, target = await _contact(rel_pool, entity), await _contact(rel_pool, entity)
+    await _priority(rel_pool, source, entity)
+
+    await contacts_mod.contact_merge(rel_pool, source, target)
+
+    assert await _priority_rows(rel_pool, source, target, entity) == [(entity, entity)]
+
+
+async def test_a_failed_contact_merge_leaves_the_priority_entry_where_it_was(rel_pool, monkeypatch):
+    source_entity, target_entity, fact, source, target = await _pair(rel_pool)
+    await _priority(rel_pool, source_entity, source_entity)
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("entity merge failed")
+
+    monkeypatch.setattr(entity_merge_mod, "write_merge_review", boom)
+    with pytest.raises(RuntimeError):
+        await contacts_mod.contact_merge(rel_pool, source, target)
+
+    assert await _priority_rows(rel_pool, source_entity) == [(source_entity, source_entity)]
