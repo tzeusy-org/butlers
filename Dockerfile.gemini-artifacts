@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1.7
+FROM python:3.12.13-slim-trixie@sha256:c2d8472b831337ab296a8ce652e1ba786e9e3034fc445dc58b50a7f5251f0003 AS producer
+
+COPY scripts/runtime_clis/install_system_artifacts.py /recipe/scripts/runtime_clis/install_system_artifacts.py
+COPY deploy/runtime-clis/debian-system-inputs.json /recipe/deploy/runtime-clis/debian-system-inputs.json
+COPY deploy/runtime-clis/codex/compiler-inputs.json /recipe/deploy/runtime-clis/codex/compiler-inputs.json
+RUN --network=none --mount=from=system-artifacts,source=debs,target=/inputs/system,readonly \
+    python3 -I -B /recipe/scripts/runtime_clis/install_system_artifacts.py \
+      --manifest /recipe/deploy/runtime-clis/debian-system-inputs.json \
+      --artifacts /inputs/system --profile compiler
+RUN --network=none --mount=from=codex-compiler-artifacts,source=debs,target=/inputs/compiler,readonly \
+    python3 -I -B /recipe/scripts/runtime_clis/install_system_artifacts.py \
+      --manifest /recipe/deploy/runtime-clis/codex/compiler-inputs.json \
+      --artifacts /inputs/compiler --profile compiler
+COPY --from=toolchain-artifacts /components/node/ /opt/node/
+COPY --from=genai-sdk-artifacts /js-genai/ /inputs/sdk/js-genai/
+COPY --from=google-auth-artifacts /google-auth-library/ /inputs/sdk/google-auth-library/
+COPY scripts/runtime_clis/produce_gemini_component.py scripts/runtime_clis/produce_npm_artifact.py scripts/runtime_clis/produce_codex_artifacts.py scripts/runtime_clis/prepare_vendor.py scripts/runtime_clis/materialize_inputs.py scripts/runtime_clis/runtime_artifacts.py /recipe/scripts/runtime_clis/
+COPY deploy/runtime-clis/ /recipe/deploy/runtime-clis/
+COPY Dockerfile.gemini-artifacts /recipe/Dockerfile.gemini-artifacts
+WORKDIR /opt/js-build
+
+# The complete ordinary install and build populate public package/browser
+# caches only. This is NONFINAL preparation, never an accepted component.
+RUN --network=default --mount=type=tmpfs,target=/root \
+    python3 -I -B /recipe/scripts/runtime_clis/produce_gemini_component.py --phase public-seed
+
+# A fresh source/materializer preparation repeats the unchanged install and
+# full workspace build with no route, retaining all installed graph/assets.
+RUN --network=none --mount=type=tmpfs,target=/root \
+    python3 -I -B /recipe/scripts/runtime_clis/produce_gemini_component.py --phase build
+
+FROM scratch AS artifacts
+COPY --from=producer /artifacts/gemini/ /
