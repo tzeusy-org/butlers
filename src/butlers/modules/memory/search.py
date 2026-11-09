@@ -16,6 +16,7 @@ from butlers.core.chronicler_visibility import (
     local_fact_visibility_condition,
 )
 from butlers.modules.memory.content_authority import RULE_ADMITTED_SQL
+from butlers.modules.memory.embedding import embed_async
 
 if TYPE_CHECKING:
     from asyncpg import Pool
@@ -600,6 +601,7 @@ async def recall(
     filters: dict[str, Any] | None = None,
     read_policy: CatalogReadPolicy | None = None,
     memory_schema: str | None = None,
+    query_embedding: list[float] | None = None,
 ) -> list[dict]:
     """High-level composite-scored retrieval of relevant facts and rules.
 
@@ -633,6 +635,9 @@ async def recall(
             recall. Callers within one context/session assembly (e.g.
             ``memory_context``) should load this once and pass it explicitly
             so every fetch in that assembly agrees on one ceiling.
+        query_embedding: Precomputed embedding of ``topic``. A caller that also needs the
+            vector elsewhere (``memory_context``'s fleet search) embeds once and passes it;
+            when omitted it is computed on a worker thread, never on the event loop.
 
     Returns:
         List of dicts with ``composite_score`` and ``memory_type`` added.
@@ -659,7 +664,8 @@ async def recall(
         )
 
     allowed_sensitivities = list(read_policy.allowed_sensitivities)
-    query_embedding = embedding_engine.embed(topic)
+    if query_embedding is None:
+        query_embedding = await embed_async(embedding_engine, topic)
 
     # The entity and predicate filters narrow the candidate set in SQL, before the
     # per-source limit; filtering the top-N afterwards would lose rows ranked below it.
@@ -737,16 +743,29 @@ async def recall(
 
     scored = scored[:limit]
 
-    # Bump reference counts for returned results
-    for r in scored:
-        table = "facts" if r["memory_type"] == "fact" else "rules"
-        await pool.execute(
-            f"UPDATE {table} SET reference_count = reference_count + 1, "
-            f"last_referenced_at = now() WHERE id = $1",
-            r["id"],
-        )
+    await _bump_reference_counts(pool, scored)
 
     return scored
+
+
+async def _bump_reference_counts(pool: Pool, results: list[dict]) -> None:
+    """Count one reference on every returned fact and rule in a single statement.
+
+    Data-modifying CTEs run whether or not their output is read, so one round trip covers
+    both tables (it was one UPDATE per result, ~30 sequential awaits per memory_context).
+    """
+    fact_ids = [r["id"] for r in results if r["memory_type"] == "fact"]
+    rule_ids = [r["id"] for r in results if r["memory_type"] == "rule"]
+    if not fact_ids and not rule_ids:
+        return
+    await pool.execute(
+        "WITH f AS (UPDATE facts SET reference_count = reference_count + 1, "
+        "last_referenced_at = now() WHERE id = ANY($1::uuid[])), "
+        "r AS (UPDATE rules SET reference_count = reference_count + 1, "
+        "last_referenced_at = now() WHERE id = ANY($2::uuid[])) SELECT 1",
+        fact_ids,
+        rule_ids,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -937,9 +956,10 @@ async def search(
     all_results: list[dict] = []
 
     # Embed once for semantic/hybrid modes
-    query_embedding = None
+    # (keyword mode never reads the vector, so it is left empty there).
+    query_embedding: list[float] = []
     if mode in ("semantic", "hybrid"):
-        query_embedding = embedding_engine.embed(query)
+        query_embedding = await embed_async(embedding_engine, query)
 
     for mem_type in types:
         table = _TYPE_TO_TABLE[mem_type]
@@ -1313,7 +1333,7 @@ async def search_catalog(
     if mode in ("semantic", "hybrid"):
         query_embedding = _query_embedding
         if query_embedding is None:
-            query_embedding = embedding_engine.embed(query)
+            query_embedding = await embed_async(embedding_engine, query)
         semantic_results = await _catalog_semantic_search(
             pool,
             query_embedding,
