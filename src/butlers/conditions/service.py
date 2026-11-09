@@ -31,6 +31,7 @@ from butlers.conditions.model import (
 MAX_LIFETIME = timedelta(days=90)
 DEPENDENCY = "system.dep.conditions"
 CONFLICT_RETRIES = 5
+MAX_ID_CHARS = 128  # the SQL store's CHECK; refused here so both stores behave alike
 
 
 class ConditionsUnavailable(RuntimeError):
@@ -94,11 +95,15 @@ def check_registration(
     predicate: object,
     grant: Grant,
     *,
+    instance_id: str,
     goal_id: str,
     starts_at: datetime,
     expires_at: datetime,
 ) -> dict:
     """Refuse before any side effect. Returns the canonical predicate."""
+    for what, value in (("instance id", instance_id), ("goal id", goal_id)):
+        if not isinstance(value, str) or not 1 <= len(value) <= MAX_ID_CHARS:
+            raise RegistrationRefused(f"{what} must be 1..{MAX_ID_CHARS} characters")
     try:
         canonical = ast.validate(predicate)
     except ast.PredicateError as exc:
@@ -178,7 +183,12 @@ class ConditionEvaluator:
     ) -> Outcome:
         """Validate, evaluate current state (no lost wake), persist, fire if already true."""
         canonical = check_registration(
-            predicate, grant, goal_id=goal_id, starts_at=snapshot.now, expires_at=expires_at
+            predicate,
+            grant,
+            instance_id=instance_id,
+            goal_id=goal_id,
+            starts_at=snapshot.now,
+            expires_at=expires_at,
         )
         inst = Instance(
             id=instance_id,

@@ -29,7 +29,10 @@ import asyncpg
 from asyncpg.pool import PoolConnectionProxy
 
 from butlers.conditions.model import FireIntent, Instance, Receipt, State, Tri
-from butlers.conditions.service import StoreConflict
+from butlers.conditions.service import RegistrationRefused, StoreConflict
+
+# PostgreSQL's generated names for the inline id/goal_id length CHECKs in core_323.
+_ID_LENGTH_CHECKS = frozenset({"condition_instances_id_check", "condition_instances_goal_id_check"})
 
 _INSTANCE_COLUMNS = (
     "id, goal_id, predicate::text AS predicate, predicate_digest, grant_digest, "
@@ -98,27 +101,35 @@ class _SqlTx:
         return None if row is None else await self._instance(row)
 
     async def insert_instance(self, instance: Instance) -> tuple[Instance, bool]:
-        inserted = await self.c.fetchval(
-            "INSERT INTO public.condition_instances (id, goal_id, predicate, predicate_digest, "
-            "grant_digest, source_boundary, starts_at, expires_at, generation, state, result, "
-            "leaves, floor, version) VALUES ($1, $2, $3::text::jsonb, $4, $5, $6, $7, $8, $9, "
-            "$10, $11, $12::text::jsonb, $13::text::jsonb, $14) "
-            "ON CONFLICT (id) DO NOTHING RETURNING id",
-            instance.id,
-            instance.goal_id,
-            _text(instance.predicate),
-            instance.predicate_digest,
-            instance.grant_digest,
-            list(instance.source_boundary),
-            instance.starts_at,
-            instance.expires_at,
-            instance.generation,
-            instance.state.value,
-            instance.result.value,
-            _text({k: v.value for k, v in instance.leaves.items()}),
-            _text(instance.floor),
-            instance.version,
-        )
+        try:
+            inserted = await self.c.fetchval(
+                "INSERT INTO public.condition_instances (id, goal_id, predicate, "
+                "predicate_digest, grant_digest, source_boundary, starts_at, expires_at, "
+                "generation, state, result, leaves, floor, version) VALUES ($1, $2, "
+                "$3::text::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12::text::jsonb, "
+                "$13::text::jsonb, $14) ON CONFLICT (id) DO NOTHING RETURNING id",
+                instance.id,
+                instance.goal_id,
+                _text(instance.predicate),
+                instance.predicate_digest,
+                instance.grant_digest,
+                list(instance.source_boundary),
+                instance.starts_at,
+                instance.expires_at,
+                instance.generation,
+                instance.state.value,
+                instance.result.value,
+                _text({k: v.value for k, v in instance.leaves.items()}),
+                _text(instance.floor),
+                instance.version,
+            )
+        except asyncpg.CheckViolationError as exc:
+            # Only the register path's own id-length CHECKs are a refused row; any other
+            # constraint trip is a bug and stays on the outage path.
+            constraint = getattr(exc, "constraint_name", None)
+            if constraint in _ID_LENGTH_CHECKS:
+                raise RegistrationRefused(f"condition store refused the row: {constraint}") from exc
+            raise
         if inserted is None:
             existing = await self.get_instance(instance.id)
             if existing is None:  # a concurrent rollback removed the conflicting row

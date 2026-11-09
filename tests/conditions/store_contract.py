@@ -12,10 +12,19 @@ from uuid import uuid5
 
 import pytest
 
-from butlers.conditions import ConditionEvaluator, Instance, State
+from butlers.conditions import ConditionEvaluator, Instance, RegistrationRefused, Snapshot, State
 from butlers.conditions.model import FireIntent
 from butlers.conditions.service import StoreConflict
-from tests.conditions.test_conditions import DECISION, NOW, NS, decision_ev, register
+from tests.conditions.test_conditions import (
+    DECISION,
+    EXPIRES,
+    GOAL,
+    GRANT,
+    NOW,
+    NS,
+    decision_ev,
+    register,
+)
 
 
 class StoreContract:
@@ -29,6 +38,9 @@ class StoreContract:
         return found
 
     async def intent_count(self, store) -> int:
+        raise NotImplementedError
+
+    async def instance_count(self, store) -> int:
         raise NotImplementedError
 
     async def receipt_reasons(self, store) -> list[str]:
@@ -79,12 +91,46 @@ class StoreContract:
         assert second.event_id == uuid5(NS, "a")
         assert await self.intent_count(store) == 1
 
-    async def test_stale_version_save_raises(self):
+    async def test_stale_version_save_raises_on_an_open_row(self):
+        # The row stays open at version 1, so only the CAS (not the frozen-row guard) can
+        # refuse. The stale writer targets version 2 = 1 + 1, which a store that merely
+        # checks "version advances by one" would accept: only the CAS refuses it.
         store, inst = await self.seeded()
-        await self.fire(store, inst)
+        async with store.transaction() as tx:
+            await tx.save_instance(replace(inst, version=1), 0)
         with pytest.raises(StoreConflict):
             async with store.transaction() as tx:
-                await tx.save_instance(replace(inst, version=1), 0)
+                await tx.save_instance(replace(inst, version=2), 0)
+        assert (await self.instance(store, "c1")).version == 1
+
+    @pytest.mark.parametrize("which", ["instance", "goal", "empty"])
+    async def test_oversized_or_empty_ids_refuse_without_an_outage(self, which):
+        store = self.make_store()
+        reports = []
+
+        class Reporter:
+            async def report(self, dependency, state, reason):
+                reports.append(dependency)
+
+        evaluator = ConditionEvaluator(store, reporter=Reporter())
+        instance_id = {"instance": "i" * 129, "goal": "c1", "empty": ""}[which]
+        goal_id = "g" * 129 if which == "goal" else GOAL
+        with pytest.raises(RegistrationRefused):
+            await evaluator.register(
+                instance_id=instance_id,
+                predicate=DECISION,
+                grant=replace(GRANT, goal_id=goal_id),
+                goal_id=goal_id,
+                snapshot=Snapshot(now=NOW),
+                expires_at=EXPIRES,
+            )
+        assert reports == [] and await self.instance_count(store) == 0
+
+    async def test_longest_allowed_ids_register(self):
+        store = self.make_store()
+        out = await register(ConditionEvaluator(store), DECISION, instance_id="i" * 128)
+        assert out.instance.id == "i" * 128
+        assert await self.instance_count(store) == 1
 
     async def test_claim_is_first_consumer_wins(self):
         store, inst = await self.seeded()
