@@ -99,22 +99,30 @@ def _jsonb_decoder(data: bytes) -> object:
     return json.loads(data[1:])
 
 
-# A partitioned peer is detected by the kernel: a savepoint ROLLBACK TO or a COMMIT that follows
-# a client deadline carries no client timer (a second one recreates asyncpg's shared cancel
-# future bug), so without these a dead link would hold the connection, its open transaction and
-# its row locks until the OS default of about two hours.
+# A partitioned peer is detected by the kernel on both ends. A savepoint ROLLBACK TO or a COMMIT
+# that follows a client deadline carries no client timer (a second one recreates asyncpg's shared
+# cancel future bug), so without these a dead link would hold the connection until the OS default
+# of about two hours. The client socket is armed below; the server's backend, which keeps the open
+# transaction and its row locks, gets the same values as startup parameters (USERSET, PostgreSQL
+# 12+; ignored on a unix socket).
 TCP_KEEPIDLE_S = 30
 TCP_KEEPINTVL_S = 10
 TCP_KEEPCNT = 3
 TCP_USER_TIMEOUT_MS = 60_000
-_TCP_USER_TIMEOUT = 18  # socket.TCP_USER_TIMEOUT where the platform defines it
+TCP_LIVENESS_SERVER_SETTINGS = {
+    "tcp_keepalives_idle": str(TCP_KEEPIDLE_S),
+    "tcp_keepalives_interval": str(TCP_KEEPINTVL_S),
+    "tcp_keepalives_count": str(TCP_KEEPCNT),
+    "tcp_user_timeout": str(TCP_USER_TIMEOUT_MS),
+}
 
 
 def _arm_tcp_liveness(conn: asyncpg.Connection) -> None:
     """Arm keepalives and a user timeout on a TCP connection; best effort, never fatal.
 
-    A unix socket, a non-Linux option or a transport without a socket is left as it was. A
-    hung but reachable backend is not detected by this; ``statement_timeout`` bounds that.
+    A unix socket, an option the platform lacks or a transport without a socket is left as it
+    was. A hung but reachable backend is not detected by this (the kernel still ACKs), and no
+    pool sets a ``statement_timeout`` to bound it.
     """
     try:
         sock = conn._transport.get_extra_info("socket")  # noqa: SLF001 - asyncpg exposes no accessor
@@ -129,11 +137,9 @@ def _arm_tcp_liveness(conn: asyncpg.Connection) -> None:
             option = getattr(socket, name, None)
             if option is not None:
                 sock.setsockopt(socket.IPPROTO_TCP, option, value)
-        sock.setsockopt(
-            socket.IPPROTO_TCP,
-            getattr(socket, "TCP_USER_TIMEOUT", _TCP_USER_TIMEOUT),
-            TCP_USER_TIMEOUT_MS,
-        )
+        user_timeout = getattr(socket, "TCP_USER_TIMEOUT", None)
+        if user_timeout is not None:
+            sock.setsockopt(socket.IPPROTO_TCP, user_timeout, TCP_USER_TIMEOUT_MS)
     except (OSError, AttributeError):
         logger.warning("Could not arm TCP liveness options on a database connection")
 
@@ -403,10 +409,11 @@ class Database:
 
     def _server_settings(self) -> dict[str, str] | None:
         """Return asyncpg server settings for this database context."""
+        settings = dict(TCP_LIVENESS_SERVER_SETTINGS)
         search_path = schema_search_path(self.schema)
-        if search_path is None:
-            return None
-        return {"search_path": search_path}
+        if search_path is not None:
+            settings["search_path"] = search_path
+        return settings
 
     async def _verify_role_exists(self, conn: asyncpg.Connection) -> bool:
         """Check if the configured role exists in pg_roles."""

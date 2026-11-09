@@ -71,7 +71,22 @@ async def test_provision_connect_pool_close(db_factory, postgres_container, monk
     async with pool.acquire() as live:  # bu-dhloi1.58: a partitioned peer is detected
         sock = live._transport.get_extra_info("socket")
         assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
-        assert sock.getsockopt(socket.IPPROTO_TCP, 18) == 60_000
+        assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT) == 60_000
+        shown = {
+            name: await live.fetchval(f"SHOW {name}")
+            for name in (
+                "tcp_keepalives_idle",
+                "tcp_keepalives_interval",
+                "tcp_keepalives_count",
+                "tcp_user_timeout",
+            )
+        }
+        assert shown == {
+            "tcp_keepalives_idle": "30",
+            "tcp_keepalives_interval": "10",
+            "tcp_keepalives_count": "3",
+            "tcp_user_timeout": "60000",
+        }
 
     # Pool executes queries
     assert await db.pool.fetchval("SELECT 1 + 1") == 2

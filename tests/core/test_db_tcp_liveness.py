@@ -34,7 +34,9 @@ async def test_a_new_tcp_connection_gets_keepalive_and_a_user_timeout() -> None:
         assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE) == db.TCP_KEEPIDLE_S
         assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL) == db.TCP_KEEPINTVL_S
         assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT) == db.TCP_KEEPCNT
-        assert sock.getsockopt(socket.IPPROTO_TCP, 18) == db.TCP_USER_TIMEOUT_MS  # TCP_USER_TIMEOUT
+        user_timeout = getattr(socket, "TCP_USER_TIMEOUT", None)
+        if user_timeout is not None:
+            assert sock.getsockopt(socket.IPPROTO_TCP, user_timeout) == db.TCP_USER_TIMEOUT_MS
     finally:
         sock.close()
 
@@ -64,3 +66,29 @@ async def test_the_pool_sets_no_command_timeout(create_pool: AsyncMock) -> None:
     """``timeout=None`` falls back to it and would re-arm the second client timer."""
     await Database(db_name="x").connect()
     assert "command_timeout" not in create_pool.call_args.kwargs
+
+
+async def test_a_platform_without_tcp_user_timeout_skips_that_option_only() -> None:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        with (
+            patch("butlers.db.register_jsonb_codec", new=AsyncMock()),
+            patch.object(socket, "TCP_USER_TIMEOUT", create=True, new=None),
+        ):
+            await Database(db_name="x")._init_connection(_conn(sock))
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
+    finally:
+        sock.close()
+
+
+@pytest.mark.parametrize("schema", [None, "chronicler"])
+def test_the_backend_gets_the_same_liveness_values_as_startup_settings(schema) -> None:
+    """The server side holds the transaction and its locks, so it must detect the dead link."""
+    settings = Database(db_name="x", schema=schema)._server_settings()
+    assert {k: v for k, v in settings.items() if k != "search_path"} == {
+        "tcp_keepalives_idle": "30",
+        "tcp_keepalives_interval": "10",
+        "tcp_keepalives_count": "3",
+        "tcp_user_timeout": "60000",
+    }
+    assert ("search_path" in settings) is (schema is not None)
