@@ -40,7 +40,7 @@ from tests.session_host.test_core import request
 
 pytestmark = pytest.mark.unit
 
-PROVEN_OAUTH_SETTINGS_SHA256 = "70594c79a82fe5ba58d99d7121a8922bd13e895372c7532429e352c9e895f892"
+PROVEN_DEVICE_SETTINGS_SHA256 = "70594c79a82fe5ba58d99d7121a8922bd13e895372c7532429e352c9e895f892"
 DOCUMENT = codex_proof.oauth_document()
 
 
@@ -202,7 +202,7 @@ def test_oauth_settings_are_their_own_proven_identity():
     settings = CodexSettings(codex_proof.MODEL, auth=OAUTH)
     identity = settings.identity
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-    assert digest == PROVEN_OAUTH_SETTINGS_SHA256
+    assert digest == PROVEN_DEVICE_SETTINGS_SHA256
     assert identity["writable_native_files"] == [AUTH_PATH]
     assert 'forced_login_method = "chatgpt"' in identity["config_utf8"]
     api_key = CodexSettings(codex_proof.MODEL).identity
