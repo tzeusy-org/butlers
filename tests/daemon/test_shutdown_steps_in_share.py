@@ -172,3 +172,81 @@ async def test_without_a_share_the_deadline_is_still_taken_after_the_catalog_ret
         await lifecycle._run_shutdown(daemon)
 
     assert seen == [None]  # _shutdown_resources takes it itself, as before
+
+
+async def test_a_step_that_swallows_cancel_is_still_bounded_and_logged(
+    tmp_path: Path, caplog
+) -> None:
+    """``asyncio.timeout`` cancels once, so a step that swallows the cancel (the calendar module
+    does it three times) ran on unbounded and unlogged: 0.5s share, 3.5s taken, no log."""
+    daemon = _daemon(tmp_path, share=0.5)
+    swallowed = 0
+    release = asyncio.Event()
+
+    async def stubborn() -> None:
+        nonlocal swallowed
+        while not release.is_set():
+            try:
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                swallowed += 1
+
+    started = time.monotonic()
+    with caplog.at_level("WARNING", logger="butlers.lifecycle"):
+        await lifecycle._within_share(
+            daemon, asyncio.get_running_loop().time() + 0.5, stubborn(), "stubborn step"
+        )
+
+    # The share plus the floor to unwind, not however long the step would have taken.
+    assert time.monotonic() - started < 2.5
+    assert swallowed >= 1  # it was cancelled, and refused
+    assert any("stubborn step" in r.getMessage() for r in caplog.records)
+    assert any("ignored the cancel" in r.getMessage() for r in caplog.records)
+    release.set()
+    await asyncio.sleep(0.2)  # let the abandoned task end before the loop closes
+
+
+async def test_a_step_that_unwinds_on_cancel_gets_its_cleanup_and_is_logged(
+    tmp_path: Path, caplog
+) -> None:
+    daemon = _daemon(tmp_path, share=0.3)
+    cleaned = asyncio.Event()
+
+    async def tidy() -> None:
+        try:
+            await asyncio.sleep(60)
+        finally:
+            await asyncio.sleep(0.2)  # its own cleanup, which an inline cancel would also cut
+            cleaned.set()
+
+    with caplog.at_level("WARNING", logger="butlers.lifecycle"):
+        await lifecycle._within_share(
+            daemon, asyncio.get_running_loop().time() + 0.3, tidy(), "tidy step"
+        )
+
+    assert cleaned.is_set()
+    assert any("cancelled it" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_step_that_fails_inside_its_share_still_raises(tmp_path: Path) -> None:
+    daemon = _daemon(tmp_path, share=5.0)
+
+    async def broken() -> None:
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await lifecycle._within_share(
+            daemon, asyncio.get_running_loop().time() + 5.0, broken(), "broken step"
+        )
+
+
+async def test_the_mcp_servers_timeout_never_drops_below_the_floor(tmp_path: Path) -> None:
+    daemon = _daemon(tmp_path, share=7.0)
+    config = SimpleNamespace(timeout_graceful_shutdown=30.0)
+    daemon._server = SimpleNamespace(should_exit=False, config=config)
+    daemon._server_task = asyncio.create_task(asyncio.sleep(0))
+    spent = asyncio.get_running_loop().time() - 5.0  # catalog retirement used the share up
+
+    await lifecycle._shutdown_resources(daemon, spent)
+
+    assert config.timeout_graceful_shutdown == 1.0

@@ -954,17 +954,40 @@ def _share_left_s(daemon: Any, deadline: float | None) -> float | None:
 
 
 async def _within_share(daemon: Any, deadline: float | None, awaitable: Any, what: str) -> None:
-    """Await ``awaitable``, cut at the remaining share when one is set. A step that overruns
-    is logged and left, so the steps after it still run."""
+    """Await ``awaitable``, cut at the remaining share when one is set.
+
+    The step runs as its own task and is waited on with the share, rather than under
+    ``asyncio.timeout``, which cancels only once: a step that swallows the cancel (some do, more
+    than once) would then run on unbounded and unlogged, and the inline cancel would also cut
+    short the awaited code's own cleanup. On overrun the task is cancelled and given at most the
+    floor to unwind; either way it is logged and left, so the steps after it still run.
+
+    An abandoned step may still be running when later steps close the pools it uses, and then
+    fail with connection errors of its own; that is the cost of not waiting on it.
+    """
     left = _share_left_s(daemon, deadline)
     if left is None:
         await awaitable
         return
+    step = asyncio.ensure_future(awaitable)
     try:
-        async with asyncio.timeout(left):
-            await awaitable
-    except TimeoutError:
-        logger.warning("Shutdown step %r overran its share (%.0fs); continuing", what, left)
+        done, _ = await asyncio.wait({step}, timeout=left)
+        if done:
+            step.result()
+            return
+        step.cancel()
+        unwound, _ = await asyncio.wait({step}, timeout=_STEP_FLOOR_S)
+        logger.warning(
+            "Shutdown step %r overran its share (%.1fs); %s, continuing",
+            what,
+            left,
+            "cancelled it" if unwound else "it ignored the cancel and was left running",
+        )
+        if unwound and not step.cancelled():
+            step.exception()  # retrieved, so an error raised while unwinding is not unhandled
+    except asyncio.CancelledError:
+        step.cancel()
+        raise
 
 
 async def _close_pool(daemon: Any, database: Any, deadline: float | None) -> None:
@@ -1007,7 +1030,7 @@ async def _shutdown_resources(daemon: Any, deadline: float | None = None) -> Non
     if daemon._server is not None:
         if vars(daemon).get("_shutdown_budget_s") is not None:
             # uvicorn waits this long for open connections, fixed at start-up otherwise.
-            daemon._server.config.timeout_graceful_shutdown = _step_budget_s(daemon, deadline)
+            daemon._server.config.timeout_graceful_shutdown = _share_left_s(daemon, deadline)
         daemon._server.should_exit = True
     if daemon._server_task is not None:
         try:
