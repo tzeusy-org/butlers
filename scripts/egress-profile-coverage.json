@@ -5981,7 +5981,7 @@
     "deploy/runtime-clis/npm-artifacts/build-inputs.json": "dbef47f206c369c9c67186f6c79c8d4027b1e6541d619e134d478fc21ba7ed01",
     "deploy/runtime-clis/npm-artifacts/patches/001-test-server-explicit-build-cache.patch": "f312102780ef667473adeb7f54a55e355e160df1ba3f159d64247b25132698ed",
     "deploy/runtime-clis/opencode/LICENSE.upstream": "625f0f619133f89bbbb2abe37369613dfa1885eba1e50d02170deb62bb42cb6b",
-    "deploy/runtime-clis/opencode/build-inputs.json": "d57ecb70988fb2ce7bd52d94826a45d2e9a61eb71a5c89664c6ce5f00a32acd7",
+    "deploy/runtime-clis/opencode/build-inputs.json": "8c53d6d540ee43fa4e52cf7031d14171232b8aa95b6661aa9240d754d0e75e09",
     "deploy/runtime-clis/opencode/component-inputs.json": "5813a2e506d4bcedb6bcf3e95f385b527e46d293df745ced91b8967799b4a9b8",
     "deploy/runtime-clis/opencode/patches/0001-request-auth-effect.patch": "53d0e366679fa37424111666d136e29e6277227ee6ceca5a99a50fb5be59e1bf",
     "deploy/runtime-clis/opencode/patches/0002-selected-websocket-and-startup.patch": "bdf4516c30974ec30e982ad567dbedb14aa5b5c85a9ac9fb1af82f565d8d1e92",
@@ -6001,7 +6001,9 @@
     "deploy/runtime-clis/shared/package-lock.json": "006d3c715164a9444763d2c5d8fbcf3108b8961cd32c0dbd2466e9ae0958c27d",
     "deploy/runtime-clis/shared/package.json": "fae6ba695fe4f3d0d0da70829b3816441aa6ee7333a5f2402b271e29afb72fba",
     "deploy/runtime-clis/shared/undici-private.d.ts": "7151fafef798eb4c5da9235547c820dbf693f096d0f0d09778bb729aaa94442c",
-    "deploy/runtime-clis/toolchains.json": "0a0d693219a11bf7df47561060f8467978ab1f9f9960bdd7598b205c4611c5e4"
+    "deploy/runtime-clis/toolchains.json": "0a0d693219a11bf7df47561060f8467978ab1f9f9960bdd7598b205c4611c5e4",
+    "deploy/runtime-clis/opencode/model-inputs.tar.gz": "67055565163909906a53c17d9188046e609affc53b7e94457ff0f2b5c2612947",
+    "deploy/runtime-clis/opencode/LICENSE.models-dev": "dc2dc41c9fea2fd3c41c21c6f484844cab367800b88ff24781f980ad3a9d160a"
   },
   "bundle_policy": {
     "scope": "pinned-source-review-required",

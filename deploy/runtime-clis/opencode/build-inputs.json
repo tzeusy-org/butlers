@@ -1427,5 +1427,12 @@
     "MODELS_DEV_API_JSON": "<verified-complete-api.json>",
     "OPENCODE_MODELS_LOGOS": "<verified-complete-logo-directory>"
   },
-  "native_build_performed": false
+  "native_build_performed": false,
+  "snapshot": {
+    "path": "model-inputs.tar.gz",
+    "format": "ustar+gzip",
+    "sha256": "67055565163909906a53c17d9188046e609affc53b7e94457ff0f2b5c2612947",
+    "size": 875537,
+    "members": 236
+  }
 }

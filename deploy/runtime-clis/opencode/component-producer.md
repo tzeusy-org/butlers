@@ -15,10 +15,11 @@ embedded web UI, workers, compile settings and version smoke. No lifecycle,
 plugin, model, authentication or tool feature is removed. `OPENCODE_RELEASE` is
 absent. This preparation is explicitly NONFINAL.
 
-Model downloads declare the public `butlers-immutable-inputs/1` User-Agent,
-matching the retained successful acquisition. They keep the same exact HTTPS
-authority, pinned bytes, all-redirect refusal and empty proxy configuration.
-No browser session, cookies or operator authorization are supplied.
+The complete model catalogue and logos are delivered by the source-owned data
+snapshot described in `model-inputs.md`. The producer verifies the archive,
+finite member set, nonexecutable modes and every original public payload hash
+before atomic staging. It makes no live model request and accepts no replacement
+from the mutable upstream API. The full original catalogue remains embedded.
 
 The build phase requires a real networkless namespace/layer, verifies every
 closed preparation input, recreates the exact patched source, and repeats that

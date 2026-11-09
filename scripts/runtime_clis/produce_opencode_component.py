@@ -8,12 +8,11 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
+import tarfile
 import tempfile
-import time
 import types
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
 ROOT = Path("/opt/opencode-build")
@@ -24,6 +23,7 @@ OUTPUT = Path("/artifacts/opencode")
 DECLARATION = "deploy/runtime-clis/opencode/component-inputs.json"
 BUILD_INPUTS = "deploy/runtime-clis/opencode/build-inputs.json"
 SERIES = "deploy/runtime-clis/opencode/series.json"
+MODEL_SNAPSHOT = "deploy/runtime-clis/opencode/model-inputs.tar.gz"
 BIN = "node_modules/opencode-linux-x64/bin/opencode"
 
 
@@ -111,6 +111,9 @@ def pins() -> dict[str, str]:
         "deploy/runtime-clis/codex/compiler-inputs.json",
         DECLARATION,
         BUILD_INPUTS,
+        MODEL_SNAPSHOT,
+        "deploy/runtime-clis/opencode/model-inputs.md",
+        "deploy/runtime-clis/opencode/LICENSE.models-dev",
         SERIES,
         *helper("produce_default_plugin_artifact").pins(),
         *("deploy/runtime-clis/opencode/" + item["path"] for item in series["patches"]),
@@ -213,60 +216,80 @@ def plugin_input(manifest: dict) -> list[dict]:
     return entries
 
 
-class RefuseRedirects(urllib.request.HTTPErrorProcessor):
-    def http_response(self, request, response):
-        if 300 <= response.status < 400:
-            response.close()
-            raise ValueError("model asset redirect refused")
-        return super().http_response(request, response)
-
-    https_response = http_response
-
-
-def fetch_model(record: dict, output: Path, *, opener=None) -> None:
-    source = urllib.parse.urlsplit(record["url"])
+def materialize_models(models: dict) -> None:
+    """Stage the entire retained public snapshot without a mutable HTTP dependency."""
+    archive_path = RECIPE / MODEL_SNAPSHOT
+    record = models["snapshot"]
+    output = ROOT / "models"
     if (
-        source.scheme != "https"
-        or source.netloc != "models.dev"
-        or source.query
-        or source.fragment
-        or not (
-            source.path == "/api.json"
-            or source.path.startswith("/logos/")
-            and source.path.endswith(".svg")
-        )
+        record["path"] != "model-inputs.tar.gz"
+        or record["format"] != "ustar+gzip"
+        or record["members"] != len(models["logos"]) + 1
+        or archive_path.is_symlink()
+        or not archive_path.is_file()
+        or archive_path.stat().st_size != record["size"]
+        or digest(archive_path) != record["sha256"]
         or output.exists()
         or output.is_symlink()
     ):
-        raise ValueError("invalid pinned model asset")
-    public = opener or urllib.request.build_opener(
-        urllib.request.ProxyHandler({}), RefuseRedirects()
-    )
-    maximum = record.get("size", 64 * 1024**2)
-    start = time.monotonic()
-    request = urllib.request.Request(
-        record["url"], headers={"User-Agent": "butlers-immutable-inputs/1"}
-    )
-    with tempfile.TemporaryDirectory(prefix="model-", dir=output.parent) as temporary:
-        stage = Path(temporary) / "data"
-        size = 0
-        with public.open(request, timeout=60) as response, stage.open("xb") as stream:
-            if response.status != 200 or response.geturl() != record["url"]:
-                raise ValueError("unexpected model asset response")
-            while block := response.read(1024**2):
-                size += len(block)
-                if size > maximum or time.monotonic() - start > 300:
-                    raise ValueError("model input exceeds its bound")
-                stream.write(block)
-        if digest(stage) != record["sha256"] or ("size" in record and size != record["size"]):
-            raise ValueError("model input differs")
-        stage.chmod(0o644)
-        stage.rename(output)
+        raise ValueError("closed model snapshot input differs")
+    expected = {"api.json": models["catalogue"]}
+    expected.update({"logos/" + item["provider"] + ".svg": item for item in models["logos"]})
+    if len(expected) != record["members"] or any(
+        name != "api.json" and re.fullmatch(r"logos/[a-z0-9][a-z0-9._-]*\.svg", name) is None
+        for name in expected
+    ):
+        raise ValueError("model snapshot declaration population differs")
+    with tarfile.open(archive_path, "r:gz") as archive:
+        members = archive.getmembers()
+        if [item.name for item in members] != sorted(expected):
+            raise ValueError("model snapshot member population differs")
+        for item in members:
+            if (
+                not item.isfile()
+                or item.issparse()
+                or item.mode != 0o644
+                or item.uid != 0
+                or item.gid != 0
+                or item.mtime != 0
+                or item.uname
+                or item.gname
+                or item.pax_headers
+                or item.size < 1
+                or item.size > (64 * 1024**2 if item.name == "api.json" else 2 * 1024**2)
+            ):
+                raise ValueError("model snapshot requires canonical finite data members")
+        with tempfile.TemporaryDirectory(prefix="model-snapshot-", dir=ROOT) as temporary:
+            stage = Path(temporary) / "models"
+            stage.mkdir(mode=0o755)
+            stage.chmod(0o755)
+            (stage / "logos").mkdir(mode=0o755)
+            (stage / "logos").chmod(0o755)
+            for item in members:
+                stream = archive.extractfile(item)
+                if stream is None:
+                    raise ValueError("model snapshot member is not data")
+                with stream:
+                    data = stream.read(item.size + 1)
+                original = expected[item.name]
+                if (
+                    len(data) != item.size
+                    or hashlib.sha256(data).hexdigest() != original["sha256"]
+                    or "size" in original
+                    and len(data) != original["size"]
+                ):
+                    raise ValueError("original model snapshot payload differs")
+                path = stage / item.name
+                path.write_bytes(data)
+                path.chmod(0o644)
+            models_identity(models, root=stage)
+            stage.rename(output)
 
 
-def models_identity(models: dict) -> None:
-    catalogue = ROOT / "models/api.json"
-    logos = ROOT / "models/logos"
+def models_identity(models: dict, *, root: Path | None = None) -> None:
+    root = ROOT / "models" if root is None else root
+    catalogue = root / "api.json"
+    logos = root / "logos"
     data = json.loads(catalogue.read_bytes())
     expected = {record["provider"] + ".svg" for record in models["logos"]}
     if (
@@ -362,8 +385,6 @@ def public_seed(operations) -> None:
     transport = helper("produce_codex_artifacts")
     for name in (
         "archives",
-        "models",
-        "models/logos",
         "bun-cache",
         "bun-install",
         "transpiler-cache",
@@ -374,10 +395,7 @@ def public_seed(operations) -> None:
         native.download(record, ROOT / "archives" / (record["name"] + ".tgz"))
     plugin.fetch_tool_input(manifest["bun"], ROOT / "bun.zip", bun=True)
     plugin.extract_bun(ROOT / "bun.zip", ROOT / "bun", manifest["bun"])
-    fetch_model(models["catalogue"], ROOT / "models/api.json")
-    for record in models["logos"]:
-        fetch_model(record, ROOT / "models/logos" / (record["provider"] + ".svg"))
-    models_identity(models)
+    materialize_models(models)
     prepare(series)
     original = transport.inventory(ROOT / "source")
     lock = lock_identity(operations)

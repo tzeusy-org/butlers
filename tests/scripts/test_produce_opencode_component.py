@@ -118,64 +118,126 @@ def test_entire_catalogue_and_logo_population_is_required(model_inputs, drift):
         producer.models_identity(inputs)
 
 
-def test_model_fetch_is_atomic_and_requires_original_bytes(tmp_path):
-    class Response(io.BytesIO):
-        status = 200
-
-        def geturl(self):
-            return "https://models.dev/api.json"
-
-    record = {"url": "https://models.dev/api.json", "sha256": "wrong"}
-    output = tmp_path / "catalogue"
-    opener = SimpleNamespace(open=lambda *args, **kwargs: Response(b"original catalogue"))
-    with pytest.raises(ValueError, match="model input differs"):
-        producer.fetch_model(record, output, opener=opener)
-    assert not output.exists()
+@pytest.fixture
+def model_snapshot(tmp_path, monkeypatch):
+    import gzip
     import hashlib
+    import tarfile
 
-    record["sha256"] = hashlib.sha256(b"original catalogue").hexdigest()
-    producer.fetch_model(record, output, opener=opener)
-    assert output.read_bytes() == b"original catalogue"
-    assert list(tmp_path.iterdir()) == [output]
+    root = tmp_path / "work"
+    root.mkdir()
+    recipe = tmp_path / "recipe"
+    path = recipe / producer.MODEL_SNAPSHOT
+    path.parent.mkdir(parents=True)
+    catalogue = json.dumps({"provider": {"models": {"model": {}}}}).encode()
+    logo = b"<svg>whole original logo</svg>"
+    models = {
+        "catalogue": {"sha256": hashlib.sha256(catalogue).hexdigest(), "providers": 1, "models": 1},
+        "logos": [
+            {"provider": "provider", "sha256": hashlib.sha256(logo).hexdigest(), "size": len(logo)}
+        ],
+        "snapshot": {"path": "model-inputs.tar.gz", "format": "ustar+gzip", "members": 2},
+    }
+    payload = [("api.json", catalogue), ("logos/provider.svg", logo)]
+
+    def pack(entries=payload, *, changed=None):
+        with path.open("wb") as output:
+            with gzip.GzipFile(fileobj=output, mode="wb", filename="", mtime=0) as compressed:
+                with tarfile.open(
+                    fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT
+                ) as archive:
+                    for name, data in entries:
+                        item = tarfile.TarInfo(name)
+                        item.size = len(data)
+                        item.mode = 0o644
+                        if changed is not None:
+                            changed(item)
+                        archive.addfile(item, io.BytesIO(data))
+        models["snapshot"].update(size=path.stat().st_size, sha256=producer.digest(path))
+
+    pack()
+    monkeypatch.setattr(producer, "ROOT", root)
+    monkeypatch.setattr(producer, "RECIPE", recipe)
+    return root, path, models, payload, pack
 
 
-def test_model_fetch_declares_public_artifact_user_agent(tmp_path):
-    import hashlib
+def test_model_snapshot_is_complete_atomic_and_transport_independent(model_snapshot, monkeypatch):
+    import os
     import urllib.request
 
-    class Response(io.BytesIO):
-        status = 200
-
-        def geturl(self):
-            return "https://models.dev/api.json"
-
-    requests = []
-
-    def open_request(request, *, timeout):
-        requests.append((request, timeout))
-        return Response(b"complete pinned catalogue")
-
-    record = {
-        "url": "https://models.dev/api.json",
-        "sha256": hashlib.sha256(b"complete pinned catalogue").hexdigest(),
-    }
-    output = tmp_path / "catalogue"
-    producer.fetch_model(record, output, opener=SimpleNamespace(open=open_request))
-    request, timeout = requests[0]
-    headers = dict(request.header_items()) if isinstance(request, urllib.request.Request) else {}
-    assert headers == {"User-agent": "butlers-immutable-inputs/1"}
-    assert request.full_url == record["url"]
-    assert timeout == 60
-    assert output.read_bytes() == b"complete pinned catalogue"
+    root, path, models, payload, _pack = model_snapshot
+    monkeypatch.setattr(
+        urllib.request, "build_opener", lambda *_a, **_k: pytest.fail("model HTTP operation")
+    )
+    original = path.read_bytes()
+    previous = os.umask(0o027)
+    try:
+        producer.materialize_models(models)
+    finally:
+        os.umask(previous)
+    producer.models_identity(models)
+    assert (root / "models").stat().st_mode & 0o7777 == 0o755
+    assert (root / "models/logos").stat().st_mode & 0o7777 == 0o755
+    for name, data in payload:
+        assert (root / "models" / name).read_bytes() == data
+        assert (root / "models" / name).stat().st_mode & 0o7777 == 0o644
+    assert sorted(p.name for p in root.iterdir()) == ["models"]
+    assert path.read_bytes() == original
+    with pytest.raises(ValueError, match="snapshot input"):
+        producer.materialize_models(models)
 
 
-@pytest.mark.parametrize("status", range(300, 400))
-def test_all_model_redirects_refuse_before_default_dispatch(status):
-    response = SimpleNamespace(status=status, closed=False)
-    response.close = lambda: setattr(response, "closed", True)
-    with pytest.raises(ValueError, match="redirect refused"):
-        producer.RefuseRedirects().http_response(None, response)
-    assert response.closed
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "archive",
+        "missing",
+        "extra",
+        "duplicate",
+        "order",
+        "path",
+        "link",
+        "mode",
+        "owner",
+        "time",
+        "payload",
+        "population",
+    ],
+)
+def test_model_snapshot_refuses_noncanonical_or_changed_data(model_snapshot, drift):
+    import tarfile
+
+    root, path, models, payload, pack = model_snapshot
+    if drift == "archive":
+        data = bytearray(path.read_bytes())
+        data[4] = 1  # gzip timestamp changes while all decompressed payload bytes remain valid.
+        path.write_bytes(data)
+    elif drift == "missing":
+        pack(payload[:1])
+    elif drift == "extra":
+        pack([*payload, ("undeclared", b"foreign")])
+    elif drift == "duplicate":
+        pack([payload[0], *payload])
+    elif drift == "order":
+        pack(list(reversed(payload)))
+    elif drift == "path":
+        pack([payload[0], ("../escape", b"foreign")])
+    elif drift == "link":
+        pack(changed=lambda item: setattr(item, "type", tarfile.SYMTYPE))
+    elif drift == "mode":
+        pack(changed=lambda item: setattr(item, "mode", 0o755))
+    elif drift == "owner":
+        pack(changed=lambda item: setattr(item, "uid", 1234))
+    elif drift == "time":
+        pack(changed=lambda item: setattr(item, "mtime", 1))
+    elif drift == "payload":
+        pack([payload[0], (payload[1][0], b"wrong original logo")])
+    else:
+        models["catalogue"]["models"] = 2
+    with pytest.raises(ValueError, match="snapshot|population"):
+        producer.materialize_models(models)
+    assert list(root.iterdir()) == []
+    assert not (root.parent / "escape").exists()
 
 
 @pytest.fixture
