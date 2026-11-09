@@ -332,12 +332,19 @@ admission resolves it. Replay removes stored `drop_context` metadata while prese
 envelope fields. Object and legacy-string JSONB rows are both supported. Older rows that never
 stored a marker or reference cannot recover it; there is no historical backfill.
 
-The authorized replay API still queues only under the connector's replay-safety policy. Drains
-retain their `FOR UPDATE SKIP LOCKED`/status transaction: a competing drain skips actively locked
-rows, and a failed submit remains `replay_failed` until an explicit replay request. Submission
-followed by uncertain status persistence may be delivered again with the same event identity for
-existing ingest deduplication. This is not an exactly-once transport guarantee or a live routing
-switch.
+The authorized replay API still queues only under the connector's replay-safety policy. A drain
+never holds a transaction across submission (bu-dhloi1.225). It claims up to 10 rows in one
+`FOR UPDATE SKIP LOCKED` statement that stamps a per-drain `claim_token` and `claimed_at` (core_325),
+so a competing drain skips them. It then submits each row with no transaction or connection held,
+within a deadline (60 s) shorter than the claim lease (300 s), and records the outcome in a second
+short statement that applies only while the row still carries its token. It starts a submission
+only while that deadline still ends inside the lease; otherwise it releases the rows it still holds
+for a later drain, so no other drain can reclaim a row this one may yet submit. A drain that is cancelled
+or fails part-way releases the rows it still holds back to `replay_pending`; a drain that dies
+leaves claims that any later drain reclaims once the lease lapses. Either way a row may be
+submitted again with the same event identity, for existing ingest deduplication. A failed submit
+stays `replay_failed` until an explicit replay request. This is not an exactly-once transport
+guarantee or a live routing switch.
 
 Gmail backfill, Calendar sync, ActivityWatch live polling and the Telegram user client's
 per-message path never move their cursor past an item whose ingest submission failed

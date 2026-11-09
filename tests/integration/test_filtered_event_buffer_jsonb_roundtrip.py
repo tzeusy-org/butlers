@@ -47,7 +47,11 @@ from fastapi import HTTPException
 
 from butlers.api.deps import get_db
 from butlers.api.routers.ingestion_events import bulk_retry_ingestion_events, replay_ingestion_event
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.filtered_event_buffer import (
+    REPLAY_IN_FLIGHT_STATUS,
+    FilteredEventBuffer,
+    drain_replay_pending,
+)
 from butlers.core.ingestion_events import ingestion_dropped_known_summary
 from butlers.testing.db import open_pool
 from butlers.testing.migration import (
@@ -85,6 +89,14 @@ def _sample_payload() -> dict:
         raw={"headers": [], "body": "Hello"},
         normalized_text="Hello",
         policy_tier="default",
+    )
+
+
+async def _lapse_leases(pool) -> None:
+    """Age every live replay claim past the lease, as if its drain had died."""
+    await pool.execute(
+        "UPDATE connectors.filtered_events SET claimed_at = claimed_at - interval '1 day' "
+        "WHERE claim_token IS NOT NULL"
     )
 
 
@@ -608,7 +620,7 @@ async def test_drain_replay_pending_handles_clean_object_row(buffer_pool: asyncp
     assert row["status"] == "replay_complete"
 
     # Real SQL/status uncertainty: submission succeeds but status persistence
-    # fails. The transaction rolls back and an explicit later drain resubmits
+    # fails. The claim lapses after its lease and a later drain resubmits
     # exactly the same event identity and exposure facts for ingest dedupe.
     # Email remains categorically unsafe even when its registry row says safe.
     async with _register_replay(buffer_pool, "gmail", "gmail:user:alice@example.com"):
@@ -697,12 +709,18 @@ async def test_drain_replay_pending_handles_clean_object_row(buffer_pool: asyncp
         await _queue_replay(buffer_pool, row_ids["uncertain"])
         await drain_replay_pending(FailedStatusPool(), "telegram_bot", endpoint, validate)
         assert len(accepted) == 1
-        assert (
-            await buffer_pool.fetchval(
-                "SELECT status FROM connectors.filtered_events WHERE id=$1", row_ids["uncertain"]
-            )
-            == "replay_pending"
+        # The claim committed before submission, so a lost outcome leaves the row
+        # claimed (bu-dhloi1.225): no drain takes it while the lease is live, and
+        # one takes it again once the lease lapses.
+        claimed = await buffer_pool.fetchrow(
+            "SELECT status, claim_token FROM connectors.filtered_events WHERE id=$1",
+            row_ids["uncertain"],
         )
+        assert claimed["status"] == REPLAY_IN_FLIGHT_STATUS
+        assert claimed["claim_token"] is not None
+        await drain_replay_pending(buffer_pool, "telegram_bot", endpoint, validate)
+        assert len(accepted) == 1  # the lease is still live
+        await _lapse_leases(buffer_pool)
         await drain_replay_pending(buffer_pool, "telegram_bot", endpoint, validate)
         assert accepted[0] == accepted[1]
         assert accepted[1]["event"]["in_reply_to_ref"] == "opaque-prior"
@@ -724,6 +742,130 @@ async def test_drain_replay_pending_handles_clean_object_row(buffer_pool: asyncp
             {"kind": "embedded", "start": 100, "end": 200}
         ]
         assert parse_ingest_envelope(accepted[-1]).payload.untrusted_spans[0].start == 0
+
+
+@pytest.mark.pg_clock
+async def test_cancelled_drain_releases_untouched_rows_and_holds_no_lock(
+    buffer_pool: asyncpg.Pool,
+) -> None:
+    """A drain cancelled mid-batch hands its unsubmitted rows back (bu-dhloi1.225).
+
+    Submission runs with no row lock held, so another connection can lock the
+    claimed row meanwhile; the next drain then replays the rows the cancelled
+    one never reached.
+    """
+    endpoint = "gmail:user:alice@example.com"
+    buf = FilteredEventBuffer(connector_type="gmail", endpoint_identity=endpoint)
+    names = ["cancel-1", "cancel-2", "cancel-3"]
+    for name in names:
+        payload = _sample_payload()
+        payload["event"]["external_event_id"] = name
+        buf.record(
+            external_message_id=name,
+            source_channel="email",
+            sender_identity="sender@example.com",
+            subject_or_preview="Hello",
+            filter_reason=FilteredEventBuffer.reason_submission_error(),
+            status="replay_pending",
+            full_payload=payload,
+        )
+        await buf.flush(buffer_pool)
+        await asyncio.sleep(0.01)  # distinct received_at, so the drain order is fixed
+
+    delivered: list[str] = []
+
+    async def cancel_on_second(envelope: dict) -> None:
+        name = envelope["event"]["external_event_id"]
+        async with buffer_pool.acquire() as other:
+            await other.execute("SET lock_timeout = '1s'")
+            try:
+                async with other.transaction():
+                    await other.execute(
+                        "SELECT 1 FROM connectors.filtered_events "
+                        "WHERE external_message_id=$1 FOR UPDATE",
+                        name,
+                    )
+            finally:
+                await other.execute("RESET lock_timeout")
+        if name == "cancel-2":
+            raise asyncio.CancelledError
+        delivered.append(name)
+
+    with pytest.raises(asyncio.CancelledError):
+        await drain_replay_pending(buffer_pool, "gmail", endpoint, cancel_on_second)
+
+    rows = {
+        r["external_message_id"]: (r["status"], r["claim_token"])
+        for r in await buffer_pool.fetch(
+            "SELECT external_message_id, status, claim_token FROM connectors.filtered_events "
+            "WHERE external_message_id = ANY($1)",
+            names,
+        )
+    }
+    assert rows == {
+        "cancel-1": ("replay_complete", None),
+        "cancel-2": ("replay_pending", None),
+        "cancel-3": ("replay_pending", None),
+    }
+
+    async def collect(envelope: dict) -> None:
+        delivered.append(envelope["event"]["external_event_id"])
+
+    await drain_replay_pending(buffer_pool, "gmail", endpoint, collect)
+    assert delivered == names
+    assert {
+        r["status"]
+        for r in await buffer_pool.fetch(
+            "SELECT status FROM connectors.filtered_events WHERE external_message_id = ANY($1)",
+            names,
+        )
+    } == {"replay_complete"}
+
+
+@pytest.mark.pg_clock
+async def test_stale_lease_is_reclaimed_and_the_late_holder_records_nothing(
+    buffer_pool: asyncpg.Pool,
+) -> None:
+    """A drain whose lease lapsed cannot overwrite the reclaiming drain's outcome."""
+    endpoint = "gmail:user:alice@example.com"
+    buf = FilteredEventBuffer(connector_type="gmail", endpoint_identity=endpoint)
+    payload = _sample_payload()
+    payload["event"]["external_event_id"] = "lease-1"
+    buf.record(
+        external_message_id="lease-1",
+        source_channel="email",
+        sender_identity="sender@example.com",
+        subject_or_preview="Hello",
+        filter_reason=FilteredEventBuffer.reason_submission_error(),
+        status="replay_pending",
+        full_payload=payload,
+    )
+    await buf.flush(buffer_pool)
+    reclaimed: list[str] = []
+
+    async def reclaiming_submit(envelope: dict) -> None:
+        reclaimed.append(envelope["event"]["external_event_id"])
+
+    async def stalled_submit(envelope: dict) -> None:
+        # While this drain is stalled its lease lapses, and another drain takes
+        # the row over and completes it.
+        await _lapse_leases(buffer_pool)
+        await drain_replay_pending(buffer_pool, "gmail", endpoint, reclaiming_submit)
+        raise ValueError("late failure from the expired holder")
+
+    await drain_replay_pending(buffer_pool, "gmail", endpoint, stalled_submit)
+
+    assert reclaimed == ["lease-1"]
+    row = await buffer_pool.fetchrow(
+        "SELECT status, error_detail, claim_token, claimed_at "
+        "FROM connectors.filtered_events WHERE external_message_id='lease-1'"
+    )
+    assert dict(row) == {
+        "status": "replay_complete",
+        "error_detail": None,
+        "claim_token": None,
+        "claimed_at": None,
+    }
 
 
 async def test_drain_replay_pending_handles_legacy_string_shaped_row(
@@ -1470,7 +1612,7 @@ async def test_replay_of_marked_drop_submits_clean_envelope(buffer_pool: asyncpg
                 await asyncio.wait_for(
                     drain_replay_pending(buffer_pool, connector_type, endpoint, other_submit), 5
                 )
-                assert competing == []  # the first real connection still holds the row lock
+                assert competing == []  # the first drain's committed claim took the row
             finally:
                 release.set()
                 await asyncio.wait_for(first, 5)
