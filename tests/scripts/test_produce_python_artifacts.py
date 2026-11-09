@@ -326,7 +326,7 @@ class ProducerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "nine-wheel"):
             producer.backend_lock(modified)
 
-    def test_seed_is_nonfinal_full_four_export_profiles_and_offline_sync(self):
+    def test_seed_is_nonfinal_full_four_export_profiles_and_no_index_sync(self):
         receipt = self.seed()
         self.assertEqual(receipt["status"], "NONFINAL")
         self.assertFalse(self.output.exists())
@@ -337,12 +337,26 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(sum("--group" in command for command in exports), 2)
         for command, _, _ in self.ops.commands:
             self.assertIn("--frozen", command)
-            self.assertIn("--offline", command)
+            if "export" in command:
+                self.assertIn("--offline", command)
             self.assertNotIn("--build-constraints", command)
         self.assertIn("--no-index", self.ops.commands[-1][0])
         constraints = (self.work / "seed/build-constraints.txt").read_text()
         self.assertIn("hatchling==1.33.0\n", constraints)
         self.assertIn("editables==0.6\n", constraints)
+
+    def test_only_public_seed_primes_url_cache_and_cold_sync_stays_offline(self):
+        self.seed()
+        syncs = [command for command, _, _ in self.ops.commands if "sync" in command]
+        self.assertEqual(len(syncs), 1)
+        self.assertNotIn("--offline", syncs[0])
+        cold = producer.sync_argv(
+            self.ops, self.project, self.root / "cache", self.root / "wheels", "production", []
+        )
+        self.assertIn("--offline", cold)
+        for command in (syncs[0], cold):
+            for flag in ("--frozen", "--no-index", "--find-links", "--no-python-downloads"):
+                self.assertIn(flag, command)
 
     def test_seed_exports_use_uv_pylock_filenames(self):
         self.seed()

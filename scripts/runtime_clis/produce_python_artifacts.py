@@ -700,6 +700,8 @@ def sync_argv(
     wheelhouse: Path,
     profile: str,
     extras: list[str],
+    *,
+    offline: bool = True,
 ) -> list[str]:
     return [
         str(operations.uv),
@@ -707,7 +709,7 @@ def sync_argv(
         "--project",
         str(project),
         "--frozen",
-        "--offline",
+        *(["--offline"] if offline else []),
         "--no-index",
         "--find-links",
         str(wheelhouse),
@@ -837,11 +839,14 @@ def public_seed(project: Path, work: Path, output: Path, lock: Path, operations=
             ops.fetch(artifact, wheelhouse)
         metadata = tomllib.loads((project / "pyproject.toml").read_text())["project"]
         inventories[f"{variant}/{profile}"] = {**versions, metadata["name"]: metadata["version"]}
-    # Seed the full dev+audio closure only from complete verified public inputs.
-    # Public seed is preparation, not a claimed offline check.
+    # Prime UV's URL-addressed cache as well as the verified wheelhouse. Direct
+    # lock URLs cannot be satisfied by find-links alone before UV caches them.
+    # Index lookup stays disabled; this public preparation is not an offline check.
     environment = {**ops.environment, "UV_PROJECT_ENVIRONMENT": str(work / "seed-environment")}
     ops.run(
-        sync_argv(ops, frozen_source, cache, wheelhouse, "development", ["live-listener"]),
+        sync_argv(
+            ops, frozen_source, cache, wheelhouse, "development", ["live-listener"], offline=False
+        ),
         frozen_source,
         environment=environment,
     )

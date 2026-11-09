@@ -73,7 +73,11 @@ hash/size mismatches. The allowed public artifact hosts are
 `files.pythonhosted.org`, `download.pytorch.org`, and `download-r2.pytorch.org`.
 
 The full development plus live-listener seed uses ordinary frozen uv sync with
-`--offline --no-index --find-links` and the explicit fresh cache. The generated
+`--no-index --find-links` and the explicit fresh cache. This public preparation
+may acquire the original hash-locked direct URLs so UV records their URL-addressed
+cache entries; a matching wheelhouse file alone does not establish that cache
+identity. All four later cold checks retain `--offline` and actual network
+containment. The generated
 `build-constraints.txt` documents the exact backend inventory. uv 0.12.22 sync has
 no `--build-constraints` option: the producer never passes one and does not claim
 that a constraints environment variable enforces it. The complete closed
