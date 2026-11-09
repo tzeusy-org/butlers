@@ -198,24 +198,15 @@ def test_base_image_freshness_fingerprints_each_local_copy_input_without_dotenv(
         target.write_bytes(original)
 
 
-def test_compose_base_freshness_uses_the_input_receipt_and_rebuilds_legacy_images() -> None:
-    """The canonical launcher reads and writes the separate path-bound input label."""
+def test_compose_base_input_requires_an_explicit_immutable_reference() -> None:
+    """Launching consumes the coordinated base by digest instead of rebuilding a tag."""
     text = _compose_script_text()
 
-    inputs_match = re.search(
-        r"BASE_IMAGE_BUILD_INPUTS=\(\n(?P<inputs>(?:\s+[^\n]+\n)+)\)",
-        text,
-    )
-    assert inputs_match is not None
-    configured_inputs = tuple(
-        line.strip() for line in inputs_match.group("inputs").splitlines() if line.strip()
-    )
-    assert configured_inputs == ("Dockerfile.base", *_non_stage_copy_sources())
-    assert 'source "${SCRIPT_DIR}/base-image-input-fingerprint.sh"' in text
-    assert '"${BASE_IMAGE_BUILD_INPUTS[@]}"' in text
-    assert '"butlers.base.dockerfile_sha"' in text
-    assert '"butlers.base.input_sha"' in text
-    assert '--label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}"' in text
-    assert '--label "butlers.base.input_sha=${BASE_INPUT_SHA}"' in text
-    assert '[ -z "$BASE_IMAGE_DOCKERFILE_SHA" ] || [ -z "$BASE_IMAGE_INPUT_SHA" ]' in text
-    assert '[ "$BASE_IMAGE_INPUT_SHA" != "$BASE_INPUT_SHA" ]' in text
+    assert "BUTLERS_BASE_IMAGE must be a full registry/repository@sha256 reference" in text
+    assert '--build-arg "BUTLERS_BASE_IMAGE=${BUTLERS_BASE_IMAGE}"' in text
+    assert '--build-context "python-artifacts=${PYTHON_ARTIFACTS_CONTEXT}"' in text
+    assert '--build-context "python-artifacts=${AUDIO_PYTHON_ARTIFACTS_CONTEXT}"' in text
+    assert "APP_BUILD_TARGET=production" in text
+    assert "APP_BUILD_TARGET=development" in text
+    assert "docker image inspect butlers-base:latest" not in text
+    assert "-f Dockerfile.base" not in text

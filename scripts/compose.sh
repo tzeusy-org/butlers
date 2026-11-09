@@ -519,65 +519,36 @@ for p in "${PROFILES[@]}"; do
   fi
 done
 
-# ── Ensure base image is current ───────────────────────────────────────
-# The base image (butlers-base) contains system deps, Node.js, LLM CLIs,
-# and uv.  Fingerprint the Dockerfile plus every local source it COPYs: Docker
-# cache invalidation alone cannot make an existing tagged image stale when a
-# generator or PID1 helper changes.  This list intentionally excludes dotenv
-# and ambient deployment configuration.
-# shellcheck source=base-image-input-fingerprint.sh
-source "${SCRIPT_DIR}/base-image-input-fingerprint.sh"
-BASE_IMAGE_BUILD_INPUTS=(
-  Dockerfile.base
-  scripts/runtime_cli_sandbox_init.c
-  scripts/generate_runtime_cli_sandbox_manifest.py
-)
-if command -v sha256sum &>/dev/null; then
-  _base_dockerfile_hasher() { sha256sum; }
+# App builds consume a previously published immutable runtime base and a closed
+# Python context. Validate before any build or stack teardown; never infer a
+# floating tag, warm host cache, or a different extras selection.
+BASE_IMAGE_REFERENCE_PATTERN='^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9]+([._/-][a-z0-9]+)*@sha256:[0-9a-f]{64}$'
+if ! [[ "${BUTLERS_BASE_IMAGE:-}" =~ $BASE_IMAGE_REFERENCE_PATTERN ]]; then
+  echo "ERROR: BUTLERS_BASE_IMAGE must be a full registry/repository@sha256 reference." >&2
+  exit 1
+fi
+_python_artifacts_context() {
+  local context="$1"
+  if [[ -z "$context" || ! -d "$context" || -L "$context" \
+    || ! -f "$context/provenance.json" || -L "$context/provenance.json" ]]; then
+    echo "ERROR: Supply a real closed Python artifacts directory with provenance.json." >&2
+    return 1
+  fi
+  (cd -- "$context" && pwd -P)
+}
+PYTHON_ARTIFACTS_CONTEXT=$(_python_artifacts_context "${BUTLERS_PYTHON_ARTIFACTS:-}")
+if [[ " ${PROFILES[*]} " == *" audio "* ]]; then
+  AUDIO_PYTHON_ARTIFACTS_CONTEXT=$(_python_artifacts_context "${BUTLERS_AUDIO_PYTHON_ARTIFACTS:-}")
+fi
+if [ "$BUTLERS_MODE" = "prod" ]; then
+  APP_BUILD_TARGET=production
 else
-  _base_dockerfile_hasher() { shasum -a 256; }
+  APP_BUILD_TARGET=development
 fi
-BASE_DOCKERFILE_SHA=$(_base_dockerfile_hasher < Dockerfile.base | awk '{print $1}')
-BASE_INPUT_SHA=$(butlers_base_image_input_fingerprint "${BASE_IMAGE_BUILD_INPUTS[@]}")
 
-# Keep the legacy Dockerfile-only label for existing image consumers.  The
-# input label is the authoritative freshness receipt for this broader closure;
-# images without it predate the sandbox inputs and rebuild fail closed.
-BASE_IMAGE_DOCKERFILE_SHA=$(
-  docker image inspect butlers-base:latest \
-    --format '{{ index .Config.Labels "butlers.base.dockerfile_sha" }}' \
-    2>/dev/null || true
-)
-BASE_IMAGE_INPUT_SHA=$(
-  docker image inspect butlers-base:latest \
-    --format '{{ index .Config.Labels "butlers.base.input_sha" }}' \
-    2>/dev/null || true
-)
-
-if [ -z "$BASE_IMAGE_DOCKERFILE_SHA" ] || [ -z "$BASE_IMAGE_INPUT_SHA" ]; then
-  echo "Building butlers-base image (~5-10 min)..."
-  docker build \
-    --label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}" \
-    --label "butlers.base.input_sha=${BASE_INPUT_SHA}" \
-    -f Dockerfile.base \
-    -t butlers-base . || {
-    echo "ERROR: Failed to build butlers-base image" >&2
-    exit 1
-  }
-  echo ""
-elif [ "$BASE_IMAGE_DOCKERFILE_SHA" != "$BASE_DOCKERFILE_SHA" ] \
-  || [ "$BASE_IMAGE_INPUT_SHA" != "$BASE_INPUT_SHA" ]; then
-  echo "Rebuilding butlers-base image because its copied runtime inputs changed..."
-  docker build \
-    --label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}" \
-    --label "butlers.base.input_sha=${BASE_INPUT_SHA}" \
-    -f Dockerfile.base \
-    -t butlers-base . || {
-    echo "ERROR: Failed to rebuild butlers-base image" >&2
-    exit 1
-  }
-  echo ""
-fi
+# The runtime base is supplied by digest above. Its scoped source/artifact
+# builder is a separate operation; launching Compose never rebuilds a floating
+# butlers-base tag or changes the selected runtime dependency closure.
 
 echo "Starting Butlers stack (${BUTLERS_MODE})..."
 echo "  Profiles: ${PROFILES[*]:-default}"
@@ -651,7 +622,9 @@ GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 export GIT_SHA
 
 echo "Building butlers-app image (tag: ${BUTLERS_APP_TAG}, sha: ${GIT_SHA})..."
-DOCKER_BUILDKIT=1 docker build --build-arg GIT_SHA="${GIT_SHA}" \
+DOCKER_BUILDKIT=1 docker build --target "$APP_BUILD_TARGET" \
+  --build-context "python-artifacts=${PYTHON_ARTIFACTS_CONTEXT}" \
+  --build-arg "BUTLERS_BASE_IMAGE=${BUTLERS_BASE_IMAGE}" --build-arg GIT_SHA="${GIT_SHA}" \
   -t "butlers-app:${BUTLERS_APP_TAG}" . || {
   echo "ERROR: Failed to build butlers-app image" >&2
   exit 1
@@ -660,7 +633,10 @@ DOCKER_BUILDKIT=1 docker build --build-arg GIT_SHA="${GIT_SHA}" \
 # Build profile-specific images (live-listener if audio profile active)
 if [[ " ${PROFILES[*]} " == *" audio "* ]]; then
   echo "Building butlers-app-audio image (tag: ${BUTLERS_APP_TAG})..."
-  DOCKER_BUILDKIT=1 docker build --build-arg EXTRAS=live-listener --build-arg GIT_SHA="${GIT_SHA}" \
+  DOCKER_BUILDKIT=1 docker build --target "$APP_BUILD_TARGET" \
+    --build-context "python-artifacts=${AUDIO_PYTHON_ARTIFACTS_CONTEXT}" \
+    --build-arg "BUTLERS_BASE_IMAGE=${BUTLERS_BASE_IMAGE}" \
+    --build-arg EXTRAS=live-listener --build-arg GIT_SHA="${GIT_SHA}" \
     -t "butlers-app-audio:${BUTLERS_APP_TAG}" . || {
     echo "ERROR: Failed to build butlers-app-audio image" >&2
     exit 1

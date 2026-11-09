@@ -53,6 +53,9 @@ def _run_launcher(
         "DASHBOARD_AUTH_TRUSTED_PROXY_PEERS=old.invalid\n",
         encoding="utf-8",
     )
+    artifacts = tmp_path / "python-artifacts"
+    artifacts.mkdir()
+    (artifacts / "provenance.json").write_text("{}")
 
     calls = tmp_path / "calls"
     state = tmp_path / "state"
@@ -150,6 +153,8 @@ printf '%s\n' "$now"
         "TEST_INITIAL_HEALTH": initial_health,
         "TEST_FINAL_HEALTH": final_health,
         "TEST_ATTRIBUTION": attribution,
+        "BUTLERS_BASE_IMAGE": "registry.example.test/butlers/base@sha256:" + "a" * 64,
+        "BUTLERS_PYTHON_ARTIFACTS": str(artifacts),
     }
     args = ["bash", scripts / "compose.sh", "--skip-oauth-check", "--skip-tailscale-check"]
     if no_hotreload:

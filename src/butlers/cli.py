@@ -334,6 +334,19 @@ def dashboard(host: str, port: int) -> None:
     ),
 )
 @click.option(
+    "--base-image",
+    envvar="BUTLERS_BASE_IMAGE",
+    default=None,
+    help="Immutable runtime base as registry/repository@sha256 (or BUTLERS_BASE_IMAGE)",
+)
+@click.option(
+    "--python-artifacts",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="BUTLERS_PYTHON_ARTIFACTS",
+    default=None,
+    help="Closed Python build context directory (or BUTLERS_PYTHON_ARTIFACTS)",
+)
+@click.option(
     "--allow-dirty-root",
     "allow_dirty_root",
     is_flag=True,
@@ -354,6 +367,8 @@ def deploy(
     env_file: str | None,
     health_url: str | None,
     profiles: tuple[str, ...],
+    base_image: str | None,
+    python_artifacts: Path | None,
     allow_dirty_root: bool,
 ) -> None:
     """Idempotent production deploy: build, migrate, recreate, verify, record.
@@ -405,7 +420,12 @@ def deploy(
         config_kwargs["health_url"] = health_url
 
     try:
-        config = DeployConfig(**config_kwargs, readiness=readiness)
+        config = DeployConfig(
+            **config_kwargs,
+            readiness=readiness,
+            base_image=base_image,
+            python_artifacts=python_artifacts.absolute() if python_artifacts is not None else None,
+        )
     except ValueError as exc:
         click.echo(f"Invalid deploy configuration: {exc}", err=True)
         sys.exit(1)

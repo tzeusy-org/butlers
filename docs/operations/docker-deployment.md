@@ -139,11 +139,15 @@ docker buildx build --target production \
 
 Use `--target development` for the complete dev-group image and keep its tag
 separate from production. This source foundation has not yet earned actual
-production/development image or cold-start proof. Existing launcher/deploy build
-callers must forward the immutable base/context and select the appropriate
-built target; their former no-input invocation fails rather than choosing a
-floating fallback. Integrating those callers and building the actual closed
-artifacts remain part of the same delivery outcome.
+production/development image or cold-start proof. `scripts/compose.sh` requires
+`BUTLERS_BASE_IMAGE` and `BUTLERS_PYTHON_ARTIFACTS`, forwarding them as the base
+argument and named context. It selects `development` in dev mode (including
+`--no-hotreload`) and `production` in prod mode. Ordinary app builds select no
+extras. `--audio` additionally requires `BUTLERS_AUDIO_PYTHON_ARTIFACTS`, whose
+profile selects exactly `live-listener`, for the separate audio image. Missing
+inputs refuse before build or stack teardown; launching never rebuilds a
+floating base tag. Each context may contain a complete hashed cache/wheel
+superset, but its declared groups/extras must match the requested install.
 
 ### Installed-only startup and hotreload
 
@@ -321,14 +325,16 @@ step and, if used, the sysctl drop-in in that role for every host that runs `das
 manual build-then-`up -d` ceremony with one idempotent command:
 
 ```bash
-uv run butlers deploy --dir /path/to/repo --timeout 180
+butlers deploy --dir /path/to/repo --timeout 180 \
+  --base-image "$BUTLERS_BASE_IMAGE" \
+  --python-artifacts "$BUTLERS_PYTHON_ARTIFACTS"
 ```
 
 It runs, in order:
 
-1. **Build** — use the explicit production target, immutable base and verified named artifact
-   context described above. The retained deploy caller must forward those required inputs; a
-   former no-input invocation refuses.
+1. **Build** — forwards the explicit production target, immutable base and named artifact
+   context described above. The two build-input options also accept their corresponding
+   environment variables; a former no-input invocation refuses.
 2. **Prepare and migrate** — runs the merged Compose input with `run --rm migrations`. That
    one-shot first applies Chronicler's explicit private-schema prerequisite, then runs the ordinary
    core/domain/module migration order, always in a fresh container. A direct Compose lifecycle
@@ -403,9 +409,8 @@ Per-mode host ports and project names (both can run at once):
 
 ## Implementation Notes
 
-- The retained `scripts/compose.sh` base rebuild check uses the `butlers.base.dockerfile_sha` label
-  differs from `Dockerfile.base`; bump pinned runtime CLIs in `Dockerfile.base`, since an app-image
-  rebuild alone does not pick up base-layer tools.
+- Runtime CLI/system changes require a new closed base build and its digest reference.
+  An application rebuild consumes the explicit base; it does not rebuild base tools.
 - Butler MCP ports `41100-41112` sit inside Linux's default ephemeral range, so `butlers-up` and
   `butlers-up-hotreload` set `net.ipv4.ip_local_reserved_ports=41100-41112`; without it an outbound
   DB connection can claim a listener port before startup.

@@ -217,6 +217,10 @@ class DeployConfig:
     project_name: str = DEFAULT_PROJECT_NAME
     env_file: str = DEFAULT_ENV_FILE
     image_tag: str = DEFAULT_IMAGE_TAG
+    #: Explicit immutable build inputs. The Dockerfile validates the complete
+    #: Python context before installation; no local/floating base is inferred.
+    base_image: str | None = None
+    python_artifacts: Path | None = None
     health_url: str = DEFAULT_HEALTH_URL
     health_timeout_s: float = DEFAULT_HEALTH_TIMEOUT_S
     health_poll_interval_s: float = DEFAULT_HEALTH_POLL_INTERVAL_S
@@ -621,9 +625,31 @@ def _run_subprocess(
 
 def build_image(config: DeployConfig, git_sha: str) -> None:
     """Build the ``butlers-app`` image, tagged and stamped with *git_sha*."""
+    if config.base_image is None or not re.fullmatch(
+        r"[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/[a-z0-9]+(?:[._/-][a-z0-9]+)*"
+        r"@sha256:[0-9a-f]{64}",
+        config.base_image,
+    ):
+        raise DeployError("build", "an explicit registry/repository@sha256 base image is required")
+    artifacts = config.python_artifacts
+    if artifacts is None:
+        raise DeployError("build", "an explicit closed Python artifacts directory is required")
+    if not artifacts.is_absolute():
+        artifacts = config.repo_root / artifacts
+    if artifacts.is_symlink() or not artifacts.is_dir():
+        raise DeployError("build", "Python artifacts must name a real directory")
+    provenance = artifacts / "provenance.json"
+    if provenance.is_symlink() or not provenance.is_file():
+        raise DeployError("build", "Python artifact provenance is required")
     cmd = [
         "docker",
         "build",
+        "--target",
+        "production",
+        "--build-context",
+        f"python-artifacts={artifacts.resolve()}",
+        "--build-arg",
+        f"BUTLERS_BASE_IMAGE={config.base_image}",
         "--build-arg",
         f"GIT_SHA={git_sha}",
         "-t",

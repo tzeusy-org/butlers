@@ -5,6 +5,9 @@ package from public monorepo commit
 `1b010c501559ec8be815f870a340fc79cbe91730`. The official archive digest and
 package Git tree are recorded in `series.json`. The source preparer selects
 that complete package, retaining its tests, notices and fixture symlinks.
+The original archive and Git blobs retain literal symlink text. Preparation
+normalizes a leading `./` on the three fixture links, preserving their relative
+targets; its tree receipt does not claim literal prepared-link equality to Git.
 
 A native external-account client creates a separate STS Gaxios client. When
 its parent has an explicitly supplied `fetchImplementation`, the constructor

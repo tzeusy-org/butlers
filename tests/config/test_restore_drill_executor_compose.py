@@ -145,6 +145,9 @@ def _run_compose_launcher_harness(
         environment_text,
         encoding="utf-8",
     )
+    artifacts = tmp_path / "python-artifacts"
+    artifacts.mkdir()
+    (artifacts / "provenance.json").write_text("{}")
 
     calls = tmp_path / "launcher-calls"
     fake_bin = tmp_path / "bin"
@@ -198,6 +201,8 @@ def _run_compose_launcher_harness(
     environment = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "BUTLERS_BASE_IMAGE": "registry.example.test/butlers/base@sha256:" + "a" * 64,
+        "BUTLERS_PYTHON_ARTIFACTS": str(artifacts),
     }
     for key in tuple(environment):
         if key.startswith("RESTORE_DRILL_"):

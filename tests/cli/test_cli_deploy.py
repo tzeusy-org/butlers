@@ -51,6 +51,30 @@ class TestDeployCommand:
         assert "--allow-dirty-root" in result2.output
         assert "--ready-url" in result2.output
         assert "--readiness-timeout" in result2.output
+        assert "--base-image" in result2.output
+        assert "--python-artifacts" in result2.output
+
+    @pytest.mark.parametrize("environment_options", [False, True])
+    def test_closed_build_inputs_are_forwarded(self, runner, tmp_path, environment_options):
+        base = "registry.example.test/butlers/base@sha256:" + "a" * 64
+        args = ["deploy", "--dir", str(tmp_path)]
+        environment = {}
+        if environment_options:
+            environment = {
+                "BUTLERS_BASE_IMAGE": base,
+                "BUTLERS_PYTHON_ARTIFACTS": str(tmp_path),
+            }
+        else:
+            args += ["--base-image", base, "--python-artifacts", str(tmp_path)]
+        with patch("butlers.core.deploy.run_deploy", new=AsyncMock()) as mock_run:
+            mock_run.return_value = DeployResult(
+                git_sha="fixture", migration_head=None, result="success"
+            )
+            result = runner.invoke(cli, args, env=environment)
+        assert result.exit_code == 0, result.output
+        config = mock_run.await_args.args[0]
+        assert config.base_image == base
+        assert config.python_artifacts == tmp_path
 
     def test_success_prints_summary_and_exits_zero(self, runner, tmp_path):
         with patch("butlers.core.deploy.run_deploy", new=AsyncMock()) as mock_run:
