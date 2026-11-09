@@ -26,7 +26,18 @@ spec:
           args:
             - >-
               uv run --frozen --no-dev butlers db prepare-chronicler-memory --dir /app/roster
+              {{- if .Values.publicMcp.reconcile }}
+              && uv run --frozen --no-dev butlers db migrate --dir /app/roster
+              && top="$(uv run --frozen --no-dev butlers --help)"
+              && group=""
+              && if printf '%s\n' "$top" | grep -Eq '^ +public-mcp( |$)';
+              then group="$(uv run --frozen --no-dev butlers public-mcp --help)"; fi
+              && if printf '%s\n' "$group" | grep -Eq '^ +reconcile( |$)';
+              then exec uv run --frozen --no-dev butlers public-mcp reconcile --database {{ .Values.database.name }};
+              else echo 'public-mcp reconcile: not in this image (a rollback); skipped' >&2; fi
+              {{- else }}
               && exec uv run --frozen --no-dev butlers db migrate --dir /app/roster
+              {{- end }}
           env:
             {{- include "butlers.postgresEnv" . | nindent 12 }}
       containers:

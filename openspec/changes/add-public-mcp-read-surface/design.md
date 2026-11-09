@@ -292,15 +292,17 @@ each conservative and reversible:
   release's exit would leave a narrowed publication unpurged after a
   readiness failure, with no marker. Putting it in `bootstrap-dev` would run
   it before reconcile, where its guard stops.
-- **Generated in the deployed tag's pod, captured first.** The script picks a
-  running `dashboard-api` pod whose image tag equals `<tag>` (and fails if
-  none does), detects the command from the pod's command listing in a
-  separate call, runs `butlers public-mcp owner-sql` there, and captures the
-  whole output before piping it to the superuser `psql` in the CNPG primary,
-  as `bootstrap-db.sh` captures `init-db.sql`. A rollback tag or a dirty
-  local checkout can never produce a file for a different manifest, and a
-  generator that dies midway feeds psql nothing. Trusting the pod is a
-  residual risk (RFC 0039 D9).
+- **Rendered from the tag's git tree, captured and allowlisted first.** The
+  script requires a running `dashboard-api` pod whose image tag equals
+  `<tag>` (and fails if none does), then renders the file from that tag's
+  commit in the deployer's checkout (`git archive`, `uv run --project
+  <tree> butlers public-mcp owner-sql`), as `bootstrap-db.sh` reads
+  `init-db.sql` with `git show <tag>:`. It never takes the file from a pod:
+  `dashboard-api` is privileged and writable (amended in review,
+  2026-11-09). A rollback tag or a dirty working tree can never produce a
+  file for a different manifest, a generator that dies midway feeds psql
+  nothing, and a psql meta-command allowlist keeps `\!` and backticks off
+  the superuser path (RFC 0039 D3, D9).
 - **Every stop is an error.** The file never uses `\q`; each guard stop
   raises an error, so psql exits non-zero.
 - **Fail loud, never roll back.** A failure exits non-zero with a fixed

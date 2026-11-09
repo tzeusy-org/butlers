@@ -159,6 +159,13 @@ dashboardApi:
     urlSecretRef: {name: "", key: ""}
     intervalSeconds: 600
 
+# Public MCP read surface (RFC 0039). reconcile converges publication butlers_public_v1 and
+# mcp_surface.manifest_state in the migrations initContainer, after Alembic, as the same
+# migration login. It refuses unless init-db.sql created mcp_surface, which needs the CNPG
+# projection roles and the butlers_public database, so it is on only where those exist (dev).
+publicMcp:
+  reconcile: false
+
 frontend:
   resources:
     requests: {cpu: 10m, memory: 32Mi}

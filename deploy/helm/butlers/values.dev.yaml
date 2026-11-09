@@ -14,6 +14,11 @@ externalSecrets:
 localSecrets:
   source: bws
 
+# postgres-dev holds the projection roles and butlers_public (Tzeusy/homelab#40), so the
+# migrations initContainer reconciles the public MCP publication (RFC 0039 D4, OD20).
+publicMcp:
+  reconcile: true
+
 publicUrl:
   dashboardPrefix: butlers-dev
   apiPrefix: butlers-dev-api
