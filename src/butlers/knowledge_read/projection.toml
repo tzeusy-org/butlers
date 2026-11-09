@@ -175,6 +175,7 @@ source = "finance.payment_destinations"
 domain = "finance"
 columns = ["id", "payee_key", "kind", "fingerprint", "last4", "first_seen_at", "last_seen_at", "seen_count"]
 types = { "id" = "uuid", "payee_key" = "text", "kind" = "text", "fingerprint" = "text", "last4" = "text", "first_seen_at" = "timestamp with time zone", "last_seen_at" = "timestamp with time zone", "seen_count" = "integer" }
+# last4: owner decision 2026-11-09: published under OD17; reviewed as possible third-party identifiers
 classes = { "id" = "system", "payee_key" = "system", "kind" = "system", "fingerprint" = "system", "last4" = "personal_record", "first_seen_at" = "system", "last_seen_at" = "system", "seen_count" = "system" }
 key = ["id"]
 replica_identity = ["id"]
@@ -467,6 +468,7 @@ source = "public.entities"
 domain = "relationship"
 columns = ["id", "canonical_name", "entity_type", "aliases", "roles", "merged_into", "deleted", "unidentified", "placeholder_name"]
 types = { "id" = "uuid", "canonical_name" = "character varying", "entity_type" = "character varying", "aliases" = "text[]", "roles" = "text[]", "merged_into" = "uuid", "deleted" = "boolean", "unidentified" = "boolean", "placeholder_name" = "boolean" }
+# aliases, canonical_name: owner decision 2026-11-09: published under OD17; reviewed as possible third-party identifiers
 classes = { "id" = "system", "canonical_name" = "personal_record", "entity_type" = "system", "aliases" = "personal_record", "roles" = "system", "merged_into" = "system", "deleted" = "system", "unidentified" = "system", "placeholder_name" = "system" }
 key = ["id"]
 replica_identity = ["id", "deleted", "unidentified", "placeholder_name"]
