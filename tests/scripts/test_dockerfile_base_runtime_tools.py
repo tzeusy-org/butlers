@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import json
 import os
-import re
 import shlex
 import subprocess
 import tomllib
@@ -200,13 +199,17 @@ def test_base_image_freshness_fingerprints_each_local_copy_input_without_dotenv(
     )
     assert ast.literal_eval(cli_inputs) == expected_inputs
     nightly = Path(".github/workflows/nightly.yml").read_text()
-    nightly_inputs = re.search(
-        r"BASE_INPUT_SHA=\$\(butlers_base_image_input_fingerprint \\\n(.*?)\)",
-        nightly,
-        re.DOTALL,
+    assert "scripts/runtime_clis/build_image_chain.py" in nightly
+    chain_tree = ast.parse(Path("scripts/runtime_clis/build_image_chain.py").read_text())
+    chain_inputs = next(
+        node.value
+        for node in chain_tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "BASE_INPUTS" for target in node.targets
+        )
     )
-    assert nightly_inputs is not None
-    assert tuple(nightly_inputs.group(1).replace("\\\n", "").split()) == expected_inputs
+    assert ast.literal_eval(chain_inputs) == expected_inputs
 
     for relative_path in expected_inputs:
         source = Path(relative_path)

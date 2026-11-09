@@ -57,3 +57,58 @@ ordering, refusal and publication behavior only. Actual Docker producer,
 assembled images, exact-image sandbox/nightly execution and remaining native
 conformance must still earn their own terminal evidence. Building contexts
 does not publish or deploy an application image.
+
+## Immutable local base and application chain
+
+After contexts close, build the base and all four application variants:
+
+```sh
+python3 -I -B scripts/runtime_clis/build_image_chain.py \
+  --project "$PWD" --contexts /absolute/closed-contexts \
+  --work /absolute/new/image-work --output /absolute/new/image-receipt \
+  --revision "$(git rev-parse HEAD)"
+```
+
+Every path must be real and disjoint. The source inventory must equal the
+inventory that produced the contexts; a later checkout or changed runtime
+manifest refuses before starting a registry. Revision must name the actual
+checkout HEAD. The builder freezes the same tracked bytes again, retains the
+existing seven-file base fingerprint helper and labels, and passes both system
+and full runtime named contexts into the base build.
+
+An owned, anonymous, loopback-only registry uses the exact official
+Linux/amd64 registry image in `image-registry-inputs.json`. Only this disposable
+registry receives the base image. Buildx returns a distribution/OCI manifest
+digest, and the builder independently reads that exact manifest from the owned
+loopback port, with proxies and redirects disabled. Both response bytes and
+`Docker-Content-Digest` must match. A Docker configuration/image ID is never
+substituted for a manifest digest. The resulting full registry/repository@sha256
+reference becomes the application's required `BUTLERS_BASE_IMAGE` argument.
+
+Production and development each consume the default and live-listener Python
+contexts separately, plus the full closed Go context. The ordinary production
+image keeps `butlers-app:<revision>`; the other three local tags carry the
+profile and target suffix. Each loaded image ID and Linux/amd64 platform must
+agree with its Buildx metadata. No image is published to an external registry,
+and no deployment, egress activation or credential move occurs.
+
+The registry is removed by its unique name, exact container ID and owner label,
+including its anonymous storage, before a successful receipt publishes. Cleanup
+settles its own command groups and defers repeat owner signals through the
+inspect/remove transaction. Foreign ownership refuses removal. Ordinary build
+commands use the existing signal/child settlement implementation. Local images
+may remain after a partial failure, but no complete image-chain receipt exists.
+
+Nightly's `exact-image-sandbox` now calls the complete context producer and this
+chain before its existing installed-file exporter and real-kernel sandbox
+checks. Its 330-minute watchdog is explicitly provisional: the full Codex
+builder alone measured 5,111 seconds on the conformance host. The timeout
+registry preserves the earlier calibration provenance and records additional
+serial producer/image and evidence reserves; no hosted whole-job timing or p95
+is claimed. A context or image command exiting zero does not establish cold
+native/auth/tool/WebSocket behavior, direct-443 trapping or CNI enforcement.
+
+The source-owned runtime tree anchors remain mandatory. This caller deliberately
+refuses a newly produced artifact that differs from them; actual final producer
+identity reconciliation and complete Docker/nightly execution remain separate
+delivery evidence, rather than a missing-input condition counted as completion.

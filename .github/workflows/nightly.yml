@@ -244,7 +244,8 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: "true"
 
   exact-image-sandbox:
-    timeout-minutes: 30
+    # Provisional cold source-build envelope; Codex alone measured 85 minutes.
+    timeout-minutes: 330
     permissions:
       contents: read
       actions: read
@@ -303,40 +304,23 @@ jobs:
           sudo apt-get clean -q
           docker image prune -f --filter "until=1h" || true
 
-      - name: Prepare pinned public Debian archives
+      - name: Produce complete closed image contexts
         run: |
-          python3 scripts/runtime_clis/fetch_system_artifacts.py \
-            --manifest deploy/runtime-clis/debian-system-inputs.json \
-            --output "${RUNNER_TEMP}/butlers-system-artifacts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-
-      - name: Build butlers-base image
-        # Labels mirror scripts/compose.sh's freshness receipt so this stays
-        # provably the same base-image build contract production uses.
-        run: |
-          # shellcheck source=scripts/base-image-input-fingerprint.sh
-          source scripts/base-image-input-fingerprint.sh
-          BASE_DOCKERFILE_SHA=$(sha256sum < Dockerfile.base | awk '{print $1}')
-          BASE_INPUT_SHA=$(butlers_base_image_input_fingerprint \
-            Dockerfile.base \
-            scripts/runtime_clis/install_system_artifacts.py \
-            deploy/runtime-clis/debian-system-inputs.json \
-            scripts/runtime_cli_sandbox_init.c \
-            scripts/runtime_clis/runtime_artifacts.py \
-            deploy/runtime-clis/runtime-inputs.json \
-            scripts/generate_runtime_cli_sandbox_manifest.py)
-          docker build \
-            --build-context "system-artifacts=${RUNNER_TEMP}/butlers-system-artifacts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}" \
-            --label "butlers.base.input_sha=${BASE_INPUT_SHA}" \
-            -f Dockerfile.base \
-            -t butlers-base:latest .
+          python3 -I -B scripts/runtime_clis/produce_image_contexts.py \
+            --project "${GITHUB_WORKSPACE}" \
+            --work "${RUNNER_TEMP}/image-context-work-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output "${RUNNER_TEMP}/image-contexts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
       - name: Build butlers-app exact image
         env:
           GIT_SHA: ${{ github.sha }}
         run: |
-          DOCKER_BUILDKIT=1 docker build --build-arg GIT_SHA="${GIT_SHA}" \
-            -t "butlers-app:${GIT_SHA}" .
+          python3 -I -B scripts/runtime_clis/build_image_chain.py \
+            --project "${GITHUB_WORKSPACE}" \
+            --contexts "${RUNNER_TEMP}/image-contexts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --work "${RUNNER_TEMP}/image-chain-work-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output "${RUNNER_TEMP}/image-chain-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --revision "${GIT_SHA}"
 
       - name: Export installed runtime image files
         timeout-minutes: 4

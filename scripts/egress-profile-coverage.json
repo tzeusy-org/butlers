@@ -6015,6 +6015,9 @@
     "deploy/runtime-clis/google-auth-library/series.json": {
       "sha256": "0289b29e2ef500b6b639a2b3389d84f506f08f23c78b635baf7022de9321c690"
     },
+    "deploy/runtime-clis/image-registry-inputs.json": {
+      "sha256": "180dabb4c31fab72cbebb85e93fdef8ad2a5804fb2e1f1dd159bfc447375ac66"
+    },
     "deploy/runtime-clis/js-genai/patches/001-dependency-closure.patch": {
       "sha256": "1ff2459f4bc9c559132fe1a74cbe837089029251972c01cf59a9c791f3e72606"
     },
@@ -6036,6 +6039,9 @@
     "deploy/runtime-clis/npm-artifacts/patches/001-test-server-explicit-build-cache.patch": {
       "sha256": "f312102780ef667473adeb7f54a55e355e160df1ba3f159d64247b25132698ed"
     },
+    "deploy/runtime-clis/opencode/LICENSE.models-dev": {
+      "sha256": "dc2dc41c9fea2fd3c41c21c6f484844cab367800b88ff24781f980ad3a9d160a"
+    },
     "deploy/runtime-clis/opencode/LICENSE.upstream": {
       "sha256": "625f0f619133f89bbbb2abe37369613dfa1885eba1e50d02170deb62bb42cb6b"
     },
@@ -6044,6 +6050,9 @@
     },
     "deploy/runtime-clis/opencode/component-inputs.json": {
       "sha256": "5813a2e506d4bcedb6bcf3e95f385b527e46d293df745ced91b8967799b4a9b8"
+    },
+    "deploy/runtime-clis/opencode/model-inputs.tar.gz": {
+      "sha256": "67055565163909906a53c17d9188046e609affc53b7e94457ff0f2b5c2612947"
     },
     "deploy/runtime-clis/opencode/patches/0001-request-auth-effect.patch": {
       "sha256": "53d0e366679fa37424111666d136e29e6277227ee6ceca5a99a50fb5be59e1bf"
@@ -6101,12 +6110,6 @@
     },
     "deploy/runtime-clis/toolchains.json": {
       "sha256": "0a0d693219a11bf7df47561060f8467978ab1f9f9960bdd7598b205c4611c5e4"
-    },
-    "deploy/runtime-clis/opencode/model-inputs.tar.gz": {
-      "sha256": "67055565163909906a53c17d9188046e609affc53b7e94457ff0f2b5c2612947"
-    },
-    "deploy/runtime-clis/opencode/LICENSE.models-dev": {
-      "sha256": "dc2dc41c9fea2fd3c41c21c6f484844cab367800b88ff24781f980ad3a9d160a"
     }
   },
   "bundle_policy": {
