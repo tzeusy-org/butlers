@@ -7,7 +7,7 @@ The runner (bu-u5s4w8 / bu-dhloi1.7) consumes ``consume_fire``; it never evaluat
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -212,7 +212,7 @@ class ConditionEvaluator:
                 if not inserted:
                     if _boundary(stored) != _boundary(inst):
                         raise RegistrationRefused("immutable condition instance changed")
-                    return await self._existing(tx, stored, snapshot.now)
+                    return await self._reregister(tx, stored, inst.leaves, snapshot)
                 if inst.result is Tri.TRUE:
                     fired = replace(inst, state=State.FIRED, version=1)
                     await tx.save_instance(fired, 0)
@@ -293,6 +293,43 @@ class ConditionEvaluator:
                 return await tx.claim_fire_intent(inst.fire_key, consumer)
 
         return await self._guard(run)
+
+    async def _reregister(
+        self, tx: ConditionTx, stored: Instance, seen: Mapping[str, Tri], snapshot: Snapshot
+    ) -> Outcome:
+        """A register retry evaluates the caller's fresher snapshot against the stored instance.
+
+        Only the leaves may move, and only upward (a ``true`` latches; nothing is downgraded by
+        a stale snapshot). Floor, boundary and cursors are never touched, and the fire intent
+        is the instance's one-per-generation row, so a retry can fire once and never twice.
+        """
+        if stored.state is not State.OPEN:
+            return await self._existing(tx, stored, snapshot.now)
+        leaves = {
+            path: Tri.TRUE if seen.get(path) is Tri.TRUE else value
+            for path, value in stored.leaves.items()
+        }
+        seeded = replace(stored, leaves=leaves, result=combine(stored.predicate, leaves))
+        if seeded.result is Tri.TRUE:
+            new = replace(seeded, state=State.FIRED, version=stored.version + 1)
+            trigger, reason = new.synthetic_event_id("registration"), "fired:registration"
+        else:
+            adv = advance(seeded, [], snapshot.now, unmeasurable=snapshot.unmeasurable)
+            if adv.changed:
+                new, trigger, reason = adv.instance, adv.trigger, adv.reason
+            elif leaves != dict(stored.leaves):
+                new = replace(seeded, version=stored.version + 1)
+                trigger, reason = None, "pending"
+            else:
+                return await self._existing(tx, stored, snapshot.now)
+        await tx.save_instance(new, stored.version)
+        intent = None
+        if trigger is not None:
+            intent = await tx.insert_fire_intent(self._intent(new, trigger, reason, snapshot))
+        kind = "expire" if new.state is State.EXPIRED else "register"
+        receipt = self._receipt(new, kind, reason, str(trigger) if trigger else None, snapshot)
+        await tx.append_receipt(receipt)
+        return Outcome(new, receipt, intent)
 
     async def _existing(
         self, tx: ConditionTx, inst: Instance, now: datetime, reason: str | None = None
