@@ -874,6 +874,14 @@ async def _run_shutdown(daemon: Any) -> None:
             pass
         daemon._boot_registration_task = None
 
+    # With a share set, it runs from here, so the catalog retirement below counts against it.
+    # Otherwise the deadline is taken after it, as before (``_shutdown_resources`` does that).
+    deadline = (
+        asyncio.get_running_loop().time() + _shutdown_budget_s(daemon)
+        if vars(daemon).get("_shutdown_budget_s") is not None
+        else None
+    )
+
     # Retire only this boot's registration before stopping its real registry.
     from butlers.core.catalog_publication import close_catalog_publication
 
@@ -884,7 +892,7 @@ async def _run_shutdown(daemon: Any) -> None:
         retirement_error = exc
 
     try:
-        await _shutdown_resources(daemon)
+        await _shutdown_resources(daemon, deadline)
     finally:
         if retirement_error is not None:
             raise retirement_error
@@ -909,7 +917,9 @@ async def _stop_scheduler_loop(daemon: Any, deadline: float) -> None:
         logger.warning("Scheduler tick still running at the shutdown deadline; cancelling it")
         # The first cancel only told the loop to wait; this one reaches the tick.
         task.cancel()
-        done, _ = await asyncio.wait({task}, timeout=_TICK_CANCEL_GRACE_S)
+        left = _share_left_s(daemon, deadline)
+        grace = _TICK_CANCEL_GRACE_S if left is None else min(_TICK_CANCEL_GRACE_S, left)
+        done, _ = await asyncio.wait({task}, timeout=grace)
     if not done:
         logger.error("Scheduler tick ignored cancellation; shutdown continues without it")
     elif not task.cancelled() and task.exception() is not None:
@@ -929,9 +939,32 @@ def _shutdown_budget_s(daemon: Any) -> float:
     return daemon.config.shutdown_timeout_s if daemon.config else 30.0
 
 
-#: A pool close never gets less than this, so a share that is nearly spent still lets a healthy
-#: pool close instead of being terminated at once.
-_POOL_CLOSE_FLOOR_S = 1.0
+#: A step bounded by the daemon's share never gets less than this, so a share that is nearly
+#: spent still lets a healthy step finish instead of being cut at once.
+_STEP_FLOOR_S = 1.0
+_POOL_CLOSE_FLOOR_S = _STEP_FLOOR_S
+
+
+def _share_left_s(daemon: Any, deadline: float | None) -> float | None:
+    """What is left of the daemon's share, never under the floor; ``None`` with no share (or no
+    deadline), where every step keeps its own bound (or none), as before."""
+    if deadline is None or vars(daemon).get("_shutdown_budget_s") is None:
+        return None
+    return max(_STEP_FLOOR_S, deadline - asyncio.get_running_loop().time())
+
+
+async def _within_share(daemon: Any, deadline: float | None, awaitable: Any, what: str) -> None:
+    """Await ``awaitable``, cut at the remaining share when one is set. A step that overruns
+    is logged and left, so the steps after it still run."""
+    left = _share_left_s(daemon, deadline)
+    if left is None:
+        await awaitable
+        return
+    try:
+        async with asyncio.timeout(left):
+            await awaitable
+    except TimeoutError:
+        logger.warning("Shutdown step %r overran its share (%.0fs); continuing", what, left)
 
 
 async def _close_pool(daemon: Any, database: Any, deadline: float | None) -> None:
@@ -941,10 +974,11 @@ async def _close_pool(daemon: Any, database: Any, deadline: float | None) -> Non
     one (a daemon shutting down alone, or no ``deadline``) it is the owner's plain ``close()``
     and its own default bound, exactly as before the budget existed.
     """
-    if deadline is None or vars(daemon).get("_shutdown_budget_s") is None:
+    left = _share_left_s(daemon, deadline)
+    if left is None:
         await database.close()
-        return
-    await database.close(max(_POOL_CLOSE_FLOOR_S, deadline - asyncio.get_running_loop().time()))
+    else:
+        await database.close(left)
 
 
 def _step_budget_s(daemon: Any, deadline: float) -> float:
@@ -955,17 +989,25 @@ def _step_budget_s(daemon: Any, deadline: float) -> float:
     return max(0.0, deadline - asyncio.get_running_loop().time())
 
 
-async def _shutdown_resources(daemon: Any) -> None:
-    """Existing resource teardown, also reached after catalog close refusal."""
+async def _shutdown_resources(daemon: Any, deadline: float | None = None) -> None:
+    """Existing resource teardown, also reached after catalog close refusal.
+
+    ``deadline`` is when the daemon's share ends. ``_run_shutdown`` takes it before the catalog
+    retires when a share is set, so the retirement counts against it; otherwise it is taken here.
+    """
 
     refresh_owner = vars(daemon).get("_chronicler_refresh_service")
     finance_owner = vars(daemon).get("_finance_warning_control_owner")
-    deadline = asyncio.get_running_loop().time() + _shutdown_budget_s(daemon)
+    if deadline is None:
+        deadline = asyncio.get_running_loop().time() + _shutdown_budget_s(daemon)
     if refresh_owner is not None:
         refresh_owner.closed = True
 
     # 1. Stop MCP server
     if daemon._server is not None:
+        if vars(daemon).get("_shutdown_budget_s") is not None:
+            # uvicorn waits this long for open connections, fixed at start-up otherwise.
+            daemon._server.config.timeout_graceful_shutdown = _step_budget_s(daemon, deadline)
         daemon._server.should_exit = True
     if daemon._server_task is not None:
         try:
@@ -1026,7 +1068,7 @@ async def _shutdown_resources(daemon: Any) -> None:
         daemon._switchboard_heartbeat_task = None
 
     # 5b. Close Switchboard MCP client
-    await daemon._disconnect_switchboard()
+    await _within_share(daemon, deadline, daemon._disconnect_switchboard(), "switchboard client")
 
     # 5c. Cancel route_inbox recovery task
     if daemon._route_inbox_recovery_task is not None:
@@ -1074,20 +1116,22 @@ async def _shutdown_chronicler_dependents(daemon: Any, deadline: float | None = 
     # 6. Module shutdown in reverse topological order (active modules only)
     from butlers.core.approval_delivery_worker import stop_approval_delivery_worker
 
-    await stop_approval_delivery_worker(daemon)
+    await _within_share(
+        daemon, deadline, stop_approval_delivery_worker(daemon), "approval delivery worker"
+    )
 
     active_set = {m.name for m in daemon._active_modules}
     for mod in reversed(daemon._modules):
         if mod.name not in active_set:
             continue
         try:
-            await mod.on_shutdown()
+            await _within_share(daemon, deadline, mod.on_shutdown(), f"module {mod.name}")
         except Exception:
             logger.exception("Error during shutdown of module: %s", mod.name)
 
     # 6b. Close S3 blob store
     if daemon.blob_store is not None:
-        await daemon.blob_store.close()
+        await _within_share(daemon, deadline, daemon.blob_store.close(), "blob store")
         daemon.blob_store = None
 
     # 6c. Detach the butler DB log handler, then wait for its in-flight
