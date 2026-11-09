@@ -184,6 +184,11 @@ def bundle_pins(root: Path) -> dict[str, str]:
     pins = {}
     base = root / "deploy/runtime-clis"
     for item in sorted(base.rglob("*")):
+        # Installed dependency bytes have separate lock/artifact attestations.
+        # An ordinary local npm install must not change the source inventory;
+        # its owning package/series/private-import declarations remain pinned.
+        if "node_modules" in item.relative_to(base).parts:
+            continue
         if item.is_file() and item.suffix not in {".md", ".pem"}:
             pins[item.relative_to(root).as_posix()] = digest(item.read_bytes())
     return pins

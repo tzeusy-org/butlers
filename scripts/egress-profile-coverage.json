@@ -533,7 +533,7 @@
       },
       "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
       "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
-      "source_tree_sha256": "5360186e526dee49e6a84297471b4089e8ff96108f0fb38bccdaf2a96455896c",
+      "source_tree_sha256": "0e7898eb7045d89f05305dc644930887d4a73afbe48f093c4f38fd0b64a8c772",
       "config": [
         "provider.*.api",
         "provider.*.models.*.api",
@@ -561,7 +561,7 @@
       },
       "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
       "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
-      "source_tree_sha256": "5360186e526dee49e6a84297471b4089e8ff96108f0fb38bccdaf2a96455896c",
+      "source_tree_sha256": "0e7898eb7045d89f05305dc644930887d4a73afbe48f093c4f38fd0b64a8c772",
       "config": [
         "OPENCODE_MODELS_URL",
         "OPENCODE_MODELS_PATH",
@@ -596,7 +596,7 @@
       },
       "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
       "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
-      "source_tree_sha256": "5360186e526dee49e6a84297471b4089e8ff96108f0fb38bccdaf2a96455896c",
+      "source_tree_sha256": "0e7898eb7045d89f05305dc644930887d4a73afbe48f093c4f38fd0b64a8c772",
       "config": [
         "authorize",
         "token",
@@ -627,7 +627,7 @@
       },
       "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
       "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
-      "source_tree_sha256": "5360186e526dee49e6a84297471b4089e8ff96108f0fb38bccdaf2a96455896c",
+      "source_tree_sha256": "0e7898eb7045d89f05305dc644930887d4a73afbe48f093c4f38fd0b64a8c772",
       "config": [
         "input.url",
         "input.headers"
@@ -654,7 +654,7 @@
       },
       "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
       "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
-      "source_tree_sha256": "5360186e526dee49e6a84297471b4089e8ff96108f0fb38bccdaf2a96455896c",
+      "source_tree_sha256": "0e7898eb7045d89f05305dc644930887d4a73afbe48f093c4f38fd0b64a8c772",
       "config": [
         "ConfigPluginV1.Spec",
         "plugin",
@@ -5970,12 +5970,12 @@
     "deploy/runtime-clis/opencode/patches/0001-request-auth-effect.patch": "53d0e366679fa37424111666d136e29e6277227ee6ceca5a99a50fb5be59e1bf",
     "deploy/runtime-clis/opencode/patches/0002-selected-websocket-and-startup.patch": "bdf4516c30974ec30e982ad567dbedb14aa5b5c85a9ac9fb1af82f565d8d1e92",
     "deploy/runtime-clis/opencode/patches/0003-complete-local-ui-inputs.patch": "a8e33a75bec5dfd02931409b6e6099489c3b2d19f5a20fafba32a9199ff1f856",
-    "deploy/runtime-clis/opencode/patches/0004-redact-effect-websocket-errors.patch": "f17ad9b0b47a93e22cf3ed41364a9677f668250951a41e0dc2eed1804e964e88",
+    "deploy/runtime-clis/opencode/patches/0004-redact-effect-websocket-errors.patch": "2897562fff349e07962cd18e732ed779b7ee2bbb119588fa7e517ba2bce40c7a",
     "deploy/runtime-clis/opencode/patches/0005-pin-original-ghostty-source.patch": "a1b2cfced27ccee79e8cc19b377e3e46ecdafac607ae2756e8500ae310a389d2",
     "deploy/runtime-clis/opencode/patches/0006-complete-selected-websocket-diagnostics.patch": "27198fc160d0d685768ef5b3bb43e59a8cb893d89a9d7192519a078a8706884d",
     "deploy/runtime-clis/opencode/patches/0007-redact-selected-url-credentials.patch": "f6af8dc0c26ea1c0b73c06f89eaa98f075e8649bc6597a7c340941e22b5d07a6",
     "deploy/runtime-clis/opencode/patches/0008-redact-json-escaped-credential-echoes.patch": "96e40b94f1be5f56d09a92320f3a9046de3b67b5da3da3da645c686404790a84",
-    "deploy/runtime-clis/opencode/series.json": "f46230003283488a1754206dd01ab095b2e8ca87e9671f2356bed8a76a90e1a6",
+    "deploy/runtime-clis/opencode/series.json": "56988bab96e2d3c7638c031f1b7a8cecf433413ef902f0a9c00618c1653ccf6a",
     "deploy/runtime-clis/shared/egress.ts": "c18a9d00ac0a4766aca736dc6e56c3f3b93c77e486b7be04b2a12b4b22817301",
     "deploy/runtime-clis/shared/package-lock.json": "006d3c715164a9444763d2c5d8fbcf3108b8961cd32c0dbd2466e9ae0958c27d",
     "deploy/runtime-clis/shared/package.json": "fae6ba695fe4f3d0d0da70829b3816441aa6ee7333a5f2402b271e29afb72fba",

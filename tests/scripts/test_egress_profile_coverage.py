@@ -155,6 +155,14 @@ def test_blocked_required_caller_cannot_silently_gain_a_route(source):
 
 def test_toml_template_and_vendor_changes_are_not_invisible(source):
     root, inventory = source
+    dependency = root / "deploy/runtime-clis/shared/node_modules/private-dependency/index.js"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_text("// Installed dependency, not a repository source input.\n")
+    assert errors(source) == []
+    package = root / "deploy/runtime-clis/shared/package.json"
+    package.write_text('{"dependencies":{"private-dependency":"changed"}}\n')
+    assert any("bundle drift" in e for e in errors(source))
+    package.unlink()
     config = root / "roster/alpha/butler.toml"
     config.parent.mkdir()
     config.write_text('url = "https://api.provider.com/v1"\n')
