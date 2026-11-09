@@ -52,6 +52,25 @@ dispatcher initialization. Fresh-process controls verify that import boundary. V
 native operation coverage, immutable builder/assets, final sandbox manifests and
 offline image closure require their own artifact evidence.
 
+The pinned system package set is `debian-system-inputs.json`: one complete public
+Debian archive population, its signed-index provenance, the original Python base
+inventory, and separate runtime/compiler selections. Supply the complete set as
+regular files under a named `system-artifacts/debs` input. The offline installer
+refuses missing, extra, changed or symlinked archives and a different starting
+package inventory before invoking APT. It passes only pinned local archive paths,
+uses `--no-download` with repository sources disabled, and verifies the installed
+package versions. Run it inside the pinned base with the builder network disabled:
+
+```sh
+python scripts/runtime_clis/install_system_artifacts.py \
+  --manifest deploy/runtime-clis/debian-system-inputs.json \
+  --artifacts /opt/system-artifacts/debs --profile runtime
+```
+
+Use `--profile compiler` in the separate PID1 helper builder. Archive validation
+alone is not an installation or final image receipt. Retain the public input set,
+actual offline install result and final image attestation separately.
+
 The pinned uv distribution is recorded in `toolchains.json`. Build separate
 production and development Python environments from the frozen lock with the
 requested extras, retaining their editable install of the intended `/app/src`.
