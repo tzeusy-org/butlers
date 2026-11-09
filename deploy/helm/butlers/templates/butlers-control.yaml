@@ -28,8 +28,8 @@ spec:
         - name: butlers-control
           image: {{ include "butlers.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          # Same command as the compose service (runtime needs dev extras).
-          command: ["/app/scripts/dev_entrypoint.sh", "butlers/control", "sh", "-c", "uv sync --dev && exec uv run butlers control --profile KEY_ABSENT_STAGE --config roster/switchboard --session-host 0.0.0.0"]
+          # Execute the sealed installed environment; never resolve dependencies at startup.
+          command: ["/app/scripts/dev_entrypoint.sh", "butlers/control", "butlers", "control", "--profile", "KEY_ABSENT_STAGE", "--config", "roster/switchboard", "--session-host", "0.0.0.0"]
           ports:
             - {name: service, containerPort: 41100}
             - {name: session, containerPort: 41199}

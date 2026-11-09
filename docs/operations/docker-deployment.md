@@ -89,24 +89,79 @@ service.
 
 ## Images
 
-Two images, both pinned by digest where practical:
+The runtime base is an explicit immutable input. Application builds require
+`BUTLERS_BASE_IMAGE` as a full `registry/repository@sha256:<64 hex>` reference;
+there is no `butlers-base:latest` fallback. Its Python 3.12.13, Linux amd64,
+glibc 2.41 and uv 0.12.22 identities are checked. The base also supplies system
+libraries for configured extras, including libportaudio2 for `live-listener`.
+CLI/system artifact construction remains the `Dockerfile.base` boundary.
 
-**`butlers-base`** (`Dockerfile.base`) -- the shared runtime:
+`Dockerfile` has two final targets, `production` (the default) and `development`.
+They build separate real `/app/.venv` directories using the complete frozen
+project dependency set: production has `--no-dev`, development has `--dev`, and
+both install exactly the whitespace-separated extras in `EXTRAS`. The declared
+extras must match the verified artifact profile; selecting an unbuilt extra is
+an error. No runtime command installs development dependencies on demand.
 
-1. **`python:3.12-slim`** base (digest-pinned).
-2. System deps: curl, ca-certificates, gnupg, `git`, `gh`, `postgresql-client`, ripgrep.
-3. **Node.js 22** via NodeSource -- required by the LLM runtime CLIs.
-4. **LLM runtime CLIs**, pinned to exact versions: `@anthropic-ai/claude-code`,
-   `@google/gemini-cli`, `@openai/codex`, `opencode-ai`.
-5. **uv** package manager.
+Both targets require a BuildKit named context `python-artifacts` containing:
 
-**`butlers-app`** (`Dockerfile`) -- the application, `FROM butlers-base`:
+- `wheelhouse/`: the verified target wheels, including completed source builds;
+- `build-constraints.txt`: pinned build-backend/transitive requirements;
+- optional `uv-cache/`: the producer's closed verified registry metadata/cache;
+- `provenance.json`: `butlers.python-artifacts/v1`, exact target and project/lock
+  hashes, production/development groups and selected extras, and every regular
+  input file's relative path and SHA256. The provenance file excludes itself
+  from its file inventory. Missing, changed, undeclared, duplicate, traversing
+  or symlink inputs refuse before install.
 
-1. A Go builder stage compiles the bundled helper binaries.
-2. Source (`pyproject.toml`, `src/`, `alembic.ini`, `alembic/`, …) is copied in
-   and installed with `uv sync --frozen --no-dev` (the Go WhatsApp bridge is included separately).
-3. Entrypoint `uv run --frozen --no-dev butlers`; default command
-   `run --config /etc/butler`.
+The artifact producer must establish full dependency/backend completeness;
+metadata declarations and these source checks alone do not prove it. The
+constraints file is a hashed producer/backend audit input; `uv sync` has no
+build-constraints flag. Exact backend wheels and any required cached metadata
+come from this closed producer context. The image
+runs `uv sync --frozen --offline` under `RUN --network=none`, with only that
+context's wheelhouse/constraints/cache and no host cache mount. It seals the
+installed environment only after the complete install succeeds. The final
+images copy the environment and seal, leaving the build wheelhouse/cache behind.
+The original locked Go WhatsApp bridge source build remains a separate stage.
+
+After obtaining those verified inputs, an explicit source build is:
+
+```bash
+GIT_SHA="$(git rev-parse HEAD)"
+docker buildx build --target production \
+  --build-arg BUTLERS_BASE_IMAGE="$BUTLERS_BASE_IMAGE" \
+  --build-arg EXTRAS=live-listener \
+  --build-arg GIT_SHA="$(git rev-parse HEAD)" \
+  --build-context python-artifacts=/absolute/path/to/verified-python-artifacts \
+  --load -t "butlers-app:$GIT_SHA" .
+```
+
+Use `--target development` for the complete dev-group image and keep its tag
+separate from production. This source foundation has not yet earned actual
+production/development image or cold-start proof. Existing launcher/deploy build
+callers must forward the immutable base/context and select the appropriate
+built target; their former no-input invocation fails rather than choosing a
+floating fallback. Integrating those callers and building the actual closed
+artifacts remain part of the same delivery outcome.
+
+### Installed-only startup and hotreload
+
+The image entrypoint checks `/usr/local/share/butlers/python-environment.json`
+against `/app/pyproject.toml`, `/app/uv.lock`, interpreter, installed distribution
+metadata and editable import identity. It then execs `/app/.venv/bin/python -I`
+with the original Butlers console or Python module/script payload. Missing
+inputs, lock/metadata drift, a symlinked environment or a foreign editable
+checkout refuse before the role starts; startup never invokes uv, resolves,
+installs or downloads. Console/module/script arguments, PID1 signal delivery and
+exit status are preserved. The default remains `run --config /etc/butler`.
+
+Mounted `/app/src` payload edits remain supported without reinstalling. They do
+not change the lock or dependency set. Hotreload now mounts both project and lock
+metadata, so changing either requires rebuilding the matching image, rather than
+runtime repair. No dependency cache volume masks the built environment. The
+seal validates the existing helper's metadata/import boundary; it is not a hash
+of every editable source byte or an adversarial runtime attestation.
 
 ## Services
 
@@ -271,7 +326,9 @@ uv run butlers deploy --dir /path/to/repo --timeout 180
 
 It runs, in order:
 
-1. **Build** — `docker build --build-arg GIT_SHA=$(git rev-parse HEAD) -t butlers-app:latest .`
+1. **Build** — use the explicit production target, immutable base and verified named artifact
+   context described above. The retained deploy caller must forward those required inputs; a
+   former no-input invocation refuses.
 2. **Prepare and migrate** — runs the merged Compose input with `run --rm migrations`. That
    one-shot first applies Chronicler's explicit private-schema prerequisite, then runs the ordinary
    core/domain/module migration order, always in a fresh container. A direct Compose lifecycle
@@ -346,7 +403,7 @@ Per-mode host ports and project names (both can run at once):
 
 ## Implementation Notes
 
-- `scripts/compose.sh` rebuilds `butlers-base:latest` when the `butlers.base.dockerfile_sha` label
+- The retained `scripts/compose.sh` base rebuild check uses the `butlers.base.dockerfile_sha` label
   differs from `Dockerfile.base`; bump pinned runtime CLIs in `Dockerfile.base`, since an app-image
   rebuild alone does not pick up base-layer tools.
 - Butler MCP ports `41100-41112` sit inside Linux's default ephemeral range, so `butlers-up` and

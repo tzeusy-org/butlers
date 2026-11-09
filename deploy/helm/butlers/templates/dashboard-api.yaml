@@ -25,8 +25,8 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - >-
-              uv run --frozen --no-dev butlers db prepare-chronicler-memory --dir /app/roster
-              && exec uv run --frozen --no-dev butlers db migrate --dir /app/roster
+              /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db prepare-chronicler-memory --dir /app/roster
+              && exec /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db migrate --dir /app/roster
           env:
             {{- include "butlers.postgresEnv" . | nindent 12 }}
       containers:

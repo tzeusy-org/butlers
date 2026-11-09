@@ -27,8 +27,8 @@ spec:
         - name: butlers-up
           image: {{ include "butlers.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          # Same command as the compose service (runtime needs dev extras).
-          command: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "sh", "-c", "uv sync --dev && exec uv run butlers up{{ if .Values.butlersControl.enabled }} --exclude switchboard{{ end }}"]
+          # Execute the sealed installed environment; never resolve dependencies at startup.
+          command: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "butlers", "up"{{ if .Values.butlersControl.enabled }}, "--exclude", "switchboard"{{ end }}]
           ports:
             - {name: daemon, containerPort: {{ if .Values.butlersControl.enabled }}41101{{ else }}41100{{ end }}}
           env:

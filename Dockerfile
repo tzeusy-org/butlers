@@ -1,19 +1,11 @@
 # syntax=docker/dockerfile:1.7
 
-# Butlers application image.
-#
-# Requires butlers-base image (built from Dockerfile.base).
-# Rebuild base only when system deps, npm CLIs, or Go source change:
-#   docker build -f Dockerfile.base -t butlers-base .
-#
-# This image rebuilds in ~30s (Python deps + source copy only).
+# Required immutable runtime/CLI base from the coordinated source build.
+# No local tag or invented digest is a fallback. BuildKit also requires the
+# explicitly supplied named python-artifacts context (see deployment docs).
+ARG BUTLERS_BASE_IMAGE
 
-# --- Optional: Go builder (whatsapp-bridge) --------------------------------
-# Only runs when whatsapp-bridge/ exists in context. The binary is small (~15MB)
-# so we always include it rather than maintaining a separate Dockerfile.
-# Digest-pinned for full reproducibility (Go 1.25.11).
-# To update: run `docker buildx imagetools inspect golang:1.25.11-bookworm` and
-# replace the sha256 below.
+# Retain the original WhatsApp bridge source build and dependency lock.
 FROM golang:1.25.11-bookworm@sha256:bbb255b0e131db500cf0520adc97441d2260cf629c7fa7e39e025ddf53995a24 AS go-builder
 
 WORKDIR /build
@@ -28,39 +20,29 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     -o /out/whatsapp-bridge \
     ./cmd/bridge
 
-# --- App image --------------------------------------------------------------
-# butlers-base:latest is a locally-built artifact (built from Dockerfile.base).
-# Digest-pinning is not applicable here — the local tag is set at build time and
-# has no registry-assigned digest until pushed. Reproducibility is achieved by
-# pinning the upstream python base in Dockerfile.base.
-FROM butlers-base:latest
-
-COPY --from=go-builder /out/whatsapp-bridge /usr/local/bin/whatsapp-bridge
-
-# Optional: extra dependency groups (e.g. "live-listener")
+# --- Shared application source (no installed environment yet) ----------------
+FROM ${BUTLERS_BASE_IMAGE} AS application-source
+ARG BUTLERS_BASE_IMAGE
 ARG EXTRAS=""
+WORKDIR /app
 
-# Extra system deps for optional features
-RUN if echo "$EXTRAS" | grep -q "live-listener"; then \
-      apt-get update && apt-get install -y --no-install-recommends libportaudio2 \
-      && rm -rf /var/lib/apt/lists/*; \
-    fi
+RUN /usr/local/bin/python - <<'PYBASE'
+import os, platform, re, sys
+value = os.environ.get("BUTLERS_BASE_IMAGE", "")
+if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/[a-z0-9]+(?:[._/-][a-z0-9]+)*@sha256:[0-9a-f]{64}", value):
+    raise SystemExit("BUTLERS_BASE_IMAGE must be a full registry/repository@sha256 reference")
+if (sys.version_info[:3], platform.system(), platform.machine(), platform.libc_ver()) != (
+    (3, 12, 13), "Linux", "x86_64", ("glibc", "2.41")
+):
+    raise SystemExit("runtime base differs from Python3.12.13/linux-amd64/glibc2.41")
+PYBASE
+RUN test "$(uv --version)" = "uv 0.12.22"
 
-# 1. Dependency manifests (changes less often than source)
+# libportaudio2 for selected live-listener is part of the immutable base, never
+# an app/startup apt download. Both targets install exactly EXTRAS below.
+COPY --from=go-builder /out/whatsapp-bridge /usr/local/bin/whatsapp-bridge
 COPY pyproject.toml uv.lock ./
-
-# 2. Frozen production dependencies use the explicit CPU source in pyproject.
-#    Keep source out of this layer so source-only edits reuse installed wheels.
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project \
-      ${EXTRAS:+--extra "$EXTRAS"}
-
-# 3. Source code, then install the local package itself (fast).
 COPY src/ src/
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev ${EXTRAS:+--extra "$EXTRAS"}
-
-# 4. Supporting files (alembic, scripts — change rarely)
 COPY alembic/alembic.ini alembic.ini
 COPY alembic/ alembic/
 COPY scripts/ scripts/
@@ -68,15 +50,58 @@ COPY roster/ roster/
 COPY pricing.toml pricing.toml
 COPY model_catalog_defaults.toml model_catalog_defaults.toml
 
-# Git commit SHA this image was built from (bu-9r3hd.2 deployments ledger).
-# Baked into the image as an env var so the running process can record its
-# own provenance in public.deployments (see src/butlers/core/deployments.py).
-# Passed via --build-arg GIT_SHA=$(git rev-parse HEAD) in scripts/compose.sh;
-# defaults to "unknown" for builds that don't set it (e.g. plain `docker build .`).
-# Declared last: it changes every commit and invalidates every later layer.
+# --- Complete, verified offline installation inputs -------------------------
+FROM application-source AS installation-inputs
+COPY --from=python-artifacts / /opt/python-artifacts/
+ENV UV_OFFLINE=1 \
+    UV_NO_INDEX=1 \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_FIND_LINKS=/opt/python-artifacts/wheelhouse \
+    UV_CACHE_DIR=/opt/python-artifacts/uv-cache
+
+FROM installation-inputs AS production-install
+RUN --network=none <<'INSTALL'
+set -efu
+set --
+for extra in $EXTRAS; do set -- "$@" --extra "$extra"; done
+/usr/local/bin/python -I scripts/runtime_clis/python_entrypoint.py verify-build \
+  --artifacts /opt/python-artifacts --project /app --profile production "$@"
+uv sync --frozen --offline --no-dev "$@"
+mkdir -p /usr/local/share/butlers
+/usr/local/bin/python -I scripts/runtime_clis/python_environment.py seal \
+  --environment /app/.venv --project /app \
+  --manifest /usr/local/share/butlers/python-environment.json "$@"
+INSTALL
+
+FROM installation-inputs AS development-install
+RUN --network=none <<'INSTALL'
+set -efu
+set --
+for extra in $EXTRAS; do set -- "$@" --extra "$extra"; done
+/usr/local/bin/python -I scripts/runtime_clis/python_entrypoint.py verify-build \
+  --artifacts /opt/python-artifacts --project /app --profile development "$@"
+uv sync --frozen --offline --dev "$@"
+mkdir -p /usr/local/share/butlers
+/usr/local/bin/python -I scripts/runtime_clis/python_environment.py seal \
+  --environment /app/.venv --project /app --group dev \
+  --manifest /usr/local/share/butlers/python-environment.json "$@"
+INSTALL
+
+# Final images retain source and the real environment, not wheels/cache/build
+# constraints. Editable /app/src supports mounted development source changes.
+FROM application-source AS development
+COPY --from=development-install /app/.venv /app/.venv
+COPY --from=development-install /usr/local/share/butlers/python-environment.json /usr/local/share/butlers/python-environment.json
 ARG GIT_SHA="unknown"
 ENV GIT_SHA=${GIT_SHA}
+ENTRYPOINT ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "butlers"]
+CMD ["run", "--config", "/etc/butler"]
 
-# --frozen: don't re-sync at runtime. --no-dev: skip dev deps.
-ENTRYPOINT ["uv", "run", "--frozen", "--no-dev", "butlers"]
+# The ordinary default target remains production, with no dev group installed.
+FROM application-source AS production
+COPY --from=production-install /app/.venv /app/.venv
+COPY --from=production-install /usr/local/share/butlers/python-environment.json /usr/local/share/butlers/python-environment.json
+ARG GIT_SHA="unknown"
+ENV GIT_SHA=${GIT_SHA}
+ENTRYPOINT ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "butlers"]
 CMD ["run", "--config", "/etc/butler"]
