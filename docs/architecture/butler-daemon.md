@@ -144,7 +144,7 @@ Each module has a well-defined lifecycle: `config_schema` validation, directory-
 The shutdown sequence is the inverse of startup:
 
 1. Stop the MCP server (stop accepting new connections).
-2. Cancel the scheduler loop (waits for any in-progress `tick()` to complete). This precedes the spawner stop because a tick claims an occurrence, advancing `next_run_at`, before it dispatches; a spawner that refused mid-tick would lose that occurrence until the next cron.
+2. Cancel the scheduler loop (waits for any in-progress `tick()` to complete). This precedes the spawner stop because a tick claims an occurrence, advancing `next_run_at`, before it dispatches; a spawner that refused mid-tick would lose that occurrence until the next cron. Cancelling the loop also tells that tick to claim no further rows.
 3. Stop accepting new triggers on the spawner.
 4. Drain in-flight runtime sessions within the configurable timeout (`[butler.shutdown].timeout_s`).
 5. Cancel the switchboard heartbeat task.

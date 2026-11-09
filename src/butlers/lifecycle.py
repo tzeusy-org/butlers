@@ -966,8 +966,10 @@ async def _shutdown_resources(daemon: Any) -> None:
     # closes. A tick advances ``next_run_at`` when it claims an occurrence and dispatches after,
     # so a spawner that refuses mid-tick fails the dispatch and loses the occurrence until the
     # next cron (bu-dhloi1.138). A job-mode job also runs inside the tick, not in the spawner's
-    # in-flight set, so draining does not wait for it. The MCP server, buffer and route tasks
-    # are already stopped, so nothing else is admitting work while the tick finishes.
+    # in-flight set, so draining does not wait for it. Cancelling the loop sets the tick's
+    # ``stopping`` event, so the tick finishes what it claimed and claims nothing more. Other
+    # admitters (the startup route-inbox recovery task, QA background tasks) are still live here;
+    # they are not scheduler claims and hit the spawner's own refusal after step 3.
     await _stop_scheduler_loop(daemon, deadline)
 
     # 3. Stop accepting new triggers and drain in-flight runtime sessions
