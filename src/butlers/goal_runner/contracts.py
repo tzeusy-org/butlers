@@ -11,19 +11,25 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
+from butlers.core.model_call import NotInvoked
+
 Role = Literal["lead", "child", "monitor"]
 
 
-class GoalEnded(RuntimeError):
+class GoalEnded(NotInvoked, RuntimeError):
     """The goal is no longer running, so no invocation may start.
 
-    Deliberately outside the failover classifier's allow-list: a relaunch of a
-    stopped or ended goal is never eligible.
+    Raised only by ledger opens, before any model runs, so the kernel records
+    it as a non-model outcome and never relaunches it.
     """
 
 
-class InvocationBudgetExhausted(RuntimeError):
-    """D10: the goal's invocation budget has no room for another launch."""
+class InvocationBudgetExhausted(NotInvoked, RuntimeError):
+    """D10: the goal's invocation budget has no room for another launch.
+
+    Raised when a ledger open reserves an invocation, before any model runs, so
+    the kernel records it as a non-model outcome. ``delegate`` handles its own.
+    """
 
 
 @dataclass(frozen=True, slots=True)

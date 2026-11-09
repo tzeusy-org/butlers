@@ -398,7 +398,7 @@ Every attempt in the failover sequence writes a row to `public.model_dispatch_at
 | `runtime_failure` | Adapter raised a failover-eligible error |
 | `resume_failure` | Provider-native resume failed safely (not a usage limit); the same candidate is retried cold without affecting its breaker |
 | `allowance_exhausted` | Provider plan usage limit; the account is exhausted until reset and the breaker ignores it |
-| `suppressed` | Failover decision was ineligible (side effects or unknown error) |
+| `suppressed` | Failover decision was ineligible (side effects or unknown error), the attempt was cancelled, or (`failure_reason` `not_invoked:<code>`) the attempt was refused before any model ran, such as a goal-runner open that lost a race or found no invocation budget. The breaker and routing evidence ignore it |
 | `exhausted` | All same-tier candidates tried, none succeeded |
 | `success` | This attempt produced the final successful result |
 
