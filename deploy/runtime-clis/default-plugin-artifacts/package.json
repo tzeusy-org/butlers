@@ -1,0 +1,11 @@
+{
+  "name": "butlers-opencode-default-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@opencode-ai/plugin": "1.17.7",
+    "@opentui/core": "0.3.4",
+    "@opentui/keymap": "0.3.4",
+    "@opentui/solid": "0.3.4"
+  }
+}

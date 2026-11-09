@@ -5952,6 +5952,12 @@
     }
   },
   "bundles": {
+    "deploy/runtime-clis/default-plugin-artifacts/build-inputs.json":
+        "ad6ed716d14ea88c4e7f82956367637678b28c4ae2dc0dc002b484a21eab98d0",
+    "deploy/runtime-clis/default-plugin-artifacts/package.json":
+        "58a6703e5adc02602dd9e34ff4a4bac5a3352d4424918c290fa42d41eccf4e48",
+    "deploy/runtime-clis/default-plugin-artifacts/package-lock.json":
+        "022e2fa5b9db64a6a17e346aacf9d7da83d88f25bfc0a1967ab756ac0e0cccbc",
     "deploy/runtime-clis/native-package-artifacts/build-inputs.json":
         "52d9fb4ea28c0d49f56dd404280a358ccb85f729ada259e12fb1d72f37419e32",
     "deploy/runtime-clis/codex/build-inputs.json":
