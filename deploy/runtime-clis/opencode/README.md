@@ -39,13 +39,23 @@ protect echoed values. Benign logical paths/query values, status, Retry-After,
 harmless headers/body and the connector's truncation signal remain available.
 It does not change off-mode transports, auth selection or the bounded handshake.
 
+The fifth patch pins the app's `ghostty-web` declaration to the original locked
+commit `20bd3613f59dfc0f088a9aec498db2fa1a08b768`. The upstream `#main` declaration
+otherwise caused pinned Bun to propose a different source/checksum and reject a
+frozen install. The resolved package record, archive integrity and every other
+locked package remain unchanged. No newer dependency source is adopted.
+
 The lockfile retains all 3,122 original package records. The two added aliases
 are the pinned shared Undici and the already-existing exact ws source/SRI. No
 plugin, model, optional native asset or lifecycle script is removed.
 
 ## Subsequent installed build and conformance
 
-A complete OpenCode install/build has not run. The integrator must
+A full frozen install has completed on the pinned Bun/Node host fixture, including
+the original lifecycle scripts and platform-selected native packages. Native
+addon compilation used npm's bundled node-gyp and the pinned Node archive's
+headers; host compiler execution is not a builder/image attestation. The full
+stock CLI/UI build and installed native caller coverage remain pending. The integrator must
 first verify/materialize every input in `build-inputs.json`, including the full
 235-provider / 8,939-model catalogue and 235 exact SVG logos. A missing local
 catalogue/logo pair, missing logo, empty logo or malformed provider key refuses

@@ -182,8 +182,24 @@
           "after_sha256": "32b1dbbb3f87d44aa01d5a759f4a6f0ba246c17d2aa4f011ede8bca561d3b448"
         }
       ]
+    },
+    {
+      "path": "patches/0005-pin-original-ghostty-source.patch",
+      "sha256": "a1b2cfced27ccee79e8cc19b377e3e46ecdafac607ae2756e8500ae310a389d2",
+      "files": [
+        {
+          "path": "bun.lock",
+          "before_sha256": "cffe8718860a54ef12b4c5b35b3ceb7b969cc877dc62b684dd4359fe0e4b48c7",
+          "after_sha256": "4e0de3f502c8724ada6625848c8e67730056513e404eb0425b7b19beb4ed5ef4"
+        },
+        {
+          "path": "packages/app/package.json",
+          "before_sha256": "9d33aad6f98007ccbf40d0aa90a081f336b635c83839958b80b00363fbc5fa18",
+          "after_sha256": "f44bc55069a1d59407a828886695cc5eddfdf9de5caf655fece821a74eb9e951"
+        }
+      ]
     }
   ],
-  "source_tree_sha256": "94044a9857d725cd242495cffe21d902f7b31994f1a708873e78499494c1d311",
+  "source_tree_sha256": "2751b333bd24117dfaee9d4288773a53f37307539ea7be7fcae7991b22dae6d1",
   "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches."
 }
