@@ -68,6 +68,10 @@ class Leaderless:
     role: Role
     tier: str | None
     relaunch_of: UUID | None
+    deferred_seconds: float | None = None
+    """For a lead the host had no room for: how long since the first such lead in a row."""
+    relaunch_spent: bool = False
+    """A lead in that row was a D14 relaunch, so its replacement must not relaunch again."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -422,6 +426,23 @@ class RunnerLedger:
                 invocation_id,
             )
         return ended is True
+
+    async def defer(self, goal_id: UUID, invocation_id: UUID) -> bool:
+        """End a launch the session host had no room for; nothing of it ran.
+
+        The invocation ends ``launch_failed`` and its token is revoked, and the
+        invocation it drew goes back to the budget (D10 charges only launches that
+        ran). False when the ledger had already ended it (Stop, a lapsed lease),
+        which keeps that end and its charge.
+        """
+        if not await self.end(goal_id, invocation_id, "failed", "launch_failed"):
+            return False
+        await self.connection.execute(
+            "UPDATE switchboard.budgets SET used_invocations = used_invocations - 1, "
+            "updated_at = now() WHERE goal_id = $1 AND used_invocations > 0",
+            goal_id,
+        )
+        return True
 
     async def goal_status(self, goal_id: UUID) -> str | None:
         return await self.connection.fetchval(
@@ -833,9 +854,18 @@ class RunnerLedger:
         """
         rows = await self.connection.fetch(
             "SELECT g.id AS goal_id, l.id, l.end_reason, l.model_role, l.model_tier, "
-            "l.relaunch_of FROM switchboard.goals g "
+            "l.relaunch_of, d.deferred_seconds, d.relaunch_spent FROM switchboard.goals g "
             "JOIN LATERAL (SELECT * FROM switchboard.invocations i WHERE i.goal_id = g.id "
             "AND i.depth = 0 ORDER BY i.lead_epoch DESC, i.created_at DESC LIMIT 1) l ON true "
+            # The unbroken run of leads the host had no room for, ending at the latest.
+            "LEFT JOIN LATERAL (SELECT "
+            "extract(epoch FROM clock_timestamp() - min(b.created_at))::float8 "
+            "AS deferred_seconds, bool_or(b.relaunch_of IS NOT NULL) AS relaunch_spent "
+            "FROM switchboard.invocations b WHERE b.goal_id = g.id AND b.depth = 0 "
+            "AND b.end_reason = 'launch_failed' AND b.lead_epoch > COALESCE((SELECT "
+            "max(n.lead_epoch) FROM switchboard.invocations n WHERE n.goal_id = g.id "
+            "AND n.depth = 0 AND n.end_reason IS DISTINCT FROM 'launch_failed'), -1)) d "
+            "ON l.end_reason = 'launch_failed' "
             "WHERE g.status IN ('running', 'recovering') "
             "AND l.status <> ALL($1::text[]) "
             "AND l.ended_at <= clock_timestamp() - make_interval(secs => $2::float8) "
@@ -852,6 +882,8 @@ class RunnerLedger:
                 row["model_role"] or "lead",
                 row["model_tier"],
                 row["relaunch_of"],
+                row["deferred_seconds"],
+                bool(row["relaunch_spent"]),
             )
             for row in rows
         ]
