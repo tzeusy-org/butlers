@@ -34,6 +34,24 @@ The `public.model_catalog` table is the global registry of available models. Eac
 - **`max_context_tokens`** / **`max_output_tokens`** --- nullable context envelope; `NULL` means
   undeclared, and undeclared is treated as unproven
 
+### Equal-priority ties: evidence, or an owner-set even split
+
+When several eligible entries share the winning priority, `_select_resolved_row` (and
+`resolve_dispatch`'s `_rank_candidates`) break the tie in one of two ways.
+
+- **Catalog-default ties** use evidence: once at least two candidates have enough recent samples the
+  best score wins, otherwise a round-robin counter rotates through them.
+- **Owner-pinned ties are an even split.** If every tied candidate is pinned by a
+  `butler_model_overrides` row that sets `priority`, the owner chose those equal priorities on
+  purpose, so selection round-robins among them and never lets evidence collapse it to one model.
+  A receipt reports `winner_reason = "owner_even_split"`. A tie that mixes pinned and catalog-default
+  entries is not a split: evidence decides it.
+
+Exclusion is unchanged and runs before the tie-break: an entry that is disabled, `last_verified_ok =
+false`, breaker-open or allowance-blocked never reaches it, so a broken pinned entry drops out and the
+remaining candidates take the whole load until it recovers. To split evenly, give each override the
+same `priority`; to prefer one, give it a higher one.
+
 ### Field ownership: catalog vs. runtime config
 
 `model`, `runtime_type`, `args`, and `session_timeout_s` live **on `public.model_catalog`** (`session_timeout_s INT NOT NULL DEFAULT 1800`), not on
