@@ -601,7 +601,7 @@ async def test_finance_and_health_reads_are_pure(projected, primary, reader):
 
 
 async def test_health_series_serves_only_the_newest_unit(projected, primary, reader):
-    """A window mixing units serves the newest unit and names the rest (REQ-010)."""
+    """A window mixing units serves the newest unit and names the rest (REQ-public-mcp-surface-010)."""
     day = _day(-8)
     facts = []
     try:
