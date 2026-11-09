@@ -1,0 +1,732 @@
+--- a/bun.lock
++++ b/bun.lock
+@@ -481,6 +481,7 @@
+         "@smithy/eventstream-codec": "4.2.14",
+         "@smithy/util-utf8": "4.2.2",
+         "aws4fetch": "1.0.20",
++        "butlers-egress-undici": "npm:undici@7.24.5",
+         "effect": "catalog:",
+       },
+       "devDependencies": {
+@@ -5168,6 +5169,8 @@
+ 
+     "uncrypto": ["uncrypto@0.1.3", "", {}, "sha512-Ql87qFHB3s/De2ClA9e0gsnS6zXG27SkTiSJwjCc9MebbfapQfuPzumMIUMi38ezPZVNFcHI9sUIepeQfw8J8Q=="],
+ 
++    "butlers-egress-undici": ["undici@7.24.5", "", {}, "sha512-3IWdCpjgxp15CbJnsi/Y9TCDE7HWVN19j1hmzVhoAkY/+CJx449tVxT5wZc1Gwg8J+P0LWvzlBzxYRnHJ+1i7Q=="],
++
+     "undici": ["undici@8.3.0", "", {}, "sha512-TkUDgb6tl7KOGZ+7e8E3d2FYgUQgF6z5YypqjWmixVQSQERFcVrVg0ySADm2LVLRh5ljAaHTCR5Fmz3Q34rB7Q=="],
+ 
+     "undici-types": ["undici-types@7.16.0", "", {}, "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="],
+--- a/packages/core/src/effect/layer-node-platform.ts
++++ b/packages/core/src/effect/layer-node-platform.ts
+@@ -1,11 +1,10 @@
+ import { NodeFileSystem, NodePath } from "@effect/platform-node"
+-import { LLMClient, RequestExecutor } from "@opencode-ai/llm/route"
+-import { FetchHttpClient } from "effect/unstable/http"
++import { LLMClient, RequestExecutor, gatewayHttpLayer } from "@opencode-ai/llm/route"
+ import { LayerNode } from "./layer-node"
+ 
+ export const filesystem = LayerNode.make(NodeFileSystem.layer, [])
+ export const path = LayerNode.make(NodePath.layer, [])
+-export const httpClient = LayerNode.make(FetchHttpClient.layer, [])
++export const httpClient = LayerNode.make(gatewayHttpLayer, [])
+ export const requestExecutor = LayerNode.make(RequestExecutor.layer, [httpClient])
+ export const llmClient = LayerNode.make(LLMClient.layer, [requestExecutor])
+ 
+--- a/packages/core/src/plugin/provider/openai-auth.ts
++++ b/packages/core/src/plugin/provider/openai-auth.ts
+@@ -1,3 +1,4 @@
++import { ButlersEgress } from "@opencode-ai/llm/route"
+ import { createServer } from "node:http"
+ import { Deferred, Effect } from "effect"
+ import { Integration } from "../../integration"
+@@ -113,7 +114,7 @@
+           while (true) {
+             const response = yield* Effect.tryPromise({
+               try: (signal) =>
+-                fetch(`${issuer}/api/accounts/deviceauth/token`, {
++                ButlersEgress.egressFetch(`${issuer}/api/accounts/deviceauth/token`, {
+                   method: "POST",
+                   headers: headers("application/json"),
+                   body: JSON.stringify({ device_auth_id: device.device_auth_id, user_code: device.user_code }),
+@@ -186,7 +187,7 @@
+ function request<A>(url: string, init: RequestInit) {
+   return Effect.tryPromise({
+     try: async (signal) => {
+-      const response = await fetch(url, { ...init, signal })
++      const response = await ButlersEgress.egressFetch(url, { ...init, signal })
+       if (!response.ok) throw new Error(`Request failed: ${response.status}`)
+       return response.json() as Promise<A>
+     },
+--- a/packages/llm/package.json
++++ b/packages/llm/package.json
+@@ -46,6 +46,7 @@
+     "@smithy/eventstream-codec": "4.2.14",
+     "@smithy/util-utf8": "4.2.2",
+     "aws4fetch": "1.0.20",
+-    "effect": "catalog:"
++    "effect": "catalog:",
++    "butlers-egress-undici": "npm:undici@7.24.5"
+   }
+ }
+--- /dev/null
++++ b/packages/llm/src/butlers-egress.ts
+@@ -0,0 +1,425 @@
++/// <reference path="./undici-private.d.ts" />
++/** Explicit request-v1 transport; auth, account, and model URLs remain logical origins. */
++import Agent from "butlers-egress-undici/lib/dispatcher/agent.js";
++import requestWire from "butlers-egress-undici/lib/api/api-request.js";
++import type { Dispatcher } from "butlers-egress-undici/index.js";
++import type { LookupFunction } from "node:net";
++import { Readable } from "node:stream";
++import { pipeline } from "node:stream";
++import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
++
++// The pinned Node22/Bun runtimes provide this static method; older vendor DOM types predate it.
++type RuntimeSignalConstructor = typeof AbortSignal & {
++  any(signals: AbortSignal[]): AbortSignal;
++};
++
++export interface GatewayConfig {
++  port: number;
++}
++export interface GatewayFetchInit extends RequestInit {
++  gatewayDecodeContent?: boolean;
++}
++
++export function gatewayConfig(): GatewayConfig | undefined {
++  const mode = process.env["BUTLERS_EGRESS_MODE"];
++  const address = process.env["BUTLERS_EGRESS_GATEWAY"];
++  if (mode === undefined && address === undefined) return undefined;
++  const match = /^http:\/\/egress-gateway:([1-9][0-9]*)$/.exec(address ?? "");
++  const port = Number(match?.[1]);
++  if (mode !== "request-v1" || !match || port < 1024 || port > 65535)
++    throw new TypeError("Invalid selected egress configuration");
++  return { port };
++}
++
++export function gatewayURL(
++  logical: URL,
++  config: GatewayConfig,
++  websocket = false,
++): URL {
++  if (
++    logical.protocol !== (websocket ? "wss:" : "https:") ||
++    logical.username ||
++    logical.password ||
++    logical.hash ||
++    !logical.hostname ||
++    logical.hostname.endsWith(".") ||
++    !/^[a-zA-Z0-9.-]+$/.test(logical.hostname) ||
++    /^[0-9.]+$/.test(logical.hostname)
++  )
++    throw new TypeError("Invalid selected egress origin");
++  const kind = websocket ? "wss" : "https";
++  return new URL(
++    `${websocket ? "ws" : "http"}://egress-gateway:${config.port}` +
++      `/_butlers/egress/v1/${kind}/${logical.hostname}/${logical.port || "443"}` +
++      logical.pathname +
++      logical.search,
++  );
++}
++
++function headersForGateway(headers: Headers, logical: URL): Headers {
++  const result = new Headers(headers);
++  for (const [name, value] of result) {
++    if (
++      (name === "host" && value.toLowerCase() !== logical.host.toLowerCase()) ||
++      (name === "connection" && value.toLowerCase() !== "close") ||
++      /^(?:forwarded|proxy-.*|upgrade|trailer|expect|transfer-encoding|te)$/.test(
++        name,
++      ) ||
++      /^(?:x-forwarded-|x-butlers-|x-egress-)/.test(name)
++    )
++      throw new TypeError("Forbidden selected egress header");
++  }
++  result.delete("host");
++  result.set("connection", "close");
++  return result;
++}
++
++function logicalResponse(response: Response, url: string): Response {
++  Object.defineProperty(response, "url", { value: url });
++  Object.defineProperty(response, "clone", {
++    value() {
++      return logicalResponse(Response.prototype.clone.call(this), url);
++    },
++  });
++  return response;
++}
++
++/** Tests can resolve the owned internal hop to loopback and observe its native buffer. */
++export function createGatewayFetch(
++  dependencies: {
++    lookup?: LookupFunction;
++    onResponseBody?: (body: Readable) => void;
++    timeouts?: Partial<{
++      connect: number;
++      headers: number;
++      bodyIdle: number;
++      total: number;
++    }>;
++  } = {},
++) {
++  const limits = {
++    connect: 10000,
++    headers: 10000,
++    bodyIdle: 300000,
++    total: 3600000,
++  };
++  for (const key of Object.keys(limits) as (keyof typeof limits)[]) {
++    const value = dependencies.timeouts?.[key];
++    if (value !== undefined) {
++      if (!Number.isFinite(value) || value <= 0 || value > limits[key])
++        throw new TypeError("Invalid selected egress timeout");
++      limits[key] = value;
++    }
++  }
++  return async function gatewayFetch(
++    input: RequestInfo | URL,
++    init?: GatewayFetchInit,
++  ): Promise<Response> {
++    const config = gatewayConfig();
++    if (!config) return globalThis.fetch(input, init);
++    const logical = new URL(input instanceof Request ? input.url : input);
++    const wire = gatewayURL(logical, config);
++    const request = new Request(input, init);
++    const headers = headersForGateway(request.headers, logical);
++    if (request.signal.aborted) throw request.signal.reason;
++    if (init?.gatewayDecodeContent !== false && !headers.has("accept-encoding"))
++      headers.set("accept-encoding", "gzip, deflate, br");
++    // This is a private dispatcher, never a global, environment, PAC or proxy agent.
++    // Undici's parser and pause/resume machinery are shared across Node and Bun;
++    // Bun 1.3.14's node:http facade otherwise buffers a paused response without bound.
++    const dispatcher = new Agent({
++      connections: 1,
++      pipelining: 0,
++      allowH2: false,
++      maxHeaderSize: 65536,
++      connect: {
++        timeout: limits.connect,
++        ...(dependencies.lookup && { lookup: dependencies.lookup }),
++      },
++    });
++    const total = new AbortController();
++    const signal = (AbortSignal as RuntimeSignalConstructor).any([
++      request.signal,
++      total.signal,
++    ]);
++    const timer = setTimeout(
++      () => total.abort(new Error("Selected egress deadline exceeded")),
++      limits.total,
++    );
++    timer.unref();
++    let upload: Readable | undefined;
++    let settlement: Promise<void> | undefined;
++    const settle = () => {
++      if (!settlement) {
++        clearTimeout(timer);
++        upload?.destroy();
++        settlement = dispatcher.destroy();
++      }
++      return settlement;
++    };
++    try {
++      if (request.body)
++        upload = Readable.fromWeb(
++          request.body as import("node:stream/web").ReadableStream<Uint8Array>,
++        );
++      // Low-level request has no redirect interceptor or automatic redirect route.
++      const incoming = await requestWire.call(dispatcher, {
++        origin: wire.origin,
++        path: wire.pathname + wire.search,
++        method: request.method as Dispatcher.HttpMethod,
++        headers: Object.fromEntries(headers),
++        body: upload,
++        signal,
++        headersTimeout: limits.headers,
++        bodyTimeout: limits.bodyIdle,
++        highWaterMark: 16384,
++      });
++      // A deliberately discarded response can emit an abort error during dispatcher teardown.
++      // Stream consumers still receive their own error through the readable interface.
++      incoming.body.on("error", () => {});
++      dependencies.onResponseBody?.(incoming.body);
++      const status = incoming.statusCode;
++      if (
++        (status >= 300 && status <= 399) ||
++        incoming.headers["x-egress-refusal"]
++      ) {
++        incoming.body.destroy();
++        await settle();
++        throw new TypeError("Selected egress request refused");
++      }
++      // Do not keep an unfinished producer alive after an early provider rejection.
++      if (upload && !upload.readableEnded) upload.destroy();
++      const responseHeaders = new Headers();
++      for (const [name, value] of Object.entries(incoming.headers)) {
++        if (Array.isArray(value))
++          for (const item of value) responseHeaders.append(name, item);
++        else if (value !== undefined) responseHeaders.append(name, value);
++      }
++      const empty =
++        request.method === "HEAD" || status === 204 || status === 205;
++      if (empty) {
++        incoming.body.destroy();
++        await settle();
++        return logicalResponse(
++          new Response(null, {
++            status,
++            statusText: incoming.statusText,
++            headers: responseHeaders,
++          }),
++          request.url,
++        );
++      }
++      let body: Readable = incoming.body;
++      const encoding =
++        init?.gatewayDecodeContent === false
++          ? undefined
++          : incoming.headers["content-encoding"];
++      const encodedHeader = Array.isArray(encoding)
++        ? encoding.join(",")
++        : encoding;
++      const codings = encodedHeader
++        ? encodedHeader.split(",").map((coding) => coding.trim().toLowerCase())
++        : [];
++      if (codings.length > 5)
++        throw new TypeError(
++          "Selected egress response has too many content codings",
++        );
++      // A mixed unsupported coding retains its complete wire entity, like native fetch.
++      // Allocate only after validating the complete chain, and undo application order.
++      const decoders = codings.every((coding) =>
++        ["gzip", "x-gzip", "deflate", "br"].includes(coding),
++      )
++        ? codings
++            .reverse()
++            .map((coding) =>
++              coding === "gzip" || coding === "x-gzip"
++                ? createGunzip()
++                : coding === "deflate"
++                  ? createInflate()
++                  : createBrotliDecompress(),
++            )
++        : [];
++      if (decoders.length) {
++        body = decoders[decoders.length - 1]!;
++        pipeline([incoming.body, ...decoders], () => {});
++      }
++      const reader = body[Symbol.asyncIterator]();
++      let cancelled = false;
++      const stream = new ReadableStream<Uint8Array>({
++        async pull(controller) {
++          try {
++            const chunk = await reader.next();
++            if (cancelled) return;
++            if (chunk.done) {
++              await settle();
++              if (!cancelled) controller.close();
++            } else controller.enqueue(chunk.value);
++          } catch (error) {
++            await settle();
++            if (!cancelled)
++              controller.error(signal.aborted ? signal.reason : error);
++          }
++        },
++        async cancel(reason) {
++          cancelled = true;
++          incoming.body.destroy();
++          body.destroy();
++          try {
++            await reader.return?.();
++          } finally {
++            await settle();
++          }
++        },
++      });
++      return logicalResponse(
++        new Response(stream, {
++          status,
++          statusText: incoming.statusText,
++          headers: responseHeaders,
++        }),
++        request.url,
++      );
++    } catch (error) {
++      await settle();
++      if (signal.aborted) throw signal.reason;
++      if (error instanceof TypeError) throw error;
++      if (error instanceof Error && error.message === "bad upgrade")
++        throw new TypeError("Invalid selected egress HTTP upgrade");
++      throw new TypeError("fetch failed", { cause: error });
++    }
++  };
++}
++
++export const egressFetch = createGatewayFetch();
++
++export interface GaxiosSelectedInit extends Omit<RequestInit, "body"> {
++  body?: BodyInit | Readable | null;
++  timeout?: number;
++  size?: number;
++  compress?: boolean;
++}
++
++/** Gaxios's explicit hook retains Node-readable bodies and node-fetch controls. */
++export function createGaxiosFetch(fetchImpl = egressFetch) {
++  return async (input: string | URL, init?: GaxiosSelectedInit) => {
++    const timeout = new AbortController();
++    const signal = init?.signal
++      ? (AbortSignal as RuntimeSignalConstructor).any([
++          init.signal,
++          timeout.signal,
++        ])
++      : timeout.signal;
++    let timer: ReturnType<typeof setTimeout> | undefined;
++    const clear = () => {
++      if (timer) clearTimeout(timer);
++    };
++    const start = (type: "request-timeout" | "body-timeout") => {
++      if (init?.timeout && init.timeout > 0) {
++        timer = setTimeout(() => {
++          const error = Object.assign(
++            new Error("Selected egress request timed out"),
++            {
++              name: "FetchError",
++              type,
++            },
++          );
++          timeout.abort(error);
++        }, init.timeout);
++        timer.unref();
++      }
++    };
++    const body =
++      init?.body instanceof Readable ? Readable.toWeb(init.body) : init?.body;
++    start("request-timeout");
++    let response: Response;
++    try {
++      response = await fetchImpl(input, {
++        ...init,
++        body,
++        signal,
++        duplex: "half",
++        gatewayDecodeContent: init?.compress !== false,
++      } as GatewayFetchInit);
++    } finally {
++      clear();
++    }
++    let nodeBody: Readable | null | undefined;
++    const consume = async (): Promise<Uint8Array> => {
++      if (response.bodyUsed || response.body?.locked)
++        throw new TypeError("Body is unusable");
++      if (!response.body) return new Uint8Array();
++      const reader = response.body.getReader();
++      const chunks: Uint8Array[] = [];
++      let size = 0;
++      start("body-timeout");
++      try {
++        while (true) {
++          const chunk = await reader.read();
++          if (chunk.done) break;
++          size += chunk.value.length;
++          if (init?.size && init.size > 0 && size > init.size) {
++            await reader.cancel();
++            throw Object.assign(
++              new Error("Selected egress response exceeds configured size"),
++              {
++                name: "FetchError",
++                type: "max-size",
++              },
++            );
++          }
++          chunks.push(chunk.value);
++        }
++        const result = new Uint8Array(size);
++        let offset = 0;
++        for (const chunk of chunks) {
++          result.set(chunk, offset);
++          offset += chunk.length;
++        }
++        return result;
++      } catch (error) {
++        if (init?.signal?.aborted) throw init.signal.reason;
++        if (timeout.signal.aborted) throw timeout.signal.reason;
++        throw error;
++      } finally {
++        clear();
++        reader.releaseLock();
++      }
++    };
++    return {
++      status: response.status,
++      statusText: response.statusText,
++      url: response.url,
++      headers: response.headers,
++      get body() {
++        if (nodeBody === undefined)
++          nodeBody = response.body
++            ? Readable.fromWeb(
++                response.body as import("node:stream/web").ReadableStream<Uint8Array>,
++              )
++            : null;
++        return nodeBody;
++      },
++      text: async () => new TextDecoder().decode(await consume()),
++      json: async () =>
++        JSON.parse(new TextDecoder().decode(await consume())) as unknown,
++      arrayBuffer: async () => (await consume()).buffer,
++      blob: async () =>
++        new Blob([await consume()], {
++          type: response.headers.get("content-type") ?? "",
++        }),
++    };
++  };
++}
++export const egressGaxiosFetch = createGaxiosFetch();
++
++export function gatewayWebSocket(url: string, headers: Record<string, string>) {
++  const config = gatewayConfig();
++  if (!config) return undefined;
++  const logical = new URL(url);
++  const selected = headersForGateway(new Headers(headers), logical);
++  selected.delete("connection");
++  return {
++    url: gatewayURL(logical, config, true).toString(),
++    headers: Object.fromEntries(selected),
++  };
++}
+--- /dev/null
++++ b/packages/llm/src/route/egress.ts
+@@ -0,0 +1,8 @@
++import { Layer } from "effect"
++import { FetchHttpClient } from "effect/unstable/http"
++import { egressFetch } from "../butlers-egress"
++
++// Explicit per-layer injection preserves the original logical request/response model.
++export const gatewayHttpLayer = FetchHttpClient.layer.pipe(
++  Layer.provide(Layer.succeed(FetchHttpClient.Fetch, egressFetch as typeof globalThis.fetch)),
++)
+--- a/packages/llm/src/route/executor.ts
++++ b/packages/llm/src/route/executor.ts
+@@ -1,6 +1,6 @@
++import { gatewayHttpLayer } from "./egress"
+ import { Cause, Context, Effect, Layer, Random } from "effect"
+ import {
+-  FetchHttpClient,
+   Headers,
+   HttpClient,
+   HttpClientError,
+@@ -380,6 +380,6 @@
+   }),
+ )
+ 
+-export const defaultLayer = layer.pipe(Layer.provide(FetchHttpClient.layer))
++export const defaultLayer = layer.pipe(Layer.provide(gatewayHttpLayer))
+ 
+ export * as RequestExecutor from "./executor"
+--- a/packages/llm/src/route/index.ts
++++ b/packages/llm/src/route/index.ts
+@@ -23,3 +23,6 @@
+ export type { Framing as FramingDef } from "./framing"
+ export type { Protocol as ProtocolDef } from "./protocol"
+ export type { Transport as TransportDef, TransportRuntime } from "./transport"
++
++export { gatewayHttpLayer } from "./egress"
++export * as ButlersEgress from "../butlers-egress"
+--- a/packages/llm/src/route/transport/websocket.ts
++++ b/packages/llm/src/route/transport/websocket.ts
+@@ -1,3 +1,4 @@
++import { gatewayWebSocket } from "../../butlers-egress"
+ import { Cause, Context, Effect, Layer, Queue, Stream } from "effect"
+ import { Headers } from "effect/unstable/http"
+ import { LLMError, TransportReason } from "../../schema"
+@@ -124,8 +125,12 @@
+ 
+ export const open = (input: WebSocketRequest) =>
+   Effect.try({
+-    try: () =>
+-      new (globalThis.WebSocket as unknown as WebSocketConstructorWithHeaders)(input.url, { headers: input.headers }),
++    try: () => {
++      const selected = gatewayWebSocket(input.url, input.headers)
++      return new (globalThis.WebSocket as unknown as WebSocketConstructorWithHeaders)(selected?.url ?? input.url, {
++        headers: selected?.headers ?? input.headers,
++      })
++    },
+     catch: (error) =>
+       transportError("open", error instanceof Error ? error.message : "Failed to construct WebSocket", {
+         url: input.url,
+--- /dev/null
++++ b/packages/llm/src/undici-private.d.ts
+@@ -0,0 +1,17 @@
++/** Version-pinned internal entry points avoid the package root's global dispatcher initialization. */
++declare module "butlers-egress-undici/lib/dispatcher/agent.js" {
++  import type { Agent as PublicAgent, Dispatcher } from "butlers-egress-undici";
++  export default class Agent {
++    constructor(options?: PublicAgent.Options);
++    dispatch: Dispatcher["dispatch"];
++    destroy: Dispatcher["destroy"];
++  }
++}
++
++declare module "butlers-egress-undici/lib/api/api-request.js" {
++  import type { Dispatcher } from "butlers-egress-undici";
++  export default function request(
++    this: Pick<Dispatcher, "dispatch">,
++    options: Dispatcher.RequestOptions,
++  ): Promise<Dispatcher.ResponseData>;
++}
+--- a/packages/opencode/src/plugin/openai/codex.ts
++++ b/packages/opencode/src/plugin/openai/codex.ts
+@@ -1,3 +1,4 @@
++import { ButlersEgress } from "@opencode-ai/llm/route"
+ import type { Hooks, PluginInput } from "@opencode-ai/plugin"
+ import { InstallationVersion } from "@opencode-ai/core/installation/version"
+ import { OAUTH_DUMMY_KEY } from "../../auth"
+@@ -103,7 +104,7 @@
+ }
+ 
+ async function exchangeCodeForTokens(code: string, redirectUri: string, pkce: PkceCodes): Promise<TokenResponse> {
+-  const response = await fetch(`${ISSUER}/oauth/token`, {
++  const response = await ButlersEgress.egressFetch(`${ISSUER}/oauth/token`, {
+     method: "POST",
+     headers: { "Content-Type": "application/x-www-form-urlencoded" },
+     body: new URLSearchParams({
+@@ -121,7 +122,7 @@
+ }
+ 
+ async function refreshAccessToken(refreshToken: string, issuer = ISSUER): Promise<TokenResponse> {
+-  const response = await fetch(`${issuer}/oauth/token`, {
++  const response = await ButlersEgress.egressFetch(`${issuer}/oauth/token`, {
+     method: "POST",
+     headers: { "Content-Type": "application/x-www-form-urlencoded" },
+     body: new URLSearchParams({
+@@ -398,7 +399,7 @@
+       async loader(getAuth) {
+         const auth = await getAuth()
+         const websocketFetch = options.experimentalWebSockets
+-          ? OpenAIWebSocketPool.createWebSocketFetch({ httpFetch: fetch })
++          ? OpenAIWebSocketPool.createWebSocketFetch({ httpFetch: ButlersEgress.egressFetch as typeof globalThis.fetch })
+           : undefined
+         if (websocketFetch) {
+           websocketFetches.push(websocketFetch)
+@@ -430,7 +431,7 @@
+ 
+             const currentAuth = await getAuth()
+             if (currentAuth.type !== "oauth")
+-              return websocketFetch ? websocketFetch(requestInput, init) : fetch(requestInput, init)
++              return websocketFetch ? websocketFetch(requestInput, init) : ButlersEgress.egressFetch(requestInput, init)
+ 
+             const authWithAccount = currentAuth as typeof currentAuth & { accountId?: string }
+ 
+@@ -497,7 +498,7 @@
+               headers,
+             }
+             if (websocketFetch && parsed.pathname.endsWith("/responses")) return websocketFetch(url, requestInit)
+-            return fetch(url, OpenAIWebSocketPool.withoutInternalHeaders(requestInit))
++            return ButlersEgress.egressFetch(url, OpenAIWebSocketPool.withoutInternalHeaders(requestInit))
+           },
+         }
+       },
+@@ -536,7 +537,7 @@
+           label: "ChatGPT Pro/Plus (headless)",
+           type: "oauth",
+           authorize: async () => {
+-            const deviceResponse = await fetch(`${ISSUER}/api/accounts/deviceauth/usercode`, {
++            const deviceResponse = await ButlersEgress.egressFetch(`${ISSUER}/api/accounts/deviceauth/usercode`, {
+               method: "POST",
+               headers: {
+                 "Content-Type": "application/json",
+@@ -560,7 +561,7 @@
+               method: "auto" as const,
+               async callback() {
+                 while (true) {
+-                  const response = await fetch(`${ISSUER}/api/accounts/deviceauth/token`, {
++                  const response = await ButlersEgress.egressFetch(`${ISSUER}/api/accounts/deviceauth/token`, {
+                     method: "POST",
+                     headers: {
+                       "Content-Type": "application/json",
+@@ -578,7 +579,7 @@
+                       code_verifier: string
+                     }
+ 
+-                    const tokenResponse = await fetch(`${ISSUER}/oauth/token`, {
++                    const tokenResponse = await ButlersEgress.egressFetch(`${ISSUER}/oauth/token`, {
+                       method: "POST",
+                       headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                       body: new URLSearchParams({
+--- a/packages/opencode/src/plugin/openai/ws-pool.ts
++++ b/packages/opencode/src/plugin/openai/ws-pool.ts
+@@ -1,3 +1,4 @@
++import { ButlersEgress } from "@opencode-ai/llm/route"
+ import WebSocket from "ws"
+ import { ProviderError } from "@/provider/error"
+ import { isRecord } from "@/util/record"
+@@ -29,7 +30,7 @@
+ const CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached"
+ 
+ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
+-  const httpFetch = options?.httpFetch ?? globalThis.fetch
++  const httpFetch = options?.httpFetch ?? (ButlersEgress.egressFetch as typeof globalThis.fetch)
+   const pool = new Map<string, PoolEntry>()
+   const connectTimeout = options?.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT
+   const idleTimeout = options?.idleTimeout ?? DEFAULT_IDLE_TIMEOUT
+--- a/packages/opencode/src/plugin/openai/ws.ts
++++ b/packages/opencode/src/plugin/openai/ws.ts
+@@ -1,3 +1,4 @@
++import { ButlersEgress } from "@opencode-ai/llm/route"
+ // Low-level OpenAI Responses WebSocket protocol helpers. Session pooling,
+ // fallback, and continuation state intentionally live above this file.
+ 
+@@ -82,12 +83,13 @@
+     delete headers["content-length"]
+ 
+     // Bun does not apply HTTP(S)_PROXY to WebSockets unless the proxy is supplied explicitly.
++    const selected = ButlersEgress.gatewayWebSocket(options.url, headers)
+     const proxy =
+-      typeof Bun === "undefined"
++      selected || typeof Bun === "undefined"
+         ? undefined
+         : ProxyEnv.getProxyForUrl(options.url.replace(/^wss:/, "https:").replace(/^ws:/, "http:"))
+-    const connect = { headers, ...(proxy ? { proxy } : {}) }
+-    const socket = new WebSocket(options.url, connect)
++    const connect = { headers: selected?.headers ?? headers, ...(proxy ? { proxy } : {}), followRedirects: false }
++    const socket = new WebSocket(selected?.url ?? options.url, connect)
+     const timeout = options.timeout
+       ? setTimeout(() => {
+           cleanup()
+--- a/packages/opencode/src/provider/provider.ts
++++ b/packages/opencode/src/provider/provider.ts
+@@ -1,3 +1,4 @@
++import { ButlersEgress } from "@opencode-ai/llm/route"
+ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+ import os from "os"
+ import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
+@@ -525,7 +526,7 @@
+             const headers = new Headers(init?.headers)
+             headers.set("Authorization", `Bearer ${token.token}`)
+ 
+-            return fetch(input, { ...init, headers })
++            return ButlersEgress.egressFetch(input, { ...init, headers })
+           },
+         },
+         async getModel(sdk: any, modelID: string) {
+@@ -899,7 +900,7 @@
+             } catch {}
+           }
+ 
+-          const response = await fetch(url, init)
++          const response = await ButlersEgress.egressFetch(url, init)
+ 
+           if (!response.ok && response.status === 400) {
+             try {
+@@ -1690,7 +1691,7 @@
+         delete options["headerTimeout"]
+ 
+         options["fetch"] = async (input: any, init?: BunFetchRequestInit) => {
+-          const fetchFn = customFetch ?? fetch
++          const fetchFn = customFetch ?? ButlersEgress.egressFetch
+           const opts = init ?? {}
+           const chunkAbortCtl = typeof chunkTimeout === "number" && chunkTimeout > 0 ? new AbortController() : undefined
+           const headerTimeoutMs = headerTimeout === false ? undefined : headerTimeout

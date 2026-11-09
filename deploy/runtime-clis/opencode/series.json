@@ -1,0 +1,166 @@
+{
+  "schema": "butlers.vendor-patch-series/v1",
+  "vendor": "opencode",
+  "version": "1.17.7",
+  "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
+  "archive": {
+    "root": "opencode-4ed4f749e644ffb5b279fb30b7b915e743d80142",
+    "sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58"
+  },
+  "patches": [
+    {
+      "path": "patches/0001-request-auth-effect.patch",
+      "sha256": "017b95b559befef251dacae0db8425f96173f04d732cf6c7500ab681bee6e08e",
+      "files": [
+        {
+          "path": "bun.lock",
+          "before_sha256": "4629fdf46f00dae4016a142ce3f2e5ac9fec3554cd12e5f4466fb9cecb53e840",
+          "after_sha256": "539ca1b08e4bc919f828f5548420e848b7a6480945b23f1ca918a35b8d509b82"
+        },
+        {
+          "path": "packages/core/src/effect/layer-node-platform.ts",
+          "before_sha256": "9c205d41f16841de288be6f4a5fe859ce4b999a6e6bbb65e803955bc9fdfe0b3",
+          "after_sha256": "783e3caecd51b3555aeaef26a0fa1720d559bdcfea44dbbaee56f95358e1e09f"
+        },
+        {
+          "path": "packages/core/src/plugin/provider/openai-auth.ts",
+          "before_sha256": "1fb5ed60e97252095fc26321451861321ff3e438a9cd8a03f591f2f972c4de98",
+          "after_sha256": "d81c22620e1b6bc369a43066a49ad9f6208169995ca0a5c96595957acad0ec44"
+        },
+        {
+          "path": "packages/llm/package.json",
+          "before_sha256": "ccf73d42a0fb4041c2bf28ed9bf8038f64969411c892942a771ed6a11e1d908a",
+          "after_sha256": "0f150c43ea492407ad12f87c01de6b66b7fbc0b74a10d01b8520c10a518a70e3"
+        },
+        {
+          "path": "packages/llm/src/butlers-egress.ts",
+          "before_sha256": null,
+          "after_sha256": "c18a9d00ac0a4766aca736dc6e56c3f3b93c77e486b7be04b2a12b4b22817301"
+        },
+        {
+          "path": "packages/llm/src/route/egress.ts",
+          "before_sha256": null,
+          "after_sha256": "2758d11a1a27b8e7a638693c22c9ea349925a514b5c4a7a0dc13f8c0bbc1ba24"
+        },
+        {
+          "path": "packages/llm/src/route/executor.ts",
+          "before_sha256": "919acea24cac3d80f88ea643d2a86337b7d5df4548c3f821dfe33b26e22e48ca",
+          "after_sha256": "d506737f4296511cde5c8d3dfa091617700533579046d4eeae4050d447d59246"
+        },
+        {
+          "path": "packages/llm/src/route/index.ts",
+          "before_sha256": "ffe5b726c5188cda1655ab4bad7b1dc185d2df791681173bd438d0adc1f95b46",
+          "after_sha256": "5c3661a7007579db4ca08bffc1ee9ad9aafd7324095c454e2e72a9b9e39ed54e"
+        },
+        {
+          "path": "packages/llm/src/route/transport/websocket.ts",
+          "before_sha256": "4568240ae28702c67004628ed9ea7c1030ab6b993cf0606a5f8fac8e932155d7",
+          "after_sha256": "51a9e7db73c578aa434cebe882ec7dcb29a266f6fbda6f2b0bd01182e98ad1cf"
+        },
+        {
+          "path": "packages/llm/src/undici-private.d.ts",
+          "before_sha256": null,
+          "after_sha256": "7151fafef798eb4c5da9235547c820dbf693f096d0f0d09778bb729aaa94442c"
+        },
+        {
+          "path": "packages/opencode/src/plugin/openai/codex.ts",
+          "before_sha256": "97e626ac75715e3e37c3eef0342cf1a6b4ee384248b92011b7d094ebeeeed78c",
+          "after_sha256": "3b6f472b5e4c77153ab926a30d18e8175fa82746293ddf47dd887dae8d306c20"
+        },
+        {
+          "path": "packages/opencode/src/plugin/openai/ws-pool.ts",
+          "before_sha256": "5a8b681d69ed8cfb592a107254f9df05e5a0c7574a5099853cac92a1c6d69226",
+          "after_sha256": "688cda5e58fe4f2b742abcca9e860b52c8b3b513774bf6024d9ffaa1e23b730c"
+        },
+        {
+          "path": "packages/opencode/src/plugin/openai/ws.ts",
+          "before_sha256": "15415cbf18806caf3475e09ea0f731e96d5397daa19740d456b6aa8468640498",
+          "after_sha256": "0a894ee7fbfa85427c892a8c4628194183d175fa777f27e8ebfbb0720ad1bea7"
+        },
+        {
+          "path": "packages/opencode/src/provider/provider.ts",
+          "before_sha256": "e7203da9a0d25dc676bd66a9fe9badfd8cfc92adc38d79c506ada5cf3f41b4b1",
+          "after_sha256": "b8d4326f4fb6f247d27aa1c5fcbe194faba4f7696199b071e7428066696491b7"
+        }
+      ]
+    },
+    {
+      "path": "patches/0002-selected-websocket-and-startup.patch",
+      "sha256": "79cdd2d34ffb1ff27cd48db257d4297497c65672ddd3b224d974174cb89b54be",
+      "files": [
+        {
+          "path": "bun.lock",
+          "before_sha256": "539ca1b08e4bc919f828f5548420e848b7a6480945b23f1ca918a35b8d509b82",
+          "after_sha256": "cffe8718860a54ef12b4c5b35b3ceb7b969cc877dc62b684dd4359fe0e4b48c7"
+        },
+        {
+          "path": "packages/core/src/models-dev.ts",
+          "before_sha256": "bdaa487a939e015a663d3b0111fc9730bc69f00d1e68669029a226fc65b9aff4",
+          "after_sha256": "368af6ccd1dffce8b81ea4d7ccc8d7c8a60dc96d260b9255d74003342eb74bcf"
+        },
+        {
+          "path": "packages/llm/package.json",
+          "before_sha256": "0f150c43ea492407ad12f87c01de6b66b7fbc0b74a10d01b8520c10a518a70e3",
+          "after_sha256": "6e71492d9e626a31ecdcb3d7c188afe6c6df25397f3f98084dc63624cabf7bc5"
+        },
+        {
+          "path": "packages/llm/src/route/gateway-websocket.ts",
+          "before_sha256": null,
+          "after_sha256": "b7058e2477efb2fa20460364ed18932b9d7cdbec81b1df307d77eb7ff2d49c0d"
+        },
+        {
+          "path": "packages/llm/src/route/transport/websocket.ts",
+          "before_sha256": "51a9e7db73c578aa434cebe882ec7dcb29a266f6fbda6f2b0bd01182e98ad1cf",
+          "after_sha256": "6b24f9ffc5e14c7588535fb62d6b82aaed9f2201395d7c94c7ed32b3dae6368a"
+        },
+        {
+          "path": "packages/llm/src/ws-private.d.ts",
+          "before_sha256": null,
+          "after_sha256": "754c49924da96aad29f166c5ac16a458baa6248d99e912b6f2bb99e86fbbc9da"
+        },
+        {
+          "path": "packages/llm/test/gateway-egress.test.ts",
+          "before_sha256": null,
+          "after_sha256": "3f274022d545230edaa7d5a165975c47f299700ae27417e3ba915b1a93fb6b49"
+        },
+        {
+          "path": "packages/llm/test/gateway-websocket.test.ts",
+          "before_sha256": null,
+          "after_sha256": "bc7c78505a913dbc7719f4fca38fcc0a715e1a861fc8dd95320c3de61dc9fcd1"
+        },
+        {
+          "path": "packages/opencode/src/plugin/openai/ws-pool.ts",
+          "before_sha256": "688cda5e58fe4f2b742abcca9e860b52c8b3b513774bf6024d9ffaa1e23b730c",
+          "after_sha256": "a48699fc0eac33a815fe8e56b01a42e0a3e94ed8ca468a5009fa6bace4405153"
+        },
+        {
+          "path": "packages/opencode/src/plugin/openai/ws.ts",
+          "before_sha256": "0a894ee7fbfa85427c892a8c4628194183d175fa777f27e8ebfbb0720ad1bea7",
+          "after_sha256": "18cd170017d19716394c19b07f0a84a5fd82c9e625a195a0cc0c3ac3c8769beb"
+        }
+      ]
+    },
+    {
+      "path": "patches/0003-complete-local-ui-inputs.patch",
+      "sha256": "438e1b250baf8e550fda3609bffc43f516151751fdd3757f85067b96e692212c",
+      "files": [
+        {
+          "path": "packages/ui/script/provider-icons.test.ts",
+          "before_sha256": null,
+          "after_sha256": "ae6c7b02fc5ece27be65ad1a0866737e07a8e6aae6b06976ce24d20158393272"
+        },
+        {
+          "path": "packages/ui/script/provider-icons.ts",
+          "before_sha256": null,
+          "after_sha256": "9b901541d5fc732be857e63a1e557d428876fd0ecb377b06471208c2dc19ea62"
+        },
+        {
+          "path": "packages/ui/vite.config.ts",
+          "before_sha256": "357b03afcfb77b4b62e93165604e0e3cb50c15287bb80b2f176fcf6cf217b1c2",
+          "after_sha256": "2cfeabd366d493d1d71b3c16f1754888878f0281c5e90006195164b69ab61049"
+        }
+      ]
+    }
+  ],
+  "source_tree_sha256": "3d2bcd3bc760d8295d98b89f9cfbfb0f04ed22d224e2aecb47109fa839e44ed2"
+}

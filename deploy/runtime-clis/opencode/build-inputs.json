@@ -1,0 +1,1431 @@
+{
+  "schema": "butlers.opencode-build-inputs/v1",
+  "version": "1.17.7",
+  "channel": "latest",
+  "bun": "1.3.14",
+  "catalogue": {
+    "url": "https://models.dev/api.json",
+    "sha256": "e5f5f63b5fc6460b7f42f592f3c33c517f06205f1781be50a1def87c2b23a421",
+    "providers": 235,
+    "models": 8939
+  },
+  "logos": [
+    {
+      "provider": "302ai",
+      "url": "https://models.dev/logos/302ai.svg",
+      "sha256": "8944fea165d884416e1d7e3db74156badd187f6d26f0fb498fbaa854edf2d2ad",
+      "size": 5041
+    },
+    {
+      "provider": "abacus",
+      "url": "https://models.dev/logos/abacus.svg",
+      "sha256": "ff15f2b5aecf31d45b23a877484879a3d6a86b1f6523135a222656e896ba4882",
+      "size": 2878
+    },
+    {
+      "provider": "abliteration-ai",
+      "url": "https://models.dev/logos/abliteration-ai.svg",
+      "sha256": "b3c16701fe9aa89608f1a7188781c4ca62ceb036dded000a7626967c2e3b935a",
+      "size": 239
+    },
+    {
+      "provider": "above",
+      "url": "https://models.dev/logos/above.svg",
+      "sha256": "494ff40f9952794c912ee72863f8ee89ae1bcc254ec470363abcc6dbbc8af609",
+      "size": 148
+    },
+    {
+      "provider": "agentrouter",
+      "url": "https://models.dev/logos/agentrouter.svg",
+      "sha256": "76478bd98302d4b0ea6bbd3851371e61ab81563a1be44d0fff21d80fdcc5ab07",
+      "size": 370
+    },
+    {
+      "provider": "agnes",
+      "url": "https://models.dev/logos/agnes.svg",
+      "sha256": "05d7a109fe6b5e113af8f52822a694d09b4f8cc460a77721e1ee459132e18a9e",
+      "size": 3397
+    },
+    {
+      "provider": "ai-router",
+      "url": "https://models.dev/logos/ai-router.svg",
+      "sha256": "d5d1a28e4e95d36ebe865f0bd06d7854c98008389dc88a2d40470c7b22185fda",
+      "size": 749
+    },
+    {
+      "provider": "ai21",
+      "url": "https://models.dev/logos/ai21.svg",
+      "sha256": "a2239e127be092089c00cf439f710ec588f73b22c6a7797134b33ed65eb6a6fc",
+      "size": 249
+    },
+    {
+      "provider": "aiand",
+      "url": "https://models.dev/logos/aiand.svg",
+      "sha256": "a516d5ebc194f286ef62426b68d27937b482ff4995bbb2d9e5b7985820a72d04",
+      "size": 634
+    },
+    {
+      "provider": "aihubmix",
+      "url": "https://models.dev/logos/aihubmix.svg",
+      "sha256": "e7d7efd8094a709ce2d5ee1889660aea96299b7dcb8bfc70969427d19dbd4e07",
+      "size": 2244
+    },
+    {
+      "provider": "aimlapi",
+      "url": "https://models.dev/logos/aimlapi.svg",
+      "sha256": "1baddb25ecf0d4fcb45917a4916bb03d2aa683ba97a3a52f9650d037d3dd9dd4",
+      "size": 1061
+    },
+    {
+      "provider": "ainetcafe",
+      "url": "https://models.dev/logos/ainetcafe.svg",
+      "sha256": "38beb084c129cf89fda9f9a0b591c9b7a74f8b9e3b7f31f3323d06a2d76dc73a",
+      "size": 151
+    },
+    {
+      "provider": "aixy",
+      "url": "https://models.dev/logos/aixy.svg",
+      "sha256": "469e07982f676b12465618df68b03eb24efc4ab503a76ce92bb3e3a05e8bf916",
+      "size": 224
+    },
+    {
+      "provider": "aki-io",
+      "url": "https://models.dev/logos/aki-io.svg",
+      "sha256": "6458afe24322cb0453cb50613daee1bedd4e19ca1bafe128167a00a2c325e837",
+      "size": 2505
+    },
+    {
+      "provider": "alibaba",
+      "url": "https://models.dev/logos/alibaba.svg",
+      "sha256": "5f4c48b021079424f030d9e960440ee8741fb8113ec63464ee8c22c099671b92",
+      "size": 2057
+    },
+    {
+      "provider": "alibaba-cn",
+      "url": "https://models.dev/logos/alibaba-cn.svg",
+      "sha256": "bf4119a0f34265479d285d646888ed73db4c110fcea66456f9e88cc7085d68db",
+      "size": 2049
+    },
+    {
+      "provider": "alibaba-coding-plan",
+      "url": "https://models.dev/logos/alibaba-coding-plan.svg",
+      "sha256": "5f4c48b021079424f030d9e960440ee8741fb8113ec63464ee8c22c099671b92",
+      "size": 2057
+    },
+    {
+      "provider": "alibaba-coding-plan-cn",
+      "url": "https://models.dev/logos/alibaba-coding-plan-cn.svg",
+      "sha256": "5f4c48b021079424f030d9e960440ee8741fb8113ec63464ee8c22c099671b92",
+      "size": 2057
+    },
+    {
+      "provider": "alibaba-token-plan",
+      "url": "https://models.dev/logos/alibaba-token-plan.svg",
+      "sha256": "5f4c48b021079424f030d9e960440ee8741fb8113ec63464ee8c22c099671b92",
+      "size": 2057
+    },
+    {
+      "provider": "alibaba-token-plan-cn",
+      "url": "https://models.dev/logos/alibaba-token-plan-cn.svg",
+      "sha256": "13bb0b37c627f6e5961487cd0159abc18dd87ff318668357c7c9990b42e7f32f",
+      "size": 1421
+    },
+    {
+      "provider": "amazon-bedrock",
+      "url": "https://models.dev/logos/amazon-bedrock.svg",
+      "sha256": "28a6d29994e72042e71efb4d31b2ed90861237ce57407e5fe7771622c02a3eac",
+      "size": 5535
+    },
+    {
+      "provider": "ambient",
+      "url": "https://models.dev/logos/ambient.svg",
+      "sha256": "1b44fa767cbe69568174c55f3727bd7c9f00aa9e11ad8d2b73cfca221e0da913",
+      "size": 6206
+    },
+    {
+      "provider": "amd",
+      "url": "https://models.dev/logos/amd.svg",
+      "sha256": "72c608fcb31f3c673c841ba003c3af2da3d4533a36745211ba6a7742ed8293da",
+      "size": 562
+    },
+    {
+      "provider": "anthropic",
+      "url": "https://models.dev/logos/anthropic.svg",
+      "sha256": "7dbf450ab558c459b9a0f86d265ae6063560cb164189f78ce705d330f8d1426c",
+      "size": 355
+    },
+    {
+      "provider": "anyapi",
+      "url": "https://models.dev/logos/anyapi.svg",
+      "sha256": "b5953eeba56ecfd68236434eebd22f17fe122277ee1f6d754cb19caf85a37872",
+      "size": 374
+    },
+    {
+      "provider": "arcee",
+      "url": "https://models.dev/logos/arcee.svg",
+      "sha256": "6326d6cecb8a6014208aa5f5d41fd1ec9ef8a2e11eedcda10dcf227058c95bb6",
+      "size": 322
+    },
+    {
+      "provider": "atomic-chat",
+      "url": "https://models.dev/logos/atomic-chat.svg",
+      "sha256": "9d7ce5d19e6252be9a8db37bafcb9654ff5008072fa4494d0e450926df245833",
+      "size": 9649
+    },
+    {
+      "provider": "auriko",
+      "url": "https://models.dev/logos/auriko.svg",
+      "sha256": "f2ec3b627b7566e33a2e8b859decedff17604a93e88da298045f09fce43e2a75",
+      "size": 1361
+    },
+    {
+      "provider": "azure",
+      "url": "https://models.dev/logos/azure.svg",
+      "sha256": "b7d9b46b2d1ae74bf7f787c2384349ebea3b619c3d25152c0087c6b16e93c070",
+      "size": 258
+    },
+    {
+      "provider": "azure-cognitive-services",
+      "url": "https://models.dev/logos/azure-cognitive-services.svg",
+      "sha256": "b7d9b46b2d1ae74bf7f787c2384349ebea3b619c3d25152c0087c6b16e93c070",
+      "size": 258
+    },
+    {
+      "provider": "bailing",
+      "url": "https://models.dev/logos/bailing.svg",
+      "sha256": "c55740ef341dc5f9be85daf804d9dbf9694a89ce0bde12ae731918f1f514269b",
+      "size": 1628
+    },
+    {
+      "provider": "baseten",
+      "url": "https://models.dev/logos/baseten.svg",
+      "sha256": "7715e7fcc9addbdc6cfc14f0669ec08862ed332b8f9115d9ffc52f05d27ddf30",
+      "size": 1630
+    },
+    {
+      "provider": "bee",
+      "url": "https://models.dev/logos/bee.svg",
+      "sha256": "5e7cbc0359a0637f6319414e095922e6f168740a9d245e3bf5613ed2718f0d64",
+      "size": 9942
+    },
+    {
+      "provider": "berget",
+      "url": "https://models.dev/logos/berget.svg",
+      "sha256": "c206dbcac2e84c8b2fb131e297a6adccac1a5723ed88eeaa9796dfa66d3dbf84",
+      "size": 287
+    },
+    {
+      "provider": "blueclaw",
+      "url": "https://models.dev/logos/blueclaw.svg",
+      "sha256": "78e32dec37abd2e710198605d59982c3693c271f40e3f41fd51ad7b791dcacbb",
+      "size": 309
+    },
+    {
+      "provider": "bothub",
+      "url": "https://models.dev/logos/bothub.svg",
+      "sha256": "5454ca4599275989103699c9aaea3cb7105f0c51558e2dee62923cf4b9745507",
+      "size": 819
+    },
+    {
+      "provider": "boundless",
+      "url": "https://models.dev/logos/boundless.svg",
+      "sha256": "34c428735c921ea050348155eb9a92a4e6c5436955ed1cdcb208b71ce5931709",
+      "size": 3143
+    },
+    {
+      "provider": "cerebras",
+      "url": "https://models.dev/logos/cerebras.svg",
+      "sha256": "d41adb7b437895e13ee22742cf6eab98f7b5e2770aad12fb2103cdf7fa1574c9",
+      "size": 3355
+    },
+    {
+      "provider": "chutes",
+      "url": "https://models.dev/logos/chutes.svg",
+      "sha256": "13bb0b37c627f6e5961487cd0159abc18dd87ff318668357c7c9990b42e7f32f",
+      "size": 1421
+    },
+    {
+      "provider": "clarifai",
+      "url": "https://models.dev/logos/clarifai.svg",
+      "sha256": "6ad900551b3ef49434203e663c94e56515457ab56ef37628502a5b42a7e5fb4f",
+      "size": 964
+    },
+    {
+      "provider": "claudinio",
+      "url": "https://models.dev/logos/claudinio.svg",
+      "sha256": "d33ef0d873000f1621238a092424e1bf1e1fd30e576954e19ac3a2cc02b2c51a",
+      "size": 17979
+    },
+    {
+      "provider": "cline-pass",
+      "url": "https://models.dev/logos/cline-pass.svg",
+      "sha256": "13bb0b37c627f6e5961487cd0159abc18dd87ff318668357c7c9990b42e7f32f",
+      "size": 1421
+    },
+    {
+      "provider": "cloudferro-sherlock",
+      "url": "https://models.dev/logos/cloudferro-sherlock.svg",
+      "sha256": "d53caf3e9603e8a3be9e1a53a4471244836809f3b3e817c1a788d2d53e3d502b",
+      "size": 408
+    },
+    {
+      "provider": "cloudflare-ai-gateway",
+      "url": "https://models.dev/logos/cloudflare-ai-gateway.svg",
+      "sha256": "443a73603930dae2ba3ee64bf03dee2c49e5a53a913d990c6540e94309395b84",
+      "size": 2230
+    },
+    {
+      "provider": "cloudflare-workers-ai",
+      "url": "https://models.dev/logos/cloudflare-workers-ai.svg",
+      "sha256": "443a73603930dae2ba3ee64bf03dee2c49e5a53a913d990c6540e94309395b84",
+      "size": 2230
+    },
+    {
+      "provider": "cohere",
+      "url": "https://models.dev/logos/cohere.svg",
+      "sha256": "b3894996912078b267595793a2acf3e73bea6b14cc499405f33c151097a0381c",
+      "size": 913
+    },
+    {
+      "provider": "commandcode",
+      "url": "https://models.dev/logos/commandcode.svg",
+      "sha256": "cb1687d141edca792ca305d174c2f68ad2129044ae977feb61c5675d86eaa987",
+      "size": 2268
+    },
+    {
+      "provider": "coralbricks",
+      "url": "https://models.dev/logos/coralbricks.svg",
+      "sha256": "d002650244491aca5a5334b9f9ceddb6a3675784358578123cbc65ddf693c31e",
+      "size": 4442
+    },
+    {
+      "provider": "cortecs",
+      "url": "https://models.dev/logos/cortecs.svg",
+      "sha256": "13bb0b37c627f6e5961487cd0159abc18dd87ff318668357c7c9990b42e7f32f",
+      "size": 1421
+    },
+    {
+      "provider": "crossmodel",
+      "url": "https://models.dev/logos/crossmodel.svg",
+      "sha256": "81ea00e6700d0410ce068537e653d308c06afa05ec2a3399890b1e89bf33ea43",
+      "size": 410
+    },
+    {
+      "provider": "crusoe",
+      "url": "https://models.dev/logos/crusoe.svg",
+      "sha256": "4b00a4b1aad1f56531f59fa7aeefe932ae8c0dcd5fd0c210912f46415d92af91",
+      "size": 17285
+    },
+    {
+      "provider": "daoxe",
+      "url": "https://models.dev/logos/daoxe.svg",
+      "sha256": "c5bbdb71cc325c95dba27ce4bf2675a9ad484d7377c95015308d311c450f414e",
+      "size": 1634
+    },
+    {
+      "provider": "databricks",
+      "url": "https://models.dev/logos/databricks.svg",
+      "sha256": "7caafae42afc2ef2f149d3ddec059880aee762e1d526563806d7f069efbd7ab2",
+      "size": 412
+    },
+    {
+      "provider": "deepinfra",
+      "url": "https://models.dev/logos/deepinfra.svg",
+      "sha256": "92a894969e86e850b4dc274ae4f99bacadf16313945b8280f8194c443019c179",
+      "size": 14898
+    },
+    {
+      "provider": "deepseek",
+      "url": "https://models.dev/logos/deepseek.svg",
+      "sha256": "fdc7613fa261eab83bccf6a2e087cf4d83b9050e9222a874689447ad901a84d5",
+      "size": 3927
+    },
+    {
+      "provider": "digitalocean",
+      "url": "https://models.dev/logos/digitalocean.svg",
+      "sha256": "556ab6fd0900757348019d72a7ee9ea1abdb1ea59a10c666a1c0a71a2e5dddbf",
+      "size": 613
+    },
+    {
+      "provider": "dinference",
+      "url": "https://models.dev/logos/dinference.svg",
+      "sha256": "08eef0681dea8abce9fac49dd1a694e8107ca8cf321011d2d5e4f5731692fff1",
+      "size": 253
+    },
+    {
+      "provider": "drun",
+      "url": "https://models.dev/logos/drun.svg",
+      "sha256": "43dc73a5a4506a8730c75a0d60530542cc8b9d13c95bdcf62bec3be0c17a7447",
+      "size": 1626
+    },
+    {
+      "provider": "ebcloud",
+      "url": "https://models.dev/logos/ebcloud.svg",
+      "sha256": "766402f641a3611aa0c3b7dd2b47850136fbfc60fdfcc8a2db7d67ba6e2e2554",
+      "size": 517
+    },
+    {
+      "provider": "echo",
+      "url": "https://models.dev/logos/echo.svg",
+      "sha256": "bda581083278e860fa4bb4bdf3cf1d17546362850cc22d6a79cc74efdb839915",
+      "size": 353
+    },
+    {
+      "provider": "edenai",
+      "url": "https://models.dev/logos/edenai.svg",
+      "sha256": "73f5b4ee2ac370448fc147b3df03839019bfb4ef5f5201e25c32b5b561250648",
+      "size": 4201
+    },
+    {
+      "provider": "empiriolabs",
+      "url": "https://models.dev/logos/empiriolabs.svg",
+      "sha256": "03c448304a957e715aefe025ab31c03197387fc5e2c8cbe3f74b54a8985e8d1d",
+      "size": 351
+    },
+    {
+      "provider": "engy",
+      "url": "https://models.dev/logos/engy.svg",
+      "sha256": "dfbd93d610ef0fcc79fa6bfb3effead7fd03a3203ab091f700623a9a5f3a5da9",
+      "size": 259
+    },
+    {
+      "provider": "evroc",
+      "url": "https://models.dev/logos/evroc.svg",
+      "sha256": "e6b1b26c5c96331a1e93257c2383b1ea4d4bb80e0c64fe9b3160c667407b73d6",
+      "size": 1792
+    },
+    {
+      "provider": "fastrouter",
+      "url": "https://models.dev/logos/fastrouter.svg",
+      "sha256": "435360e241e963c3f12289abe7d2632d4cb4512ac289b705c2c7ab1bc4340f0b",
+      "size": 488
+    },
+    {
+      "provider": "fireworks-ai",
+      "url": "https://models.dev/logos/fireworks-ai.svg",
+      "sha256": "c5d275fc8142a415bd678d50d7b0948a74f829139baf79122fb9e1934e6c05ac",
+      "size": 992
+    },
+    {
+      "provider": "freemodel",
+      "url": "https://models.dev/logos/freemodel.svg",
+      "sha256": "428305a95af79b4b3a91f6f188fa7f37ade512ba63069f752e5161b11606559d",
+      "size": 334
+    },
+    {
+      "provider": "friendli",
+      "url": "https://models.dev/logos/friendli.svg",
+      "sha256": "5bc1850aa1bb39cf310cea77d2ea5066bd2e73344cb33b3dc96bc2f3aad882c7",
+      "size": 2196
+    },
+    {
+      "provider": "frogbot",
+      "url": "https://models.dev/logos/frogbot.svg",
+      "sha256": "fe2407117358b0b01d8abb9019a5f249b27340b90cda66b913066cc3d2875751",
+      "size": 1697
+    },
+    {
+      "provider": "github-copilot",
+      "url": "https://models.dev/logos/github-copilot.svg",
+      "sha256": "982c4004ab12c3cc3af34851848754c28bd52f70494330f2f8e0d39d89ad3723",
+      "size": 2870
+    },
+    {
+      "provider": "gitlab",
+      "url": "https://models.dev/logos/gitlab.svg",
+      "sha256": "9696454235f3559a7f1af762e939c55100318db53dac7f3adebc99b3fab54084",
+      "size": 959
+    },
+    {
+      "provider": "gmicloud",
+      "url": "https://models.dev/logos/gmicloud.svg",
+      "sha256": "13bb0b37c627f6e5961487cd0159abc18dd87ff318668357c7c9990b42e7f32f",
+      "size": 1421
+    },
+    {
+      "provider": "google",
+      "url": "https://models.dev/logos/google.svg",
+      "sha256": "32768e91724a46b8f06c3999b491984ef7974194057cc617658635df4ea65240",
+      "size": 333
+    },
+    {
+      "provider": "google-vertex",
+      "url": "https://models.dev/logos/google-vertex.svg",
+      "sha256": "525156915678d1093b96f4693c03df13cf2830005a544efaee7b42c55edc58ff",
+      "size": 11243
+    },
+    {
+      "provider": "google-vertex-anthropic",
+      "url": "https://models.dev/logos/google-vertex-anthropic.svg",
+      "sha256": "525156915678d1093b96f4693c03df13cf2830005a544efaee7b42c55edc58ff",
+      "size": 11243
+    },
+    {
+      "provider": "greenpt",
+      "url": "https://models.dev/logos/greenpt.svg",
+      "sha256": "81218b359e1ed14c655734103bb56a351629ba9a45ce38a6f1661f515aade47f",
+      "size": 1235
+    },
+    {
+      "provider": "groq",
+      "url": "https://models.dev/logos/groq.svg",
+      "sha256": "40578773086b54d5522c7d22f75664b41ccda03f8fab964882a58037de237c55",
+      "size": 680
+    },
+    {
+      "provider": "helicone",
+      "url": "https://models.dev/logos/helicone.svg",
+      "sha256": "135eff3440255e07e3c9d873997bf6d2beae9d98dd9e43224f443a8666beea9c",
+      "size": 1267
+    },
+    {
+      "provider": "hetzner",
+      "url": "https://models.dev/logos/hetzner.svg",
+      "sha256": "a1bd9d33107a0c69980d394a134377fba1150c2427c9eb1c606ca3fec2ea166f",
+      "size": 5223
+    },
+    {
+      "provider": "hopper",
+      "url": "https://models.dev/logos/hopper.svg",
+      "sha256": "6d823600da8e95218aa02fe83db3a681ca991255a02f8497000fc7fdc15c62e2",
+      "size": 307
+    },
+    {
+      "provider": "hpc-ai",
+      "url": "https://models.dev/logos/hpc-ai.svg",
+      "sha256": "fc04f6a1ec0aa5ed63c6cda02d6e54b6be67d35c2ecd521f0f4bc333c9a98dee",
+      "size": 34469
+    },
+    {
+      "provider": "huggingface",
+      "url": "https://models.dev/logos/huggingface.svg",
+      "sha256": "678d7de1bc3b085b9fda5d0ab5067f2ef2d68b87a0a0eb728e48da26cd93892e",
+      "size": 8444
+    },
+    {
+      "provider": "hyper",
+      "url": "https://models.dev/logos/hyper.svg",
+      "sha256": "e4c4bdd616ecff3cf94f8ff1f1b0a2bc452c8fab234a4f71274ba9060b8f5d90",
+      "size": 6905
+    },
+    {
+      "provider": "impossibl",
+      "url": "https://models.dev/logos/impossibl.svg",
+      "sha256": "ad766a52b72e710e99650cb4c33e4e3adf5ba319fd87fce7a4d8666cdbd902fd",
+      "size": 138
+    },
+    {
+      "provider": "inception",
+      "url": "https://models.dev/logos/inception.svg",
+      "sha256": "fa52be7a7c27050a37671ec537ceb65a2c9e8a2141379a296a6827ed40f03f21",
+      "size": 2731
+    },
+    {
+      "provider": "inceptron",
+      "url": "https://models.dev/logos/inceptron.svg",
+      "sha256": "19e1fcd001320b7cc62e718b80583a0617e843b7132192f384de87403f0dcab2",
+      "size": 889
+    },
+    {
+      "provider": "inco",
+      "url": "https://models.dev/logos/inco.svg",
+      "sha256": "0568c8778d715fdfcb8c75e285e7b432f63caaa763cbc4bfc1288a6904ec8f3c",
+      "size": 1608
+    },
+    {
+      "provider": "infer",
+      "url": "https://models.dev/logos/infer.svg",
+      "sha256": "08d7e42486009950b5b186e70b2cd7686ca52c6ba57ff597bac595525d872682",
+      "size": 254
+    },
+    {
+      "provider": "inference",
+      "url": "https://models.dev/logos/inference.svg",
+      "sha256": "dfc3c01df8beb21190bddafc23ff6d39e92c887d3a4a140d8fccb9dbfe9afbf3",
+      "size": 314
+    },
+    {
+      "provider": "inferx",
+      "url": "https://models.dev/logos/inferx.svg",
+      "sha256": "2d9cafcc7ddb47d1c1e066ea53dd2cb419dbad1bda021083405972645c1a2bef",
+      "size": 2966
+    },
+    {
+      "provider": "infomaniak",
+      "url": "https://models.dev/logos/infomaniak.svg",
+      "sha256": "21fa67a1e44710718876584c735067ce8f20e188521961ee331c4e80559ad3e8",
+      "size": 264
+    },
+    {
+      "provider": "io-net",
+      "url": "https://models.dev/logos/io-net.svg",
+      "sha256": "c0e762bf720b7dcca3e887cd87a2cc5bad3d99374da67912b9eb51e13dc265d1",
+      "size": 645
+    },
+    {
+      "provider": "iteracompute",
+      "url": "https://models.dev/logos/iteracompute.svg",
+      "sha256": "1b2d8679dbc5d3c0f86970e066b70f5a171717a6f5a77a15d7bb8a40010b3fe8",
+      "size": 6350
+    },
+    {
+      "provider": "jalapeno",
+      "url": "https://models.dev/logos/jalapeno.svg",
+      "sha256": "9257e7d271f02005e89fc1a560283ca06d5d9afc3b8eba06f0a66654d11aba46",
+      "size": 812
+    },
+    {
+      "provider": "jiekou",
+      "url": "https://models.dev/logos/jiekou.svg",
+      "sha256": "17f808d7f1814a06ca4314cb2e98f5496a4f580855bfcae5d386796738bfdd92",
+      "size": 285
+    },
+    {
+      "provider": "kenari",
+      "url": "https://models.dev/logos/kenari.svg",
+      "sha256": "88e2c5be43095bd3e23c41083dae16070ba177f181ec73927e08df3cb7e530f7",
+      "size": 360
+    },
+    {
+      "provider": "kilo",
+      "url": "https://models.dev/logos/kilo.svg",
+      "sha256": "8cbb6d388783dfe829d12e656cb2b15ff26ce42ecb8247bfd4f56c2221b14b11",
+      "size": 291
+    },
+    {
+      "provider": "kimi-code-plan-cn",
+      "url": "https://models.dev/logos/kimi-code-plan-cn.svg",
+      "sha256": "8b5bad7786092425839ffc98e0a292e994bcafe1908e5e0bd2dbfb1f43a39982",
+      "size": 6808
+    },
+    {
+      "provider": "kimi-code-plan-global",
+      "url": "https://models.dev/logos/kimi-code-plan-global.svg",
+      "sha256": "23a89aaa3ed64f069381203f68967711028a3549026a808c305671f5ad09640b",
+      "size": 6785
+    },
+    {
+      "provider": "klokintegration",
+      "url": "https://models.dev/logos/klokintegration.svg",
+      "sha256": "f35103831c6fdece4593f1ebb212f8ed02557947465af136e19980ac439d1255",
+      "size": 5395
+    },
+    {
+      "provider": "kosmik",
+      "url": "https://models.dev/logos/kosmik.svg",
+      "sha256": "8b41d24c61b577b6c4142def1c841e903d33ca9b91169910d1593b268f4e8da2",
+      "size": 50952
+    },
+    {
+      "provider": "kuae-cloud-coding-plan",
+      "url": "https://models.dev/logos/kuae-cloud-coding-plan.svg",
+      "sha256": "2d3d79a2915942e386ba92441129c385c5d19790d7b148a055cb1f19bfce978b",
+      "size": 279
+    },
+    {
+      "provider": "lilac",
+      "url": "https://models.dev/logos/lilac.svg",
+      "sha256": "95b700d53273840dcb9c18cafb4f8068a78ae8eb293335e87a07c9513e1c9642",
+      "size": 1575
+    },
+    {
+      "provider": "liquid",
+      "url": "https://models.dev/logos/liquid.svg",
+      "sha256": "515dd4f0d42e7fd469a99df62e44923692a96c86af6db3ccd14ae36c7dac7f62",
+      "size": 232
+    },
+    {
+      "provider": "llmgateway",
+      "url": "https://models.dev/logos/llmgateway.svg",
+      "sha256": "366cb44ed3b3d6df9bdb8b9093b0c5295ea0a632525a36a01789c53369cc8de3",
+      "size": 1496
+    },
+    {
+      "provider": "llmgateway-providers",
+      "url": "https://models.dev/logos/llmgateway-providers.svg",
+      "sha256": "4b621d9d92498b4e27b889b7601bbe791e7e1ac0efcba98fea76a7e5f60bdf49",
+      "size": 1473
+    },
+    {
+      "provider": "llmtech",
+      "url": "https://models.dev/logos/llmtech.svg",
+      "sha256": "b7f12d6b3b78f0c84cc3bf406356a93f4a93961db39b5ff536fce15b3727389c",
+      "size": 300
+    },
+    {
+      "provider": "llmtr",
+      "url": "https://models.dev/logos/llmtr.svg",
+      "sha256": "e7c1659086028825fa356ace8041bb340b0a5f847de4943476935f7d372be37a",
+      "size": 451
+    },
+    {
+      "provider": "lmstudio",
+      "url": "https://models.dev/logos/lmstudio.svg",
+      "sha256": "461acdf34bf96cb90b9767b521aefdd04ca7d40b5ccda88f0a0ffc43aaf736d4",
+      "size": 726
+    },
+    {
+      "provider": "longcat",
+      "url": "https://models.dev/logos/longcat.svg",
+      "sha256": "d0475647b306db5576dd5487c6cd8f8d49c384abec8ce24408b88b72b4603dd4",
+      "size": 2865
+    },
+    {
+      "provider": "lowrouter",
+      "url": "https://models.dev/logos/lowrouter.svg",
+      "sha256": "1ba5ee1642ae0c7b832e792de72e7cee1a2ba4d9d08e445c7c94e935c510c0cb",
+      "size": 494
+    },
+    {
+      "provider": "lucidquery",
+      "url": "https://models.dev/logos/lucidquery.svg",
+      "sha256": "a9d26d97ca51740169c290e00e8a91f31aa4fa61ca879474c730fe38b3eef520",
+      "size": 80010
+    },
+    {
+      "provider": "lynkr",
+      "url": "https://models.dev/logos/lynkr.svg",
+      "sha256": "ba07600d7c6bb63c5901f28081858f3f33e3d69578f53649f68096a368dabe7d",
+      "size": 173
+    },
+    {
+      "provider": "meganova",
+      "url": "https://models.dev/logos/meganova.svg",
+      "sha256": "b99696dfe2c6e70b961d3a13e14e49ed3143240eb1b80e2015d7427cdad9fcb5",
+      "size": 11819
+    },
+    {
+      "provider": "melious",
+      "url": "https://models.dev/logos/melious.svg",
+      "sha256": "f7c8c0e3cfa00a84a1587fb40f8ceb2d868ce27dae962e1f77fac77fe9343012",
+      "size": 507
+    },
+    {
+      "provider": "merge-gateway",
+      "url": "https://models.dev/logos/merge-gateway.svg",
+      "sha256": "4e460c9c033d7911737f35ec8181443f0ffc6de6b1b56e65b07bff8b268e1586",
+      "size": 594
+    },
+    {
+      "provider": "meta",
+      "url": "https://models.dev/logos/meta.svg",
+      "sha256": "3d4af304617cf27cbc26add3f3ab8a911b21f2366fe1325db553233e7c46dfa8",
+      "size": 1154
+    },
+    {
+      "provider": "minimax",
+      "url": "https://models.dev/logos/minimax.svg",
+      "sha256": "f3200b68c5d7d6a0b25f6c097e6a818808fe8b5aa17b7190ef702ac8a17988de",
+      "size": 2214
+    },
+    {
+      "provider": "minimax-cn",
+      "url": "https://models.dev/logos/minimax-cn.svg",
+      "sha256": "f3200b68c5d7d6a0b25f6c097e6a818808fe8b5aa17b7190ef702ac8a17988de",
+      "size": 2214
+    },
+    {
+      "provider": "minimax-cn-coding-plan",
+      "url": "https://models.dev/logos/minimax-cn-coding-plan.svg",
+      "sha256": "f3200b68c5d7d6a0b25f6c097e6a818808fe8b5aa17b7190ef702ac8a17988de",
+      "size": 2214
+    },
+    {
+      "provider": "minimax-coding-plan",
+      "url": "https://models.dev/logos/minimax-coding-plan.svg",
+      "sha256": "f3200b68c5d7d6a0b25f6c097e6a818808fe8b5aa17b7190ef702ac8a17988de",
+      "size": 2214
+    },
+    {
+      "provider": "mistral",
+      "url": "https://models.dev/logos/mistral.svg",
+      "sha256": "4d2b60e6e7397b2c6a30954e5ad8d8738c4916760c9dc15ccd779a53cae701f6",
+      "size": 397
+    },
+    {
+      "provider": "mixlayer",
+      "url": "https://models.dev/logos/mixlayer.svg",
+      "sha256": "dc34db9c2ba140453d85795da624633f6883385d4c99abad14eb2c98d670a9b4",
+      "size": 2135
+    },
+    {
+      "provider": "moark",
+      "url": "https://models.dev/logos/moark.svg",
+      "sha256": "1e1829edf1cc7cbdc03c05c6e37657a7024abc36fdc535edbb046137d56d50f4",
+      "size": 2307
+    },
+    {
+      "provider": "modal",
+      "url": "https://models.dev/logos/modal.svg",
+      "sha256": "588bff09b055b896c63babc6a6ec68ce93978ef1289aac92b04cb950541f7133",
+      "size": 403
+    },
+    {
+      "provider": "model-oracle-ai",
+      "url": "https://models.dev/logos/model-oracle-ai.svg",
+      "sha256": "49b82672ca31b1919b06d6a8a37d58536da16aca585d8afc3e71b3d4594b0274",
+      "size": 808
+    },
+    {
+      "provider": "modelis",
+      "url": "https://models.dev/logos/modelis.svg",
+      "sha256": "26b23cf96b5ef1b5c18addbd08ee74e841e28b7d68faa25e70e12c046696e366",
+      "size": 255
+    },
+    {
+      "provider": "modelscope",
+      "url": "https://models.dev/logos/modelscope.svg",
+      "sha256": "1a5ada767aa3316c457f5a4b44ba98c545848cab4ebf172f5c4bdd70ec4dc3c7",
+      "size": 726
+    },
+    {
+      "provider": "modular",
+      "url": "https://models.dev/logos/modular.svg",
+      "sha256": "6bae7b4bcff99b1e447238689b960258cc3da0b7e0edad1b21f5ac7f3dfbee58",
+      "size": 385
+    },
+    {
+      "provider": "moonshotai",
+      "url": "https://models.dev/logos/moonshotai.svg",
+      "sha256": "fb10fd4231a3b3785f866d3c78ff521a79d614a8cf87c369575cf916078d5141",
+      "size": 6823
+    },
+    {
+      "provider": "moonshotai-cn",
+      "url": "https://models.dev/logos/moonshotai-cn.svg",
+      "sha256": "fb10fd4231a3b3785f866d3c78ff521a79d614a8cf87c369575cf916078d5141",
+      "size": 6823
+    },
+    {
+      "provider": "morph",
+      "url": "https://models.dev/logos/morph.svg",
+      "sha256": "13bb0b37c627f6e5961487cd0159abc18dd87ff318668357c7c9990b42e7f32f",
+      "size": 1421
+    },
+    {
+      "provider": "munito",
+      "url": "https://models.dev/logos/munito.svg",
+      "sha256": "e3016f704473c41ff3082abefcf60105fc589678ebd5bfc18ec7461a363139a4",
+      "size": 868
+    },
+    {
+      "provider": "munito-eu",
+      "url": "https://models.dev/logos/munito-eu.svg",
+      "sha256": "e3016f704473c41ff3082abefcf60105fc589678ebd5bfc18ec7461a363139a4",
+      "size": 868
+    },
+    {
+      "provider": "nan",
+      "url": "https://models.dev/logos/nan.svg",
+      "sha256": "2e0935d9bb0ec0527f30130f851b4e405d2ba63c7023fb94122e9b690e790355",
+      "size": 599
+    },
+    {
+      "provider": "nano-gpt",
+      "url": "https://models.dev/logos/nano-gpt.svg",
+      "sha256": "caba65fad36ec927388715ab27bcd92e3a486190e6868baaa772411af0e3ee3b",
+      "size": 597
+    },
+    {
+      "provider": "nearai",
+      "url": "https://models.dev/logos/nearai.svg",
+      "sha256": "7bc6c3096f0874afe28af82d999b70de1124885b45fb9b9d0d14dc6b82ea3a0a",
+      "size": 889
+    },
+    {
+      "provider": "nebius",
+      "url": "https://models.dev/logos/nebius.svg",
+      "sha256": "b676918909f35a9c74eafbff11fe227fc70bb62da3354aa97aca06219e66957c",
+      "size": 660
+    },
+    {
+      "provider": "neon",
+      "url": "https://models.dev/logos/neon.svg",
+      "sha256": "9a5231bbf42fc0eef479e7020bf3e80c067cf3b526431e1278c5f953795565b0",
+      "size": 271
+    },
+    {
+      "provider": "neosmith",
+      "url": "https://models.dev/logos/neosmith.svg",
+      "sha256": "5643f99338476b9cf641653669136d2c34ed4d735fc64b0803f656bac034496c",
+      "size": 5914
+    },
+    {
+      "provider": "neuralwatt",
+      "url": "https://models.dev/logos/neuralwatt.svg",
+      "sha256": "17c1f0f0b5d5ac3146533d497cb5246855b756eac6dc1433f81d71c9a2e16d91",
+      "size": 6167
+    },
+    {
+      "provider": "nova",
+      "url": "https://models.dev/logos/nova.svg",
+      "sha256": "a1ade6bb7c77c87d21bad588876170134b6e552e0e21f4ddc1d7f67cf9c861e7",
+      "size": 1614
+    },
+    {
+      "provider": "novita-ai",
+      "url": "https://models.dev/logos/novita-ai.svg",
+      "sha256": "d72d27ef39517af990f25f49bb5b7f7f807336dda775c2fcbbe62c8030893c7e",
+      "size": 414
+    },
+    {
+      "provider": "nvidia",
+      "url": "https://models.dev/logos/nvidia.svg",
+      "sha256": "9933406684df81e5fdd65e4ef28119c98d7b35f7b90a5ad6f387996c80ed81e6",
+      "size": 1439
+    },
+    {
+      "provider": "oci",
+      "url": "https://models.dev/logos/oci.svg",
+      "sha256": "2870a4f9bc6b6390feecb5e846ce282f0740d3aa7ae9d41cd457499e3b48aafc",
+      "size": 197
+    },
+    {
+      "provider": "ofox",
+      "url": "https://models.dev/logos/ofox.svg",
+      "sha256": "99115b2c244c2b1577cc93a8cc0a115540635faf5bdcd3deff555e475c5f616a",
+      "size": 1947
+    },
+    {
+      "provider": "ollama-cloud",
+      "url": "https://models.dev/logos/ollama-cloud.svg",
+      "sha256": "b2e03b786987a1a66a5144f0373d33320a256a6e4dad391593f7b16232d40c43",
+      "size": 5677
+    },
+    {
+      "provider": "openai",
+      "url": "https://models.dev/logos/openai.svg",
+      "sha256": "a495ae1dee53ebf3eab642acb0c6e564ea23ceb7c1565c826f480cb2bf32beda",
+      "size": 3695
+    },
+    {
+      "provider": "opencode",
+      "url": "https://models.dev/logos/opencode.svg",
+      "sha256": "d24c25ec9e90d6b0da823a94a64a2ca19398c794ae7e2eaf7d2699b9757d5df3",
+      "size": 246
+    },
+    {
+      "provider": "opencode-go",
+      "url": "https://models.dev/logos/opencode-go.svg",
+      "sha256": "d24c25ec9e90d6b0da823a94a64a2ca19398c794ae7e2eaf7d2699b9757d5df3",
+      "size": 246
+    },
+    {
+      "provider": "openreason",
+      "url": "https://models.dev/logos/openreason.svg",
+      "sha256": "1391b646a282ae91ca4b82b3e7b217f072ec3b690c609a67968f5b5658f47fca",
+      "size": 617
+    },
+    {
+      "provider": "openrouter",
+      "url": "https://models.dev/logos/openrouter.svg",
+      "sha256": "5087a8510fa7e339c0fd9f658e76362d00d39a94a75b90d5fb42b8b28c6b964f",
+      "size": 604
+    },
+    {
+      "provider": "opper",
+      "url": "https://models.dev/logos/opper.svg",
+      "sha256": "d0d68501145febd9334891476c6106766036d7a422c61fca5c4ff2bb1bd991ee",
+      "size": 478
+    },
+    {
+      "provider": "orcarouter",
+      "url": "https://models.dev/logos/orcarouter.svg",
+      "sha256": "b2df96a88208f03c5e507ba0d6b2dfb84211d2376e69020498eedf4f0a7ee030",
+      "size": 3027
+    },
+    {
+      "provider": "ovhcloud",
+      "url": "https://models.dev/logos/ovhcloud.svg",
+      "sha256": "d96983d0ed42a95455e9ff68a728b7f4c3ea7d491242b2105d8f797c9542d977",
+      "size": 429
+    },
+    {
+      "provider": "pareto",
+      "url": "https://models.dev/logos/pareto.svg",
+      "sha256": "ae829ee1dc51fa27ba31435bf293cd7e9754e04548458096cdaae4eade227302",
+      "size": 412
+    },
+    {
+      "provider": "pendra",
+      "url": "https://models.dev/logos/pendra.svg",
+      "sha256": "34117abd8377a5761a4be7d75b5bb3a225c30859cb7d96b243dc10325782d290",
+      "size": 548
+    },
+    {
+      "provider": "perplexity",
+      "url": "https://models.dev/logos/perplexity.svg",
+      "sha256": "2d0eb623b3fb33885f0b02de10c4078b909c7866b70a5a7bd323b7ac1aaa4d0d",
+      "size": 604
+    },
+    {
+      "provider": "perplexity-agent",
+      "url": "https://models.dev/logos/perplexity-agent.svg",
+      "sha256": "2d0eb623b3fb33885f0b02de10c4078b909c7866b70a5a7bd323b7ac1aaa4d0d",
+      "size": 604
+    },
+    {
+      "provider": "pioneer",
+      "url": "https://models.dev/logos/pioneer.svg",
+      "sha256": "9873ec640bc6fb05cc013b1cb46db7779fa1ed2037fb35e0a0aa767914556d7e",
+      "size": 449
+    },
+    {
+      "provider": "poe",
+      "url": "https://models.dev/logos/poe.svg",
+      "sha256": "1e669470a01e3616f35bae8278b1aa289ee9abd1df44cb4d22756460148058e3",
+      "size": 3694
+    },
+    {
+      "provider": "poolside",
+      "url": "https://models.dev/logos/poolside.svg",
+      "sha256": "132bbf92ec6359757642a81e972388bc83e2fe0d9a42a93ad46d94f418099d09",
+      "size": 1863
+    },
+    {
+      "provider": "prime",
+      "url": "https://models.dev/logos/prime.svg",
+      "sha256": "179ee822486c6b52176950d1154a513dcf8cff7f93a6cf71aa6304e050307d6b",
+      "size": 4189
+    },
+    {
+      "provider": "privatemode-ai",
+      "url": "https://models.dev/logos/privatemode-ai.svg",
+      "sha256": "437a7d6bb05bd1e0fbc30a39b8294cd83b1ec606744d38ee42882fe9291f4134",
+      "size": 828
+    },
+    {
+      "provider": "qihang-ai",
+      "url": "https://models.dev/logos/qihang-ai.svg",
+      "sha256": "c2f882718214495dc83a7185ebb8e0f6f9f0e0f1a5720418bb8653bb989b3801",
+      "size": 346
+    },
+    {
+      "provider": "qiniu-ai",
+      "url": "https://models.dev/logos/qiniu-ai.svg",
+      "sha256": "623672390ca374052d081ac6aaf5b25e28301a5f5a2f2d526cbefea4eb636d37",
+      "size": 1527
+    },
+    {
+      "provider": "qvac",
+      "url": "https://models.dev/logos/qvac.svg",
+      "sha256": "1879461e27731865d73fdb6af1a539a5cb0bc6453bb1e5a2ea403c1a89037d3e",
+      "size": 1034
+    },
+    {
+      "provider": "reflection",
+      "url": "https://models.dev/logos/reflection.svg",
+      "sha256": "0175b1eda5a198954bd0d36f62d620f0308702c46acc24d9faec987b50816213",
+      "size": 727
+    },
+    {
+      "provider": "regolo-ai",
+      "url": "https://models.dev/logos/regolo-ai.svg",
+      "sha256": "18d8ad4cec57bbde7fc7c28fbe64e2af1d3c5c19dd4d02bba0036eb182430431",
+      "size": 3301
+    },
+    {
+      "provider": "requesty",
+      "url": "https://models.dev/logos/requesty.svg",
+      "sha256": "13bb0b37c627f6e5961487cd0159abc18dd87ff318668357c7c9990b42e7f32f",
+      "size": 1421
+    },
+    {
+      "provider": "routing-run",
+      "url": "https://models.dev/logos/routing-run.svg",
+      "sha256": "618ffad78e1862fd1c89cb4d6ceca802b7ad450ec60e579c6d29168e7ed6364a",
+      "size": 292
+    },
+    {
+      "provider": "runinfra",
+      "url": "https://models.dev/logos/runinfra.svg",
+      "sha256": "727c332e0f9114e36293e623113d867fa6c899f4a4dcb512dc06c15ee9905a68",
+      "size": 480
+    },
+    {
+      "provider": "sakana",
+      "url": "https://models.dev/logos/sakana.svg",
+      "sha256": "13bb0b37c627f6e5961487cd0159abc18dd87ff318668357c7c9990b42e7f32f",
+      "size": 1421
+    },
+    {
+      "provider": "salad-cloud",
+      "url": "https://models.dev/logos/salad-cloud.svg",
+      "sha256": "0de817810a40e45d3f5bbe0fbc011b83063fee3487b1d235184ac6a8710fc83b",
+      "size": 1550
+    },
+    {
+      "provider": "sambanova",
+      "url": "https://models.dev/logos/sambanova.svg",
+      "sha256": "f962a30115db53c0ccd6689b975b058cee3561ad4264fd83645f9a49b987c48e",
+      "size": 12503
+    },
+    {
+      "provider": "sap-ai-core",
+      "url": "https://models.dev/logos/sap-ai-core.svg",
+      "sha256": "13bb0b37c627f6e5961487cd0159abc18dd87ff318668357c7c9990b42e7f32f",
+      "size": 1421
+    },
+    {
+      "provider": "sarvam",
+      "url": "https://models.dev/logos/sarvam.svg",
+      "sha256": "13bb0b37c627f6e5961487cd0159abc18dd87ff318668357c7c9990b42e7f32f",
+      "size": 1421
+    },
+    {
+      "provider": "scaleway",
+      "url": "https://models.dev/logos/scaleway.svg",
+      "sha256": "6773ed399ec8f9ef420a44008a181d1378ae0e80becded9896eedd1087d3a91f",
+      "size": 1561
+    },
+    {
+      "provider": "scnet-token-plan",
+      "url": "https://models.dev/logos/scnet-token-plan.svg",
+      "sha256": "eb2d85d2ec72a3dc43dbb9fa34dc531d121b433be28c12049c078f5d5bb0a27d",
+      "size": 2303
+    },
+    {
+      "provider": "scx-ai",
+      "url": "https://models.dev/logos/scx-ai.svg",
+      "sha256": "390557d548745e6e571d36162700541a4e75882c5cf6e55852f2df48a6e21891",
+      "size": 4935
+    },
+    {
+      "provider": "sensenova",
+      "url": "https://models.dev/logos/sensenova.svg",
+      "sha256": "9e88b1c1eb0c669f0a0649f1bcaf1c90f3c042f58833a7ffab11c25c34fe63b6",
+      "size": 3367
+    },
+    {
+      "provider": "siliconflow",
+      "url": "https://models.dev/logos/siliconflow.svg",
+      "sha256": "52e21b0870e52e402c9e57a3fec66c740bf5b24c1689a9428f5769d2abe74c69",
+      "size": 781
+    },
+    {
+      "provider": "siliconflow-cn",
+      "url": "https://models.dev/logos/siliconflow-cn.svg",
+      "sha256": "52e21b0870e52e402c9e57a3fec66c740bf5b24c1689a9428f5769d2abe74c69",
+      "size": 781
+    },
+    {
+      "provider": "snowflake-cortex",
+      "url": "https://models.dev/logos/snowflake-cortex.svg",
+      "sha256": "e69ccf15c9afeddf9c6f081a291bd60bbee80ea6130bffc0211705992ff8ecca",
+      "size": 2266
+    },
+    {
+      "provider": "stackit",
+      "url": "https://models.dev/logos/stackit.svg",
+      "sha256": "9b5bc259cbc80f763c55995b5dc2ce4485a0712de5ca682de94435e1833a80b9",
+      "size": 420
+    },
+    {
+      "provider": "standardcompute",
+      "url": "https://models.dev/logos/standardcompute.svg",
+      "sha256": "bfd45022be508be22c2590957aaec7a6c768c9591b33265469cbe3ce8af9ae08",
+      "size": 310
+    },
+    {
+      "provider": "stepfun",
+      "url": "https://models.dev/logos/stepfun.svg",
+      "sha256": "9615b38126d8345e4cb70a1b37cb58e2ae556aeb8ed78835ac143a9675b84741",
+      "size": 643
+    },
+    {
+      "provider": "stepfun-ai",
+      "url": "https://models.dev/logos/stepfun-ai.svg",
+      "sha256": "9615b38126d8345e4cb70a1b37cb58e2ae556aeb8ed78835ac143a9675b84741",
+      "size": 643
+    },
+    {
+      "provider": "stepfun-ai-step-plan",
+      "url": "https://models.dev/logos/stepfun-ai-step-plan.svg",
+      "sha256": "9615b38126d8345e4cb70a1b37cb58e2ae556aeb8ed78835ac143a9675b84741",
+      "size": 643
+    },
+    {
+      "provider": "stepfun-step-plan",
+      "url": "https://models.dev/logos/stepfun-step-plan.svg",
+      "sha256": "9615b38126d8345e4cb70a1b37cb58e2ae556aeb8ed78835ac143a9675b84741",
+      "size": 643
+    },
+    {
+      "provider": "subconscious",
+      "url": "https://models.dev/logos/subconscious.svg",
+      "sha256": "a275aa9f7ad5a425daa360cc8065d6011bf5298149988f08900c2c8a4512f854",
+      "size": 5023
+    },
+    {
+      "provider": "submodel",
+      "url": "https://models.dev/logos/submodel.svg",
+      "sha256": "3d33d13a78826e8884b4e1898a8e6ba120ce45a6a11ffb4c06d8c873b05967bb",
+      "size": 839
+    },
+    {
+      "provider": "synthetic",
+      "url": "https://models.dev/logos/synthetic.svg",
+      "sha256": "13bb0b37c627f6e5961487cd0159abc18dd87ff318668357c7c9990b42e7f32f",
+      "size": 1421
+    },
+    {
+      "provider": "tempr",
+      "url": "https://models.dev/logos/tempr.svg",
+      "sha256": "560bf2f86833f22bdce2a6467066f0633e9d4c3adc5bd0a06ebf0c3a4afd0936",
+      "size": 174
+    },
+    {
+      "provider": "tencent-coding-plan",
+      "url": "https://models.dev/logos/tencent-coding-plan.svg",
+      "sha256": "c325e49ac34251e74036363b2324349c9af9fbe1ff27d72a6591e4cb4f6e91bd",
+      "size": 2071
+    },
+    {
+      "provider": "tencent-token-plan",
+      "url": "https://models.dev/logos/tencent-token-plan.svg",
+      "sha256": "88eb9638dd57e13df225f2b8e8094703abb5924810aa978c8744e635f1b7f2ed",
+      "size": 2571
+    },
+    {
+      "provider": "tencent-tokenhub",
+      "url": "https://models.dev/logos/tencent-tokenhub.svg",
+      "sha256": "88eb9638dd57e13df225f2b8e8094703abb5924810aa978c8744e635f1b7f2ed",
+      "size": 2571
+    },
+    {
+      "provider": "tensorx",
+      "url": "https://models.dev/logos/tensorx.svg",
+      "sha256": "f5ddaa061c226ef18b0fe01621912b327e3506654d7e0f4c2a84217fb9cd47ec",
+      "size": 415
+    },
+    {
+      "provider": "the-grid-ai",
+      "url": "https://models.dev/logos/the-grid-ai.svg",
+      "sha256": "25a7ac3e7d97b9192286dd5b63e1a299a0adfc0f2a7579f0a42913c879774aa7",
+      "size": 1059
+    },
+    {
+      "provider": "thinkingmachines",
+      "url": "https://models.dev/logos/thinkingmachines.svg",
+      "sha256": "3a12f14d9a3ca25b8b9df9eefcaebb9c1a5cb47604ecb1eda0d6109e2339dd85",
+      "size": 180
+    },
+    {
+      "provider": "tinfoil",
+      "url": "https://models.dev/logos/tinfoil.svg",
+      "sha256": "731d1fbb296c68342587036dcc6c52ca45a44f14aa3a172c841d936f61c53802",
+      "size": 242
+    },
+    {
+      "provider": "togetherai",
+      "url": "https://models.dev/logos/togetherai.svg",
+      "sha256": "7d492f4a110f6d5dad07782c0abc4b01ea9c68490f3e29120ba1a487f1138919",
+      "size": 1396
+    },
+    {
+      "provider": "tokengo",
+      "url": "https://models.dev/logos/tokengo.svg",
+      "sha256": "76a9efce6ccd97456f2628515239020b119da6c8011b520cab6745de23b69323",
+      "size": 196
+    },
+    {
+      "provider": "tokenrouter",
+      "url": "https://models.dev/logos/tokenrouter.svg",
+      "sha256": "24f23c40686923f39b97785df332c39210fcfa02f0a12469c04200e808f9fc6e",
+      "size": 226
+    },
+    {
+      "provider": "trustedrouter",
+      "url": "https://models.dev/logos/trustedrouter.svg",
+      "sha256": "27ed84715f0b17ed68b553425b946b11773e0c1961c1014bf3190699d1bbdb73",
+      "size": 264
+    },
+    {
+      "provider": "umans-ai",
+      "url": "https://models.dev/logos/umans-ai.svg",
+      "sha256": "35813d7bbf615bc2d7473182e023b1d9a920242caf343c982558ce258dfa33cf",
+      "size": 2388
+    },
+    {
+      "provider": "umans-ai-coding-plan",
+      "url": "https://models.dev/logos/umans-ai-coding-plan.svg",
+      "sha256": "35813d7bbf615bc2d7473182e023b1d9a920242caf343c982558ce258dfa33cf",
+      "size": 2388
+    },
+    {
+      "provider": "unorouter",
+      "url": "https://models.dev/logos/unorouter.svg",
+      "sha256": "8f4586bba3d8dd42991c75a9fb98411a93bcbc840ea24a58edd3123b6433394f",
+      "size": 661
+    },
+    {
+      "provider": "upstage",
+      "url": "https://models.dev/logos/upstage.svg",
+      "sha256": "13bb0b37c627f6e5961487cd0159abc18dd87ff318668357c7c9990b42e7f32f",
+      "size": 1421
+    },
+    {
+      "provider": "vancine",
+      "url": "https://models.dev/logos/vancine.svg",
+      "sha256": "deb2b0cd138d004c2e751598b65661e0e709c16238ad78a9e47578d0cdedc20f",
+      "size": 439
+    },
+    {
+      "provider": "venice",
+      "url": "https://models.dev/logos/venice.svg",
+      "sha256": "cc81fc540f89be47cf7da53f208ef0ac728b7f54d708282c6de11f3ffec6e596",
+      "size": 4339
+    },
+    {
+      "provider": "vercel",
+      "url": "https://models.dev/logos/vercel.svg",
+      "sha256": "3b911debccdc0c8f305d2dc4ee11f6241dbf85495aaa3f366456198c36ea21d2",
+      "size": 166
+    },
+    {
+      "provider": "vispark",
+      "url": "https://models.dev/logos/vispark.svg",
+      "sha256": "d9ef47112941ba169e372dce2c49e875837213a63f40295bf595cab209e16ae7",
+      "size": 3184
+    },
+    {
+      "provider": "vivgrid",
+      "url": "https://models.dev/logos/vivgrid.svg",
+      "sha256": "7277b8df8aaef1787f9f5803641cda40a6cf0843a1cb812f2de3c6c47a805c94",
+      "size": 1359
+    },
+    {
+      "provider": "volcengine",
+      "url": "https://models.dev/logos/volcengine.svg",
+      "sha256": "c1e06b7f395d83debe15ac8c692a68f1ea8d4cf80a49eecf8e0211ccb2fcb8d1",
+      "size": 279
+    },
+    {
+      "provider": "volcengine-coding-plan",
+      "url": "https://models.dev/logos/volcengine-coding-plan.svg",
+      "sha256": "c1e06b7f395d83debe15ac8c692a68f1ea8d4cf80a49eecf8e0211ccb2fcb8d1",
+      "size": 279
+    },
+    {
+      "provider": "vultr",
+      "url": "https://models.dev/logos/vultr.svg",
+      "sha256": "21b261d5a514ee2c6a478d7c556a7403d4979b90ff62090a4a2619aa8c4071d4",
+      "size": 2221
+    },
+    {
+      "provider": "wafer.ai",
+      "url": "https://models.dev/logos/wafer.ai.svg",
+      "sha256": "0d67e28cbf4b2f3f8d961125e40d716606ab0720504417fb6b4f20b275a1d1ef",
+      "size": 2873
+    },
+    {
+      "provider": "wallaby",
+      "url": "https://models.dev/logos/wallaby.svg",
+      "sha256": "a95aba11bd7864ea753022d54161d6309312754ab80e94b0cce9d4a2ff630155",
+      "size": 7973
+    },
+    {
+      "provider": "wally",
+      "url": "https://models.dev/logos/wally.svg",
+      "sha256": "f337ce336562497d012391da38d6ab53249c69fd7fcc15f9b292f21b0d896929",
+      "size": 14324
+    },
+    {
+      "provider": "wandb",
+      "url": "https://models.dev/logos/wandb.svg",
+      "sha256": "f9a106164c849680e20205948bc9ab5893295014595bd9192b2d21e71a88d006",
+      "size": 1044
+    },
+    {
+      "provider": "watsonx",
+      "url": "https://models.dev/logos/watsonx.svg",
+      "sha256": "0508d13fa4e91f78102174f92bce9bc75e357a7a146898133ddffffe9da50716",
+      "size": 830
+    },
+    {
+      "provider": "xai",
+      "url": "https://models.dev/logos/xai.svg",
+      "sha256": "ba49a4f1fa9a013612a184fb0a7c19857cf75eab051e7c03573cb05f02fe5924",
+      "size": 364
+    },
+    {
+      "provider": "xiaomi",
+      "url": "https://models.dev/logos/xiaomi.svg",
+      "sha256": "079225d086f52e3e6377c937ae3c6e50298bf7b69efcf9e78742a66696ad42ed",
+      "size": 1734
+    },
+    {
+      "provider": "xiaomi-token-plan-ams",
+      "url": "https://models.dev/logos/xiaomi-token-plan-ams.svg",
+      "sha256": "079225d086f52e3e6377c937ae3c6e50298bf7b69efcf9e78742a66696ad42ed",
+      "size": 1734
+    },
+    {
+      "provider": "xiaomi-token-plan-cn",
+      "url": "https://models.dev/logos/xiaomi-token-plan-cn.svg",
+      "sha256": "079225d086f52e3e6377c937ae3c6e50298bf7b69efcf9e78742a66696ad42ed",
+      "size": 1734
+    },
+    {
+      "provider": "xiaomi-token-plan-sgp",
+      "url": "https://models.dev/logos/xiaomi-token-plan-sgp.svg",
+      "sha256": "079225d086f52e3e6377c937ae3c6e50298bf7b69efcf9e78742a66696ad42ed",
+      "size": 1734
+    },
+    {
+      "provider": "xpersona",
+      "url": "https://models.dev/logos/xpersona.svg",
+      "sha256": "7e6b296f922dfa799acc715e82ae62ada3d6b33d04860d5f455fd6391095daae",
+      "size": 2044
+    },
+    {
+      "provider": "zai",
+      "url": "https://models.dev/logos/zai.svg",
+      "sha256": "57d355dafab000caa3386066f9df7e179da577729295cb4600d42cec998bc712",
+      "size": 295
+    },
+    {
+      "provider": "zai-coding-plan",
+      "url": "https://models.dev/logos/zai-coding-plan.svg",
+      "sha256": "57d355dafab000caa3386066f9df7e179da577729295cb4600d42cec998bc712",
+      "size": 295
+    },
+    {
+      "provider": "zeldoc",
+      "url": "https://models.dev/logos/zeldoc.svg",
+      "sha256": "c8beb79fb22b6562585bbce7ef14716b36142e7eb49e049d71d2c2f1e9be524a",
+      "size": 915
+    },
+    {
+      "provider": "zenifra",
+      "url": "https://models.dev/logos/zenifra.svg",
+      "sha256": "fb5bcf026fcb10991f800fe67bfef5f77714f81e7e314f93aa41a4ac303801f1",
+      "size": 472
+    },
+    {
+      "provider": "zenmux",
+      "url": "https://models.dev/logos/zenmux.svg",
+      "sha256": "0c0af88d670c5a2c15c864efb620739377b249c40208693ec493c804b0a756ea",
+      "size": 2528
+    },
+    {
+      "provider": "zhipuai",
+      "url": "https://models.dev/logos/zhipuai.svg",
+      "sha256": "57d355dafab000caa3386066f9df7e179da577729295cb4600d42cec998bc712",
+      "size": 295
+    },
+    {
+      "provider": "zhipuai-coding-plan",
+      "url": "https://models.dev/logos/zhipuai-coding-plan.svg",
+      "sha256": "2d3d79a2915942e386ba92441129c385c5d19790d7b148a055cb1f19bfce978b",
+      "size": 279
+    }
+  ],
+  "environment": {
+    "OPENCODE_VERSION": "1.17.7",
+    "OPENCODE_CHANNEL": "latest",
+    "MODELS_DEV_API_JSON": "<verified-complete-api.json>",
+    "OPENCODE_MODELS_LOGOS": "<verified-complete-logo-directory>"
+  },
+  "native_build_performed": false
+}
