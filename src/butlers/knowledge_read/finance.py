@@ -1,4 +1,4 @@
-"""``finance_ledger`` over published transactions and accounts (RFC 0039 D10, OD17).
+"""Finance readers over published tables: ledger, summary, obligations and records (RFC 0039 D10).
 
 ``merchant`` and ``category`` are the source-owned ``display_merchant``/``display_category``
 materializations (REQ-public-mcp-projection-013); amounts stay the decimal strings the view
@@ -7,7 +7,7 @@ renders, never floats. The transactions view already hides soft-deleted rows.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 import asyncpg
@@ -25,6 +25,7 @@ from butlers.knowledge_read.core import (
     record_uri,
     span,
 )
+from butlers.knowledge_read.records import read_records
 
 LEDGER_MAX_DAYS = 366
 LEDGER_LIMIT = 500
@@ -131,3 +132,179 @@ async def finance_ledger(
         return {"items": [entry[2] for entry in kept], "next_cursor": cursor}
 
     return fit(items, build)
+
+
+SUMMARY_GROUPS = 500
+OBLIGATION_LIMIT = 200
+_GROUP_KEYS = {
+    "category": "fields->>'display_category'",
+    "merchant": "fields->>'display_merchant'",
+    "month": "to_char((fields->>'posted_at')::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM')",
+}
+
+
+async def finance_summary(
+    conn: asyncpg.Connection, context: ReadContext, arguments: object
+) -> dict[str, Any]:
+    """Debit spend per currency over UTC days ``start``..``end``, never converted.
+
+    Transfers and uncategorized rows are not spend (parity with the dashboard summary);
+    soft-deleted rows are already absent from the view. ``totals`` is per currency; ``groups``
+    is per (group key, currency). Amounts are decimal strings.
+    """
+    args = Arguments(arguments, {"start", "end", "group_by", "currency"})
+    start, end = args.day("start"), args.day("end")
+    span(start, end, max_days=LEDGER_MAX_DAYS)
+    group_by = args.choice("group_by", tuple(_GROUP_KEYS))
+    currency = args.text("currency", max_length=3)
+    if currency is not None:
+        if len(currency) != 3:
+            raise ReadError("invalid_argument", argument="currency")
+        currency = currency.upper()
+        args.values["currency"] = currency
+    context.require("finance")
+    _, view = published("finance.transactions", "finance_summary")
+    lower = datetime.combine(start, time(), UTC)
+    upper = datetime.combine(end + timedelta(days=1), time(), UTC)
+    where = """fields->>'direction' = 'debit'
+        AND COALESCE(fields->>'display_category', '') NOT IN ('transfer', 'uncategorized')
+        AND (fields->>'posted_at')::timestamptz >= $1
+        AND (fields->>'posted_at')::timestamptz < $2
+        AND ($3::text IS NULL OR fields->>'currency' = $3)"""
+
+    async def read() -> tuple[list[asyncpg.Record], list[asyncpg.Record]]:
+        totals = await conn.fetch(
+            f"""SELECT fields->>'currency' AS currency,
+                   sum((fields->>'amount')::numeric)::text AS total, count(*) AS n
+            FROM {view} WHERE {where} GROUP BY currency ORDER BY currency""",
+            lower,
+            upper,
+            currency,
+        )
+        groups = await conn.fetch(
+            f"""SELECT {_GROUP_KEYS[group_by]} AS grp, fields->>'currency' AS currency,
+                   sum((fields->>'amount')::numeric)::text AS total, count(*) AS n
+            FROM {view} WHERE {where} GROUP BY 1, 2 ORDER BY 1 NULLS LAST, 2 LIMIT $4""",
+            lower,
+            upper,
+            currency,
+            SUMMARY_GROUPS + 1,
+        )
+        return totals, groups
+
+    totals, groups = await in_snapshot(conn, read)
+    result: dict[str, Any] = {
+        "totals": [
+            {"currency": r["currency"], "total": r["total"], "count": r["n"]} for r in totals
+        ],
+        "groups": [
+            {"key": r["grp"], "currency": r["currency"], "total": r["total"], "count": r["n"]}
+            for r in groups[:SUMMARY_GROUPS]
+        ],
+        "source": context.aggregate_source("finance", "finance_summary"),
+    }
+    if len(groups) > SUMMARY_GROUPS:
+        result["truncated"] = True
+    return result
+
+
+async def finance_obligations(
+    conn: asyncpg.Connection, context: ReadContext, arguments: object
+) -> dict[str, Any]:
+    """Unpaid bills and active subscriptions falling due within ``horizon_days`` of today (UTC).
+
+    Overdue unpaid bills are included. A field the item's table lacks is ``null``.
+    """
+    args = Arguments(arguments, {"horizon_days"})
+    horizon = args.integer("horizon_days", low=1, high=90)
+    context.require("finance")
+    bills, bill_view = published("finance.bills", "finance_obligations")
+    subs, sub_view = published("finance.subscriptions", "finance_obligations")
+    today: date = context.now.astimezone(UTC).date()
+    end = today + timedelta(days=horizon)
+
+    async def read() -> tuple[list[asyncpg.Record], list[asyncpg.Record]]:
+        due = await conn.fetch(
+            f"""SELECT source_id, fields FROM {bill_view}
+            WHERE fields->>'status' IS DISTINCT FROM 'paid'
+              AND (fields->>'due_date')::date <= $3::date
+              AND ((fields->>'due_date')::date >= $2::date OR fields->>'status' = 'overdue')
+            ORDER BY (fields->>'due_date')::date, source_id LIMIT $1""",
+            OBLIGATION_LIMIT + 1,
+            today,
+            end,
+        )
+        renewals = await conn.fetch(
+            f"""SELECT source_id, fields FROM {sub_view}
+            WHERE fields->>'status' = 'active'
+              AND (fields->>'next_renewal')::date BETWEEN $2::date AND $3::date
+            ORDER BY (fields->>'next_renewal')::date, source_id LIMIT $1""",
+            OBLIGATION_LIMIT + 1,
+            today,
+            end,
+        )
+        return due, renewals
+
+    due, renewals = await in_snapshot(conn, read)
+    items = []
+    for row in due:
+        data = fields(row["fields"])
+        _, uri = record_uri(bills, row["source_id"])
+        items.append(
+            (
+                data.get("due_date") or "",
+                row["source_id"],
+                {
+                    "payee": data.get("payee"),
+                    "kind": "bill",
+                    "amount": data.get("amount"),
+                    "currency": data.get("currency"),
+                    "cadence": data.get("frequency"),
+                    "next_due": data.get("due_date"),
+                    "status": data.get("status"),
+                    "payment_method": data.get("payment_method"),
+                    "autopay": data.get("autopay"),
+                    "cancellation_url": None,
+                    "notice_period_days": None,
+                    "cancel_by": None,
+                    "source": context.source("bills", uri),
+                },
+            )
+        )
+    for row in renewals:
+        data = fields(row["fields"])
+        _, uri = record_uri(subs, row["source_id"])
+        items.append(
+            (
+                data.get("next_renewal") or "",
+                row["source_id"],
+                {
+                    "payee": data.get("service"),
+                    "kind": "subscription",
+                    "amount": data.get("amount"),
+                    "currency": data.get("currency"),
+                    "cadence": data.get("frequency"),
+                    "next_due": data.get("next_renewal"),
+                    "status": data.get("status"),
+                    "payment_method": data.get("payment_method"),
+                    "autopay": data.get("auto_renew"),
+                    "cancellation_url": data.get("cancellation_url"),
+                    "notice_period_days": data.get("notice_period_days"),
+                    "cancel_by": data.get("cancel_by"),
+                    "source": context.source("subscriptions", uri),
+                },
+            )
+        )
+    items.sort(key=lambda entry: entry[:2])
+    cut = len(items) > OBLIGATION_LIMIT
+    result = fit(items[:OBLIGATION_LIMIT], lambda kept, _: {"items": [e[2] for e in kept]})
+    if cut:
+        result["truncated"] = True
+    return result
+
+
+async def finance_records(
+    conn: asyncpg.Connection, context: ReadContext, arguments: object
+) -> dict[str, Any]:
+    """One page of one published finance table, newest first (REQ-public-mcp-surface-014)."""
+    return await read_records(conn, context, arguments, tool="finance_records", domain="finance")
