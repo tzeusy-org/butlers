@@ -327,3 +327,12 @@ actual drainage, stopped admission or an executed rollout/rollback.
 Under profiles a held workload cannot be enabled (the render fails); disabled optional
 workloads render no pods, and `suspend` scales rendered workloads down. Any pod no profile
 names keeps default-deny. None is silently admitted.
+
+The source inventory also pins the compiler, backend and runtime artifact manifests.
+These build inputs account for immutable public dependencies; they grant no runtime
+destination. OpenCode's installed default-plugin seed reads the complete local graph
+only for a fresh, selected request for the exact default plugin, and settles that
+copy before releasing the install lock. Custom plugins and off-mode retain their
+existing resolution paths and profile restrictions. Updating the bundle identity
+requires checking the named upstream resolver files as well as the changed build
+inputs. Source accounting does not establish native operation, image or CNI parity.

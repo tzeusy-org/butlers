@@ -533,7 +533,7 @@
       },
       "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
       "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
-      "source_tree_sha256": "fef963b0c265a417c0be6f88adce2f9bb2bdd485292b538123601eb479d8b986",
+      "source_tree_sha256": "b6c5f8dec7460555610bfaa9fc2a9bfe578f763babdfbc800efca1fbb19f6cd7",
       "config": [
         "provider.*.api",
         "provider.*.models.*.api",
@@ -561,7 +561,7 @@
       },
       "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
       "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
-      "source_tree_sha256": "fef963b0c265a417c0be6f88adce2f9bb2bdd485292b538123601eb479d8b986",
+      "source_tree_sha256": "b6c5f8dec7460555610bfaa9fc2a9bfe578f763babdfbc800efca1fbb19f6cd7",
       "config": [
         "OPENCODE_MODELS_URL",
         "OPENCODE_MODELS_PATH",
@@ -596,7 +596,7 @@
       },
       "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
       "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
-      "source_tree_sha256": "fef963b0c265a417c0be6f88adce2f9bb2bdd485292b538123601eb479d8b986",
+      "source_tree_sha256": "b6c5f8dec7460555610bfaa9fc2a9bfe578f763babdfbc800efca1fbb19f6cd7",
       "config": [
         "authorize",
         "token",
@@ -627,7 +627,7 @@
       },
       "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
       "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
-      "source_tree_sha256": "fef963b0c265a417c0be6f88adce2f9bb2bdd485292b538123601eb479d8b986",
+      "source_tree_sha256": "b6c5f8dec7460555610bfaa9fc2a9bfe578f763babdfbc800efca1fbb19f6cd7",
       "config": [
         "input.url",
         "input.headers"
@@ -654,7 +654,7 @@
       },
       "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
       "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
-      "source_tree_sha256": "fef963b0c265a417c0be6f88adce2f9bb2bdd485292b538123601eb479d8b986",
+      "source_tree_sha256": "b6c5f8dec7460555610bfaa9fc2a9bfe578f763babdfbc800efca1fbb19f6cd7",
       "config": [
         "ConfigPluginV1.Spec",
         "plugin",
@@ -5952,6 +5952,18 @@
     }
   },
   "bundles": {
+    "deploy/runtime-clis/codex/build-inputs.json":
+        "8886263cf441af7834f9a1e3f4d24cbd1c4c0474bf6e789f43c96ba9ed215b84",
+    "deploy/runtime-clis/codex/compiler-inputs.json":
+        "b8b8e3910b089d0622818620c090709884f1d0e1849c427a0dc98831360fd412",
+    "deploy/runtime-clis/opencode/patches/0010-seed-default-plugin-from-installed-artifact.patch":
+        "5fd2e4e8779c711dce3624d40a8e27f818e48090df3c3668f86072e5544de066",
+    "deploy/runtime-clis/opencode/patches/0011-settle-default-plugin-seed-before-lock-release.patch":
+        "66581755e6a1364b38e92f70af413ed140f65ae289f747a15516e371946d08f6",
+    "deploy/runtime-clis/python-artifacts/build-lock.toml":
+        "f02fb9ac77ff654765ea1ef97508e0a417b115e9b56e26285721cccae8047bb2",
+    "deploy/runtime-clis/runtime-inputs.json":
+        "9c88c359c490e9f6f34d23305a5391c6cda8792d83b682ceccc4fad28ff21a84",
     "deploy/runtime-clis/builders.json":
         "f7d83e9dcdeef94626d9e0dd81fa2db6222343824488c1e95b785ea0773b691b",
     "deploy/runtime-clis/codex/patches/001-workspace-release-versions.patch":
@@ -6015,7 +6027,7 @@
     "deploy/runtime-clis/opencode/patches/0009-bound-selected-session-retries.patch":
         "52d7dbb76dedec1c1056e928b6947d180ad1df4a955095f436fad94bcce96a92",
     "deploy/runtime-clis/opencode/series.json":
-        "1f3e5c4642ef9ca1879e689ee619c86c6cdaf71b456406ecfe71fce7951d1934",
+        "6c0f52c13ad4d359f08804b71f545ef70fe87f7bf1e26e556a03c56b9c199b61",
     "deploy/runtime-clis/shared/egress.ts":
         "c18a9d00ac0a4766aca736dc6e56c3f3b93c77e486b7be04b2a12b4b22817301",
     "deploy/runtime-clis/shared/package-lock.json":
