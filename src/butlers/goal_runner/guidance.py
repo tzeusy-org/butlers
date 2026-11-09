@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -53,6 +54,10 @@ _AUTHORITIES = ("owner_correction", "owner", "domain", "third_party", "unknown")
 _CREDENCE = {name: rank for rank, name in enumerate(_AUTHORITIES)}
 _NAME_CHARS = 128
 _SHORT_CHARS = 200
+# A reference reaches the model on every hit, inlined or not, so its parts are closed slugs:
+# no space, newline, colon or markup, whatever a source (or its third-party text) supplies.
+_DOMAIN = re.compile(r"[a-z][a-z0-9_]{0,31}")
+_NAME = re.compile(rf"[A-Za-z0-9][A-Za-z0-9._/-]{{0,{_NAME_CHARS - 1}}}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +123,7 @@ def _valid(item: Any) -> bool:
     return (
         isinstance(item, GuidanceItem)
         and all(type(v) is str for v in (item.name, item.title, item.version, item.text))
-        and 0 < len(item.name) <= _NAME_CHARS
+        and _NAME.fullmatch(item.name) is not None
         and (item.tainted is None or type(item.tainted) is bool)
     )
 
@@ -169,8 +174,8 @@ def parse_ref(arguments: Any) -> tuple[str, str]:
     if type(ref) is not str or len(ref) > _NAME_CHARS + 65:
         raise _refuse()
     domain, sep, name = ref.partition(":")
-    if not sep or not domain or not name:
-        raise BrokerRefused(Reason.RESOURCE)
+    if not sep or not _DOMAIN.fullmatch(domain) or not _NAME.fullmatch(name):
+        raise BrokerRefused(Reason.RESOURCE)  # no domain holds a name outside the slug
     return domain, name
 
 
@@ -183,6 +188,8 @@ class Guidance:
         sources: Mapping[str, GuidanceSource],
         limits: GuidanceLimits | None = None,
     ):
+        if any(type(name) is not str or not _DOMAIN.fullmatch(name) for name in sources):
+            raise ValueError("a guidance domain must be a lowercase slug")
         self.broker = broker
         self.sources = dict(sources)
         self.limits = limits or GuidanceLimits()
