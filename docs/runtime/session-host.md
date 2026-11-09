@@ -169,11 +169,79 @@ still succeed before merge.
 
 Production CA/workload identity, key lifecycle/rotation and pin distribution,
 durable replay and restart ledger, fleet admission, authenticated production service,
-runner/broker integration, restricted gateway and deployment, OAuth/Codex/dashboard
-credential-volume retargeting and tool-less model functions remain separate gates.
+runner/broker integration, restricted gateway and deployment, switching OAuth/Codex
+and dashboard login to the [credential volume](#codex-auth-credential-volume-dark)
+and tool-less model functions remain separate gates.
 Existing Engineering/QA adapter behavior is unchanged. This child cannot complete
 parent AC1/3/4/5/6/7 or authorize activation; native evidence can support only the
 bounded dark-library portion of AC2 after hosted verification.
+
+## Codex auth credential volume (dark)
+
+bu-kiuh8v.3 builds the session-host target for Codex device auth. Nothing live uses
+it yet. The system-global `cli-auth/codex` row stays the authority. The session
+host's `CredentialVolume` (`session_host/credential_volume.py`) would replace
+butlers-up's `~/.codex/auth.json` as the runtime copy.
+
+- The volume holds one document, `codex-auth.json`. It must be a single non-empty
+  JSON object, UTF-8, at most 64 KiB, with no duplicate keys.
+- It is replaced only by compare-and-set on its SHA-256. Writes are atomic,
+  fsynced, mode `0600` and `O_NOFOLLOW`.
+- The root must be a real `0700` directory owned by the host user. Errors are fixed
+  codes; no path or document byte appears in them.
+- `LocalControl` takes the volume as an optional `credentials` argument and serves
+  three closed operations over the pinned mTLS channel: `codex_auth_status`
+  (digest only), `codex_auth_install` (document plus expected digest) and
+  `codex_auth_read`.
+- `codex_auth_read` is the one reply that carries a credential. That is how a
+  rotation the runtime made on the host gets back to the authority. Only the
+  pinned control-plane caller can reach it.
+- A host built without a volume refuses all three operations.
+
+The control plane's side is `session_host/codex_auth.py`:
+
+- `SessionHostCodexAuth` checks every reply against an exact key set. It refuses a
+  read whose digest does not match the decoded document.
+- `push_codex_authority` installs the authority's exact document. It fails closed,
+  leaving the volume unchanged, when the authority is missing, invalid or
+  unreachable, or when the volume changes during the install.
+- Push never rolls back a rotation. Codex refresh tokens are single-use. The caller
+  passes the previous push's fence (`PushedAuthority`).
+  - When the host holds a document other than the one last pushed, push first
+    stores that document into the authority. This is conditional on the authority
+    being unchanged, as the local reconcile flushes a rotated `auth.json`.
+  - Only if that write loses, because a newer login exists, does the authority
+    replace the host's document.
+  - Without a fence, an unknown host document cannot be judged, so push fails
+    closed. Persisting the fence across control-plane restarts is switch-time
+    wiring. Until then, a dashboard login recovers it.
+- `collect_codex_rotation` stores a changed document back to the authority. It does
+  this only when the authority still holds the value that was pushed, so a newer
+  dashboard login always wins. This matches today's `_codex_auth_sync` fencing.
+- `persist_validated_staged_device_auth_bytes(..., session_host=)` and the dashboard
+  router's `_DeviceAuthAuthorityPersistence` / `_build_on_success` take a
+  keyword-only `session_host` target that defaults to `None`.
+  - With `None`, a login writes the local file exactly as today.
+  - With a target, a Codex login commits the authority, then installs on the volume
+    and does not write the local file. An unreachable or conflicting host reports
+    login failure.
+  - Other providers refuse a target.
+
+What pins the off path (`tests/session_host/test_codex_auth.py`):
+
+- The `session_host` parameters are keyword-only and default to `None`.
+- An AST scan fails if any live module outside `session_host/` constructs
+  `SessionHostCodexAuth` or `CredentialVolume`.
+
+Remaining before the switch, which is a live change:
+
+- The control-plane factory that binds `local_command` to production PKI.
+- A session-host entrypoint and a mounted credential volume in Compose/Helm.
+- Calling push and collect around runtime invocations.
+- Moving `runtime_codex` out of butlers-up.
+- Retargeting the startup restore (`restore_tokens`) and the dashboard health probe.
+- A Codex runtime mode on the session host that reads the volume. `CodexSettings` is
+  API-key only today.
 
 ## Closed OpenCode settings transport (dark)
 

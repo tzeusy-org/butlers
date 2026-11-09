@@ -2,7 +2,9 @@
 
 One length-prefixed JSON command per TLS connection. Identity, origin and inert
 profile factory come only from trusted construction, never request fields.
-Responses/logs never contain prompt, credential, token or runtime output.
+Responses/logs never contain prompt, credential, token or runtime output, with
+one exception: ``codex_auth_read`` returns the credential volume's document to
+the pinned caller, so the control plane can collect a rotation (bu-kiuh8v.3).
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import ssl
 import struct
 from collections.abc import Callable
@@ -24,10 +27,12 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
 
 from .contracts import BrokerBinding, LaunchRequest, Refused
+from .credential_volume import CredentialVolume
 from .lifecycle import Domain, InvocationOwner
 
 _MAX_FRAME = 280 * 1024
 _IO_SECONDS = 3
+_CREDENTIAL_OPERATIONS = frozenset({"codex_auth_status", "codex_auth_read", "codex_auth_install"})
 
 
 def _pin(value: str) -> str:
@@ -171,8 +176,10 @@ class LocalControl:
         caller_sha256: str,
         server_sha256: str,
         broker_origin: str,
+        credentials: CredentialVolume | None = None,
     ) -> None:
         self._caller = _pin(caller_sha256)
+        self._credentials = credentials
         context, actual_server = _server_context(certificate_pem, private_key_pem, client_ca_pem)
         if (
             not hmac.compare_digest(_pin(server_sha256), actual_server)
@@ -238,9 +245,60 @@ class LocalControl:
             version=data["version"],
         )
 
+    def _credential_command(self, data: dict) -> dict:
+        """The runner's Codex auth operations on this host's credential volume.
+
+        ``codex_auth_read`` is the one reply that carries credential bytes: the
+        control plane needs a rotated document back to update its authority.
+        It goes only to the pinned caller over this channel, and is never
+        logged. A host built without a volume refuses all three.
+        """
+        operation = data["operation"]
+        fields = {
+            "codex_auth_status": {"version", "operation"},
+            "codex_auth_read": {"version", "operation"},
+            "codex_auth_install": {"version", "operation", "document", "expected_sha256"},
+        }[operation]
+        if (
+            self._credentials is None
+            or set(data) != fields
+            or type(data["version"]) is not int
+            or data["version"] != 1
+        ):
+            raise Refused("invalid_control_request")
+        if operation == "codex_auth_status":
+            digest = self._credentials.status()
+            if digest is None:
+                return {"status": "absent"}
+            return {"status": "present", "sha256": digest}
+        if operation == "codex_auth_read":
+            found = self._credentials.read()
+            if found is None:
+                return {"status": "absent"}
+            document, digest = found
+            encoded = base64.b64encode(document).decode()
+            return {"status": "present", "document": encoded, "sha256": digest}
+        expected = data["expected_sha256"]
+        if expected is not None and (
+            type(expected) is not str or re.fullmatch(r"[0-9a-f]{64}", expected) is None
+        ):
+            raise Refused("invalid_control_request")
+        if type(data["document"]) is not str or len(data["document"]) > 87384:
+            raise Refused("invalid_control_request")
+        try:
+            document = base64.b64decode(data["document"], validate=True)
+        except (ValueError, TypeError):
+            raise Refused("invalid_control_request") from None
+        installed = self._credentials.install(document, expected_sha256=expected)
+        return {"status": "installed" if installed else "conflict"}
+
     async def _command(self, data: dict) -> dict:
         if self._closing:
             raise Refused("control_unavailable")
+        operation = data.get("operation")
+        if type(operation) is str and operation in _CREDENTIAL_OPERATIONS:
+            # Off the event loop: a volume write fsyncs.
+            return await asyncio.to_thread(self._credential_command, data)
         if data.get("operation") == "revoke":
             if (
                 set(data) != {"version", "operation", "invocation_id"}

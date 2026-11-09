@@ -19,9 +19,13 @@ import logging
 import os
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
 from butlers.credential_store import CredentialStore
+
+if TYPE_CHECKING:
+    from butlers.session_host.codex_auth import CodexAuthTarget
 
 logger = logging.getLogger(__name__)
 
@@ -384,6 +388,7 @@ async def persist_validated_staged_device_auth_bytes(
     *,
     expected_authority_value: str | None,
     codex_authority: CredentialStore | None = None,
+    session_host: CodexAuthTarget | None = None,
 ) -> bool:
     """Persist bytes already validated through the trusted sandbox root FD.
 
@@ -391,7 +396,14 @@ async def persist_validated_staged_device_auth_bytes(
     callers are routed through the sandbox.  Device-auth sandbox callers must
     use this seam: it never receives a path and therefore cannot reopen a
     canonical credential file after child containment has been verified.
+
+    ``session_host`` (dark, RFC 0038 D3, bu-kiuh8v.3) retargets the runtime
+    copy of a Codex login from this process's ``~/.codex/auth.json`` to the
+    session host's credential volume.  ``None``, the only value any live
+    caller passes, keeps today's behavior exactly.
     """
+    if session_host is not None and provider.name != "codex":
+        raise ValueError("Only Codex device auth can target the session host")
     try:
         decoded = content.decode("utf-8")
     except UnicodeDecodeError:
@@ -402,7 +414,7 @@ async def persist_validated_staged_device_auth_bytes(
     if projected is None:
         logger.warning("CLI auth persist: refusing invalid staged device-auth document")
         return False
-    if provider.token_path is None:
+    if session_host is None and provider.token_path is None:
         # A successful authority CAS without a usable runtime projection would
         # leave the just-completed device flow unavailable until restart.
         logger.warning("CLI auth persist: provider has no canonical runtime projection path")
@@ -427,7 +439,12 @@ async def persist_validated_staged_device_auth_bytes(
         logger.warning("CLI auth persist: device-auth authority changed before commit")
         return False
 
-    if not _reconcile_device_auth_runtime_file(provider, projected):
+    if session_host is not None:
+        from butlers.session_host.codex_auth import install_login
+
+        if not await install_login(session_host, projected):
+            return False
+    elif not _reconcile_device_auth_runtime_file(provider, projected):
         return False
 
     logger.info("CLI auth persist: stored validated staged token for %s", provider.name)
