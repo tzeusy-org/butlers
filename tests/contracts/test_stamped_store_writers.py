@@ -75,7 +75,7 @@ NO_TEXT = {
     "src/butlers/modules/memory/consolidation_executor.py::_lock_and_renew_claim_for_persistence",
     "src/butlers/modules/memory/consolidation_executor.py::execute_consolidation",
     "src/butlers/modules/memory/reembedding.py::_process_tier",
-    "src/butlers/modules/memory/search.py::recall",
+    "src/butlers/modules/memory/search.py::_bump_reference_counts",
     "src/butlers/modules/memory/storage.py::store_fact",
     "src/butlers/modules/memory/storage.py::_forget_plain",
     "src/butlers/modules/memory/storage.py::confirm_memory",

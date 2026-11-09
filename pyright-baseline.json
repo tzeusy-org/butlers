@@ -1592,8 +1592,6 @@
     "[\"src/butlers/modules/memory/consolidation_parser.py\", \"reportArgumentType\", \"761244b8181ba753d6145fda3e52377d0b127694146b4ee30ff03fb49435468d\"]": 2,
     "[\"src/butlers/modules/memory/consolidation_parser.py\", \"reportArgumentType\", \"ed4b055759c103e4b4a03d9c18b22b71661dc01a0db69b5d1b547bbce77208a5\"]": 1,
     "[\"src/butlers/modules/memory/content_authority.py\", \"reportReturnType\", \"69815b3dff3c9b8f1151b500d92320c05b1a790aa22154e9f70f402e5244846d\"]": 1,
-    "[\"src/butlers/modules/memory/search.py\", \"reportArgumentType\", \"5ad77ec07c4f28bd6b30db9f8dcade3e0b38aa3f77de28ff43c0664564faa6ff\"]": 1,
-    "[\"src/butlers/modules/memory/search.py\", \"reportArgumentType\", \"e4c97db4c22aa3916ecf7f9e3151117216dbc9a7045dfd121aff7fa2fd6b9c64\"]": 1,
     "[\"src/butlers/modules/memory/storage.py\", \"reportArgumentType\", \"24c6b96623551cd615b20d0e1cf79326c77792c357e142d3d04fb2244f598ed1\"]": 1,
     "[\"src/butlers/modules/memory/storage.py\", \"reportArgumentType\", \"2b2d83779f13c030e4b9ea91b5dedd35da8684bb49603f0808177e622720f920\"]": 2,
     "[\"src/butlers/modules/memory/storage.py\", \"reportArgumentType\", \"73c5e47db733561a54ef30f60ad3ca6106a100702f028529e61e84fd29ead5b3\"]": 2,
