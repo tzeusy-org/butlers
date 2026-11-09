@@ -42,8 +42,8 @@ serialises with Stop.
 - **Supervision.** `GoalRuntime.start()` runs `supervise_once` every `supervise_every` seconds
   (default 15). A failed sweep is logged and the next one runs. The switchboard daemon starts it
   at startup (step 16d) when trusted construction set `daemon.goal_runtime` and its switch is on,
-  and `close()` runs at shutdown (step 2c): supervision stops and in-flight launches are abandoned,
-  not terminated. Their leases lapse and the next runtime's sweep fences and replaces them.
+  and `close()` runs at shutdown (step 2d, after the scheduler loop stops): supervision stops
+  and in-flight launches are abandoned, not terminated. Their leases lapse and the next runtime's sweep fences and replaces them.
 - **Owner Stop.** `GoalRuntime.stop(goal_id)` is the single entry to `GoalRunner.stop_goal`. It
   returns `StopResult("stopped", n)` when this call fenced the goal, else `"not_running"`
   (terminal or unknown goal; anything of it still live is still fenced).
@@ -53,7 +53,9 @@ serialises with Stop.
   of the store is read or sent. A runtime with no reviewed profile, or a missing credential, raises
   `CredentialUnavailable`, a `NotInvoked` refusal: the goal fails with no model run, and the
   breaker never counts it. Any reply but a bare `completed` is a reported runtime failure.
-  `terminate` sends `revoke`.
+  `terminate` sends `revoke`. A launch whose send fails (including a reply lost to the channel's
+  read timeout) is revoked before it is reported `session_host_unavailable`, so the host frees
+  the credential and its active slot.
 
 Migration `sw_062` (`roster/switchboard/migrations/062_goal_runner.py`) adds the per-invocation
 budget share, deadline, model binding, relaunch lineage and closed `end_reason` to
