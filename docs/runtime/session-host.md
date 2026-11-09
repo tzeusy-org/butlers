@@ -366,8 +366,47 @@ Remaining before the switch, which is a live change:
 - Moving `runtime_codex` out of butlers-up, which is the switch itself while butlers-up
   runs Codex.
 - Passing the session-host target to the startup restore and the dashboard health probe.
-- A Codex runtime mode on the session host that reads the volume. `CodexSettings` is
-  API-key only today.
+- Wiring the OAuth mode (below). The mode itself exists (bu-kiuh8v.16).
+  - In `entrypoint.build`, `ProfileFactory(codex_oauth=CodexOAuthVolume(volume))`, where
+    `volume` is the same `CredentialVolume` instance passed as
+    `LocalControl(credentials=)`. One instance keeps the lease and the control
+    channel's installs on one volume object.
+  - `CodexOAuthCredentials` around the control plane's `ModelCredentials`.
+  - A reviewed OAuth profile.
+
+### Codex OAuth mode (dark)
+
+`CodexSettings(model, auth="oauth")` is the second closed Codex preset. The runtime
+authenticates from the volume's device-auth document instead of an API key (bu-kiuh8v.16).
+
+- The launch credential is not a secret. It is the SHA-256 of the document
+  `CodexAuthFencedHost` just pushed, supplied by `CodexOAuthCredentials` only inside
+  that fenced launch. Outside it, a Codex launch refuses `codex_auth_unavailable`
+  (`NotInvoked`), and no API key is sent for an OAuth runtime.
+- `CodexOAuthVolume.stage` leases the volume's document only if the volume still holds
+  that digest (else `codex_auth_stale`). The document must be a valid device-auth
+  document (`oauth_account`):
+  - id, access and refresh tokens are present and `account_id` is set;
+  - the id token's account claim repeats that `account_id`;
+  - there is no API key.
+- The document is staged byte for byte as the runtime's `auth.json`. This is the one
+  writable native file, bound with `--bind-fd` from the staged file that was checked
+  (regular, owned, `0600`, one link, staged hash). The rest stays sealed read-only:
+  config, catalog, prompt and the API-key auth file of the other mode.
+  - A bind mount of a single file cannot be renamed over, unlinked or replaced with a
+    link from inside the sandbox. The pinned CLI rewrites it in place, so the runtime
+    can change that file's bytes and nothing else on the host.
+- Only after `settle()` proves the domain gone does the host read the file back
+  (bounded at 64 KiB). It installs the file into the volume by compare-and-set, with
+  the staged digest as the expected value:
+  - Garbage, an API-key document or a document for another account is `rejected`, and
+    the volume is left untouched.
+  - A volume that moved on (a dashboard login) wins, as `conflict`.
+  - The control plane's existing collect then stores the refresh in the authority.
+- One lease per volume. A second OAuth launch refuses `codex_auth_busy` until the
+  first is collected. The control plane's fence lock already serializes these launches;
+  this is the host's own guard. An unproven settlement keeps the lease, so OAuth
+  launches stay refused rather than racing a runtime that may still write.
 
 ## Closed OpenCode settings transport (dark)
 
@@ -491,6 +530,41 @@ Also unproven: a real provider honoring the request (no real calls were made, so
 server-side behavior is outside this proof), and the bundled TLS trust path. Three
 MCP resource tools remain offered because the pinned CLI has no switch for them.
 They can only reach configured MCP servers, so the broker must answer them safely.
+
+### OAuth mode native proof
+
+The same harness runs OAuth mode (`{"oauth": True}`), with its own pinned settings hash.
+The staged document's access token has expired, so the runtime must refresh. Two more
+proof-only deltas apply, besides `openai_base_url`:
+
+- `chatgpt_base_url` points at the fakes;
+- `CODEX_REFRESH_TOKEN_URL_OVERRIDE` points the refresh at a fake token endpoint.
+
+Production sets neither.
+
+- The runtime refreshed once, with the staged refresh token, over WebSocket and over
+  HTTP. The provider saw only the refreshed access token and the staged account. All
+  nine measured checks pass as in API-key mode, and the broker call completes.
+- After settlement the volume holds the refreshed document for the same account, and
+  the lease is free.
+- If the token endpoint returns an id token for another account, the pinned CLI still
+  writes it under the old `account_id`. The claim check rejects that, and the volume
+  keeps the staged document.
+- Control: the same staged file mounted read-only (`--ro-bind-fd`) loses the refresh,
+  and the volume keeps the staged document. The writable file is what carries a
+  refresh back.
+
+What OAuth mode adds, and does not prove:
+
+- The pinned CLI also reads `GET /backend-api/wham/accounts/check` and
+  `GET /backend-api/wham/settings/user` from the ChatGPT backend.
+  - They offer no tool, and the checker allows exactly these two
+    (`OAUTH_PROVIDER_PATHS`).
+  - The fakes answer 404, so what a real backend returns, and whether that changes
+    runtime behavior, is unmeasured. That is part of the restricted-egress gate.
+- Over HTTP the CLI zstd-compresses request bodies to the ChatGPT backend. The fake
+  decompresses with the `zstd` CLI, so the native OAuth tests need it on PATH.
+- Real ChatGPT tokens, a real refresh grant and the real token endpoint were not used.
 
 
 ## Installed-image evidence export (build only)

@@ -24,8 +24,10 @@ from pathlib import Path
 from typing import Any
 
 from butlers.session_host.bubblewrap import BubblewrapDomain, ImageFile
-from butlers.session_host.codex import CATALOG_NAME, CONFIG_NAME, CodexSettings
+from butlers.session_host.codex import API_KEY, CATALOG_NAME, CONFIG_NAME, OAUTH, CodexSettings
+from butlers.session_host.codex_oauth import CodexOAuthVolume
 from butlers.session_host.contracts import BrokerBinding, LaunchRequest
+from butlers.session_host.credential_volume import CredentialVolume
 from butlers.session_host.lifecycle import InvocationOwner
 from butlers.session_host.material import InvocationMaterial
 from butlers.session_host.profiles import carries_bypass
@@ -36,6 +38,56 @@ _SETUP_TIMEOUT = 5
 SYNTHETIC_KEY = "SYNTHETIC-NOT-A-REAL-KEY"
 SYNTHETIC_TOKEN = base64.urlsafe_b64encode(b"s" * 32).rstrip(b"=").decode()
 MODEL = "gpt-6-sol"
+# OAuth mode: a synthetic device-auth document whose access token has expired, so the
+# runtime must refresh it against the fake token endpoint and persist the result.
+OAUTH_ACCOUNT = "acct-synthetic-proof"
+OAUTH_REFRESHED_ACCESS = "SYNTHETIC-REFRESHED-ACCESS"
+OAUTH_REFRESHED_REFRESH = "SYNTHETIC-REFRESHED-REFRESH"
+# What the pinned CLI asks the ChatGPT backend for in OAuth mode, besides responses:
+# account and user-settings reads on the provider's own origin. They offer no tool; the
+# fake answers 404. What the real backend returns is not measured here (a residual).
+OAUTH_PROVIDER_PATHS = frozenset(
+    {"GET /backend-api/wham/accounts/check", "GET /backend-api/wham/settings/user"}
+)
+
+
+def _jwt(claims: dict[str, Any]) -> str:
+    def part(value: dict[str, Any]) -> str:
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).rstrip(b"=").decode()
+
+    return f"{part({'alg': 'none', 'typ': 'JWT'})}.{part(claims)}.c2ln"
+
+
+def oauth_id_token(account: str = OAUTH_ACCOUNT) -> str:
+    return _jwt(
+        {
+            "email": "proof@example.invalid",
+            "exp": 4102444800,
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": account,
+                "chatgpt_plan_type": "pro",
+                "chatgpt_user_id": "user-synthetic-proof",
+            },
+        }
+    )
+
+
+def oauth_document(account: str = OAUTH_ACCOUNT) -> bytes:
+    """The staged document: expired access token, last refreshed long ago."""
+    return json.dumps(
+        {
+            "OPENAI_API_KEY": None,
+            "tokens": {
+                "id_token": oauth_id_token(account),
+                "access_token": _jwt({"exp": 946684800}),
+                "refresh_token": "SYNTHETIC-STALE-REFRESH",
+                "account_id": account,
+            },
+            "last_refresh": "2000-01-01T00:00:00Z",
+        }
+    ).encode()
+
+
 # @openai/codex@0.159.2 (Dockerfile.base), x86_64-unknown-linux-musl native binary.
 PINNED_CODEX_SHA256 = "1748767b230ebfc3d4ab7e4e254920d0c0ad9691fd8c11f190e7d44511a4a92e"
 
@@ -146,10 +198,19 @@ def tool_outputs(body: Any) -> dict[str, str]:
     return outputs
 
 
-def evaluate(observation: dict[str, Any]) -> dict[str, list[str]]:
+def evaluate(
+    observation: dict[str, Any],
+    *,
+    provider_auth: str = f"Bearer {SYNTHETIC_KEY}",
+    provider_paths: frozenset[str] = frozenset(),
+) -> dict[str, list[str]]:
     """Return failure reasons per check; an empty list is a pass.
 
     A run that reached nothing fails every check: no evidence is not a pass.
+    ``provider_auth`` is the one credential the provider must have seen: the API key,
+    or in OAuth mode the access token the runtime refreshed to. ``provider_paths`` are
+    provider-backend requests a mode is known to make (``OAUTH_PROVIDER_PATHS``); any
+    other request is still unexpected.
     """
     failures: dict[str, list[str]] = {check: [] for check in CHECKED}
     bodies = observation.get("bodies") or []
@@ -162,7 +223,7 @@ def evaluate(observation: dict[str, Any]) -> dict[str, list[str]]:
         fail_all(f"runtime did not complete: {observation.get('exit')}")
     if len(bodies) < 2:
         fail_all("no second provider request, so no tool result evidence")
-    if observation.get("provider_auth") != [f"Bearer {SYNTHETIC_KEY}"]:
+    if observation.get("provider_auth") != [provider_auth]:
         fail_all("provider was not called with exactly the staged credential")
     executed = observation.get("argv")
     if not executed:
@@ -225,8 +286,9 @@ def evaluate(observation: dict[str, Any]) -> dict[str, list[str]]:
     if observation.get("decoy"):
         failures["local_mcp_disabled"].append(f"decoy contacted: {observation['decoy']}")
         failures["broker_only_mcp"].append("second MCP server contacted")
-    if observation.get("unexpected_paths"):
-        failures["broker_only_mcp"].append(f"other paths: {observation['unexpected_paths']}")
+    unexpected = [p for p in observation.get("unexpected_paths") or [] if p not in provider_paths]
+    if unexpected:
+        failures["broker_only_mcp"].append(f"other paths: {unexpected}")
 
     # The positive companion: a runtime that cannot call the broker would pass
     # every denial above, and RFC 0038 D16 requires working broker tool calls.
@@ -282,6 +344,9 @@ class _Fakes(BaseHTTPRequestHandler):
             auth = self.headers.get("authorization")
             if auth not in log["provider_auth"]:
                 log["provider_auth"].append(auth)
+            account = self.headers.get("chatgpt-account-id")
+            if account not in log["provider_account"]:
+                log["provider_account"].append(account)
             self.server.turn += 1
             turn = self.server.turn
             first = turn == 1 and body.get("generate") is not False
@@ -390,7 +455,14 @@ class _Fakes(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         raw = self.rfile.read(int(self.headers.get("content-length") or 0))
-        if self.path.endswith("/responses"):
+        if self.headers.get("content-encoding") == "zstd":
+            # The pinned CLI compresses ChatGPT-backend request bodies (OAuth mode, HTTP).
+            raw = subprocess.run(
+                ["zstd", "-d", "-c", "-q"], input=raw, capture_output=True, check=True, timeout=5
+            ).stdout
+        if self.path == "/oauth/token":
+            self._refresh(raw)
+        elif self.path.endswith("/responses"):
             events = self._record_provider("http", json.loads(raw))
             stream = b"".join(
                 f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode()
@@ -402,6 +474,23 @@ class _Fakes(BaseHTTPRequestHandler):
         else:
             self.server.log["unexpected_paths"].append(f"POST {self.path}")
             self._reply(404, b"{}")
+
+    def _refresh(self, raw: bytes) -> None:
+        """The fake token endpoint: records the grant, returns fresh synthetic tokens."""
+        try:
+            grant = json.loads(raw)
+        except ValueError:
+            grant = {"unparsed": raw.decode(errors="replace")[:200]}
+        self.server.log["refresh"].append(
+            {"grant_type": grant.get("grant_type"), "refresh_token": grant.get("refresh_token")}
+        )
+        account = self.server.refresh_account
+        body = {
+            "id_token": oauth_id_token(account),
+            "access_token": OAUTH_REFRESHED_ACCESS,
+            "refresh_token": OAUTH_REFRESHED_REFRESH,
+        }
+        self._reply(200, json.dumps(body).encode())
 
     def _mcp(self, message: dict[str, Any]) -> None:
         who = "decoy" if "/decoy/" in self.path else "broker"
@@ -449,6 +538,8 @@ def mutate(rendered: dict[str, bytes], scenario: dict[str, Any], origin: str) ->
     config += scenario.get("append_config", "")
     # TOML top-level keys must precede the first table, so this goes first.
     config = f'openai_base_url = "{origin}/v1"\n' + config
+    if scenario.get("oauth"):
+        config = f'chatgpt_base_url = "{origin}/backend-api/"\n' + config
     catalog = json.loads(rendered[CATALOG_NAME])
     catalog["models"][0].update(scenario.get("catalog_set", {}))
     return {
@@ -518,13 +609,27 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
         "broker": [],
         "decoy": [],
         "unexpected_paths": [],
+        "refresh": [],
+        "provider_account": [],
     }
     server.lock = threading.Lock()  # type: ignore[attr-defined]
     server.turn = 0  # type: ignore[attr-defined]
     server.refuse_websocket = scenario.get("refuse_websocket", False)  # type: ignore[attr-defined]
     server.broker_down = scenario.get("broker_down", False)  # type: ignore[attr-defined]
+    server.refresh_account = scenario.get("refresh_account", OAUTH_ACCOUNT)  # type: ignore[attr-defined]
     origin = f"http://127.0.0.1:{PROOF_PORT}"
-    settings = CodexSettings(MODEL)
+    oauth = bool(scenario.get("oauth"))
+    settings = CodexSettings(MODEL, auth=OAUTH if oauth else API_KEY)
+    lease: CodexOAuthVolume | None = None
+    credential = SYNTHETIC_KEY.encode()
+    volume_root = work / "volume"
+    if oauth:
+        volume_root.mkdir(mode=0o700)
+        volume_root.chmod(0o700)
+        volume = CredentialVolume(volume_root)
+        volume.install(scenario.get("document", oauth_document()), expected_sha256=None)
+        lease = CodexOAuthVolume(volume)
+        credential = str(volume.status()).encode()  # the pushed digest, not a secret
 
     class ProofDomain(BubblewrapDomain):
         async def _info(self, descriptor: int) -> int:
@@ -538,8 +643,14 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
         def _prepare_native(self, material: InvocationMaterial) -> None:
             request = material._request
             assert request is not None
+            self._material = material
+            staged = request.model_credential
+            if lease is not None:
+                # The production lease, then the same bytes production would stage.
+                self._staged = lease.stage(request.model_credential)
+                staged = self._staged.document
             for name, content in mutate(
-                settings.render(request.broker, request.model_credential), scenario, origin
+                settings.render(request.broker, staged), scenario, origin
             ).items():
                 material.write_native(name, content)
 
@@ -558,6 +669,17 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
             tail = len(argv) - len(settings.command)
             assert argv[tail:] == list(settings.command)
             argv[tail + 2 : tail + 2] = scenario.get("add_argv", [])
+            if scenario.get("readonly_auth"):
+                # Mutation: the same staged file, mounted read-only.
+                argv[argv.index("--bind-fd")] = "--ro-bind-fd"
+            if oauth:
+                # Proof-only: point the runtime's token refresh at the fake endpoint.
+                at = argv.index("--tmpfs")
+                argv[at:at] = [
+                    "--setenv",
+                    "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+                    origin + "/oauth/token",
+                ]
             return (argv, *rest)
 
     image = tuple(
@@ -582,12 +704,12 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
         ),
         runtime="codex",
         model=MODEL,
-        model_credential=SYNTHETIC_KEY.encode(),
+        model_credential=credential,
         prompt="synthetic prompt",
         timeout_s=60,
     )
     owner = InvocationOwner(stage)
-    domain = ProofDomain(image=image, command=settings.command, codex=settings)
+    domain = ProofDomain(image=image, command=settings.command, codex=settings, codex_oauth=lease)
     outcome: dict[str, Any] = {"events": []}
     # Production discards the runtime's stderr. Keep it here, where every input
     # is synthetic, so a failed proof run explains itself.
@@ -627,4 +749,8 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
     outcome["settled"] = domain.namespace_dead and domain.direct_child_reaped
     outcome["stage_empty"] = not list(stage.iterdir())
     outcome["execution_sha256"] = hashlib.sha256(output).hexdigest()
+    if oauth:
+        found = CredentialVolume(volume_root).read()
+        outcome["volume_document"] = None if found is None else found[0]
+        outcome["lease_released"] = lease is not None and lease._held is None
     return outcome

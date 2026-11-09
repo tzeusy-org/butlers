@@ -24,6 +24,7 @@ import json
 import re
 from dataclasses import dataclass
 
+from .codex_oauth import oauth_account
 from .contracts import BrokerBinding, Refused
 from .opencode import api_key_text
 
@@ -76,18 +77,41 @@ _DISABLED_FEATURES = (
 )
 
 
+API_KEY = "api_key"
+OAUTH = "oauth"
+AUTH_PATH = CODEX_HOME + "/auth.json"
+
+
 @dataclass(frozen=True)
 class CodexSettings:
-    """Server-selected preset; no arbitrary options, paths, providers or env."""
+    """Server-selected preset; no arbitrary options, paths, providers or env.
+
+    ``auth`` selects the credential mode, by trusted construction only:
+
+    * ``api_key`` (default): the staged credential is an OpenAI API key, and the
+      auth file is a sealed read-only copy.
+    * ``oauth``: the staged credential is the session host's Codex device-auth
+      document (``codex_oauth``). Its auth file is the one writable native file, so
+      the runtime can persist a refreshed token; the host validates and collects
+      it after settlement. Its identity differs, so it needs its own native proof.
+    """
 
     model: str
+    auth: str = API_KEY
 
     def __post_init__(self) -> None:
         if (
             type(self.model) is not str
             or re.fullmatch(r"gpt-[A-Za-z0-9][A-Za-z0-9._-]{0,99}", self.model) is None
+            or type(self.auth) is not str
+            or self.auth not in (API_KEY, OAUTH)
         ):
             raise Refused("unsupported_codex_settings")
+
+    @property
+    def writable_auth(self) -> bool:
+        """Only OAuth mode stages a runtime-writable auth file."""
+        return self.auth == OAUTH
 
     @property
     def command(self) -> tuple[str, ...]:
@@ -108,7 +132,7 @@ class CodexSettings:
             f"model = {json.dumps(self.model)}",
             'approval_policy = "never"',
             'sandbox_mode = "read-only"',
-            'forced_login_method = "api"',
+            f"forced_login_method = {json.dumps('chatgpt' if self.writable_auth else 'api')}",
             'cli_auth_credentials_store = "file"',
             "check_for_update_on_startup = false",
             "",
@@ -172,13 +196,22 @@ class CodexSettings:
         return json.dumps({"models": [entry]}, separators=(",", ":"), sort_keys=True).encode()
 
     def render(self, binding: BrokerBinding, credential: bytes) -> dict[str, bytes]:
-        """Return each staged file's bytes; the auth file is the staged credential."""
+        """Return each staged file's bytes; the auth file is the staged credential.
+
+        In OAuth mode ``credential`` is the device-auth document, staged byte for
+        byte so its digest is the one the volume holds.
+        """
         if type(binding) is not BrokerBinding:
             raise Refused("unsupported_codex_credential")
-        key = api_key_text(credential, refusal="unsupported_codex_credential")
-        auth = json.dumps(
-            {"auth_mode": "apikey", "OPENAI_API_KEY": key}, separators=(",", ":")
-        ).encode()
+        if self.writable_auth:
+            if type(credential) is not bytes or oauth_account(credential) is None:
+                raise Refused("unsupported_codex_credential")
+            auth = credential
+        else:
+            key = api_key_text(credential, refusal="unsupported_codex_credential")
+            auth = json.dumps(
+                {"auth_mode": "apikey", "OPENAI_API_KEY": key}, separators=(",", ":")
+            ).encode()
         return {
             CONFIG_NAME: self._config(binding.endpoint, binding.token),
             CATALOG_NAME: self._catalog(),
@@ -187,8 +220,11 @@ class CodexSettings:
 
     @property
     def identity(self) -> dict:
-        """Pin the exact bytes, leaving only the two broker slots dynamic."""
-        return {
+        """Pin the exact bytes, leaving only the two broker slots dynamic.
+
+        The API-key identity is unchanged byte for byte; OAuth adds its writable file.
+        """
+        identity = {
             "version": 1,
             "cli": "@openai/codex@0.159.2",
             "auth_mode": "openai-api-key",
@@ -200,3 +236,7 @@ class CodexSettings:
             "stdin": "independent-readonly-sealed:/invocation/prompt@offset0",
             "command": self.command,
         }
+        if self.writable_auth:
+            identity["auth_mode"] = "chatgpt-device-auth"
+            identity["writable_native_files"] = [AUTH_PATH]
+        return identity

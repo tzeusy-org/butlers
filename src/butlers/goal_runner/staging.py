@@ -174,6 +174,12 @@ class ModelCredentials:
         return credential
 
 
+class LaunchCredentials(Protocol):
+    """What resolves the one credential a launch stages (``ModelCredentials`` and wrappers)."""
+
+    async def resolve(self, runtime: str, model: str) -> bytes: ...
+
+
 class ControlSessionHost:
     """The goal runner's ``SessionHost`` over the session host's control channel."""
 
@@ -181,7 +187,7 @@ class ControlSessionHost:
     busy_attempts = 4
     busy_backoff_s = 2.0
 
-    def __init__(self, send: Send, credentials: ModelCredentials, *, broker_origin: str) -> None:
+    def __init__(self, send: Send, credentials: LaunchCredentials, *, broker_origin: str) -> None:
         self._send = send
         self._credentials = credentials
         self._origin = broker_origin.rstrip("/")
