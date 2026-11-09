@@ -3520,6 +3520,16 @@ _NO_LIVE_MEMORY_FACT = """
     )
 """
 
+# A knowledge gap is an open question to the owner about an entity, closed by a later fact
+# write. Reaping the entity first makes ``store_fact`` refuse it, so the question would hang
+# until it expires. Only this schema's gaps are readable; other butlers' gaps are out of reach.
+_NO_OPEN_KNOWLEDGE_GAP = """
+    AND NOT EXISTS (
+        SELECT 1 FROM knowledge_gaps g
+        WHERE g.entity_id = e.id AND g.status IN ('open', 'answerable')
+    )
+"""
+
 
 async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) -> int:
     """Archive ``public.entities`` orphaned by rejected/expired enrichment proposals.
@@ -3545,7 +3555,8 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
     intact), no live (pending/approved/executed) ``pending_actions`` subject, no live
     memory fact as subject or object (read from ``public.memory_catalog`` for every butler's
     schema, whose ``invalid_at`` is set by supersede, forget, expire and purge, and from this
-    schema's own ``facts`` where present), no ``contact_entity_map`` link, no
+    schema's own ``facts`` where present), no open knowledge gap in this schema (other
+    butlers' gaps are out of reach), no ``contact_entity_map`` link, no
     ``public.entity_info`` row and no ``public.priority_contacts`` entry. Any acquired
     reference means the entity graduated to a real entity and is left fully intact.
     ``test_every_table_referencing_entities_is_checked_by_the_reap_or_excused`` fails when a
@@ -3566,6 +3577,8 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
     clean_orphan = _CLEAN_ENRICHMENT_ORPHAN
     if await db_pool.fetchval("SELECT to_regclass('facts') IS NOT NULL"):
         clean_orphan += _NO_LIVE_MEMORY_FACT
+    if await db_pool.fetchval("SELECT to_regclass('knowledge_gaps') IS NOT NULL"):
+        clean_orphan += _NO_OPEN_KNOWLEDGE_GAP
     candidates = await db_pool.fetch(
         f"SELECT e.id FROM public.entities e WHERE {clean_orphan} ORDER BY e.id"
     )

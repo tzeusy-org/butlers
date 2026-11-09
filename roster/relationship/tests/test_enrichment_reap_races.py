@@ -42,6 +42,8 @@ _CHECKED: set[tuple[str, str]] = {
     ("contact_entity_map", "entity_id"),
     ("entity_info", "entity_id"),
     ("priority_contacts", "entity_id"),
+    # An open or answerable gap is an owner question the entity's later fact write closes.
+    ("knowledge_gaps", "entity_id"),
 }
 _EXCUSED: set[tuple[str, str]] = {
     # Derived from facts or ledgers: they follow a fact the reap already read, or record history.
@@ -54,21 +56,23 @@ _EXCUSED: set[tuple[str, str]] = {
     ("merge_reviews", "entity_a"),
     ("merge_reviews", "entity_b"),
     ("entity_view_marks", "entity_id"),
-    # Name the owner or an authority, never a person an email placeholder stands for.
-    ("entity_facts", "authority_entity_id"),
-    ("entity_facts", "confirmed_by_entity_id"),
+    # Name the owner, never a person an email placeholder stands for.
     ("fact_identity_decisions", "owner_entity_id"),
     ("fact_identity_decisions", "owner_original_entity_id"),
+    ("custody_holds", "owner_entity_id"),
+    # An authority column can hold the email placeholder. It is excused because the authority
+    # class is stamped on the row and the reap's soft-delete keeps the id, so nothing dangles.
+    ("entity_facts", "authority_entity_id"),
     ("entity_facts", "authority_original_entity_id"),
+    ("entity_facts", "confirmed_by_entity_id"),
     ("entity_facts", "confirmed_by_original_entity_id"),
     ("facts", "authority_entity_id"),
     ("episodes", "authority_entity_id"),
     ("rules", "authority_entity_id"),
-    ("custody_holds", "owner_entity_id"),
-    ("break_through_clauses", "entity_id"),
-    # Open questions put to the owner about an entity, derived from facts the reap already read.
-    ("knowledge_gaps", "entity_id"),
     ("knowledge_gaps", "answered_authority_entity_id"),
+    # An owner clause about a sender entity. Excused only because runtime roles have REVOKE ALL
+    # on it, so the reap cannot read it; the definer read is tracked in bu-dhloi1.242.
+    ("break_through_clauses", "entity_id"),
     # Accounts and money belong to an entity the owner already identified, and live in schemas
     # a relationship role cannot read (calendar, finance, credentials).
     ("calendar_event_entities", "entity_id"),
@@ -323,6 +327,28 @@ async def test_an_invalidated_catalog_row_does_not_keep_a_placeholder_alive(rel_
     assert await reap(rel_pool) >= 1
 
     assert await _deleted_at(rel_pool, placeholder) is not None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("status", "reaped"),
+    [("open", False), ("answerable", False), ("expired", True), ("dismissed", True)],
+)
+async def test_the_reap_leaves_a_placeholder_with_an_open_knowledge_gap(
+    rel_pool, status, reaped
+) -> None:
+    """bu-dhloi1.127: reaping the entity would leave the owner's question hanging."""
+    placeholder = await _placeholder(rel_pool)
+    await rel_pool.execute(
+        "INSERT INTO knowledge_gaps (entity_id, predicate, question_summary, status, expires_at) "
+        "VALUES ($1, 'opaque', 'opaque', $2, now() + interval '90 days')",
+        placeholder,
+        status,
+    )
+
+    assert await reap(rel_pool) == (1 if reaped else 0)
+
+    assert (await _deleted_at(rel_pool, placeholder) is not None) is reaped
 
 
 @pytest.mark.asyncio(loop_scope="session")
