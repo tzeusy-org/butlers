@@ -112,6 +112,17 @@ dashboardAuth:
   # `tailscale serve` -> NodePort, this is the node's cni0 address.
   trustedProxyPeers: ""
 
+# Daemon shutdown. `butlers up` unwinds its daemons one at a time inside one process budget
+# (BUTLERS_SHUTDOWN_BUDGET_S), giving each an equal share of what is left. The pod's
+# terminationGracePeriodSeconds is the budget plus a margin for pool close and interpreter
+# exit; without it Kubernetes SIGKILLs at its 30s default, which one slow daemon can use up.
+# A butler's own `[butler.shutdown].timeout_s` still caps its share.
+shutdown:
+  budgetSeconds: 60
+  graceMarginSeconds: 30
+  # `butlers-control` runs one daemon, bounded by its own [butler.shutdown].timeout_s (30s default).
+  daemonTimeoutSeconds: 30
+
 # Plain env applied to butlers-up, dashboard-api and every connector.
 commonEnv:
   # OTLP/HTTP (4318). The BWS value used by compose (:4317) never connected.

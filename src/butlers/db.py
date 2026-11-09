@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -168,6 +169,8 @@ async def register_jsonb_codec(conn: asyncpg.Connection) -> None:
     )
 
 
+# Seconds a pool gets to close before it is terminated (see ``Database.close``).
+_POOL_CLOSE_TIMEOUT_S = 10.0
 _VALID_SSL_MODES = {"disable", "prefer", "allow", "require", "verify-ca", "verify-full"}
 _SSL_UPGRADE_CONNECTION_LOST = "unexpected connection_lost() call"
 _SCHEMA_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -682,12 +685,26 @@ class Database:
         logger.info("Connection pool created for: %s", self.db_name)
         return self.pool
 
-    async def close(self) -> None:
-        """Close the connection pool."""
+    async def close(self, timeout: float = _POOL_CLOSE_TIMEOUT_S) -> None:  # noqa: ASYNC109
+        """Close the connection pool, terminating it if it will not close within ``timeout``.
+
+        ``Pool.close()`` waits for every connection to be released, and one stuck in a query
+        never is, so an unbounded wait here could hold shutdown until the pod is SIGKILLed.
+        ``terminate()`` drops the connections without waiting.
+        """
         if self.pool:
-            await self.pool.close()
-            self.pool = None
-            logger.info("Connection pool closed for: %s", self.db_name)
+            pool, self.pool = self.pool, None
+            try:
+                await asyncio.wait_for(pool.close(), timeout=timeout)
+            except TimeoutError:
+                logger.warning(
+                    "Connection pool for %s did not close within %.0fs; terminating it",
+                    self.db_name,
+                    timeout,
+                )
+                pool.terminate()
+            else:
+                logger.info("Connection pool closed for: %s", self.db_name)
 
     # -- Pool proxy methods ------------------------------------------------
     # Modules receive a Database instance but need to call asyncpg pool
