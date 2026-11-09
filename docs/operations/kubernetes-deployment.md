@@ -146,7 +146,10 @@ A `Local` NodePort answers only on a node that hosts the pod. If the pod is sche
 another node, `localhost:<nodePort>` on the `tailscale serve` host refuses connections and the
 route returns 502. Point `tailscale serve` at the Service ClusterIP instead (for example
 `http://<frontend ClusterIP>:80/butlers-dev`), which kube-proxy routes to the pod on any node;
-the flannel source above is what makes that cross-node hop admissible.
+the flannel source above is what makes that cross-node hop admissible. A ClusterIP lasts only
+as long as its Service, so to keep the route valid across a Service recreate, fix the addresses
+in the gitignored `values.local.yaml` (`serviceClusterIPs.frontend`, `serviceClusterIPs.dashboardApi`);
+they are empty in committed values.
 
 Every other pod is covered too. `butlers-default-deny-ingress` selects all pods, and allowed
 ingress is the union of the policies selecting a pod, so a deny cannot subtract an allow.

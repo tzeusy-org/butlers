@@ -650,3 +650,25 @@ def test_disabling_metrics_renders_no_metrics_allow_and_needs_no_source():
     monitor = Source(_MONITORING_NAMESPACE, {"app": "scraper"})
     gmail = _pod_named(docs, "connector-gmail")
     assert _admitting(docs, gmail, monitor, _METRICS_PORT, ns) == []
+
+
+def _service_cluster_ips(docs: list[dict]) -> dict[str, str | None]:
+    wanted = {"frontend", "dashboard-api"}
+    return {
+        doc["metadata"]["name"]: doc["spec"].get("clusterIP")
+        for doc in docs
+        if doc["kind"] == "Service" and doc["metadata"]["name"] in wanted
+    }
+
+
+def test_service_cluster_ips_are_unset_by_default_and_fixed_when_configured():
+    assert _service_cluster_ips(_docs("dev")) == {"frontend": None, "dashboard-api": None}
+    docs = _docs(
+        "dev",
+        "serviceClusterIPs.frontend=192.0.2.10",
+        "serviceClusterIPs.dashboardApi=192.0.2.11",
+    )
+    assert _service_cluster_ips(docs) == {
+        "frontend": "192.0.2.10",
+        "dashboard-api": "192.0.2.11",
+    }

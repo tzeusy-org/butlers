@@ -134,6 +134,9 @@ metadata:
   labels:
     {{- include "butlers.labels" . | nindent 4 }}
 spec:
+  {{- with .Values.serviceClusterIPs.dashboardApi }}
+  clusterIP: {{ . | quote }}
+  {{- end }}
   selector:
     {{- include "butlers.selector" (dict "root" . "component" "dashboard-api") | nindent 4 }}
   ports:

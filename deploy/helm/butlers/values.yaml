@@ -83,6 +83,14 @@ hostIngress:
   extraSourceCidrs:
     - 10.42.0.0/32
 
+# Optional fixed Service ClusterIPs, so a host `tailscale serve` route that
+# targets one survives the Service being recreated. Leave empty to let the
+# cluster assign; set the site's addresses in the gitignored values.local.yaml
+# (they must be free addresses inside the cluster's service CIDR).
+serviceClusterIPs:
+  frontend: ""
+  dashboardApi: ""
+
 nodePorts:
   frontend: 0
   dashboard: 0
