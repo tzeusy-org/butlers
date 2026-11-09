@@ -186,11 +186,11 @@ BACKUP_RETAIN_DAYS="${BACKUP_RETAIN_DAYS:-14}"
 
 # Trusted-bootstrap exclusion set. Whitespace-separated; parsed by
 # tests/scripts/test_pg_dump_backup.py, so keep the assignments on one line each.
-BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_generation_admin runtime_attention_admin"
+BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_generation_admin runtime_attention_admin perception_admin perception_private"
 # public.audit_log is deliberately NOT here: it carries the restore-drill
 # evidence projection, and excluding it is the one edit that would silently
 # empty that path. Four tests across two files fail if it is added.
-BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.task_continuity public.qa_publication_operations public.qa_publication_exports public.qa_publication_refusals"
+BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.task_continuity public.qa_publication_operations public.qa_publication_exports public.qa_publication_refusals public.situation_slots public.owner_modes public.timeline public.perception_conditions public.perception_suppressions"
 # Durable FORCE RLS application data carried by the scoped staging block.
 # Parsed and policy-verified by tests/scripts/test_pg_dump_backup.py.
 BACKUP_SCOPED_DATA_TABLES="public.cost_claims public.cost_claim_resolutions public.cost_claim_events public.captures public.capture_operations public.capture_service_control public.fleet_cases public.fleet_case_links"
@@ -598,6 +598,49 @@ elif [ "${DND_INTERFACE_PRESENT}" = "t" ]; then
   fi
 fi
 
+if ! PERCEPTION_INTERFACE_PRESENT="$(PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+    --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+    --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
+    --no-password --no-align --tuples-only --set=ON_ERROR_STOP=1 \
+    -c "SELECT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'perception_backup' AND p.proname = 'export_v1')")"; then
+  FAILURE_REASON="pg_dump_failed"
+  echo "[backup] FAILED: could not determine whether the PERCEPTION export interface is installed; not publishing" >&2
+  exit 1
+fi
+PERCEPTION_EXPORT_MODE="absent"
+if ! PERCEPTION_RELATIONS_PRESENT="$(PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+    --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+    --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
+    --no-password --no-align --tuples-only --set=ON_ERROR_STOP=1 \
+    -c "SELECT to_regclass('public.timeline') IS NOT NULL")"; then
+  FAILURE_REASON="pg_dump_failed"
+  echo "[backup] FAILED: could not determine whether PERCEPTION history exists; not publishing" >&2
+  exit 1
+fi
+if [ "${PERCEPTION_RELATIONS_PRESENT}" = "t" ] && [ "${PERCEPTION_INTERFACE_PRESENT}" != "t" ]; then
+  # core_197 is applied but scripts/init-db.sql has not been re-run since the
+  # export interface shipped: the history exists and cannot be exported yet.
+  if [ -n "${BACKUP_EXPORT_USER:-}" ]; then
+    FAILURE_REASON="pg_dump_failed"
+    echo "[backup] FAILED: perception history exists without its fixed export interface" >&2
+    exit 1
+  fi
+  PERCEPTION_EXPORT_MODE="skipped"
+  echo "[backup] NOTICE: PERCEPTION mutation receipts, generation guard and PERCEPTION context are NOT in this artifact:" \
+       "the perception_backup export interface is not installed; re-run scripts/init-db.sql as the" \
+       "cluster superuser (see docs/operations/backup-restore.md, 'Private history export')." >&2
+elif [ "${PERCEPTION_INTERFACE_PRESENT}" = "t" ]; then
+  if [ -n "${BACKUP_EXPORT_USER:-}" ]; then
+    PERCEPTION_EXPORT_MODE="export"
+  else
+    PERCEPTION_EXPORT_MODE="skipped"
+    echo "[backup] NOTICE: PERCEPTION mutation receipts, generation guard and PERCEPTION context are NOT in this artifact:" \
+         "no export identity is configured (BACKUP_EXPORT_USER unset). Activation is an owner step;" \
+         "see docs/operations/backup-restore.md, 'Private history export'." >&2
+  fi
+fi
+
+
 : > "${STATUSFILE}"
 {
   PGPASSWORD="${POSTGRES_PASSWORD:-}" pg_dump \
@@ -951,6 +994,150 @@ DND_REPLAY_PROOF
   printf '%s\n' "SELECT coalesce(pg_has_role(current_user, to_regrole('butlers_backup_restore'), 'MEMBER'), false) AS butlers_dnd_restore_authorized \\gset" '\if :butlers_dnd_restore_authorized' '\set ON_ERROR_STOP on' 'GRANT SELECT ON butlers_dnd_restore_rows TO butlers_backup_restore;' 'SET ROLE butlers_backup_restore;'
   printf '%s\n' "SELECT dnd_generation_backup.restore_v1(jsonb_agg(jsonb_build_object('ordinal', ordinal, 'relation', relation_name, 'row', convert_from(decode(payload_hex, 'hex'), 'UTF8')::jsonb) ORDER BY ordinal, payload_hex)) FROM butlers_dnd_restore_rows;"
   printf '%s\n' 'RESET ROLE;' '\else' '\set ON_ERROR_STOP on' "DO \$\$ BEGIN RAISE EXCEPTION 'DND history restore requires butlers_backup_restore membership'; END \$\$;" '\endif' '\endif' 'DROP TABLE butlers_dnd_restore_rows;'
+  fi
+  # Coverage is outside the companion: a declared complete artifact cannot
+  # silently become an ordinary/dark dump if a component is lost.
+  printf '\n-- Butlers private-history coverage: perception-v1 %s\n' "${PERCEPTION_EXPORT_MODE}"
+  if [ "${PERCEPTION_EXPORT_MODE}" = "export" ]; then
+  printf '\n-- Butlers canonical perception history (all ten fixed populations)\n'
+  # Canonical schema metadata, without pg_dump's forbidden private-table LOCK.
+  # The fixed function emits no rows or caller-chosen relation/DDL names.
+  PGPASSWORD="${BACKUP_EXPORT_PASSWORD:-}" psql \
+    --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+    --username="${BACKUP_EXPORT_USER}" --dbname="${POSTGRES_DB}" \
+    --no-password --quiet --no-align --tuples-only --set=ON_ERROR_STOP=1 <<PERCEPTION_SCHEMA_SQL \
+  || { echo "$?" > "${STATUSFILE}"; exit 0; }
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+SET TRANSACTION SNAPSHOT '${BACKUP_SNAPSHOT}';
+DO \$dnd_boundary\$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname='perception_owner'
+      AND NOT r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolcreaterole
+      AND NOT r.rolcreatedb AND NOT r.rolreplication AND NOT r.rolbypassrls
+      AND NOT EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.roleid=r.oid OR m.member=r.oid))
+     OR (SELECT count(*) FROM pg_roles WHERE rolname IN ('butlers_backup_export','butlers_backup_restore')
+         AND NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper AND NOT rolcreaterole
+         AND NOT rolcreatedb AND NOT rolreplication AND NOT rolbypassrls) <> 2
+     OR NOT EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname='perception_backup'
+         AND n.nspowner=to_regrole('perception_owner') AND NOT EXISTS (
+           SELECT 1 FROM aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a
+           WHERE a.is_grantable OR NOT (a.grantee=n.nspowner OR
+             (a.grantee IN (to_regrole('butlers_backup_export'),to_regrole('butlers_backup_restore'))
+              AND a.privilege_type='USAGE'))))
+     OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='perception_backup') <> 3
+     OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='perception_backup' AND p.proowner=to_regrole('perception_owner')
+           AND p.prosecdef AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp','row_security=on']
+           AND ((p.proname='export_v1' AND p.pronargs=0 AND p.proretset AND p.prorettype=2249 AND p.provolatile='s')
+             OR (p.proname='export_schema_v1' AND p.pronargs=0 AND p.proretset AND p.prorettype=25 AND p.provolatile='s')
+             OR (p.proname='restore_v1' AND p.proargtypes='3802'::oidvector
+                 AND NOT p.proretset AND p.prorettype=2278 AND p.provolatile='v'))
+           AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+             WHERE a.is_grantable OR NOT (a.grantee=p.proowner OR
+               (a.grantee=CASE WHEN p.proname='restore_v1' THEN to_regrole('butlers_backup_restore')
+                               ELSE to_regrole('butlers_backup_export') END AND a.privilege_type='EXECUTE')))
+           AND has_function_privilege(CASE WHEN p.proname='restore_v1' THEN 'butlers_backup_restore'
+                                           ELSE 'butlers_backup_export' END,p.oid,'EXECUTE')) <> 3
+     OR NOT coalesce(has_schema_privilege('butlers_backup_export',to_regnamespace('perception_backup'),'USAGE'),false)
+     OR NOT coalesce(has_schema_privilege('butlers_backup_restore',to_regnamespace('perception_backup'),'USAGE'),false)
+  THEN
+    RAISE EXCEPTION 'PERCEPTION backup authority is untrusted; restore is not certified';
+  END IF;
+END
+\$dnd_boundary\$;
+SET LOCAL ROLE butlers_backup_export;
+SELECT * FROM perception_backup.export_schema_v1();
+COMMIT;
+PERCEPTION_SCHEMA_SQL
+  printf 'CREATE TEMP TABLE butlers_perception_restore_rows (ordinal integer NOT NULL CHECK (ordinal BETWEEN 1 AND 10), relation_name text NOT NULL, payload_hex text NOT NULL);\n'
+  printf 'COPY butlers_perception_restore_rows (ordinal, relation_name, payload_hex) FROM stdin;\n'
+  # The proof and the export share one transaction and the dump's snapshot. The
+  # session user is the configured export login; the work runs as the inert
+  # export role, whose only entitlement is EXECUTE on the fixed function.
+  PGPASSWORD="${BACKUP_EXPORT_PASSWORD:-}" psql \
+    --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+    --username="${BACKUP_EXPORT_USER}" --dbname="${POSTGRES_DB}" \
+    --no-password --quiet --no-align --tuples-only --set=ON_ERROR_STOP=1 <<PERCEPTION_EXPORT_SQL \
+  || { echo "$?" > "${STATUSFILE}"; exit 0; }
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+SET TRANSACTION SNAPSHOT '${BACKUP_SNAPSHOT}';
+DO \$proof\$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_proc p
+     WHERE p.oid = 'perception_backup.export_v1()'::regprocedure
+       AND p.prosecdef
+       AND pg_get_userbyid(p.proowner) = 'perception_owner'
+       AND p.proconfig @> ARRAY['search_path=pg_catalog, pg_temp']
+       AND NOT EXISTS (
+         SELECT 1 FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+          WHERE a.privilege_type = 'EXECUTE'
+            AND a.grantee NOT IN (p.proowner, 'butlers_backup_export'::regrole)
+       )
+  ) THEN
+    RAISE EXCEPTION 'PERCEPTION export function is not the exact fixed owner-only interface';
+  END IF;
+END
+\$proof\$;
+SET LOCAL ROLE butlers_backup_export;
+COPY (
+  SELECT ordinal, relation_name, encode(convert_to(payload::text, 'UTF8'), 'hex')
+    FROM perception_backup.export_v1()
+   ORDER BY 1, 3
+) TO STDOUT;
+COMMIT;
+PERCEPTION_EXPORT_SQL
+  printf '\\.\n'
+  printf '%s\n' "SELECT EXISTS(SELECT 1 FROM butlers_perception_restore_rows) AS butlers_perception_restore_needed \\gset" '\if :butlers_perception_restore_needed'
+  # Fail before a staged call can use a dumped function whose owner handoff failed.
+  cat <<'PERCEPTION_REPLAY_PROOF'
+\set ON_ERROR_STOP on
+DO $perception_boundary$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname='perception_owner'
+      AND NOT r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolcreaterole
+      AND NOT r.rolcreatedb AND NOT r.rolreplication AND NOT r.rolbypassrls
+      AND NOT EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.roleid=r.oid OR m.member=r.oid))
+     OR (SELECT count(*) FROM pg_roles WHERE rolname IN ('butlers_backup_export','butlers_backup_restore')
+         AND NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper AND NOT rolcreaterole
+         AND NOT rolcreatedb AND NOT rolreplication AND NOT rolbypassrls) <> 2
+     OR NOT EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname='perception_backup'
+         AND n.nspowner=to_regrole('perception_owner') AND NOT EXISTS (
+           SELECT 1 FROM aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a
+           WHERE a.is_grantable OR NOT (a.grantee=n.nspowner OR
+             (a.grantee IN (to_regrole('butlers_backup_export'),to_regrole('butlers_backup_restore'))
+              AND a.privilege_type='USAGE'))))
+     OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='perception_backup') <> 3
+     OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='perception_backup' AND p.proowner=to_regrole('perception_owner')
+           AND p.prosecdef AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp','row_security=on']
+           AND ((p.proname='export_v1' AND p.pronargs=0 AND p.proretset AND p.prorettype=2249 AND p.provolatile='s')
+             OR (p.proname='export_schema_v1' AND p.pronargs=0 AND p.proretset AND p.prorettype=25 AND p.provolatile='s')
+             OR (p.proname='restore_v1' AND p.proargtypes='3802'::oidvector
+                 AND NOT p.proretset AND p.prorettype=2278 AND p.provolatile='v'))
+           AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+             WHERE a.is_grantable OR NOT (a.grantee=p.proowner OR
+               (a.grantee=CASE WHEN p.proname='restore_v1' THEN to_regrole('butlers_backup_restore')
+                               ELSE to_regrole('butlers_backup_export') END AND a.privilege_type='EXECUTE')))
+           AND has_function_privilege(CASE WHEN p.proname='restore_v1' THEN 'butlers_backup_restore'
+                                           ELSE 'butlers_backup_export' END,p.oid,'EXECUTE')) <> 3
+     OR NOT coalesce(has_schema_privilege('butlers_backup_export',to_regnamespace('perception_backup'),'USAGE'),false)
+     OR NOT coalesce(has_schema_privilege('butlers_backup_restore',to_regnamespace('perception_backup'),'USAGE'),false)
+  THEN
+    RAISE EXCEPTION 'PERCEPTION backup authority is untrusted; restore is not certified';
+  END IF;
+END
+$perception_boundary$;
+DO $$ BEGIN IF (SELECT count(*) FROM pg_class WHERE oid IN
+  (to_regclass('perception_private.kinds'),to_regclass('perception_private.sources'),to_regclass('perception_private.source_refs'),to_regclass('perception_private.suppression_refs'),to_regclass('public.timeline'),to_regclass('perception_private.receipts'),to_regclass('public.situation_slots'),to_regclass('public.owner_modes'),to_regclass('public.perception_conditions'),to_regclass('public.perception_suppressions')) AND relowner=to_regrole('perception_owner')) <> 10
+THEN RAISE EXCEPTION 'PERCEPTION relations are absent or their fixed ownership was not preserved'; END IF; END $$;
+PERCEPTION_REPLAY_PROOF
+  printf '%s\n' "SELECT coalesce(pg_has_role(current_user, to_regrole('butlers_backup_restore'), 'MEMBER'), false) AS butlers_perception_restore_authorized \\gset" '\if :butlers_perception_restore_authorized' '\set ON_ERROR_STOP on' 'GRANT SELECT ON butlers_perception_restore_rows TO butlers_backup_restore;' 'SET ROLE butlers_backup_restore;'
+  printf '%s\n' "SELECT perception_backup.restore_v1(jsonb_agg(jsonb_build_object('ordinal', ordinal, 'relation', relation_name, 'row', convert_from(decode(payload_hex, 'hex'), 'UTF8')::jsonb) ORDER BY ordinal, payload_hex)) FROM butlers_perception_restore_rows;"
+  printf '%s\n' 'RESET ROLE;' '\else' '\set ON_ERROR_STOP on' "DO \$\$ BEGIN RAISE EXCEPTION 'PERCEPTION history restore requires butlers_backup_restore membership'; END \$\$;" '\endif' '\endif' 'DROP TABLE butlers_perception_restore_rows;'
+  printf '\n-- Butlers canonical perception history end\n'
   fi
 } | gzip > "${TMPFILE}"
 

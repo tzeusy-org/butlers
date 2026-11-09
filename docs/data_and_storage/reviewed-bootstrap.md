@@ -54,7 +54,7 @@ bootstrap failure, nor proof of working Relationship reads: actual default-ACL
 and effective `SET ROLE` readback separately witness the repair. No revision or
 completion marker supplies bootstrap provenance.
 
-The applied `core_196`, `core_197` and `core_198` point-of-use guards remain
+The applied `core_196`, `core_197`, `core_198` and `core_322` point-of-use guards remain
 independent. Existing managed privileged downgrade authorization and its data
 constraints remain; catalog admission grants no downgrade authority to a normal
 login. Managed privileged operations use their existing private-config read
@@ -100,3 +100,11 @@ verification retain their fail-closed boundaries. See
   files live outside current production source identity so coverage does not
   attribute old code to the current source population. Software ordering or
   collection alone is not PostgreSQL proof.
+
+The fourth managed boundary is dark perception (`perception_admin`, `core_322`).
+Its ordinary installer grant does not grant private-table reads or service-role
+membership. Installed partial namespaces/functions must pass the finalized
+catalog proof; absence permits only the genuine superuser-owned staged installer.
+The admission predicate reads catalog rows and fixed function-source hashes without
+requiring schema USAGE on private data. Actual-role authority and complete backup
+capabilities remain separate checks. See [perception](perception.md).

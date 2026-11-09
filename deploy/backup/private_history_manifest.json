@@ -9,21 +9,105 @@
       "schema_function": "dnd_generation_backup.export_schema_v1()",
       "restore_function": "dnd_generation_backup.restore_v1(jsonb)",
       "owner": "dnd_generation_owner"
+    },
+    "perception": {
+      "owner": "perception_owner",
+      "export_function": "perception_backup.export_v1()",
+      "schema_function": "perception_backup.export_schema_v1()",
+      "restore_function": "perception_backup.restore_v1(jsonb)"
     }
   },
   "populations": [
-    {"relation": "public.dnd_generation_mutations", "interface": "dnd", "status": "exported", "ordinal": 1, "filter": null},
-    {"relation": "public.dnd_generation_guard", "interface": "dnd", "status": "exported", "ordinal": 2, "filter": null},
-    {"relation": "public.user_context", "interface": "dnd", "status": "exported", "ordinal": 3, "filter": "signal_type = 'dnd'"},
-    {"relation": "perception_private.kinds", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
-    {"relation": "perception_private.sources", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
-    {"relation": "perception_private.source_refs", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
-    {"relation": "perception_private.suppression_refs", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
-    {"relation": "perception_private.receipts", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
-    {"relation": "public.situation_slots", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
-    {"relation": "public.owner_modes", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
-    {"relation": "public.timeline", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
-    {"relation": "public.perception_conditions", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"},
-    {"relation": "public.perception_suppressions", "interface": "perception", "status": "pending", "gate": "bu-dhloi1.9"}
+    {
+      "relation": "public.dnd_generation_mutations",
+      "interface": "dnd",
+      "status": "exported",
+      "ordinal": 1,
+      "filter": null
+    },
+    {
+      "relation": "public.dnd_generation_guard",
+      "interface": "dnd",
+      "status": "exported",
+      "ordinal": 2,
+      "filter": null
+    },
+    {
+      "relation": "public.user_context",
+      "interface": "dnd",
+      "status": "exported",
+      "ordinal": 3,
+      "filter": "signal_type = 'dnd'"
+    },
+    {
+      "relation": "perception_private.kinds",
+      "interface": "perception",
+      "status": "exported",
+      "ordinal": 1,
+      "filter": null
+    },
+    {
+      "relation": "perception_private.sources",
+      "interface": "perception",
+      "status": "exported",
+      "ordinal": 2,
+      "filter": null
+    },
+    {
+      "relation": "perception_private.source_refs",
+      "interface": "perception",
+      "status": "exported",
+      "ordinal": 3,
+      "filter": null
+    },
+    {
+      "relation": "perception_private.suppression_refs",
+      "interface": "perception",
+      "status": "exported",
+      "ordinal": 4,
+      "filter": null
+    },
+    {
+      "relation": "perception_private.receipts",
+      "interface": "perception",
+      "status": "exported",
+      "ordinal": 6,
+      "filter": null
+    },
+    {
+      "relation": "public.situation_slots",
+      "interface": "perception",
+      "status": "exported",
+      "ordinal": 7,
+      "filter": null
+    },
+    {
+      "relation": "public.owner_modes",
+      "interface": "perception",
+      "status": "exported",
+      "ordinal": 8,
+      "filter": null
+    },
+    {
+      "relation": "public.timeline",
+      "interface": "perception",
+      "status": "exported",
+      "ordinal": 5,
+      "filter": null
+    },
+    {
+      "relation": "public.perception_conditions",
+      "interface": "perception",
+      "status": "exported",
+      "ordinal": 9,
+      "filter": null
+    },
+    {
+      "relation": "public.perception_suppressions",
+      "interface": "perception",
+      "status": "exported",
+      "ordinal": 10,
+      "filter": null
+    }
   ]
 }
