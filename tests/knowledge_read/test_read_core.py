@@ -171,3 +171,27 @@ def test_read_library_imports_only_stdlib_asyncpg_and_itself():
                     or top in allowed
                     or name.startswith("butlers.knowledge_read")
                 ), f"{path.name} imports {name}"
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["UndefinedFunctionError", "InvalidSchemaNameError", "InsufficientPrivilegeError"],
+)
+async def test_entity_lookup_without_the_trigram_extension_is_unavailable(missing):
+    """An interrupted owner step leaves no mcp_ext; the reader refuses with a D17 code."""
+    import asyncpg
+
+    from butlers.knowledge_read.entities import entity_lookup
+
+    class Connection:
+        def is_in_transaction(self):
+            return True
+
+        async def fetch(self, *_args):
+            raise getattr(asyncpg, missing)("raw driver text never reaches the caller")
+
+    with pytest.raises(ReadError) as caught:
+        await entity_lookup(Connection(), _context(), {"name": "Avery"})
+    assert caught.value.to_dict()["error"]["code"] == "unavailable"
+    assert caught.value.to_dict()["error"]["retryable"] is True
+    assert "raw driver" not in json.dumps(caught.value.to_dict())

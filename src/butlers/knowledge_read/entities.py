@@ -7,6 +7,7 @@ name such an entity, so these readers need no flag of their own.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -30,6 +31,12 @@ TRIGRAM_THRESHOLD = 0.3
 CANDIDATE_LIMIT = 100
 _MERGE_HOPS = 8
 _MATCH_RANK = {"exact": 0, "alias": 1, "trigram": 2}
+_TRIGRAM_MISSING = (
+    asyncpg.UndefinedFunctionError,
+    asyncpg.InvalidSchemaNameError,
+    asyncpg.InsufficientPrivilegeError,
+)
+_NEVER = datetime.min.replace(tzinfo=UTC)
 
 
 async def _entities(conn: asyncpg.Connection, view: str, ids: list[str]) -> dict[str, dict]:
@@ -90,7 +97,15 @@ async def entity_lookup(
     table, view = published("public.entities", "entity_lookup")
 
     async def read() -> dict[str, Any]:
-        rows = await conn.fetch(
+        try:
+            rows = await _candidates()
+        except _TRIGRAM_MISSING:
+            # The owner step installs and grants mcp_ext; until it has, the tool cannot run.
+            raise ReadError("unavailable", domain="relationship") from None
+        return await _resolve(rows)
+
+    async def _candidates() -> list[asyncpg.Record]:
+        return await conn.fetch(
             f"""
             WITH candidates AS (
                 SELECT source_id, fields, fields->>'canonical_name' AS name,
@@ -120,6 +135,8 @@ async def entity_lookup(
             wanted_type,
             CANDIDATE_LIMIT,
         )
+
+    async def _resolve(rows: list[asyncpg.Record]) -> dict[str, Any]:
         survivors = await _survivors(
             conn, view, {r["source_id"]: fields(r["fields"]) for r in rows}
         )
@@ -180,6 +197,12 @@ def _profile_fact(context: ReadContext, table: Any, row_id: str, row: dict) -> d
     }
 
 
+def _fact_time(fact: dict[str, Any]) -> datetime:
+    """Order by the instant, not the text: views render offsets in the session time zone."""
+    value = fact["valid_at"]
+    return datetime.fromisoformat(value) if value else _NEVER
+
+
 async def entity_profile(
     conn: asyncpg.Connection, context: ReadContext, arguments: object
 ) -> dict[str, Any]:
@@ -229,7 +252,7 @@ async def entity_profile(
                     _profile_fact(context, table, r["source_id"], fields(r["fields"])) for r in rows
                 ]
             facts.sort(key=lambda f: f["id"])
-            facts.sort(key=lambda f: f["valid_at"] or "", reverse=True)
+            facts.sort(key=_fact_time, reverse=True)
             complete = len(facts) <= PROFILE_FACT_LIMIT
             facts = facts[:PROFILE_FACT_LIMIT]
         edges = await _edge_counts(target) if "edges" in sections else None

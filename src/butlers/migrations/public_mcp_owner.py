@@ -968,8 +968,36 @@ $decode$;
     )
 
 
+# pg_trgm is a trusted extension, so the projection database owner could create it, own it and
+# add its own functions to it. Only a superuser-owned mcp_ext, extension and member set is
+# accepted, and only similarity(text, text) may be executable by anyone but its owner. Absent
+# objects pass: the superuser step creates them.
+_SUPERUSER = "EXISTS(SELECT 1 FROM pg_roles r WHERE r.oid={} AND r.rolsuper)"
+_TRGM_SAFE = f"""NOT EXISTS(SELECT 1 FROM pg_namespace n WHERE n.nspname='mcp_ext'
+        AND NOT {_SUPERUSER.format("n.nspowner")})
+    AND NOT EXISTS(SELECT 1 FROM pg_namespace n, LATERAL aclexplode(n.nspacl) a
+        WHERE n.nspname='mcp_ext' AND a.grantee<>n.nspowner
+          AND (a.privilege_type<>'USAGE' OR a.grantee<>'mcp_public_ro'::regrole))
+    AND NOT EXISTS(SELECT 1 FROM pg_extension x JOIN pg_namespace n ON n.oid=x.extnamespace
+        WHERE x.extname='pg_trgm'
+          AND (n.nspname<>'mcp_ext' OR NOT {_SUPERUSER.format("x.extowner")}))
+    AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+        WHERE n.nspname='mcp_ext' AND (p.prosecdef
+          OR NOT {_SUPERUSER.format("p.proowner")}
+          OR NOT EXISTS(SELECT 1 FROM pg_depend d JOIN pg_extension x ON x.oid=d.refobjid
+              WHERE d.classid='pg_proc'::regclass AND d.objid=p.oid
+                AND d.refclassid='pg_extension'::regclass AND d.deptype='e'
+                AND x.extname='pg_trgm')
+          OR EXISTS(SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantee<>p.proowner
+              AND NOT (a.grantee='mcp_public_ro'::regrole
+                       AND p.oid=to_regprocedure('mcp_ext.similarity(text,text)')))))
+    AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='mcp_ext')"""
+
+
 def _subscriber_preflight() -> str:
-    return _do("""
+    return _do(
+        """
 IF current_database()<>'butlers_public' OR NOT EXISTS(SELECT 1 FROM
         pg_catalog.pg_database
     WHERE datname=current_database() AND
@@ -1016,7 +1044,9 @@ IF to_regclass('mcp_local.manifest_applied') IS NOT NULL AND NOT EXISTS(
 IF EXISTS(SELECT 1 FROM pg_namespace WHERE left(nspname, 3)<>'pg_'
     AND nspname<>'information_schema' AND
         nspowner<>'mcp_projection_owner'::regrole
-    AND NOT (nspname='public' AND nspowner='pg_database_owner'::regrole))
+    AND NOT (nspname='public' AND nspowner='pg_database_owner'::regrole)
+    AND NOT (nspname='mcp_ext' AND EXISTS(SELECT 1 FROM pg_roles r
+        WHERE r.oid=nspowner AND r.rolsuper)))
         THEN
     RAISE EXCEPTION 'foreign projection schema owner refused'; END IF;
 IF EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON
@@ -1028,6 +1058,7 @@ IF EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON
         'mcp_proposals_reader'::regrole))
    OR EXISTS(SELECT 1 FROM pg_namespace n, LATERAL aclexplode(n.nspacl) a
     WHERE left(n.nspname, 3)<>'pg_' AND n.nspname<>'information_schema'
+    AND n.nspname<>'mcp_ext'
     AND a.grantee NOT IN (0, 'pg_database_owner'::regrole,
         'mcp_projection_owner'::regrole,
                           'mcp_public_ro'::regrole,
@@ -1040,6 +1071,11 @@ IF EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON
     AND a.grantee NOT IN
         (0, 'mcp_projection_owner'::regrole, 'mcp_public_ro'::regrole,
         'mcp_proposals_reader'::regrole))
+   OR EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace,
+    LATERAL aclexplode(p.proacl) a
+    WHERE left(n.nspname, 3)<>'pg_' AND n.nspname NOT IN ('information_schema', 'mcp_ext')
+    AND a.grantee NOT IN
+        ('mcp_projection_owner'::regrole, 'mcp_public_ro'::regrole))
         THEN
     RAISE EXCEPTION 'foreign projection ACL refused'; END IF;
 IF EXISTS(SELECT 1 FROM pg_class c, LATERAL aclexplode(c.relacl) a
@@ -1059,6 +1095,8 @@ IF EXISTS(SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
         t.tgtype=7
         AND t.tgenabled='O' AND t.tgqual IS NULL AND t.tgnargs=0)) THEN
     RAISE EXCEPTION 'foreign projection trigger refused'; END IF;
+IF NOT (__TRGM_SAFE__) THEN
+    RAISE EXCEPTION 'projection pg_trgm ownership or grants refused'; END IF;
 IF EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON
         n.oid=p.pronamespace
     WHERE left(n.nspname, 3)<>'pg_' AND n.nspname<>'information_schema'
@@ -1066,11 +1104,7 @@ IF EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON
         p.proowner='mcp_projection_owner'::regrole
         AND ((n.nspname='mcp_read' AND p.proname='replication_as_of')
              OR (n.nspname='mcp_inbox' AND p.proname='cap_proposals')))
-    AND NOT (n.nspname='mcp_ext' AND NOT p.prosecdef AND EXISTS(
-        SELECT 1 FROM pg_depend d JOIN pg_extension x ON x.oid=d.refobjid
-        WHERE d.classid='pg_proc'::regclass AND d.objid=p.oid
-          AND d.refclassid='pg_extension'::regclass AND d.deptype='e'
-          AND x.extname='pg_trgm')))
+    AND n.nspname<>'mcp_ext')
         THEN
     RAISE EXCEPTION 'foreign projection function refused'; END IF;
 IF EXISTS(SELECT 1 FROM pg_extension x JOIN pg_namespace n ON n.oid=x.extnamespace
@@ -1082,35 +1116,41 @@ IF EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON
     WHERE n.nspname='mcp_read' AND (c.relkind<>'v' OR c.reloptions IS NOT
         NULL)) THEN
     RAISE EXCEPTION 'read view kind/options refused'; END IF;
-""")
+""".replace("__TRGM_SAFE__", _TRGM_SAFE)
+    )
 
 
 def _trigram_extension() -> str:
     """pg_trgm for entity_lookup's trigram match (RFC 0039 D11), run as the superuser.
 
-    Extension members belong to the bootstrap superuser, so only it can strip PUBLIC EXECUTE;
-    ``mcp_public_ro`` gets back ``similarity(text, text)`` alone. The owner's revoke loop skips
-    this schema for the same reason.
+    The schema, the extension and every member belong to the superuser, so the projection
+    owner can neither add functions nor grant them. The state is checked before anything is
+    created (an owner-planted copy is never adopted) and again after the grants, when only
+    ``similarity(text, text)`` is executable by ``mcp_public_ro``. The owner's revoke loop
+    skips this schema because it cannot change superuser-owned ACLs.
     """
+    refused = "projection pg_trgm ownership or grants refused"
     return (
-        """CREATE SCHEMA IF NOT EXISTS mcp_ext AUTHORIZATION mcp_projection_owner;
+        _do(_raise_unless(_TRGM_SAFE, refused))
+        + """CREATE SCHEMA IF NOT EXISTS mcp_ext;
 CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA mcp_ext;
-"""
-        + _do(
-            _raise_unless(
-                """(SELECT n.nspname FROM pg_extension x JOIN pg_namespace n ON
-        n.oid=x.extnamespace WHERE x.extname='pg_trgm')='mcp_ext'
-        AND (SELECT nspowner FROM pg_namespace WHERE
-        nspname='mcp_ext')='mcp_projection_owner'::regrole""",
-                "projection pg_trgm schema refused",
-            )
-        )
-        + """REVOKE ALL ON SCHEMA mcp_ext FROM PUBLIC, mcp_proposals_reader;
-REVOKE ALL ON ALL FUNCTIONS IN SCHEMA mcp_ext FROM PUBLIC, mcp_public_ro,
-        mcp_proposals_reader;
+REVOKE ALL ON SCHEMA mcp_ext FROM PUBLIC, mcp_projection_owner, mcp_proposals_reader;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA mcp_ext FROM PUBLIC, mcp_projection_owner,
+        mcp_public_ro, mcp_proposals_reader;
 GRANT USAGE ON SCHEMA mcp_ext TO mcp_public_ro;
 GRANT EXECUTE ON FUNCTION mcp_ext.similarity(text, text) TO mcp_public_ro;
 """
+        + _do(
+            _raise_unless(
+                _TRGM_SAFE
+                + """
+    AND EXISTS(SELECT 1 FROM pg_extension WHERE extname='pg_trgm')
+    AND NOT EXISTS(SELECT 1 FROM pg_proc p WHERE
+        p.pronamespace='mcp_ext'::regnamespace AND p.proacl IS NULL)
+    AND has_function_privilege('mcp_public_ro', 'mcp_ext.similarity(text,text)', 'EXECUTE')""",
+                refused,
+            )
+        )
     )
 
 

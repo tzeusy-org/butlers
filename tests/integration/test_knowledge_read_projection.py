@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from butlers.knowledge_read.chronology import time_use, timeline
 from butlers.knowledge_read.core import (
@@ -286,14 +287,13 @@ async def test_entity_profile_serves_facts_and_edges_and_drops_a_retraction(
         await primary.execute(
             "UPDATE relationship.entity_facts SET validity='retracted' WHERE id=$1", works_at
         )
+        # A memory fact reclassified to pii leaves the profile too.
+        await primary.execute(
+            "UPDATE relationship.facts SET sensitivity='pii' WHERE id=$1", interaction
+        )
         _barrier(projected)
         after = await entity_profile(reader, await _context(reader), {"entity_id": person})
-        assert {f["id"] for f in after["facts"]} == {
-            str(knows),
-            str(interaction),
-            str(befriended),
-            str(gift),
-        }
+        assert {f["id"] for f in after["facts"]} == {str(knows), str(befriended), str(gift)}
 
         missing = await _refused(entity_profile(reader, context, {"entity_id": str(uuid.uuid4())}))
         assert missing.code == "not_found"
@@ -806,14 +806,16 @@ async def test_replicated_controls_and_reads_are_pure(projected, primary, reader
         with topology.engine.connect() as conn:
             assert conn.execute(text(counters_sql), {"id": fact}).one() == counters
 
-        # Of the trigram extension the reader may execute similarity() alone.
+        # Of the trigram extension the reader may execute similarity(text, text) alone.
         assert await reader.fetchval("SELECT mcp_ext.similarity('abc', 'abd')") > 0
-        for denied in (
-            "SELECT mcp_ext.show_trgm('abc')",
-            "SELECT mcp_ext.word_similarity('a','b')",
-        ):
-            with pytest.raises(asyncpg.InsufficientPrivilegeError):
-                await reader.fetchval(denied)
+        grants = await reader.fetch(
+            "SELECT p.oid::regprocedure::text AS name, has_function_privilege(p.oid, 'EXECUTE') "
+            "AS allowed FROM pg_proc p WHERE p.pronamespace = 'mcp_ext'::regnamespace"
+        )
+        assert len(grants) > 20
+        assert {g["name"] for g in grants if g["allowed"]} == {"mcp_ext.similarity(text,text)"}
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await reader.fetchval("SELECT mcp_ext.show_trgm('abc')")
 
         # The replicated owner switch is a readable layer the host composes.
         assert await projection_disabled_domains(reader) == frozenset()
@@ -829,3 +831,59 @@ async def test_replicated_controls_and_reads_are_pure(projected, primary, reader
         await primary.execute("DELETE FROM relationship.facts WHERE id=$1", fact)
         await primary.execute("DELETE FROM public.entities WHERE id=$1", uuid.UUID(person))
         _barrier(projected)
+
+
+async def test_owner_planted_trigram_extension_is_refused(projected):
+    """The projection owner cannot pre-create pg_trgm, plant a member and have it adopted.
+
+    pg_trgm is a trusted extension, so the database owner can create it and add its own
+    functions to it. The owner step must refuse that state before mutating anything, and
+    the owner must not be able to create functions in the superuser-owned ``mcp_ext``.
+    """
+    topology, projection = projected
+    manifest = load_manifest()
+    program = render_owner_program(manifest)
+
+    def superuser(sql):
+        with projection.begin() as conn:
+            conn.exec_driver_sql(sql)
+
+    def as_owner(*statements):
+        with projection.begin() as conn:
+            conn.exec_driver_sql("SET LOCAL ROLE mcp_projection_owner")
+            for statement in statements:
+                conn.exec_driver_sql(statement)
+
+    applied = _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied")
+    try:
+        # With the step applied, the owner cannot add a function to mcp_ext.
+        with pytest.raises(DBAPIError):
+            as_owner(
+                "CREATE FUNCTION mcp_ext.planted(text) RETURNS text LANGUAGE sql AS 'SELECT $1'"
+            )
+        # An interrupted first step: no extension yet; the owner plants its own copy.
+        superuser("DROP EXTENSION pg_trgm")
+        superuser("DROP SCHEMA mcp_ext")
+        as_owner(
+            "CREATE SCHEMA mcp_ext",
+            "CREATE EXTENSION pg_trgm WITH SCHEMA mcp_ext",
+            "CREATE FUNCTION mcp_ext.planted(text) RETURNS text LANGUAGE sql AS 'SELECT $1'",
+            "ALTER EXTENSION pg_trgm ADD FUNCTION mcp_ext.planted(text)",
+        )
+        refused = topology.execute(program)
+        assert refused.exit_code != 0, "the owner step must refuse an owner-planted pg_trgm"
+        assert b"pg_trgm" in bytes(refused.output)
+        assert _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied") == applied
+        # The same extension in another owner schema is refused too.
+        as_owner(
+            "DROP EXTENSION pg_trgm",
+            "DROP SCHEMA mcp_ext",
+            "CREATE EXTENSION pg_trgm SCHEMA mcp_read",
+        )
+        refused = topology.execute(program)
+        assert refused.exit_code != 0 and b"pg_trgm" in bytes(refused.output)
+    finally:
+        superuser("DROP EXTENSION IF EXISTS pg_trgm")
+        superuser("DROP SCHEMA IF EXISTS mcp_ext CASCADE")
+        healed = topology.execute(program)
+        assert healed.exit_code == 0, repr(healed.output)[-4000:]

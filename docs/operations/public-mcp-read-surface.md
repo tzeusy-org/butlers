@@ -83,8 +83,11 @@ view OIDs remain stable; only a source removed from the manifest loses its view.
 a view and freshness is a timestamp-only function; exactly two pinned-search-path definers
 exist, with no monitoring role.
 
-The owner step also installs `pg_trgm` in a projection-only `mcp_ext` schema; `mcp_public_ro`
-may execute only `mcp_ext.similarity(text, text)` there (the `entity_lookup` trigram match).
+The owner step also installs `pg_trgm` in a projection-only `mcp_ext` schema, as the superuser:
+the schema, the extension and every member must be superuser-owned, so the projection owner
+cannot plant or grant a function there (pg_trgm is a trusted extension it could otherwise
+create). `mcp_public_ro` may execute only `mcp_ext.similarity(text, text)` (the `entity_lookup`
+trigram match). The step refuses any other state before creating anything.
 
 The first pure readers exist in `butlers.knowledge_read` (`entities`, `chronology`, `finance`):
 `entity_lookup`, `entity_profile`, `timeline`, `time_use` and `finance_ledger`. Each takes an
