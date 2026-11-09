@@ -6,6 +6,7 @@
 ARG BUTLERS_BASE_IMAGE
 
 # Retain the original WhatsApp bridge source build and dependency lock.
+# Digest-pinned for full reproducibility (Go 1.25.11).
 FROM golang:1.25.11-bookworm@sha256:bbb255b0e131db500cf0520adc97441d2260cf629c7fa7e39e025ddf53995a24 AS go-builder
 
 WORKDIR /build
