@@ -19,7 +19,7 @@ spec:
         {{- include "butlers.selector" (dict "root" . "component" "butlers-control") | nindent 8 }}
     spec:
       # One daemon in this process, so its own shutdown timeout (30s default) is the budget.
-      terminationGracePeriodSeconds: {{ add 30 .Values.shutdown.graceMarginSeconds }}
+      terminationGracePeriodSeconds: {{ add .Values.shutdown.daemonTimeoutSeconds .Values.shutdown.graceMarginSeconds }}
       securityContext:
         sysctls:
           - {name: net.ipv4.ip_local_reserved_ports, value: "41100,41199"}

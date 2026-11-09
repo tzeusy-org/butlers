@@ -929,6 +929,21 @@ def _shutdown_budget_s(daemon: Any) -> float:
     return daemon.config.shutdown_timeout_s if daemon.config else 30.0
 
 
+#: A pool close never gets less than this, so a share that is nearly spent still lets a healthy
+#: pool close instead of being terminated at once.
+_POOL_CLOSE_FLOOR_S = 1.0
+
+
+def _pool_close_timeout_s(daemon: Any, deadline: float) -> float:
+    """Seconds one pool close may take: what is left of the daemon's share, never under the
+    floor; ``Database.close``'s own default when the daemon shuts down alone."""
+    from butlers.db import _POOL_CLOSE_TIMEOUT_S
+
+    if vars(daemon).get("_shutdown_budget_s") is None:
+        return _POOL_CLOSE_TIMEOUT_S
+    return max(_POOL_CLOSE_FLOOR_S, deadline - asyncio.get_running_loop().time())
+
+
 def _step_budget_s(daemon: Any, deadline: float) -> float:
     """Seconds one drain step may take: the daemon's whole timeout when it shuts down alone,
     and what is left of its share when ``butlers up`` set one, so steps cannot add up past it."""
@@ -1040,7 +1055,7 @@ async def _shutdown_resources(daemon: Any) -> None:
         # One retained tail fences ALL physical-pool owners, not two independent closers.
         async def finish():
             await asyncio.gather(*(owner.settle() for owner in owners))
-            await _shutdown_chronicler_dependents(daemon)
+            await _shutdown_chronicler_dependents(daemon, deadline)
 
         existing = vars(daemon).get("_chronicler_cleanup_task")
         if existing is None:
@@ -1048,10 +1063,10 @@ async def _shutdown_resources(daemon: Any) -> None:
             daemon._chronicler_cleanup_task = task
             task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
         raise TimeoutError("Owned request cleanup incomplete; resources retained")
-    await _shutdown_chronicler_dependents(daemon)
+    await _shutdown_chronicler_dependents(daemon, deadline)
 
 
-async def _shutdown_chronicler_dependents(daemon: Any) -> None:
+async def _shutdown_chronicler_dependents(daemon: Any, deadline: float) -> None:
     """Original dependent teardown, reached once after owned work settles."""
     # 6. Module shutdown in reverse topological order (active modules only)
     from butlers.core.approval_delivery_worker import stop_approval_delivery_worker
@@ -1086,11 +1101,11 @@ async def _shutdown_chronicler_dependents(daemon: Any) -> None:
 
     # 7. Close credential-layer DB pools
     if daemon._shared_credentials_db is not None:
-        await daemon._shared_credentials_db.close()
+        await daemon._shared_credentials_db.close(_pool_close_timeout_s(daemon, deadline))
         daemon._shared_credentials_db = None
 
     # 8. Close DB pool
     if daemon.db:
-        await daemon.db.close()
+        await daemon.db.close(_pool_close_timeout_s(daemon, deadline))
 
     logger.info("Butler shutdown complete")

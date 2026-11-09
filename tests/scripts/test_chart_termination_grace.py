@@ -59,6 +59,18 @@ def test_a_daemon_pod_has_grace_beyond_its_shutdown_budget(env, settings) -> Non
         assert control["spec"]["terminationGracePeriodSeconds"] >= 30 + 20
 
 
+def test_the_control_pod_grace_follows_the_daemon_timeout_value() -> None:
+    deployments = _deployments(
+        "dev",
+        "butlersControl.enabled=true",
+        "shutdown.daemonTimeoutSeconds=50",
+        "shutdown.graceMarginSeconds=25",
+    )
+    control = deployments["butlers-control"]["spec"]["template"]
+
+    assert control["spec"]["terminationGracePeriodSeconds"] == 75
+
+
 def test_the_budget_and_margin_come_from_values() -> None:
     deployments = _deployments(
         "dev", "shutdown.budgetSeconds=100", "shutdown.graceMarginSeconds=40"

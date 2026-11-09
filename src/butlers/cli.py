@@ -1152,15 +1152,17 @@ _SHUTDOWN_BUDGET_ENV = "BUTLERS_SHUTDOWN_BUDGET_S"
 
 
 class _ShutdownPlan:
-    """One shutdown budget for every daemon in the process.
+    """One shutdown budget for every daemon in the process, if ``BUTLERS_SHUTDOWN_BUDGET_S`` is set.
 
     ``butlers up`` unwinds its daemons one at a time. Each used to get its own full
-    ``shutdown_timeout_s``, so one slow daemon could spend the pod's whole termination grace
-    and leave the rest to be SIGKILLed with no module shutdown or pool close. Now the process
-    has one budget (``BUTLERS_SHUTDOWN_BUDGET_S``, else the largest daemon timeout), counted
-    from when shutdown begins. Each daemon gets an equal share of what is left among the
-    daemons still to go, capped by its own timeout, so time a daemon does not use passes to the
-    next, and the whole unwind ends inside the budget.
+    ``shutdown_timeout_s``, so one slow daemon could spend a pod's whole termination grace and
+    leave the rest to be SIGKILLed with no module shutdown or pool close. With the budget set
+    (the Helm chart sets it beside the pod's grace period), it counts from when shutdown begins
+    and each daemon gets an equal share of what is left among the daemons still to go, capped by
+    its own timeout, so time a daemon does not use passes to the next.
+
+    With it unset (a local ``butlers up``, compose) nothing is shared and each daemon keeps its
+    own full timeout, as before.
     """
 
     def __init__(self, daemons: list[Any], *, clock: Callable[[], float] | None = None) -> None:
@@ -1169,29 +1171,32 @@ class _ShutdownPlan:
         self._deadline: float | None = None
         self._pending: int | None = None
 
-    def begin(self) -> None:
-        """Start the clock; later calls change nothing."""
-        if self._deadline is None:
-            self._deadline = self._clock() + self._budget_s()
-
-    def _budget_s(self) -> float:
+    def _budget_s(self) -> float | None:
         raw = os.environ.get(_SHUTDOWN_BUDGET_ENV)
-        if raw:
-            try:
-                return float(raw)
-            except ValueError:
-                logger.warning("Ignoring non-numeric %s=%r", _SHUTDOWN_BUDGET_ENV, raw)
-        return max((self._timeout_of(d) for d in self._daemons), default=30.0)
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning("Ignoring non-numeric %s=%r", _SHUTDOWN_BUDGET_ENV, raw)
+            return None
+
+    def begin(self) -> None:
+        """Start the clock; later calls change nothing. A no-op without a budget."""
+        budget = self._budget_s()
+        if budget is not None and self._deadline is None:
+            self._deadline = self._clock() + budget
 
     @staticmethod
     def _timeout_of(daemon: Any) -> float:
         timeout = getattr(getattr(daemon, "config", None), "shutdown_timeout_s", None)
         return float(timeout) if isinstance(timeout, int | float) else 30.0
 
-    def next_budget(self, daemon: Any) -> float:
-        """Seconds this daemon's shutdown may take."""
+    def next_budget(self, daemon: Any) -> float | None:
+        """Seconds this daemon's shutdown may take, or ``None`` for its own full timeout."""
         self.begin()
-        assert self._deadline is not None
+        if self._deadline is None:
+            return None
         if self._pending is None:
             self._pending = len(self._daemons)
         remaining = max(0.0, self._deadline - self._clock())

@@ -120,6 +120,8 @@ dashboardAuth:
 shutdown:
   budgetSeconds: 60
   graceMarginSeconds: 30
+  # `butlers-control` runs one daemon, bounded by its own [butler.shutdown].timeout_s (30s default).
+  daemonTimeoutSeconds: 30
 
 # Plain env applied to butlers-up, dashboard-api and every connector.
 commonEnv:

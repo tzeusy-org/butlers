@@ -128,7 +128,7 @@ Graceful shutdown proceeds in reverse order:
 8. Shut down modules in **reverse** topological order (each module's `on_shutdown()`)
 9. Close the database connection pool
 
-`butlers up` runs several daemons in one process and shuts them down one at a time. They share one process budget, `BUTLERS_SHUTDOWN_BUDGET_S` (default: the largest `[butler.shutdown].timeout_s`), counted from the signal. Each daemon gets an equal share of what is left among the daemons still to go, capped by its own timeout, so time a quick daemon leaves passes to the next and one slow daemon cannot starve the rest. The Helm chart sets the pod's `terminationGracePeriodSeconds` to `shutdown.budgetSeconds + shutdown.graceMarginSeconds`; the margin covers pool close and interpreter exit. A database pool that will not close within 10 seconds is terminated.
+`butlers up` runs several daemons in one process and shuts them down one at a time. When `BUTLERS_SHUTDOWN_BUDGET_S` is set (the Helm chart sets it), they share one process budget counted from the signal; unset, each daemon keeps its own full timeout. Each daemon gets an equal share of what is left among the daemons still to go, capped by its own timeout, so time a quick daemon leaves passes to the next and one slow daemon cannot starve the rest. The Helm chart sets the pod's `terminationGracePeriodSeconds` to `shutdown.budgetSeconds + shutdown.graceMarginSeconds`; the margin covers pool close and interpreter exit. A database pool that will not close is terminated: after 10 seconds, or after what is left of the daemon's share (at least 1 second) when a share is set.
 
 ## Module Failure Handling
 

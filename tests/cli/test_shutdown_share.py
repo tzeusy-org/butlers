@@ -72,12 +72,23 @@ def test_a_share_never_exceeds_the_daemons_own_timeout(monkeypatch) -> None:
     assert plan.next_budget(_daemon(5.0)) == 5.0
 
 
-def test_the_budget_defaults_to_the_largest_daemon_timeout(monkeypatch) -> None:
+def test_without_a_budget_nothing_is_shared_and_each_daemon_keeps_its_own_timeout(
+    monkeypatch,
+) -> None:
+    """A local ``butlers up`` or compose sets no budget; sharing the largest timeout across a
+    dozen daemons would hand the first one a couple of seconds."""
     monkeypatch.delenv("BUTLERS_SHUTDOWN_BUDGET_S", raising=False)
     daemons = [_daemon(10.0), _daemon(45.0)]
     plan = _ShutdownPlan(daemons, clock=_Clock())
 
-    assert plan.next_budget(daemons[1]) == 22.5
+    assert [plan.next_budget(d) for d in daemons] == [None, None]
+
+
+def test_a_blank_or_unreadable_budget_means_no_sharing(monkeypatch) -> None:
+    daemons = [_daemon()]
+    for raw in ("", "soon"):
+        monkeypatch.setenv("BUTLERS_SHUTDOWN_BUDGET_S", raw)
+        assert _ShutdownPlan(daemons, clock=_Clock()).next_budget(daemons[0]) is None
 
 
 def test_the_budget_clock_starts_when_shutdown_begins_not_when_a_daemon_is_reached(
@@ -128,3 +139,18 @@ async def test_a_daemon_shuts_down_under_the_share_it_was_given(monkeypatch) -> 
     assert _step_budget_s(daemon, now + 7) <= 7
     # Shut down alone, with no share, the daemon's own timeout still applies.
     assert _step_budget_s(_daemon(12.0), now + 1) == 12.0
+
+
+async def test_a_daemon_without_a_share_keeps_its_own_timeout(monkeypatch) -> None:
+    from unittest.mock import AsyncMock
+
+    from butlers.cli import _shutdown_in_share
+
+    monkeypatch.delenv("BUTLERS_SHUTDOWN_BUDGET_S", raising=False)
+    seen: list[object] = []
+    daemon = _daemon()
+    daemon.shutdown = AsyncMock(side_effect=lambda: seen.append(daemon._shutdown_budget_s))
+
+    await _shutdown_in_share(daemon, _ShutdownPlan([daemon], clock=_Clock()))
+
+    assert seen == [None]
