@@ -18,6 +18,7 @@ from butlers.knowledge_read.core import (
     ReadContext,
     ReadError,
     fields,
+    fit,
     in_snapshot,
     published,
     record_uri,
@@ -95,21 +96,21 @@ async def health_series(
     rows, units = await in_snapshot(conn, read)
     if len(rows) > SERIES_POINTS:
         raise ReadError("too_large", domain="health")
+    points = [{"t": r["t"].isoformat(), "value": float(Decimal(r["value"]))} for r in rows]
     omitted = [u["unit"] for u in units[1:]]
-    result: dict[str, Any] = {
-        "unit": units[0]["unit"] if units else None,
-        "points": [
-            {
-                "t": r["t"].isoformat(),
-                "value": float(Decimal(r["value"])),
-            }
-            for r in rows
-        ],
-        "source": context.aggregate_source("health", "health_series"),
-    }
-    if omitted:
-        result["units_omitted"] = omitted
-    return result
+    source = context.aggregate_source("health", "health_series")
+
+    def build(kept: list, _: bool) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "unit": units[0]["unit"] if units else None,
+            "points": kept,
+            "source": source,
+        }
+        if omitted:
+            result["units_omitted"] = omitted
+        return result
+
+    return fit(points, build)
 
 
 def _text(value: Any) -> Any:
@@ -165,7 +166,7 @@ async def health_profile(
         return found
 
     found = await in_snapshot(conn, read)
-    result: dict[str, Any] = {section: [] for section in SECTIONS}
+    entries: list[tuple[str, dict[str, Any]]] = []
     cut = False
     for section, table in (
         ("medications", medications),
@@ -209,7 +210,16 @@ async def health_profile(
                     "fields": found["json"].get(row["source_id"], {}),
                 }
             entry["source"] = source
-            result[section].append(entry)
+            entries.append((section, entry))
+
+    def build(kept: list, _: bool) -> dict[str, Any]:
+        grouped: dict[str, Any] = {section: [] for section in SECTIONS}
+        for section, entry in kept:
+            grouped[section].append(entry)
+        return grouped
+
+    # One ordered list (medications, conditions, allergies, providers) so a cut drops the tail.
+    result = fit(entries, build)
     if cut:
         result["truncated"] = True
     return result

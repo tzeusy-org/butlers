@@ -290,7 +290,9 @@ def test_finance_obligations_horizon_and_shape():
     assert bill["autopay"] is True and bill["amount"] == "900.00"
     assert bill["source"]["uri"] == "butlers://finance/bills/b1"
     # Both queries are bounded by today (UTC) and today + horizon.
-    assert all(p[1:3] == (date(2026, 11, 9), date(2026, 12, 9)) for _, p in conn.calls)
+    bills_call, subs_call = conn.calls
+    assert bills_call[1][1:] == (date(2026, 12, 9),)  # past-due bills are included
+    assert subs_call[1][1:] == (date(2026, 11, 9), date(2026, 12, 9))
 
 
 def test_health_series_refuses_unknown_metric_and_oversized_raw():

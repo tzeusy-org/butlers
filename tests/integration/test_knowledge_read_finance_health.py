@@ -15,7 +15,7 @@ import asyncpg
 import pytest
 from sqlalchemy import text
 
-from butlers.knowledge_read.core import ReadContext, ReadError, read_context
+from butlers.knowledge_read.core import MAX_RESPONSE_BYTES, ReadContext, ReadError, read_context
 from butlers.knowledge_read.finance import (
     finance_ledger,
     finance_obligations,
@@ -167,6 +167,16 @@ async def test_finance_summary_obligations_and_records(projected, primary, reade
                 _day(10),
             )
         )
+        for payee, status in (("Late Pending", "pending"), ("Late Paid", "paid")):
+            bills.append(
+                await primary.fetchval(
+                    "INSERT INTO finance.bills(payee,amount,currency,due_date,frequency,status) "
+                    "VALUES ($1,7,'SGD',$2,'monthly',$3) RETURNING id",
+                    payee,
+                    _day(-20),
+                    status,
+                )
+            )
         bills.append(
             await primary.fetchval(
                 "INSERT INTO finance.bills(payee,amount,currency,due_date,frequency,status) "
@@ -242,12 +252,14 @@ async def test_finance_summary_obligations_and_records(projected, primary, reade
 
         obligations = await finance_obligations(reader, context, {"horizon_days": 30})
         assert [(i["kind"], i["payee"], i["amount"]) for i in obligations["items"]] == [
+            ("bill", "Late Pending", "7.00"),
             ("bill", "Landlord", "1200.50"),
             ("subscription", "Soon Stream", "9.99"),
         ]
+        assert "Late Paid" not in json.dumps(obligations)
         assert "Far Stream" not in json.dumps(obligations)
         assert "Paid Up" not in json.dumps(obligations)
-        bill = obligations["items"][0]
+        bill = obligations["items"][1]
         assert bill["next_due"] == _day(10).isoformat() and bill["cancel_by"] is None
         assert bill["source"]["uri"] == f"butlers://finance/bills/{bills[0]}"
         wide = await finance_obligations(reader, context, {"horizon_days": 90})
@@ -585,4 +597,93 @@ async def test_finance_and_health_reads_are_pure(projected, primary, reader):
         assert versions() == before
     finally:
         await primary.execute("DELETE FROM health.facts WHERE id=$1", fact)
+        _barrier(projected)
+
+
+async def test_health_series_serves_only_the_newest_unit(projected, primary, reader):
+    """A window mixing units serves the newest unit and names the rest (REQ-010)."""
+    day = _day(-8)
+    facts = []
+    try:
+        for hour, value, unit in ((6, 70.0, "kg"), (9, 71.0, "kg"), (18, 154.0, "lb")):
+            facts.append(
+                await _health_fact(
+                    primary,
+                    "measurement_weight",
+                    "mixed",
+                    {"value": value, "unit": unit},
+                    valid_at=datetime(day.year, day.month, day.day, hour, tzinfo=UTC),
+                )
+            )
+        _barrier(projected)
+        context = await _context(reader)
+        window = {"metric": "measurement_weight", "start": day.isoformat(), "end": day.isoformat()}
+        raw = await health_series(reader, context, {**window, "bucket": "raw"})
+        assert raw["unit"] == "lb" and [p["value"] for p in raw["points"]] == [154.0]
+        assert raw["units_omitted"] == ["kg"]
+        daily = await health_series(reader, context, {**window, "bucket": "day"})
+        assert daily["points"] == [{"t": day.isoformat(), "value": 154.0}]
+    finally:
+        for fact in facts:
+            await primary.execute("DELETE FROM health.facts WHERE id=$1", fact)
+        _barrier(projected)
+
+
+async def test_health_profile_is_cut_at_the_response_cap(projected, primary, reader):
+    """REQ-public-mcp-surface-012: a 200-medication profile fits 256 KiB and says it was cut."""
+    await primary.execute(
+        "INSERT INTO health.facts(subject,predicate,content,metadata,sensitivity,scope) "
+        "SELECT 'cap '||i||' '||$1::text,'medication','cap med '||i,"
+        "jsonb_build_object('name','Cap '||lpad(i::text,3,'0'),'notes',repeat('n',1500),"
+        "'active',true),'confidential','arbitrary' FROM generate_series(1,200) AS i",
+        uuid.uuid4().hex,
+    )
+    try:
+        _barrier(projected)
+        context = await _context(reader)
+        cut = await health_profile(reader, context, {"sections": ["medications"]})
+        assert len(json.dumps(cut, separators=(",", ":")).encode()) <= MAX_RESPONSE_BYTES
+        assert cut["truncated"] is True and 0 < len(cut["medications"]) < 200
+        ordered = await reader.fetch(
+            "SELECT fields->>'name' AS name FROM mcp_read.health__medications_public "
+            "WHERE fields->>'name' LIKE 'Cap %' "
+            "ORDER BY (fields->>'recorded_at')::timestamptz DESC NULLS LAST, source_id"
+        )
+        kept = [m["name"] for m in cut["medications"]]
+        assert kept == [r["name"] for r in ordered][: len(kept)]
+        small = await health_profile(reader, context, {"sections": ["conditions"]})
+        assert "truncated" not in small
+    finally:
+        await primary.execute("DELETE FROM health.facts WHERE subject LIKE 'cap %'")
+        _barrier(projected)
+
+
+async def test_finance_summary_is_cut_at_the_response_cap(projected, primary, reader):
+    """Unbounded merchant group keys cannot push finance_summary past 256 KiB."""
+    day = _day(-40)
+    posted = datetime(day.year, day.month, day.day, 9, tzinfo=UTC)
+    await primary.execute(
+        "INSERT INTO finance.transactions(posted_at,merchant,amount,currency,direction,category) "
+        "SELECT $1,'cap '||lpad(i::text,3,'0')||' '||repeat('m',2000),1,'SGD','debit','shopping' "
+        "FROM generate_series(1,300) AS i",
+        posted,
+    )
+    try:
+        _barrier(projected)
+        context = await _context(reader)
+        window = {"start": day.isoformat(), "end": day.isoformat(), "group_by": "merchant"}
+        cut = await finance_summary(reader, context, window)
+        assert len(json.dumps(cut, separators=(",", ":")).encode()) <= MAX_RESPONSE_BYTES
+        assert cut["truncated"] is True and 0 < len(cut["groups"]) < 300
+        assert cut["totals"] == [
+            {"currency": "SGD", "direction": "debit", "total": "300.00", "count": 300}
+        ]
+        ordered = await reader.fetch(
+            "SELECT fields->>'display_merchant' AS merchant FROM mcp_read.finance__transactions "
+            "WHERE fields->>'display_merchant' LIKE 'cap %' GROUP BY 1 ORDER BY 1"
+        )
+        kept = [g["key"] for g in cut["groups"]]
+        assert kept == [r["merchant"] for r in ordered][: len(kept)]
+    finally:
+        await primary.execute("DELETE FROM finance.transactions WHERE merchant LIKE 'cap %'")
         _barrier(projected)

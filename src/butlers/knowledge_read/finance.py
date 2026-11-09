@@ -192,28 +192,29 @@ async def finance_summary(
         return totals, groups
 
     totals, groups = await in_snapshot(conn, read)
-    result: dict[str, Any] = {
-        "totals": [
-            {
-                "currency": r["currency"],
-                "direction": r["direction"],
-                "total": r["total"],
-                "count": r["n"],
-            }
-            for r in totals
-        ],
-        "groups": [
-            {
-                "key": r["grp"],
-                "currency": r["currency"],
-                "direction": r["direction"],
-                "total": r["total"],
-                "count": r["n"],
-            }
-            for r in groups[:SUMMARY_GROUPS]
-        ],
-        "source": context.aggregate_source("finance", "finance_summary"),
-    }
+    totals_out = [
+        {
+            "currency": r["currency"],
+            "direction": r["direction"],
+            "total": r["total"],
+            "count": r["n"],
+        }
+        for r in totals
+    ]
+    group_out = [
+        {
+            "key": r["grp"],
+            "currency": r["currency"],
+            "direction": r["direction"],
+            "total": r["total"],
+            "count": r["n"],
+        }
+        for r in groups[:SUMMARY_GROUPS]
+    ]
+    source = context.aggregate_source("finance", "finance_summary")
+    result = fit(
+        group_out, lambda kept, _: {"totals": totals_out, "groups": kept, "source": source}
+    )
     if len(groups) > SUMMARY_GROUPS:
         result["truncated"] = True
     return result
@@ -224,7 +225,9 @@ async def finance_obligations(
 ) -> dict[str, Any]:
     """Unpaid bills and active subscriptions falling due within ``horizon_days`` of today (UTC).
 
-    Overdue unpaid bills are included. A field the item's table lacks is ``null``.
+    Every unpaid bill due on or before the horizon is included, past-due ones too: the
+    ``overdue`` status is derived on read in the finance tools and is not reliably stored, and
+    the schema's only other status is ``paid``. A field the item's table lacks is ``null``.
     """
     args = Arguments(arguments, {"horizon_days"})
     horizon = args.integer("horizon_days", low=1, high=90)
@@ -238,11 +241,9 @@ async def finance_obligations(
         due = await conn.fetch(
             f"""SELECT source_id, fields FROM {bill_view}
             WHERE fields->>'status' IS DISTINCT FROM 'paid'
-              AND (fields->>'due_date')::date <= $3::date
-              AND ((fields->>'due_date')::date >= $2::date OR fields->>'status' = 'overdue')
+              AND (fields->>'due_date')::date <= $2::date
             ORDER BY (fields->>'due_date')::date, source_id LIMIT $1""",
             OBLIGATION_LIMIT + 1,
-            today,
             end,
         )
         renewals = await conn.fetch(
