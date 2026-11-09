@@ -57,6 +57,16 @@ frames alongside native off-mode, HTTP, redirect, deadline and cancellation
 survivors. This is bounded source/runtime-fixture evidence, not full installed
 caller or stock CLI/build conformance.
 
+The seventh patch removes refused URL userinfo and fragments from selected
+structured diagnostic identity. The shared HTTP redactors also mask their raw
+and decoded echoes and explicitly named username/password fields, retaining safe
+origin/path/model and benign metadata. Native off-mode behavior is unchanged.
+The genuine pinned Effect/schema fixture now has 36 passing cases across the two
+owning files, including encoded/malformed userinfo, fragments, short named
+credentials, echoed values, off-mode identity and the existing UTF-8 byte cap.
+These are isolated source-bound fixture controls; full installed callers, stock
+build and operational conformance remain separate requirements.
+
 The lockfile retains all 3,122 original package records. The two added aliases
 are the pinned shared Undici and the already-existing exact ws source/SRI. No
 plugin, model, optional native asset or lifecycle script is removed.

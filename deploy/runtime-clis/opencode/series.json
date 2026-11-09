@@ -219,8 +219,24 @@
           "after_sha256": "f3d09b66ea71819942b8beb73646da6af10bb382f31d802c9dd4e05675c76861"
         }
       ]
+    },
+    {
+      "path": "patches/0007-redact-selected-url-credentials.patch",
+      "sha256": "f6af8dc0c26ea1c0b73c06f89eaa98f075e8649bc6597a7c340941e22b5d07a6",
+      "files": [
+        {
+          "path": "packages/llm/src/route/executor.ts",
+          "before_sha256": "51158f37986fc078e600711d4742a258cbd5757e583f113dd9f8a722afbe524f",
+          "after_sha256": "6c6b318ea2796716ffb35d58339c8497ce050970673ba7823508fbf64b5d6bc2"
+        },
+        {
+          "path": "packages/llm/test/gateway-websocket-errors.test.ts",
+          "before_sha256": "f3d09b66ea71819942b8beb73646da6af10bb382f31d802c9dd4e05675c76861",
+          "after_sha256": "0bf6974790c77cb58d99db4b8e835c5b1bb7afcf07bbfb519c6f318f8b5a3e90"
+        }
+      ]
     }
   ],
-  "source_tree_sha256": "786ecd8b0e57f54e7d36babfde5ab47153dda0352208d5ed5a596748a903a48d",
+  "source_tree_sha256": "fc32cdb0e1865ce0e9930bb8d36c91c4ae8769e952783b24acf1a5ba08f59c10",
   "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches."
 }
