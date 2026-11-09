@@ -80,8 +80,14 @@ Budgets fail closed and are charged atomically inside the broker's per-call tran
 - `goal.complete` validates every relied-on effect, records the outcome in `goal_outcomes`, stops
   the children and moves the goal to `settling`.
 - The sweep syncs parked effects and resolves settling goals. A goal answering an owner message
-  completes only if its reply effect committed; otherwise it ends `partial` with the
-  `delivery_failure` (`reply_missing` or `reply_not_committed`) recorded.
+  completes only if its reply is an owner delivery that committed; otherwise it ends `partial`
+  with the `delivery_failure` (`reply_missing`, `reply_not_owner_delivery` or
+  `reply_not_committed`) recorded.
+- An owner delivery is an effect whose `recipient_entity` is the live owner. The broker records
+  it only for a `communicate` capability whose every party resolved to the owner. `goal.complete`
+  refuses (`RESOURCE`) any other effect named as the reply, and settling checks it again. An
+  owner-edited approval re-dispatches as a new effect without a recorded recipient, so it cannot
+  be the reply.
 - A lead that exits without calling `goal.complete` leaves the goal `failed`
   (`returned_without_outcome`); a child that exits without `goal.return` fails the same way.
 
@@ -97,12 +103,25 @@ Budgets fail closed and are charged atomically inside the broker's per-call tran
   the capability calls the broker recorded for the failed attempt to the failure, which makes any
   attempt that already acted ineligible for relaunch. A lead whose relaunch is spent ends the goal
   `failed`; a failed child is the lead's to handle.
+- **Idempotent launches.** A launch whose goal is no longer runnable, or whose lead slot is already
+  held, opens nothing and ends nothing. A duplicate `start_goal` (an at-least-once admission
+  retry) leaves the running lead alone, and a recovery or escalation that loses a race is a no-op.
+  Only a failure of an invocation the launch itself opened can end the goal.
+- **Resuming after a runner crash.** A goal that is `running` or `recovering`, has no live lead
+  and no outcome, and whose latest lead ended more than `resume_grace_seconds` ago (default 90)
+  is resumed by the sweep. A lapsed lead is replaced at the next epoch, and an escalated one by a
+  lead on the next ladder tier. A lead that failed at runtime gets its one relaunch only if it was
+  not itself a relaunch and the broker recorded no call of its token. Anything else ends the goal:
+  `budget_exhausted` after a lead's turns or tokens ran out, otherwise `failed`. The failure class
+  is not persisted, so a sweep relaunch cannot apply the retryable classifier: it applies the two
+  ledger rules only.
 
 ## Roles, tiers and ladders (D16)
 
 Each role resolves its model through the catalog with `CallSpec(exact_tier=True)`: an exact-tier
 call never falls through to another tier, and refuses before any attempt if no model of the
-requested tier qualifies. See [Model Routing](model-routing.md#roles-tiers-and-ladders).
+requested tier qualifies. It also ignores a spend rule's model reroute, which could name a model
+on any tier. See [Model Routing](model-routing.md#roles-tiers-and-ladders).
 
 | Role | Ladder |
 | --- | --- |
@@ -115,7 +134,7 @@ of the ladder, or with no invocation room left, it refuses and the current lead 
 
 ## Telemetry (D17)
 
-Spans (`goal.delegate`, `goal.complete`, `goal.escalate`, `goal.stop`, `goal.recover`, and the
+Spans (`goal.delegate`, `goal.complete`, `goal.escalate`, `goal.stop`, `goal.recover`, `goal.resume`, and the
 per-launch span) carry identifiers only: goal id, invocation id, depth, lead epoch and tier. No
 brief text, arguments or results.
 

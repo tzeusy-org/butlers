@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 from butlers.capability_broker.boundaries import BoundaryLedger
 from butlers.capability_broker.contracts import BrokerRefused, Catalog, Principal, Reason
 from butlers.capability_broker.ledger import BrokerLedger
+from butlers.capability_broker.recipients import live_owner
 from butlers.capability_broker.typed import TypedSchema, parse_schema
 from butlers.core.goal_admission import Grant, decode_grants, digest, encode_grants
 
@@ -47,6 +48,18 @@ class Started:
     token: str
     origin: str
     exposed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class Leaderless:
+    """A running or recovering goal whose latest lead ended with no successor (D14)."""
+
+    goal_id: UUID
+    lead_id: UUID
+    end_reason: str | None
+    role: Role
+    tier: str | None
+    relaunch_of: UUID | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +221,16 @@ class RunnerLedger:
             list(LIVE),
         ):
             raise GoalEnded("lead_active")
+        if relaunch_of is not None and not await self.connection.fetchval(
+            # D14: one relaunch, of the latest lead only, never twice.
+            "SELECT (SELECT id FROM switchboard.invocations WHERE goal_id = $1 AND depth = 0 "
+            "ORDER BY lead_epoch DESC, created_at DESC LIMIT 1) = $2 "
+            "AND NOT EXISTS (SELECT 1 FROM switchboard.invocations WHERE goal_id = $1 "
+            "AND relaunch_of = $2)",
+            goal_id,
+            relaunch_of,
+        ):
+            raise GoalEnded("relaunch_unavailable")
         epoch = await self.connection.fetchval(
             "SELECT COALESCE(max(lead_epoch) + 1, 0) FROM switchboard.invocations "
             "WHERE goal_id = $1 AND depth = 0",
@@ -509,6 +532,8 @@ class RunnerLedger:
             )
             if found != len(named):
                 raise BrokerRefused(Reason.RESOURCE)
+        if reply is not None and not await self._owner_delivery(principal.goal_id, reply):
+            raise BrokerRefused(Reason.RESOURCE)
         exhausted = await self.broker.charge_call(principal)
         if exhausted is not None:
             return exhausted
@@ -531,12 +556,29 @@ class RunnerLedger:
         await self.resolve(principal.goal_id)
         return children
 
+    async def _owner_delivery(self, goal_id: UUID, effect_id: UUID) -> bool:
+        """The effect is the goal's communication to the live owner (D11).
+
+        The broker records the owner as recipient only for a communicate
+        capability whose every party it resolved to the owner.
+        """
+        owner = await live_owner(self.connection)
+        return owner is not None and bool(
+            await self.connection.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM switchboard.effects WHERE goal_id = $1 "
+                "AND id = $2 AND recipient_entity = $3)",
+                goal_id,
+                effect_id,
+                owner,
+            )
+        )
+
     async def resolve(self, goal_id: UUID) -> str | None:
         """settling -> completed | partial | failed once no effect can change (D11).
 
-        A goal admitted from an owner message completes only if its reply
-        effect committed; otherwise it ends ``partial`` with the delivery
-        failure recorded.
+        A goal admitted from an owner message completes only if its reply is an
+        owner delivery that committed; otherwise it ends ``partial`` with the
+        delivery failure recorded.
         """
         goal = await self.lock(goal_id)
         if goal is None or goal["status"] != "settling":
@@ -563,6 +605,8 @@ class RunnerLedger:
             if final == "completed" and owner_reply:
                 if row["reply_effect_id"] is None:
                     final, failure = "partial", "reply_missing"
+                elif not await self._owner_delivery(goal_id, row["reply_effect_id"]):
+                    final, failure = "partial", "reply_not_owner_delivery"
                 elif row["reply_status"] != "committed":
                     final, failure = "partial", "reply_not_committed"
             await self.connection.execute(
@@ -727,6 +771,80 @@ class RunnerLedger:
             "AND e.status IN ('requested', 'parked', 'approved') ORDER BY g.id"
         )
         return [row["id"] for row in rows]
+
+    async def lead_wanted(self, goal_id: UUID) -> bool:
+        """A lead may open: the goal is runnable and no lead of it is live.
+
+        A pre-check only; ``open_lead`` decides under the goal-row lock.
+        """
+        return bool(
+            await self.connection.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM switchboard.goals g WHERE g.id = $1 "
+                "AND g.status IN ('admitted', 'running', 'recovering') "
+                "AND NOT EXISTS (SELECT 1 FROM switchboard.invocations i "
+                "WHERE i.goal_id = g.id AND i.depth = 0 AND i.status = ANY($2::text[])))",
+                goal_id,
+                list(LIVE),
+            )
+        )
+
+    async def child_wanted(self, goal_id: UUID, child_id: UUID) -> bool:
+        """A delegated child still waits for its launch (pre-check only)."""
+        return (
+            await self.connection.fetchval(
+                "SELECT status FROM switchboard.invocations WHERE goal_id = $1 AND id = $2 "
+                "AND depth = 1",
+                goal_id,
+                child_id,
+            )
+            == "launching"
+        )
+
+    async def leaderless(self, grace_seconds: float) -> list[Leaderless]:
+        """Running or recovering goals whose latest lead ended over ``grace_seconds`` ago.
+
+        A runner that dies between ending a lead (lease expiry, escalation, a
+        runtime failure) and launching its successor leaves the goal here; an
+        in-process successor opens well inside the grace.
+        """
+        rows = await self.connection.fetch(
+            "SELECT g.id AS goal_id, l.id, l.end_reason, l.model_role, l.model_tier, "
+            "l.relaunch_of FROM switchboard.goals g "
+            "JOIN LATERAL (SELECT * FROM switchboard.invocations i WHERE i.goal_id = g.id "
+            "AND i.depth = 0 ORDER BY i.lead_epoch DESC, i.created_at DESC LIMIT 1) l ON true "
+            "WHERE g.status IN ('running', 'recovering') "
+            "AND l.status <> ALL($1::text[]) "
+            "AND l.ended_at <= clock_timestamp() - make_interval(secs => $2::float8) "
+            "AND NOT EXISTS (SELECT 1 FROM switchboard.goal_outcomes o WHERE o.goal_id = g.id) "
+            "ORDER BY g.id",
+            list(LIVE),
+            grace_seconds,
+        )
+        return [
+            Leaderless(
+                row["goal_id"],
+                row["id"],
+                row["end_reason"],
+                row["model_role"] or "lead",
+                row["model_tier"],
+                row["relaunch_of"],
+            )
+            for row in rows
+        ]
+
+    async def end_leaderless(
+        self, goal_id: UUID, lead_id: UUID, status: str, reason: str
+    ) -> list[UUID]:
+        """End a leaderless goal, only if ``lead_id`` is still its latest, ended lead."""
+        await self.lock(goal_id)
+        latest = await self.connection.fetchrow(
+            "SELECT id, status FROM switchboard.invocations WHERE goal_id = $1 AND depth = 0 "
+            "ORDER BY lead_epoch DESC, created_at DESC LIMIT 1",
+            goal_id,
+        )
+        if latest is None or latest["id"] != lead_id or latest["status"] in LIVE:
+            return []
+        return await self.end_goal(goal_id, status, reason)
 
     async def settling(self) -> list[UUID]:
         rows = await self.connection.fetch(

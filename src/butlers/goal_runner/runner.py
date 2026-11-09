@@ -31,6 +31,7 @@ from butlers.core.model_call import AttemptOutcome, AttemptSink, CallSpec, Candi
 
 from .contracts import (
     Brief,
+    GoalEnded,
     HostOutcome,
     InvocationBudgetExhausted,
     Launch,
@@ -41,7 +42,7 @@ from .contracts import (
     SessionHost,
 )
 from .delegation import DelegationRequest, parse_delegation
-from .ledger import RunnerLedger, Started
+from .ledger import Leaderless, RunnerLedger, Started
 from .models import ModelLadders, next_tier
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,9 @@ class RunnerConfig:
     child_max_turns: int = 20
     launch_timeout_s: float = 300
     transaction_timeout: float = 5
+    # How long a running goal may sit without a live lead before the sweep
+    # resumes it; an in-process successor opens well inside this.
+    resume_grace_seconds: float = 90
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +78,8 @@ class _Plan:
     child_id: UUID | None = None
     brief: Brief | None = None
     summary: bool = False
+    relaunch_of: UUID | None = None
+    """A sweep-resumed relaunch: it is the failed lead's one relaunch (D14)."""
 
 
 class _HostedAttempt:
@@ -182,14 +188,37 @@ class GoalRunner:
                 max_turns=self.config.lead_max_turns,
                 max_tokens=self.config.lead_max_tokens,
                 lease_seconds=lease,
-                relaunch_of=attempts[-1] if attempts else None,
+                relaunch_of=attempts[-1] if attempts else plan.relaunch_of,
             )
 
+    async def _wanted(self, plan: _Plan) -> bool:
+        """Whether the plan still has an invocation to open (a pre-check)."""
+        async with self._txn() as ledger:
+            if plan.depth == 1:
+                assert plan.child_id is not None
+                return await ledger.child_wanted(plan.goal_id, plan.child_id)
+            return await ledger.lead_wanted(plan.goal_id)
+
     async def _supervise(self, plan: _Plan) -> None:
+        """Launch the plan's invocation through the kernel and act on how it ended.
+
+        A plan whose goal is no longer runnable, or whose lead slot is already
+        held (a duplicate start, or a recovery or escalation that lost a race),
+        opens nothing and ends nothing: only a failure of an invocation this
+        plan opened can end the goal.
+        """
+        if not await self._wanted(plan):
+            logger.info("goal runner launch not needed goal=%s role=%s", plan.goal_id, plan.role)
+            return
         attempts: list[UUID] = []
+        unopened: list[str] = []
 
         async def attempt(adapter: _HostedAttempt, candidate: Candidate) -> AttemptOutcome:
-            started = await self._open(plan, attempts, candidate)
+            try:
+                started = await self._open(plan, attempts, candidate)
+            except GoalEnded as refused:
+                unopened.append(str(refused))
+                raise
             attempts.append(started.invocation_id)
             adapter.last_process_info = {"runtime_type": candidate.runtime_type}
             outcome = await self._launch(plan, started, candidate)
@@ -210,7 +239,8 @@ class GoalRunner:
             butler_name=plan.role,  # D16: the role is the resolution key.
             tier=plan.tier,
             exact_tier=True,
-            max_relaunches=1,
+            # A sweep-resumed relaunch already is the failed lead's one relaunch.
+            max_relaunches=0 if plan.relaunch_of is not None else 1,
             redact_failures=True,
             usage_purpose="goal",
             caller="goal_runner",
@@ -222,6 +252,16 @@ class GoalRunner:
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            if unopened:
+                # The open was refused under the goal lock: nothing of this
+                # plan is live, and the goal belongs to whoever holds it.
+                logger.info(
+                    "goal runner launch not opened goal=%s role=%s reason=%s",
+                    plan.goal_id,
+                    plan.role,
+                    unopened[-1],
+                )
+                return
             await self._after_failure(plan, attempts, error)
             return
         await self._after_exit(plan, attempts[-1])
@@ -389,9 +429,10 @@ class GoalRunner:
                 span.set_attribute("invocation_id", str(principal.invocation_id))
                 ledger = RunnerLedger(broker_ledger.connection)
                 children = await ledger.complete(principal, outcome, relied_ids, reply_id)
-                status = None
-                if not isinstance(children, BrokerRefused):
-                    status = await ledger.goal_status(goal_id)
+                if isinstance(children, BrokerRefused):
+                    status = ""
+                else:
+                    status = await ledger.goal_status(goal_id) or ""
             if isinstance(children, BrokerRefused):
                 raise children
         await self._terminate_all(children)
@@ -498,6 +539,10 @@ class GoalRunner:
                     ended = await ledger.fence_ended(goal_id)
             await self._terminate_all(ended)
         async with self._txn() as ledger:
+            leaderless = await ledger.leaderless(self.config.resume_grace_seconds)
+        for item in leaderless:
+            await self._resume(item)
+        async with self._txn() as ledger:
             uncancelled = await ledger.stopped_with_parked()
         for goal_id in uncancelled:
             await self._cancel_parked(goal_id)
@@ -510,6 +555,48 @@ class GoalRunner:
                 logger.warning("goal runner parked sync unavailable goal=%s", goal_id)
             async with self._txn() as ledger:
                 await ledger.resolve(goal_id)
+
+    async def _resume(self, item: Leaderless) -> None:
+        """Finish what a runner that died between ending a lead and its successor began (D14).
+
+        A lapsed lead is replaced at the next epoch; an escalated one by a lead
+        on the next ladder tier. A lead that failed at runtime gets its one
+        relaunch only if it was not itself a relaunch and the broker recorded no
+        call of its token. Anything else ends the goal as the runner would have.
+        """
+        tier = item.tier or self.ladders.first(item.role)
+        plan: _Plan | None = None
+        if item.end_reason == "lease_lapsed":
+            plan = _Plan(item.goal_id, item.role, tier, 0, summary=True)
+        elif item.end_reason == "escalated":
+            target = await next_tier(self.catalog_pool, self.ladders, item.role, tier)
+            if target is not None:
+                plan = _Plan(item.goal_id, item.role, target, 0, summary=True)
+        elif item.end_reason == "runtime_failure" and item.relaunch_of is None:
+            async with self._txn() as ledger:
+                calls = await ledger.recorded_calls(item.goal_id, item.lead_id)
+            if not calls:
+                plan = _Plan(
+                    item.goal_id, item.role, tier, 0, summary=True, relaunch_of=item.lead_id
+                )
+        with _tracer.start_as_current_span(
+            "goal.resume", record_exception=False, set_status_on_exception=False
+        ) as span:
+            span.set_attribute("goal_id", str(item.goal_id))
+            span.set_attribute("invocation_id", str(item.lead_id))
+            if plan is not None:
+                span.set_attribute("tier", plan.tier)
+                self._spawn(plan)
+                return
+            exhausted = item.end_reason in ("turns_exhausted", "tokens_exhausted")
+            async with self._txn() as ledger:
+                fenced = await ledger.end_leaderless(
+                    item.goal_id,
+                    item.lead_id,
+                    "budget_exhausted" if exhausted else "failed",
+                    "budget_exhausted" if exhausted else "goal_ended",
+                )
+        await self._terminate_all(fenced)
 
     async def record_usage(
         self,

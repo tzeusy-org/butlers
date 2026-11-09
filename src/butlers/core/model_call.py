@@ -250,8 +250,17 @@ async def _resolve(
                     rerouted.model_id,
                 )
             if rerouted.catalog_entry_id != candidate.catalog_entry_id:
-                selection_reason = "spend_rule_override"
-            candidate = rerouted
+                if spec.exact_tier:
+                    # RFC 0038 D16: a rule's model may sit on any tier, so an
+                    # exact-tier call keeps its tier-resolved model.
+                    logger.info(
+                        "%s: spend rule reroute ignored for an exact-tier call; keeping model=%s",
+                        spec.caller,
+                        candidate.model_id,
+                    )
+                else:
+                    selection_reason = "spend_rule_override"
+                    candidate = rerouted
         except Exception:
             logger.warning(
                 "%s: spend routing-rule evaluation failed for butler=%s; keeping tier-resolved "

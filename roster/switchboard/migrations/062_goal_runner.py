@@ -113,7 +113,7 @@ def upgrade() -> None:
             final_status TEXT CHECK (final_status IS NULL OR final_status IN (
                 'completed','partial','failed')),
             delivery_failure TEXT CHECK (delivery_failure IS NULL OR delivery_failure IN (
-                'reply_missing','reply_not_committed')),
+                'reply_missing','reply_not_owner_delivery','reply_not_committed')),
             created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             resolved_at TIMESTAMPTZ,
             CONSTRAINT ck_outcome_resolution CHECK ((final_status IS NULL) = (resolved_at IS NULL)),

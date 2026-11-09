@@ -277,6 +277,24 @@ async def test_an_exact_tier_call_refuses_the_fallthrough_without_attempting() -
     assert attempt.seen == [] and sink.events == []
 
 
+async def test_an_exact_tier_call_never_follows_a_spend_rule_reroute() -> None:
+    """RFC 0038 D16: an operator rule cannot move a goal invocation off its ladder tier."""
+
+    async def resolve(pool, butler, tier, **kwargs):
+        return (*A, "workhorse")
+
+    sink = _Sink()
+    attempt = _attempts(AttemptOutcome("ok"))
+    with (
+        _Catalog(routed=C),  # a catch-all rule naming a model of any tier
+        patch(f"{_K}.resolve_model_with_effective_tier", AsyncMock(side_effect=resolve)),
+    ):
+        await _call(_spec(exact_tier=True), attempt, sink)
+
+    assert [c.model_id for c in attempt.seen] == ["model-a"]
+    assert "spend_rule_override" not in str(sink.events[-1][1]["resolution_receipt"])
+
+
 async def test_spend_rule_override_dispatches_the_routed_model_with_its_receipt_reason() -> None:
     sink = _Sink()
     attempt = _attempts(AttemptOutcome("ok"))

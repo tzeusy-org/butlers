@@ -244,7 +244,8 @@ Spawner's session loop and the Switchboard's structured classifier keep their ow
 RFC 0038 D16 goal invocations resolve by role and tier with `CallSpec(exact_tier=True)`. An
 exact-tier call passes `allow_tier_fallthrough=False` to resolution and raises
 `NoModelConfigured` before any attempt when no model of the requested tier qualifies, instead of
-silently running on another tier. Each role climbs a finite ladder
+silently running on another tier. It also keeps its tier-resolved model when a spend rule names
+another, because a rule's model may sit on any tier; the rule's other effects still apply. Each role climbs a finite ladder
 (`butlers.goal_runner.models.ModelLadders`): lead `workhorse → reasoning`; monitor
 `cheap → workhorse → reasoning`; delegated children choose `cheap` or `workhorse`.
 `goal.escalate` moves to the next tier of the ladder that qualifies and refuses at the top.

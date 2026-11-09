@@ -35,6 +35,8 @@ from butlers.goal_runner.runner import GoalRunner, RunnerConfig
 from butlers.goal_runner.tools import GoalTools
 from tests.capability_broker.test_broker_ledger import (
     NOTIFY,
+    OWNER,
+    PAY,
     RULES,
     SEARCH,
     SEND,
@@ -262,6 +264,32 @@ async def test_a_lead_launches_through_the_runner_with_a_token_bound_to_its_row(
         principal = await h.w.broker.authenticate(goal, launch.token)
         assert principal.invocation_id == launch.invocation_id and principal.depth == 0
         assert row["lease_expires_at"] is not None
+        assert (await h.budget(goal))["used_invocations"] == 1
+
+
+async def test_a_duplicate_start_is_a_no_op_that_leaves_the_running_lead(broker_db_url):
+    """Admission is at-least-once: a second start_goal never fails or fences the goal."""
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEARCH))
+        lead = await h.lead(goal)
+        await h.runner.start_goal(goal)  # the duplicate's whole supervision
+        assert await h.goal_status(goal) == "running"
+        assert (await h.row(lead.invocation_id))["status"] == "running"
+        assert len(h.host.launches) == 1 and h.host.terminated == []
+        assert (await h.budget(goal))["used_invocations"] == 1
+        assert h.sink.outcomes == []  # no model attempt was made for the duplicate
+
+
+async def test_a_duplicate_that_loses_the_open_race_is_a_no_op(broker_db_url):
+    """A start that passed the pre-check but loses the goal-row lock opens nothing."""
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEARCH))
+        lead = await h.lead(goal)
+        h.runner._wanted = AsyncMock(return_value=True)  # the pre-check raced the open
+        await h.runner.start_goal(goal)
+        assert await h.goal_status(goal) == "running"
+        assert (await h.row(lead.invocation_id))["status"] == "running"
+        assert len(h.host.launches) == 1 and h.host.terminated == []
         assert (await h.budget(goal))["used_invocations"] == 1
 
 
@@ -561,6 +589,80 @@ async def test_an_owner_goal_without_a_delivered_reply_ends_partial(broker_db_ur
         assert foreign in (Reason.GOAL, Reason.AUTHENTICATION)  # the goal already ended
 
 
+async def _committed_effect(h: Harness, goal: UUID, lead: Launch, capability: str, **recipient):
+    """A committed effect of the goal, as a domain's receipt would leave it."""
+    effect_id = uuid4()
+    columns = ", ".join(("id", "goal_id", "invocation_id", "capability", "args_digest", "status"))
+    extra = "".join(f", {name}" for name in recipient)
+    values = ", ".join(f"${i}" for i in range(1, 7 + len(recipient)))
+    await h.w.owner.execute(
+        f"INSERT INTO switchboard.effects ({columns}{extra}) VALUES ({values})",
+        effect_id,
+        goal,
+        lead.invocation_id,
+        capability,
+        "0" * 64,
+        "committed",
+        *recipient.values(),
+    )
+    return effect_id
+
+
+async def test_the_owner_reply_records_its_owner_recipient(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEND))
+        lead = await h.lead(goal)
+        reply = await h.w.broker.call(goal, lead.token, SEND.identity, TO_OWNER)
+        effect = await h.w.effect(reply.effect_id)
+        assert effect["recipient_entity"] == OWNER
+
+
+@pytest.mark.parametrize("kind", ["record", "non_owner"])
+async def test_only_an_owner_delivery_can_be_the_owner_reply(broker_db_url, kind):
+    """D11: a committed effect that did not reach the owner never completes the goal."""
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEND))
+        lead = await h.lead(goal)
+        if kind == "record":
+            effect = await _committed_effect(h, goal, lead, PAY.identity)
+        else:
+            effect = await _committed_effect(h, goal, lead, SEND.identity, recipient_entity=uuid4())
+        reason = await refused(
+            h.call(
+                goal,
+                lead.token,
+                "goal__complete",
+                {"outcome": "completed", "reply_effect_id": str(effect)},
+            )
+        )
+        assert reason is Reason.RESOURCE
+        assert await h.goal_status(goal) == "running"
+
+
+async def test_settling_rechecks_that_the_reply_reached_the_owner(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEND))
+        lead = await h.lead(goal)
+        effect = await _committed_effect(h, goal, lead, SEND.identity, recipient_entity=uuid4())
+        # An outcome that bypassed goal.complete's check: resolve must not trust it.
+        await h.w.owner.execute(
+            "INSERT INTO switchboard.goal_outcomes (goal_id, invocation_id, outcome, "
+            "relied_effects, reply_effect_id) VALUES ($1, $2, 'completed', '{}', $3)",
+            goal,
+            lead.invocation_id,
+            effect,
+        )
+        await h.w.owner.execute(
+            "UPDATE switchboard.goals SET status = 'settling' WHERE id = $1", goal
+        )
+        await h.runner.supervise_once()
+        assert await h.goal_status(goal) == "partial"
+        failure = await h.w.owner.fetchval(
+            "SELECT delivery_failure FROM switchboard.goal_outcomes WHERE goal_id = $1", goal
+        )
+        assert failure == "reply_not_owner_delivery"
+
+
 async def test_a_completed_goal_settles_until_its_parked_effects_resolve(broker_db_url):
     async with harness(broker_db_url) as h:
         goal = await h.goal(_grant(NOTIFY), _grant(SEND))
@@ -805,6 +907,118 @@ async def test_an_exhausted_invocation_budget_ends_the_goal_budget_exhausted(bro
         h.host.script = [HostOutcome(failure=_retryable())]
         await h.lead(goal)
         await until(lambda: _equals(h.goal_status(goal), "budget_exhausted"))
+
+
+# -- D14: a runner that dies between ending a lead and launching its successor ----
+
+_RESUMING = RunnerConfig(renew_every=3600, lead_max_tokens=500, resume_grace_seconds=0)
+
+
+async def _crash_after(h: Harness, lead: Launch, step) -> None:
+    """Commit what the runner commits before ``_spawn``, then lose the process.
+
+    The old session ends with nothing for its supervisor to do: the ledger
+    already ended it, as a restarted runner would find it.
+    """
+    async with h.runner._txn() as ledger:
+        await step(ledger)
+    h.host.end(lead.invocation_id)
+    await until(lambda: len(h.runner._tasks) == 0)
+
+
+async def test_a_goal_left_recovering_by_a_dead_runner_gets_its_replacement(broker_db_url):
+    async with harness(broker_db_url, config=_RESUMING) as h:
+        goal = await h.goal(_grant(SEARCH))
+        old = await h.lead(goal)
+        await h.w.owner.execute(
+            "UPDATE switchboard.invocations SET lease_expires_at = now() - interval '1 second' "
+            "WHERE id = $1",
+            old.invocation_id,
+        )
+        await _crash_after(h, old, lambda ledger: ledger.expire(goal, old.invocation_id))
+        assert await h.goal_status(goal) == "recovering" and len(h.host.launches) == 1
+        await h.runner.supervise_once()
+        new = await h.launched(2)
+        row = await h.row(new.invocation_id)
+        assert (row["lead_epoch"], row["model_tier"], row["relaunch_of"]) == (1, "workhorse", None)
+        assert await h.goal_status(goal) == "running"
+        await h.runner.supervise_once()  # a live lead: nothing more to resume
+        assert len(h.host.launches) == 2
+
+
+async def test_a_goal_whose_escalation_outlived_its_runner_resumes_on_the_next_tier(
+    broker_db_url,
+):
+    async with harness(broker_db_url, config=_RESUMING) as h:
+        goal = await h.goal(_grant(SEARCH))
+        old = await h.lead(goal)
+
+        async def escalate(ledger):
+            principal = await ledger.broker.authenticate(goal, old.token)
+            await ledger.escalate(principal)
+
+        await _crash_after(h, old, escalate)
+        assert await h.goal_status(goal) == "running" and len(h.host.launches) == 1
+        await h.runner.supervise_once()
+        new = await h.launched(2)
+        assert new.model == "model-reason-a"
+        assert (await h.row(new.invocation_id))["model_tier"] == "reasoning"
+
+
+async def test_a_runtime_failure_without_calls_gets_its_one_relaunch_from_the_sweep(
+    broker_db_url,
+):
+    async with harness(broker_db_url, config=_RESUMING) as h:
+        goal = await h.goal(_grant(SEARCH))
+        old = await h.lead(goal)
+        await _crash_after(
+            h, old, lambda ledger: ledger.end(goal, old.invocation_id, "failed", "runtime_failure")
+        )
+        h.host.script = [HostOutcome(failure=_retryable())]  # the relaunch fails too
+        await h.runner.supervise_once()
+        relaunch = await h.launched(2)
+        assert (await h.row(relaunch.invocation_id))["relaunch_of"] == old.invocation_id
+        await until(lambda: _equals(h.goal_status(goal), "failed"))
+        await h.runner.supervise_once()
+        await until(lambda: len(h.runner._tasks) == 0)
+        assert len(h.host.launches) == 2  # one relaunch, never a second
+
+
+async def test_a_runtime_failure_after_a_call_ends_the_goal_from_the_sweep(broker_db_url):
+    async with harness(broker_db_url, config=_RESUMING) as h:
+        goal = await h.goal(_grant(SEARCH))
+        old = await h.lead(goal)
+        await h.w.broker.call(goal, old.token, SEARCH.identity, {})
+        await _crash_after(
+            h, old, lambda ledger: ledger.end(goal, old.invocation_id, "failed", "runtime_failure")
+        )
+        await h.runner.supervise_once()
+        assert await h.goal_status(goal) == "failed"
+        await until(lambda: len(h.runner._tasks) == 0)
+        assert len(h.host.launches) == 1
+
+
+async def test_a_lead_past_its_turns_ends_its_goal_budget_exhausted(broker_db_url):
+    async with harness(broker_db_url, config=_RESUMING) as h:
+        goal = await h.goal(_grant(SEARCH))
+        old = await h.lead(goal)
+        await _crash_after(
+            h, old, lambda ledger: ledger.end(goal, old.invocation_id, "failed", "turns_exhausted")
+        )
+        await h.runner.supervise_once()
+        assert await h.goal_status(goal) == "budget_exhausted"
+        assert len(h.host.launches) == 1
+
+
+async def test_a_leaderless_goal_inside_the_grace_is_left_to_its_runner(broker_db_url):
+    async with harness(broker_db_url) as h:  # default grace
+        goal = await h.goal(_grant(SEARCH))
+        old = await h.lead(goal)
+        await _crash_after(
+            h, old, lambda ledger: ledger.end(goal, old.invocation_id, "failed", "runtime_failure")
+        )
+        await h.runner.supervise_once()
+        assert await h.goal_status(goal) == "running" and len(h.host.launches) == 1
 
 
 # -- AC7: escalation climbs a finite ladder (D16) --------------------------------

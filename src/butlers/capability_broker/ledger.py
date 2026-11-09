@@ -37,6 +37,7 @@ from .contracts import (
     mint_token,
     token_hash,
 )
+from .recipients import live_owner
 
 # Effects a repeated call must not duplicate (D12): committed or unknown, plus
 # anything still in flight that could become either.
@@ -358,16 +359,22 @@ class BrokerLedger:
             # A dispatched call commits its intent before any byte leaves the
             # broker; a parked one stays requested until the domain parks it.
             status = "dispatched" if decision.disposition is Disposition.DISPATCH else "requested"
+            # D11: an owner delivery records the owner as its recipient; only
+            # such an effect can be a goal's owner reply.
+            owner = None
+            if capability.effect_class == "communicate" and recipient == "owner":
+                owner = await live_owner(self.connection)
             await self.connection.execute(
                 "INSERT INTO switchboard.effects "
-                "(id, goal_id, invocation_id, capability, args_digest, status) "
-                "VALUES ($1, $2, $3, $4, $5, $6)",
+                "(id, goal_id, invocation_id, capability, args_digest, status, recipient_entity) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7)",
                 effect_id,
                 principal.goal_id,
                 principal.invocation_id,
                 capability.identity,
                 args_digest,
                 status,
+                owner,
             )
         await self._charge(principal)
         return Reservation(
