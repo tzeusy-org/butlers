@@ -1,0 +1,94 @@
+--- a/packages/core/src/npm.ts
++++ b/packages/core/src/npm.ts
+@@ -152,4 +152,8 @@
+-      yield* Effect.tryPromise({
+-        try: () => seedDefaultPlugin(dir, input, Option.getOrUndefined(fixture)?.path ?? process.execPath),
+-        catch: () => new InstallFailedError({ dir, cause: "Installed default-plugin seed refused" }),
+-      })
++      // Local seed validation/copy must settle (including rollback) before interruption
++      // releases this flock. Its Promise has no abortable filesystem transaction.
++      yield* Effect.uninterruptible(
++        Effect.tryPromise({
++          try: () => seedDefaultPlugin(dir, input, Option.getOrUndefined(fixture)?.path ?? process.execPath),
++          catch: () => new InstallFailedError({ dir, cause: "Installed default-plugin seed refused" }),
++        }),
++      )
+--- a/packages/core/test/default-plugin-seed.test.ts
++++ b/packages/core/test/default-plugin-seed.test.ts
+@@ -5 +5 @@
+-import { Effect, Layer } from "effect"
++import { Effect, Layer, Fiber } from "effect"
+@@ -385,0 +386,73 @@
++
++for (const cancel of [false, true])
++  test(
++    "seed IO settles under npm flock before interruption=" + cancel,
++    async () => {
++      let entered!: () => void, release!: () => void
++      const enteredP = new Promise<void>((resolve) => {
++        entered = resolve
++      })
++      const gate = new Promise<void>((resolve) => {
++        release = resolve
++      })
++      const realOpen = fs.open
++      let intercepted = false,
++        writes = 0
++      const opened = spyOn(fs, "open").mockImplementation(async (file: any, ...args: any[]) => {
++        if (String(file).startsWith(dest + "/") && args[0] === "wx") {
++          writes++
++          if (!intercepted) {
++            intercepted = true
++            entered()
++            await gate
++          }
++        }
++        return realOpen(file, ...(args as [any]))
++      })
++      const layer = Npm.layerWith(exe).pipe(
++        Layer.provide(EffectFlock.layer),
++        Layer.provide(FSUtil.layer),
++        Layer.provide(Global.layerWith({ cache: path.join(root, "cache"), state: path.join(root, "state") })),
++        Layer.provide(NodeFileSystem.layer),
++      )
++      const fiber = Effect.runFork(
++        Effect.gen(function* () {
++          const npm = yield* Npm.Service
++          yield* npm.install(dest, add)
++        }).pipe(Effect.provide(layer)),
++      )
++      let settled = false
++      let cancellation: Promise<unknown> | undefined
++      try {
++        await Promise.race([
++          enteredP,
++          new Promise((_, reject) => setTimeout(() => reject(Error("first exclusive write gate unpositioned")), 2000)),
++        ])
++        if (cancel)
++          cancellation = Effect.runPromise(Fiber.interrupt(fiber)).then(() => {
++            settled = true
++          })
++        await new Promise((resolve) => setTimeout(resolve, 50))
++        expect(writes).toBe(1)
++        expect(await fs.readdir(path.join(root, "state/locks"))).toHaveLength(1)
++        expect(settled).toBe(false)
++      } finally {
++        release()
++        if (cancellation) await cancellation
++        else await Effect.runPromise(Fiber.join(fiber))
++        opened.mockRestore()
++      }
++      const writesAtSettlement = writes
++      await new Promise((resolve) => setTimeout(resolve, 30))
++      expect(writes).toBe(writesAtSettlement)
++      expect(writes).toBeGreaterThan(1)
++      expect(await fs.readdir(path.join(root, "state/locks"))).toEqual([])
++      expect(JSON.parse(await fs.readFile(path.join(dest, "package.json"), "utf8"))).toEqual({
++        private: true,
++        dependencies: roots,
++      })
++      expect(await fs.readFile(path.join(dest, "opencode.json"), "utf8")).toBe("{}\n")
++      expect(calls).toBe(0)
++    },
++    5000,
++  )

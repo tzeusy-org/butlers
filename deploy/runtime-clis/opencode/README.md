@@ -172,3 +172,14 @@ plugin/SDK/TUI graph, actual imports, native operation and final image closure.
 This is an off-by-default source foundation. Four-CLI, image, CNI, inventory,
 operational credential custody and activation acceptance remain separate and
 incomplete. It does not expose an alternate operator path or activate egress.
+
+The eleventh patch keeps the local default-seed validation/copy uninterruptible
+inside the existing npm flock. Its filesystem Promise must settle, including
+rollback on a failed copy, before interruption can release the lock; registry
+reification and native off-mode behavior retain their original semantics. Two
+positioned first-exclusive-write controls cover ordinary and interrupted copies,
+lock ownership until settlement, no later writes, complete output and preserved
+config. The 51 prior owning cases remain, for 53 passing source-bound cases.
+The real separate 141-package seed also passes the actual Npm.install seam with
+7,934 payload records checked and registry reification trapped. These are contained
+source/graph controls; the corrected compiled CLI and final image remain separate.

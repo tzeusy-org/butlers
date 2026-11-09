@@ -288,8 +288,24 @@
           "after_sha256": "9bfcf152aadfe625fbb9e038acd1ad8282e0a394717a70f362dfb325aec4a9af"
         }
       ]
+    },
+    {
+      "path": "patches/0011-settle-default-plugin-seed-before-lock-release.patch",
+      "sha256": "66581755e6a1364b38e92f70af413ed140f65ae289f747a15516e371946d08f6",
+      "files": [
+        {
+          "path": "packages/core/src/npm.ts",
+          "before_sha256": "5943bdaabd42fc817e2d0e2969dedeb4b18fa196175c46f693f80db019ed4c5f",
+          "after_sha256": "b7c8e6722b50a3533769e5da8369fa72ccc38e200fa5f34bd2b9da4bd33447b0"
+        },
+        {
+          "path": "packages/core/test/default-plugin-seed.test.ts",
+          "before_sha256": "9bfcf152aadfe625fbb9e038acd1ad8282e0a394717a70f362dfb325aec4a9af",
+          "after_sha256": "b7aeb5ab02798cb942d82ee7fcc4c6826d2b18e2defdfdeb413f00c1cd582e50"
+        }
+      ]
     }
   ],
-  "source_tree_sha256": "48d39c0392302b092b21d90b6beb613c7f212601f0413b83081ebef7dde57c9b",
+  "source_tree_sha256": "b6c5f8dec7460555610bfaa9fc2a9bfe578f763babdfbc800efca1fbb19f6cd7",
   "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches."
 }
