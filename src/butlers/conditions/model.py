@@ -106,7 +106,10 @@ class Instance:
     state: State = State.OPEN
     result: Tri = Tri.FALSE
     leaves: Mapping[str, Tri] = field(default_factory=dict)
-    cursors: Mapping[str, int] = field(default_factory=dict)
+    cursors: Mapping[str, int] = field(
+        default_factory=dict
+    )  # advancing high-water, receipts/resume
+    floor: Mapping[str, int] = field(default_factory=dict)  # immutable exclusive replay floor
     version: int = 0
 
     @property

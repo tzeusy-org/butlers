@@ -136,7 +136,7 @@ def advance(
             reason = "fired:clock_late"
     else:
         for ev in sorted(events, key=lambda e: (e.position, e.id)):
-            floor = inst.cursors.get(ev.source)
+            floor = inst.floor.get(ev.source)
             if ev.source not in inst.source_boundary or ev.at >= inst.expires_at:
                 continue  # undeclared source or post-expiry evidence never contributes
             if floor is not None and ev.position <= floor:

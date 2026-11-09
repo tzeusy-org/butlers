@@ -133,6 +133,7 @@ def _boundary(inst: Instance) -> tuple:
         inst.generation,
         inst.expires_at,
         tuple(inst.source_boundary),
+        tuple(sorted(inst.floor.items())),
     )
 
 
@@ -191,6 +192,7 @@ class ConditionEvaluator:
             generation=generation,
             leaves=initial_leaves(canonical, snapshot),
             cursors=dict(cursors or {}),
+            floor=dict(cursors or {}),
         )
         inst = replace(inst, result=combine(canonical, dict(inst.leaves)))
 

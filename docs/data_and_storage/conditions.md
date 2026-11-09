@@ -18,8 +18,10 @@ consumes `ConditionEvaluator.consume_fire`; it never evaluates predicates itself
   unmeasurable source is `unknown`, never `false`. Transition leaves ignore events that are
   late, retracted, retraction records, or older than 10 minutes. An `at` leaf crossed by a
   clock jump fires once (`fired:clock_late`) if the instance has not expired.
-- Events at or below an instance's per-source cursor are an exclusive replay bound: a rearm
-  that passes the prior generation's cursors cannot re-fire on its event. Expiry wins: an
+- Events at or below the instance's immutable per-source replay floor (the cursors given at
+  registration, part of its boundary) are ignored: a rearm that passes the prior generation's
+  cursors cannot re-fire on its event. The advancing `cursors` are high-water marks for
+  receipts and resume only; within a generation latching makes reordering safe. Expiry wins: an
   instance at or past `expires_at` expires before any event or clock fire is considered.
 - One fire intent exists per instance generation (`Instance.fire_key`); the instance row, the
   receipt and the intent commit in one store transaction. `FireIntent.event_id` is the

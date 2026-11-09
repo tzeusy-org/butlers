@@ -653,3 +653,19 @@ class StoreContract:
 
 class TestInMemoryStoreContract(StoreContract):
     pass
+
+
+class TestReplayFloorIsImmutable:
+    async def test_reordered_match_across_evaluate_calls_still_fires(self, evaluator):
+        await register(evaluator, DECISION)
+        unrelated = decision_ev(position=5, outcome="rejected")
+        first = await evaluator.evaluate("c1", [unrelated], now=NOW)
+        assert first.instance.state is State.OPEN
+        assert dict(first.instance.cursors) == {"goal.decision": 5}
+        late = await evaluator.evaluate("c1", [decision_ev(position=3)], now=NOW)
+        assert late.instance.state is State.FIRED
+
+    async def test_floor_is_part_of_the_immutable_boundary(self, evaluator):
+        await register(evaluator, DECISION, cursors={"goal.decision": 4})
+        with pytest.raises(RegistrationRefused):
+            await register(evaluator, DECISION, cursors={"goal.decision": 9})
