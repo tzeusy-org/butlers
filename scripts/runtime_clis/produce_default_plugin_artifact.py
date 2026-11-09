@@ -203,7 +203,6 @@ def pins() -> dict[str, str]:
         "scripts/runtime_clis/runtime_artifacts.py",
         "scripts/runtime_clis/install_system_artifacts.py",
         "deploy/runtime-clis/toolchains.json",
-        "deploy/runtime-clis/runtime-inputs.json",
         "deploy/runtime-clis/debian-system-inputs.json",
         *[
             DECLARATION + "/" + name
@@ -219,12 +218,14 @@ def declarations() -> tuple[dict, dict]:
     package = json.loads((source / "package.json").read_bytes())
     lock = json.loads((source / "package-lock.json").read_bytes())
     tools = json.loads((RECIPE / "deploy/runtime-clis/toolchains.json").read_bytes())
-    runtime = json.loads((RECIPE / "deploy/runtime-clis/runtime-inputs.json").read_bytes())
     if (
         manifest["schema"] != "butlers.default-plugin-build-inputs/v1"
         or manifest["target"] != helper("runtime_artifacts").TARGET
-        or manifest["node"]
-        != {**tools["node"], "tree_sha256": runtime["components"]["node"]["tree_sha256"]}
+        or {key: value for key, value in manifest["node"].items() if key != "tree_sha256"}
+        != tools["node"]
+        or not isinstance(manifest["node"]["tree_sha256"], str)
+        or len(manifest["node"]["tree_sha256"]) != 64
+        or any(c not in "0123456789abcdef" for c in manifest["node"]["tree_sha256"])
         or manifest["npm"] != tools["npm"]["version"]
         or {key: value for key, value in manifest["bun"].items() if key != "size"} != tools["bun"]
         or package["dependencies"] != DEPENDENCIES
@@ -306,6 +307,11 @@ def identity(manifest: dict) -> None:
         or any(home.iterdir())
     ):
         raise ValueError("plugin builder requires an empty owned home backing")
+    validate_node(manifest)
+
+
+def validate_node(manifest: dict) -> None:
+    """Bind only the complete declared Node input, never an enclosing output tree."""
     artifacts = helper("runtime_artifacts")
     if (
         digest(NODE / "bin/node") != manifest["node"]["binary_sha256"]

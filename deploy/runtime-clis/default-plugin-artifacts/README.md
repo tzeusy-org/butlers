@@ -67,3 +67,9 @@ positive import checks precede publication. Synthetic source tests establish
 these orchestration boundaries; actual public/offline builds, the selected
 OpenCode consumer, final component identity, installed native behavior and
 whole image delivery remain separate requirements.
+
+The producer binds Node through the exact official toolchain fields and the
+pinned complete Node tree in its own build inputs. It does not read or hash the
+enclosing runtime output manifest: the installed seed is part of OpenCode, so
+such an output-to-input dependency would make reproducible closure circular.
+All graph, mode, lifecycle, import and eight-field consumer checks remain.

@@ -702,3 +702,64 @@ def test_owned_command_settles_on_owner_signal(tmp_path, number, window):
                 os.killpg(owned, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+def test_declarations_and_provenance_ignore_unrelated_runtime_output_maps(tmp_path, monkeypatch):
+    import shutil
+
+    source = SCRIPTS.parents[1]
+    recipe = tmp_path / "recipe"
+    monkeypatch.setattr(producer, "RECIPE", source)
+    for name in producer.pins():
+        output = recipe / name
+        output.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / name, output)
+    unrelated = recipe / "deploy/runtime-clis/runtime-inputs.json"
+    original = json.loads((source / "deploy/runtime-clis/runtime-inputs.json").read_bytes())
+    producer.write_json(unrelated, original)
+    monkeypatch.setattr(producer, "RECIPE", recipe)
+    first = producer.declarations()
+    before = producer.provenance(first[0], producer.pins(), {})
+    original["components"]["opencode"]["tree_sha256"] = "a" * 64
+    producer.write_json(unrelated, original)
+    assert producer.declarations() == first
+    assert producer.provenance(first[0], producer.pins(), {}) == before
+    assert "deploy/runtime-clis/runtime-inputs.json" not in producer.pins()
+    assert producer.DECLARATION + "/build-inputs.json" in producer.pins()
+    unrelated.unlink()
+    assert producer.declarations() == first
+    assert producer.provenance(first[0], producer.pins(), {}) == before
+
+
+def test_node_identity_binds_complete_declared_tree_with_healthy_companion(tmp_path, monkeypatch):
+    monkeypatch.setattr(producer, "RECIPE", SCRIPTS.parents[1])
+    node = tmp_path / "node"
+    binary = node / "bin/node"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"fixed official binary stand-in")
+    binary.chmod(0o755)
+    npm = node / "lib/node_modules/npm/package.json"
+    npm.parent.mkdir(parents=True)
+    npm.write_text(json.dumps({"version": "10.9.9"}))
+    asset = node / "share/full-native-asset"
+    asset.parent.mkdir()
+    asset.write_bytes(b"complete original asset")
+    for path in [node, *node.rglob("*")]:
+        if path.is_dir():
+            path.chmod(0o755)
+        elif path != binary:
+            path.chmod(0o644)
+    declaration = {
+        "node": {
+            "binary_sha256": producer.digest(binary),
+            "tree_sha256": artifacts.tree_digest(artifacts.inventory(node, closed=True)),
+        },
+        "npm": "10.9.9",
+    }
+    monkeypatch.setattr(producer, "NODE", node)
+    producer.validate_node(declaration)
+    asset.write_bytes(b"wrong ancillary asset, same executable")
+    with pytest.raises(ValueError, match="complete official Node"):
+        producer.validate_node(declaration)
+    asset.write_bytes(b"complete original asset")
+    producer.validate_node(declaration)

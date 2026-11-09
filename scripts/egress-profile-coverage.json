@@ -5952,104 +5952,56 @@
     }
   },
   "bundles": {
-    "deploy/runtime-clis/npm-artifacts/build-inputs.json":
-        "dbef47f206c369c9c67186f6c79c8d4027b1e6541d619e134d478fc21ba7ed01",
-    "deploy/runtime-clis/npm-artifacts/patches/001-test-server-explicit-build-cache.patch":
-        "f312102780ef667473adeb7f54a55e355e160df1ba3f159d64247b25132698ed",
-    "deploy/runtime-clis/default-plugin-artifacts/build-inputs.json":
-        "16f855d08bb6b1d28ed15f9ebe4ecbe78d72b988429fb0b854aca3afb3ca9883",
-    "deploy/runtime-clis/default-plugin-artifacts/package.json":
-        "58a6703e5adc02602dd9e34ff4a4bac5a3352d4424918c290fa42d41eccf4e48",
-    "deploy/runtime-clis/default-plugin-artifacts/package-lock.json":
-        "022e2fa5b9db64a6a17e346aacf9d7da83d88f25bfc0a1967ab756ac0e0cccbc",
-    "deploy/runtime-clis/native-package-artifacts/build-inputs.json":
-        "52d9fb4ea28c0d49f56dd404280a358ccb85f729ada259e12fb1d72f37419e32",
-    "deploy/runtime-clis/codex/build-inputs.json":
-        "8886263cf441af7834f9a1e3f4d24cbd1c4c0474bf6e789f43c96ba9ed215b84",
-    "deploy/runtime-clis/codex/compiler-inputs.json":
-        "b8b8e3910b089d0622818620c090709884f1d0e1849c427a0dc98831360fd412",
-    "deploy/runtime-clis/opencode/patches/0010-seed-default-plugin-from-installed-artifact.patch":
-        "5fd2e4e8779c711dce3624d40a8e27f818e48090df3c3668f86072e5544de066",
-    "deploy/runtime-clis/opencode/patches/0011-settle-default-plugin-seed-before-lock-release.patch":
-        "66581755e6a1364b38e92f70af413ed140f65ae289f747a15516e371946d08f6",
-    "deploy/runtime-clis/python-artifacts/build-lock.toml":
-        "f02fb9ac77ff654765ea1ef97508e0a417b115e9b56e26285721cccae8047bb2",
-    "deploy/runtime-clis/runtime-inputs.json":
-        "9c88c359c490e9f6f34d23305a5391c6cda8792d83b682ceccc4fad28ff21a84",
-    "deploy/runtime-clis/builders.json":
-        "f7d83e9dcdeef94626d9e0dd81fa2db6222343824488c1e95b785ea0773b691b",
-    "deploy/runtime-clis/codex/patches/001-workspace-release-versions.patch":
-        "3a7260f09562f9046a5b8f99b45506f959fb2331e7512175f2ec9cda7536ca43",
-    "deploy/runtime-clis/codex/patches/002-explicit-http-executor.patch":
-        "06e728e1bed84b6e6460ea01040a5b1e080058bcc47ab11dd0d5b5aafa72bbe0",
-    "deploy/runtime-clis/codex/patches/003-explicit-websocket-executor.patch":
-        "23d303ca89c3b89a3520d7d5140b00b6c941c55fc1299eb1d956162e66bebe59",
-    "deploy/runtime-clis/codex/patches/004-bounded-selected-hop-errors.patch":
-        "7c0216178ec5ee2ea29cb9014ce7fc60ebb4dcd4e15d3a205411605212bdfc13",
-    "deploy/runtime-clis/codex/series.json":
-        "d476705b01d0b1818bdb4ad94109cf1a10147bbb950cbd384245f0215438bf8e",
-    "deploy/runtime-clis/debian-system-inputs.json":
-        "a42de4f1082b934775b2a36f24b9dcff29d6a7265f9255960c47ca4ee0cdcd28",
-    "deploy/runtime-clis/gemini/artifact-inputs.json":
-        "547bfaee9ac838c98f599c07c74595c2ec07ba3ae7fcf4e2fb6d13c913fcddbe",
-    "deploy/runtime-clis/gemini/patches/001-dependency-closure.patch":
-        "7bb2858d456ad4672bec0e72bb354fa398300f8105cfac7bc8f563833323c2bd",
-    "deploy/runtime-clis/gemini/patches/002-terminal-http-auth-executor.patch":
-        "9b851f3df99c53604b25ffe23e7661fdc9ce2027558f3f3742cc5f75ca6a9fb1",
-    "deploy/runtime-clis/gemini/patches/003-cached-adc-client-transports.patch":
-        "663d38bc13da48e54bf5551f5481bda6ab2f0d64be1840e49e7a94b23df76b33",
-    "deploy/runtime-clis/gemini/patches/004-pinned-external-account-sts.patch":
-        "f0b6b9bfd1f90dc04c3196d88e8893deb9d7e9bfb6a413fdbc1d4da3ef15af73",
-    "deploy/runtime-clis/gemini/series.json":
-        "1e4c4b87d9b77373421550a150c9738411b3744d250503c3cd82de03f95f4859",
-    "deploy/runtime-clis/google-auth-library/LICENSE.upstream":
-        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
-    "deploy/runtime-clis/google-auth-library/patches/001-explicit-sts-fetch-and-build-lock.patch":
-        "34b4f86c7dba4b68acb5cc6fa5c3842779dd950f8d4ac7319e5fc0975d469d76",
-    "deploy/runtime-clis/google-auth-library/series.json":
-        "0289b29e2ef500b6b639a2b3389d84f506f08f23c78b635baf7022de9321c690",
-    "deploy/runtime-clis/js-genai/patches/001-dependency-closure.patch":
-        "1ff2459f4bc9c559132fe1a74cbe837089029251972c01cf59a9c791f3e72606",
-    "deploy/runtime-clis/js-genai/patches/002-terminal-http-auth-executor.patch":
-        "20aae830cf9409032a12cfb5dc35dab8a3fde6bd505263da8edcd385bb366024",
-    "deploy/runtime-clis/js-genai/patches/003-websocket-executor.patch":
-        "a588e52f617fb4a44d1c866088bfb01b235ae2f077075fd61b90d6d30d83e0d0",
-    "deploy/runtime-clis/js-genai/series.json":
-        "8e1aa9b4c4e60cb92562a1efa6ec9061d52c8bdcb246d8f0ed1ce129cfa4c486",
-    "deploy/runtime-clis/opencode/LICENSE.upstream":
-        "625f0f619133f89bbbb2abe37369613dfa1885eba1e50d02170deb62bb42cb6b",
-    "deploy/runtime-clis/opencode/build-inputs.json":
-        "d57ecb70988fb2ce7bd52d94826a45d2e9a61eb71a5c89664c6ce5f00a32acd7",
-    "deploy/runtime-clis/opencode/patches/0001-request-auth-effect.patch":
-        "53d0e366679fa37424111666d136e29e6277227ee6ceca5a99a50fb5be59e1bf",
-    "deploy/runtime-clis/opencode/patches/0002-selected-websocket-and-startup.patch":
-        "bdf4516c30974ec30e982ad567dbedb14aa5b5c85a9ac9fb1af82f565d8d1e92",
-    "deploy/runtime-clis/opencode/patches/0003-complete-local-ui-inputs.patch":
-        "a8e33a75bec5dfd02931409b6e6099489c3b2d19f5a20fafba32a9199ff1f856",
-    "deploy/runtime-clis/opencode/patches/0004-redact-effect-websocket-errors.patch":
-        "2897562fff349e07962cd18e732ed779b7ee2bbb119588fa7e517ba2bce40c7a",
-    "deploy/runtime-clis/opencode/patches/0005-pin-original-ghostty-source.patch":
-        "a1b2cfced27ccee79e8cc19b377e3e46ecdafac607ae2756e8500ae310a389d2",
-    "deploy/runtime-clis/opencode/patches/0006-complete-selected-websocket-diagnostics.patch":
-        "27198fc160d0d685768ef5b3bb43e59a8cb893d89a9d7192519a078a8706884d",
-    "deploy/runtime-clis/opencode/patches/0007-redact-selected-url-credentials.patch":
-        "f6af8dc0c26ea1c0b73c06f89eaa98f075e8649bc6597a7c340941e22b5d07a6",
-    "deploy/runtime-clis/opencode/patches/0008-redact-json-escaped-credential-echoes.patch":
-        "96e40b94f1be5f56d09a92320f3a9046de3b67b5da3da3da645c686404790a84",
-    "deploy/runtime-clis/opencode/patches/0009-bound-selected-session-retries.patch":
-        "52d7dbb76dedec1c1056e928b6947d180ad1df4a955095f436fad94bcce96a92",
-    "deploy/runtime-clis/opencode/series.json":
-        "6c0f52c13ad4d359f08804b71f545ef70fe87f7bf1e26e556a03c56b9c199b61",
-    "deploy/runtime-clis/shared/egress.ts":
-        "c18a9d00ac0a4766aca736dc6e56c3f3b93c77e486b7be04b2a12b4b22817301",
-    "deploy/runtime-clis/shared/package-lock.json":
-        "006d3c715164a9444763d2c5d8fbcf3108b8961cd32c0dbd2466e9ae0958c27d",
-    "deploy/runtime-clis/shared/package.json":
-        "fae6ba695fe4f3d0d0da70829b3816441aa6ee7333a5f2402b271e29afb72fba",
-    "deploy/runtime-clis/shared/undici-private.d.ts":
-        "7151fafef798eb4c5da9235547c820dbf693f096d0f0d09778bb729aaa94442c",
-    "deploy/runtime-clis/toolchains.json":
-        "0a0d693219a11bf7df47561060f8467978ab1f9f9960bdd7598b205c4611c5e4"
+    "deploy/runtime-clis/builders.json": "f7d83e9dcdeef94626d9e0dd81fa2db6222343824488c1e95b785ea0773b691b",
+    "deploy/runtime-clis/codex/build-inputs.json": "8886263cf441af7834f9a1e3f4d24cbd1c4c0474bf6e789f43c96ba9ed215b84",
+    "deploy/runtime-clis/codex/compiler-inputs.json": "b8b8e3910b089d0622818620c090709884f1d0e1849c427a0dc98831360fd412",
+    "deploy/runtime-clis/codex/patches/001-workspace-release-versions.patch": "3a7260f09562f9046a5b8f99b45506f959fb2331e7512175f2ec9cda7536ca43",
+    "deploy/runtime-clis/codex/patches/002-explicit-http-executor.patch": "06e728e1bed84b6e6460ea01040a5b1e080058bcc47ab11dd0d5b5aafa72bbe0",
+    "deploy/runtime-clis/codex/patches/003-explicit-websocket-executor.patch": "23d303ca89c3b89a3520d7d5140b00b6c941c55fc1299eb1d956162e66bebe59",
+    "deploy/runtime-clis/codex/patches/004-bounded-selected-hop-errors.patch": "7c0216178ec5ee2ea29cb9014ce7fc60ebb4dcd4e15d3a205411605212bdfc13",
+    "deploy/runtime-clis/codex/series.json": "d476705b01d0b1818bdb4ad94109cf1a10147bbb950cbd384245f0215438bf8e",
+    "deploy/runtime-clis/debian-system-inputs.json": "a42de4f1082b934775b2a36f24b9dcff29d6a7265f9255960c47ca4ee0cdcd28",
+    "deploy/runtime-clis/default-plugin-artifacts/build-inputs.json": "16f855d08bb6b1d28ed15f9ebe4ecbe78d72b988429fb0b854aca3afb3ca9883",
+    "deploy/runtime-clis/default-plugin-artifacts/package-lock.json": "022e2fa5b9db64a6a17e346aacf9d7da83d88f25bfc0a1967ab756ac0e0cccbc",
+    "deploy/runtime-clis/default-plugin-artifacts/package.json": "58a6703e5adc02602dd9e34ff4a4bac5a3352d4424918c290fa42d41eccf4e48",
+    "deploy/runtime-clis/gemini/artifact-inputs.json": "547bfaee9ac838c98f599c07c74595c2ec07ba3ae7fcf4e2fb6d13c913fcddbe",
+    "deploy/runtime-clis/gemini/patches/001-dependency-closure.patch": "7bb2858d456ad4672bec0e72bb354fa398300f8105cfac7bc8f563833323c2bd",
+    "deploy/runtime-clis/gemini/patches/002-terminal-http-auth-executor.patch": "9b851f3df99c53604b25ffe23e7661fdc9ce2027558f3f3742cc5f75ca6a9fb1",
+    "deploy/runtime-clis/gemini/patches/003-cached-adc-client-transports.patch": "663d38bc13da48e54bf5551f5481bda6ab2f0d64be1840e49e7a94b23df76b33",
+    "deploy/runtime-clis/gemini/patches/004-pinned-external-account-sts.patch": "f0b6b9bfd1f90dc04c3196d88e8893deb9d7e9bfb6a413fdbc1d4da3ef15af73",
+    "deploy/runtime-clis/gemini/series.json": "1e4c4b87d9b77373421550a150c9738411b3744d250503c3cd82de03f95f4859",
+    "deploy/runtime-clis/google-auth-library/LICENSE.upstream": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "deploy/runtime-clis/google-auth-library/patches/001-explicit-sts-fetch-and-build-lock.patch": "34b4f86c7dba4b68acb5cc6fa5c3842779dd950f8d4ac7319e5fc0975d469d76",
+    "deploy/runtime-clis/google-auth-library/series.json": "0289b29e2ef500b6b639a2b3389d84f506f08f23c78b635baf7022de9321c690",
+    "deploy/runtime-clis/js-genai/patches/001-dependency-closure.patch": "1ff2459f4bc9c559132fe1a74cbe837089029251972c01cf59a9c791f3e72606",
+    "deploy/runtime-clis/js-genai/patches/002-terminal-http-auth-executor.patch": "20aae830cf9409032a12cfb5dc35dab8a3fde6bd505263da8edcd385bb366024",
+    "deploy/runtime-clis/js-genai/patches/003-websocket-executor.patch": "a588e52f617fb4a44d1c866088bfb01b235ae2f077075fd61b90d6d30d83e0d0",
+    "deploy/runtime-clis/js-genai/series.json": "8e1aa9b4c4e60cb92562a1efa6ec9061d52c8bdcb246d8f0ed1ce129cfa4c486",
+    "deploy/runtime-clis/native-package-artifacts/build-inputs.json": "52d9fb4ea28c0d49f56dd404280a358ccb85f729ada259e12fb1d72f37419e32",
+    "deploy/runtime-clis/npm-artifacts/build-inputs.json": "dbef47f206c369c9c67186f6c79c8d4027b1e6541d619e134d478fc21ba7ed01",
+    "deploy/runtime-clis/npm-artifacts/patches/001-test-server-explicit-build-cache.patch": "f312102780ef667473adeb7f54a55e355e160df1ba3f159d64247b25132698ed",
+    "deploy/runtime-clis/opencode/LICENSE.upstream": "625f0f619133f89bbbb2abe37369613dfa1885eba1e50d02170deb62bb42cb6b",
+    "deploy/runtime-clis/opencode/build-inputs.json": "d57ecb70988fb2ce7bd52d94826a45d2e9a61eb71a5c89664c6ce5f00a32acd7",
+    "deploy/runtime-clis/opencode/component-inputs.json": "5813a2e506d4bcedb6bcf3e95f385b527e46d293df745ced91b8967799b4a9b8",
+    "deploy/runtime-clis/opencode/patches/0001-request-auth-effect.patch": "53d0e366679fa37424111666d136e29e6277227ee6ceca5a99a50fb5be59e1bf",
+    "deploy/runtime-clis/opencode/patches/0002-selected-websocket-and-startup.patch": "bdf4516c30974ec30e982ad567dbedb14aa5b5c85a9ac9fb1af82f565d8d1e92",
+    "deploy/runtime-clis/opencode/patches/0003-complete-local-ui-inputs.patch": "a8e33a75bec5dfd02931409b6e6099489c3b2d19f5a20fafba32a9199ff1f856",
+    "deploy/runtime-clis/opencode/patches/0004-redact-effect-websocket-errors.patch": "2897562fff349e07962cd18e732ed779b7ee2bbb119588fa7e517ba2bce40c7a",
+    "deploy/runtime-clis/opencode/patches/0005-pin-original-ghostty-source.patch": "a1b2cfced27ccee79e8cc19b377e3e46ecdafac607ae2756e8500ae310a389d2",
+    "deploy/runtime-clis/opencode/patches/0006-complete-selected-websocket-diagnostics.patch": "27198fc160d0d685768ef5b3bb43e59a8cb893d89a9d7192519a078a8706884d",
+    "deploy/runtime-clis/opencode/patches/0007-redact-selected-url-credentials.patch": "f6af8dc0c26ea1c0b73c06f89eaa98f075e8649bc6597a7c340941e22b5d07a6",
+    "deploy/runtime-clis/opencode/patches/0008-redact-json-escaped-credential-echoes.patch": "96e40b94f1be5f56d09a92320f3a9046de3b67b5da3da3da645c686404790a84",
+    "deploy/runtime-clis/opencode/patches/0009-bound-selected-session-retries.patch": "52d7dbb76dedec1c1056e928b6947d180ad1df4a955095f436fad94bcce96a92",
+    "deploy/runtime-clis/opencode/patches/0010-seed-default-plugin-from-installed-artifact.patch": "5fd2e4e8779c711dce3624d40a8e27f818e48090df3c3668f86072e5544de066",
+    "deploy/runtime-clis/opencode/patches/0011-settle-default-plugin-seed-before-lock-release.patch": "66581755e6a1364b38e92f70af413ed140f65ae289f747a15516e371946d08f6",
+    "deploy/runtime-clis/opencode/series.json": "6c0f52c13ad4d359f08804b71f545ef70fe87f7bf1e26e556a03c56b9c199b61",
+    "deploy/runtime-clis/python-artifacts/build-lock.toml": "f02fb9ac77ff654765ea1ef97508e0a417b115e9b56e26285721cccae8047bb2",
+    "deploy/runtime-clis/runtime-inputs.json": "9c88c359c490e9f6f34d23305a5391c6cda8792d83b682ceccc4fad28ff21a84",
+    "deploy/runtime-clis/shared/egress.ts": "c18a9d00ac0a4766aca736dc6e56c3f3b93c77e486b7be04b2a12b4b22817301",
+    "deploy/runtime-clis/shared/package-lock.json": "006d3c715164a9444763d2c5d8fbcf3108b8961cd32c0dbd2466e9ae0958c27d",
+    "deploy/runtime-clis/shared/package.json": "fae6ba695fe4f3d0d0da70829b3816441aa6ee7333a5f2402b271e29afb72fba",
+    "deploy/runtime-clis/shared/undici-private.d.ts": "7151fafef798eb4c5da9235547c820dbf693f096d0f0d09778bb729aaa94442c",
+    "deploy/runtime-clis/toolchains.json": "0a0d693219a11bf7df47561060f8467978ab1f9f9960bdd7598b205c4611c5e4"
   },
   "bundle_policy": {
     "scope": "pinned-source-review-required",
@@ -6057,67 +6009,36 @@
     "limits": "bundle digest drift is detected, not parsed upstream-host completeness or installed-client/runtime conformance"
   },
   "topology": {
-    "deploy/helm/butlers/templates/_helpers.tpl":
-        "e163a20ff26700605813561399421bbd8df97f25ebefa717fbf15a2faf3e8c67",
-    "deploy/helm/butlers/templates/butlers-control.yaml":
-        "7c464148f4fc163bc9d088f5215fb465fb0fc62ef22b332e241030edf804d9ac",
-    "deploy/helm/butlers/templates/butlers-up.yaml":
-        "0f8e9cfc9acb3fa99481f378717ccccbae29177fccfa93f3b55485796fc57181",
-    "deploy/helm/butlers/templates/connector-podmonitor.yaml":
-        "d910cfcf8a4ae5b79dc712e8f050fde764ef37f10d462dd63a2041d391d5c03a",
-    "deploy/helm/butlers/templates/connectors.yaml":
-        "3b7defec41e80ef38d231d1b2032a89305ec731e9199a3a7cceb012d2e886eaf",
-    "deploy/helm/butlers/templates/cronjobs.yaml":
-        "174eccfe628196cc18d86b6175b4284301d5adb67169e1751313505d12b19697",
-    "deploy/helm/butlers/templates/dashboard-api.yaml":
-        "17ef7a8bb0d543707fc0e9e821dd926978eac957e11b2dc4f7d6ef3aecd91b81",
-    "deploy/helm/butlers/templates/egress-gateway.yaml":
-        "46726ddc9aa6cb92b69054cca56e5772923848af373dc68022d239cf8f4544bd",
-    "deploy/helm/butlers/templates/egress-profiles.yaml":
-        "aaf002d7b4559805319cee1324d5a283fd596455672bf10cdd8d9e70d8e627f1",
-    "deploy/helm/butlers/templates/externalsecret-local.yaml":
-        "e79d9c637b30444fa5583290494a0543638466541bc8462563e5038bd6c9df94",
-    "deploy/helm/butlers/templates/externalsecret.yaml":
-        "6d3d001e0f8891c6a9469d8a3f0f058b52deefa619b99b8de96d16db29aa8b8f",
-    "deploy/helm/butlers/templates/frontend.yaml":
-        "b0e580a6affd00a1d9d929ee04c6a58b64dce0ca7789f5c2c7dbca74d6d388bd",
-    "deploy/helm/butlers/templates/networkpolicy.yaml":
-        "6aa1ca4f158d1a61c0f21d2f67b10b0ab446f2cdd7188fc9426edc72e0774bdc",
-    "deploy/helm/butlers/templates/pvc.yaml":
-        "1f1d1883011f76f59a4175544361ce6af8874399081857c36929196f712459f3",
-    "deploy/helm/butlers/templates/session-host.yaml":
-        "73c7ce19e39bce54430a27b370440594f651c76d2460c1db1633400da32688ce",
-    "deploy/helm/butlers/templates/tracker-egress.yaml":
-        "da5c9d1b5636373dc93e8259fa73c8b1955f23971c02a322a61a0c3fca16366c",
-    "roster/chronicler/butler.toml":
-        "98062af177c1697c45d75a69b243395f1f63a9486c3508f3559d28f8d904dd35",
-    "roster/concierge/butler.toml":
-        "dfb76df841bd011cdb0df4a7c58b0969c6de1de156ab04ab2c6bd8b5d77c4278",
-    "roster/education/butler.toml":
-        "5d1c0c1c7247985fbaebed2bdf169da7c89883ab4b3650bcfb7184646e2c2565",
-    "roster/finance/butler.toml":
-        "27e21f98735e68b89cb3833418df5747bf25fa28bd9e05c9a5f13cc5b7d85018",
-    "roster/general/butler.toml":
-        "f0946a126d7d2e42b2585fb0c2f2ae8ffa867056b59a724d81aa32dabcb69fe5",
-    "roster/health/butler.toml":
-        "db0711fa87c18cea64b86ef3cf59f402a3988d01c12f152e17ea0bac30375f20",
-    "roster/home/butler.toml":
-        "b3bec5a8dc4a80062534280da091dc14d78f154f872aac642b27cd5719ebf5d9",
-    "roster/lifestyle/butler.toml":
-        "4485479a800ecc7375493d707e06c91039580a33b857852db4a253229a3d443b",
-    "roster/messenger/butler.toml":
-        "ae5900295afd06662c810de34693c14252d94ba6d28416699cddb79a786ec5f4",
-    "roster/qa/butler.toml":
-        "1846bef76733ba6f7f800a59fb9131a3a6b38a180727c95bc7f86c30abb61821",
-    "roster/relationship/butler.toml":
-        "394fa84df45272ac44ba8a2149bf329bbaafe0e5a619a34e5112aa69a6d77d0f",
-    "roster/switchboard/butler.toml":
-        "32aa27e2069b9af076099b992a268e2052bd1ec5c7f60a5338d0622ea2af9c6d",
-    "roster/travel/butler.toml":
-        "7acadf31e6a30e5a1007f0c0a64cfc8c97aa58a1dea5aafd3042707078c54fcc",
-    "src/butlers/connector_catalog.py":
-        "f20b49d2d0bc61896b6734434a7df49b0004fa548c6d98155cdf860497bc7811",
-    "src/butlers/modules/__init__.py":
-        "60b4c75a4e3c996e431e298698161bc209d1f7c7d27c6113c2e07e893144a736"
+    "deploy/helm/butlers/templates/_helpers.tpl": "e163a20ff26700605813561399421bbd8df97f25ebefa717fbf15a2faf3e8c67",
+    "deploy/helm/butlers/templates/butlers-control.yaml": "7c464148f4fc163bc9d088f5215fb465fb0fc62ef22b332e241030edf804d9ac",
+    "deploy/helm/butlers/templates/butlers-up.yaml": "0f8e9cfc9acb3fa99481f378717ccccbae29177fccfa93f3b55485796fc57181",
+    "deploy/helm/butlers/templates/connector-podmonitor.yaml": "d910cfcf8a4ae5b79dc712e8f050fde764ef37f10d462dd63a2041d391d5c03a",
+    "deploy/helm/butlers/templates/connectors.yaml": "3b7defec41e80ef38d231d1b2032a89305ec731e9199a3a7cceb012d2e886eaf",
+    "deploy/helm/butlers/templates/cronjobs.yaml": "174eccfe628196cc18d86b6175b4284301d5adb67169e1751313505d12b19697",
+    "deploy/helm/butlers/templates/dashboard-api.yaml": "17ef7a8bb0d543707fc0e9e821dd926978eac957e11b2dc4f7d6ef3aecd91b81",
+    "deploy/helm/butlers/templates/egress-gateway.yaml": "46726ddc9aa6cb92b69054cca56e5772923848af373dc68022d239cf8f4544bd",
+    "deploy/helm/butlers/templates/egress-profiles.yaml": "aaf002d7b4559805319cee1324d5a283fd596455672bf10cdd8d9e70d8e627f1",
+    "deploy/helm/butlers/templates/externalsecret-local.yaml": "e79d9c637b30444fa5583290494a0543638466541bc8462563e5038bd6c9df94",
+    "deploy/helm/butlers/templates/externalsecret.yaml": "6d3d001e0f8891c6a9469d8a3f0f058b52deefa619b99b8de96d16db29aa8b8f",
+    "deploy/helm/butlers/templates/frontend.yaml": "b0e580a6affd00a1d9d929ee04c6a58b64dce0ca7789f5c2c7dbca74d6d388bd",
+    "deploy/helm/butlers/templates/networkpolicy.yaml": "6aa1ca4f158d1a61c0f21d2f67b10b0ab446f2cdd7188fc9426edc72e0774bdc",
+    "deploy/helm/butlers/templates/pvc.yaml": "1f1d1883011f76f59a4175544361ce6af8874399081857c36929196f712459f3",
+    "deploy/helm/butlers/templates/session-host.yaml": "73c7ce19e39bce54430a27b370440594f651c76d2460c1db1633400da32688ce",
+    "deploy/helm/butlers/templates/tracker-egress.yaml": "da5c9d1b5636373dc93e8259fa73c8b1955f23971c02a322a61a0c3fca16366c",
+    "roster/chronicler/butler.toml": "98062af177c1697c45d75a69b243395f1f63a9486c3508f3559d28f8d904dd35",
+    "roster/concierge/butler.toml": "dfb76df841bd011cdb0df4a7c58b0969c6de1de156ab04ab2c6bd8b5d77c4278",
+    "roster/education/butler.toml": "5d1c0c1c7247985fbaebed2bdf169da7c89883ab4b3650bcfb7184646e2c2565",
+    "roster/finance/butler.toml": "27e21f98735e68b89cb3833418df5747bf25fa28bd9e05c9a5f13cc5b7d85018",
+    "roster/general/butler.toml": "f0946a126d7d2e42b2585fb0c2f2ae8ffa867056b59a724d81aa32dabcb69fe5",
+    "roster/health/butler.toml": "db0711fa87c18cea64b86ef3cf59f402a3988d01c12f152e17ea0bac30375f20",
+    "roster/home/butler.toml": "b3bec5a8dc4a80062534280da091dc14d78f154f872aac642b27cd5719ebf5d9",
+    "roster/lifestyle/butler.toml": "4485479a800ecc7375493d707e06c91039580a33b857852db4a253229a3d443b",
+    "roster/messenger/butler.toml": "ae5900295afd06662c810de34693c14252d94ba6d28416699cddb79a786ec5f4",
+    "roster/qa/butler.toml": "1846bef76733ba6f7f800a59fb9131a3a6b38a180727c95bc7f86c30abb61821",
+    "roster/relationship/butler.toml": "394fa84df45272ac44ba8a2149bf329bbaafe0e5a619a34e5112aa69a6d77d0f",
+    "roster/switchboard/butler.toml": "32aa27e2069b9af076099b992a268e2052bd1ec5c7f60a5338d0622ea2af9c6d",
+    "roster/travel/butler.toml": "7acadf31e6a30e5a1007f0c0a64cfc8c97aa58a1dea5aafd3042707078c54fcc",
+    "src/butlers/connector_catalog.py": "f20b49d2d0bc61896b6734434a7df49b0004fa548c6d98155cdf860497bc7811",
+    "src/butlers/modules/__init__.py": "60b4c75a4e3c996e431e298698161bc209d1f7c7d27c6113c2e07e893144a736"
   }
 }
