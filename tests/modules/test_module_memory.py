@@ -1766,7 +1766,9 @@ class TestOwnedRuntimePools:
         try:
             await module.on_startup(MemoryModuleConfig(memory_schema="chronicler_mem"), primary)
             assert module._memory_db.role == "butler_chronicler_rw"
-            assert pools[1][1]["server_settings"] == {"search_path": "chronicler_mem,public"}
+            settings = pools[1][1]["server_settings"]
+            assert settings["search_path"] == "chronicler_mem,public"
+            assert {"tcp_keepalives_idle", "tcp_user_timeout"} <= settings.keys()
             connection.reset_mock()
             await pools[1][1]["setup"](connection)
             await pools[1][1]["setup"](connection)
