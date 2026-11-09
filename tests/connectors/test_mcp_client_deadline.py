@@ -165,7 +165,7 @@ class _Text:
 
 def _client(monkeypatch, *fakes: _Fake, call: float = 0.05, connect: float = 0.05):
     pending = list(fakes)
-    monkeypatch.setattr(mcp_client, "MCPClient", lambda url, *, name: pending.pop(0))
+    monkeypatch.setattr(mcp_client, "MCPClient", lambda url, *, name, **_kwargs: pending.pop(0))
     return CachedMCPClient(
         "http://switchboard/sse", client_name="test", call_timeout_s=call, connect_timeout_s=connect
     )
@@ -286,3 +286,26 @@ async def test_a_real_cancel_during_the_deadline_stays_a_cancel(monkeypatch) -> 
     with pytest.raises(asyncio.CancelledError):
         await call
     assert hung.closed == 0
+
+
+async def test_the_initialize_handshake_gets_the_connect_deadline(monkeypatch) -> None:
+    """fastmcp's ``initialize`` has no deadline by default (bu-dhloi1.246); the client passes
+    its own connect deadline so the handshake ends and cleans up by itself."""
+    seen: dict[str, Any] = {}
+
+    class _Stub:
+        async def __aenter__(self) -> _Stub:
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    def factory(url: str, *, name: str, **kwargs: Any) -> _Stub:
+        seen.update(kwargs)
+        return _Stub()
+
+    monkeypatch.setattr(mcp_client, "MCPClient", factory)
+    client = CachedMCPClient("http://switchboard/sse", connect_timeout_s=7.0)
+    await client._connect()
+
+    assert seen == {"init_timeout": 7.0}
