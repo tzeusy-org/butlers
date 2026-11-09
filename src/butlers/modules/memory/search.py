@@ -6,6 +6,7 @@ All functions accept an asyncpg connection pool and return ranked results.
 
 from __future__ import annotations
 
+import logging
 import math
 import uuid
 from datetime import UTC, datetime
@@ -22,6 +23,8 @@ if TYPE_CHECKING:
     from asyncpg import Pool
 
 from butlers.modules.memory.search_vector import preprocess_search_query
+
+logger = logging.getLogger(__name__)
 
 _VALID_TABLES = frozenset({"episodes", "facts", "rules"})
 # Tables that support scope filtering (facts/rules use `scope` column).
@@ -758,14 +761,18 @@ async def _bump_reference_counts(pool: Pool, results: list[dict]) -> None:
     rule_ids = [r["id"] for r in results if r["memory_type"] == "rule"]
     if not fact_ids and not rule_ids:
         return
-    await pool.execute(
-        "WITH f AS (UPDATE facts SET reference_count = reference_count + 1, "
-        "last_referenced_at = now() WHERE id = ANY($1::uuid[])), "
-        "r AS (UPDATE rules SET reference_count = reference_count + 1, "
-        "last_referenced_at = now() WHERE id = ANY($2::uuid[])) SELECT 1",
-        fact_ids,
-        rule_ids,
-    )
+    # Best effort: a deadlock with another multi-row writer must not fail the recall itself.
+    try:
+        await pool.execute(
+            "WITH f AS (UPDATE facts SET reference_count = reference_count + 1, "
+            "last_referenced_at = now() WHERE id = ANY($1::uuid[])), "
+            "r AS (UPDATE rules SET reference_count = reference_count + 1, "
+            "last_referenced_at = now() WHERE id = ANY($2::uuid[])) SELECT 1",
+            fact_ids,
+            rule_ids,
+        )
+    except Exception:  # noqa: BLE001 - reference counts are bookkeeping, not the answer
+        logger.warning("could not bump memory reference counts", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

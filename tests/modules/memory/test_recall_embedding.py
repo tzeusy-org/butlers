@@ -169,3 +169,12 @@ async def test_a_caller_supplied_embedding_is_not_recomputed(searches):
     engine = MagicMock()
     await _search.recall(_pool(), "topic", engine, read_policy=POLICY, query_embedding=[0.5] * 384)
     engine.embed.assert_not_called()
+
+
+async def test_reference_bump_failure_does_not_fail_recall(caplog):
+    # A deadlock with another multi-row writer must not fail memory_context.
+    pool = AsyncMock()
+    pool.execute.side_effect = RuntimeError("deadlock detected")
+    with caplog.at_level("WARNING"):
+        await _search._bump_reference_counts(pool, [{"id": uuid.uuid4(), "memory_type": "fact"}])
+    assert "reference" in caplog.text.lower()
