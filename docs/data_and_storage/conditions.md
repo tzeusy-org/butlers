@@ -53,6 +53,9 @@ re-reads the winner's fired row; `insert_instance` is `ON CONFLICT DO NOTHING RE
 - Serialisation failures, deadlocks and a lost CAS raise `StoreConflict` (the service retries);
   any other driver error raises `ConnectionError`, which the service reports as
   `system.dep.conditions` and surfaces as `ConditionsUnavailable`.
+- Instance and goal ids must be 1..128 characters; `register` refuses others for both stores. A
+  row the SQL constraints still refuse (`IntegrityConstraintViolationError`) raises
+  `RegistrationRefused`, never an outage report.
 - JSON travels as text, so the store works with or without the repository jsonb codec.
 - Rollback: `core_323` downgrade drops the tables only for the last installed schema chain and
   refuses while any instance exists, preserving receipts and intents.

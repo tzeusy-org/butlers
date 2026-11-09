@@ -18,6 +18,7 @@ import pytest
 from butlers.conditions import (
     ConditionEvaluator,
     ConditionsUnavailable,
+    RegistrationRefused,
     State,
 )
 from butlers.conditions.sql import PostgresConditionStore
@@ -90,6 +91,16 @@ class TestPostgresStoreContract(StoreContract):
 
     async def intent_count(self, store) -> int:
         return await self.owner.fetchval("SELECT count(*) FROM public.condition_fire_intents")
+
+    async def instance_count(self, store) -> int:
+        return await self.owner.fetchval("SELECT count(*) FROM public.condition_instances")
+
+    async def test_integrity_violation_is_a_refusal_not_an_outage(self):
+        # Backstop: a row the SQL CHECKs refuse that service validation did not catch.
+        store, inst = await self.seeded()
+        with pytest.raises(RegistrationRefused):
+            async with store.transaction() as tx:
+                await tx.insert_instance(replace(inst, id="i" * 129))
 
     async def receipt_reasons(self, store) -> list[str]:
         rows = await self.owner.fetch("SELECT reason FROM public.condition_receipts ORDER BY id")

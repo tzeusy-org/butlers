@@ -29,7 +29,7 @@ import asyncpg
 from asyncpg.pool import PoolConnectionProxy
 
 from butlers.conditions.model import FireIntent, Instance, Receipt, State, Tri
-from butlers.conditions.service import StoreConflict
+from butlers.conditions.service import RegistrationRefused, StoreConflict
 
 _INSTANCE_COLUMNS = (
     "id, goal_id, predicate::text AS predicate, predicate_digest, grant_digest, "
@@ -225,6 +225,11 @@ class PostgresConditionStore:
                 yield _SqlTx(connection)
         except (asyncpg.SerializationError, asyncpg.DeadlockDetectedError) as exc:
             raise StoreConflict(str(exc)) from exc
+        except asyncpg.IntegrityConstraintViolationError as exc:
+            # A CHECK/NOT NULL/FK/unique refusal is a refused row, not a dependency outage.
+            raise RegistrationRefused(
+                f"condition store refused the row: {getattr(exc, 'constraint_name', None)}"
+            ) from exc
         except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError) as exc:
             if isinstance(exc, ConnectionError):
                 raise
