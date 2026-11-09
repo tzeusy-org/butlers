@@ -27,6 +27,7 @@ serialises with Stop.
 | `models.py` | `ModelLadders`: per-role tier ladders; `qualifies` / `next_tier` |
 | `tools.py` | `GoalTools`: the `goal__*` and `context__search` MCP tools, listed by invocation depth |
 | `context_search.py` | `ContextSearch`: the closed query, grant-scoped fan-out, fusion and the bounded envelope |
+| `guidance.py` | `Guidance`: `guidance.search` / `guidance.load` over per-domain `GuidanceSource`s |
 | `contracts.py` | `SessionHost` protocol, `Launch`, `HostOutcome`, `LaunchContext`, `LaunchFacts`, prompt-composer protocol |
 | `packet.py` | `PacketComposer`: the four-section starting-context packet |
 | `control_plane.py` | `GoalRuntime`: admission to launch, the periodic sweep, owner Stop; `GoalRuntimeSwitch` |
@@ -96,8 +97,36 @@ capability and never lists one. The runner serves these tools on the same per-go
 | `goal__escalate` | lead | Hand the goal to a fresh lead on the next ladder tier |
 | `goal__return` | child | Return a result validated against the brief's `result_schema` |
 | `context__search` | lead, child | Grant-scoped, read-pure recall (see below); served only when a `ContextSearch` is configured |
+| `guidance__search`, `guidance__load` | lead, child | Find, and load by `<domain>:<name>` reference, the domain guidance the grant covers (see below); served only when a `Guidance` is configured |
 
 Every goal-tool call is charged against the goal budget and the caller's invocation share.
+
+### Domain guidance (D2, D8; M4)
+
+`Guidance` (`guidance.py`) serves a domain's guidance documents (its `CLAUDE.md` and skills,
+versioned) through `GuidanceSource`s, one per domain. It follows `context.search` throughout:
+
+- **Admission.** One transaction authenticates, checks the live catalog, refuses an exposed
+  reader or a third-party-origin goal (`POLICY`), finds the domains the grant covers (any
+  granted capability the catalog lists at the caller's depth, in a domain with a source) and
+  charges one call (`BUDGET` when spent), all before a source is asked. A child reaches only its
+  own grant's domains, whatever its brief names.
+- **Closed arguments.** `guidance__search` takes `query` and optional `k` (1-20);
+  `guidance__load` takes one `ref`, `<domain>:<name>`, as search returns it and a brief's
+  `guidance_refs` name it. A malformed reference, a domain outside the grant (refused before the
+  charge) or a name its domain does not know (after it) is refused `RESOURCE`.
+- **Trust.** Only `owner` or `owner_correction` text that is provably untainted is returned
+  (excerpt on search, bounded text on load, with title and version). Anything else is a bare
+  reference with its authority and taint, never its text, title or version.
+- **Closed references.** A reference reaches the model on every hit, bare ones included, so a
+  domain is a lowercase slug (`[a-z][a-z0-9_]{0,31}`, checked when `Guidance` is built) and a
+  name is `[A-Za-z0-9][A-Za-z0-9._/-]{0,127}`: no space, newline, colon or markup. A source
+  returning any other name fails, like any malformed answer; a `ref` naming one is refused
+  `RESOURCE` before the charge and before a source is asked.
+- **Read-only.** No effect row. Inlined guidance joins the reader as owner data (D6). A failing
+  source is `degraded` on search; all failing, or a failing load, is `UNAVAILABLE`.
+- **Sources see no caller.** A source gets the query or name and a `GuidanceReader` (depth
+  only), never a token, goal or grant. It must not record the read.
 
 ### Joined replies (inbox)
 
@@ -148,6 +177,10 @@ namespace is reserved like `goal`: no catalog capability of that domain is liste
   `omitted` (count and reason `k` or `packet_budget`). Sources are fused by rank, never raw score,
   and shown in the order of credence. One slow or failed source makes the status `degraded`; all
   failing refuses `UNAVAILABLE`.
+- **Closed labels.** A hit's `ref` and `conflict_set` (`[A-Za-z0-9][A-Za-z0-9._:/-]`, up to 256)
+  and its region and kind (`[A-Za-z0-9][A-Za-z0-9._/-]`, up to 64) reach the model on every hit,
+  bare references included, so anything else (a space, a newline, markup) fails the whole source,
+  as does an `observed_at` that is not a zoned `datetime`.
 - **Not yet covered.** Preconditions for any production `ContextSource` adapter, which the engine
   cannot enforce from outside a source:
   - an availability-only view for exposed and third-party goals (`busy_until` or unknown); they are
@@ -180,7 +213,8 @@ from the model:
    (the host had no room, so none ran). A child never gets one.
 4. `refs`: the context tools the broker serves (runner-authored only). `GoalTools` points the
    runner's `PacketComposer` at exactly the tools it serves (`context__search` when a
-   `ContextSearch` is configured); none are advertised otherwise.
+   `ContextSearch` is configured, `guidance__search` and `guidance__load` when a `Guidance` is);
+   none are advertised otherwise.
 
 A child's packet carries its own brief, grant and share only: no origin, exposure, epoch,
 goal-wide budget, ledger or parent identifier. The runner uses `PacketComposer()` unless a
@@ -289,7 +323,8 @@ brief text, arguments or results.
 
 ## Not yet delivered
 
-- `guidance.search` / `guidance.load` (M4), and the per-domain `ContextSource` adapters for `context.search`.
+- The per-domain `GuidanceSource` and `ContextSource` adapters (a domain's guidance documents,
+  memory and facts), and the lead-policy guidance.
 - The deployed session host (`bu-kiuh8v`), and a usage relay between tool calls; today the
   runner charges only the counts a settled run reports.
 - Constructing the runtime in the control plane: a live `Broker` needs the signing key and the
