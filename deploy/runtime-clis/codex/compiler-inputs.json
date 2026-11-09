@@ -1,0 +1,81 @@
+{
+  "schema": "butlers.debian-base-inputs/v1",
+  "base_image": "docker.io/library/python:3.12.13-slim-trixie@sha256:c2d8472b831337ab296a8ce652e1ba786e9e3034fc445dc58b50a7f5251f0003",
+  "predecessor": {
+    "path": "deploy/runtime-clis/debian-system-inputs.json",
+    "sha256": "a42de4f1082b934775b2a36f24b9dcff29d6a7265f9255960c47ca4ee0cdcd28",
+    "profile": "compiler"
+  },
+  "installed_dpkg_status_sha256": "e0cbac91685bb14ead1e32cbb215293c6c2e0a4873ee8f6ab73bb4409124296c",
+  "indexes": [
+    {
+      "path": "var/lib/apt/lists/deb.debian.org_debian-security_dists_trixie-security_InRelease",
+      "sha256": "9e3152b63d07b2535833b22e6602b09b46e18abee616b36078ae1723df5e1d6d"
+    },
+    {
+      "path": "var/lib/apt/lists/deb.debian.org_debian-security_dists_trixie-security_main_binary-amd64_Packages.lz4",
+      "sha256": "dcfc2b83bfbab40c514f7dc681fadead516313ae91aef28aea333b9b48e68c3f"
+    },
+    {
+      "path": "var/lib/apt/lists/deb.debian.org_debian_dists_trixie-updates_InRelease",
+      "sha256": "406133c486e2d2a9169f659e734d9c0683ac828fde6e2b7eef1992097a2edac2"
+    },
+    {
+      "path": "var/lib/apt/lists/deb.debian.org_debian_dists_trixie-updates_main_binary-amd64_Packages.lz4",
+      "sha256": "d13f2682f6d034ded79a907486be05e83de21dd80c8696b7107bf5502e8a7c2b"
+    },
+    {
+      "path": "var/lib/apt/lists/deb.debian.org_debian_dists_trixie_InRelease",
+      "sha256": "0584fba32e13e0ab8285fb16c27adea1ec03a73669c18702821094fd6ca86675"
+    },
+    {
+      "path": "var/lib/apt/lists/deb.debian.org_debian_dists_trixie_main_binary-amd64_Packages.lz4",
+      "sha256": "31c37ab52e49bc16fd5116607198838519beb0fa5defaa99ad33e1d45666d551"
+    }
+  ],
+  "debs": [
+    {
+      "filename": "libssl-dev_3.5.7-1~deb13u3_amd64.deb",
+      "package": "libssl-dev",
+      "version": "3.5.7-1~deb13u3",
+      "architecture": "amd64",
+      "sha256": "c5f5f0383cac45209fefe85b3c3308e5ef6743663597d89bedcb96aaa06b8342",
+      "size": 2968412,
+      "url": "https://deb.debian.org/debian-security/pool/updates/main/o/openssl/libssl-dev_3.5.7-1~deb13u3_amd64.deb"
+    },
+    {
+      "filename": "libssl3t64_3.5.7-1~deb13u3_amd64.deb",
+      "package": "libssl3t64",
+      "version": "3.5.7-1~deb13u3",
+      "architecture": "amd64",
+      "sha256": "ff16bc048bcd7d1b256094450b79c77947d8e76fe2a24bd99b91021d591fa074",
+      "size": 2458176,
+      "url": "https://deb.debian.org/debian-security/pool/updates/main/o/openssl/libssl3t64_3.5.7-1~deb13u3_amd64.deb"
+    },
+    {
+      "filename": "openssl-provider-legacy_3.5.7-1~deb13u3_amd64.deb",
+      "package": "openssl-provider-legacy",
+      "version": "3.5.7-1~deb13u3",
+      "architecture": "amd64",
+      "sha256": "c12e0266c4780749a4702b8959ac979689f4182e18eed85a8a5eb90ed0e16eab",
+      "size": 316452,
+      "url": "https://deb.debian.org/debian-security/pool/updates/main/o/openssl/openssl-provider-legacy_3.5.7-1~deb13u3_amd64.deb"
+    }
+  ],
+  "profiles": {
+    "compiler": {
+      "debs": [
+        "libssl-dev_3.5.7-1~deb13u3_amd64.deb",
+        "libssl3t64_3.5.7-1~deb13u3_amd64.deb",
+        "openssl-provider-legacy_3.5.7-1~deb13u3_amd64.deb"
+      ]
+    }
+  },
+  "requested": {
+    "compiler": [
+      "libssl-dev=3.5.7-1~deb13u3"
+    ]
+  },
+  "qualification": "Compiler-only supplement to the exact predecessor compiler profile, selected from its retained signed Debian security indexes. Not a runtime profile or image attestation.",
+  "output_installed_dpkg_status_sha256": "5dd302694b291b3449deb221598e3aca148190aab27eab67b2d881f1cf06347e"
+}

@@ -38,6 +38,41 @@ builder/libc compatibility and the installed artifact set require separate
 closure evidence. The final binary must be hashed after the complete build;
 this series does not advertise an artifact that has not been built.
 
+`Dockerfile.codex-artifacts` is the fixed-path public producer for that same
+release command. It uses the pinned Python and Rust child images, the original
+Debian compiler profile, and the separate `compiler-inputs.json` OpenSSL
+development supplement. The supplement pins its predecessor manifest and
+starting/finished package inventories; it does not change the runtime profile.
+Prepare its three public archives with the existing system fetcher:
+
+```sh
+python3 scripts/runtime_clis/fetch_system_artifacts.py \
+  --manifest deploy/runtime-clis/codex/compiler-inputs.json \
+  --output /path/to/new/codex-compiler-artifacts
+docker buildx build --platform linux/amd64 -f Dockerfile.codex-artifacts \
+  --build-context system-artifacts=/path/to/complete/system-artifacts \
+  --build-context codex-compiler-artifacts=/path/to/new/codex-compiler-artifacts \
+  --target artifacts --output type=local,dest=/path/to/new/codex-artifact .
+```
+
+The public seed downloads the exact source archive and complete CMake wheel,
+applies the unchanged four-patch series, and vendors the full locked Cargo graph,
+including its non-target package sources. Hashes, modes, links and file population
+are recorded without task paths or timestamps. Every redirect is refused. The
+subsequent actual networkless layer checks the entire seeded graph, compiler
+inventory, fixed identity flags and original source before compiling. Compiler
+children receive an explicit environment and an empty builder-owned home;
+ambient proxy, credential, registry and loader configuration is not forwarded.
+
+Only successful compilation atomically publishes the GNU executable and
+content-only provenance. Path and timestamp normalization preserve the original
+release profile, debug information, default features and native dependency graph.
+The bare artifact must still be assembled with the complete original published
+wrapper, platform assets, code-mode host, voice resources, licenses and launchers.
+An executed fixed-builder reproduction, installed native operation checks and
+final image evidence remain required separately. Neither this recipe nor its
+bounded archive tests establish those results.
+
 Focused native tests cover original logical URL/cookie identity, streaming 429
 and retry headers, every selected redirect class, hop outage, response drop,
 early 401 upload cancellation and the native WebSocket handshake/frame path.

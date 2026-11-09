@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1.7
+
+FROM rust:1.95.0-slim-trixie@sha256:28846ec5a6bcfcddb93f403ba7071bd579787852b2f2ac3839965620e8bd9456 AS rust-toolchain
+
+FROM python:3.12.13-slim-trixie@sha256:c2d8472b831337ab296a8ce652e1ba786e9e3034fc445dc58b50a7f5251f0003 AS producer
+COPY scripts/runtime_clis/install_system_artifacts.py /recipe/scripts/runtime_clis/install_system_artifacts.py
+COPY deploy/runtime-clis/debian-system-inputs.json /recipe/deploy/runtime-clis/debian-system-inputs.json
+COPY deploy/runtime-clis/codex/compiler-inputs.json /recipe/deploy/runtime-clis/codex/compiler-inputs.json
+
+# Keep the original compiler profile and runtime profile intact. The separate
+# supplement starts only from its pinned predecessor compiler dpkg inventory.
+RUN --network=none --mount=from=system-artifacts,source=debs,target=/inputs/system,readonly \
+    python3 -I -B /recipe/scripts/runtime_clis/install_system_artifacts.py \
+      --manifest /recipe/deploy/runtime-clis/debian-system-inputs.json \
+      --artifacts /inputs/system --profile compiler
+RUN --network=none --mount=from=codex-compiler-artifacts,source=debs,target=/inputs/compiler,readonly \
+    python3 -I -B /recipe/scripts/runtime_clis/install_system_artifacts.py \
+      --manifest /recipe/deploy/runtime-clis/codex/compiler-inputs.json \
+      --artifacts /inputs/compiler --profile compiler \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
+
+COPY --from=rust-toolchain /usr/local/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/ /opt/rust/
+COPY scripts/runtime_clis/prepare_vendor.py scripts/runtime_clis/produce_codex_artifacts.py /recipe/scripts/runtime_clis/
+COPY deploy/runtime-clis/codex/ /recipe/deploy/runtime-clis/codex/
+COPY deploy/runtime-clis/builders.json /recipe/deploy/runtime-clis/builders.json
+COPY Dockerfile.codex-artifacts /recipe/Dockerfile.codex-artifacts
+
+ENV PATH=/opt/rust/bin:/opt/cmake/cmake/data/bin:/usr/local/bin:/usr/bin:/bin \
+    CARGO_HOME=/opt/build/cargo-home CARGO_TARGET_DIR=/opt/build/target \
+    CARGO_NET_GIT_FETCH_WITH_CLI=false CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 \
+    STABLE_GIT_COMMIT=ff6aec96948b70d94983af2641a6b67c94faeff5 \
+    SOURCE_DATE_EPOCH=0 ZERO_AR_DATE=1 \
+    RUSTFLAGS="--remap-path-prefix=/opt/build=/butlers-build --remap-path-prefix=/opt/rust=/butlers-rust" \
+    CFLAGS="-ffile-prefix-map=/opt/build=/butlers-build" \
+    CXXFLAGS="-ffile-prefix-map=/opt/build=/butlers-build"
+WORKDIR /opt/build
+
+# Whole source archives and all locked Cargo targets are acquired here. This
+# stage is explicitly NONFINAL; no original feature/profile or debug setting is
+# changed. The private root-user home has no host credentials or Cargo config.
+RUN --network=default --mount=type=tmpfs,target=/root \
+    python3 -I -B /recipe/scripts/runtime_clis/produce_codex_artifacts.py --phase public-seed
+
+# Every vendored source and compiler payload is checked again before the stock
+# release command. The actual layer must expose only loopback and no routes.
+RUN --network=none --mount=type=tmpfs,target=/root CARGO_NET_OFFLINE=true \
+    python3 -I -B /recipe/scripts/runtime_clis/produce_codex_artifacts.py --phase build
+
+FROM scratch AS artifacts
+COPY --from=producer /artifacts/codex/ /
