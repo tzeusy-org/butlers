@@ -1,0 +1,79 @@
+{
+  "schema": "butlers.npm-build-inputs/v1",
+  "npm_child_umask": 23,
+  "test_server": {
+    "package": "test-server-sdk",
+    "version": "0.2.9",
+    "lock_path": "node_modules/test-server-sdk",
+    "original_archive": {
+      "url": "https://registry.npmjs.org/test-server-sdk/-/test-server-sdk-0.2.9.tgz",
+      "sha256": "9f322dc8d44333e13c850bb31576950f9e7762888e773304a7e209aad1da0c41",
+      "integrity": "sha512-D0pK72s99mys0QcRnZrKUFmLvbL2d0YN7pqrptM9f1F5Zefog9WqdVGj9sbJVvWze3lqtJ9Qg7rAoW5vgaOc/Q==",
+      "size": 14169,
+      "maximum_bytes": 14169
+    },
+    "members": [
+      {
+        "path": "package/LICENSE",
+        "mode": 416,
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "size": 11358
+      },
+      {
+        "path": "package/dist/index.js",
+        "mode": 416,
+        "sha256": "ef643fbb340bd421ee271f4c15cecf73e730d368c7cd96843bc1a159caad9c86",
+        "size": 10016
+      },
+      {
+        "path": "package/postinstall.js",
+        "mode": 416,
+        "sha256": "575a42a0545ce63ca34ea8aa9c024c3668deee05f6570b0bc61c0fdc1504aaf6",
+        "size": 8128
+      },
+      {
+        "path": "package/checksums.json",
+        "mode": 416,
+        "sha256": "26f3aa0610aea9643e16aff3a5222e02c66c97c34dc56d53869b06e3bec3aaac",
+        "size": 9529
+      },
+      {
+        "path": "package/package.json",
+        "mode": 416,
+        "sha256": "1135617f874d1f8812ed3f1fa8c229555a6415c68b8e226199da2083c3c1571b",
+        "size": 884
+      },
+      {
+        "path": "package/dist/index.d.ts",
+        "mode": 416,
+        "sha256": "3e8bc6214cb5f5f538cee49da75efcf681c6bef5b5ebda76273d75814a89283e",
+        "size": 2129
+      }
+    ],
+    "patch": {
+      "path": "patches/001-test-server-explicit-build-cache.patch",
+      "sha256": "f312102780ef667473adeb7f54a55e355e160df1ba3f159d64247b25132698ed",
+      "before_sha256": "575a42a0545ce63ca34ea8aa9c024c3668deee05f6570b0bc61c0fdc1504aaf6",
+      "after_sha256": "e191de9ccc779f62246fd29f2d18bde3fffacad39ccb255dcf2dbdf2fbd68ab6"
+    },
+    "derived_archive": {
+      "filename": "test-server-sdk-0.2.9-cache.tar",
+      "sha256": "64c75fa79f7868b694639d6bf9853c3182d5f6c43c4818d5fbc51c86bfb4ecb1",
+      "integrity": "sha512-MP+Z9SE+M4/uti6rvKWtbuHcuC2sZnJf4F0ruLXvaYDzbFj2bHdBTHPEaslnHdnrZDS8Ap4C1+5Sq1bxGSSfEg==",
+      "size": 51200
+    },
+    "lock": {
+      "before_sha256": "77d808f0a5c88b8ebbc963d22fd5dd660184675dc81afc7e576d9dd5d811b3d6",
+      "after_sha256": "ebeb21e184423ead871b2a9bc5b95e06b68d4ba2d6e236e40fb1cf808eee7c53",
+      "resolved": "file:../dependencies/test-server-sdk-0.2.9-cache.tar"
+    },
+    "release_archive": {
+      "url": "https://github.com/google/test-server/releases/download/v0.2.9/test-server_Linux_x86_64.tar.gz",
+      "size": 3074725,
+      "sha256": "715e5ec7db9c35ee1c644c95f1911184c7f085596679c7d56670a98fc6f308ff",
+      "github_asset_id": 307943526
+    },
+    "cache_environment": "BUTLERS_TEST_SERVER_ARCHIVE",
+    "checksums_sha256": "26f3aa0610aea9643e16aff3a5222e02c66c97c34dc56d53869b06e3bec3aaac"
+  }
+}

@@ -37,3 +37,32 @@ The owning tests exercise synthetic source, cache, lifecycle and publication
 boundaries. They do not execute npm or establish real builder reproduction,
 native CLI parity, authentication coverage, final image closure or nightly
 delivery. Those checks require the actual complete pinned input contexts.
+
+The declared SDK build closure is in `npm-artifacts/build-inputs.json`. npm
+children use umask `0027`, reproducing the generated archive members' original
+`0640` modes without changing the parent or published source modes. Both SDK
+archive digests remain the existing materializer anchors.
+
+GenAI's locked development dependency `test-server-sdk` 0.2.9 normally downloads
+its binary on every install. The producer retains its six original members,
+checksums, version, extraction, executable permissions, cleanup and lifecycle.
+A declared patch adds only an explicit `BUTLERS_TEST_SERVER_ARCHIVE` branch;
+without that input the original Axios download branch remains. The producer
+fetches the exact original release archive, verifies the upstream checksum and
+creates a deterministic six-member derivative tar. Its full digest, patch and
+original/derived lock identities are pinned. Only that dependency's lock
+`resolved` and `integrity` fields change; root specs and the full dependency
+population remain intact. Ordinary `npm ci` installs the derivative and runs
+all hooks. No installed dependency files are rewritten after installation.
+
+The public seed retains all three dependency archives and binds their complete
+inventory. The networkless build verifies and reproduces the derivative,
+repeats the exact two-field lock overlay, and runs the full install and pack.
+Content-only provenance includes these declared inputs. All SDK source entries
+are checked against the explicit prepared source plus lock overlay; final
+packed bytes must still match the unchanged Gemini materializer input.
+The release fetch admits one bounded HTTPS transition from the exact GitHub
+release URL to `release-assets.githubusercontent.com`; npm archive redirects
+remain refused. Transient signed URLs and urllib exception text are never
+persisted. These are build-input acquisition rules, with no runtime gateway
+policy or account-operation grant.

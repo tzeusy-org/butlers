@@ -5952,6 +5952,10 @@
     }
   },
   "bundles": {
+    "deploy/runtime-clis/npm-artifacts/build-inputs.json":
+        "dbef47f206c369c9c67186f6c79c8d4027b1e6541d619e134d478fc21ba7ed01",
+    "deploy/runtime-clis/npm-artifacts/patches/001-test-server-explicit-build-cache.patch":
+        "f312102780ef667473adeb7f54a55e355e160df1ba3f159d64247b25132698ed",
     "deploy/runtime-clis/default-plugin-artifacts/build-inputs.json":
         "16f855d08bb6b1d28ed15f9ebe4ecbe78d72b988429fb0b854aca3afb3ca9883",
     "deploy/runtime-clis/default-plugin-artifacts/package.json":
