@@ -132,13 +132,15 @@ same sections, built from the ledger rows the broker enforces (`RunnerLedger.lau
 from the model:
 
 1. `task` (leads: runner-authored) or `brief` (children: objective, success conditions and the
-   fixed result schema). Lead-authored text is entity-escaped, so it cannot close its fence or
-   open another section.
+   fixed result schema), including the brief's context and guidance references, all inside one
+   block labelled lead-written. Every lead-authored item is rendered as a JSON string literal
+   (newlines and quotes escaped) and entity-escaped, so it cannot forge a packet line, close its
+   fence or open another section.
 2. `grant` and `budget`: the invocation's own grant and what is left of its calls, turns, tokens
    and wall time. Leads also see the goal's remaining calls, tokens and seconds.
 3. `ledger`: only for a replacement or escalated lead (the effects and children, as identifiers and
    statuses). A first lead has none, and a child never gets one.
-4. `refs`: the brief's context and guidance references, plus the context tools the broker serves.
+4. `refs`: the context tools the broker serves (runner-authored only).
    `PacketComposer(context_tools=...)` names them; none are advertised by default.
 
 A child's packet carries its own brief, grant and share only: no origin, exposure, epoch,

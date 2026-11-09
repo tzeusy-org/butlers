@@ -83,7 +83,7 @@ async def test_a_child_packet_is_its_brief_grant_and_share_never_the_leads_conte
         launch = await h.launched(2)
         assert launch.invocation_id == child
         packet = launch.prompt
-        assert "objective: Find the receipt" in section(packet, "brief")
+        assert 'objective: "Find the receipt"' in section(packet, "brief")
         assert '"found"' in section(packet, "brief")  # the ledger's fixed result schema
         grant = section(packet, "grant")
         assert f"capability: {SEARCH.identity}" in grant
