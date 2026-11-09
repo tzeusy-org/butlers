@@ -178,6 +178,13 @@ class _OrderConn:
             return {"id": args[0], "entity_type": "person"}
         return None
 
+    async def fetch(self, sql, *args):
+        # The entity lock is a locking SELECT, whose rows the writer then judges live or dead.
+        if "FOR KEY SHARE" in sql:
+            self.events.append("lock")
+            raise _StopAtLock
+        return []
+
     async def fetchval(self, sql, *args):
         return None
 
