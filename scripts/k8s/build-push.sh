@@ -36,26 +36,29 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   TAG="${TAG}-dirty-$(date +%Y%m%d%H%M%S)"
 fi
 
-# ── Base image: same freshness rule as scripts/compose.sh ──────────────
-# shellcheck source=../base-image-input-fingerprint.sh
-source scripts/base-image-input-fingerprint.sh
-BASE_INPUT_SHA=$(butlers_base_image_input_fingerprint \
-  Dockerfile.base scripts/runtime_cli_sandbox_init.c scripts/generate_runtime_cli_sandbox_manifest.py)
-BASE_DOCKERFILE_SHA=$(sha256sum < Dockerfile.base | awk '{print $1}')
-current=$(docker image inspect butlers-base:latest \
-  --format '{{ index .Config.Labels "butlers.base.input_sha" }}' 2>/dev/null || true)
-if [ "$current" != "$BASE_INPUT_SHA" ]; then
-  echo "Building butlers-base (inputs changed or missing)..." >&2
-  docker build \
-    --label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}" \
-    --label "butlers.base.input_sha=${BASE_INPUT_SHA}" \
-    -f Dockerfile.base -t butlers-base . >&2
+# The shared app retains its production dependency profile in both environments.
+# Building the coordinated base is separate from deployment publication.
+BASE_REF_PATTERN='^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9]+([._/-][a-z0-9]+)*@sha256:[0-9a-f]{64}$'
+if ! [[ "${BUTLERS_BASE_IMAGE:-}" =~ $BASE_REF_PATTERN ]]; then
+  echo "ERROR: BUTLERS_BASE_IMAGE must be a full registry/repository@sha256 reference." >&2
+  exit 1
 fi
+PYTHON_ARTIFACTS_CONTEXT="${BUTLERS_PYTHON_ARTIFACTS:-}"
+if [[ -z "$PYTHON_ARTIFACTS_CONTEXT" || ! -d "$PYTHON_ARTIFACTS_CONTEXT" \
+  || -L "$PYTHON_ARTIFACTS_CONTEXT" || ! -f "$PYTHON_ARTIFACTS_CONTEXT/provenance.json" \
+  || -L "$PYTHON_ARTIFACTS_CONTEXT/provenance.json" ]]; then
+  echo "ERROR: Supply a real closed Python artifacts directory with provenance.json." >&2
+  exit 1
+fi
+PYTHON_ARTIFACTS_CONTEXT=$(cd -- "$PYTHON_ARTIFACTS_CONTEXT" && pwd -P)
 
 # ── App image ─────────────────────────────────────────────────────────
 APP_IMAGE="${REGISTRY}/butlers-app:${TAG}"
 echo "Building ${APP_IMAGE}..." >&2
-docker build --build-arg "GIT_SHA=$(git rev-parse HEAD)" -t "$APP_IMAGE" . >&2
+docker build --build-arg "GIT_SHA=$(git rev-parse HEAD)" \
+  --build-arg "BUTLERS_BASE_IMAGE=${BUTLERS_BASE_IMAGE}" \
+  --build-context "python-artifacts=${PYTHON_ARTIFACTS_CONTEXT}" \
+  --target production -t "$APP_IMAGE" . >&2
 docker push "$APP_IMAGE" >&2
 
 # ── Frontend image ────────────────────────────────────────────────────

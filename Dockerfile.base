@@ -5,48 +5,46 @@
 # This image changes infrequently (only when system deps or npm packages
 # change). Build it once and reference from Dockerfile:
 #
-#   docker build -f Dockerfile.base -t butlers-base .
+#   docker build --build-context system-artifacts=/path/to/closed/context \
+#     -f Dockerfile.base -t butlers-base .
 #
-# The main Dockerfile uses this as its base, so app rebuilds only
-# re-run Python dependency install and source copy (~30s vs ~5min).
+# The application Dockerfile consumes the coordinated output by immutable
+# reference and installs its independently verified Python profile offline.
 
-# Digest-pinned for full reproducibility (resolves to 3.12.13-slim-trixie).
-# To update: run `docker buildx imagetools inspect python:3.12-slim` and
-# replace the sha256 below.
-FROM python:3.12-slim@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9 AS runtime-cli-sandbox-init-builder
+# Exact official Linux/amd64 Python child. Update its verified digest and
+# the matching Debian baseline/archive manifest together.
+FROM python:3.12.13-slim-trixie@sha256:c2d8472b831337ab296a8ce652e1ba786e9e3034fc445dc58b50a7f5251f0003 AS system-inputs
+COPY scripts/runtime_clis/install_system_artifacts.py /tmp/install_system_artifacts.py
+COPY deploy/runtime-clis/debian-system-inputs.json /tmp/debian-system-inputs.json
+
+FROM system-inputs AS runtime-cli-sandbox-init-builder
 
 # Compile the namespace-PID1 helper outside the final runtime image.  Python's
 # stdlib does not expose close_range on every supported image, so this helper
 # performs the kernel close_range + post-close descriptor audit before it
 # execs any Dashboard CLI-auth payload.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    libc6-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN --network=none --mount=from=system-artifacts,source=debs,target=/opt/system-artifacts/debs,readonly \
+    python -I /tmp/install_system_artifacts.py \
+      --manifest /tmp/debian-system-inputs.json \
+      --artifacts /opt/system-artifacts/debs --profile compiler \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
+    && rm /tmp/install_system_artifacts.py /tmp/debian-system-inputs.json
 COPY scripts/runtime_cli_sandbox_init.c /src/runtime_cli_sandbox_init.c
-RUN mkdir -p /out \
+RUN --network=none mkdir -p /out \
     && gcc -O2 -Wall -Wextra -Werror -o /out/runtime-cli-sandbox-init \
     /src/runtime_cli_sandbox_init.c
 
-FROM python:3.12-slim@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9
+FROM system-inputs
 
-# System dependencies (single layer, sorted for readability)
-# postgresql-client (psql, createdb, dropdb): the isolated restore-drill
-# executor shells out to psql to replay a plain-format pg_dump's COPY...FROM
-# stdin blocks -- asyncpg's protocol cannot do this, only the real client can.
-# ffmpeg: the Telegram bot connector transcodes owner voice notes to PCM for
-# speech-to-text (telegram-voice-transcription; off unless explicitly enabled).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    bubblewrap=0.12.0-1~deb13u1 \
-    curl \
-    ffmpeg \
-    gh \
-    git \
-    gnupg \
-    postgresql-client \
-    ripgrep \
-    && rm -rf /var/lib/apt/lists/*
+# Exact runtime profile includes the existing restore/voice tools plus audio
+# libraries for explicitly selected live-listener extras. Both Debian profiles
+# install only pinned local archives from the complete required public context.
+RUN --network=none --mount=from=system-artifacts,source=debs,target=/opt/system-artifacts/debs,readonly \
+    python -I /tmp/install_system_artifacts.py \
+      --manifest /tmp/debian-system-inputs.json \
+      --artifacts /opt/system-artifacts/debs --profile runtime \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
+    && rm /tmp/install_system_artifacts.py /tmp/debian-system-inputs.json
 
 # The Dashboard itself remains its existing process identity.  This immutable
 # marker reserves the outer identities that the CLI-auth sandbox leases one at

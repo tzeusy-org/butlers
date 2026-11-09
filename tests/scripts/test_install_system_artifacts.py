@@ -85,3 +85,57 @@ def test_invalid_manifest_refuses(inputs, change):
     manifest.write_text(json.dumps(value))
     with pytest.raises(ValueError):
         module.validate(manifest, artifacts, "runtime")
+
+
+@pytest.mark.parametrize("corruption", [None, "bytes", "oversize", "foreign-url", "escape"])
+def test_public_fetcher_publishes_only_complete_verified_inputs(inputs, monkeypatch, corruption):
+    import io
+
+    _, artifacts, manifest, value = inputs
+    spec = importlib.util.spec_from_file_location(
+        "_fetch_system_artifacts", Path("scripts/runtime_clis/fetch_system_artifacts.py")
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for item in value["debs"]:
+        item["url"] = "http://deb.debian.org/debian/pool/main/f/fixture/" + item["filename"]
+    if corruption == "foreign-url":
+        value["debs"][0]["url"] = "https://foreign.invalid/fixture.deb"
+    if corruption == "escape":
+        value["debs"][0]["filename"] = "../escape.deb"
+    manifest.write_text(json.dumps(value))
+    requests = []
+
+    class PublicInputs:
+        def open(self, url, timeout):
+            assert url.startswith("https://deb.debian.org/debian/pool/") and timeout == 60
+            requests.append(url)
+            data = (artifacts / url.rsplit("/", 1)[1]).read_bytes()
+            if corruption == "bytes":
+                data = b"R" + data[1:]
+            if corruption == "oversize":
+                data += b"extra"
+            return io.BytesIO(data)
+
+    def opener(proxy):
+        assert proxy.proxies == {}
+        return PublicInputs()
+
+    monkeypatch.setattr(module.urllib.request, "build_opener", opener)
+    output = manifest.parent / "context"
+    if corruption:
+        with pytest.raises(ValueError):
+            module.fetch(manifest, output)
+        assert not output.exists()
+        assert not list(output.parent.glob("system-artifacts-*"))
+        if corruption in {"foreign-url", "escape"}:
+            assert not requests
+    else:
+        module.fetch(manifest, output)
+        assert len(requests) == 2
+        for item in value["debs"]:
+            assert (output / "debs" / item["filename"]).read_bytes() == (
+                artifacts / item["filename"]
+            ).read_bytes()
+        assert json.loads((output / "provenance.json").read_text())["archive_count"] == 2

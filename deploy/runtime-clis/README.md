@@ -55,7 +55,20 @@ offline image closure require their own artifact evidence.
 The pinned system package set is `debian-system-inputs.json`: one complete public
 Debian archive population, its signed-index provenance, the original Python base
 inventory, and separate runtime/compiler selections. Supply the complete set as
-regular files under a named `system-artifacts/debs` input. The offline installer
+regular files under the named `system-artifacts` context's `debs/` directory.
+Prepare that context from the exact public archive records without installing them:
+
+```sh
+python scripts/runtime_clis/fetch_system_artifacts.py \
+  --manifest deploy/runtime-clis/debian-system-inputs.json \
+  --output /path/to/new/system-artifacts
+docker build --build-context system-artifacts=/path/to/new/system-artifacts \
+  -f Dockerfile.base -t butlers-base .
+```
+
+The fetcher uses only the manifest's public Debian locations over HTTPS, with no
+proxy or credential discovery, and publishes only the complete verified set.
+The offline installer
 refuses missing, extra, changed or symlinked archives and a different starting
 package inventory before invoking APT. It passes only pinned local archive paths,
 uses `--no-download` with repository sources disabled, and verifies the installed

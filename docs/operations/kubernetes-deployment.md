@@ -586,3 +586,16 @@ enforces egress policy. With the chart policy, a node-hosted private address was
 blocked, DNS resolved and a public host was reachable; allowlisting that address made
 it reachable. A Service in another namespace (`postgres-dev-rw.postgres-dev:5432`) and
 kube-dns stayed reachable through the `namespaceSelector: {}` rule.
+
+### Closed application build inputs
+
+`scripts/k8s/build-push.sh` consumes the same explicit immutable base and closed
+Python artifact input as the application Dockerfile. Set `BUTLERS_BASE_IMAGE` to
+the coordinated full `registry/repository@sha256` reference and
+`BUTLERS_PYTHON_ARTIFACTS` to its verified context directory containing
+`provenance.json`. Missing inputs refuse before image build or publication. Both
+Kubernetes environments retain the shared application's production dependency
+profile; Compose hotreload selects the separate development profile. Building the
+base is a separate source/artifact operation described in
+[the runtime input contract](../../deploy/runtime-clis/README.md). This input
+contract does not authorize deployment or enable egress enforcement.

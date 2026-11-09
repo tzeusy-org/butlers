@@ -303,6 +303,12 @@ jobs:
           sudo apt-get clean -q
           docker image prune -f --filter "until=1h" || true
 
+      - name: Prepare pinned public Debian archives
+        run: |
+          python3 scripts/runtime_clis/fetch_system_artifacts.py \
+            --manifest deploy/runtime-clis/debian-system-inputs.json \
+            --output "${RUNNER_TEMP}/butlers-system-artifacts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
       - name: Build butlers-base image
         # Labels mirror scripts/compose.sh's freshness receipt so this stays
         # provably the same base-image build contract production uses.
@@ -312,9 +318,12 @@ jobs:
           BASE_DOCKERFILE_SHA=$(sha256sum < Dockerfile.base | awk '{print $1}')
           BASE_INPUT_SHA=$(butlers_base_image_input_fingerprint \
             Dockerfile.base \
+            scripts/runtime_clis/install_system_artifacts.py \
+            deploy/runtime-clis/debian-system-inputs.json \
             scripts/runtime_cli_sandbox_init.c \
             scripts/generate_runtime_cli_sandbox_manifest.py)
           docker build \
+            --build-context "system-artifacts=${RUNNER_TEMP}/butlers-system-artifacts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}" \
             --label "butlers.base.input_sha=${BASE_INPUT_SHA}" \
             -f Dockerfile.base \

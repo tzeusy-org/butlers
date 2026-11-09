@@ -372,6 +372,8 @@ def test_host_identity_pins_provider_job_checkout_and_exact_build_fingerprint(im
             (
                 "source scripts/base-image-input-fingerprint.sh; "
                 "butlers_base_image_input_fingerprint Dockerfile.base "
+                "scripts/runtime_clis/install_system_artifacts.py "
+                "deploy/runtime-clis/debian-system-inputs.json "
                 "scripts/runtime_cli_sandbox_init.c "
                 "scripts/generate_runtime_cli_sandbox_manifest.py"
             ),

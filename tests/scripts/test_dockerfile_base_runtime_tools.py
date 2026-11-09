@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -59,10 +60,11 @@ def _base_input_fingerprint(inputs: tuple[str, ...], *, cwd: Path, env: dict[str
 
 def test_base_image_installs_uv_git_and_gh_for_qa_runtime() -> None:
     text = _dockerfile_base_text()
-    assert "git" in text
+    system = json.loads(Path("deploy/runtime-clis/debian-system-inputs.json").read_text())
+    assert {"git", "gh"} <= set(system["profiles"]["runtime"]["requested"])
+    assert "--profile runtime" in text
     assert "python -m pip install --no-cache-dir uv" in text
     assert "uv --version" in text
-    assert "gh" in text
 
     # REQ-testing-048: project/lock packaging choice; these structural and
     # installed witnesses do not claim either application image was built.
@@ -119,7 +121,11 @@ def test_base_image_ships_the_pinned_dashboard_cli_sandbox_toolchain() -> None:
     """REQ-core-credentials-002: the image, not the host, owns the sandbox contract."""
     text = _dockerfile_base_text()
 
-    assert re.search(r"\bbubblewrap=0\.12\.0-1~deb13u1\b", text)
+    system = json.loads(Path("deploy/runtime-clis/debian-system-inputs.json").read_text())
+    assert "bubblewrap=0.12.0-1~deb13u1" in system["profiles"]["runtime"]["requested"]
+    assert "--profile runtime" in text and "--profile compiler" in text
+    assert text.count("RUN --network=none --mount=from=system-artifacts") == 2
+    assert "apt-get update" not in text
     assert "dpkg-query" in text
     assert "bubblewrap" in text
     assert "runtime_cli_sandbox_init.c" in text
@@ -131,7 +137,7 @@ def test_sandbox_init_builder_creates_its_declared_output_directory() -> None:
     """The exact-image toolchain cannot rely on an implicit compiler output path."""
     text = _dockerfile_base_text()
 
-    assert text.index("RUN mkdir -p /out") < text.index(
+    assert text.index("RUN --network=none mkdir -p /out") < text.index(
         "gcc -O2 -Wall -Wextra -Werror -o /out/runtime-cli-sandbox-init"
     )
 
@@ -167,6 +173,8 @@ def test_base_image_freshness_fingerprints_each_local_copy_input_without_dotenv(
     docker_sources = _non_stage_copy_sources()
     expected_inputs = (
         "Dockerfile.base",
+        "scripts/runtime_clis/install_system_artifacts.py",
+        "deploy/runtime-clis/debian-system-inputs.json",
         "scripts/runtime_cli_sandbox_init.c",
         "scripts/generate_runtime_cli_sandbox_manifest.py",
     )
