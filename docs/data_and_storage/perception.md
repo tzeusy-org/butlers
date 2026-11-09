@@ -22,8 +22,8 @@ slot. Conditions and suppression instances are finite, immutable, source-bound
 representations. `bind_condition` registers an **open dark record**, with no
 subscriber, evaluation, fire operation or executable authority. A suppression
 must reference an existing registered suppression authority; it does not mutate
-DND. A later evaluator must validate the current goal/grant binding before
-activating any recorded condition. Storage of an opaque goal reference is not
+DND. A later evaluator (the dark [`butlers.conditions`](conditions.md) seam) must validate the
+current goal/grant binding before activating any recorded condition. Storage of an opaque goal reference is not
 a grant or proof that the goal exists.
 
 ## Authentication and bootstrap
