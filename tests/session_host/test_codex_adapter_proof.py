@@ -573,6 +573,59 @@ def test_native_bypass_flag_is_what_the_read_only_sandbox_stops(proof_root, tmp_
     assert "Success" in patch_output(allowed)
 
 
+# OAuth mode (bu-kiuh8v.16) ----------------------------------------------------
+
+
+def _oauth_failures(observation):
+    failures = codex_proof.evaluate(
+        observation,
+        provider_auth=f"Bearer {codex_proof.OAUTH_REFRESHED_ACCESS}",
+        provider_paths=codex_proof.OAUTH_PROVIDER_PATHS,
+    )
+    return {k: v for k, v in failures.items() if v}
+
+
+@pytest.mark.parametrize("transport", ["websocket", "http"])
+def test_native_oauth_codex_refreshes_and_the_host_persists_it(proof_root, transport, tmp_path):
+    """The staged token is expired: the runtime refreshes it, writes its one writable
+    file, and after settlement the host installs that into the volume."""
+    observation = launch(
+        proof_root, {"oauth": True, "refuse_websocket": transport == "http"}, tmp_path
+    )
+    assert _oauth_failures(observation) == {}, (
+        observation.get("proof_error"),
+        observation.get("stderr_tail"),
+    )
+    assert set(observation["transports"]) == {transport}
+    assert observation["provider_account"] == [codex_proof.OAUTH_ACCOUNT]
+    assert observation["refresh"] == [
+        {"grant_type": "refresh_token", "refresh_token": "SYNTHETIC-STALE-REFRESH"}
+    ]
+    assert observation["settled"] and observation["stage_empty"]
+    assert observation["lease_released"]
+    persisted = json.loads(observation["volume_document"])
+    assert persisted["tokens"]["access_token"] == codex_proof.OAUTH_REFRESHED_ACCESS
+    assert persisted["tokens"]["refresh_token"] == codex_proof.OAUTH_REFRESHED_REFRESH
+    assert persisted["tokens"]["account_id"] == codex_proof.OAUTH_ACCOUNT
+
+
+def test_native_oauth_refresh_for_another_account_leaves_the_volume(proof_root, tmp_path):
+    observation = launch(
+        proof_root, {"oauth": True, "refresh_account": "acct-somebody-else"}, tmp_path
+    )
+    assert observation["settled"] and observation["lease_released"]
+    assert observation["refresh"], "the runtime never refreshed, so nothing was tested"
+    assert observation["volume_document"] == codex_proof.oauth_document()
+
+
+def test_native_oauth_read_only_auth_file_loses_the_refresh(proof_root, tmp_path):
+    """The control: the writable file is what carries a refresh back to the volume."""
+    observation = launch(proof_root, {"oauth": True, "readonly_auth": True}, tmp_path)
+    assert observation["refresh"], "the runtime never refreshed, so nothing was tested"
+    assert observation["settled"] and observation["lease_released"]
+    assert observation["volume_document"] == codex_proof.oauth_document()
+
+
 def test_native_unreachable_broker_fails_the_launch(proof_root, tmp_path):
     (tmp_path / "required").mkdir()
     (tmp_path / "optional").mkdir()

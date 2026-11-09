@@ -14,7 +14,8 @@ import re
 from dataclasses import dataclass
 
 from .bubblewrap import BubblewrapDomain, ImageFile
-from .codex import CodexSettings
+from .codex import API_KEY, CodexSettings
+from .codex_oauth import CodexOAuthVolume
 from .contracts import Refused
 from .opencode import OpenCodeSettings
 
@@ -81,23 +82,34 @@ def _hash(value: object) -> str:
     ).hexdigest()
 
 
-def _settings(runtime: str, model: str) -> OpenCodeSettings | CodexSettings | None:
+def _settings(
+    runtime: str, model: str, codex_auth: str = API_KEY
+) -> OpenCodeSettings | CodexSettings | None:
+    if runtime == "codex":
+        return CodexSettings(model, auth=codex_auth)
+    if codex_auth != API_KEY:
+        raise Refused("invalid_runtime_profile")  # only Codex has an OAuth mode
     if runtime == "opencode":
         return OpenCodeSettings(model)
-    if runtime == "codex":
-        return CodexSettings(model)
     return None
 
 
 def _domain(
-    image: tuple[ImageFile, ...], command: tuple[str, ...], runtime: str, model: str
+    image: tuple[ImageFile, ...],
+    command: tuple[str, ...],
+    runtime: str,
+    model: str,
+    codex_auth: str = API_KEY,
+    codex_oauth: CodexOAuthVolume | None = None,
 ) -> BubblewrapDomain:
-    settings = _settings(runtime, model)
+    settings = _settings(runtime, model, codex_auth)
+    codex = settings if isinstance(settings, CodexSettings) else None
     return BubblewrapDomain(
         image=image,
         command=command,
         opencode=settings if isinstance(settings, OpenCodeSettings) else None,
-        codex=settings if isinstance(settings, CodexSettings) else None,
+        codex=codex,
+        codex_oauth=codex_oauth if codex is not None and codex.writable_auth else None,
     )
 
 
@@ -116,6 +128,8 @@ class Profile:
     model: str
     image: tuple[ImageFile, ...]
     command: tuple[str, ...]
+    # Codex only: ``oauth`` stages the host's device-auth document (a separate proof).
+    codex_auth: str = API_KEY
 
     def __post_init__(self) -> None:
         if (
@@ -134,15 +148,22 @@ class Profile:
             or self.runtime != self.runtime.lower()
         ):
             raise Refused("invalid_runtime_profile")
-        # Reuse the actual backend's inert profile validation. It opens nothing
-        # and starts nothing; immutable inputs are rechecked/snapshotted at use.
-        _domain(self.image, self.command, self.runtime, self.model)
+        # Reuse the actual backend's inert profile validation. It opens nothing and
+        # starts nothing; immutable inputs are rechecked/snapshotted at use. The OAuth
+        # lease is the factory's, so only the profile, not a domain, is checked here.
+        settings = _settings(self.runtime, self.model, self.codex_auth)
+        BubblewrapDomain.check_profile(
+            self.image,
+            self.command,
+            opencode=settings if isinstance(settings, OpenCodeSettings) else None,
+            codex=settings if isinstance(settings, CodexSettings) else None,
+        )
         if carries_bypass(self.command):
             raise Refused("invalid_runtime_profile")
 
     @property
     def subject(self) -> dict[str, str]:
-        settings = _settings(self.runtime, self.model)
+        settings = _settings(self.runtime, self.model, self.codex_auth)
         return {
             "runtime": self.runtime,
             "model": self.model,
@@ -224,17 +245,35 @@ class ReviewedProfile:
 class ProfileFactory:
     """The existing LocalControl factory seam, with no fallback or default tuple."""
 
-    def __init__(self, profiles: tuple[ReviewedProfile, ...] = ()) -> None:
+    def __init__(
+        self,
+        profiles: tuple[ReviewedProfile, ...] = (),
+        *,
+        codex_oauth: CodexOAuthVolume | None = None,
+    ) -> None:
+        """``codex_oauth`` is the host's lease over its volume; OAuth profiles need it."""
         if type(profiles) is not tuple or any(type(p) is not ReviewedProfile for p in profiles):
             raise Refused("invalid_runtime_profiles")
         keys = [(p.profile.runtime, p.profile.model) for p in profiles]
         if len(keys) != len(set(keys)):
             raise Refused("invalid_runtime_profiles")
+        if codex_oauth is not None and type(codex_oauth) is not CodexOAuthVolume:
+            raise Refused("invalid_runtime_profiles")
+        if codex_oauth is None and any(p.profile.codex_auth != API_KEY for p in profiles):
+            raise Refused("invalid_runtime_profiles")
         self._profiles = profiles
+        self._codex_oauth = codex_oauth
 
     def __call__(self, runtime: str, model: str) -> BubblewrapDomain:
         for reviewed in self._profiles:
             profile = reviewed.profile
             if (runtime, model) == (profile.runtime, profile.model):
-                return _domain(profile.image, profile.command, profile.runtime, profile.model)
+                return _domain(
+                    profile.image,
+                    profile.command,
+                    profile.runtime,
+                    profile.model,
+                    profile.codex_auth,
+                    self._codex_oauth,
+                )
         raise Refused("runtime_ineligible")

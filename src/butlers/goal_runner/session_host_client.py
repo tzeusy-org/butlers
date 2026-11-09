@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import hashlib
 import logging
 import os
@@ -49,9 +50,15 @@ from butlers.session_host.contracts import Refused
 from butlers.session_host.control import local_command
 
 from .contracts import HostOutcome, Launch, SessionHost
-from .staging import ControlSessionHost, CredentialUnavailable, ModelCredentials
+from .staging import ControlSessionHost, CredentialUnavailable, LaunchCredentials
 
 logger = logging.getLogger(__name__)
+
+# The digest of the document ``CodexAuthFencedHost`` pushed for the launch in flight.
+# Set only inside its lock, around that one launch.
+_PUSHED_SHA256: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "codex_pushed_sha256", default=None
+)
 
 _PEM_BYTES = 64 * 1024
 _NAME = re.compile(
@@ -156,7 +163,7 @@ def _checked(config: SessionHostClientConfig) -> None:
 
 
 def session_host_clients(
-    config: SessionHostClientConfig, credentials: ModelCredentials, *, broker_origin: str
+    config: SessionHostClientConfig, credentials: LaunchCredentials, *, broker_origin: str
 ) -> SessionHostClients:
     """Bind both clients to the configured host and identity; refuse anything unsound."""
     _checked(config)
@@ -208,12 +215,16 @@ class CodexAuthFencedHost:
             return await self._host.launch(launch)
         async with self._lock:
             pushed = await push_codex_authority(self._authority, self._target, self._fence)
-            if not pushed.known:
+            if not pushed.known or pushed.installed_sha256 is None:
                 raise CredentialUnavailable("codex_auth_unavailable")
             self._fence = pushed
+            # The launch names the pushed document by digest (CodexOAuthCredentials);
+            # the host stages only that, and installs the runtime's refresh against it.
+            reference = _PUSHED_SHA256.set(pushed.installed_sha256)
             try:
                 return await self._host.launch(launch)
             finally:
+                _PUSHED_SHA256.reset(reference)
                 with contextlib.suppress(Exception):
                     await collect_codex_rotation(self._authority, self._target, pushed)
 
@@ -221,8 +232,32 @@ class CodexAuthFencedHost:
         await self._host.terminate(invocation_id)
 
 
+class CodexOAuthCredentials:
+    """Launch credentials for a host whose Codex runtimes authenticate from its volume.
+
+    For a runtime in ``runtimes`` (the same set ``CodexAuthFencedHost`` fences), the
+    launch's credential is the SHA-256 of the document just pushed, not a secret: the
+    host stages its own volume's document only if it still has that digest. Outside a
+    fenced launch there is no pushed document, so it refuses (``NotInvoked``). Other
+    runtimes resolve through ``base`` as before.
+    """
+
+    def __init__(self, base: LaunchCredentials, *, runtimes: Iterable[str]) -> None:
+        self._base = base
+        self._runtimes = frozenset(runtimes)
+
+    async def resolve(self, runtime: str, model: str) -> bytes:
+        if runtime not in self._runtimes:
+            return await self._base.resolve(runtime, model)
+        digest = _PUSHED_SHA256.get()
+        if digest is None or _PIN.fullmatch(digest) is None:
+            raise CredentialUnavailable("codex_auth_unavailable")
+        return digest.encode("ascii")
+
+
 __all__ = [
     "CodexAuthFencedHost",
+    "CodexOAuthCredentials",
     "SessionHostClientConfig",
     "SessionHostClients",
     "client_context",

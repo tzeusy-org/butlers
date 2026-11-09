@@ -53,16 +53,27 @@ class InvocationMaterial:
             raise Refused("invalid_opencode_material")
         self.write_native(CONFIG_NAME, content)
 
-    def prepare_codex(self, settings: CodexSettings) -> None:
-        """Create the closed Codex files; same ownership rules as OpenCode's."""
+    def prepare_codex(
+        self, settings: CodexSettings, *, oauth_document: bytes | None = None
+    ) -> None:
+        """Create the closed Codex files; same ownership rules as OpenCode's.
+
+        OAuth mode stages ``oauth_document``, the leased volume document, in place of
+        the request's credential (which is only that document's digest); API-key mode
+        refuses one.
+        """
         if (
             type(settings) is not CodexSettings
             or type(self._request) is not LaunchRequest
             or self._request.runtime != "codex"
             or self._request.model != settings.model
+            or (oauth_document is None) == settings.writable_auth
         ):
             raise Refused("invalid_codex_material")
-        rendered = settings.render(self._request.broker, self._request.model_credential)
+        credential = self._request.model_credential
+        if settings.writable_auth and oauth_document is not None:
+            credential = oauth_document
+        rendered = settings.render(self._request.broker, credential)
         if any(len(content) > 65536 for content in rendered.values()):
             raise Refused("invalid_codex_material")
         for name, content in rendered.items():

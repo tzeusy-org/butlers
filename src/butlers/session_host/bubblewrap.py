@@ -14,6 +14,7 @@ import asyncio
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import select
 import signal
@@ -23,12 +24,16 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
-from .codex import CODEX_HOME, NATIVE_FILES, CodexSettings
-from .contracts import Refused
+from .codex import AUTH_NAME, AUTH_PATH, CODEX_HOME, NATIVE_FILES, CodexSettings
+from .codex_oauth import CodexOAuthVolume, StagedOAuth
+from .contracts import CredentialNotStaged, Refused
 from .material import InvocationMaterial
 from .opencode import CONFIG_NAME, OpenCodeSettings
 
+logger = logging.getLogger(__name__)
+
 _READY = b"BUTLERS_RUNTIME_CLI_SANDBOX_READY\n"
+_MAX_AUTH = 64 * 1024
 _MAX_OUTPUT = 1024 * 1024
 _SETUP_SECONDS = 5.0
 # The pinned Codex static binary is 274 MiB. Each launch holds a sealed copy.
@@ -166,7 +171,48 @@ class BubblewrapDomain:
         bwrap: Path = Path("/usr/bin/bwrap"),
         opencode: OpenCodeSettings | None = None,
         codex: CodexSettings | None = None,
+        codex_oauth: CodexOAuthVolume | None = None,
     ) -> None:
+        self.check_profile(image, command, shim=shim, opencode=opencode, codex=codex)
+        # OAuth mode needs the host's lease; nothing else may hold one.
+        oauth = codex is not None and codex.writable_auth
+        if oauth != (codex_oauth is not None) or (
+            codex_oauth is not None and type(codex_oauth) is not CodexOAuthVolume
+        ):
+            raise Refused("invalid_domain_profile")
+        self._opencode = opencode
+        self._codex = codex
+        self._codex_oauth = codex_oauth
+        self._staged: StagedOAuth | None = None
+        self._material: InvocationMaterial | None = None
+        self._stdin: int | None = None
+        self._image = image
+        self._command = command
+        self._shim = shim
+        self._bwrap = bwrap
+        self._process: asyncio.subprocess.Process | None = None
+        self._spawn: asyncio.Task | None = None
+        self._pidfd: int | None = None
+        self._fds: set[int] = set()
+        self._used = False
+        self._released = False
+        self.namespace_dead = False
+        self.direct_child_reaped = False
+        self._settled = False
+        self._reaper: asyncio.Task | None = None
+        self.output_bytes_received = 0
+        self.output_ready = asyncio.Event()
+
+    @staticmethod
+    def check_profile(
+        image: tuple[ImageFile, ...],
+        command: tuple[str, ...],
+        *,
+        shim: str = "/runtime/init",
+        opencode: OpenCodeSettings | None = None,
+        codex: CodexSettings | None = None,
+    ) -> None:
+        """The inert profile checks; opens nothing, needs no lease."""
         destinations = {entry.destination for entry in image}
         if (
             len(destinations) != len(image)
@@ -185,25 +231,6 @@ class BubblewrapDomain:
             type(codex) is not CodexSettings or opencode is not None or command != codex.command
         ):
             raise Refused("invalid_domain_profile")
-        self._opencode = opencode
-        self._codex = codex
-        self._stdin: int | None = None
-        self._image = image
-        self._command = command
-        self._shim = shim
-        self._bwrap = bwrap
-        self._process: asyncio.subprocess.Process | None = None
-        self._spawn: asyncio.Task | None = None
-        self._pidfd: int | None = None
-        self._fds: set[int] = set()
-        self._used = False
-        self._released = False
-        self.namespace_dead = False
-        self.direct_child_reaped = False
-        self._settled = False
-        self._reaper: asyncio.Task | None = None
-        self.output_bytes_received = 0
-        self.output_ready = asyncio.Event()
 
     def _close(self, descriptor: int) -> None:
         if descriptor in self._fds:
@@ -253,10 +280,74 @@ class BubblewrapDomain:
         raise Refused("namespace_receipt_missing")
 
     def _prepare_native(self, material: InvocationMaterial) -> None:
+        self._material = material
         if self._opencode is not None:
             material.prepare_opencode(self._opencode)
-        if self._codex is not None:
+        if self._codex is not None and self._codex_oauth is not None:
+            request = material._request
+            if request is None:
+                raise Refused("invalid_codex_material")
+            # The lease is taken before the file exists, and released only by collect.
+            self._staged = self._codex_oauth.stage(request.model_credential)
+            material.prepare_codex(self._codex, oauth_document=self._staged.document)
+        elif self._codex is not None:
             material.prepare_codex(self._codex)
+
+    def _writable_auth(self, material: InvocationMaterial) -> int:
+        """The staged auth file, opened once and checked, for ``--bind-fd``.
+
+        The runtime gets that one file writable, nothing beside it: a bind mount of a
+        single file cannot be renamed over, unlinked or turned into a link from inside.
+        """
+        descriptor = _open_source(material.directory / AUTH_NAME)
+        try:
+            metadata = os.fstat(descriptor)
+            content = os.pread(descriptor, _MAX_AUTH + 1, 0)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+                or metadata.st_nlink != 1
+                or hashlib.sha256(content).hexdigest() != material.content_hashes[AUTH_NAME]
+            ):
+                raise Refused("invalid_staged_material")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        return descriptor
+
+    def _read_written_auth(self) -> bytes | None:
+        """What the settled runtime left in its auth file, bounded; None if unreadable."""
+        if self._material is None:
+            return None
+        try:
+            descriptor = _open_source(self._material.directory / AUTH_NAME)
+        except Refused:
+            return None
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_size > _MAX_AUTH
+            ):
+                return None
+            content = os.pread(descriptor, _MAX_AUTH + 1, 0)
+            return content if len(content) <= _MAX_AUTH else None
+        except OSError:
+            return None
+        finally:
+            os.close(descriptor)
+
+    def _collect_oauth(self) -> None:
+        """After proven settlement only: hand the runtime's auth file to the lease."""
+        staged, self._staged = self._staged, None
+        if staged is None or self._codex_oauth is None:
+            return
+        try:
+            self._codex_oauth.collect(staged, self._read_written_auth())
+        except Exception:
+            logger.warning("session host codex oauth: collect failed; volume unchanged")
 
     def _plan(
         self, material: InvocationMaterial
@@ -341,8 +432,19 @@ class BubblewrapDomain:
             # Codex keeps its config beside writable runtime state, so its home
             # is fresh tmpfs scratch with these files mounted read-only inside.
             argv.extend(("--dir", CODEX_HOME))
-            names += tuple(name for name, _ in NATIVE_FILES)
-            mounts.update(NATIVE_FILES)
+            native_files = tuple(
+                (name, path)
+                for name, path in NATIVE_FILES
+                if not (self._codex.writable_auth and name == AUTH_NAME)
+            )
+            names += tuple(name for name, _ in native_files)
+            mounts.update(native_files)
+            if self._codex.writable_auth:
+                # OAuth only: the runtime persists a refreshed token here.
+                descriptor = self._writable_auth(material)
+                self._fds.add(descriptor)
+                inherited.append(descriptor)
+                argv.extend(("--bind-fd", str(descriptor), AUTH_PATH))
         for name in names:
             descriptor = _open_source(material.directory / name)
             metadata = os.fstat(descriptor)
@@ -449,6 +551,11 @@ class BubblewrapDomain:
             return bytes(output)
         except asyncio.CancelledError:
             raise
+        except CredentialNotStaged:
+            # Only a refusal from planning, before any spawn, may claim no runtime ran.
+            if self._spawn is not None:
+                raise Refused("sandbox_execution_failed") from None
+            raise
         except BaseException:
             raise Refused("sandbox_execution_failed") from None
 
@@ -463,6 +570,17 @@ class BubblewrapDomain:
             await asyncio.sleep(0.005)
 
     async def settle(self) -> bool:
+        """Prove the domain gone; only then collect an OAuth refresh and free the lease.
+
+        Unproven settlement keeps the lease, so later OAuth launches refuse.
+        """
+        settled = await self._settle_domain()
+        if settled and self._staged is not None:
+            # Off the event loop: a volume install fsyncs.
+            await asyncio.to_thread(self._collect_oauth)
+        return settled
+
+    async def _settle_domain(self) -> bool:
         if self._settled:
             return True
         deadline = asyncio.get_running_loop().time() + 4

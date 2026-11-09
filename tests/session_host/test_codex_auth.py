@@ -555,6 +555,8 @@ _TARGETS = {
     "ControlSessionHost",
     "CodexAuthFencedHost",
     "session_host_clients",
+    # OAuth mode (bu-kiuh8v.16): the launch credential that names the pushed document.
+    "CodexOAuthCredentials",
 }
 # The one control-plane module that defines the factory, and so builds targets.
 _FACTORY_MODULE = Path("goal_runner") / "session_host_client.py"
@@ -604,6 +606,8 @@ def _live_constructions(root: Path) -> list[str]:
         "session_host_clients(config, credentials, broker_origin=o)\n",
         "from butlers.goal_runner.session_host_client import CodexAuthFencedHost as F\n"
         "F(host, authority, target, runtimes={'codex'})\n",
+        "from butlers.goal_runner.session_host_client import CodexOAuthCredentials\n"
+        "CodexOAuthCredentials(base, runtimes={'codex'})\n",
         "from butlers.goal_runner.staging import ControlSessionHost\n"
         "ControlSessionHost(send, credentials, broker_origin=o)\n",
     ],

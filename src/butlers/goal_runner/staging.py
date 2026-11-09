@@ -91,6 +91,7 @@ _FAILURE_CLASSES = frozenset({"timeout", "runtime_failed", "containment_failed",
 _USAGE_KEYS = frozenset({"input_tokens", "output_tokens", "cached_input_tokens"})
 _USAGE_MAX = 2**53
 _BUSY = HostOutcome(failure=SessionHostRefused("host_busy"))
+_NOT_STAGED = HostOutcome(failure=SessionHostRefused("credential_unavailable"))
 _MALFORMED = "session_host_malformed_reply"
 
 
@@ -112,8 +113,9 @@ def _usage(reply: dict) -> tuple[bool, dict[str, int] | None]:
 def _reply_outcome(reply: Any) -> HostOutcome:
     """Map one launch reply (#5691's closed shape) to how the invocation ended.
 
-    Returns ``_BUSY`` for the retryable ``host_busy`` refusal. Anything outside the
-    closed shape is a malformed reply; nothing of it is kept or logged.
+    Returns ``_BUSY`` for the retryable ``host_busy`` refusal, and ``_NOT_STAGED`` when
+    the host could not stage the credential and settled before any runtime started.
+    Anything outside the closed shape is a malformed reply; nothing of it is kept or logged.
     """
     malformed = HostOutcome(failure=SessionHostRefused(_MALFORMED))
     if type(reply) is not dict:
@@ -122,8 +124,11 @@ def _reply_outcome(reply: Any) -> HostOutcome:
     if status == "refused":
         if set(reply) == {"status"}:
             return HostOutcome(failure=SessionHostRefused("session_host_refused"))
-        if set(reply) == {"status", "reason"} and reply["reason"] == "host_busy":
-            return _BUSY
+        if set(reply) == {"status", "reason"}:
+            if reply["reason"] == "host_busy":
+                return _BUSY
+            if reply["reason"] == "credential_unavailable":
+                return _NOT_STAGED
         return malformed
     valid, usage = _usage(reply)
     if not valid:
@@ -174,6 +179,12 @@ class ModelCredentials:
         return credential
 
 
+class LaunchCredentials(Protocol):
+    """What resolves the one credential a launch stages (``ModelCredentials`` and wrappers)."""
+
+    async def resolve(self, runtime: str, model: str) -> bytes: ...
+
+
 class ControlSessionHost:
     """The goal runner's ``SessionHost`` over the session host's control channel."""
 
@@ -181,7 +192,7 @@ class ControlSessionHost:
     busy_attempts = 4
     busy_backoff_s = 2.0
 
-    def __init__(self, send: Send, credentials: ModelCredentials, *, broker_origin: str) -> None:
+    def __init__(self, send: Send, credentials: LaunchCredentials, *, broker_origin: str) -> None:
         self._send = send
         self._credentials = credentials
         self._origin = broker_origin.rstrip("/")
@@ -191,8 +202,9 @@ class ControlSessionHost:
 
         The host replies when the invocation settles (see ``_reply_outcome``). A
         ``host_busy`` refusal is the one retried here, with the same invocation id,
-        which the host did not remember. A credential that cannot be resolved, or a
-        host that stays busy, is raised as a ``NotInvoked`` refusal: no model ran.
+        which the host did not remember. A credential that cannot be resolved or that
+        the host could not stage, or a host that stays busy, is raised as a
+        ``NotInvoked`` refusal: no model ran.
         Any other failure is reported, never raised, as ``SessionHost`` requires.
         """
         credential = await self._credentials.resolve(launch.runtime, launch.model)
@@ -229,6 +241,9 @@ class ControlSessionHost:
                     logger.warning("session host revoke failed invocation=%s", launch.invocation_id)
                 return HostOutcome(failure=SessionHostRefused("session_host_unavailable"))
             outcome = _reply_outcome(reply)
+            if outcome is _NOT_STAGED:
+                # The host settled before spawn (a stale or busy OAuth lease): no model ran.
+                raise CredentialUnavailable("session_host_credential_unavailable")
             if outcome is not _BUSY:
                 if isinstance(outcome.failure, SessionHostRefused) and (
                     str(outcome.failure) == "session_host_malformed_reply"
