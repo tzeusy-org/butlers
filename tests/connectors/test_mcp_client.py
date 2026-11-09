@@ -42,7 +42,7 @@ async def test_tool_error_is_an_application_error_and_not_retried(monkeypatch):
     server = _server(calls)
     connects: list[str] = []
 
-    def factory(url: str, *, name: str) -> Client:
+    def factory(url: str, *, name: str, **_kwargs: Any) -> Client:
         connects.append(url)
         return Client(server, name=name)
 
@@ -94,7 +94,7 @@ async def test_session_drop_reconnects_once_then_succeeds(monkeypatch, error):
     server = _server(calls)
     built: list[Any] = []
 
-    def factory(url: str, *, name: str) -> Any:
+    def factory(url: str, *, name: str, **_kwargs: Any) -> Any:
         client = _DroppingClient(error) if not built else Client(server, name=name)
         built.append(client)
         return client
@@ -113,7 +113,7 @@ async def test_session_drop_reconnects_once_then_succeeds(monkeypatch, error):
 async def test_session_drop_on_both_attempts_raises_connection_error(monkeypatch):
     built: list[Any] = []
 
-    def factory(url: str, *, name: str) -> Any:
+    def factory(url: str, *, name: str, **_kwargs: Any) -> Any:
         client = _DroppingClient("Server session was closed unexpectedly")
         built.append(client)
         return client
@@ -136,7 +136,9 @@ async def test_transient_tool_reply_raises_a_typed_connection_error(monkeypatch)
         calls.append("ingest")
         return {"status": "transient_error", "retryable": True, "error": "retry later"}
 
-    monkeypatch.setattr(mcp_client, "MCPClient", lambda url, *, name: Client(server, name=name))
+    monkeypatch.setattr(
+        mcp_client, "MCPClient", lambda url, *, name, **_kwargs: Client(server, name=name)
+    )
     client = CachedMCPClient("http://switchboard/sse", client_name="test")
     try:
         with pytest.raises(mcp_client.TransientToolError, match="retry later") as excinfo:
@@ -204,7 +206,7 @@ async def test_a_stray_from_a_real_cancelled_session_reconnects_and_succeeds(mon
     server, holding = _holding_server()
     built: list[Any] = []
 
-    def factory(url: str, *, name: str) -> Any:
+    def factory(url: str, *, name: str, **_kwargs: Any) -> Any:
         built.append(Client(server, name=name))
         return built[-1]
 
@@ -227,7 +229,7 @@ async def test_a_stray_from_a_real_cancelled_session_reconnects_and_succeeds(mon
 async def test_a_stray_on_both_attempts_is_a_connection_error_that_names_it(monkeypatch):
     built: list[Any] = []
 
-    def factory(url: str, *, name: str) -> Any:
+    def factory(url: str, *, name: str, **_kwargs: Any) -> Any:
         built.append(_StrayClient())
         return built[-1]
 
@@ -246,7 +248,9 @@ async def test_a_stray_while_connecting_is_a_connection_error(monkeypatch):
         async def __aenter__(self) -> Any:
             await _raise_stray()
 
-    monkeypatch.setattr(mcp_client, "MCPClient", lambda url, *, name: _StrayEnter("unused"))
+    monkeypatch.setattr(
+        mcp_client, "MCPClient", lambda url, *, name, **_kwargs: _StrayEnter("unused")
+    )
     client = CachedMCPClient("http://switchboard/sse", client_name="test")
 
     with pytest.raises(ConnectionError, match="CancelledError"):
@@ -262,7 +266,7 @@ async def test_a_stray_while_closing_does_not_stop_the_reconnect(monkeypatch):
     server = _server(calls)
     built: list[Any] = []
 
-    def factory(url: str, *, name: str) -> Any:
+    def factory(url: str, *, name: str, **_kwargs: Any) -> Any:
         built.append(
             _StrayExit("Server session was closed unexpectedly")
             if not built
@@ -305,7 +309,7 @@ async def test_a_real_cancel_still_ends_the_call(monkeypatch, stage):
 
     built: list[Any] = []
 
-    def factory(url: str, *, name: str) -> Any:
+    def factory(url: str, *, name: str, **_kwargs: Any) -> Any:
         built.append(_Blocking("unused"))
         return built[-1]
 
@@ -326,7 +330,7 @@ async def test_a_real_cancel_still_ends_the_call(monkeypatch, stage):
 
 async def test_a_stray_does_not_end_the_telegram_poll_loop(monkeypatch):
     """The poll loop re-raises ``CancelledError``, so a stray used to end it for good."""
-    monkeypatch.setattr(mcp_client, "MCPClient", lambda url, *, name: _StrayClient())
+    monkeypatch.setattr(mcp_client, "MCPClient", lambda url, *, name, **_kwargs: _StrayClient())
     monkeypatch.setattr(telegram_bot, "wait_for_switchboard_ready", AsyncMock())
     connector = telegram_bot.TelegramBotConnector(
         telegram_bot.TelegramBotConnectorConfig(
@@ -375,7 +379,7 @@ async def test_a_stray_does_not_end_the_telegram_poll_loop(monkeypatch):
 
 async def test_a_stray_does_not_end_the_connector_heartbeat_loop(monkeypatch):
     """Same shape on the loop that keeps a connector registered."""
-    monkeypatch.setattr(mcp_client, "MCPClient", lambda url, *, name: _StrayClient())
+    monkeypatch.setattr(mcp_client, "MCPClient", lambda url, *, name, **_kwargs: _StrayClient())
     built_client = CachedMCPClient("http://switchboard/sse", client_name="test")
     sends = 0
     real_call = built_client.call_tool

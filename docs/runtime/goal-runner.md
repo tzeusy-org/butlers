@@ -1,9 +1,11 @@
 # Goal Runner
 
-> **Status:** first package of RFC 0038 M3 (bead `bu-u5s4w8`). The runner, goal tools, delegation,
-> budgets, Stop and recovery exist and are tested against Postgres. They are **not yet wired** to
-> admission/ingress (M6), and the session host is a protocol whose production adapter is still
-> open (see [Not yet delivered](#not-yet-delivered)).
+> **Status:** RFC 0038 M3 (bead `bu-u5s4w8`) plus the M6 control-plane seams (`bu-dhloi1.206`).
+> The runner, goal tools, delegation, budgets, Stop and recovery exist and are tested against
+> Postgres. `GoalRuntime` joins admission, periodic supervision and owner Stop to the runner, and
+> `ControlSessionHost` stages each launch's model credential over the session-host control
+> channel. All of it stays **dark** behind `GoalRuntimeSwitch` (default off): nothing constructs a
+> runtime yet, and no ingress calls it (see [Not yet delivered](#not-yet-delivered)).
 >
 > **Design contract:** [RFC 0038](../../about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md)
 > D8 (goal tools), D9 (delegation), D10 (budgets), D11 (state machines), D14 (Stop, recovery,
@@ -23,8 +25,57 @@ serialises with Stop.
 | `ledger.py` | `RunnerLedger`: every SQL statement the runner issues (invocations, budgets, outcomes) |
 | `delegation.py` | `parse_delegation` (closed request shape) and `child_grant` (grant intersection) |
 | `models.py` | `ModelLadders`: per-role tier ladders; `qualifies` / `next_tier` |
-| `tools.py` | `GoalTools`: the `goal__*` MCP tools, listed by invocation depth |
-| `contracts.py` | `SessionHost` protocol, `Launch`, `HostOutcome`, prompt-composer protocol |
+| `tools.py` | `GoalTools`: the `goal__*` and `context__search` MCP tools, listed by invocation depth |
+| `context_search.py` | `ContextSearch`: the closed query, grant-scoped fan-out, fusion and the bounded envelope |
+| `guidance.py` | `Guidance`: `guidance.search` / `guidance.load` over per-domain `GuidanceSource`s |
+| `roster_guidance.py` | The roster `GuidanceSource`s (butler `CLAUDE.md` and skills, the lead policy) and the `roster_guidance` factory |
+| `contracts.py` | `SessionHost` protocol, `Launch`, `HostOutcome`, `LaunchContext`, `LaunchFacts`, prompt-composer protocol |
+| `packet.py` | `PacketComposer`: the four-section starting-context packet |
+| `control_plane.py` | `GoalRuntime`: admission to launch, the periodic sweep, owner Stop; `GoalRuntimeSwitch` |
+| `staging.py` | `ControlSessionHost` (the `SessionHost` over the control channel), `ModelCredentials` |
+
+## Control-plane wiring (M6, dark)
+
+- **Admission to launch.** `GoalRuntime.admit(source, attempt_id)` calls
+  `GoalAdmission.admit_submission` and starts an `admitted` goal's lead. Admission is idempotent
+  per attempt and a duplicate start opens nothing, so a retried submission is safe. A `joined`
+  reply is delivered to the goal inbox by admission and starts nothing. Admission commits before
+  the start, so a process that dies in between leaves the goal `admitted` with no lead: the sweep
+  starts any such goal older than `resume_grace_seconds`.
+- **Supervision.** `GoalRuntime.start()` runs `supervise_once` every `supervise_every` seconds
+  (default 15). A failed sweep is logged and the next one runs. The switchboard daemon starts it
+  at startup (step 16d) when trusted construction set `daemon.goal_runtime` and its switch is on,
+  and `close()` runs at shutdown (step 2d, after the scheduler loop stops): supervision stops
+  and in-flight launches are abandoned, not terminated. Their leases lapse and the next runtime's sweep fences and replaces them.
+- **Owner Stop.** `GoalRuntime.stop(goal_id)` is the single entry to `GoalRunner.stop_goal`. It
+  returns `StopResult("stopped", n)` when this call fenced the goal, else `"not_running"`
+  (terminal or unknown goal; anything of it still live is still fenced).
+- **Credential staging (D3).** `ControlSessionHost.launch` resolves the launch's one model
+  credential from the credential store at launch time (`ModelCredentials`; both reviewed
+  session-host profiles use `cli-auth/openai`) and sends it with the launch command; nothing else
+  of the store is read or sent. A runtime with no reviewed profile, or a missing credential, raises
+  `CredentialUnavailable`, a `NotInvoked` refusal: the goal fails with no model run, and the
+  breaker never counts it. The host replies when the invocation settles, in a closed shape
+  (`docs/runtime/session-host.md`):
+  - `completed` ends cleanly. `failed` maps its `failure_class` onto the D14 taxonomy: `timeout`
+    is `SessionHostTimeout` (a `TimeoutError`, so it relaunches once if no call was recorded);
+    `runtime_failed`, `containment_failed` and `cancelled` are non-retryable `SessionHostFailed`;
+    any other class is `failure_class_unknown`, also non-retryable.
+  - Either may carry counts-only `usage`. The runner charges `input_tokens + output_tokens`
+    (cached input is part of input) to the invocation and goal budgets through `record_usage`
+    before deciding on a relaunch, so a run that spent its budget is never relaunched.
+  - `refused` with `reason: host_busy` (the host at its concurrency bound, the id not burned) is
+    offered again with the same invocation id, with backoff (2, 4, 8 s); a host that stays busy
+    raises `SessionHostBusy`, a `HostAtCapacity` refusal the runner defers (see Stop, recovery and relaunch). A
+    bare `refused` is non-retryable
+    `session_host_refused`.
+  - Anything else, including `usage` the host itself would not send (a non-`int` or `bool` count,
+    a negative or over-2^53 one, an unknown key), is `session_host_malformed_reply`; no reply
+    content is logged.
+
+  `terminate` sends `revoke`. The client waits `timeout_s + 35` for the reply, so a send that
+  fails is a broken channel, not a long run: the launch is revoked before it is reported
+  `session_host_unavailable`, so the host frees the credential and its active slot.
 
 Migration `sw_062` (`roster/switchboard/migrations/062_goal_runner.py`) adds the per-invocation
 budget share, deadline, model binding, relaunch lineage and closed `end_reason` to
@@ -40,13 +91,164 @@ capability and never lists one. The runner serves these tools on the same per-go
 | Tool | Depth | Effect |
 | --- | --- | --- |
 | `goal__delegate` | lead | Admit a child with a brief, capabilities, tier and budget share |
-| `goal__await` | lead | Read a child's validated result |
+| `goal__await` | lead | Read a child's status, closed `end_reason` (`launch_failed`: it never ran) and validated result |
 | `goal__stop_child` | lead | End one child (`child_stopped`) |
 | `goal__complete` | lead | Record the outcome; the goal settles |
+| `goal__inbox` | lead | Take the owner replies joined to this goal since the last call |
 | `goal__escalate` | lead | Hand the goal to a fresh lead on the next ladder tier |
 | `goal__return` | child | Return a result validated against the brief's `result_schema` |
+| `context__search` | lead, child | Grant-scoped, read-pure recall (see below); served only when a `ContextSearch` is configured |
+| `guidance__search`, `guidance__load` | lead, child | Find, and load by `<domain>:<name>` reference, the domain guidance the grant covers (see below); served only when a `Guidance` is configured |
 
 Every goal-tool call is charged against the goal budget and the caller's invocation share.
+
+### Domain guidance (D2, D8; M4)
+
+`Guidance` (`guidance.py`) serves a domain's guidance documents (its `CLAUDE.md` and skills,
+versioned) through `GuidanceSource`s, one per domain. It follows `context.search` throughout:
+
+- **Admission.** One transaction authenticates, checks the live catalog, refuses an exposed
+  reader or a third-party-origin goal (`POLICY`), finds the domains the grant covers (any
+  granted capability the catalog lists at the caller's depth, in a domain with a source) and
+  charges one call (`BUDGET` when spent), all before a source is asked. A child reaches only its
+  own grant's domains, whatever its brief names.
+- **Closed arguments.** `guidance__search` takes `query` and optional `k` (1-20);
+  `guidance__load` takes one `ref`, `<domain>:<name>`, as search returns it and a brief's
+  `guidance_refs` name it. A malformed reference, a domain outside the grant (refused before the
+  charge) or a name its domain does not know (after it) is refused `RESOURCE`.
+- **Trust.** Only `owner` or `owner_correction` text that is provably untainted is returned
+  (excerpt on search, bounded text on load, with title and version). Anything else is a bare
+  reference with its authority and taint, never its text, title or version.
+- **Closed references.** A reference reaches the model on every hit, bare ones included, so a
+  domain is a lowercase slug (`[a-z][a-z0-9_]{0,31}`, checked when `Guidance` is built) and a
+  name is `[A-Za-z0-9][A-Za-z0-9._/-]{0,127}`: no space, newline, colon or markup. A source
+  returning any other name fails, like any malformed answer; a `ref` naming one is refused
+  `RESOURCE` before the charge and before a source is asked.
+- **Read-only.** No effect row. Inlined guidance joins the reader as owner data (D6). A failing
+  source is `degraded` on search; all failing, or a failing load, is `UNAVAILABLE`.
+- **Sources see no caller.** A source gets the query or name and a `GuidanceReader` (depth
+  only), never a token, goal or grant. It must not record the read.
+- **The lead policy.** `Guidance(..., lead_policy=source)` serves one more domain, `lead`, to a
+  lead (depth 0) whatever its grant, and never to a child (`RESOURCE`): the lead policy governs
+  every lead (D1), and a child has its brief instead. No butler may be named `lead`.
+
+The roster adapters (`roster_guidance.py`) are the real sources. `roster_guidance(broker, roster)`
+builds a `Guidance` with one `ButlerGuidance` per domain butler (a `roster/<butler>/` holding a
+`butler.toml`; `shared/` is not a domain) and `LeadPolicyGuidance` for
+`roster/switchboard/goal-policy/LEAD.md`. Nothing constructs it in a daemon yet (the goal runtime
+itself is unconstructed until its wiring lands).
+
+- **Documents.** A butler's `CLAUDE.md` (name `CLAUDE.md`) and each
+  `.claude/skills/<skill>/SKILL.md` (name `skills/<skill>`, `<skill>` a lowercase slug, so every
+  name is a closed reference); the lead policy is `lead:LEAD.md`.
+  Each is `owner` authority and untainted (git-reviewed owner config), versioned
+  `sha256:<16 hex>` of the served text, so the version is stable across reads and changes on any
+  edit, including to an included file.
+- **Includes and session notes.** Whole-line `@<file>.md` includes resolve as the CLI does (depth
+  3, no cycles). Every `Notes to self` section is dropped: sessions write it, not the owner (D2
+  moves it to a record capability), so it is never served as owner text.
+- **Confinement.** A name is a key in the set the adapter enumerates, never a path, so `../x` is
+  just unknown (`RESOURCE`). Every file, include and symlink target is resolved and must stay
+  inside the roster root; only `.md` files are read, never an env or secret-looking name. A
+  document whose served text (after includes, with notes stripped) is over 64 KiB is omitted,
+  never served cut, so session notes cannot push a butler's guidance out. Each raw file read,
+  and the raw expansion, is capped at 8 x 64 KiB, since raw text still carries the notes. Reads are fresh per call
+  on a worker thread; nothing is cached or recorded.
+- **Search.** Term counts over the document, a name or title hit weighing three body hits;
+  documents with no hit are not returned; ties break by name.
+
+### Joined replies (inbox)
+
+An owner reply that admission joins to a goal lands in `switchboard.goal_inbox`. A joined goal is
+always `running` (a settling goal takes no joins, and D11 has no `waiting` state yet), so its
+reader is the live lead, or the lead the sweep starts next after a lapse, resume or escalation.
+The session host cannot push input into a live session, so the lead pulls replies between tool
+calls with `goal__inbox` (`Broker.goal_inbox`):
+
+- Each unconsumed row is consumed once, oldest first (at most 20 per call), through
+  `consume_inbox`. The row's label joins the calling lead (cause `inbox`) in the same transaction,
+  so the lead is exposed before it learns of the reply.
+- The caller's token fences the epoch. A superseded, Stopped or ended lead fails authentication
+  and consumes nothing, so its rows wait for the successor lead. A child cannot call it.
+- A reply carries references only (`inbox_id`, `source_ref`, `reply_effect_id`, `received_at`).
+  The inbox stores no message body, so reading the reply text is a separate read.
+
+## Context search (D8, D15, S5)
+
+`context.search` (`context__search`) is served to both depths, beside the goal tools. The `context`
+namespace is reserved like `goal`: no catalog capability of that domain is listed or callable.
+
+- **Closed query.** Keys `query`, `anchors`, `as_of`, `since`, `until`, `regions`, `kinds`, `k`;
+  anything else, or any value outside `ContextSearchLimits` (query 1024 UTF-8 bytes, 16 anchors,
+  16 regions/kinds, `k` 1-20), refuses `POLICY` before anything is charged. Anchors are entity
+  UUIDs, instants must carry a zone, and a point in time (`as_of`) cannot be combined with a window.
+- **Grant-scoped.** A domain is searched only if the invocation holds an unrestricted grant on a
+  `read` capability of that domain that the catalog lists at its depth. A domain reached only
+  through resource-restricted grants is not searched, because a source cannot honour a per-resource
+  restriction. A grant that covers no source refuses `CAPABILITY` and charges nothing. A child holds
+  a subset of its lead's grant, so it sees a subset of the sources.
+- **S5 trust rules.** An exposed reader, or one of third-party origin, is refused `POLICY` before
+  anything is charged: S5 gives it availability only, never recall. Only owner-authored
+  (`owner`, `owner_correction`), provably untainted text is inlined; every other hit is a bare
+  reference (`inline: false`, no excerpt) carrying its `category`, `authority` and `taint` label,
+  and a missing authority or taint never inlines. The six sensitive categories are excluded unless
+  the query names one in `regions` or `kinds` and a granted read capability declares it (otherwise
+  `RESOURCE`, uncharged). A hit in an excluded category is dropped whatever the source returned,
+  and not counted. A source gets `ReaderContext` (depth, exposure, the categories allowed), never a
+  token, goal or grant.
+- **Read-pure.** A call is charged to the goal budget and the caller's share like every goal tool
+  (`BUDGET` when spent, before any source is asked). It writes no effect row. The only other write
+  is the reader's label join for what it read (D6): a source's stamp account sets the label, and
+  hits without an owner-untainted account, or from a tainted writer, expose the reader. A source
+  that returned nothing joins nothing.
+- **Envelope.** Whole items with `ref` (`<source>:<ref>`), region, kind, a bounded excerpt,
+  `observed_at`, `authority` and `conflict_set`; `sources` (per-source `ok`, `timeout`, `failed`);
+  `omitted` (count and reason `k` or `packet_budget`). Sources are fused by rank, never raw score,
+  and shown in the order of credence. One slow or failed source makes the status `degraded`; all
+  failing refuses `UNAVAILABLE`.
+- **Closed labels.** A hit's `ref` and `conflict_set` (`[A-Za-z0-9][A-Za-z0-9._:/-]`, up to 256)
+  and its region and kind (`[A-Za-z0-9][A-Za-z0-9._/-]`, up to 64) reach the model on every hit,
+  bare references included, so anything else (a space, a newline, markup) fails the whole source,
+  as does an `observed_at` that is not a zoned `datetime`.
+- **Not yet covered.** Preconditions for any production `ContextSource` adapter, which the engine
+  cannot enforce from outside a source:
+  - an availability-only view for exposed and third-party goals (`busy_until` or unknown); they are
+    refused outright today;
+  - private-custody exclusion and raw-coordinate exclusion in every hit;
+  - per-hit `category`, `authority` and `tainted` supplied truthfully (a hit with no taint is never
+    inlined, so an adapter that cannot say loses inlining, not safety);
+  - resolving an opaque reference to its text, which must be its own label-joining read;
+  - owner-law `never` terms on a domain's read capability do not yet exclude its source.
+  Limits are a constructor argument, not yet read from `runtime_config`.
+
+## Starting-context packet (D15)
+
+`PacketComposer` replaces the minimal prompt. Every launch gets `<goal_packet version=1>` with the
+same sections, built from the ledger rows the broker enforces (`RunnerLedger.launch_facts`), never
+from the model:
+
+1. `task` (leads: runner-authored) or `brief` (children: objective, success conditions and the
+   fixed result schema), including the brief's context and guidance references, all inside one
+   block labelled lead-written. Every lead-authored item is rendered as a JSON string literal
+   (newlines and quotes escaped) and entity-escaped, so it cannot forge a packet line, close its
+   fence or open another section.
+2. `grant` and `budget`: the invocation's own grant and what is left of its calls, turns, tokens
+   and wall time. Leads also see the goal's remaining calls, tokens and seconds.
+3. `ledger`: only for a lead that follows one that ran (recovery, escalation, relaunch): the
+   effects and children, as identifiers and statuses, and the goal's pending inbox replies as
+   `inbox_pending: <count>` and up to 20 `inbox: <id>` lines. Stating them consumes nothing and
+   joins no label; the lead reads them with `goal__inbox`, which does both. A first lead has no
+   ledger, and neither does a lead re-offered after every earlier lead ended `launch_failed`
+   (the host had no room, so none ran). A child never gets one.
+4. `refs`: the context tools the broker serves (runner-authored only). `GoalTools` points the
+   runner's `PacketComposer` at exactly the tools it serves (`context__search` when a
+   `ContextSearch` is configured, `guidance__search` and `guidance__load` when a `Guidance` is);
+   none are advertised otherwise.
+
+A child's packet carries its own brief, grant and share only: no origin, exposure, epoch,
+goal-wide budget, ledger or parent identifier. The runner uses `PacketComposer()` unless a
+composer is passed. The lead's goal input, owner profile, lead policy and domain index (D15) are not
+in the packet yet: admission and ingress (M6) own them.
 
 ## Delegation (D9)
 
@@ -115,6 +317,16 @@ Budgets fail closed and are charged atomically inside the broker's per-call tran
   `budget_exhausted` after a lead's turns or tokens ran out, otherwise `failed`. The failure class
   is not persisted, so a sweep relaunch cannot apply the retryable classifier: it applies the two
   ledger rules only.
+- **A host with no room defers the launch.** When the session host stays at its concurrency bound
+  through every re-offer (`HostAtCapacity`), nothing ran: the invocation ends `failed` with
+  `launch_failed`, its invocation goes back to the budget, the kernel records a `suppressed`
+  attempt (never a runtime failure, never a relaunch), and nothing is charged. A child's lead
+  keeps running and sees the child failed. A lead's goal stays `running`, and the sweep above
+  offers the same role and tier again at the next epoch, until `busy_defer_seconds` (default
+  900) have passed since the first lead in the unbroken run the host turned away; after that the
+  goal ends `failed`. A lead that replaces a turned-away relaunch is that relaunch, so it gets
+  none of its own. Stop during a deferral wins: a stopped goal is never resumed, and a Stop during
+  the re-offers keeps the invocation's `stopped` end.
 
 ## Roles, tiers and ladders (D16)
 
@@ -134,14 +346,22 @@ of the ladder, or with no invocation room left, it refuses and the current lead 
 
 ## Telemetry (D17)
 
-Spans (`goal.delegate`, `goal.complete`, `goal.escalate`, `goal.stop`, `goal.recover`, `goal.resume`, and the
+Spans (`goal.context_search`, `goal.delegate`, `goal.complete`, `goal.escalate`, `goal.stop`, `goal.recover`, `goal.resume`, and the
 per-launch span) carry identifiers only: goal id, invocation id, depth, lead epoch and tier. No
 brief text, arguments or results.
 
 ## Not yet delivered
 
-- `context.search` (AC8) and `guidance.search` / `guidance.load` (M4).
-- The production session-host adapter and runtime usage relay (depends on `bu-kiuh8v`).
+- The per-domain `ContextSource` adapters (a domain's memory and facts).
+- The lead policy's text: `roster/switchboard/goal-policy/LEAD.md` is owner-authored doctrine
+  and does not exist yet, so `lead:LEAD.md` serves nothing until the owner writes it.
+- The deployed session host (`bu-kiuh8v`), and a usage relay between tool calls; today the
+  runner charges only the counts a settled run reports.
+- Constructing the runtime in the control plane: a live `Broker` needs the signing key and the
+  isolated `butlers-control` process (`bu-jnhxc5`).
+- Calling `GoalRuntime.admit` from ingress, confirms and obligations, and an owner Stop surface
+  (the D19 dashboard change, or a control-plane service route).
+- Waking a `waiting` goal on a joined reply or condition (RFC 0038 S2; there is no `waiting`
+  state yet), and the reply text itself: `goal__inbox` returns references only.
 - `awaiting_approval` and parked-wait continuation (`bu-dhloi1.7`).
-- The four-section starting-context packet; `MinimalComposer` is a placeholder.
-- Wiring to admission and ingress (M6), and per-invocation model credential staging.
+- The lead's goal input, owner profile, lead policy and domain index in the packet (M6).

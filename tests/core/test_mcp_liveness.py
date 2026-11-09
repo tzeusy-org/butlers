@@ -169,3 +169,28 @@ def test_the_daemon_to_daemon_call_sites_use_the_liveness_client() -> None:
     assert deps.MCPClient is LivenessClient
     assert forwarder.Client is LivenessClient
     assert route.MCPClient is LivenessClient
+
+
+async def test_connecting_to_a_frozen_server_ends_at_the_init_timeout(server) -> None:
+    """``Client.__aenter__`` sends ``initialize`` and, by default, waits for it forever, so a
+    first connect or a reconnect to a frozen server would hang. The TCP connection is accepted
+    by the kernel, so only the init timeout ends it (bu-dhloi1.246)."""
+    process, url = server
+    os.kill(process.pid, signal.SIGSTOP)
+    client = LivenessClient(url, init_timeout=0.5)
+
+    started = time.monotonic()
+    with pytest.raises(Exception):  # noqa: B017, PT011
+        async with asyncio.timeout(15):
+            await client.__aenter__()
+
+    # Ended by the 0.5s init timeout, not by the 15s guard above.
+    assert time.monotonic() - started < 5
+
+
+async def test_the_default_init_timeout_is_bounded_and_can_be_overridden() -> None:
+    from butlers.mcp_liveness import DEFAULT_INIT_TIMEOUT_S
+
+    assert 0 < DEFAULT_INIT_TIMEOUT_S <= 60
+    assert LivenessClient("http://127.0.0.1:1/mcp")._init_timeout == DEFAULT_INIT_TIMEOUT_S
+    assert LivenessClient("http://127.0.0.1:1/mcp", init_timeout=3)._init_timeout == 3

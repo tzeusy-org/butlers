@@ -23,7 +23,15 @@ from butlers.capability_broker.recipients import live_owner
 from butlers.capability_broker.typed import TypedSchema, parse_schema
 from butlers.core.goal_admission import Grant, decode_grants, digest, encode_grants
 
-from .contracts import GoalEnded, InvocationBudgetExhausted, LedgerSummary, Role
+from .contracts import (
+    GoalBudgetView,
+    GoalEnded,
+    InvocationBudgetExhausted,
+    InvocationShare,
+    LaunchFacts,
+    LedgerSummary,
+    Role,
+)
 from .delegation import DelegationRequest, child_grant
 
 LIVE = ("launching", "running")
@@ -32,6 +40,8 @@ _STOPPABLE = ("admitted", "running", "awaiting_approval", "recovering", "settlin
 # Goal states a failed lead or exhausted budget ends (never settling: its lead is done).
 _ACTIVE = ("admitted", "running", "awaiting_approval", "recovering")
 _TERMINAL = ("completed", "partial", "failed", "stopped", "budget_exhausted")
+# Pending inbox ids a summary lead's packet lists; the count covers the rest.
+INBOX_LISTED = 20
 # Effects that may still change: settling waits for them (D11).
 _UNSETTLED = ("requested", "parked", "approved", "dispatched")
 Outcome = Literal["completed", "partial", "failed"]
@@ -60,6 +70,10 @@ class Leaderless:
     role: Role
     tier: str | None
     relaunch_of: UUID | None
+    deferred_seconds: float | None = None
+    """For a lead the host had no room for: how long since the first such lead in a row."""
+    relaunch_spent: bool = False
+    """A lead in that row was a D14 relaunch, so its replacement must not relaunch again."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,6 +428,23 @@ class RunnerLedger:
                 invocation_id,
             )
         return ended is True
+
+    async def defer(self, goal_id: UUID, invocation_id: UUID) -> bool:
+        """End a launch the session host had no room for; nothing of it ran.
+
+        The invocation ends ``launch_failed`` and its token is revoked, and the
+        invocation it drew goes back to the budget (D10 charges only launches that
+        ran). False when the ledger had already ended it (Stop, a lapsed lease),
+        which keeps that end and its charge.
+        """
+        if not await self.end(goal_id, invocation_id, "failed", "launch_failed"):
+            return False
+        await self.connection.execute(
+            "UPDATE switchboard.budgets SET used_invocations = used_invocations - 1, "
+            "updated_at = now() WHERE goal_id = $1 AND used_invocations > 0",
+            goal_id,
+        )
+        return True
 
     async def goal_status(self, goal_id: UUID) -> str | None:
         return await self.connection.fetchval(
@@ -800,6 +831,22 @@ class RunnerLedger:
             == "launching"
         )
 
+    async def unlaunched(self, grace_seconds: float) -> list[UUID]:
+        """Admitted goals no lead was ever opened for, admitted over ``grace_seconds`` ago.
+
+        Admission commits before the runner starts the goal, so a process that
+        dies between the two leaves the goal admitted with no invocation; the
+        start right after admission opens well inside the grace (bu-dhloi1.206).
+        """
+        rows = await self.connection.fetch(
+            "SELECT g.id FROM switchboard.goals g WHERE g.status = 'admitted' "
+            "AND g.created_at <= clock_timestamp() - make_interval(secs => $1::float8) "
+            "AND NOT EXISTS (SELECT 1 FROM switchboard.invocations i "
+            "WHERE i.goal_id = g.id AND i.depth = 0) ORDER BY g.id",
+            grace_seconds,
+        )
+        return [row["id"] for row in rows]
+
     async def leaderless(self, grace_seconds: float) -> list[Leaderless]:
         """Running or recovering goals whose latest lead ended over ``grace_seconds`` ago.
 
@@ -809,9 +856,18 @@ class RunnerLedger:
         """
         rows = await self.connection.fetch(
             "SELECT g.id AS goal_id, l.id, l.end_reason, l.model_role, l.model_tier, "
-            "l.relaunch_of FROM switchboard.goals g "
+            "l.relaunch_of, d.deferred_seconds, d.relaunch_spent FROM switchboard.goals g "
             "JOIN LATERAL (SELECT * FROM switchboard.invocations i WHERE i.goal_id = g.id "
             "AND i.depth = 0 ORDER BY i.lead_epoch DESC, i.created_at DESC LIMIT 1) l ON true "
+            # The unbroken run of leads the host had no room for, ending at the latest.
+            "LEFT JOIN LATERAL (SELECT "
+            "extract(epoch FROM clock_timestamp() - min(b.created_at))::float8 "
+            "AS deferred_seconds, bool_or(b.relaunch_of IS NOT NULL) AS relaunch_spent "
+            "FROM switchboard.invocations b WHERE b.goal_id = g.id AND b.depth = 0 "
+            "AND b.end_reason = 'launch_failed' AND b.lead_epoch > COALESCE((SELECT "
+            "max(n.lead_epoch) FROM switchboard.invocations n WHERE n.goal_id = g.id "
+            "AND n.depth = 0 AND n.end_reason IS DISTINCT FROM 'launch_failed'), -1)) d "
+            "ON l.end_reason = 'launch_failed' "
             "WHERE g.status IN ('running', 'recovering') "
             "AND l.status <> ALL($1::text[]) "
             "AND l.ended_at <= clock_timestamp() - make_interval(secs => $2::float8) "
@@ -828,6 +884,8 @@ class RunnerLedger:
                 row["model_role"] or "lead",
                 row["model_tier"],
                 row["relaunch_of"],
+                row["deferred_seconds"],
+                bool(row["relaunch_spent"]),
             )
             for row in rows
         ]
@@ -852,8 +910,24 @@ class RunnerLedger:
         )
         return [row["id"] for row in rows]
 
-    async def summary(self, goal_id: UUID) -> LedgerSummary:
-        """The effect ledger and returned child results, identifiers only (D14)."""
+    async def summary(self, goal_id: UUID, lead_id: UUID) -> LedgerSummary | None:
+        """What an earlier lead left for lead ``lead_id``, identifiers only (D14).
+
+        ``None`` when no earlier lead of the goal ran (each ended ``launch_failed``:
+        the host had no room for it), so the lead starts as a first lead. Pending
+        inbox replies are stated by id and count, never consumed: the lead reads
+        them through ``goal.inbox``, which joins their labels.
+        """
+        ran = await self.connection.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM switchboard.invocations WHERE goal_id = $1 "
+            "AND depth = 0 AND id <> $2 AND end_reason IS DISTINCT FROM 'launch_failed')",
+            goal_id,
+            lead_id,
+        )
+        if not ran:
+            return None
+        inbox = await self.broker.pending_inbox(goal_id, INBOX_LISTED)
+        pending = await self.broker.pending_inbox_count(goal_id) if inbox else 0
         effects = await self.connection.fetch(
             "SELECT id, capability, status FROM switchboard.effects WHERE goal_id = $1 "
             "ORDER BY created_at, id",
@@ -867,6 +941,52 @@ class RunnerLedger:
         return LedgerSummary(
             tuple((str(e["id"]), e["capability"], e["status"]) for e in effects),
             tuple((str(c["id"]), c["status"]) for c in children),
+            tuple(str(row["id"]) for row in inbox),
+            pending,
+        )
+
+    async def launch_facts(self, goal_id: UUID, invocation_id: UUID) -> LaunchFacts:
+        """The invocation's grant and share and the goal's remaining budget, for its packet.
+
+        Read from the ledger rows the broker enforces, so the packet states exactly what a
+        call will be checked against. A child's fixed result schema comes with them (D9).
+        """
+        row = await self.connection.fetchrow(
+            "SELECT i.grant_snapshot, i.depth, i.max_calls, i.used_calls, i.max_turns, "
+            "i.max_tokens, "
+            "ceil(extract(epoch FROM i.deadline - clock_timestamp()))::bigint AS seconds_left, "
+            "r.result_schema::text AS schema_text, "
+            "b.max_calls AS goal_max_calls, b.used_calls AS goal_used_calls, "
+            "b.max_tokens AS goal_max_tokens, b.used_tokens AS goal_used_tokens, "
+            "ceil(extract(epoch FROM b.deadline - clock_timestamp()))::bigint AS goal_seconds "
+            "FROM switchboard.invocations i "
+            "JOIN switchboard.budgets b ON b.goal_id = i.goal_id "
+            "LEFT JOIN switchboard.goal_child_results r "
+            "ON (r.goal_id, r.invocation_id) = (i.goal_id, i.id) "
+            "WHERE i.goal_id = $1 AND i.id = $2",
+            goal_id,
+            invocation_id,
+        )
+        if row is None:
+            raise GoalEnded("invocation_not_found")
+        schema = None if row["schema_text"] is None else json.loads(row["schema_text"])
+        return LaunchFacts(
+            decode_grants(row["grant_snapshot"]),
+            InvocationShare(
+                row["max_calls"],
+                row["used_calls"],
+                row["max_turns"],
+                row["max_tokens"],
+                row["seconds_left"],
+            ),
+            GoalBudgetView(
+                row["goal_max_calls"],
+                row["goal_used_calls"],
+                row["goal_max_tokens"],
+                row["goal_used_tokens"],
+                row["goal_seconds"],
+            ),
+            schema,
         )
 
     # -- usage metering (D10) -------------------------------------------------

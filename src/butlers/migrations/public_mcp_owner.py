@@ -1780,7 +1780,24 @@ END IF;""")
 \\gset
 \\if :e_has_sub
 ALTER SUBSCRIPTION butlers_public_sub DISABLE;
-ALTER SUBSCRIPTION butlers_public_sub SET (slot_name=NONE);
+"""
+    # Same-instance topology: a tablesync worker inside CREATE_REPLICATION_SLOT
+    # waits for every transaction in flight to finish. DROP SUBSCRIPTION waits
+    # for that worker to exit while its own transaction holds an xid, so the two
+    # deadlock until statement_timeout and leave a disabled slotless subscription
+    # behind. DISABLE has committed, so let the workers drain before ALTER/DROP.
+    sql += _do("""deadline:=clock_timestamp()+interval '30 seconds';
+    LOOP
+        EXIT WHEN NOT EXISTS(SELECT 1 FROM pg_stat_subscription ws
+            JOIN pg_subscription s ON s.oid=ws.subid
+            WHERE s.subname='butlers_public_sub' AND
+            s.subdbid=(SELECT oid FROM pg_catalog.pg_database WHERE
+            datname=current_database()) AND ws.pid IS NOT NULL);
+        IF clock_timestamp()>deadline THEN RAISE EXCEPTION
+        'subscription worker drain deadline'; END IF;
+        PERFORM pg_sleep(0.05);
+    END LOOP;""")
+    sql += """ALTER SUBSCRIPTION butlers_public_sub SET (slot_name=NONE);
 DROP SUBSCRIPTION butlers_public_sub;
 \\endif
 """

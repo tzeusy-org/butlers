@@ -215,7 +215,11 @@ class CachedMCPClient:
     async def _connect(self) -> None:
         """Establish a new MCP client connection."""
         await self._disconnect()
-        client_ctx = MCPClient(self._endpoint_url, name=self._client_name)
+        # fastmcp gives ``initialize`` no deadline by default; bound it by the connect deadline so
+        # the handshake itself ends, and the client cleans up, instead of leaning on the outer wait.
+        client_ctx = MCPClient(
+            self._endpoint_url, name=self._client_name, init_timeout=self._connect_timeout_s
+        )
         entered = await client_ctx.__aenter__()
         self._client_ctx = client_ctx
         self._client = entered if entered is not None else client_ctx

@@ -194,6 +194,23 @@ class BrokerLedger:
             raise BrokerRefused(Reason.AUTHENTICATION)
         return True
 
+    async def pending_inbox(self, goal_id: UUID, limit: int) -> list[Any]:
+        """The goal's unconsumed inbox rows, oldest first (the goal is locked)."""
+        return await self.connection.fetch(
+            "SELECT id, source_ref, reply_effect_id, created_at FROM switchboard.goal_inbox "
+            "WHERE goal_id = $1 AND consumed_at IS NULL ORDER BY created_at, id LIMIT $2",
+            goal_id,
+            limit,
+        )
+
+    async def pending_inbox_count(self, goal_id: UUID) -> int:
+        """How many of the goal's inbox rows are unconsumed (ids are not labels: no join)."""
+        return await self.connection.fetchval(
+            "SELECT count(*) FROM switchboard.goal_inbox "
+            "WHERE goal_id = $1 AND consumed_at IS NULL",
+            goal_id,
+        )
+
     async def read_child_result(self, goal_id: UUID, lead_id: UUID, child_id: UUID) -> Label:
         """A lead reading its child's result joins the child's label (cause ``child``)."""
         if await self._lock_goal(goal_id) is None:

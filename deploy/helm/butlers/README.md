@@ -59,9 +59,14 @@ Port 41199 permits only pods with this release's instance label and component
 trusted deployment identities, not caller input.
 
 `sessionHost.enabled` (default false, requires `butlersControl.enabled`) renders the
-dark RFC 0038 D3 session-host skeleton: one idle `session-host` Deployment with no
-port, Service, secret, volume or credential, and excluded from the namespace ingress
-allow so it has no inbound path. Egress is not restricted yet (`trackerEgress` allows
+dark RFC 0038 D3 session host: a `session-host` Deployment running
+`butlers session-host`, which refuses every launch and serves the Codex credential
+volume over mTLS. Its control port (`sessionHost.port`, 41198) has a ClusterIP Service,
+and `<release>-session-host-ingress` admits only butlers-control there; it stays
+excluded from the namespace ingress allow. Its only secret is its own PKI
+(`sessionHost.pkiSecret`, provisioned out of band; the pod does not start without it).
+The credential PVC is `<release>-session-host-credentials`. It carries no database,
+domain or connector credential. Egress is not restricted yet (`trackerEgress` allows
 all destinations and policies union); that is the dev reachability work.
 `tests/scripts/test_session_host_env_guard.py` pins its environment composition.
 NetworkPolicy enforcement and the owner Telegram smoke still require actual dev

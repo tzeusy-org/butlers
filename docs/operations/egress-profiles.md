@@ -231,6 +231,14 @@ The Dashboard readiness canary is an actual internal outbound resolver, bound to
 metadata records the Dashboard workload and existing control peer; it grants no
 additional route.
 
+The dark session-host broker defaults in Helm and Compose are blocked
+`broker.invalid` placeholders, not admitted destinations. Its mTLS control listener,
+PKI/staging/credential-volume layout and off-by-default enablement do not grant
+broker egress. The Codex OAuth document parser's `https://api.openai.com/auth` string
+is an offline JWT claim-map key, not a network request or issuer verification.
+Session-host startup uses the same installed-only sealed Python dispatcher as
+other application roles; it never resolves or installs dependencies at startup.
+
 Inventory schema `butlers.egress-profile-coverage/v2` stores bundle and topology
 identities as explicit `{"sha256": "<digest>"}` records. These readable public
 content hashes remain exact source checks, distinct from credential assignments;

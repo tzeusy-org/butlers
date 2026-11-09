@@ -1,9 +1,11 @@
 # Dark session-host foundation
 
-`butlers.session_host` is a private, unmounted library for RFC0038 D3 sandboxing
-and authenticated local dispatch. It has no production entrypoint, deployment,
-provider profile or imports from the existing daemon, runner or adapters. Importing
-it starts no listener or process. It does not make any runtime/model tuple eligible.
+`butlers.session_host` is a private library for RFC0038 D3 sandboxing and
+authenticated local dispatch. Its process entrypoint (`butlers session-host`) and
+off-by-default Compose/Helm manifests are described under
+[The host process and its manifests](#the-host-process-and-its-manifests). It has no
+provider profile and no imports from the existing daemon, runner or adapters.
+Importing it starts no listener or process. It does not make any runtime/model tuple eligible.
 This foundation implements part of `bu-kiuh8v`; that parent remains incomplete.
 
 ## Trust and launch contract
@@ -24,10 +26,14 @@ checks the exact caller leaf pin before reading a command. The local client chec
 the server chain, hostname and exact leaf pin before sending credential bytes.
 Only a trusted constructor supplies these identities; no deployment PKI is inferred.
 
-`LocalControl.start()` binds only `127.0.0.1` on an ephemeral port. This is a dark
-prototype control channel, not a production listener or a dashboard endpoint.
+`LocalControl.start()` binds `127.0.0.1` on an ephemeral port unless its trusted
+constructor passes `bind_host` (an IP literal) and `bind_port`. A non-loopback bind
+is allowed only behind the same mTLS with the pinned caller and server leaves, plus a
+NetworkPolicy that admits butlers-control alone; there is no sidecar. It is a dark
+control channel, never a dashboard endpoint.
 One connection carries one JSON object, prefixed by its four-byte big-endian
-length. The aggregate limit is 280 KiB and the read/write deadlines are 3 seconds.
+length. The aggregate limit is 280 KiB and the read/write deadlines are 3 seconds, except that
+a `launch` reply is awaited until the invocation settles (see below).
 Duplicate keys and unknown fields refuse. Escaped JSON can exceed the aggregate
 limit even if individual decoded fields meet their limits.
 
@@ -40,6 +46,33 @@ The endpoint must be the trusted origin plus `/goals/{canonical goal UUID}/mcp`,
 with no query, fragment or alternative spelling. The bearer is an opaque canonical
 43-character base64url token for 32 bytes. Shape checks do not authenticate broker
 authority: the broker owns active-token/goal/invocation/epoch/grant checks.
+
+**Launch reply.** The reply to `launch` arrives when the invocation settles, so the runner-side
+client waits for the launch's own `timeout_s` plus 35 seconds (the owner's cleanup cap and
+slack), not 3 seconds; a `timeout_s` that is not a plausible launch timeout gets the largest
+bound (335s), never an unbounded wait. The reply is one of:
+
+| Reply | Meaning |
+| --- | --- |
+| `{"status":"completed"}` | The runtime exited cleanly and cleanup was proven |
+| `{"status":"failed","failure_class":C}` | It ran and did not finish well; `C` is `timeout`, `runtime_failed`, `containment_failed` (cleanup not proven; the owner is quarantined) or `cancelled` (revoke or host shutdown) |
+| `{"status":"refused"}` | Nothing started: bad frame, replay, unknown profile, staging refused, owner unhealthy |
+| `{"status":"refused","reason":"host_busy"}` | The concurrency bound is full; nothing started and the id is not remembered, so it may be offered again |
+
+Either `completed` or `failed` may carry `"usage"`: counts only (`input_tokens`, `output_tokens`,
+`cached_input_tokens`, each an integer from 0 to 2^53) that the domain reports through an
+optional `usage()` after settlement. Anything else the domain returns there is dropped. The host
+never inspects runtime output, so provider classes (auth, quota, rate limit) are not reported;
+the runner treats an unknown class as non-retryable (default-closed).
+
+**Concurrency.** `LocalControl(max_concurrent=N)` (1 to 64, default 4) runs that many
+invocations at once. A launch beyond the bound is refused `host_busy`.
+
+**Early revoke.** A `revoke` for an id that has not launched answers `revoked` and tombstones
+the id, so a later launch of it is refused (a Stop that lands before its launch). Repeating it is
+idempotent. A revoke for an id that already ran still refuses. The host remembers at most 65536
+ids; with none left it refuses new work rather than forget one, because forgetting would permit
+a replay.
 
 `revoke` accepts only `version`, `operation`, `invocation_id` and addresses the
 current owned invocation. Responses contain fixed status strings only; prompt,
@@ -94,7 +127,8 @@ provider, networking or native-conformance credit.
 ## Isolation, settlement and restart
 
 `InvocationOwner` admits one invocation identity once per owner lifetime. The
-local channel permits one active launch and also keeps an in-memory replay fence.
+local channel permits up to `max_concurrent` active launches and also keeps an in-memory
+replay fence.
 Neither fence is durable restart authority. An invocation receives only its staged
 model credential, prompt and sole-broker MCP configuration. Staging uses a private
 owned root; partial staging or uncertain cleanup poisons the owner and quarantines
@@ -233,15 +267,152 @@ What pins the off path (`tests/session_host/test_codex_auth.py`):
 - An AST scan fails if any live module outside `session_host/` constructs
   `SessionHostCodexAuth` or `CredentialVolume`.
 
+The control plane's client side is `goal_runner/session_host_client.py` (bu-kiuh8v.11),
+also dark:
+
+- `session_host_clients(config, credentials, broker_origin=)` binds `local_command` to one
+  host. `SessionHostClientConfig` names the dialed address and port, the TLS server name,
+  the host's exact leaf pin, and three mounted files: CA, client leaf and client key.
+  - Files are opened once, must be regular and at most 64 KiB, and the TLS library loads
+    the descriptors that were checked. A secret mount's links are followed.
+  - The key must not be readable by group or others, and the host's pin must not be the
+    client's own leaf.
+  - Every refusal is `session_host_client_unavailable`; no path or byte appears in it.
+  - It returns the runner's `ControlSessionHost` and the volume's `SessionHostCodexAuth`
+    over that one channel. Production CA, workload identity and rotation stay their own
+    gate: this takes whatever a trusted deployment mounts.
+- `CodexAuthFencedHost(host, authority, target, runtimes=)` wraps the runner's host for
+  the runtimes named, which must be passed explicitly.
+  - Before each such launch it pushes the authority (fenced by the last push). A push
+    that fails closed refuses the launch as `NotInvoked` (`codex_auth_unavailable`), so
+    no model runs.
+  - After the launch, whether it succeeded or failed, it collects a rotation. A
+    rotation a collect missed is flushed by the next push, under the same fence.
+  - Those launches run one at a time: two runs on one document would spend a single-use
+    refresh token twice. Other runtimes pass straight through and are never held.
+- `local_command` takes the dialed `host` by trusted construction (default `127.0.0.1`).
+  TLS still checks the server name and the pin. The TCP connect and the handshake are
+  bounded together by the 3-second I/O deadline (`TimeoutError`, an `OSError`). A
+  black-holed non-loopback host therefore fails fast instead of waiting out the
+  kernel's SYN retries while `CodexAuthFencedHost` holds its lock.
+- The AST scan also fails on any live construction of `ControlSessionHost`,
+  `CodexAuthFencedHost` or `session_host_clients` outside the factory module.
+
+Startup restore and the dashboard health probe take the same keyword-only
+`session_host` target, default `None` (bu-kiuh8v.14). Every live caller passes none.
+
+- `restore_tokens(..., session_host=)` pushes the Codex authority to the volume instead
+  of writing `~/.codex/auth.json`. Other providers restore as today. The push fails
+  closed, leaving the volume as it was. After a control-plane restart there is no fence,
+  so a host document that differs from the authority is not judged and restore reports
+  Codex `False` until a dashboard login.
+- `probe_provider` and `probe_all(..., session_host=)` check the volume's document
+  against the authority, for Codex only; the local file is neither read nor reconciled.
+  - A volume that is absent, differs or cannot be read is `probe_failed` without
+    contacting the backend.
+  - The probe never installs, rotates or collects. Push and collect around launches
+    reconcile the volume.
+  - The prepared path, used after a login test, re-reads the volume against the
+    prepared authority.
+
+### The host process and its manifests
+
+`butlers session-host` (`session_host/entrypoint.py`, bu-kiuh8v.15) runs one host
+until SIGTERM or SIGINT. It imports neither the daemon nor the goal runner.
+
+- `--pki-dir` holds `tls.crt`, `tls.key`, `client-ca.crt`, `server.sha256` and
+  `caller.sha256`. Each file is at most 64 KiB; the key must not be readable by group
+  or others; the pins are 64 hex characters. Any defect refuses as
+  `session_host_pki_unavailable` before anything listens, with no path in the refusal.
+- `--staging-root` must be empty (a fresh tmpfs or emptyDir), and `--credentials-root`
+  is the Codex volume. Each is created `0700`, or must already be a directory owned by
+  the host's uid; otherwise `session_host_storage_unavailable`. Without
+  `--credentials-root`, every Codex auth operation refuses.
+- `--bind-host` defaults to `127.0.0.1` and `--port` to an ephemeral port.
+- It installs no runtime profile, so every launch refuses. `--broker-origin` is
+  required, but no runtime reaches it yet.
+
+The manifests are off by default and pinned by
+`tests/scripts/test_session_host_env_guard.py`, which compares storage and exposure
+exactly:
+
+- Compose: the `session-host` profile on the `control-session` network, port 41198,
+  nothing published. The PKI directory is `SESSION_HOST_PKI_DIR`, mounted read-only.
+  It defaults to the keyless `deploy/session-host/pki-unprovisioned`, so an
+  unprovisioned host refuses to start. The `session_host_credentials` volume holds the
+  Codex copy and staging is a `0700` tmpfs.
+- Helm (`sessionHost.enabled`, which requires `butlersControl.enabled`): one Deployment
+  that mounts the `sessionHost.pkiSecret` Secret read-only (mode `0400`), a Memory
+  emptyDir for staging, and the `<release>-session-host-credentials` PVC (kept on
+  uninstall). There is a ClusterIP Service on `sessionHost.port`, and an ingress
+  NetworkPolicy admitting only the release's butlers-control pods on that port. The
+  PKI Secret is the only secret reference; the environment is still `HOME` alone.
+  Rendering fails if `sessionHost.pkiSecret` names the release's `<release>-bws`
+  Secret, so database credentials can never be mounted into the host.
+- Key mounts, on both sides. Any Secret volume carrying a TLS key (the host's
+  `tls.key` here, and the control plane's client key when it is wired) uses
+  `defaultMode` `0400` or `0600`, and its pod sets no `fsGroup`. An `fsGroup` makes
+  the projected key group-readable (`0440`), and both the host and
+  `session_host_clients` refuse a key with any `0o077` bit, so the pod would fail
+  closed. The env guard pins the host's `0400` and fails on an `fsGroup`.
+
+Provisioning the PKI (CA, workload identity, rotation, pin distribution) is a separate
+gate. Nothing in the control plane dials the host yet.
+
 Remaining before the switch, which is a live change:
 
-- The control-plane factory that binds `local_command` to production PKI.
-- A session-host entrypoint and a mounted credential volume in Compose/Helm.
-- Calling push and collect around runtime invocations.
-- Moving `runtime_codex` out of butlers-up.
-- Retargeting the startup restore (`restore_tokens`) and the dashboard health probe.
-- A Codex runtime mode on the session host that reads the volume. `CodexSettings` is
-  API-key only today.
+- Provisioning the session-host PKI and the control plane's client identity.
+- Calling `session_host_clients` and `CodexAuthFencedHost` from the control plane.
+- Moving `runtime_codex` out of butlers-up, which is the switch itself while butlers-up
+  runs Codex.
+- Passing the session-host target to the startup restore and the dashboard health probe.
+- Wiring the OAuth mode (below). The mode itself exists (bu-kiuh8v.16).
+  - In `entrypoint.build`, `ProfileFactory(codex_oauth=CodexOAuthVolume(volume))`, where
+    `volume` is the same `CredentialVolume` instance passed as
+    `LocalControl(credentials=)`. One instance keeps the lease and the control
+    channel's installs on one volume object.
+  - `CodexOAuthCredentials` around the control plane's `ModelCredentials`.
+  - A reviewed OAuth profile.
+
+### Codex OAuth mode (dark)
+
+`CodexSettings(model, auth="oauth")` is the second closed Codex preset. The runtime
+authenticates from the volume's device-auth document instead of an API key (bu-kiuh8v.16).
+
+- The launch credential is not a secret. It is the SHA-256 of the document
+  `CodexAuthFencedHost` just pushed, supplied by `CodexOAuthCredentials` only inside
+  that fenced launch. Outside it, a Codex launch refuses `codex_auth_unavailable`
+  (`NotInvoked`), and no API key is sent for an OAuth runtime.
+- `CodexOAuthVolume.stage` leases the volume's document only if the volume still holds
+  that digest (else `codex_auth_stale`). The document must be a valid device-auth
+  document (`oauth_account`):
+  - id, access and refresh tokens are present and `account_id` is set;
+  - the id token's account claim repeats that `account_id`;
+  - there is no API key.
+- The document is staged byte for byte as the runtime's `auth.json`. This is the one
+  writable native file, bound with `--bind-fd` from the staged file that was checked
+  (regular, owned, `0600`, one link, staged hash). The rest stays sealed read-only:
+  config, catalog, prompt and the API-key auth file of the other mode.
+  - A bind mount of a single file cannot be renamed over, unlinked or replaced with a
+    link from inside the sandbox. The pinned CLI rewrites it in place, so the runtime
+    can change that file's bytes and nothing else on the host.
+- Only after `settle()` proves the domain gone does the host read the file back
+  (bounded at 64 KiB). It installs the file into the volume by compare-and-set, with
+  the staged digest as the expected value:
+  - Garbage, an API-key document or a document for another account is `rejected`, and
+    the volume is left untouched.
+  - A volume that moved on (a dashboard login) wins, as `conflict`.
+  - The control plane's existing collect then stores the refresh in the authority.
+- One lease per volume. A second OAuth launch refuses `codex_auth_busy` until the
+  first is collected. The control plane's fence lock already serializes these launches;
+  this is the host's own guard. An unproven settlement keeps the lease, so OAuth
+  launches stay refused rather than racing a runtime that may still write.
+- A stale or busy lease is refused before spawn (`CredentialNotStaged`). The owner
+  still settles and discards the invocation, and the host replies
+  `{"status": "refused", "reason": "credential_unavailable"}`. The runner raises
+  `CredentialUnavailable("session_host_credential_unavailable")`, a `NotInvoked`
+  refusal, so no model ran and nothing counts as a runtime failure. The same refusal
+  after a spawn is still `sandbox_execution_failed`.
 
 ## Closed OpenCode settings transport (dark)
 
@@ -365,6 +536,48 @@ Also unproven: a real provider honoring the request (no real calls were made, so
 server-side behavior is outside this proof), and the bundled TLS trust path. Three
 MCP resource tools remain offered because the pinned CLI has no switch for them.
 They can only reach configured MCP servers, so the broker must answer them safely.
+
+### OAuth mode native proof
+
+The same harness runs OAuth mode (`{"oauth": True}`), with its own pinned settings hash.
+The staged document's access token has expired, so the runtime must refresh. Two more
+proof-only deltas apply, besides `openai_base_url`:
+
+- `chatgpt_base_url` points at the fakes;
+- `CODEX_REFRESH_TOKEN_URL_OVERRIDE` points the refresh at a fake token endpoint.
+
+Production sets neither.
+
+- The runtime refreshed once, with the staged refresh token, over WebSocket and over
+  HTTP. The provider saw only the refreshed access token and the staged account. All
+  nine measured checks pass as in API-key mode, and the broker call completes.
+- After settlement the volume holds the refreshed document for the same account, and
+  the lease is free.
+- If the token endpoint returns an id token for another account, the pinned CLI still
+  writes it under the old `account_id`. The claim check rejects that, and the volume
+  keeps the staged document.
+- Control: the same staged file mounted read-only (`--ro-bind-fd`) loses the refresh,
+  and the volume keeps the staged document. The writable file is what carries a
+  refresh back.
+
+What OAuth mode adds, and does not prove:
+
+- The pinned CLI also reads `GET /backend-api/wham/accounts/check` and
+  `GET /backend-api/wham/settings/user` from the ChatGPT backend.
+  - They offer no tool, and the checker allows exactly these two
+    (`OAUTH_PROVIDER_PATHS`).
+  - The fakes answer 404, so what a real backend returns, and whether that changes
+    runtime behavior, is unmeasured. That is part of the restricted-egress gate.
+- Over HTTP the CLI zstd-compresses request bodies to the ChatGPT backend. The fake
+  decompresses with the `zstd` CLI, so the native OAuth tests need it on PATH.
+- Real ChatGPT tokens, a real refresh grant and the real token endpoint were not used.
+- The runtime holds a live, single-use refresh token. Model-driven reads of
+  `$CODEX_HOME/auth.json`, and exfiltration through tool arguments or output, fall under
+  the `filesystem_isolation` and `restricted_egress` gates, as the API key does.
+- The account and claim check binds fields the document asserts about itself. It
+  guards against confusion (a refresh for the wrong account), not malice. A hostile
+  runtime can spend the refresh token and write back garbage, which is rejected but
+  costs a re-login.
 
 
 ## Installed-image evidence export (build only)

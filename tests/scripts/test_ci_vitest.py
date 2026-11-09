@@ -106,11 +106,12 @@ def _vitest_concurrent_receipt_controls(root, pair, monkeypatch, tmp_path, bound
         for name in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "VITEST_CONTROL"):
             local.delenv(name, raising=False)
         local.setenv("VITEST_CONTROL_STARTUP_DELAY", "0.2")
+        # Each stage is timed inside the run's own clock. Overlap of the two stages
+        # is proven by the rendezvous in ``overlapped_run``, not by elapsed sums.
         for child in pair:
             assert (
                 max(child["reference_elapsed_s"], child["execute_elapsed_s"]) <= child["elapsed_s"]
             )
-            assert child["reference_elapsed_s"] + child["execute_elapsed_s"] > child["elapsed_s"]
         concurrent = copy.deepcopy(pair)
         for child in concurrent:
             child.update(reference_elapsed_s=70, execute_elapsed_s=65, elapsed_s=80)
@@ -406,6 +407,16 @@ output = next((a[9:] for a in sys.argv if a.startswith('--output=')), None)
 stage = 'collect-full' if sys.argv[1] == 'list' else 'execute'
 mode = os.environ.get('VITEST_CONTROL')
 (root / ('transport-ready-' + stage)).write_text('ready')
+overlap = os.environ.get('VITEST_CONTROL_OVERLAP')
+if overlap:
+    # Rendezvous: each stage records its entry, then waits for the other's. Both
+    # markers exist only if both processes were alive at once; a serial runner
+    # leaves the first stage waiting until the transport's bound ends it.
+    (Path(overlap) / ('entered-' + stage)).write_text('1')
+    other = 'execute' if stage == 'collect-full' else 'collect-full'
+    while not (Path(overlap) / ('entered-' + other)).exists():
+        time.sleep(0.01)
+    (Path(overlap) / ('overlapped-' + stage)).write_text('1')
 if mode == 'descendant-stall' and stage == 'collect-full':
     ready_read, ready_write = os.pipe()
     child = subprocess.Popen([sys.executable, '-c', "import os, signal, sys, time; from pathlib import Path; signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(sys.argv[2]).write_text('ready'); os.write(int(sys.argv[1]), b'1'); time.sleep(3); Path(sys.argv[3]).write_text('late descendant output')", str(ready_write), str(root / 'descendant-ready'), str(root / 'descendant-late')], pass_fds=(ready_write,))
@@ -548,13 +559,31 @@ else:
         time.sleep(3)
         assert not (buildroot / "frontend/descendant-late").exists()
         local.delenv("VITEST_CONTROL")
+
+        def overlapped_run(shard: int, destination: Path) -> int:
+            # The full reference and the shard execution run concurrently: each
+            # stage saw the other enter while it was still running. An event
+            # rendezvous, not elapsed-time arithmetic, which runner load inverts.
+            rendezvous = tmp_path / f"overlap-{shard}"
+            rendezvous.mkdir()
+            with monkeypatch.context() as overlap:
+                overlap.setenv("VITEST_CONTROL_OVERLAP", str(rendezvous))
+                code = vitest.run(buildroot, shard, destination)
+            assert sorted(p.name for p in rendezvous.iterdir()) == [
+                "entered-collect-full",
+                "entered-execute",
+                "overlapped-collect-full",
+                "overlapped-execute",
+            ]
+            return code
+
         destination = tmp_path / "vitest-healthy"
-        assert vitest.run(buildroot, 1, destination) == 0
+        assert overlapped_run(1, destination) == 0
         receipt = json.loads((destination / "receipt.json").read_text())
         assert receipt["complete"] is True and receipt["count"] == 1
         assert receipt["stage"] == "complete" and "failure_category" not in receipt
         second = tmp_path / "vitest-healthy-two"
-        assert vitest.run(buildroot, 2, second) == 0
+        assert overlapped_run(2, second) == 0
         pair = [receipt, json.loads((second / "receipt.json").read_text())]
         vitest.reconcile(buildroot, pair)
         # Same counts cannot hide changed parameters, missing declarations,

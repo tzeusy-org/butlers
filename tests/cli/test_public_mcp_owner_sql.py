@@ -63,3 +63,13 @@ def test_owner_sql_is_listed_for_the_deploy_hook(args):
     assert result.exit_code == 0
     expected = "public-mcp" if args == ["--help"] else "owner-sql"
     assert any(line.split()[:1] == [expected] for line in result.output.splitlines())
+
+
+def test_subscription_drop_waits_for_workers_to_drain_after_disable():
+    """Same-instance tablesync workers deadlock a DROP that holds its own xid (bu-b22sk6)."""
+    program = render_owner_program(load_manifest())
+    disable = program.index("ALTER SUBSCRIPTION butlers_public_sub DISABLE;")
+    drain = program.index("subscription worker drain deadline", disable)
+    detach = program.index("SET (slot_name=NONE)", disable)
+    drop = program.index("DROP SUBSCRIPTION butlers_public_sub;", disable)
+    assert disable < drain < detach < drop

@@ -158,6 +158,48 @@ def control(profile: str, config_path: Path, session_host: str) -> None:
     asyncio.run(run_control(config_path, profile=profile, session_host=session_host))
 
 
+@cli.command("session-host")
+@click.option(
+    "--pki-dir",
+    type=click.Path(path_type=Path),
+    required=True,
+    help="Mounted tls.crt, tls.key, client-ca.crt, server.sha256 and caller.sha256",
+)
+@click.option("--staging-root", type=click.Path(path_type=Path), required=True)
+@click.option(
+    "--credentials-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="The Codex credential volume's directory; without it every auth operation refuses",
+)
+@click.option("--broker-origin", required=True)
+@click.option("--bind-host", default="127.0.0.1", show_default=True, help="An IP literal")
+@click.option("--port", type=int, default=0, show_default=True)
+@click.option("--max-concurrent", type=int, default=4, show_default=True)
+def session_host(
+    pki_dir: Path,
+    staging_root: Path,
+    credentials_root: Path | None,
+    broker_origin: str,
+    bind_host: str,
+    port: int,
+    max_concurrent: int,
+) -> None:
+    """Run the dark session host (RFC 0038 D3); it refuses every launch."""
+    from butlers.session_host.entrypoint import SessionHostServeConfig, run
+
+    config = SessionHostServeConfig(
+        pki_dir=pki_dir,
+        staging_root=staging_root,
+        broker_origin=broker_origin,
+        credentials_root=credentials_root,
+        bind_host=bind_host,
+        port=port,
+        max_concurrent=max_concurrent,
+    )
+    asyncio.run(run(config))
+
+
 @cli.command("list")
 @click.option(
     "--dir",

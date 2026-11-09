@@ -55,7 +55,11 @@ from pydantic import BaseModel
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.filtered_event_buffer import (
+    FilteredEventBuffer,
+    ParkNotDurableError,
+    drain_replay_pending,
+)
 from butlers.connectors.gmail_policy import _normalize_email
 from butlers.connectors.google_fleet import (
     AccountHealthStatus,
@@ -68,6 +72,7 @@ from butlers.connectors.google_fleet import (
     _format_google_error as _format_google_error,
 )
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.connectors.known_contact_snapshot import PriorityContactSnapshotSource
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
@@ -877,6 +882,16 @@ class GDriveAccountLoop:
         self._pending_batch: list[_PendingChange] = []
         self._batch_window_opened_at: float | None = None
 
+        # No silent drop (bu-dhloi1.224): envelopes read but not yet delivered,
+        # in order, resent exactly (same key, same event id) until delivered or,
+        # once their attempts are spent, parked as replayable error rows. The
+        # page token they came from, and the metadata cache, are committed only
+        # when nothing is unsent or batched. A restart loses this state and
+        # re-reads from the committed token against the committed cache.
+        self._ingest_retry = IngestRetryBudget()
+        self._unsent: list[dict[str, Any]] = []
+        self._uncommitted_token: str | None = None
+
     def _record_source_api_success(self) -> None:
         """Clear source-API health failures after a successful Google call."""
         self._source_api_ok = True
@@ -1248,6 +1263,12 @@ class GDriveAccountLoop:
 
         await self._refresh_known_contacts()
 
+        # Deliver what an earlier cycle could not before reading anything new:
+        # nothing is read past an undelivered item (bu-dhloi1.224).
+        if self._unsent and not await self._deliver_unsent():
+            return
+        await self._commit_if_settled()
+
         # Load cursor from store (or None if first run)
         cursor = await self._load_cursor()
 
@@ -1266,7 +1287,8 @@ class GDriveAccountLoop:
             # Save the initial cursor so restarts don't re-fetch startPageToken
             await self._save_cursor(cursor)
 
-        page_token: str = cursor.page_token
+        # A batch still open read up to an uncommitted token; carry on from there.
+        page_token: str = self._uncommitted_token or cursor.page_token
         all_changes: list[dict[str, Any]] = []
         new_start_token: str | None = None
 
@@ -1287,13 +1309,11 @@ class GDriveAccountLoop:
             page_token = next_page_token
 
         if not all_changes:
-            # No changes — update cursor to the new start token if given
-            if new_start_token and new_start_token != cursor.page_token:
-                new_cursor = GDriveCursor(
-                    page_token=new_start_token,
-                    last_updated_at=datetime.now(UTC),
-                )
-                await self._save_cursor(new_cursor)
+            # No changes — move to the new start token if given (committed now,
+            # unless an open batch still holds earlier changes).
+            if new_start_token and new_start_token != page_token:
+                self._uncommitted_token = new_start_token
+                await self._commit_if_settled()
             logger.debug("Drive: no changes found for email=%s", self.email)
             return
 
@@ -1313,27 +1333,103 @@ class GDriveAccountLoop:
                 if batching:
                     self._buffer_change(change, envelope, observed_at)
                 else:
-                    await self._submit_to_ingest_api(envelope)
+                    self._unsent.append(envelope)
                 accepted_count += 1
 
+        if new_start_token is not None:
+            self._uncommitted_token = new_start_token
+        if not batching:
+            await self._deliver_unsent()
+
         logger.info(
-            "Drive: processed %d changes (%d accepted, batch_pending=%d) for email=%s",
+            "Drive: processed %d changes (%d accepted, batch_pending=%d, unsent=%d) for email=%s",
             len(all_changes),
             accepted_count,
             len(self._pending_batch),
+            len(self._unsent),
             self.email,
         )
 
-        # Checkpoint-after-acceptance: advance cursor only after successful processing (task 9.4)
-        if new_start_token is not None:
-            new_cursor = GDriveCursor(
-                page_token=new_start_token,
-                last_updated_at=datetime.now(UTC),
-            )
-            await self._save_cursor(new_cursor)
+        # Checkpoint-after-acceptance (task 9.4): the token and the metadata
+        # cache (task 9.5) are committed only once every change is delivered
+        # or parked.
+        await self._commit_if_settled()
 
+    async def _deliver_unsent(self) -> bool:
+        """Send unsent envelopes in order; True once none are left.
+
+        A failure with attempts left stops here, keeping that envelope and
+        everything after it for the next cycle. A failure that spends the
+        envelope's last attempt parks it durably as a replayable error row and
+        goes on; a park that is not written also stops here, so the page token
+        is never committed past an item with no durable copy.
+        """
+        while self._unsent:
+            envelope = self._unsent[0]
+            key = str(envelope["control"]["idempotency_key"])
+            try:
+                await self._submit_to_ingest_api(envelope)
+            except Exception as exc:
+                if not self._ingest_retry.failed(key):
+                    logger.warning(
+                        "Drive: failed to ingest %s for email=%s; holding the page token "
+                        "for a retry (error_class=%s)",
+                        envelope["event"]["external_event_id"],
+                        self.email,
+                        type(exc).__name__,
+                    )
+                    return False
+                if not await self._park(envelope, exc):
+                    return False
+            else:
+                self._ingest_retry.succeeded(key)
+            self._unsent.pop(0)
+        return True
+
+    async def _park(self, envelope: dict[str, Any], exc: BaseException) -> bool:
+        """Durably park an envelope whose attempts are spent; True once written.
+
+        Error detail is the exception class only: transport text can echo
+        content. False (the row was not written, or there is no pool) means the
+        envelope stays unsent and the page token stays held; the next cycle
+        sends it again, which only adds attempts.
+        """
+        event_id = str(envelope["event"]["external_event_id"])
+        try:
+            await self._filtered_event_buffer.park(
+                self._db_pool,
+                external_message_id=event_id,
+                source_channel=_DESCRIPTOR.channel,
+                sender_identity=self.endpoint_identity,
+                subject_or_preview=None,
+                error_detail=type(exc).__name__,
+                full_payload=FilteredEventBuffer.stored_envelope(envelope),
+            )
+        except ParkNotDurableError:
+            logger.error(
+                "Drive: attempts spent for %s (email=%s) but it could not be parked; "
+                "holding the page token",
+                event_id,
+                self.email,
+            )
+            return False
+        logger.warning(
+            "Drive: attempts spent for %s (email=%s); parked for replay",
+            event_id,
+            self.email,
+        )
+        return True
+
+    async def _commit_if_settled(self) -> None:
+        """Commit the read position once nothing read is unsent or batched."""
+        if self._uncommitted_token is None or self._unsent or self._pending_batch:
+            return
+        await self._save_cursor(
+            GDriveCursor(page_token=self._uncommitted_token, last_updated_at=datetime.now(UTC))
+        )
         # Persist updated metadata cache (task 9.5)
         await self._save_metadata_cache_to_store()
+        self._uncommitted_token = None
 
     def _buffer_change(
         self,
@@ -1372,8 +1468,17 @@ class GDriveAccountLoop:
         await self._flush_batch()
 
     async def _flush_batch(self) -> None:
-        """Submit all buffered changes as a single digest envelope and clear the buffer."""
+        """Submit all buffered changes as a single digest envelope and clear the buffer.
+
+        The digest joins the unsent queue, so a failed submission is kept and
+        resent exactly (or parked once its attempts are spent) instead of
+        raising out of the poll loop (bu-dhloi1.224). The read position is
+        committed once it is delivered.
+        """
         if not self._pending_batch:
+            # An earlier digest may still be unsent (stop() lands here).
+            await self._deliver_unsent()
+            await self._commit_if_settled()
             return
 
         opened_at = datetime.fromtimestamp(
@@ -1392,10 +1497,11 @@ class GDriveAccountLoop:
             self.email,
         )
 
-        await self._submit_to_ingest_api(envelope)
-
         self._pending_batch.clear()
         self._batch_window_opened_at = None
+        self._unsent.append(envelope)
+        await self._deliver_unsent()
+        await self._commit_if_settled()
 
     async def _submit_to_ingest_api(self, envelope: dict[str, Any]) -> None:
         """Submit an ingest.v1 envelope to Switchboard via MCP ingest tool.
@@ -1488,11 +1594,20 @@ class GDriveAccountLoop:
                 await self._task
             except (asyncio.CancelledError, Exception):
                 pass
-        # Flush any remaining batch so changes aren't lost on shutdown
+        # Flush any remaining batch so changes aren't lost on shutdown. A digest
+        # that fails is sent again or parked durably; one that is neither keeps
+        # the page token held, so the next start re-reads its changes.
         try:
             await self._flush_batch()
         except Exception as exc:
             logger.warning("Drive: error flushing batch on stop for email=%s: %s", self.email, exc)
+        # Persist the filtered (visibility) rows recorded since the last cycle.
+        try:
+            await self._flush_filtered_events()
+        except Exception as exc:
+            logger.warning(
+                "Drive: error flushing filtered events on stop for email=%s: %s", self.email, exc
+            )
         try:
             await self._mcp_client.aclose()
         except Exception as exc:
@@ -1689,8 +1804,11 @@ class GDriveAccountLoop:
             )
             return None
 
-        # Idempotency key uses modified_time epoch; fall back to observed_at (task 10.3)
-        modified_time_epoch: str | int = modified_time or observed_at
+        # Idempotency key uses modified_time epoch (task 10.3). A removed file
+        # has no file data and may be uncached: fall back to the change's own
+        # time, which a re-read reproduces, before the poll's clock
+        # (bu-dhloi1.224).
+        modified_time_epoch: str | int = modified_time or change.get("time") or observed_at
         idempotency_key = _make_idempotency_key(
             self.endpoint_identity, file_id, modified_time_epoch
         )

@@ -225,7 +225,9 @@ async def test_inverse_embed_happens_before_the_entity_locks():
     assert any(e.startswith("embed:Alex parent_of Sam") for e in events), events
 
 
-async def test_provenance_placeholder_embedding_is_computed_once_per_model():
+async def test_provenance_placeholder_embedding_is_computed_once_per_model(monkeypatch):
+    # The cache is process-global; an earlier test in the run may already have filled it.
+    monkeypatch.setattr(storage, "_placeholder_embeddings", {})
     engine = Engine()
     for _ in range(3):
         await storage._provenance_placeholder_embedding(cast(Any, engine))

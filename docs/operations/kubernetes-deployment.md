@@ -161,6 +161,7 @@ ingress is the union of the policies selecting a pod, so a deny cannot subtract 
 | `butlers-host-ingress` | Dashboard API, frontend, OwnTracks | Node and namespace pods; metrics port from the scraper namespace |
 | `butlers-metrics-ingress` | Other connectors with a metrics sidecar | Scraper namespace, metrics port only |
 | `butlers-control-ingress` | `butlers-control` | Namespace pods on 41100; session-host and control health on 41199 |
+| `butlers-session-host-ingress` | `session-host` (only when `sessionHost.enabled`) | `butlers-control` on `sessionHost.port` (41198), mTLS-pinned |
 
 The scraper namespace is `connectorMetrics.sourceNamespace` (default `lgtm`). It is matched on the
 immutable `kubernetes.io/metadata.name`; the chart refuses an empty value and the public MCP

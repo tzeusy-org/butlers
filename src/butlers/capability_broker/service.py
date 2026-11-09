@@ -48,9 +48,14 @@ from .typed import TypedRefused, parse_schema, typed_value_label, validate_value
 
 logger = logging.getLogger(__name__)
 
+# The goal tools' namespaces (RFC 0038 D8) are served by the runner, never by a domain.
+RESERVED_DOMAINS = frozenset({"goal", "context"})
+
 ActuationRiskMap = Callable[[Capability, dict[str, Any]], ActuationRisk]
 
 # A domain action's terminal decision and the parked effect state it ends in.
+# Joined replies one goal.inbox call delivers; the rest wait for the next call.
+_INBOX_BATCH = 20
 _PARKED_END = {"rejected": "rejected", "expired": "expired", "cancelled": "cancelled"}
 
 
@@ -191,7 +196,7 @@ class Broker:
                 for grant in principal.grants
                 if (capability := catalog.get(grant.capability)) is not None
                 and listable(capability, principal.depth)
-                and capability.domain != "goal"
+                and capability.domain not in RESERVED_DOMAINS
                 and not (capability.selection_bound - {k for k, _ in grant.resources})
             )
 
@@ -280,7 +285,7 @@ class Broker:
             or grant is None
             or not listable(capability, principal.depth)
             # The goal tools' namespace (D8) is reserved: never a domain capability.
-            or capability.domain == "goal"
+            or capability.domain in RESERVED_DOMAINS
         ):
             raise self._refused(principal, name, Reason.CAPABILITY)
         if not _in_scope(capability, grant, args):
@@ -604,7 +609,9 @@ class Broker:
             if principal.depth != 0:
                 raise BrokerRefused(Reason.CAPABILITY)
             boundary = BoundaryLedger(ledger)
-            status, result, label, effects = await boundary.child_outcome(principal, child_id)
+            status, end_reason, result, label, effects = await boundary.child_outcome(
+                principal, child_id
+            )
             exhausted = await boundary.charge(principal)
             if exhausted is None:
                 await boundary.join(principal, label, "child")
@@ -612,9 +619,41 @@ class Broker:
             raise exhausted
         return {
             "status": status,
+            # Closed and content-blind: ``launch_failed`` says the child never ran.
+            "end_reason": end_reason,
             "result": result if status == "returned" else None,
             "effects": effects,
         }
+
+    async def goal_inbox(self, goal_id: UUID, token: str) -> dict[str, Any]:
+        """``goal.inbox``: the lead takes its goal's joined replies, between tool calls.
+
+        Each row is consumed once, by the calling lead, in the same transaction
+        that joins its label into that lead (S1 cause ``inbox``), so the lead is
+        exposed before it learns of the reply. The token fences the epoch: a
+        superseded or Stopped lead fails authentication and consumes nothing.
+        """
+        self._require_available()
+        async with self._transaction() as ledger:
+            principal = await ledger.authenticate(goal_id, token)
+            if principal.depth != 0:
+                raise BrokerRefused(Reason.CAPABILITY)
+            exhausted = await BoundaryLedger(ledger).charge(principal)
+            delivered: list[dict[str, Any]] = []
+            if exhausted is None:
+                for row in await ledger.pending_inbox(goal_id, _INBOX_BATCH):
+                    if await ledger.consume_inbox(goal_id, principal.invocation_id, row["id"]):
+                        delivered.append(
+                            {
+                                "inbox_id": str(row["id"]),
+                                "source_ref": row["source_ref"],
+                                "reply_effect_id": str(row["reply_effect_id"]),
+                                "received_at": row["created_at"].isoformat(),
+                            }
+                        )
+        if exhausted is not None:
+            raise exhausted
+        return {"replies": delivered}
 
     # -- trusted owner-decision path (D13) --------------------------------------
 

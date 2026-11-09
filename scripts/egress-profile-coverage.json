@@ -540,6 +540,26 @@
         "dashboard-api"
       ]
     },
+    "deploy/helm/butlers/values.yaml::<deployment-scalar>::deployment::31276e1f29a03c1dbbdcd11739cbbf49f159d8493b3c6362e417d9e065e0d6a6": {
+      "class": "blocked",
+      "observed": {
+        "authorities": [
+          "broker.invalid:443"
+        ],
+        "config": null,
+        "count": 1,
+        "kind": "deployment",
+        "path": "deploy/helm/butlers/values.yaml",
+        "scope": "<deployment-scalar>",
+        "sha256": "31276e1f29a03c1dbbdcd11739cbbf49f159d8493b3c6362e417d9e065e0d6a6"
+      },
+      "reason": "Dark session-host broker-origin placeholder from deployment configuration; broker.invalid is deliberately not admitted by the session-host profile. Configured replacements require separate reviewed destination accounting and route approval.",
+      "resolver": null,
+      "sites": [],
+      "workloads": [
+        "session-host"
+      ]
+    },
     "deploy/helm/butlers/values.yaml::<deployment-scalar>::deployment::7179d937567f02e7bcb8f85d889c9a31b00873f141061aad197b1a29541d5096": {
       "class": "site",
       "observed": {
@@ -758,6 +778,26 @@
       "sites": [],
       "workloads": [
         "butlers-up"
+      ]
+    },
+    "docker-compose.yml::<deployment-scalar>::deployment::96df1917a202059021349d3638fbf47aaab0dfcd63ca11331e8274756d0d1e69": {
+      "class": "blocked",
+      "observed": {
+        "authorities": [
+          "broker.invalid:443"
+        ],
+        "config": null,
+        "count": 1,
+        "kind": "deployment",
+        "path": "docker-compose.yml",
+        "scope": "<deployment-scalar>",
+        "sha256": "96df1917a202059021349d3638fbf47aaab0dfcd63ca11331e8274756d0d1e69"
+      },
+      "reason": "Dark session-host broker-origin placeholder from deployment configuration; broker.invalid is deliberately not admitted by the session-host profile. Configured replacements require separate reviewed destination accounting and route approval.",
+      "resolver": null,
+      "sites": [],
+      "workloads": [
+        "session-host"
       ]
     },
     "docker-compose.yml::<deployment-scalar>::deployment::a79a2d2ac58e8dbf0a4686fbce59413627863185b6ad5aba74cb049c303f442f": {
@@ -5290,6 +5330,24 @@
         "butlers-control"
       ]
     },
+    "src/butlers/session_host/codex_oauth.py::_id_token_account::url::a3c42bb889a2c72e6cb1e84f8bcc9319035a4020081c9f200523f6e15b7b36d9": {
+      "class": "reference",
+      "observed": {
+        "authorities": [
+          "api.openai.com:443"
+        ],
+        "config": null,
+        "count": 1,
+        "kind": "url",
+        "path": "src/butlers/session_host/codex_oauth.py",
+        "scope": "_id_token_account",
+        "sha256": "a3c42bb889a2c72e6cb1e84f8bcc9319035a4020081c9f200523f6e15b7b36d9"
+      },
+      "reason": "Offline JWT claim-map key read by _id_token_account; this parses an existing document and performs no outbound request or issuer verification.",
+      "resolver": null,
+      "sites": [],
+      "workloads": []
+    },
     "src/butlers/session_host/contracts.py::_origin::url::66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8": {
       "class": "reference",
       "observed": {
@@ -5547,7 +5605,7 @@
       "sha256": "1f1d1883011f76f59a4175544361ce6af8874399081857c36929196f712459f3"
     },
     "deploy/helm/butlers/templates/session-host.yaml": {
-      "sha256": "73c7ce19e39bce54430a27b370440594f651c76d2460c1db1633400da32688ce"
+      "sha256": "96c602953decccf4a99b00429146ca5c2a0d2c342111458f08890bfc633f4ed6"
     },
     "deploy/helm/butlers/templates/tracker-egress.yaml": {
       "sha256": "da5c9d1b5636373dc93e8259fa73c8b1955f23971c02a322a61a0c3fca16366c"

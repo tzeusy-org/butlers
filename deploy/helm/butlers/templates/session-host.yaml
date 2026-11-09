@@ -2,9 +2,16 @@
 {{- if not .Values.butlersControl.enabled }}
 {{- fail "sessionHost.enabled requires butlersControl.enabled: the session host's only reachable peer is the control session listener" }}
 {{- end }}
-# RFC 0038 D3 session host skeleton (bu-kiuh8v.1). Dark and inert: no listener
-# exists yet, so it declares no port and no Service, and it carries no database,
-# domain or connector credential, secret or credential volume. The environment
+{{- if eq .Values.sessionHost.pkiSecret (printf "%s-bws" .Release.Name) }}
+{{- fail "sessionHost.pkiSecret must not be the release's BWS Secret: the session host never mounts database or domain credentials" }}
+{{- end }}
+# RFC 0038 D3 session host (bu-kiuh8v.1, .15). Dark: sessionHost.enabled is false by
+# default. It installs no reviewed runtime profile, so it refuses every launch; it
+# serves the Codex credential volume to the pinned control-plane caller over mTLS on
+# the control port, and the ingress policy below admits only butlers-control there.
+# It carries no database, domain or connector credential. Its only secret is its
+# own PKI (sessionHost.pkiSecret: tls.crt, tls.key, client-ca.crt, server.sha256,
+# caller.sha256), provisioned out of band; without it the pod does not start. The
 # composition is pinned by tests/scripts/test_session_host_env_guard.py.
 # Egress is NOT restricted here: trackerEgress selects every pod and allows all
 # destinations, and policies union. egressProfiles.enabled (default off) replaces that
@@ -32,11 +39,83 @@ spec:
         - name: session-host
           image: {{ include "butlers.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          # No session-host entrypoint exists yet; idle until one lands.
-          command: ["sleep", "infinity"]
+          command: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "butlers"]
+          args:
+            - session-host
+            - --pki-dir=/run/session-host/pki
+            - --staging-root=/var/lib/session-host/staging
+            - --credentials-root=/var/lib/session-host/credentials/codex
+            - --broker-origin={{ .Values.sessionHost.brokerOrigin }}
+            - --bind-host=0.0.0.0
+            - --port={{ .Values.sessionHost.port }}
+          ports:
+            - {name: control, containerPort: {{ .Values.sessionHost.port }}, protocol: TCP}
           env:
             - {name: HOME, value: /root}
             {{- with (include "butlers.egressProxyEnv" (dict "root" . "component" "session-host") | trim) }}{{ . | nindent 12 }}{{- end }}
+          volumeMounts:
+            - {name: pki, mountPath: /run/session-host/pki, readOnly: true}
+            - {name: staging, mountPath: /var/lib/session-host/staging}
+            - {name: credentials, mountPath: /var/lib/session-host/credentials}
           resources:
             {{- toYaml .Values.sessionHost.resources | nindent 12 }}
+      volumes:
+        - name: pki
+          secret:
+            secretName: {{ .Values.sessionHost.pkiSecret }}
+            defaultMode: 0400
+        - name: staging
+          emptyDir: {medium: Memory, sizeLimit: {{ .Values.sessionHost.stagingSize }}}
+        - name: credentials
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-session-host-credentials
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: session-host
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "butlers.selector" (dict "root" . "component" "session-host") | nindent 4 }}
+  ports:
+    - {name: control, port: {{ .Values.sessionHost.port }}, targetPort: control, protocol: TCP}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-session-host-credentials
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+  annotations:
+    # The Codex runtime copy; the authority stays in the database.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: {{ .Values.storage.storageClassName }}
+  resources:
+    requests:
+      storage: {{ .Values.sessionHost.credentialsSize }}
+---
+# Only the control plane may reach the session host's control port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-session-host-ingress
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" . "component" "session-host") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: butlers-control
+      ports:
+        - {protocol: TCP, port: {{ .Values.sessionHost.port }}}
 {{- end }}

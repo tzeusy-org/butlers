@@ -244,8 +244,12 @@ class BoundaryLedger:
 
     async def child_outcome(
         self, principal: Principal, child_id: Any
-    ) -> tuple[str, dict | None, Label, list[dict[str, str]]]:
-        """(status, result, child label, effect statuses) of the lead's own child."""
+    ) -> tuple[str, str | None, dict | None, Label, list[dict[str, str]]]:
+        """(status, end reason, result, child label, effect statuses) of the lead's child.
+
+        The end reason is the runner's closed, content-blind code (``launch_failed``:
+        it never ran), ``None`` while the child is live.
+        """
         await self._locked(principal.goal_id)
         try:
             identity = UUID(child_id) if type(child_id) is str else None
@@ -254,8 +258,8 @@ class BoundaryLedger:
         row = None
         if identity is not None and str(identity) == child_id:
             row = await self.connection.fetchrow(
-                "SELECT i.status, i.label_version, i.label_instr, i.label_data, i.label_sens, "
-                "r.result::text AS result FROM switchboard.invocations i "
+                "SELECT i.status, i.end_reason, i.label_version, i.label_instr, i.label_data, "
+                "i.label_sens, r.result::text AS result FROM switchboard.invocations i "
                 "LEFT JOIN switchboard.goal_child_results r "
                 "ON (r.goal_id, r.invocation_id) = (i.goal_id, i.id) "
                 # Any child of the goal, not only the caller's own: children of a
@@ -282,4 +286,4 @@ class BoundaryLedger:
             {"effect_id": str(e["id"]), "capability": e["capability"], "status": e["status"]}
             for e in effects
         ]
-        return row["status"], result, label, statuses
+        return row["status"], row["end_reason"], result, label, statuses

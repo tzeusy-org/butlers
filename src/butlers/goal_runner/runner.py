@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal
@@ -32,11 +32,11 @@ from butlers.core.model_call import AttemptOutcome, AttemptSink, CallSpec, Candi
 from .contracts import (
     Brief,
     GoalEnded,
+    HostAtCapacity,
     HostOutcome,
     InvocationBudgetExhausted,
     Launch,
     LaunchContext,
-    MinimalComposer,
     PromptComposer,
     Role,
     SessionHost,
@@ -44,6 +44,7 @@ from .contracts import (
 from .delegation import DelegationRequest, parse_delegation
 from .ledger import Leaderless, RunnerLedger, Started
 from .models import ModelLadders, next_tier
+from .packet import PacketComposer
 
 logger = logging.getLogger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -65,6 +66,9 @@ class RunnerConfig:
     # How long a running goal may sit without a live lead before the sweep
     # resumes it; an in-process successor opens well inside this.
     resume_grace_seconds: float = 90
+    # How long a goal may wait for room on the session host, from its first lead
+    # the host turned away; the sweep offers the launch again until then.
+    busy_defer_seconds: float = 900
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +84,8 @@ class _Plan:
     summary: bool = False
     relaunch_of: UUID | None = None
     """A sweep-resumed relaunch: it is the failed lead's one relaunch (D14)."""
+    relaunch_spent: bool = False
+    """Replaces a relaunch the host had no room for: it is that relaunch, so none follows."""
 
 
 class _HostedAttempt:
@@ -120,7 +126,7 @@ class GoalRunner:
         self.catalog_pool = catalog_pool
         self.sink = sink if sink is not None else AttemptSink(catalog_pool)
         self.ladders = ladders or ModelLadders()
-        self.composer = composer or MinimalComposer()
+        self.composer = composer or PacketComposer()
         self.config = config or RunnerConfig()
         self.kernel = kernel
         self._tasks: set[asyncio.Task] = set()
@@ -231,6 +237,17 @@ class GoalRunner:
             attempts.append(started.invocation_id)
             adapter.last_process_info = {"runtime_type": candidate.runtime_type}
             outcome = await self._launch(plan, started, candidate)
+            if isinstance(outcome.failure, HostAtCapacity):
+                # Nothing ran: no failure to count, nothing to charge, no relaunch.
+                async with self._txn() as ledger:
+                    await ledger.defer(plan.goal_id, started.invocation_id)
+                raise outcome.failure
+            if outcome.usage:
+                # The host's settled counts (D10), charged before the relaunch decision,
+                # so a run that spent the budget is never relaunched.
+                await self.record_usage(
+                    plan.goal_id, started.invocation_id, tokens=_host_tokens(outcome.usage)
+                )
             async with self._txn() as ledger:
                 status = await ledger.status_of(plan.goal_id, started.invocation_id)
                 if outcome.failure is None or status not in ("launching", "running"):
@@ -249,7 +266,7 @@ class GoalRunner:
             tier=plan.tier,
             exact_tier=True,
             # A sweep-resumed relaunch already is the failed lead's one relaunch.
-            max_relaunches=0 if plan.relaunch_of is not None else 1,
+            max_relaunches=0 if plan.relaunch_of is not None or plan.relaunch_spent else 1,
             redact_failures=True,
             usage_purpose="goal",
             caller="goal_runner",
@@ -271,15 +288,21 @@ class GoalRunner:
                     unopened[-1],
                 )
                 return
+            if isinstance(error, HostAtCapacity):
+                # The invocation ended launch_failed; a lead's goal stays running
+                # for the sweep to launch again (bounded), a child's is its lead's.
+                logger.info("goal runner launch deferred goal=%s role=%s", plan.goal_id, plan.role)
+                return
             await self._after_failure(plan, attempts, error)
             return
         await self._after_exit(plan, attempts[-1])
 
     async def _launch(self, plan: _Plan, started: Started, candidate: Candidate) -> HostOutcome:
         summary = None
-        if plan.summary:
-            async with self._txn() as ledger:
-                summary = await ledger.summary(plan.goal_id)
+        async with self._txn() as ledger:
+            if plan.summary:
+                summary = await ledger.summary(plan.goal_id, started.invocation_id)
+            facts = await ledger.launch_facts(plan.goal_id, started.invocation_id)
         context = LaunchContext(
             goal_id=plan.goal_id,
             invocation_id=started.invocation_id,
@@ -290,6 +313,7 @@ class GoalRunner:
             exposed=started.exposed,
             brief=plan.brief,
             ledger=summary,
+            facts=facts,
         )
         launch = Launch(
             goal_id=plan.goal_id,
@@ -494,6 +518,11 @@ class GoalRunner:
 
     async def stop(self, goal_id: UUID) -> int:
         """Owner Stop: fence in one transaction, terminate, cancel parked effects."""
+        stopped, terminated = await self.stop_goal(goal_id)
+        return terminated if stopped else 0
+
+    async def stop_goal(self, goal_id: UUID) -> tuple[bool, int]:
+        """Owner Stop; ``(whether this call stopped the goal, live invocations ended)``."""
         with _tracer.start_as_current_span(
             "goal.stop", record_exception=False, set_status_on_exception=False
         ) as span:
@@ -503,7 +532,17 @@ class GoalRunner:
             await self._terminate_all(live)
             if stopped:
                 await self._cancel_parked(goal_id)
-            return len(live) if stopped else 0
+            return stopped, len(live)
+
+    async def abandon(self) -> None:
+        """Shutdown: cancel every supervised invocation's supervision, then wait for it.
+
+        The invocations are not terminated here: their leases stop renewing and
+        lapse, and the next runner's sweep fences and replaces them (D14).
+        """
+        for task in tuple(self._tasks):
+            task.cancel()
+        await self.drain()
 
     async def _cancel_parked(self, goal_id: UUID) -> None:
         try:
@@ -514,7 +553,12 @@ class GoalRunner:
             logger.warning("goal runner parked-effect cancel unavailable goal=%s", goal_id)
 
     async def supervise_once(self) -> None:
-        """One sweep: lapsed leases, deadlines, ended goals, settling goals."""
+        """One sweep: unlaunched admissions, lapsed leases, deadlines, ended and settling goals."""
+        async with self._txn() as ledger:
+            unlaunched = await ledger.unlaunched(self.config.resume_grace_seconds)
+        for goal_id in unlaunched:
+            # A duplicate of a start still in flight is a no-op (lead_wanted).
+            self.start_goal(goal_id)
         async with self._txn() as ledger:
             lapsed = await ledger.lapsed()
         for goal_id, invocation_id in lapsed:
@@ -577,6 +621,18 @@ class GoalRunner:
         plan: _Plan | None = None
         if item.end_reason == "lease_lapsed":
             plan = _Plan(item.goal_id, item.role, tier, 0, summary=True)
+        elif item.end_reason == "launch_failed":
+            # The host had no room: offer the same lead again until the bound.
+            waited = item.deferred_seconds or 0.0
+            if waited <= self.config.busy_defer_seconds:
+                plan = _Plan(
+                    item.goal_id,
+                    item.role,
+                    tier,
+                    0,
+                    summary=True,
+                    relaunch_spent=item.relaunch_spent,
+                )
         elif item.end_reason == "escalated":
             target = await next_tier(self.catalog_pool, self.ladders, item.role, tier)
             if target is not None:
@@ -623,6 +679,15 @@ class GoalRunner:
             )
         await self._terminate_all(ended)
         return verdict
+
+
+def _host_tokens(usage: Mapping[str, Any]) -> int:
+    """Tokens a settled run used: input plus output. Cached input is part of input."""
+    return sum(
+        value
+        for key in ("input_tokens", "output_tokens")
+        if type(value := usage.get(key)) is int and value >= 0
+    )
 
 
 def _uuid(value: Any) -> UUID:

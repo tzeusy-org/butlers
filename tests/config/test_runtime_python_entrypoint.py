@@ -1,6 +1,6 @@
 """Installed-only role execution and closed offline image-input provenance.
 
-Standalone stdlib tests use disposable minimal venvs, never project installation
+Synthetic tests use disposable minimal venvs, never project installation
 or actual images. They also run under the normal pytest owning population.
 """
 
@@ -14,6 +14,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "scripts/runtime_clis/python_entrypoint.py"
@@ -102,6 +104,28 @@ class InstalledStartup(unittest.TestCase):
             json.loads(console.stdout),
             ["original", "control", "--profile", "KEY_ABSENT_STAGE", "--project", "payload"],
         )
+        # Execute the actual composed session-host payload through the same seal,
+        # with no uv/command fallback available in this synthetic environment.
+        service = yaml.safe_load((ROOT / "docker-compose.yml").read_text())["services"][
+            "session-host"
+        ]
+        self.assertEqual(
+            service["entrypoint"][:3],
+            ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py"],
+        )
+        arguments = [*service["entrypoint"][3:], *service["command"]]
+        self.assertEqual(arguments[:2], ["butlers", "session-host"])
+        session_host = self.launch(*arguments)
+        self.assertEqual(session_host.returncode, 0, session_host.stderr)
+        self.assertEqual(json.loads(session_host.stdout), ["original", *arguments[1:]])
+        seal = self.manifest.read_bytes()
+        self.manifest.unlink()
+        try:
+            refused_session_host = self.launch(*arguments)
+            self.assertEqual(refused_session_host.returncode, 78)
+            self.assertEqual(refused_session_host.stdout, "")
+        finally:
+            self.manifest.write_bytes(seal)
         module = self.launch("python", "-m", "butlers.synthetic", "--host", "0.0.0.0")
         self.assertEqual(module.returncode, 0, module.stderr)
         self.assertEqual(json.loads(module.stdout), ["original", "--host", "0.0.0.0"])
