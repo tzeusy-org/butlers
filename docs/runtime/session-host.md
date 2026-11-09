@@ -407,6 +407,12 @@ authenticates from the volume's device-auth document instead of an API key (bu-k
   first is collected. The control plane's fence lock already serializes these launches;
   this is the host's own guard. An unproven settlement keeps the lease, so OAuth
   launches stay refused rather than racing a runtime that may still write.
+- A stale or busy lease is refused before spawn (`CredentialNotStaged`). The owner
+  still settles and discards the invocation, and the host replies
+  `{"status": "refused", "reason": "credential_unavailable"}`. The runner raises
+  `CredentialUnavailable("session_host_credential_unavailable")`, a `NotInvoked`
+  refusal, so no model ran and nothing counts as a runtime failure. The same refusal
+  after a spawn is still `sandbox_execution_failed`.
 
 ## Closed OpenCode settings transport (dark)
 
@@ -565,6 +571,13 @@ What OAuth mode adds, and does not prove:
 - Over HTTP the CLI zstd-compresses request bodies to the ChatGPT backend. The fake
   decompresses with the `zstd` CLI, so the native OAuth tests need it on PATH.
 - Real ChatGPT tokens, a real refresh grant and the real token endpoint were not used.
+- The runtime holds a live, single-use refresh token. Model-driven reads of
+  `$CODEX_HOME/auth.json`, and exfiltration through tool arguments or output, fall under
+  the `filesystem_isolation` and `restricted_egress` gates, as the API key does.
+- The account and claim check binds fields the document asserts about itself. It
+  guards against confusion (a refresh for the wrong account), not malice. A hostile
+  runtime can spend the refresh token and write back garbage, which is rejected but
+  costs a re-login.
 
 
 ## Installed-image evidence export (build only)

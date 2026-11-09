@@ -29,7 +29,13 @@ from uuid import UUID
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
 
-from .contracts import BrokerBinding, LaunchRequest, Refused, RuntimeTimeout
+from .contracts import (
+    BrokerBinding,
+    CredentialNotStaged,
+    LaunchRequest,
+    Refused,
+    RuntimeTimeout,
+)
 from .credential_volume import CredentialVolume
 from .lifecycle import Domain, InvocationOwner
 
@@ -492,6 +498,9 @@ class LocalControl:
     def _reply(task: asyncio.Task, domain: object | None) -> dict:
         if _never_started(task):
             return {"status": "refused"}
+        if not task.cancelled() and isinstance(task.exception(), CredentialNotStaged):
+            # Settled before spawn: the runner reads this as not-invoked, never a failure.
+            return {"status": "refused", "reason": "credential_unavailable"}
         failure = _failure_class(task)
         reply: dict = {"status": "completed"} if failure is None else {"status": "failed"}
         if failure is not None:

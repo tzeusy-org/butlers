@@ -20,6 +20,15 @@ class Refused(ValueError):
     """Content-blind refusal: messages contain fixed reason codes only."""
 
 
+class CredentialNotStaged(Refused):
+    """The launch's credential could not be staged, so no runtime was started.
+
+    Raised before spawn (a stale or busy Codex OAuth lease). The owner still settles and
+    discards the invocation, then reports ``credential_unavailable``, which the runner
+    takes as not-invoked rather than a runtime failure.
+    """
+
+
 class RuntimeTimeout(Refused):
     """The runtime did not finish within its timeout (a D14 ``timeout`` failure class).
 

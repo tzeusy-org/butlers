@@ -13,12 +13,14 @@ import json
 import os
 from dataclasses import replace
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
+from butlers.core.model_call import NotInvoked
 from butlers.goal_runner.contracts import HostOutcome, Launch
 from butlers.goal_runner.session_host_client import CodexAuthFencedHost, CodexOAuthCredentials
-from butlers.goal_runner.staging import CredentialUnavailable
+from butlers.goal_runner.staging import ControlSessionHost, CredentialUnavailable
 from butlers.session_host.bubblewrap import BubblewrapDomain
 from butlers.session_host.codex import (
     AUTH_NAME,
@@ -29,8 +31,10 @@ from butlers.session_host.codex import (
     CodexSettings,
 )
 from butlers.session_host.codex_oauth import CodexOAuthVolume, oauth_account
-from butlers.session_host.contracts import Refused
+from butlers.session_host.contracts import CredentialNotStaged, Refused
+from butlers.session_host.control import LocalControl, local_command
 from butlers.session_host.credential_volume import CredentialVolume
+from butlers.session_host.lifecycle import InvocationOwner
 from butlers.session_host.material import InvocationMaterial
 from butlers.session_host.profiles import Profile, ProfileFactory
 from tests.session_host import codex_proof
@@ -461,3 +465,109 @@ async def test_the_digest_does_not_leak_into_a_concurrent_unfenced_resolve(volum
     release.set()
     await fenced
     assert seen == ["codex_auth_unavailable"]
+
+
+# ── A lease the host cannot take: settled before spawn, so not-invoked ─────────
+
+
+async def test_a_login_between_push_and_stage_is_not_invoked(tmp_path, pki, volume, lease):
+    """Stale between push and stage: the runner gets NotInvoked, never runtime_failed."""
+    stage = tmp_path / "owner"
+    stage.mkdir(mode=0o700)
+    stage.chmod(0o700)
+    server, client, pin = pki
+    owner = InvocationOwner(stage)
+    domains: list[BubblewrapDomain] = []
+
+    def factory(runtime: str, model: str) -> BubblewrapDomain:
+        domains.append(_domain(tmp_path, lease))
+        return domains[-1]
+
+    host = LocalControl(
+        owner=owner,
+        factory=factory,
+        **server(),
+        caller_sha256=pin("runner"),
+        server_sha256=pin("server"),
+        broker_origin="https://broker.test",
+    )
+    port = await host.start()
+
+    async def send(command: dict) -> dict:
+        # Another login lands on the volume after the fence pushed and named DOCUMENT.
+        assert volume.install(refreshed(), expected_sha256=sha(DOCUMENT))
+        return await local_command(
+            port,
+            context=client("runner"),
+            server_hostname="host.test",
+            server_sha256=pin("server"),
+            command=command,
+        )
+
+    credentials = CodexOAuthCredentials(Base(), runtimes={"codex"})
+    runner = ControlSessionHost(send, credentials, broker_origin="https://broker.test")
+    fenced = CodexAuthFencedHost(
+        runner, Authority(DOCUMENT.decode()), VolumeTarget(volume), runtimes={"codex"}
+    )
+    order = Launch(uuid4(), uuid4(), "A" * 43, "codex", codex_proof.MODEL, "prompt", 30)
+    try:
+        with pytest.raises(NotInvoked, match="^session_host_credential_unavailable$"):
+            await fenced.launch(order)
+        assert len(domains) == 1 and domains[0]._spawn is None  # no runtime started
+        assert owner.healthy  # settled and discarded, not quarantined
+        assert volume.read() == (refreshed(), sha(refreshed()))  # the new login is untouched
+        lease.stage(sha(refreshed()).encode())  # and no lease was left behind
+    finally:
+        await host.close()
+
+
+async def test_a_busy_lease_is_not_invoked_either(tmp_path, lease):
+    stage = tmp_path / "owner"
+    stage.mkdir(mode=0o700)
+    stage.chmod(0o700)
+    owner = InvocationOwner(stage)
+    lease.stage(sha(DOCUMENT).encode())  # another launch holds the one token
+    req = replace(request(), model=codex_proof.MODEL, model_credential=sha(DOCUMENT).encode())
+    with pytest.raises(CredentialNotStaged, match="^credential_unavailable$"):
+        await owner.run(req, lambda: _domain(tmp_path, lease))
+    assert owner.healthy
+
+
+async def test_a_refusal_after_spawn_is_never_called_not_invoked(tmp_path, lease):
+    """Only a pre-spawn refusal may claim nothing ran."""
+    domain = _domain(tmp_path, lease)
+    material = _material(tmp_path, sha(DOCUMENT).encode())
+
+    def planned(_material):
+        domain._spawn = asyncio.get_running_loop().create_future()  # as if spawned
+        raise CredentialNotStaged("codex_auth_stale")
+
+    domain._plan = planned  # type: ignore[method-assign]
+    try:
+        with pytest.raises(Refused, match="^sandbox_execution_failed$") as refused:
+            await domain.execute(material)
+        assert not isinstance(refused.value, CredentialNotStaged)
+    finally:
+        domain._spawn = None
+        material.discard()
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        ({"status": "refused", "reason": "credential_unavailable"}, "not_staged"),
+        ({"status": "refused", "reason": "host_busy"}, "busy"),
+        ({"status": "refused", "reason": "something_else"}, "session_host_malformed_reply"),
+        ({"status": "refused"}, "session_host_refused"),
+    ],
+)
+def test_the_runner_reads_only_the_closed_refusal_reasons(reply, expected):
+    from butlers.goal_runner import staging
+
+    outcome = staging._reply_outcome(reply)
+    if expected == "not_staged":
+        assert outcome is staging._NOT_STAGED
+    elif expected == "busy":
+        assert outcome is staging._BUSY
+    else:
+        assert str(outcome.failure) == expected

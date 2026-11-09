@@ -26,7 +26,7 @@ from typing import Any, cast
 
 from .codex import AUTH_NAME, AUTH_PATH, CODEX_HOME, NATIVE_FILES, CodexSettings
 from .codex_oauth import CodexOAuthVolume, StagedOAuth
-from .contracts import Refused
+from .contracts import CredentialNotStaged, Refused
 from .material import InvocationMaterial
 from .opencode import CONFIG_NAME, OpenCodeSettings
 
@@ -550,6 +550,11 @@ class BubblewrapDomain:
                 raise Refused("runtime_failed")
             return bytes(output)
         except asyncio.CancelledError:
+            raise
+        except CredentialNotStaged:
+            # Only a refusal from planning, before any spawn, may claim no runtime ran.
+            if self._spawn is not None:
+                raise Refused("sandbox_execution_failed") from None
             raise
         except BaseException:
             raise Refused("sandbox_execution_failed") from None

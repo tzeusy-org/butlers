@@ -31,7 +31,7 @@ import re
 import threading
 from dataclasses import dataclass, field
 
-from .contracts import Refused
+from .contracts import CredentialNotStaged, Refused
 from .credential_volume import CredentialVolume, valid_document
 
 logger = logging.getLogger(__name__)
@@ -116,10 +116,10 @@ class CodexOAuthVolume:
             raise Refused("unsupported_codex_credential")
         with self._lock:
             if self._held is not None:
-                raise Refused("codex_auth_busy")
+                raise CredentialNotStaged("codex_auth_busy")
             found = self._volume.read()
             if found is None or not hmac.compare_digest(found[1].encode(), reference):
-                raise Refused("codex_auth_stale")
+                raise CredentialNotStaged("codex_auth_stale")
             document, digest = found
             account = oauth_account(document)
             if account is None:

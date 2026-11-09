@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
 
-from .contracts import LaunchRequest, Refused, RuntimeTimeout
+from .contracts import CredentialNotStaged, LaunchRequest, Refused, RuntimeTimeout
 from .material import InvocationMaterial, StagingCleanupFailed
 
 
@@ -147,6 +147,7 @@ class InvocationOwner:
         output: bytes | None = None
         failed = False
         timed_out = False
+        not_staged = False
         try:
             done, _ = await asyncio.wait({work}, timeout=request.timeout_s)
             if not done:
@@ -159,6 +160,9 @@ class InvocationOwner:
                     output = work.result()
                     if type(output) is not bytes or len(output) > 1024 * 1024:
                         failed = True
+                except CredentialNotStaged:
+                    failed = True
+                    not_staged = True
                 except BaseException:
                     failed = True
         except asyncio.CancelledError:
@@ -197,6 +201,9 @@ class InvocationOwner:
             raise asyncio.CancelledError
         if timed_out:
             raise RuntimeTimeout("runtime_failed")
+        if not_staged:
+            # Settled with no runtime started: the runner may treat it as not-invoked.
+            raise CredentialNotStaged("credential_unavailable")
         if failed or output is None:
             raise Refused("runtime_failed")
         return output
