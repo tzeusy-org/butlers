@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -254,6 +255,27 @@ MUTATIONS = {
     # --ro-bind-data file, so a single staged file cannot be swapped this way.)
     "staged-directory-overmounted": (
         {"add_bwrap": ["--ro-bind", "$HOSTCRED", "/invocation"]},
+        "filesystem_isolation",
+    ),
+    # Planned mounts replaced in place by host ones of the same shape. A host
+    # tmpfs at /tmp is tmpfs rooted at "/", like the planned one; a host tmpfs
+    # file named like bwrap's data file has the planned root. Only the device
+    # shows they came from the host.
+    "host-tmpfs-in-place-of-tmp": (
+        {"replace_mount": {"/tmp": ["--bind", "$HOSTSHM", "/tmp"]}},
+        "filesystem_isolation",
+    ),
+    "host-tmpfs-file-in-place-of-staged": (
+        {
+            "replace_mount": {
+                "/invocation/prompt": ["--ro-bind", "$HOSTSHMFILE", "/invocation/prompt"]
+            }
+        },
+        "filesystem_isolation",
+    ),
+    # The staged file, but writable.
+    "staged-file-writable": (
+        {"replace_mount": {"/invocation/prompt": ["--bind-data", "$FD", "/invocation/prompt"]}},
         "filesystem_isolation",
     ),
     # Both go: with --as-pid-1 kept and --unshare-pid dropped, the run did not
@@ -961,7 +983,7 @@ _MOUNT_KINDS = {
     "--proc": "proc",
     "--dev": "dev",
     "--ro-bind-data": "data",
-    "--bind-data": "data",
+    "--bind-data": "data-rw",
     "--bind": "bind",
     "--ro-bind": "bind",
     "--dev-bind": "bind",
@@ -1004,32 +1026,69 @@ def planned_mounts(argv: list[str]) -> dict[str, str]:
     return planned
 
 
-def unplanned_mounts(mounts: list[dict[str, str]], planned: dict[str, str]) -> list[str]:
-    """Every mount that is not exactly the plan's, and every planned mount missing."""
+def replace_mount(argv: list[str], target: str, parts: list[str]) -> None:
+    """Swap the plan's mount at ``target`` for ``parts``, in place.
+
+    ``$FD`` in ``parts`` is the planned mount's own source. A ``--perms``
+    before it goes too, since it would otherwise apply to the replacement.
+    """
+    index = next(i for i, part in enumerate(argv) if part.startswith("--"))
+    while argv[index] != "--":
+        option = argv[index]
+        arity = _BWRAP_ARITY[option]
+        if option in _MOUNT_KINDS and argv[index + arity] == target:
+            start = index - 2 if index >= 2 and argv[index - 2] == "--perms" else index
+            source = argv[index + 1] if arity == 2 else ""
+            argv[start : index + 1 + arity] = [p.replace("$FD", source) for p in parts]
+            return
+        index += 1 + arity
+    raise AssertionError(f"mutation does not apply: no planned mount at {target}")
+
+
+def unplanned_mounts(
+    mounts: list[dict[str, str]], planned: dict[str, str], host_devices: frozenset[str]
+) -> list[str]:
+    """Every mount that is not exactly the plan's, and every planned mount missing.
+
+    Shape alone cannot tell a fresh tmpfs from a host one: ``--bind /dev/shm
+    /tmp`` is tmpfs rooted at ``/`` just like ``--tmpfs /tmp``, and a host
+    file named like bwrap's data file has the same root. ``host_devices`` is
+    every ``major:minor`` mounted on the observer's side. A mount bwrap makes
+    gets a new anonymous device, so any domain mount on one of those devices
+    came from the host. Only the planned ``/dev`` node binds may, and do.
+    """
     findings: list[str] = []
     seen: dict[str, int] = {}
     devs = [target for target, kind in planned.items() if kind == "dev"]
     for mount in mounts:
         point, root, fstype = mount["mountpoint"], mount["root"], mount["fstype"]
+        access = mount["options"].split(",", 1)[0]
         kind = planned.get(point)
         if kind is not None:
             seen[point] = seen.get(point, 0) + 1
+        node = False
         if kind in ("tmpfs", "dev"):
             ok = fstype == "tmpfs" and root == "/"
         elif kind == "proc":
             ok = fstype == "proc"
-        elif kind == "data":
-            ok = fstype == "tmpfs" and _DATA_ROOT.fullmatch(root) is not None
+        elif kind in ("data", "data-rw"):
+            ok = (
+                fstype == "tmpfs"
+                and _DATA_ROOT.fullmatch(root) is not None
+                and access == ("ro" if kind == "data" else "rw")
+            )
         elif kind == "bind":
             ok = False  # the closed plan binds nothing from the host
         else:
             parent = next((d for d in devs if point.startswith(d + "/")), None)
             name = point[len(parent) + 1 :] if parent else ""
-            ok = (name == "pts" and fstype == "devpts") or (
-                name in _DEV_NODES and root == f"/{name}"
-            )
+            node = name in _DEV_NODES and root == f"/{name}"
+            ok = (name == "pts" and fstype == "devpts") or node
         if not ok:
-            findings.append(f"{point} ({fstype} {root})")
+            mode = f" {access}" if kind in ("data", "data-rw") else ""
+            findings.append(f"{point} ({fstype} {root}{mode})")
+        elif not node and mount["device"] in host_devices:
+            findings.append(f"{point} ({fstype} {root}) on host device {mount['device']}")
     findings += [f"{point} missing" for point in planned if point not in seen]
     findings += [f"{point} mounted {n} times" for point, n in seen.items() if n > 1]
     return findings
@@ -1053,8 +1112,10 @@ def read_mounts(pid: int) -> list[dict[str, str]]:
         fields, rest = head.split(), tail.split()
         mounts.append(
             {
+                "device": fields[2],
                 "mountpoint": _unescape(fields[4]),
                 "root": _unescape(fields[3]),
+                "options": fields[5],
                 "fstype": rest[0],
                 "source": _unescape(rest[1]) if len(rest) > 1 else "",
             }
@@ -1121,10 +1182,12 @@ def observe_isolation(
             processes.append(cmdline.split(b"\0", 1)[0].decode(errors="replace"))
     foreign = sorted({p for p in processes if p not in _PROCESS_IMAGES})
     mounts = read_mounts(pid)
+    # The observer's own mount table is the host side of the boundary.
+    host_devices = frozenset(m["device"] for m in read_mounts(os.getpid()))
     return {
         "measured": True,
         "mount_count": len(mounts),
-        "unplanned_mounts": unplanned_mounts(mounts, planned)[:32],
+        "unplanned_mounts": unplanned_mounts(mounts, planned, host_devices)[:32],
         "missing_paths": sorted(_REQUIRED_PATHS - set(visible)),
         "unexpected_paths": unexpected[:32],
         "canary_seen": canary_seen[:32],
@@ -1175,6 +1238,14 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
     host_credentials = work / "host-credentials"
     host_credentials.mkdir(mode=0o700)
     (host_credentials / "auth.json").write_text('{"OPENAI_API_KEY": "host-store-not-a-key"}')
+    # A host tmpfs, whole: only the rows that name it touch it, and whatever the
+    # launch leaves there is removed afterwards.
+    host_shm = Path("/dev/shm")
+    uses_shm = "$HOSTSHM" in json.dumps(scenario)
+    shm_before = set(os.listdir(host_shm)) if uses_shm else set()
+    host_shm_file = host_shm / f"bindfile{uuid.uuid4().hex}"
+    if "$HOSTSHMFILE" in json.dumps(scenario):
+        host_shm_file.write_text("synthetic prompt")
 
     class ProofDomain(BubblewrapDomain):
         async def _info(self, descriptor: int) -> int:
@@ -1234,12 +1305,20 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
             for option in scenario.get("drop_bwrap", ()):
                 assert option in argv, f"mutation does not apply: {option}"
                 argv.remove(option)
-            extra = [
-                part.replace("$PEER", str(peer["material"].directory)).replace(
-                    "$HOSTCRED", str(host_credentials)
-                )
-                for part in scenario.get("add_bwrap", ())
-            ]
+
+            def bound(part: str) -> str:
+                for name, value in (
+                    ("$PEER", str(peer["material"].directory)),
+                    ("$HOSTCRED", str(host_credentials)),
+                    ("$HOSTSHMFILE", str(host_shm_file)),
+                    ("$HOSTSHM", str(host_shm)),
+                ):
+                    part = part.replace(name, value)
+                return part
+
+            for target, parts in scenario.get("replace_mount", {}).items():
+                replace_mount(argv, target, [bound(part) for part in parts])
+            extra = [bound(part) for part in scenario.get("add_bwrap", ())]
             # After the plan's own mounts, which a later --tmpfs / would hide.
             at = argv.index("--info-fd")
             argv[at:at] = extra
@@ -1317,6 +1396,14 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
         peer["process"].kill()
         peer["process"].wait()
         peer["material"].discard()
+        host_shm_file.unlink(missing_ok=True)
+        for name in set(os.listdir(host_shm)) - shm_before if uses_shm else ():
+            leftover = host_shm / name
+            if leftover.lstat().st_uid == os.geteuid():
+                if leftover.is_dir() and not leftover.is_symlink():
+                    shutil.rmtree(leftover, ignore_errors=True)
+                else:
+                    leftover.unlink(missing_ok=True)
     outcome["proof_error"] = getattr(domain, "proof_error", None)
     if stderr_path.exists():
         outcome["stderr_tail"] = stderr_path.read_text(errors="replace")[-1500:]

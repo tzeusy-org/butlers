@@ -491,8 +491,21 @@ _PLAN = [
 ]
 
 
-def mount(point, root="/", fstype="tmpfs"):
-    return {"mountpoint": point, "root": root, "fstype": fstype, "source": "x"}
+_HOST_SHM, _HOST_DEV, _HOST_DISK = "0:26", "0:5", "259:2"
+# The observer's own mount table: the devices that are the host's.
+_HOST = frozenset({_HOST_SHM, _HOST_DEV, _HOST_DISK})
+_fresh = iter(range(100, 1000))
+
+
+def mount(point, root="/", fstype="tmpfs", *, device=None, options="rw,nosuid"):
+    return {
+        "device": device or f"0:{next(_fresh)}",
+        "mountpoint": point,
+        "root": root,
+        "options": options,
+        "fstype": fstype,
+        "source": "x",
+    }
 
 
 def planned_view():
@@ -500,13 +513,21 @@ def planned_view():
         mount("/"),
         mount("/proc", fstype="proc"),
         mount("/dev"),
-        mount("/dev/null", "/null", "devtmpfs"),
+        # The planned node binds are the host's own device nodes.
+        mount("/dev/null", "/null", "devtmpfs", device=_HOST_DEV),
         # In a container, /dev is itself a tmpfs.
-        mount("/dev/tty", "/tty", "tmpfs"),
+        mount("/dev/tty", "/tty", "tmpfs", device=_HOST_DEV),
         mount("/dev/pts", fstype="devpts"),
         mount("/tmp"),
-        mount("/invocation/prompt", "/bindfileuSe1Iw//deleted"),
+        mount("/invocation/prompt", "/bindfileuSe1Iw//deleted", options="ro,nosuid"),
     ]
+
+
+def swap(point, **change):
+    def apply(view):
+        return [{**m, **change} if m["mountpoint"] == point else m for m in view]
+
+    return apply
 
 
 def test_the_plan_mounts_are_read_up_to_the_separator():
@@ -526,7 +547,7 @@ def test_a_plan_option_the_reader_does_not_know_refuses():
 
 def test_exactly_the_planned_mounts_pass():
     planned = codex_proof.planned_mounts(_PLAN)
-    assert codex_proof.unplanned_mounts(planned_view(), planned) == []
+    assert codex_proof.unplanned_mounts(planned_view(), planned, _HOST) == []
 
 
 @pytest.mark.parametrize(
@@ -554,11 +575,53 @@ def test_exactly_the_planned_mounts_pass():
         ),
         (lambda v: [m for m in v if m["mountpoint"] != "/proc"], "/proc missing"),
         (lambda v: v + [mount("/dev/sda", "/sda", "devtmpfs")], "/dev/sda (devtmpfs /sda)"),
+        # Review r4511161750: --bind /dev/shm /tmp in place of --tmpfs /tmp. Same
+        # type and root as the planned tmpfs; only the device is the host's.
+        (swap("/tmp", device=_HOST_SHM), f"/tmp (tmpfs /) on host device {_HOST_SHM}"),
+        # A host tmpfs file named like bwrap's data file, in place of a staged one.
+        (
+            swap("/invocation/prompt", device=_HOST_SHM),
+            f"/invocation/prompt (tmpfs /bindfileuSe1Iw//deleted) on host device {_HOST_SHM}",
+        ),
+        (swap("/", device=_HOST_SHM), f"/ (tmpfs /) on host device {_HOST_SHM}"),
+        (swap("/proc", device="0:24"), "/proc (proc /) on host device 0:24"),
+        # --bind-data in place of --ro-bind-data.
+        (
+            swap("/invocation/prompt", options="rw,nosuid"),
+            "/invocation/prompt (tmpfs /bindfileuSe1Iw//deleted rw)",
+        ),
+        # A host device at a node name the plan does not make.
+        (
+            lambda v: v + [mount("/dev/pts/0", "/0", "devpts", device=_HOST_DEV)],
+            "/dev/pts/0 (devpts /0)",
+        ),
     ],
 )
 def test_any_mount_outside_the_plan_is_a_finding(change, finding):
     planned = codex_proof.planned_mounts(_PLAN)
-    assert finding in codex_proof.unplanned_mounts(change(planned_view()), planned)
+    host = _HOST | {"0:24"}
+    assert finding in codex_proof.unplanned_mounts(change(planned_view()), planned, host)
+
+
+def test_a_planned_writable_data_mount_must_be_writable():
+    plan = [p.replace("--ro-bind-data", "--bind-data") for p in _PLAN]
+    planned = codex_proof.planned_mounts(plan)
+    assert planned["/invocation/prompt"] == "data-rw"
+    view = swap("/invocation/prompt", options="rw")(planned_view())
+    assert codex_proof.unplanned_mounts(view, planned, _HOST) == []
+    assert codex_proof.unplanned_mounts(planned_view(), planned, _HOST) != []
+
+
+def test_replace_mount_swaps_the_planned_mount_and_its_perms():
+    argv = list(_PLAN)
+    codex_proof.replace_mount(argv, "/invocation/prompt", ["--bind-data", "$FD", "/x"])
+    assert argv[argv.index("--dir") + 2 :][:4] == ["--setenv", "PATH", "/runtime", "--bind-data"]
+    assert "--perms" not in argv and argv[argv.index("--bind-data") + 1] == "5"
+    argv = list(_PLAN)
+    codex_proof.replace_mount(argv, "/tmp", ["--bind", "/dev/shm", "/tmp"])
+    assert codex_proof.planned_mounts(argv)["/tmp"] == "bind"
+    with pytest.raises(AssertionError, match="mutation does not apply"):
+        codex_proof.replace_mount(list(_PLAN), "/nowhere", [])
 
 
 def test_report_maps_each_measured_failure_to_fail(tmp_path):

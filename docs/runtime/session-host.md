@@ -555,10 +555,19 @@ the unmutated bwrap argv:
 - `/` and `/tmp` must be fresh tmpfs;
 - `/proc` must be proc;
 - `/dev` must be bwrap's tmpfs and device nodes;
-- each staged file must be bwrap's deleted data file.
+- each staged file must be bwrap's deleted data file, read-only when the plan
+  says `--ro-bind-data`.
 
-A bind from the host anywhere, a planned mount point with a foreign source, a
-second mount over a planned point, or a missing planned mount fails the check. As
+Shape alone cannot tell a fresh tmpfs from a host one. `--bind /dev/shm /tmp` is
+tmpfs rooted at `/`, just like `--tmpfs /tmp`. A host tmpfs file named like bwrap's
+data file has the planned root. So the check also compares devices. Every mount
+bwrap makes gets a new anonymous `major:minor`. Any domain mount whose device also
+appears in the observer's own `/proc/self/mountinfo` came from the host. The only
+exemption is the planned `/dev` node binds.
+
+A bind from the host anywhere, a planned mount point with a foreign source or a
+host device, a second mount over a planned point, or a missing planned mount fails
+the check. As
 a positive anchor, the walk must also find the staged runtime, invocation and
 Codex config paths, so an empty or wrong view cannot pass.
 
@@ -579,7 +588,14 @@ measured view, not because the launch broke:
 - mount a host directory, at its own path or under `/tmp` (`/etc` at `/tmp/etc`);
 - mount a host credential store under `/tmp`;
 - mount a host directory over `/invocation`;
+- replace `--tmpfs /tmp` with `--bind /dev/shm /tmp`, a whole host tmpfs;
+- replace a staged file with a host tmpfs file named like bwrap's data file;
+- stage a file with `--bind-data`, which is writable, instead of `--ro-bind-data`;
 - drop `--unshare-pid`.
+
+The `/dev/shm` rows expose that host tmpfs to the synthetic runtime for one launch.
+Natively, that is the host's shared memory. In the exact-image payload, it is the
+container's own. The proof removes what the launch leaves there.
 
 That is this host's bwrap and kernel. `tests/session_host/exact_image_codex_proof.py`
 runs the same clean launches and every mutation row inside the rebuilt production
