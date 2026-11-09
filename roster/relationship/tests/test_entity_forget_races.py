@@ -132,9 +132,10 @@ async def test_a_merge_cannot_slip_into_a_forget_in_flight(rel_pool, forgotten_h
     real_retract = memory_entities._retract_facts_on_conn
 
     async def pausing_retract(conn, entity_id):
-        await real_retract(conn, entity_id)
+        counts = await real_retract(conn, entity_id)
         retracted.set()
         await resume.wait()
+        return counts
 
     with patch.object(memory_entities, "_retract_facts_on_conn", pausing_retract):
         forget = asyncio.create_task(_forget_route()(forgotten, db=_dashboard_db(rel_pool)))
@@ -296,9 +297,10 @@ async def _forget_or_delete_paused_after_retiring(
     real_retract = memory_entities._retract_facts_on_conn
 
     async def pausing_retract(conn, entity_id):
-        await real_retract(conn, entity_id)
+        counts = await real_retract(conn, entity_id)
         retracted.set()
         await resume.wait()
+        return counts
 
     patcher = patch.object(memory_entities, "_retract_facts_on_conn", pausing_retract)
     patcher.start()
@@ -332,11 +334,11 @@ async def test_a_rebind_cannot_slip_into_a_forget_or_delete_in_flight(rel_pool, 
             patcher.stop()
 
     row = await rel_pool.fetchrow("SELECT entity_id, validity FROM facts WHERE id = $1", fact)
-    assert (row["entity_id"], row["validity"]) == (source, "active")
+    assert (row["entity_id"], row["validity"]) == (source, "retracted")
     receipt = await rel_pool.fetchrow(
         "SELECT status, error_class FROM public.entity_rebind_log WHERE rebind_id = $1", rebind_id
     )
-    assert (receipt["status"], receipt["error_class"]) == ("failed", "EntityRebindTargetForgotten")
+    assert (receipt["status"], receipt["error_class"]) == ("skipped_forgotten", None)
 
 
 @pytest.mark.asyncio(loop_scope="session")

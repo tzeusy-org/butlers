@@ -332,11 +332,13 @@ settlement to the runtime role bound to the receipt's target schema.
 - **AND** a merge of that entity still in flight MUST be waited for and followed
 - **AND** the receipt MUST keep its original source and target
 
-#### Scenario: A late rebind onto a forgotten entity moves nothing
+#### Scenario: A late rebind onto a forgotten entity forgets the source's references
 
 - **WHEN** the entity at the end of a receipt target's `merged_into` chain has been forgotten
 - **THEN** no reference MUST move onto it
-- **AND** the receipt MUST stay `failed` and name `EntityRebindTargetForgotten`
+- **AND** the receipt's schema MUST retract the live facts that reference the receipt's source, through the same retraction that forgetting an entity applies in that schema
+- **AND** the receipt MUST settle as `skipped_forgotten` with no error class and MUST NOT be retried
+- **AND** a schema MUST change only its own rows
 
 #### Scenario: A rebind failure log carries no data values
 

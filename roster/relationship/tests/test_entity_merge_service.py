@@ -1150,13 +1150,14 @@ async def test_a_rebind_waits_for_a_merge_of_its_survivor_still_in_flight(merge_
     ids=["forget_entity", "memory_entity_delete"],
 )
 @pytest.mark.parametrize("hops", [0, 1])
-async def test_a_late_rebind_onto_a_forgotten_entity_moves_nothing(
-    merge_pool, forgotten, hops
+@pytest.mark.parametrize("status", ["pending", "failed"])
+async def test_a_late_rebind_onto_a_forgotten_entity_forgets_the_source_and_skips(
+    merge_pool, forgotten, hops, status
 ) -> None:
-    """Forgetting retracts what is on the entity; references arriving later must not revive it."""
+    """Nothing moves onto a forgotten entity; the source's live facts are retracted (bu-dhloi1.71)."""
     pool = merge_pool
     rebind_id, target_id, fact_id = await _receipt_with_fact(
-        pool, f"Forgotten {forgotten} {hops}", status="failed", age="1 day"
+        pool, f"Forgotten {forgotten} {hops} {status}", status=status, age="1 day"
     )
     source_id = await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id)
     survivor = await _merge_on(pool, target_id, hops=hops)
@@ -1168,8 +1169,14 @@ async def test_a_late_rebind_onto_a_forgotten_entity_moves_nothing(
 
     await process_pending_entity_rebinds(pool, target_schema="relationship")
 
-    assert await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id) == source_id
-    assert await _receipt_state(pool, rebind_id) == ("failed", "EntityRebindTargetForgotten", 2)
+    row = await pool.fetchrow("SELECT entity_id, validity FROM facts WHERE id = $1", fact_id)
+    assert (row["entity_id"], row["validity"]) == (source_id, "retracted")
+    expected_count = 2 if status == "failed" else 0
+    assert await _receipt_state(pool, rebind_id) == ("skipped_forgotten", None, expected_count)
+
+    await pool.execute("UPDATE public.entity_rebind_log SET updated_at = now() - interval '1 day'")
+    await process_pending_entity_rebinds(pool, target_schema="relationship")
+    assert (await _receipt_state(pool, rebind_id))[0] == "skipped_forgotten"
 
 
 @pytest.mark.integration
