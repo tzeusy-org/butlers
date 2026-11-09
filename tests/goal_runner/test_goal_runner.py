@@ -308,6 +308,7 @@ async def test_a_child_never_lists_or_calls_a_lead_tool_or_administer(broker_db_
             "goal__await",
             "goal__stop_child",
             "goal__complete",
+            "goal__inbox",
             "goal__escalate",
         ]
         child = await h.delegate(goal, lead.token, SEARCH.identity, RULES.identity)
@@ -316,11 +317,18 @@ async def test_a_child_never_lists_or_calls_a_lead_tool_or_administer(broker_db_
         assert [t.name for t in h.tools.listed(1)] == ["goal__return"]
         listed = await h.w.broker.list_tools(goal, child_launch.token)
         assert [c.identity for c in listed] == [SEARCH.identity]
-        for name in ("goal__delegate", "goal__stop_child", "goal__complete", "goal__escalate"):
+        for name in (
+            "goal__delegate",
+            "goal__stop_child",
+            "goal__complete",
+            "goal__inbox",
+            "goal__escalate",
+        ):
             args = {
                 "goal__delegate": delegation(SEARCH.identity),
                 "goal__stop_child": {"child_id": str(child)},
                 "goal__complete": {"outcome": "completed"},
+                "goal__inbox": {},
                 "goal__escalate": {},
             }[name]
             reason = await refused(h.call(goal, child_launch.token, name, args))
@@ -328,6 +336,15 @@ async def test_a_child_never_lists_or_calls_a_lead_tool_or_administer(broker_db_
         reason = await refused(h.w.broker.call(goal, child_launch.token, RULES.identity, {}))
         assert reason is Reason.CAPABILITY
         assert len(h.host.launches) == 2  # no grandchild was ever started
+
+
+async def test_a_lead_takes_its_inbox_through_the_goal_tool(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEARCH))
+        lead = await h.lead(goal)
+        assert await h.call(goal, lead.token, "goal__inbox", {}) == {"replies": []}
+        reason = await refused(h.call(goal, lead.token, "goal__inbox", {"all": True}))
+        assert reason is Reason.POLICY
 
 
 async def test_the_endpoint_lists_goal_tools_by_depth_and_reserves_the_namespace(broker_db_url):

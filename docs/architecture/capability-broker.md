@@ -81,7 +81,7 @@ Every producer, deferred path and reader of a label:
 | Invocation start | admitted label; a child joins its caller; a replacement lead joins every earlier lead and recorded effect (`child` / `recovery`) | sw_057 `goal_label_invocation` |
 | Broker read | committed output joins `{owner}` (trusted) or `{world}` (untrusted) plus the capability's categories; stamped output, see D6 stores (`read`) | `BrokerLedger.settle` |
 | Child result | the lead joins its child's label (`child`) | `Broker.read_child_result` |
-| Joined reply | inbox row = owner ∪ answered effect's label ∪ unknown for outside content; the reader joins it on consumption (`inbox`) | sw_057 `goal_label_inbox`; `GoalLedger.deliver`; `Broker.consume_inbox` |
+| Joined reply | inbox row = owner ∪ answered effect's label ∪ unknown for outside content; the reader joins it on consumption (`inbox`) | sw_057 `goal_label_inbox`; `GoalLedger.deliver`; `Broker.consume_inbox` (lead pulls via `goal__inbox`) |
 | Effect | snapshots its requesting label at insert; immutable | sw_057 `goal_label_effect` |
 | Park, approval, edit, retry | the approved call runs under the requesting invocation's current label, which must cover the effect's snapshot; an edited effect row snapshots that label | `BrokerLedger.begin_approved` |
 | Receipt / unknown / not_received | no output join unless committed; the effect label never changes | `Broker._forward` |

@@ -54,6 +54,8 @@ RESERVED_DOMAINS = frozenset({"goal", "context"})
 ActuationRiskMap = Callable[[Capability, dict[str, Any]], ActuationRisk]
 
 # A domain action's terminal decision and the parked effect state it ends in.
+# Joined replies one goal.inbox call delivers; the rest wait for the next call.
+_INBOX_BATCH = 20
 _PARKED_END = {"rejected": "rejected", "expired": "expired", "cancelled": "cancelled"}
 
 
@@ -618,6 +620,36 @@ class Broker:
             "result": result if status == "returned" else None,
             "effects": effects,
         }
+
+    async def goal_inbox(self, goal_id: UUID, token: str) -> dict[str, Any]:
+        """``goal.inbox``: the lead takes its goal's joined replies, between tool calls.
+
+        Each row is consumed once, by the calling lead, in the same transaction
+        that joins its label into that lead (S1 cause ``inbox``), so the lead is
+        exposed before it learns of the reply. The token fences the epoch: a
+        superseded or Stopped lead fails authentication and consumes nothing.
+        """
+        self._require_available()
+        async with self._transaction() as ledger:
+            principal = await ledger.authenticate(goal_id, token)
+            if principal.depth != 0:
+                raise BrokerRefused(Reason.CAPABILITY)
+            exhausted = await BoundaryLedger(ledger).charge(principal)
+            delivered: list[dict[str, Any]] = []
+            if exhausted is None:
+                for row in await ledger.pending_inbox(goal_id, _INBOX_BATCH):
+                    if await ledger.consume_inbox(goal_id, principal.invocation_id, row["id"]):
+                        delivered.append(
+                            {
+                                "inbox_id": str(row["id"]),
+                                "source_ref": row["source_ref"],
+                                "reply_effect_id": str(row["reply_effect_id"]),
+                                "received_at": row["created_at"].isoformat(),
+                            }
+                        )
+        if exhausted is not None:
+            raise exhausted
+        return {"replies": delivered}
 
     # -- trusted owner-decision path (D13) --------------------------------------
 
