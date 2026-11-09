@@ -128,6 +128,8 @@ Graceful shutdown proceeds in reverse order:
 8. Shut down modules in **reverse** topological order (each module's `on_shutdown()`)
 9. Close the database connection pool
 
+`butlers up` runs several daemons in one process and shuts them down one at a time. They share one process budget, `BUTLERS_SHUTDOWN_BUDGET_S` (default: the largest `[butler.shutdown].timeout_s`), counted from the signal. Each daemon gets an equal share of what is left among the daemons still to go, capped by its own timeout, so time a quick daemon leaves passes to the next and one slow daemon cannot starve the rest. The Helm chart sets the pod's `terminationGracePeriodSeconds` to `shutdown.budgetSeconds + shutdown.graceMarginSeconds`; the margin covers pool close and interpreter exit. A database pool that will not close within 10 seconds is terminated.
+
 ## Module Failure Handling
 
 Module failures during startup are handled with a cascade model. When a module fails at any phase (config, credentials, migration, startup, tools), it is recorded with a `ModuleStartupStatus` capturing the status (`failed`), phase, and error message. Any modules that declared a dependency on the failed module are automatically marked as `cascade_failed`. The butler continues operating with whatever modules remain healthy.

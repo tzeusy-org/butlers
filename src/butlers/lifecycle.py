@@ -916,14 +916,33 @@ async def _stop_scheduler_loop(daemon: Any, deadline: float) -> None:
         logger.error("Scheduler loop failed before shutdown", exc_info=task.exception())
 
 
+def _shutdown_budget_s(daemon: Any) -> float:
+    """Seconds this daemon's shutdown may take.
+
+    ``butlers up`` sets ``daemon._shutdown_budget_s`` to the daemon's share of the process's
+    shutdown budget, so one slow daemon cannot spend the pod's whole grace period. Otherwise
+    the daemon's own configured timeout applies.
+    """
+    share = vars(daemon).get("_shutdown_budget_s")
+    if share is not None:
+        return share
+    return daemon.config.shutdown_timeout_s if daemon.config else 30.0
+
+
+def _step_budget_s(daemon: Any, deadline: float) -> float:
+    """Seconds one drain step may take: the daemon's whole timeout when it shuts down alone,
+    and what is left of its share when ``butlers up`` set one, so steps cannot add up past it."""
+    if vars(daemon).get("_shutdown_budget_s") is None:
+        return _shutdown_budget_s(daemon)
+    return max(0.0, deadline - asyncio.get_running_loop().time())
+
+
 async def _shutdown_resources(daemon: Any) -> None:
     """Existing resource teardown, also reached after catalog close refusal."""
 
     refresh_owner = vars(daemon).get("_chronicler_refresh_service")
     finance_owner = vars(daemon).get("_finance_warning_control_owner")
-    deadline = asyncio.get_running_loop().time() + (
-        daemon.config.shutdown_timeout_s if daemon.config else 30.0
-    )
+    deadline = asyncio.get_running_loop().time() + _shutdown_budget_s(daemon)
     if refresh_owner is not None:
         refresh_owner.closed = True
 
@@ -946,7 +965,7 @@ async def _shutdown_resources(daemon: Any) -> None:
 
     # 2. Stop durable buffer — drain remaining queue then cancel workers/scanner
     if daemon._buffer is not None:
-        shutdown_timeout = daemon.config.shutdown_timeout_s if daemon.config else 30.0
+        shutdown_timeout = _step_budget_s(daemon, deadline)
         await daemon._buffer.stop(drain_timeout_s=shutdown_timeout)
         daemon._buffer = None
 
@@ -976,7 +995,7 @@ async def _shutdown_resources(daemon: Any) -> None:
     daemon._accepting_connections = False
     if daemon.spawner is not None:
         daemon.spawner.stop_accepting()
-        timeout = daemon.config.shutdown_timeout_s if daemon.config else 30.0
+        timeout = _step_budget_s(daemon, deadline)
         await daemon.spawner.drain(timeout=timeout)
 
     # 4. Cancel switchboard heartbeat

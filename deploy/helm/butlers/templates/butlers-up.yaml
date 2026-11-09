@@ -17,6 +17,7 @@ spec:
       labels:
         {{- include "butlers.selector" (dict "root" . "component" "butlers-up") | nindent 8 }}
     spec:
+      terminationGracePeriodSeconds: {{ add .Values.shutdown.budgetSeconds .Values.shutdown.graceMarginSeconds }}
       securityContext:
         sysctls:
           - {name: net.ipv4.ip_local_reserved_ports, value: "41100-41112"}
@@ -41,6 +42,7 @@ spec:
             - {name: DASHBOARD_URL, value: "https://{{ $u.host }}/{{ $u.dashboardPrefix }}"}
             - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
             - {name: BUTLERS_MAX_GLOBAL_SESSIONS, value: "{{ include "butlers.domainSessionCapacity" . }}"}
+            - {name: BUTLERS_SHUTDOWN_BUDGET_S, value: "{{ .Values.shutdown.budgetSeconds }}"}
             {{- with (include "butlers.egressProxyEnv" (dict "root" . "component" "butlers-up") | trim) }}{{ . | nindent 12 }}{{- end }}
           readinessProbe:
             httpGet: {path: /health, port: daemon}

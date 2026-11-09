@@ -254,6 +254,8 @@ class ButlerDaemon:
         self._started_at: float | None = None
         self._accepting_connections = False
         self._shutting_down = False
+        # Set by `butlers up` to this daemon's share of the process shutdown budget.
+        self._shutdown_budget_s: float | None = None
         self._boot_instance_id = uuid.UUID(generate_uuid7_string())
         self._boot_epoch: int | None = None
         self._boot_registration_task: asyncio.Task | None = None
