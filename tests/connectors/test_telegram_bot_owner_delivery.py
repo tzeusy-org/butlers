@@ -95,6 +95,12 @@ def owner_resolver(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     return resolver
 
 
+async def _sweep_the_woken_drain(connector: Any) -> None:
+    """The tap only wakes the sweep (bu-dhloi1.115); run the pass it woke, deterministically."""
+    assert connector._owner_delivery_sweep_wake.is_set()
+    await connector._drain_owner_delivery_retractions()
+
+
 async def test_owner_tap_redeems_once_then_retracts_every_other_stale_card(
     owner_resolver: AsyncMock, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -115,6 +121,7 @@ async def test_owner_tap_redeems_once_then_retracts_every_other_stale_card(
             side_effect=AssertionError("owner-delivery taps never ingest")
         )
         await connector._process_update(_update(token))
+        await _sweep_the_woken_drain(connector)
 
     owner_resolver.assert_awaited_once_with(connector._db_pool, "telegram_bot", "9001")
     actions = http.dashboard("/api/owner-delivery/actions")
@@ -150,6 +157,7 @@ async def test_failed_provider_retraction_is_reported_not_claimed(
     connector._http_client = http  # type: ignore[assignment]
 
     assert await connector._maybe_handle_owner_delivery_callback(_update(token)) is True
+    await _sweep_the_woken_drain(connector)
 
     reports = http.dashboard("/api/owner-delivery/retractions/")
     assert reports == [
@@ -264,6 +272,7 @@ async def test_genuine_400_on_retraction_still_fails_and_logs_a_safe_description
 
     with caplog.at_level(logging.WARNING):
         assert await connector._maybe_handle_owner_delivery_callback(_update(token)) is True
+        await _sweep_the_woken_drain(connector)
 
     [(_, report)] = http.dashboard("/api/owner-delivery/retractions/")
     assert report == {"retracted": False, "reason": "provider_error"}
@@ -309,6 +318,7 @@ async def test_token_shaped_400_description_is_not_logged(
 
     with caplog.at_level(logging.WARNING):
         await connector._maybe_handle_owner_delivery_callback(_update(token))
+        await _sweep_the_woken_drain(connector)
 
     assert "HTTP 400" in caplog.text
     assert leaked not in caplog.text
@@ -334,6 +344,7 @@ async def test_tapped_card_keeps_its_outcome_and_other_cards_still_retract(
     connector._http_client = http  # type: ignore[assignment]
 
     assert await connector._maybe_handle_owner_delivery_callback(_update(token)) is True
+    await _sweep_the_woken_drain(connector)
 
     edits = [(body["message_id"], body["text"]) for body in http.telegram("editMessageText")]
     assert [text for mid, text in edits if mid == 44] == ["✅ Approved"]
@@ -430,6 +441,7 @@ async def test_retracted_card_keeps_its_subject_and_an_open_link(
     connector._http_client = http  # type: ignore[assignment]
 
     await connector._maybe_handle_owner_delivery_callback(_update(token))
+    await _sweep_the_woken_drain(connector)
 
     [edit] = [b for b in http.telegram("editMessageText") if b["message_id"] == 55]
     assert edit["text"].startswith("[messenger] Approval: Send Telegram message")

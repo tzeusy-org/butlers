@@ -186,7 +186,9 @@ must use that narrower meaning. A link opened in a background tab loads when sho
 clients can still call the GET: the server can't tell whether a tab is visible.
 
 The Telegram connector handles `od1:` taps before `apr1:` (primary owner channel only),
-posts the token to `/actions`, edits the tapped card, then drains `/retractions`. It also
+posts the token to `/actions`, edits the tapped card, then wakes the sweep, which drains
+`/retractions` off the polling loop (an outage can make the listing long, and inbound updates
+must not wait behind it; a wake during a drain runs one more pass). It also
 drains on a timer (`CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S`, default 60 seconds, polling and
 webhook modes), so a card staled by a dashboard decision, expiry or cancellation is retracted
 with no tap. One drain runs at a time. Telegram's "message is not modified" counts as retracted,

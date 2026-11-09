@@ -509,6 +509,8 @@ class TelegramBotConnector:
         self._semaphore = asyncio.Semaphore(config.max_inflight)
         self._owner_delivery_sweep_task: asyncio.Task[None] | None = None
         self._owner_delivery_drain_lock = asyncio.Lock()
+        # Set by a tap whose decision staled other cards; the sweep drains at once.
+        self._owner_delivery_sweep_wake = asyncio.Event()
         self._owner_delivery_token_rejected_drains = 0
         # Cards (chat id, message id) this connector itself rewrote with the decided status.
         # The sweep must leave them alone: retracting one would replace "Approved" with
@@ -1441,8 +1443,13 @@ class TelegramBotConnector:
             await self._edit_approval_callback_message(callback_query, status)
         else:
             await self._clear_stale_keyboard(callback_query)
-        await self._drain_owner_delivery_retractions()
+        # The listing can be long (an edit-only outage retries every stale card), and this
+        # runs inside the polling loop: wake the sweep instead of draining inline.
+        self._wake_owner_delivery_sweep()
         return True
+
+    def _wake_owner_delivery_sweep(self) -> None:
+        self._owner_delivery_sweep_wake.set()
 
     async def _submit_owner_delivery_action(self, token: str) -> str | None:
         """POST the token; returns the terminal card status, or ``None`` when refused."""
@@ -1516,12 +1523,18 @@ class TelegramBotConnector:
 
     async def _owner_delivery_sweep_loop(self) -> None:
         while True:
+            # Cleared before the drain, so a wake that lands mid-drain runs another pass.
+            self._owner_delivery_sweep_wake.clear()
             try:
                 await self._drain_owner_delivery_retractions()
             except Exception as exc:  # noqa: BLE001 -- the next sweep retries
                 # The type only: an HTTP error's text can carry the bot-token URL.
                 logger.warning("Owner-delivery retraction sweep failed (%s)", type(exc).__name__)
-            await asyncio.sleep(self._config.owner_delivery_sweep_interval_s)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    self._owner_delivery_sweep_wake.wait(),
+                    self._config.owner_delivery_sweep_interval_s,
+                )
 
     async def _drain_owner_delivery_retractions(self) -> int:
         """Retract every stale owner card and receipt each attempt honestly.

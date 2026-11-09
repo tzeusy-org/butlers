@@ -659,3 +659,59 @@ def test_a_sweep_interval_that_would_spin_or_never_run_is_refused(monkeypatch, v
 
     with pytest.raises(ValueError, match="CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S"):
         TelegramBotConnectorConfig.from_env()
+
+
+async def test_a_tap_wakes_the_sweep_instead_of_draining_inline() -> None:
+    """bu-dhloi1.115: inbound updates must not wait behind a long retraction listing."""
+    connector = _connector()
+    connector._config.owner_delivery_sweep_interval_s = 3600.0
+    release = asyncio.Event()
+    draining = asyncio.Event()
+    calls = 0
+
+    async def drain() -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 2:  # the pass the tap wakes: a long outage-time listing
+            draining.set()
+            await release.wait()
+        return 0
+
+    connector._drain_owner_delivery_retractions = drain
+    connector._is_primary_owner_callback = AsyncMock(return_value=True)
+    connector._answer_callback_query = AsyncMock()
+    connector._submit_owner_delivery_action = AsyncMock(return_value="approved")
+    connector._edit_approval_callback_message = AsyncMock()
+    update = {
+        "callback_query": {"id": "1", "data": f"{telegram_bot.OWNER_DELIVERY_TOKEN_PREFIX}:x"}
+    }
+
+    connector._start_owner_delivery_sweep()
+    await _until(lambda: calls == 1)
+
+    assert await asyncio.wait_for(connector._maybe_handle_owner_delivery_callback(update), 1)
+    await asyncio.wait_for(draining.wait(), 1)  # woken at once, long before the interval
+    release.set()
+    await connector.stop()
+
+
+async def test_a_tap_during_a_drain_runs_one_more_pass() -> None:
+    connector = _connector()
+    connector._config.owner_delivery_sweep_interval_s = 3600.0
+    release = asyncio.Event()
+    calls = 0
+
+    async def drain() -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            await release.wait()
+        return 0
+
+    connector._drain_owner_delivery_retractions = drain
+    connector._start_owner_delivery_sweep()
+    await _until(lambda: calls == 1)
+    connector._wake_owner_delivery_sweep()  # a tap's card went stale mid-drain
+    release.set()
+    await _until(lambda: calls == 2)
+    await connector.stop()
