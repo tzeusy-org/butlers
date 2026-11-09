@@ -137,9 +137,20 @@ butlersControl:
     requests: {cpu: 250m, memory: 1Gi}
     limits: {memory: 4Gi}
 
-# RFC 0038 D3 session host skeleton: dark, no inbound port, no credentials.
+# RFC 0038 D3 session host: dark. Refuses every launch; serves the Codex credential
+# volume over mTLS on `port`, reachable from butlers-control only. No database,
+# domain or connector credential; its only secret is its own PKI (pkiSecret).
 sessionHost:
   enabled: false
+  port: 41198
+  # Secret with tls.crt, tls.key, client-ca.crt, server.sha256 and caller.sha256,
+  # provisioned out of band (production CA and rotation are a separate gate).
+  pkiSecret: session-host-pki
+  # The goal broker the host's runtimes would reach; unused while no profile is
+  # installed, and real only once the gateway lands (bu-kiuh8v.4).
+  brokerOrigin: https://broker.invalid
+  stagingSize: 256Mi
+  credentialsSize: 16Mi
   resources:
     requests: {cpu: 100m, memory: 128Mi}
     limits: {memory: 512Mi}

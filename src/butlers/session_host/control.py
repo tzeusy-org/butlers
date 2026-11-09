@@ -14,6 +14,7 @@ import base64
 import fcntl
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import math
@@ -266,7 +267,11 @@ class _Busy(Refused):
 
 
 class LocalControl:
-    """One in-memory launch/revoke owner, reachable only on IPv4 loopback port0.
+    """One in-memory launch/revoke owner on a configurable bind.
+
+    The bind defaults to ``127.0.0.1`` on an ephemeral port. A trusted constructor may
+    pass another IP literal and port; off loopback it is reachable only through the
+    pinned mTLS and a NetworkPolicy admitting butlers-control.
 
     Disconnecting does not abandon the invocation: launch runs to bounded owner
     settlement, and its reply arrives then (``completed`` or ``failed`` with a D14
@@ -290,6 +295,8 @@ class LocalControl:
         broker_origin: str,
         credentials: CredentialVolume | None = None,
         max_concurrent: int = _DEFAULT_CONCURRENT,
+        bind_host: str = "127.0.0.1",
+        bind_port: int = 0,
     ) -> None:
         if (
             type(max_concurrent) is not int
@@ -297,6 +304,16 @@ class LocalControl:
             or not 1 <= max_concurrent <= _MAX_CONCURRENT
         ):
             raise Refused("invalid_control_identity")
+        # The bind is the trusted host owner's: an IP literal and a port, never a name.
+        # Loopback by default; the session-host pod alone binds its pod address, where
+        # mTLS with the pinned caller and the deployment's network policy both apply.
+        try:
+            ipaddress.ip_address(bind_host)
+        except ValueError:
+            raise Refused("invalid_control_identity") from None
+        if type(bind_port) is not int or not 0 <= bind_port <= 65535:
+            raise Refused("invalid_control_identity")
+        self._bind = (bind_host, bind_port)
         self._max_concurrent = max_concurrent
         self._caller = _pin(caller_sha256)
         self._credentials = credentials
@@ -322,8 +339,7 @@ class LocalControl:
             raise Refused("control_unavailable")
         self._server = await asyncio.start_server(
             self._handle,
-            "127.0.0.1",
-            0,
+            *self._bind,
             ssl=self._context,
             ssl_handshake_timeout=_IO_SECONDS,
             ssl_shutdown_timeout=1,
@@ -552,20 +568,24 @@ async def local_command(
 
     ``host`` is the address dialed, by trusted construction only; TLS still checks
     ``server_hostname`` and the pin, so a wrong address reaches no other identity.
+    Connect and handshake together are bounded by ``_IO_SECONDS`` (``TimeoutError``).
     A launch's reply arrives when its invocation settles, so the wait for it is tied to the
     launch's ``timeout_s`` (``_reply_timeout``); every other command keeps the short bound.
     """
     expected = _pin(server_sha256)
     if not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED:
         raise Refused("invalid_control_identity")
-    reader, writer = await asyncio.open_connection(
-        host,
-        port,
-        ssl=context,
-        server_hostname=server_hostname,
-        ssl_handshake_timeout=_IO_SECONDS,
-        ssl_shutdown_timeout=1,
-    )
+    # Bound the TCP connect too: a black-holed non-loopback host would otherwise wait
+    # out the kernel's SYN retries (minutes) while a caller holds its Codex lock.
+    async with asyncio.timeout(_IO_SECONDS):
+        reader, writer = await asyncio.open_connection(
+            host,
+            port,
+            ssl=context,
+            server_hostname=server_hostname,
+            ssl_handshake_timeout=_IO_SECONDS,
+            ssl_shutdown_timeout=1,
+        )
     try:
         _peer(writer, expected)
         await _write(writer, command)

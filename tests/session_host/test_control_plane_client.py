@@ -275,6 +275,34 @@ async def test_no_valid_authority_refuses_the_launch_before_the_host(volume, val
     assert inner.seen == []
 
 
+async def test_a_black_holed_host_refuses_the_launch_within_the_bound(
+    monkeypatch, volume, pki, pki_root, tmp_path
+):
+    """A host IP that never answers SYN refuses with the fixed code, and frees the lock."""
+    from butlers.session_host import control as control_module
+
+    _server, _client, pin = pki
+
+    async def black_hole(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(control_module, "_IO_SECONDS", 0.2)
+    monkeypatch.setattr(control_module.asyncio, "open_connection", black_hole)
+    config = _config(pki_root, _mount(tmp_path), pin, host="192.0.2.1", port=41198)
+    clients = session_host_clients(config, ModelCredentials(Store()), broker_origin=_ORIGIN)
+    inner = Inner(volume)
+    host = CodexAuthFencedHost(
+        inner, Authority(codex_document("one")), clients.codex_auth, runtimes={"codex"}
+    )
+    task = asyncio.create_task(host.launch(launch()))
+    done, _pending = await asyncio.wait({task}, timeout=3)
+    if not done:
+        task.cancel()
+        pytest.fail("the launch waited on an unbounded connect")
+    assert isinstance(task.exception(), CredentialUnavailable)
+    assert str(task.exception()) == "codex_auth_unavailable" and inner.seen == []
+
+
 async def test_other_runtimes_pass_straight_through(volume):
     authority = Authority(None)  # would refuse a codex launch
     inner = Inner(volume)
