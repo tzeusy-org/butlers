@@ -591,7 +591,7 @@ async def test_every_contact_child_table_exists_and_every_contact_column_is_acco
     }
 
     assert set(contacts_mod._CONTACT_CHILD_TABLES) | _NOT_REPOINTED == at_head
-    assert _NOT_REPOINTED <= at_head  # an exception for a dropped column is itself stale
+    assert _NOT_REPOINTED.isdisjoint(contacts_mod._CONTACT_CHILD_TABLES)  # one handler per column
 
 
 async def _priority(pool, contact_id, entity_id=None) -> None:
@@ -658,15 +658,33 @@ async def test_two_contacts_of_one_entity_keep_one_priority_entry(rel_pool):
     assert await _priority_rows(rel_pool, source, target, entity) == [(entity, entity)]
 
 
-async def test_a_failed_contact_merge_leaves_the_priority_entry_where_it_was(rel_pool, monkeypatch):
+async def test_a_priority_entry_anchored_to_the_source_entity_moves_whatever_its_key(rel_pool):
+    """A sibling contact's legacy key, or a leftover from before the fix, is not stranded."""
+    source_entity, target_entity, _fact_id, source, target = await _pair(rel_pool)
+    sibling_legacy_key = uuid.uuid4()
+    await _priority(rel_pool, sibling_legacy_key, source_entity)
+
+    await contacts_mod.contact_merge(rel_pool, source, target)
+
+    assert await _priority_rows(rel_pool, sibling_legacy_key, source_entity, target_entity) == [
+        (target_entity, target_entity)
+    ]
+
+
+async def test_a_failure_after_the_priority_move_rolls_it_back(rel_pool, monkeypatch):
+    """The fault fires after the helper ran, so the move itself must be inside the merge."""
     source_entity, target_entity, fact, source, target = await _pair(rel_pool)
     await _priority(rel_pool, source_entity, source_entity)
+    real = contacts_mod._merge_priority_contact
 
-    async def boom(*_args, **_kwargs):
-        raise RuntimeError("entity merge failed")
+    async def move_then_fail(*args, **kwargs):
+        await real(*args, **kwargs)
+        assert await _priority_rows(rel_pool, target_entity) == []  # other connection: uncommitted
+        raise RuntimeError("fault after the priority move")
 
-    monkeypatch.setattr(entity_merge_mod, "write_merge_review", boom)
-    with pytest.raises(RuntimeError):
+    monkeypatch.setattr(contacts_mod, "_merge_priority_contact", move_then_fail)
+    with pytest.raises(RuntimeError, match="after the priority move"):
         await contacts_mod.contact_merge(rel_pool, source, target)
 
     assert await _priority_rows(rel_pool, source_entity) == [(source_entity, source_entity)]
+    await _assert_nothing_moved(rel_pool, source_entity, target_entity, fact, source)
