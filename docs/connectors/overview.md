@@ -357,7 +357,26 @@ message.
 The Telegram user client holds only on its per-message path: backfill, the fallback for messages
 without a chat id, and retries. Live messages go through the per-chat batch buffer, and a failed
 batch submit still parks at once with no text; the next successful flush from any chat can then
-advance the checkpoint past it. Other connectors keep their existing behaviour.
+advance the checkpoint past it.
+
+Slice 2a (bu-dhloi1.224) covers the sources that used to lose a failed item with no record:
+
+- **Google Drive** keeps the envelopes a page produced and resends them exactly (same key, same
+  event id) under the same budget, then parks them. A failed batch digest joins that queue
+  instead of escaping the poll loop. The page token and the metadata cache are committed only
+  when nothing read is unsent or batched, so a page is never re-read against a cache that
+  already holds its new state. A removed file's key falls back to the change's own time.
+- **OwnTracks** answers the webhook only once the point is ingested or parked. A failure with
+  attempts left answers 503, so the phone keeps the point and sends it again (deduplicated by its
+  `tst`-based key); the wait is bounded (10 s) and never cancels the ingest.
+- **Home Assistant live** and the **live listener** are push streams that never re-deliver an
+  item, so a failed envelope is parked at once. HA parks each failed envelope (home_assistant,
+  wellness, automation_triggered) scrubbed, and a failed primary no longer stops the wellness
+  emission. Both store only the exception class as error detail, since transport text can echo
+  content. The live listener now drains replay requests after each delivered utterance.
+
+Spotify, Telegram bot polling and the batch flushes of the Telegram user and WhatsApp clients keep
+their existing behaviour until later slices.
 
 The [bearer material custody audit](bearer-material-custody-audit.md) records the exact
 source inventory, connector stores, inbox readers and synthetic seam evidence. Its
