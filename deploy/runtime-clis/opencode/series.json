@@ -164,7 +164,7 @@
     },
     {
       "path": "patches/0004-redact-effect-websocket-errors.patch",
-      "sha256": "f17ad9b0b47a93e22cf3ed41364a9677f668250951a41e0dc2eed1804e964e88",
+      "sha256": "2897562fff349e07962cd18e732ed779b7ee2bbb119588fa7e517ba2bce40c7a",
       "files": [
         {
           "path": "packages/llm/src/route/executor.ts",
@@ -179,7 +179,7 @@
         {
           "path": "packages/llm/test/gateway-websocket-errors.test.ts",
           "before_sha256": null,
-          "after_sha256": "32b1dbbb3f87d44aa01d5a759f4a6f0ba246c17d2aa4f011ede8bca561d3b448"
+          "after_sha256": "d4bf1bcd36874ef04d6d6de79de0ae3a25df89d968e103de53a95d941d6ed0a2"
         }
       ]
     },
@@ -215,8 +215,8 @@
         },
         {
           "path": "packages/llm/test/gateway-websocket-errors.test.ts",
-          "before_sha256": "32b1dbbb3f87d44aa01d5a759f4a6f0ba246c17d2aa4f011ede8bca561d3b448",
-          "after_sha256": "f3d09b66ea71819942b8beb73646da6af10bb382f31d802c9dd4e05675c76861"
+          "before_sha256": "d4bf1bcd36874ef04d6d6de79de0ae3a25df89d968e103de53a95d941d6ed0a2",
+          "after_sha256": "e7edc3ed4f3649b56a91689ab54bd843b6f1270fa03608d06539c696d0da69c4"
         }
       ]
     },
@@ -231,8 +231,8 @@
         },
         {
           "path": "packages/llm/test/gateway-websocket-errors.test.ts",
-          "before_sha256": "f3d09b66ea71819942b8beb73646da6af10bb382f31d802c9dd4e05675c76861",
-          "after_sha256": "0bf6974790c77cb58d99db4b8e835c5b1bb7afcf07bbfb519c6f318f8b5a3e90"
+          "before_sha256": "e7edc3ed4f3649b56a91689ab54bd843b6f1270fa03608d06539c696d0da69c4",
+          "after_sha256": "5e2b15a75ec0604fa0d8d5b68bf91cda2abd3c2c70f6d0dde905bce67234be3b"
         }
       ]
     },
@@ -247,12 +247,12 @@
         },
         {
           "path": "packages/llm/test/gateway-websocket-errors.test.ts",
-          "before_sha256": "0bf6974790c77cb58d99db4b8e835c5b1bb7afcf07bbfb519c6f318f8b5a3e90",
-          "after_sha256": "5f1289336e9b2c72758cd90e1bf9079cdabcedc0766f18fe3186669e2cc2ad4d"
+          "before_sha256": "5e2b15a75ec0604fa0d8d5b68bf91cda2abd3c2c70f6d0dde905bce67234be3b",
+          "after_sha256": "2a594a84c133c6b5cf9fc92e0b5655d3572fdf8feda4a503c069020cb985c5ab"
         }
       ]
     }
   ],
-  "source_tree_sha256": "5360186e526dee49e6a84297471b4089e8ff96108f0fb38bccdaf2a96455896c",
+  "source_tree_sha256": "0e7898eb7045d89f05305dc644930887d4a73afbe48f093c4f38fd0b64a8c772",
   "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches."
 }

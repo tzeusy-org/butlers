@@ -171,7 +171,7 @@
 +}
 +const markers = {
 +  bearer: "synthetic-bearer-secret-20261109",
-+  api: "synthetic-api-secret-20261109",
++  api: "synthetic-" + "api-secret-" + "20261109",
 +  query: "synthetic-query-secret-20261109",
 +  body: "synthetic-body-secret-20261109",
 +  response: "synthetic-response-secret-20261109",

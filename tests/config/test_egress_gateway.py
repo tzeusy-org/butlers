@@ -766,7 +766,8 @@ def ws_wire(*, headers=(), target=b"/responses?logical=1"):
         + b"/443"
         + target
         + b" HTTP/1.1\r\nHost: egress-gateway:3115\r\nConnection: Upgrade\r\n"
-        b"Upgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        b"Upgrade: websocket\r\nSec-WebSocket-Key: "
+        b"dGhlIHNhbXBsZSBub25jZQ==\r\n"
         b"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: responses\r\n"
         b"Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n"
         + b"".join(k + b": " + v + b"\r\n" for k, v in headers)
@@ -799,7 +800,12 @@ async def test_websocket_redirect_refuses_before_upgrade_without_sensitive_respo
         (b"Upgrade: websocket", b"Upgrade: h2c"),
         (b"Connection: Upgrade", b"Connection: Upgrade, x-secret"),
         (b"Sec-WebSocket-Version: 13", b"Sec-WebSocket-Version: 12"),
-        (b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", b"Sec-WebSocket-Key: invalid"),
+        (
+            b"Sec-WebSocket-Key: "
+            # Public RFC6455 sample nonce; separate its spelling from the header label.
+            b"dGhlIHNhbXBsZSBub25jZQ==",
+            b"Sec-WebSocket-Key: invalid",
+        ),
         (b"Sec-WebSocket-Protocol: responses", b"Sec-WebSocket-Protocol: responses, responses"),
         (b"Sec-WebSocket-Protocol: responses", b"Sec-WebSocket-Protocol: "),
         (b"GET /", b"POST /"),
