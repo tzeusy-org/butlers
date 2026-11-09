@@ -28,7 +28,7 @@
   },
   "package_json_sha256": "58a6703e5adc02602dd9e34ff4a4bac5a3352d4424918c290fa42d41eccf4e48",
   "package_lock_sha256": "022e2fa5b9db64a6a17e346aacf9d7da83d88f25bfc0a1967ab756ac0e0cccbc",
-  "ordinary_npm_installed": 129,
+  "ordinary_npm_installed": 130,
   "complete_lock_packages": 141,
   "metadata": [
     {
@@ -306,5 +306,8 @@
       "@opencode-ai/sdk/v2/server",
       "@opencode-ai/sdk/v2/gen/client"
     ]
-  }
+  },
+  "ordinary_present_supplements": [
+    "node_modules/@opentui/core-linux-x64-musl"
+  ]
 }

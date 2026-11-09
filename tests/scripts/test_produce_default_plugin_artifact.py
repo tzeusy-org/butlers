@@ -108,6 +108,7 @@ def graph(tmp_path, monkeypatch):
     manifest = json.loads((source / "build-inputs.json").read_bytes())
     lock = json.loads((source / "package-lock.json").read_bytes())
     payloads = {}
+    musl_archive = tmp_path / "original-musl.tgz"
     for item in manifest["supplements"]:
         raw = archive(
             [
@@ -126,6 +127,8 @@ def graph(tmp_path, monkeypatch):
         )
         lock["packages"][item["lock_path"]]["integrity"] = item["archive_integrity"]
         payloads[item["archive_url"]] = raw
+        if item["lock_path"] in producer.PRESENT_SUPPLEMENTS:
+            musl_archive.write_bytes(raw)
     (source / "package-lock.json").write_text(json.dumps(lock))
     manifest["package_lock_sha256"] = producer.digest(source / "package-lock.json")
     raw_bun = bun_zip()
@@ -160,6 +163,14 @@ def graph(tmp_path, monkeypatch):
                     {"name": name.rsplit("node_modules/", 1)[1], "version": record["version"]}
                 )
             )
+        present = next(
+            item
+            for item in manifest["supplements"]
+            if item["lock_path"] in producer.PRESENT_SUPPLEMENTS
+        )
+        native.extract(
+            producer.supplemental_record(present), musl_archive, directory / present["lock_path"]
+        )
         # A DFS walk misorders these two, unlike the contract's literal sort.
         assets = directory / "node_modules/@opencode-ai/plugin/lib/helpers"
         assets.mkdir(parents=True)
@@ -357,6 +368,8 @@ def test_supplement_identity_refusal_keeps_output_absent(graph, monkeypatch):
 
     def changed(record, archive, output):
         original(record, archive, output)
+        if record["name"] == "@opentui/core-linux-x64-musl":
+            return
         package = json.loads((output / "package.json").read_bytes())
         package["version"] = "0.0.0"
         (output / "package.json").write_text(json.dumps(package))
@@ -380,12 +393,59 @@ def test_ordinary_population_diagnostic_binds_only_public_lock_paths(graph):
     with pytest.raises(ValueError, match="population differs: ") as caught:
         producer.package_population(directory, graph.lock, graph.manifest, complete=False)
     diagnostic = json.loads(str(caught.value).split(": ", 1)[1])
-    expected = {record["lock_path"] for record in graph.manifest["supplements"]}
+    expected = {
+        record["lock_path"]
+        for record in graph.manifest["supplements"]
+        if record["lock_path"] not in producer.PRESENT_SUPPLEMENTS
+    }
     assert diagnostic == {
         "absent": sorted(expected - {item["lock_path"]}),
         "expected_absent": sorted(expected),
     }
     assert str(graph.root) not in str(caught.value)
+
+
+@pytest.mark.parametrize("change", ["missing", "wrong-payload", "extra-payload"])
+def test_exact_ordinary_musl_payload_is_preserved_and_required(graph, monkeypatch, change):
+    original = graph.install
+
+    def changed(directory):
+        original(directory)
+        musl = directory / producer.PRESENT_SUPPLEMENTS[0]
+        if change == "missing":
+            import shutil
+
+            shutil.rmtree(musl)
+        elif change == "wrong-payload":
+            (musl / "complete-original-native").write_bytes(b"wrong platform payload")
+        else:
+            (musl / "foreign").write_bytes(b"unexpected payload")
+
+    monkeypatch.setattr(graph, "install", changed)
+    with pytest.raises(ValueError):
+        producer.public_seed(graph.commands)
+    assert not (graph.root / "inputs").exists() and not graph.output.exists()
+
+
+def test_present_verification_never_replaces_the_ordinary_payload(graph):
+    directory = graph.root / "project"
+    producer.project(directory)
+    graph.install(directory)
+    archives = graph.root / "archives"
+    archives.mkdir()
+    for index, record in enumerate(graph.manifest["supplements"]):
+        (archives / f"{index:02d}.tgz").write_bytes(graph.payloads[record["archive_url"]])
+    installed = directory / producer.PRESENT_SUPPLEMENTS[0]
+    before = artifacts.inventory(installed, closed=True)
+    identities = {
+        path.relative_to(installed).as_posix(): path.stat().st_ino for path in installed.rglob("*")
+    }
+    producer.package_population(directory, graph.lock, graph.manifest, complete=False)
+    producer.preserve_present_supplements(directory, archives, graph.manifest)
+    assert before == artifacts.inventory(installed, closed=True)
+    assert identities == {
+        path.relative_to(installed).as_posix(): path.stat().st_ino for path in installed.rglob("*")
+    }
 
 
 @pytest.mark.parametrize("field", ["dependencies", "population", "authority", "integrity"])

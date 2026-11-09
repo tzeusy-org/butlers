@@ -46,6 +46,7 @@ IMPORTS = (
     "@opencode-ai/sdk/v2/gen/client",
 )
 CONFIGURATION = ("npm-user.npmrc", "npm-global.npmrc")
+PRESENT_SUPPLEMENTS = ("node_modules/@opentui/core-linux-x64-musl",)
 
 
 def digest(path: Path) -> str:
@@ -230,7 +231,8 @@ def declarations() -> tuple[dict, dict]:
         or lock["packages"][""]["dependencies"] != DEPENDENCIES
         or digest(source / "package.json") != manifest["package_json_sha256"]
         or digest(source / "package-lock.json") != manifest["package_lock_sha256"]
-        or manifest["ordinary_npm_installed"] != 129
+        or manifest["ordinary_npm_installed"] != 130
+        or manifest["ordinary_present_supplements"] != list(PRESENT_SUPPLEMENTS)
         or manifest["complete_lock_packages"] != 141
         or len(lock["packages"]) != 142
         or manifest["imports"]
@@ -482,7 +484,15 @@ def package_population(directory: Path, lock: dict, manifest: dict, *, complete:
         expected_name = name.rsplit("node_modules/", 1)[1]
         if package["name"] != expected_name or package["version"] != record["version"]:
             raise ValueError("installed package differs from original full lock")
-    expected_absent = set() if complete else {item["lock_path"] for item in manifest["supplements"]}
+    expected_absent = (
+        set()
+        if complete
+        else {
+            item["lock_path"]
+            for item in manifest["supplements"]
+            if item["lock_path"] not in PRESENT_SUPPLEMENTS
+        }
+    )
     if absent != expected_absent:
         # These are committed public lock paths, never environment values or
         # arbitrary filesystem paths. Preserve the exact failed population so
@@ -509,6 +519,29 @@ def supplemental_record(item: dict) -> dict:
         "sha256": item["archive_sha256"],
         "integrity": item["archive_integrity"],
     }
+
+
+def preserve_present_supplements(project: Path, archives: Path, manifest: dict) -> None:
+    """Verify the exact ordinary npm musl payload; never overwrite or execute it."""
+    artifacts = helper("runtime_artifacts")
+    native = helper("produce_native_packages")
+    for index, item in enumerate(manifest["supplements"]):
+        if item["lock_path"] not in PRESENT_SUPPLEMENTS:
+            continue
+        installed = project / item["lock_path"]
+        with tempfile.TemporaryDirectory(prefix="verify-present-", dir=ROOT) as temporary:
+            extracted = Path(temporary) / "package"
+            native.extract(supplemental_record(item), archives / f"{index:02d}.tgz", extracted)
+            package = json.loads((extracted / "package.json").read_bytes())
+            if any(
+                name in package.get("scripts", {})
+                for name in ("preinstall", "install", "postinstall")
+            ):
+                raise ValueError("present data supplement unexpectedly has lifecycle hooks")
+            if artifacts.inventory(installed) != artifacts.inventory(extracted, closed=True):
+                raise ValueError(
+                    "ordinary present supplement differs from complete original archive"
+                )
 
 
 def metadata_identity(directory: Path, manifest: dict, lock: dict) -> None:
@@ -561,6 +594,7 @@ def public_seed(operations: Operations) -> None:
             env=environment(offline=False),
         )
         package_population(stage / "ordinary", lock, manifest, complete=False)
+        preserve_present_supplements(stage / "ordinary", stage / "archives", manifest)
         if before != pins():
             raise ValueError("plugin recipe changed during public seed")
         entries = artifacts.inventory(stage)
@@ -629,8 +663,10 @@ def provenance(manifest: dict, recipe: dict, imports: dict) -> dict:
         "schema": "butlers.default-plugin-provenance/v1",
         "recipe": recipe,
         "public_inputs": manifest,
-        "ordinary_npm_lifecycle_packages": 129,
+        "ordinary_npm_lifecycle_packages": 130,
         "supplemental_data_packages": 12,
+        "supplemental_appended_packages": 11,
+        "supplemental_preserved_ordinary_packages": list(PRESENT_SUPPLEMENTS),
         "complete_lock_packages": 141,
         "commands": ["npm ci (all lifecycle scripts)", "npm ci --offline (all lifecycle scripts)"],
         "supplements": "complete SRI-bound archives carried as data; no foreign-platform execution",
@@ -670,7 +706,10 @@ def build(operations: Operations) -> None:
             env=environment(offline=True),
         )
         package_population(work / "project", lock, manifest, complete=False)
+        preserve_present_supplements(work / "project", inputs / "archives", manifest)
         for index, item in enumerate(manifest["supplements"]):
+            if item["lock_path"] in PRESENT_SUPPLEMENTS:
+                continue
             native.extract(
                 supplemental_record(item),
                 inputs / "archives" / f"{index:02d}.tgz",

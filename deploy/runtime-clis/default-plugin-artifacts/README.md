@@ -10,17 +10,29 @@ unchanged upstream source lock, which resolves 1.9.10.
 The checked-in package and complete package-lock are immutable inputs. Public
 seeding runs ordinary `npm ci` with all lifecycle scripts and retains its
 complete public npm cache. The observed ordinary Linux/glibc install contains
-129 packages. Twelve separately declared, complete official npm archives are
+130 packages. Twelve separately declared, complete official npm archives are
 retained with their lock SHA512, archive SHA256, size and original metadata
-identities. They are non-target data payloads, not twelve additional packages
-executed by npm. No optional lock entry, foreign-platform asset, lifecycle
+identities. The exact `@opentui/core-linux-x64-musl` package is already present
+in this ordinary install. Its entire canonical mode/content/link inventory
+must match an independent extraction of the original SRI-bound archive; it
+is preserved without overwriting or executing it. Only the eleven precisely
+declared absent packages are appended as data. No optional lock entry,
+foreign-platform asset, lifecycle
 hook or public export is removed. The complete seed contains all 141 locked
-packages, each with the original package name and version.
+packages, each with the original package name and version. The earlier task
+prototype used `npm install --save-exact`, reported 129 installed packages,
+and lacked the musl archive in both its public and offline caches. Node/npm
+bytes and the final lock are identical. The lock omits that record's libc
+field although its pinned public metadata says musl. A cache/lock selection
+difference explains the observed staging change plausibly; npm internals
+were not independently traced. Final graph identity remains unchanged.
 
 The public layer is NONFINAL. The separate `RUN --network=none` verifies the
 actual route state and closed input inventory before any package operation.
 It independently copies the cache, repeats fresh `npm ci --offline` with all
-hooks, then appends the exact twelve archives as data. It uses the complete
+hooks, verifies the exact already-present musl payload and appends the other
+eleven archives as data. All twelve original archives remain closed inputs.
+It uses the complete
 pinned Node 22.23.4/npm 10.9.9 component and full original Bun 1.3.14 ZIP.
 Bun acquisition allows only the explicit GitHub release to HTTPS
 `release-assets.githubusercontent.com` transition, once. Every npm archive
