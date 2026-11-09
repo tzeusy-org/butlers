@@ -507,7 +507,68 @@ Each enforcing setting has a native row that removes it and requires failure.
 Settings in `codex.py` marked unmeasured changed nothing this proof could see, so
 they claim nothing.
 
-Five of the nine measured checks show absence, not enforcement:
+### Native discovery (`tool_search`) is the broker's corpus, not provider search
+
+The private catalog keeps `supports_search_tool`. It enables Codex's own
+`tool_search`, which RFC 0027 native deferred discovery needs (`bu-r980fk`). On the
+wire it is a distinct tool entry, `{"type": "tool_search", "execution": "client"}`,
+whose description lists the MCP sources it searches. Its answers are
+`tool_search_output` items holding the matching tools. With it on, the broker's
+tools are deferred: they are no longer offered up front, and reach the model only
+through search. The checker therefore classifies:
+
+- a client-executed `tool_search` as its own surface entry, `client:tool_search`;
+- a `tool_search` (or any search) the provider executes as `hosted:*`, which fails
+  `provider_search_disabled` like web search.
+
+The proof fails unless all of these hold:
+
+- the offered `tool_search` lists `broker` and nothing else as its source;
+- a hostile `tool_search` call is answered on the client and completes;
+- every tool in the answer is in the `mcp__broker` namespace;
+- the broker's `goal_ping` is reachable through it.
+
+The sources check matters. A built-in family the config fails to disable, such as
+multi-agent tools, becomes deferred too and shows up only in that list. Native rows
+pin both directions: dropping `supports_search_tool` fails `broker_only_mcp`, and so
+does a second MCP server, whose tools the same search returns. Three MCP resource
+tools (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`)
+stay offered because the pinned CLI has no switch for them. They can only name
+configured servers, so a broker test pins that the goal endpoint serves no
+resource, template or prompt.
+
+### Isolation measured on the live runtime
+
+`filesystem_isolation` and `process_isolation` are now measured for this tuple. They
+are no longer covered only by synthetic payloads. While the runtime waits on its
+first provider answer, the proof reads the domain from outside:
+
+- its mount view through `/proc/<pid>/root`;
+- its pid namespace through that root's `/proc`.
+
+Next to the launch, it stages a second invocation's real material under the same
+stage root, with a canary credential, and starts a host process. The checks fail
+if the domain sees any of these:
+
+- a path outside its plan;
+- the canary in any readable file;
+- the peer's stage directory;
+- any process other than the shim and `/runtime/codex`;
+- the host peer.
+
+Native rows loosen the bwrap plan: mount the peer's material, mount a host
+directory, or drop `--unshare-pid`. Each fails on a completed launch with a measured
+view, not because the launch broke.
+
+That is this host's bwrap and kernel. `tests/session_host/exact_image_codex_proof.py`
+runs the same clean launches and every mutation row inside the rebuilt production
+image, with the image's own bwrap and Codex binary. It needs Docker, so the owner
+runs it. The shim there is compiled statically from the same source, because the
+image ships a dynamically linked one, which cannot run inside the empty domain root.
+
+### Measured checks
+
+Five of the eleven measured checks show absence, not enforcement:
 
 - `provider_search_disabled`, `provider_fetch_disabled`, `provider_remote_mcp_disabled`
   and `provider_code_disabled` pass when no hosted tool appears anywhere in the client
@@ -518,24 +579,48 @@ Five of the nine measured checks show absence, not enforcement:
   native mutation can make this check fail. Hosted search is covered only by
   `provider_search_disabled`.
 
-The other four (`builtin_shell_disabled`, `builtin_filesystem_disabled`,
-`local_mcp_disabled`, `broker_only_mcp`) enforce. Each has a native mutation that
-makes it fail. They send hostile calls and require each one to be refused, or the
-broker call to complete.
+The other six enforce. Each has a native mutation that makes it fail:
+
+- `builtin_shell_disabled`, `builtin_filesystem_disabled`, `local_mcp_disabled`,
+  `broker_only_mcp`. These send hostile calls and require each one to be refused,
+  the broker call to complete, and discovery to stay on the broker.
+- `filesystem_isolation`, `process_isolation`. These read the live domain, as
+  described above.
 
 The tuple stays ineligible. `ReviewedProfile` requires 13 checks. The proof measures
-nine and reports the other four as `unproven`, which admission refuses:
+eleven and reports the other two as `unproven`, which admission refuses:
 
 | Check | What remains | Who can run it |
 | --- | --- | --- |
 | `restricted_egress` | The domain has no route out, so a real launch cannot reach a provider or broker yet. Needs the gateway and the dev network proof (`bu-kiuh8v.4`). | Dev deployment |
-| `filesystem_isolation`, `process_isolation` | Native tests cover synthetic payloads, not this runtime in the installed image. | Exact-image run (Docker denied on agent hosts) |
-| `catalog_conformance` | RFC 0027 gate at the real catalog size, with native discovery (`bu-r980fk`). | Broker work |
+| `catalog_conformance` | RFC 0027 gate at the real catalog size, through the native discovery measured above (`bu-r980fk`). | Broker work |
 
-Also unproven: a real provider honoring the request (no real calls were made, so
-server-side behavior is outside this proof), and the bundled TLS trust path. Three
-MCP resource tools remain offered because the pinned CLI has no switch for them.
-They can only reach configured MCP servers, so the broker must answer them safely.
+The exact-image run confirms the two isolation checks in the installed image. It
+does not by itself make the tuple eligible. Also unproven:
+
+- a real provider honoring the request (no real calls were made, so server-side
+  behavior is outside this proof);
+- the bundled TLS trust path.
+
+### Control-channel authentication
+
+D3 requires an authenticated control channel. This is an engineering choice, not an
+owner gate. The choice is mutual TLS 1.3 with constructor-held leaf pins
+(`LocalControl`, above), not a shared bearer or a Unix-socket peer credential:
+
+- The runner and the session host are separate processes and may become separate
+  pods. A peer-credential check only works on one host, and would have to be
+  replaced at that split.
+- A bearer is replayable by anyone who reads it once, and the channel carries model
+  credentials. A pinned client leaf is useless without its key, and the key never
+  crosses the channel.
+- Pinning the exact leaf, on top of chain verification, means a second certificate
+  from the same CA cannot impersonate either side. That is also why the server and
+  caller pins must differ.
+- The trusted constructor supplies every identity, and no deployment PKI is
+  inferred. Issuing, rotating and distributing production certificates is a
+  switch-time gate, together with provider activation. Until then, tests use
+  synthetic certificates only.
 
 ### OAuth mode native proof
 

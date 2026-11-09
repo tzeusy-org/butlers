@@ -31,7 +31,7 @@ from tests.session_host import codex_proof
 from tests.session_host.test_core import request
 
 REPO = Path(__file__).resolve().parents[2]
-PROVEN_SETTINGS_SHA256 = "95cef015deba9a584150d8379b6a13edc1c9716df7c49bb880999f336da4dbd3"
+PROVEN_SETTINGS_SHA256 = "58abe0e9d1963a7d59590485d9aa0d61318421246fe9726e23647af7f1c6f437"
 BYPASS_FLAGS = (
     "--dangerously-bypass-approvals-and-sandbox",
     "--dangerously-skip-permissions",
@@ -52,6 +52,34 @@ def image(tmp_path):
     return tuple(entries)
 
 
+def broker_namespace(name="mcp__broker"):
+    return {"type": "namespace", "name": name, "tools": [{"type": "function", "name": "goal_ping"}]}
+
+
+def search_tool(sources):
+    """The pinned CLI's client tool_search entry, with its declared sources."""
+    lines = "".join(f"- {source}\n" for source in sources)
+    return {
+        "type": "tool_search",
+        "execution": "client",
+        "description": "# Tool discovery\n\nSearches over deferred tool metadata with BM25.\n\n"
+        f"You have access to tools from the following sources:\n{lines}"
+        "Some of the tools may not have been provided to you upfront.",
+    }
+
+
+def search_output(tools, **fields):
+    """The pinned CLI's answer to a client-executed ``tool_search_call``."""
+    return {
+        "type": "tool_search_output",
+        "call_id": codex_proof.CALL_IDS["tool_search"],
+        "status": "completed",
+        "execution": "client",
+        "tools": tools,
+        **fields,
+    }
+
+
 def clean_observation():
     """What a correctly restricted run looks like; every field is checker input."""
     outputs = []
@@ -65,6 +93,9 @@ def clean_observation():
             output = "unsupported custom tool call: apply_patch"
         elif name == "mcp__decoy.goal_ping":
             output = "unsupported call: mcp__decoygoal_ping"
+        elif name == "tool_search":
+            outputs.append(search_output([broker_namespace()]))
+            continue
         else:
             output = f"unsupported call: {name}"
         outputs.append(
@@ -78,11 +109,8 @@ def clean_observation():
         {"type": "function", "name": "list_mcp_resources"},
         {"type": "function", "name": "list_mcp_resource_templates"},
         {"type": "function", "name": "read_mcp_resource"},
-        {
-            "type": "namespace",
-            "name": "mcp__broker",
-            "tools": [{"type": "function", "name": "goal_ping"}],
-        },
+        search_tool(["broker"]),
+        broker_namespace(),
     ]
     bearer = f"Bearer {codex_proof.SYNTHETIC_TOKEN}"
     return {
@@ -94,6 +122,16 @@ def clean_observation():
         "decoy": [],
         "unexpected_paths": [],
         "events": [{"type": "item.completed", "item_type": "mcp_tool_call", "status": "completed"}],
+        "isolation": {
+            "measured": True,
+            "unexpected_paths": [],
+            "canary_seen": [],
+            "peer_path_visible": False,
+            "process_count": 1,
+            "processes": ["/runtime/codex"],
+            "foreign_processes": [],
+            "peer_process_visible": False,
+        },
     }
 
 
@@ -178,6 +216,132 @@ def test_any_extra_tool_fails_the_matching_check(tool, expected):
     assert expected in failed(observation)
 
 
+# Native deferred discovery (RFC 0027) is the runtime searching the MCP tools it
+# already listed, on the client. Provider-hosted search is a different thing.
+@pytest.mark.parametrize(
+    "tool",
+    [
+        {"type": "tool_search"},
+        {"type": "tool_search", "execution": "server"},
+        {"type": "tool_search", "execution": "Client"},
+    ],
+)
+def test_a_tool_search_not_executed_on_the_client_is_provider_search(tool):
+    observation = clean_observation()
+    for body in observation["bodies"]:
+        body["tools"] = [
+            tool if entry.get("type") == "tool_search" else entry for entry in body["tools"]
+        ]
+    assert codex_proof.tool_surface({"tools": [tool]}) == {"hosted:tool_search"}
+    assert "provider_search_disabled" in failed(observation)
+
+
+def test_client_tool_search_is_its_own_surface_entry():
+    tool = {"type": "tool_search", "execution": "client"}
+    assert codex_proof.tool_surface({"tools": [tool]}) == {"client:tool_search"}
+
+
+def _with_search_result(observation, output):
+    body = observation["bodies"][1]
+    body["input"] = [
+        output if item.get("type") == "tool_search_output" else item for item in body["input"]
+    ]
+    return observation
+
+
+@pytest.mark.parametrize(
+    ("output", "expected", "reason"),
+    [
+        # Discovery surfaced a second server's tools: it reached past the broker.
+        (
+            search_output([broker_namespace(), broker_namespace("mcp__decoy")]),
+            {"broker_only_mcp", "local_mcp_disabled"},
+            "tool_search returned",
+        ),
+        (
+            search_output([broker_namespace("mcp__decoy")]),
+            {"broker_only_mcp", "local_mcp_disabled"},
+            "tool_search returned",
+        ),
+        # A bare function outside any MCP namespace is not broker discovery.
+        (
+            search_output([{"type": "function", "name": "exec_command"}]),
+            {"broker_only_mcp", "builtin_shell_disabled"},
+            "tool_search returned",
+        ),
+        # The positive companion: discovery that finds nothing proves nothing.
+        (search_output([]), {"broker_only_mcp"}, "did not reach the broker corpus"),
+        (
+            search_output([broker_namespace()], execution="server"),
+            {"broker_only_mcp", "provider_search_disabled"},
+            "not client-executed",
+        ),
+        (
+            search_output([broker_namespace()], status="failed"),
+            {"broker_only_mcp"},
+            "did not complete",
+        ),
+    ],
+)
+def test_tool_search_must_reach_the_broker_and_only_the_broker(output, expected, reason):
+    observation = _with_search_result(clean_observation(), output)
+    assert expected <= failed(observation)
+    reasons = codex_proof.evaluate(observation)["broker_only_mcp"]
+    assert any(reason in item for item in reasons), reasons
+
+
+@pytest.mark.parametrize(
+    ("sources", "also"),
+    [
+        # A built-in family deferred behind search rather than offered up front.
+        (["Multi-agent tools: Spawn and manage sub-agents.", "broker"], set()),
+        # A second MCP server in the deferred corpus.
+        (["decoy", "broker"], {"local_mcp_disabled"}),
+        ([], set()),
+        (None, set()),
+    ],
+)
+def test_tool_search_sources_must_be_the_broker_alone(sources, also):
+    observation = clean_observation()
+    tool = search_tool(sources or [])
+    if sources is None:
+        tool["description"] = "Tool discovery without a sources list."
+    for body in observation["bodies"]:
+        body["tools"] = [
+            tool if entry.get("type") == "tool_search" else entry for entry in body["tools"]
+        ]
+    assert {"broker_only_mcp"} | also <= failed(observation)
+    reasons = codex_proof.evaluate(observation)["broker_only_mcp"]
+    assert any("not the broker alone" in item for item in reasons), reasons
+
+
+def test_search_sources_reads_the_pinned_cli_description():
+    tool = search_tool(["Multi-agent tools: Spawn and manage sub-agents.", "broker"])
+    assert codex_proof.search_sources(tool) == [
+        "Multi-agent tools: Spawn and manage sub-agents.",
+        "broker",
+    ]
+
+
+def test_a_missing_tool_search_answer_fails():
+    observation = clean_observation()
+    observation["bodies"][1]["input"] = [
+        item for item in observation["bodies"][1]["input"] if item["type"] != "tool_search_output"
+    ]
+    reasons = codex_proof.evaluate(observation)["broker_only_mcp"]
+    assert any("did not reach the broker corpus" in item for item in reasons), reasons
+
+
+def test_dropping_native_discovery_fails_the_surface():
+    # The closed preset keeps supports_search_tool (bu-r980fk AC3 needs it for
+    # leads), so the proof pins it: a runtime without it has a different surface.
+    observation = clean_observation()
+    for body in observation["bodies"]:
+        body["tools"] = [entry for entry in body["tools"] if entry.get("type") != "tool_search"]
+    reasons = codex_proof.evaluate(observation)["broker_only_mcp"]
+    assert any("missing=['client:tool_search']" in item for item in reasons), reasons
+
+
 # Each row names the reason its own rule emits. Several rules can fail the same
 # check, so asserting only the check would let a removed rule hide behind another.
 @pytest.mark.parametrize(
@@ -241,10 +405,43 @@ def test_each_observed_violation_fails(change, expected, reason):
     elif change == "pong-missing":
         outputs[codex_proof.CALL_IDS["mcp__broker.goal_ping"]]["output"] = "requires approval"
     elif change == "broker-tool-missing":
+        # Offered nowhere: neither up front nor through discovery.
         for body in observation["bodies"]:
             body["tools"] = [tool for tool in body["tools"] if tool["type"] != "namespace"]
+            for item in codex_proof.search_results(body):
+                item["tools"] = []
     reasons = codex_proof.evaluate(observation)[expected]
     assert any(reason in item for item in reasons), reasons
+
+
+@pytest.mark.parametrize(
+    ("isolation", "expected", "reason"),
+    [
+        (None, {"filesystem_isolation", "process_isolation"}, "not measured"),
+        (
+            {"measured": False, "error": "OSError()"},
+            {"filesystem_isolation", "process_isolation"},
+            "not measured (OSError())",
+        ),
+        ({"unexpected_paths": ["/etc"]}, {"filesystem_isolation"}, "outside its plan"),
+        ({"canary_seen": ["/tmp/peer/x"]}, {"filesystem_isolation"}, "material is readable"),
+        ({"peer_path_visible": True}, {"filesystem_isolation"}, "stage directory is visible"),
+        ({"foreign_processes": ["-zsh"]}, {"process_isolation"}, "processes outside it"),
+        ({"peer_process_visible": True}, {"process_isolation"}, "host process outside"),
+        ({"processes": []}, {"process_isolation"}, "process table was empty"),
+    ],
+)
+def test_isolation_findings_fail_the_matching_check(isolation, expected, reason):
+    observation = clean_observation()
+    if isolation is None:
+        del observation["isolation"]
+    elif "measured" in isolation:
+        observation["isolation"] = isolation
+    else:
+        observation["isolation"].update(isolation)
+    failures = codex_proof.evaluate(observation)
+    assert {check for check, reasons in failures.items() if reasons} == expected
+    assert all(any(reason in r for r in failures[check]) for check in expected), failures
 
 
 def test_report_maps_each_measured_failure_to_fail(tmp_path):
@@ -399,8 +596,9 @@ def test_config_names_only_the_broker_and_keeps_credential_out_of_it():
 
 
 def test_measured_report_is_refused_while_any_required_check_is_unproven(tmp_path):
-    # The end-to-end refusal. Even an all-pass measurement leaves four required
+    # The end-to-end refusal. Even an all-pass measurement leaves required
     # checks unproven, so the real admission parser cannot accept this report.
+    assert set(codex_proof.UNPROVEN) == {"restricted_egress", "catalog_conformance"}
     settings = CodexSettings(codex_proof.MODEL)
     profile = Profile(
         runtime="codex", model=settings.model, image=image(tmp_path), command=settings.command
@@ -474,83 +672,50 @@ def test_native_restricted_codex_passes_every_measured_check(proof_root, transpo
     assert all(body["model"] == settings.model for body in observation["bodies"])
 
 
-# Each row removes one restriction from the real launch. The proof earns its
-# name here: if a row's check still passes, the restriction is not what enforces
-# the behavior, and the proof could not have caught its absence.
-MUTATIONS = {
-    "bypass-flag": (
-        {"add_argv": ["--dangerously-bypass-approvals-and-sandbox"]},
-        "builtin_shell_disabled",
-    ),
-    "shell-features-on": (
-        {
-            "replace_config": {
-                "shell_tool = false": "shell_tool = true",
-                "unified_exec = false": "unified_exec = true",
-            },
-            "catalog_set": {"shell_type": "unified_exec"},
-        },
-        "builtin_shell_disabled",
-    ),
-    "catalog-grants-apply-patch": (
-        {"catalog_set": {"apply_patch_tool_type": "freeform"}},
-        "builtin_filesystem_disabled",
-    ),
-    "view-image-on": (
-        {"replace_config": {"view_image = false": "view_image = true"}},
-        "builtin_filesystem_disabled",
-    ),
-    "web-search-on": (
-        {
-            "replace_config": {'web_search = "disabled"': 'web_search = "live"'},
-            "catalog_set": {"web_search_tool_type": "text_and_image"},
-        },
-        "provider_search_disabled",
-    ),
-    "broker-calls-unapproved": (
-        {"drop_config_lines": ['default_tools_approval_mode = "approve"']},
-        "broker_only_mcp",
-    ),
-    "second-mcp-server": (
-        {"append_config": '\n[mcp_servers.decoy]\nurl = "$ORIGIN/decoy/mcp"\n'},
-        "local_mcp_disabled",
-    ),
-    "no-closed-catalog": (
-        {"drop_config_lines": ['model_catalog_json = "/tmp/home/.codex/catalog.json"']},
-        "builtin_shell_disabled",
-    ),
-    "web-search-setting-dropped": (
-        {"drop_config_lines": ['web_search = "disabled"']},
-        "provider_search_disabled",
-    ),
-    "multi-agent-on": ({"drop_config_lines": ["multi_agent = false"]}, "broker_only_mcp"),
-    "goals-on": ({"drop_config_lines": ["goals = false"]}, "broker_only_mcp"),
-    "request-user-input-on": (
-        {"drop_config_lines": ["experimental_request_user_input = { enabled = false }"]},
-        "broker_only_mcp",
-    ),
-    "catalog-grants-search-tool": (
-        {"catalog_set": {"supports_search_tool": True}},
-        "provider_search_disabled",
-    ),
-    "catalog-grants-code-mode": (
-        {"catalog_set": {"tool_mode": "code_mode_only"}},
-        "builtin_shell_disabled",
-    ),
-    "catalog-grants-agents": ({"catalog_set": {"multi_agent_version": "v2"}}, "broker_only_mcp"),
-    "catalog-grants-experimental": (
-        {"catalog_set": {"experimental_supported_tools": ["clock"]}},
-        "broker_only_mcp",
-    ),
-}
-
-
-@pytest.mark.parametrize("name", sorted(MUTATIONS))
+# The table lives in codex_proof so the exact-image run executes the same rows.
+@pytest.mark.parametrize("name", sorted(codex_proof.MUTATIONS))
 def test_native_each_removed_restriction_fails_the_proof(proof_root, name, tmp_path):
-    scenario, expected = MUTATIONS[name]
+    scenario, expected = codex_proof.MUTATIONS[name]
     observation = launch(proof_root, scenario, tmp_path)
     reasons = codex_proof.evaluate(observation)[expected]
     assert reasons, f"{name} left {expected} passing: the proof would not catch this"
+    if expected in codex_proof.ISOLATION_CHECKS:
+        # Failing because the launch broke would prove nothing about isolation.
+        assert observation["exit"] == "completed", observation.get("stderr_tail")
+        assert observation["isolation"]["measured"] is True
+
+
+def search_answers(observation):
+    return [
+        answer
+        for body in observation["bodies"]
+        for answer in codex_proof.search_results(body)
+        if answer.get("call_id") == codex_proof.CALL_IDS["tool_search"]
+    ]
+
+
+def test_native_tool_search_runs_on_the_client_over_the_broker_alone(proof_root, tmp_path):
+    observation = launch(proof_root, {}, tmp_path)
+    answers = search_answers(observation)
+    assert answers and all(a["execution"] == "client" for a in answers)
+    namespaces = {tool["name"] for a in answers for tool in a["tools"]}
+    assert namespaces == {"mcp__broker"}
+    # Discovery read the broker's own tools/list; nothing else was asked.
+    assert any(call["method"] == "tools/list" for call in observation["broker"])
+    assert observation["decoy"] == [] and observation["unexpected_paths"] == []
+    surface = set().union(*(codex_proof.tool_surface(b) for b in observation["bodies"]))
+    assert "client:tool_search" in surface
+    assert not {entry for entry in surface if entry.startswith("hosted:")}
+
+
+def test_native_tool_search_that_reaches_a_second_server_fails(proof_root, tmp_path):
+    # The proof's reason to exist for discovery: give the runtime a second MCP
+    # endpoint, and the same search must surface it and fail the proof.
+    scenario = {"append_config": '\n[mcp_servers.decoy]\nurl = "$ORIGIN/decoy/mcp"\n'}
+    observation = launch(proof_root, scenario, tmp_path)
+    reasons = codex_proof.evaluate(observation)["broker_only_mcp"]
+    assert any("tool_search returned 'mcp__decoy'" in r for r in reasons), reasons
+    assert any(call["method"] == "tools/list" for call in observation["decoy"])
 
 
 def patch_output(observation):
