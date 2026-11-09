@@ -58,6 +58,8 @@ def _from_inventory(name: str) -> Capability:
 
 EPISODES = _from_inventory("chronicler_list_episodes")
 ENTITY_MERGE = _from_inventory("memory_entity_merge")
+SET_POSTURE = _from_inventory("entity_set_posture")
+ASSERT_SENDER = _from_inventory("identity_assert_sender_channel")
 NOTES = capability(
     "entity_note",
     "record",
@@ -66,7 +68,10 @@ NOTES = capability(
     alias_resolvers=(("entity_ids", "entity"),),
     recipient_params=RecipientParameters(),
 )
-ALIASED = Catalog("catalog-v1", (*CATALOG.capabilities, EPISODES, ENTITY_MERGE, NOTES))
+ALIASED = Catalog(
+    "catalog-v1",
+    (*CATALOG.capabilities, EPISODES, ENTITY_MERGE, NOTES, SET_POSTURE, ASSERT_SENDER),
+)
 PARAM = "participant_entity_id"
 
 
@@ -129,6 +134,28 @@ async def test_a_term_on_a_merged_away_id_holds_its_survivor(broker_db_url, reso
         await _never(w, EPISODES, PARAM, [source])
         await _merge(broker_db_url, source, survivor)
         held = await _refused(_episodes_call(w, survivor))
+        assert held.reason is Reason.POLICY
+
+
+@pytest.mark.parametrize(
+    ("cap", "other_args"),
+    [(SET_POSTURE, {"posture": "quiet"}), (ASSERT_SENDER, {"channel_type": "telegram"})],
+    ids=["entity_set_posture", "identity_assert_sender_channel"],
+)
+async def test_person_id_tools_resolve_a_merged_away_term_to_its_survivor(
+    broker_db_url, cap, other_args
+):
+    """bu-dhloi1.46: a term written on a merged-away person must hold these tools' survivor."""
+    assert dict(cap.alias_resolvers) == {"entity_id": "entity"}
+    async with _world(broker_db_url) as w:
+        source, survivor = await _person(w), await _person(w)
+        await _never(w, cap, "entity_id", [source])
+        await _merge(broker_db_url, source, survivor)
+        goal = await w.goal(_grant(cap))
+        _, token = await w.invocation(goal, _grant(cap))
+        held = await _refused(
+            w.broker.call(goal, token, cap.identity, {"entity_id": str(survivor), **other_args})
+        )
         assert held.reason is Reason.POLICY
 
 
