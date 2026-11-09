@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -84,6 +85,28 @@ class NoModelConfigured(RuntimeError):
 
 class SpendCeilingReached(RuntimeError):
     """The owner's monthly spend ceiling refuses the call."""
+
+
+class NotInvoked(Exception):
+    """Raised by an attempt function that refused before invoking any model.
+
+    The kernel records it as a ``suppressed`` attempt (``not_invoked:<code>``), not a
+    ``runtime_failure``. Only ``runtime_failure`` and ``success`` rows feed the dispatch
+    breaker and the routing evidence, so a refusal that says nothing about the model
+    (a goal-ledger open that lost a race, an exhausted invocation budget) can never
+    count against it. No failover follows, and the exception propagates unchanged.
+    The message must be a short code: it is the recorded reason.
+    """
+
+
+_NOT_INVOKED_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+
+
+def _not_invoked_reason(refusal: NotInvoked) -> str:
+    code = str(refusal)
+    if _NOT_INVOKED_CODE.fullmatch(code) is None:
+        code = "unclassified"
+    return f"not_invoked:{code}"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -507,6 +530,20 @@ async def call_model(
                 resolution_receipt=receipt,
                 usage_evidence=_usage_evidence(spec, None),
                 served_identity=snapshot(adapter),
+                attempt_key=attempt_key,
+            )
+            raise
+        except NotInvoked as refusal:
+            # No model ran: a non-model outcome, like a quota skip (bu-dhloi1.208).
+            await sink.attempt(
+                catalog_entry_id=candidate.catalog_entry_id,
+                butler=spec.butler_name,
+                outcome="suppressed",
+                attempt_index=attempt_count - 1,
+                failure_reason=_not_invoked_reason(refusal),
+                purpose_lane=spec.purpose_lane,
+                resolution_receipt=receipt,
+                served_identity=unknown(candidate.runtime_type, state="not_invoked"),
                 attempt_key=attempt_key,
             )
             raise
