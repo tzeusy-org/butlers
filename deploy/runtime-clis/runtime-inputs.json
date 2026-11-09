@@ -25,37 +25,287 @@
       "tree_sha256": "c430cd45c2ba69db759b141419c822d3d72e316f7802e69cf6787e812e627b57"
     },
     "codex": {
-      "tree_sha256": "377a00a84081b2e1f1960eeadd6895e169e5be6c58f6fda0527454d4e8c675fd"
+      "tree_sha256": "65a476c86eec256e5f25510773e261f556ea155d3105fc3985416615821e5e20"
     },
     "gemini": {
-      "tree_sha256": "99e2e2bc593afb4ed0fe636739460ff1531c7adaa5e1b788012f08e05d1e4f51"
+      "tree_sha256": "4d9a90d40b84d35db811ad5d69056137bf279bf249bf06962fcd6048ff604777"
     },
     "opencode": {
-      "tree_sha256": "2ace38c4b1716eba74212d93b48a9fe6f03fe7129b7e08a7656315c5b5fc5c0a"
+      "tree_sha256": "5cc74a7c1a2b7f10f25b38ff425fdb3ed428594b9972276d4b2b18057b2927e0"
     }
   },
   "provenance": {
+    "schema": "butlers.fixed-runtime-provenance/v1",
     "source_inputs": {
-      "node_official_archive_sha256": "1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce",
-      "uv_official_wheel_sha256": "680769ef701922dd93426b73476073411941f51ac46991a6e5c5a6efbf68a713",
-      "claude_official_wrapper_sha256": "507309e76aa5e13e5f95a8964dcbaad1ff447eb004f6d6ecd67e4c55e937e03e",
-      "codex_official_wrapper_sha256": "cf1e5d7b6e317a4a1d36dbff2ebd9b3cf048ac98d06fcb6682c57248e023cad2",
-      "codex_official_platform_archive_sha256": "84a6b35fb45bdcb94cef9fcb329438045a8911f53876cc9a9a7e6f9bb1382eba",
-      "opencode_official_wrapper_sha256": "1642eca13464b2616a786c5a860edfc7daf1c40dc9cfb880d27a37a5d1c04e1a"
+      "Dockerfile.codex-artifacts": {
+        "sha256": "70a0a46fb894c038eb4e830910bc204d569ed6b277eb64de48811ef91de63688"
+      },
+      "Dockerfile.default-plugin-artifacts": {
+        "sha256": "d3f809f55a782938d7f9e5b1634dc51c8ad67366e02517ed5b2dd72005142c0c"
+      },
+      "Dockerfile.gemini-artifacts": {
+        "sha256": "82ef9dacd245d204e65af38d3902985a5f7eb7ef6fad3ec5f3a7f725f93e8604"
+      },
+      "Dockerfile.native-package-artifacts": {
+        "sha256": "38971982f1263c202413b08f3c02452f02946d3b01233c5521ee186ecadb0a29"
+      },
+      "Dockerfile.npm-artifacts": {
+        "sha256": "089f988d9afe7e126086ff63b566fd718519529a7a0f517fb26bef9f8ec66260"
+      },
+      "Dockerfile.opencode-artifacts": {
+        "sha256": "f6ef09070bf4225d0759664eaad576be23c5ff09fcd3db709f73ae389f4f63c0"
+      },
+      "Dockerfile.toolchain-artifacts": {
+        "sha256": "4fa098003cb2d0700419ef5fea30f70c084a9eadccc15371ed0ceca3d19c01e2"
+      },
+      "deploy/runtime-clis/builders.json": {
+        "sha256": "f7d83e9dcdeef94626d9e0dd81fa2db6222343824488c1e95b785ea0773b691b"
+      },
+      "deploy/runtime-clis/codex/build-inputs.json": {
+        "sha256": "8886263cf441af7834f9a1e3f4d24cbd1c4c0474bf6e789f43c96ba9ed215b84"
+      },
+      "deploy/runtime-clis/codex/compiler-inputs.json": {
+        "sha256": "b8b8e3910b089d0622818620c090709884f1d0e1849c427a0dc98831360fd412"
+      },
+      "deploy/runtime-clis/codex/patches/001-workspace-release-versions.patch": {
+        "sha256": "3a7260f09562f9046a5b8f99b45506f959fb2331e7512175f2ec9cda7536ca43"
+      },
+      "deploy/runtime-clis/codex/patches/002-explicit-http-executor.patch": {
+        "sha256": "06e728e1bed84b6e6460ea01040a5b1e080058bcc47ab11dd0d5b5aafa72bbe0"
+      },
+      "deploy/runtime-clis/codex/patches/003-explicit-websocket-executor.patch": {
+        "sha256": "23d303ca89c3b89a3520d7d5140b00b6c941c55fc1299eb1d956162e66bebe59"
+      },
+      "deploy/runtime-clis/codex/patches/004-bounded-selected-hop-errors.patch": {
+        "sha256": "7c0216178ec5ee2ea29cb9014ce7fc60ebb4dcd4e15d3a205411605212bdfc13"
+      },
+      "deploy/runtime-clis/codex/series.json": {
+        "sha256": "d476705b01d0b1818bdb4ad94109cf1a10147bbb950cbd384245f0215438bf8e"
+      },
+      "deploy/runtime-clis/debian-system-inputs.json": {
+        "sha256": "a42de4f1082b934775b2a36f24b9dcff29d6a7265f9255960c47ca4ee0cdcd28"
+      },
+      "deploy/runtime-clis/default-plugin-artifacts/build-inputs.json": {
+        "sha256": "16f855d08bb6b1d28ed15f9ebe4ecbe78d72b988429fb0b854aca3afb3ca9883"
+      },
+      "deploy/runtime-clis/default-plugin-artifacts/package-lock.json": {
+        "sha256": "022e2fa5b9db64a6a17e346aacf9d7da83d88f25bfc0a1967ab756ac0e0cccbc"
+      },
+      "deploy/runtime-clis/default-plugin-artifacts/package.json": {
+        "sha256": "58a6703e5adc02602dd9e34ff4a4bac5a3352d4424918c290fa42d41eccf4e48"
+      },
+      "deploy/runtime-clis/gemini/artifact-inputs.json": {
+        "sha256": "547bfaee9ac838c98f599c07c74595c2ec07ba3ae7fcf4e2fb6d13c913fcddbe"
+      },
+      "deploy/runtime-clis/gemini/patches/001-dependency-closure.patch": {
+        "sha256": "7bb2858d456ad4672bec0e72bb354fa398300f8105cfac7bc8f563833323c2bd"
+      },
+      "deploy/runtime-clis/gemini/patches/002-terminal-http-auth-executor.patch": {
+        "sha256": "9b851f3df99c53604b25ffe23e7661fdc9ce2027558f3f3742cc5f75ca6a9fb1"
+      },
+      "deploy/runtime-clis/gemini/patches/003-cached-adc-client-transports.patch": {
+        "sha256": "663d38bc13da48e54bf5551f5481bda6ab2f0d64be1840e49e7a94b23df76b33"
+      },
+      "deploy/runtime-clis/gemini/patches/004-pinned-external-account-sts.patch": {
+        "sha256": "f0b6b9bfd1f90dc04c3196d88e8893deb9d7e9bfb6a413fdbc1d4da3ef15af73"
+      },
+      "deploy/runtime-clis/gemini/series.json": {
+        "sha256": "1e4c4b87d9b77373421550a150c9738411b3744d250503c3cd82de03f95f4859"
+      },
+      "deploy/runtime-clis/google-auth-library/patches/001-explicit-sts-fetch-and-build-lock.patch": {
+        "sha256": "34b4f86c7dba4b68acb5cc6fa5c3842779dd950f8d4ac7319e5fc0975d469d76"
+      },
+      "deploy/runtime-clis/google-auth-library/series.json": {
+        "sha256": "0289b29e2ef500b6b639a2b3389d84f506f08f23c78b635baf7022de9321c690"
+      },
+      "deploy/runtime-clis/js-genai/patches/001-dependency-closure.patch": {
+        "sha256": "1ff2459f4bc9c559132fe1a74cbe837089029251972c01cf59a9c791f3e72606"
+      },
+      "deploy/runtime-clis/js-genai/patches/002-terminal-http-auth-executor.patch": {
+        "sha256": "20aae830cf9409032a12cfb5dc35dab8a3fde6bd505263da8edcd385bb366024"
+      },
+      "deploy/runtime-clis/js-genai/patches/003-websocket-executor.patch": {
+        "sha256": "a588e52f617fb4a44d1c866088bfb01b235ae2f077075fd61b90d6d30d83e0d0"
+      },
+      "deploy/runtime-clis/js-genai/series.json": {
+        "sha256": "8e1aa9b4c4e60cb92562a1efa6ec9061d52c8bdcb246d8f0ed1ce129cfa4c486"
+      },
+      "deploy/runtime-clis/native-package-artifacts/build-inputs.json": {
+        "sha256": "52d9fb4ea28c0d49f56dd404280a358ccb85f729ada259e12fb1d72f37419e32"
+      },
+      "deploy/runtime-clis/npm-artifacts/build-inputs.json": {
+        "sha256": "dbef47f206c369c9c67186f6c79c8d4027b1e6541d619e134d478fc21ba7ed01"
+      },
+      "deploy/runtime-clis/npm-artifacts/patches/001-test-server-explicit-build-cache.patch": {
+        "sha256": "f312102780ef667473adeb7f54a55e355e160df1ba3f159d64247b25132698ed"
+      },
+      "deploy/runtime-clis/opencode/LICENSE.models-dev": {
+        "sha256": "dc2dc41c9fea2fd3c41c21c6f484844cab367800b88ff24781f980ad3a9d160a"
+      },
+      "deploy/runtime-clis/opencode/build-inputs.json": {
+        "sha256": "8c53d6d540ee43fa4e52cf7031d14171232b8aa95b6661aa9240d754d0e75e09"
+      },
+      "deploy/runtime-clis/opencode/component-inputs.json": {
+        "sha256": "5813a2e506d4bcedb6bcf3e95f385b527e46d293df745ced91b8967799b4a9b8"
+      },
+      "deploy/runtime-clis/opencode/model-inputs.md": {
+        "sha256": "3a0c2a284b04301a934ce43235f0a7bcb00e42c25dafb009a80616301324df9e"
+      },
+      "deploy/runtime-clis/opencode/model-inputs.tar.gz": {
+        "sha256": "67055565163909906a53c17d9188046e609affc53b7e94457ff0f2b5c2612947"
+      },
+      "deploy/runtime-clis/opencode/patches/0001-request-auth-effect.patch": {
+        "sha256": "53d0e366679fa37424111666d136e29e6277227ee6ceca5a99a50fb5be59e1bf"
+      },
+      "deploy/runtime-clis/opencode/patches/0002-selected-websocket-and-startup.patch": {
+        "sha256": "bdf4516c30974ec30e982ad567dbedb14aa5b5c85a9ac9fb1af82f565d8d1e92"
+      },
+      "deploy/runtime-clis/opencode/patches/0003-complete-local-ui-inputs.patch": {
+        "sha256": "a8e33a75bec5dfd02931409b6e6099489c3b2d19f5a20fafba32a9199ff1f856"
+      },
+      "deploy/runtime-clis/opencode/patches/0004-redact-effect-websocket-errors.patch": {
+        "sha256": "2897562fff349e07962cd18e732ed779b7ee2bbb119588fa7e517ba2bce40c7a"
+      },
+      "deploy/runtime-clis/opencode/patches/0005-pin-original-ghostty-source.patch": {
+        "sha256": "a1b2cfced27ccee79e8cc19b377e3e46ecdafac607ae2756e8500ae310a389d2"
+      },
+      "deploy/runtime-clis/opencode/patches/0006-complete-selected-websocket-diagnostics.patch": {
+        "sha256": "27198fc160d0d685768ef5b3bb43e59a8cb893d89a9d7192519a078a8706884d"
+      },
+      "deploy/runtime-clis/opencode/patches/0007-redact-selected-url-credentials.patch": {
+        "sha256": "f6af8dc0c26ea1c0b73c06f89eaa98f075e8649bc6597a7c340941e22b5d07a6"
+      },
+      "deploy/runtime-clis/opencode/patches/0008-redact-json-escaped-credential-echoes.patch": {
+        "sha256": "96e40b94f1be5f56d09a92320f3a9046de3b67b5da3da3da645c686404790a84"
+      },
+      "deploy/runtime-clis/opencode/patches/0009-bound-selected-session-retries.patch": {
+        "sha256": "52d7dbb76dedec1c1056e928b6947d180ad1df4a955095f436fad94bcce96a92"
+      },
+      "deploy/runtime-clis/opencode/patches/0010-seed-default-plugin-from-installed-artifact.patch": {
+        "sha256": "5fd2e4e8779c711dce3624d40a8e27f818e48090df3c3668f86072e5544de066"
+      },
+      "deploy/runtime-clis/opencode/patches/0011-settle-default-plugin-seed-before-lock-release.patch": {
+        "sha256": "66581755e6a1364b38e92f70af413ed140f65ae289f747a15516e371946d08f6"
+      },
+      "deploy/runtime-clis/opencode/patches/0012-align-existing-workspace-build-metadata.patch": {
+        "sha256": "605676dcd90f674520fb42ea02f8db447330046f77c2e734ddeae185ae249bdc"
+      },
+      "deploy/runtime-clis/opencode/series.json": {
+        "sha256": "90a57c9860440f6dc366e71cc191457b2206581643eb9ac27270284c387b4d0c"
+      },
+      "deploy/runtime-clis/toolchains.json": {
+        "sha256": "0a0d693219a11bf7df47561060f8467978ab1f9f9960bdd7598b205c4611c5e4"
+      },
+      "scripts/runtime_clis/fetch_uv_toolchain.py": {
+        "sha256": "a3d65e9c8e9de3f62e367e7900b4f1afa7146959c85e63e73f4ae25ce45300a9"
+      },
+      "scripts/runtime_clis/install_system_artifacts.py": {
+        "sha256": "dc4c9dc05cf0e5a2d5dcd6608becad417e4c5e1117a661c8368c8181e36ffb96"
+      },
+      "scripts/runtime_clis/materialize_inputs.py": {
+        "sha256": "37496e7a6618cbc9a16b27d13ab5f20bb760f706d1a1b6991b118f6d05be43d9"
+      },
+      "scripts/runtime_clis/prepare_vendor.py": {
+        "sha256": "3f1312bedbc18b3c0c029eb7c87e6883eba7a7a41cfc6a79cb3fbb0fcc4030c3"
+      },
+      "scripts/runtime_clis/produce_codex_artifacts.py": {
+        "sha256": "5a928a24a4bc5f0fa8140880fb25d3eaec75f238f7ad160f37e71c10c7e7ef08"
+      },
+      "scripts/runtime_clis/produce_default_plugin_artifact.py": {
+        "sha256": "62b3b44cec0344e52a8e1ece03b23197485d0b68dd622e40788038924c21705b"
+      },
+      "scripts/runtime_clis/produce_gemini_component.py": {
+        "sha256": "8f4afcfa0d4e8fb4cac9783030c8ca78a8c088e7562df10ceea988e89f032016"
+      },
+      "scripts/runtime_clis/produce_native_packages.py": {
+        "sha256": "0d2918dd5f445b3a3735a827d8ca42171aa034e2a1d40666170599a1b5ce83c1"
+      },
+      "scripts/runtime_clis/produce_npm_artifact.py": {
+        "sha256": "46cb73df1429c9cda156dc8bc85da9fdb051e8da14ca7ada585b4bcb25d5b0b3"
+      },
+      "scripts/runtime_clis/produce_opencode_component.py": {
+        "sha256": "19d3934af9f9062f4d29fff2c16c0c93bac19e0362ff021b92633993ca5c6f8b"
+      },
+      "scripts/runtime_clis/produce_toolchain_components.py": {
+        "sha256": "aae14ccd2fbcfc3f3759f246af2f86c5cc3260ad155478270113bf693a8c218a"
+      },
+      "scripts/runtime_clis/runtime_artifacts.py": {
+        "sha256": "2c30297a31ccbbc071ea6d4c9b51e2b6cd6450ed716bf8ef05d90f42b0f54374"
+      }
     },
-    "receipts": {
-      "runtime-component-inputs/postinstall-terminal.json": "5c26c4d368e835b7e4f9c7456d920797e59d81a6a884802bfd4ef14207673f10",
-      "runtime-component-inputs/codex-assembly.json": "224a7dd4746749ed3e87f31593320ed48af40d10c656244b478806dcc704ce35",
-      "runtime-component-inputs/gemini-doc-link-relocation.json": "8772a29183dbc241034e6c47d20eab6013f87c0d04565a12ba19f838ed9d4b7d",
-      "opencode-ninepatch-final-proof/ROOT-VERIFIED.json": "a0c2fb2ebd859e3f9d088f1d5a80cdda53f03068fac7b0f1ccd60ecfdacf21ca",
-      "gemini-adc-stock-build.json": "2f98d12e300e175fe37d463e8d06abbd8d94b7b9bc6cd37838a0e74a5e8a57e2",
-      "gemini-adc-build-source-closure.json": "16a21b5eea324e81bc1e7181d9be870a716c730c6e8737b806c4a8533b9067c5",
-      "gemini-sts-materialized.json": "4411ada8ae2fb3e791f78f328f626a02c394c54fff785c16df8fd34974ca952a",
-      "codex-corrected-artifact-retention.json": "3b569772e28625a5bc3c9b4923312016f2f5eaf6fd9ebea43b69fa66527ddb77",
-      "codex-timeout-release.json": "68640ce66c169ecf4e0d0efec1136f0bc521629e8470bcaa440bd2dbfdb56f30",
-      "claude-official-artifact.json": "fed5a62282fd35a89b4bf9bfc7c418de403c13c63eaa25dc4099c8c727770a8c"
+    "vendor_sources": {
+      "codex": {
+        "version": "0.159.2",
+        "commit": "ff6aec96948b70d94983af2641a6b67c94faeff5",
+        "archive_sha256": "8cfd92ccc784603d0ef94165f5a70bb99fd3de6e8b4bccda58580fc3f5f4961d",
+        "source_tree_sha256": "a3d6dc8d1e40e0ab10f27b1b8a74b6332fa74c2267c058ff7252d4cc85d2a1d9"
+      },
+      "gemini": {
+        "version": "0.66.0",
+        "commit": "970413207732f5d4d8c50540c7fc359c44fdaaf2",
+        "archive_sha256": "4634ef7c864630816c541e1d387965519fa9cbfb868c46fa12821b3965d6434c",
+        "source_tree_sha256": "0d8556efa99887f9c542ecb7226f9f593b15138dea58311da68c2cfc1bb3794d"
+      },
+      "google-auth-library": {
+        "version": "10.9.0",
+        "commit": "1b010c501559ec8be815f870a340fc79cbe91730",
+        "archive_sha256": "6ea44e31f9895ba1fc2f35e9e38a920f6028f59fdaf191ac54aedf7a59b5b299",
+        "source_tree_sha256": "656c79ecb519356064ce810b95e525120569d382981d4fd0c7f3a9d08a3115c3"
+      },
+      "js-genai": {
+        "version": "1.30.0",
+        "commit": "38cac5bbf4941ec5fa760238bd423c0ecc2c6f04",
+        "archive_sha256": "e3ce684f86b945810c0b0d1d926e2d69a6e59d74b289744ff4badb6429bcdc8d",
+        "source_tree_sha256": "806d397085acaaa39677f9607d947332d5f982da74f1439f948b24be75000b52"
+      },
+      "opencode": {
+        "version": "1.17.7",
+        "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
+        "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
+        "source_tree_sha256": "b04d05fe88c4c0741b25db9b230614b4f13fb26d200ae4017ad1c57dfda95d6d"
+      }
     },
-    "scope": "Complete retained public package/installed graphs, original stock wrapper paths and native assets. Claude/OpenCode original lifecycle executed before closure. Codex replaces only main executable with corrected GNU build; musl-named original wrapper path does not assert libc. Gemini complete installed corrected monorepo/bundle; OpenCode complete installed nine-patch graph plus original platform package. Actual versions passed contained no-network child. No full auth/tools/plugin/default443/CNI/image conformance inferred.",
-    "plugin_limit": "Default OpenCode global/project config dependency installation remains a separately required closure; complete bundled graph does not prove default config plugin startup."
+    "native_artifacts": {
+      "claude": {
+        "sha256": "4d704a8aecbe038affa3000f498ae17c1b4f753add8facb8764120affc99b658"
+      },
+      "codex": {
+        "sha256": "f01d464882507260d51f32f15dfe37565a09baa83be23df6da64f9cf55816189"
+      },
+      "opencode": {
+        "sha256": "0b91e3fb566d68af4d7969f35d5d073424a884fe6400faff04bd9ab737915fa2"
+      }
+    },
+    "sdk_artifacts": {
+      "google-auth-library": {
+        "sha256": "8f34332e7d10e9292118e3deb99f4752391015d12f57df85208a788708dab258"
+      },
+      "js-genai": {
+        "sha256": "90b6c717bb129da68ef1e386eb85519331ce4405a2f00fb50a72fc53b418dba5"
+      }
+    },
+    "default_plugin": {
+      "seed_sha256": "b9c658cb44914a7604a34743328142bb1387d7d6735e407511d98336b160c3d6",
+      "complete_lock_packages": 141,
+      "ordinary_npm_lifecycle_packages": 130,
+      "supplemental_data_packages": 12
+    },
+    "fixed_build": {
+      "source_date_epoch": 0,
+      "codex_identity": {
+        "cflags": "-ffile-prefix-map=/opt/build=/butlers-build",
+        "cxxflags": "-ffile-prefix-map=/opt/build=/butlers-build",
+        "rustflags": "--remap-path-prefix=/opt/build=/butlers-build --remap-path-prefix=/opt/rust=/butlers-rust",
+        "source_date_epoch": "0",
+        "zero_ar_date": "1"
+      },
+      "codex_default_features": true,
+      "codex_release_profile": "unchanged upstream release profile, debug and strip settings",
+      "sdk_npm_child_umask": "0027",
+      "opencode_lock_packages": 3124,
+      "opencode_workspaces": 30
+    },
+    "self_reference": "The runtime-inputs manifest itself is excluded from source_inputs. Immutable external phase receipts retain its complete launch pin; input targets/versions and unchanged Node tree were checked by the actual producers.",
+    "scope": "Complete source-owned fixed-path components and original installed graphs, launchers, lifecycle outputs, native assets, model catalogue/logos, embedded UI and full141 default-plugin graph. Actual CLI auth/tools/default443/CNI and OCI/image conformance remain separate; no deployment or activation."
   }
 }

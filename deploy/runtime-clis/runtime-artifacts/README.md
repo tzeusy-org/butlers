@@ -42,9 +42,17 @@ helper. Source non-executable access-bit differences are normalized, not asserte
 byte-for-byte permission identity. Closed artifacts must already have exact
 canonical directory/file modes, including component roots and metadata files.
 
-`provenance` in the input manifest is a nonempty reviewed object supplying the
-producer's source/build receipts. The helper treats it as bound metadata, not
-executable instructions or a signature. Top-level shape, duplicate keys, nonfinite
+`provenance` in the input manifest is a nonempty reviewed object. The checked-in
+`butlers.fixed-runtime-provenance/v1` record binds the direct producer, toolchain,
+vendor series/patch, model and plugin inputs, compiled artifacts and fixed build
+settings using content identities. It contains no timestamps, host paths or task
+receipt hashes. The manifest itself is excluded from its source-input map to avoid
+self-reference; immutable external phase receipts retain the complete launch pin
+and target/version checks. Updating a component identity requires the actual
+complete producer output, including its original dependency graph and lifecycle
+results. Those external receipts, native conformance and image evidence remain
+separate from this reproducible manifest. The helper treats provenance as bound
+metadata, not executable instructions or a signature. Top-level shape, duplicate keys, nonfinite
 JSON, target/version population and component digests fail closed. The generated
 `provenance.json` has exactly `schema: butlers.runtime-artifacts/v1`, the SHA256 of
 the **exact reviewed input bytes**, and the same six component digests.
