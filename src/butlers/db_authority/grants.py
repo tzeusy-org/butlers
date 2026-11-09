@@ -186,6 +186,7 @@ _LEGACY_FLEET_DML_RELATIONS = (
 _SWITCHBOARD = "butler_switchboard_rw"
 _OWNER_ONLY = "private to its NOLOGIN owner; reached only through definer interfaces"
 
+_PERCEPTION_OWNER = "perception_owner only: FORCE RLS, every other grant revoked at install"
 _CONNECTOR = "connector_writer"
 _CONCIERGE = "butler_concierge_rw"
 _SELECT = frozenset({"SELECT"})
@@ -262,7 +263,7 @@ _REPLAY_WIDENED: dict[str, RelationGrant] = {
     ),
     "runtime_attention_operator_control": _replay_widened(_NONE, {}, "migration: " + _OWNER_ONLY),
     "runtime_probe_control_receipts": _replay_widened(
-        _NONE, {_CONCIERGE: _DML}, "migration: concierge only"
+        _NONE, {_CONCIERGE: _DML, _SWITCHBOARD: _DML}, "migration: concierge and Switchboard"
     ),
 }
 
@@ -280,6 +281,11 @@ _BOUNDARIES: dict[str, RelationGrant] = {
         frozenset({"SELECT"}), reason="DND generation fence: read-only outside its owner"
     ),
     "dnd_generation_mutations": RelationGrant(_NONE, reason=_OWNER_ONLY),
+    "owner_modes": RelationGrant(_NONE, reason=_PERCEPTION_OWNER),
+    "perception_conditions": RelationGrant(_NONE, reason=_PERCEPTION_OWNER),
+    "perception_suppressions": RelationGrant(_NONE, reason=_PERCEPTION_OWNER),
+    "situation_slots": RelationGrant(_NONE, reason=_PERCEPTION_OWNER),
+    "timeline": RelationGrant(_NONE, reason=_PERCEPTION_OWNER),
     "runtime_attention_condition_control": RelationGrant(_NONE, reason=_OWNER_ONLY),
     "runtime_attention_condition_episodes": RelationGrant(_NONE, reason=_OWNER_ONLY),
     "runtime_attention_delivery_lease": RelationGrant(
