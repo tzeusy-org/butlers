@@ -53,10 +53,26 @@ serialises with Stop.
   session-host profiles use `cli-auth/openai`) and sends it with the launch command; nothing else
   of the store is read or sent. A runtime with no reviewed profile, or a missing credential, raises
   `CredentialUnavailable`, a `NotInvoked` refusal: the goal fails with no model run, and the
-  breaker never counts it. Any reply but a bare `completed` is a reported runtime failure.
-  `terminate` sends `revoke`. A launch whose send fails (including a reply lost to the channel's
-  read timeout) is revoked before it is reported `session_host_unavailable`, so the host frees
-  the credential and its active slot.
+  breaker never counts it. The host replies when the invocation settles, in a closed shape
+  (`docs/runtime/session-host.md`):
+  - `completed` ends cleanly. `failed` maps its `failure_class` onto the D14 taxonomy: `timeout`
+    is `SessionHostTimeout` (a `TimeoutError`, so it relaunches once if no call was recorded);
+    `runtime_failed`, `containment_failed` and `cancelled` are non-retryable `SessionHostFailed`;
+    any other class is `failure_class_unknown`, also non-retryable.
+  - Either may carry counts-only `usage`. The runner charges `input_tokens + output_tokens`
+    (cached input is part of input) to the invocation and goal budgets through `record_usage`
+    before deciding on a relaunch, so a run that spent its budget is never relaunched.
+  - `refused` with `reason: host_busy` (the host at its concurrency bound, the id not burned) is
+    offered again with the same invocation id, with backoff; a host that stays busy raises
+    `SessionHostBusy`, a `NotInvoked` refusal. A bare `refused` is non-retryable
+    `session_host_refused`.
+  - Anything else, including `usage` the host itself would not send (a non-`int` or `bool` count,
+    a negative or over-2^53 one, an unknown key), is `session_host_malformed_reply`; no reply
+    content is logged.
+
+  `terminate` sends `revoke`. The client waits `timeout_s + 35` for the reply, so a send that
+  fails is a broken channel, not a long run: the launch is revoked before it is reported
+  `session_host_unavailable`, so the host frees the credential and its active slot.
 
 Migration `sw_062` (`roster/switchboard/migrations/062_goal_runner.py`) adds the per-invocation
 budget share, deadline, model binding, relaunch lineage and closed `end_reason` to
@@ -258,9 +274,8 @@ brief text, arguments or results.
 ## Not yet delivered
 
 - `guidance.search` / `guidance.load` (M4), and the per-domain `ContextSource` adapters for `context.search`.
-- The deployed session host and runtime usage relay (`bu-kiuh8v`). Its control listener today runs
-  one invocation at a time, answers only `completed`/`refused` (no failure class or usage), and
-  its client reads replies with a 3 s timeout, shorter than any launch.
+- The deployed session host (`bu-kiuh8v`), and a usage relay between tool calls; today the
+  runner charges only the counts a settled run reports.
 - Constructing the runtime in the control plane: a live `Broker` needs the signing key and the
   isolated `butlers-control` process (`bu-jnhxc5`).
 - Calling `GoalRuntime.admit` from ingress, confirms and obligations, and an owner Stop surface
