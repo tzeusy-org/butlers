@@ -244,10 +244,13 @@ def fetch_model(record: dict, output: Path, *, opener=None) -> None:
     )
     maximum = record.get("size", 64 * 1024**2)
     start = time.monotonic()
+    request = urllib.request.Request(
+        record["url"], headers={"User-Agent": "butlers-immutable-inputs/1"}
+    )
     with tempfile.TemporaryDirectory(prefix="model-", dir=output.parent) as temporary:
         stage = Path(temporary) / "data"
         size = 0
-        with public.open(record["url"], timeout=60) as response, stage.open("xb") as stream:
+        with public.open(request, timeout=60) as response, stage.open("xb") as stream:
             if response.status != 200 or response.geturl() != record["url"]:
                 raise ValueError("unexpected model asset response")
             while block := response.read(1024**2):

@@ -15,6 +15,11 @@ embedded web UI, workers, compile settings and version smoke. No lifecycle,
 plugin, model, authentication or tool feature is removed. `OPENCODE_RELEASE` is
 absent. This preparation is explicitly NONFINAL.
 
+Model downloads declare the public `butlers-immutable-inputs/1` User-Agent,
+matching the retained successful acquisition. They keep the same exact HTTPS
+authority, pinned bytes, all-redirect refusal and empty proxy configuration.
+No browser session, cookies or operator authorization are supplied.
+
 The build phase requires a real networkless namespace/layer, verifies every
 closed preparation input, recreates the exact patched source, and repeats that
 complete install/build. Bun 1.3.14 has no install `--offline` flag; containment is

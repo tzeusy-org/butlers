@@ -139,6 +139,36 @@ def test_model_fetch_is_atomic_and_requires_original_bytes(tmp_path):
     assert list(tmp_path.iterdir()) == [output]
 
 
+def test_model_fetch_declares_public_artifact_user_agent(tmp_path):
+    import hashlib
+    import urllib.request
+
+    class Response(io.BytesIO):
+        status = 200
+
+        def geturl(self):
+            return "https://models.dev/api.json"
+
+    requests = []
+
+    def open_request(request, *, timeout):
+        requests.append((request, timeout))
+        return Response(b"complete pinned catalogue")
+
+    record = {
+        "url": "https://models.dev/api.json",
+        "sha256": hashlib.sha256(b"complete pinned catalogue").hexdigest(),
+    }
+    output = tmp_path / "catalogue"
+    producer.fetch_model(record, output, opener=SimpleNamespace(open=open_request))
+    request, timeout = requests[0]
+    headers = dict(request.header_items()) if isinstance(request, urllib.request.Request) else {}
+    assert headers == {"User-agent": "butlers-immutable-inputs/1"}
+    assert request.full_url == record["url"]
+    assert timeout == 60
+    assert output.read_bytes() == b"complete pinned catalogue"
+
+
 @pytest.mark.parametrize("status", range(300, 400))
 def test_all_model_redirects_refuse_before_default_dispatch(status):
     response = SimpleNamespace(status=status, closed=False)
