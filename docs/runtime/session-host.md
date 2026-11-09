@@ -27,7 +27,8 @@ Only a trusted constructor supplies these identities; no deployment PKI is infer
 `LocalControl.start()` binds only `127.0.0.1` on an ephemeral port. This is a dark
 prototype control channel, not a production listener or a dashboard endpoint.
 One connection carries one JSON object, prefixed by its four-byte big-endian
-length. The aggregate limit is 280 KiB and the read/write deadlines are 3 seconds.
+length. The aggregate limit is 280 KiB and the read/write deadlines are 3 seconds, except that
+a `launch` reply is awaited until the invocation settles (see below).
 Duplicate keys and unknown fields refuse. Escaped JSON can exceed the aggregate
 limit even if individual decoded fields meet their limits.
 
@@ -40,6 +41,33 @@ The endpoint must be the trusted origin plus `/goals/{canonical goal UUID}/mcp`,
 with no query, fragment or alternative spelling. The bearer is an opaque canonical
 43-character base64url token for 32 bytes. Shape checks do not authenticate broker
 authority: the broker owns active-token/goal/invocation/epoch/grant checks.
+
+**Launch reply.** The reply to `launch` arrives when the invocation settles, so the runner-side
+client waits for the launch's own `timeout_s` plus 35 seconds (the owner's cleanup cap and
+slack), not 3 seconds; a `timeout_s` that is not a plausible launch timeout gets the largest
+bound (335s), never an unbounded wait. The reply is one of:
+
+| Reply | Meaning |
+| --- | --- |
+| `{"status":"completed"}` | The runtime exited cleanly and cleanup was proven |
+| `{"status":"failed","failure_class":C}` | It ran and did not finish well; `C` is `timeout`, `runtime_failed`, `containment_failed` (cleanup not proven; the owner is quarantined) or `cancelled` (revoke or host shutdown) |
+| `{"status":"refused"}` | Nothing started: bad frame, replay, unknown profile, staging refused, owner unhealthy |
+| `{"status":"refused","reason":"host_busy"}` | The concurrency bound is full; nothing started and the id is not remembered, so it may be offered again |
+
+Either `completed` or `failed` may carry `"usage"`: counts only (`input_tokens`, `output_tokens`,
+`cached_input_tokens`, each an integer from 0 to 2^53) that the domain reports through an
+optional `usage()` after settlement. Anything else the domain returns there is dropped. The host
+never inspects runtime output, so provider classes (auth, quota, rate limit) are not reported;
+the runner treats an unknown class as non-retryable (default-closed).
+
+**Concurrency.** `LocalControl(max_concurrent=N)` (1 to 64, default 4) runs that many
+invocations at once. A launch beyond the bound is refused `host_busy`.
+
+**Early revoke.** A `revoke` for an id that has not launched answers `revoked` and tombstones
+the id, so a later launch of it is refused (a Stop that lands before its launch). Repeating it is
+idempotent. A revoke for an id that already ran still refuses. The host remembers at most 65536
+ids; with none left it refuses new work rather than forget one, because forgetting would permit
+a replay.
 
 `revoke` accepts only `version`, `operation`, `invocation_id` and addresses the
 current owned invocation. Responses contain fixed status strings only; prompt,
@@ -94,7 +122,8 @@ provider, networking or native-conformance credit.
 ## Isolation, settlement and restart
 
 `InvocationOwner` admits one invocation identity once per owner lifetime. The
-local channel permits one active launch and also keeps an in-memory replay fence.
+local channel permits up to `max_concurrent` active launches and also keeps an in-memory
+replay fence.
 Neither fence is durable restart authority. An invocation receives only its staged
 model credential, prompt and sole-broker MCP configuration. Staging uses a private
 owned root; partial staging or uncertain cleanup poisons the owner and quarantines

@@ -20,6 +20,14 @@ class Refused(ValueError):
     """Content-blind refusal: messages contain fixed reason codes only."""
 
 
+class RuntimeTimeout(Refused):
+    """The runtime did not finish within its timeout (a D14 ``timeout`` failure class).
+
+    Still ``runtime_failed`` to every caller that matches on the message; the control
+    channel reads the type to report the class.
+    """
+
+
 def _origin(value: str) -> str:
     try:
         parts = urlsplit(value)
