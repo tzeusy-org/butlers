@@ -3497,6 +3497,20 @@ _CLEAN_ENRICHMENT_ORPHAN = """
         WHERE pa.tool_args ->> 'subject' = e.id::text
           AND pa.status IN ('pending', 'approved', 'executed')
     )
+    AND NOT EXISTS (SELECT 1 FROM contact_entity_map m WHERE m.entity_id = e.id)
+    AND NOT EXISTS (SELECT 1 FROM public.entity_info i WHERE i.entity_id = e.id)
+    AND NOT EXISTS (SELECT 1 FROM public.priority_contacts pc WHERE pc.entity_id = e.id)
+"""
+
+
+# Memory facts live in this butler's schema only where the memory module is enabled, so the
+# check is added when the table is there.
+_NO_LIVE_MEMORY_FACT = """
+    AND NOT EXISTS (
+        SELECT 1 FROM facts f
+        WHERE (f.entity_id = e.id OR f.object_entity_id = e.id)
+          AND f.validity IN ('active', 'fading')
+    )
 """
 
 
@@ -3521,10 +3535,12 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
     ``cleanup_bulk_email_identity_proposals`` script): no ``entity_facts`` as subject or
     object-entity (an approved has-email
     proposal writes such a fact, so approved/graduated entities are excluded and left
-    intact) and no live (pending/approved/executed) ``pending_actions`` subject. (Contact
-    linkage lives in ``relationship.entity_facts`` now that ``public.contacts`` is retired,
-    so the entity_facts checks cover it.) Any acquired reference means the entity graduated
-    to a real entity and is left fully intact.
+    intact), no live (pending/approved/executed) ``pending_actions`` subject, no live
+    (active/fading) memory ``facts`` row as subject or object, no ``contact_entity_map``
+    link, no ``public.entity_info`` row and no ``public.priority_contacts`` entry. Any
+    acquired reference means the entity graduated to a real entity and is left fully
+    intact. ``test_every_table_referencing_entities_is_checked_by_the_reap_or_excused`` fails
+    when a table gains a foreign key to ``public.entities`` without being decided here.
 
     We *soft-delete* (set ``metadata.deleted_at`` -- the ecosystem tombstone convention,
     honored alongside ``merged_into`` by every entity query) rather than hard-DELETE, for
@@ -3535,10 +3551,13 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
     reversible. Returns the number of entities archived.
     """
     # NB: public.contacts / public.contact_info were retired (DROPped by core_115 /
-    # core_134); contact linkage now lives entirely in relationship.entity_facts, so the
-    # entity_facts subject/object checks below fully cover "is this entity referenced".
+    # core_134); the contact bridge is relationship.contact_entity_map, which
+    # _CLEAN_ENRICHMENT_ORPHAN checks beside the facts and the other entity references.
+    clean_orphan = _CLEAN_ENRICHMENT_ORPHAN
+    if await db_pool.fetchval("SELECT to_regclass('facts') IS NOT NULL"):
+        clean_orphan += _NO_LIVE_MEMORY_FACT
     candidates = await db_pool.fetch(
-        f"SELECT e.id FROM public.entities e WHERE {_CLEAN_ENRICHMENT_ORPHAN} ORDER BY e.id"
+        f"SELECT e.id FROM public.entities e WHERE {clean_orphan} ORDER BY e.id"
     )
     archived = 0
     for candidate in candidates:
@@ -3564,7 +3583,7 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
                             'archived_reason', 'rejected_email_identity_enrichment'
                         ),
                     updated_at = now()
-                WHERE e.id = $1 AND {_CLEAN_ENRICHMENT_ORPHAN}
+                WHERE e.id = $1 AND {clean_orphan}
                 RETURNING e.id
                 """,
                 candidate["id"],

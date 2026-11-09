@@ -27,6 +27,45 @@ pytestmark = [
 ]
 
 
+# (table, column) pairs with an FK to public.entities that the reap's referenced check reads,
+# and the ones it deliberately does not, each with the reason.
+_CHECKED: set[tuple[str, str]] = {
+    ("public.facts", "entity_id"),
+    ("public.facts", "object_entity_id"),
+    ("relationship.entity_facts", "subject"),
+    ("relationship.entity_facts", "object_entity_id"),
+    ("public.entity_info", "entity_id"),
+    ("public.priority_contacts", "entity_id"),
+}
+# contact_entity_map has no FK, so the query below cannot see it; it is checked and tested by name.
+_EXCUSED: set[tuple[str, str]] = {
+    # Derived from facts or ledgers: they follow a fact the reap already read, or record history.
+    ("public.entity_graph_edges", "object_entity_id"),
+    ("public.entity_graph_edges", "subject_entity_id"),
+    ("public.entity_graph_withheld_counts", "entity_id"),
+    ("public.memory_catalog", "object_entity_id"),
+    ("public.entity_rebind_log", "source_entity_id"),
+    ("public.entity_rebind_log", "target_entity_id"),
+    ("relationship.fact_coverage", "subject"),
+    ("relationship.merge_reviews", "entity_a"),
+    ("relationship.merge_reviews", "entity_b"),
+    ("relationship.entity_view_marks", "entity_id"),
+    # Name the owner or an authority, never a person an email placeholder stands for.
+    ("relationship.entity_facts", "authority_entity_id"),
+    ("relationship.entity_facts", "confirmed_by_entity_id"),
+    ("relationship.fact_identity_decisions", "owner_entity_id"),
+    # Accounts and money belong to an entity the owner already identified, and live in schemas
+    # a relationship role cannot read (calendar, finance, credentials).
+    ("public.calendar_event_entities", "entity_id"),
+    ("public.cost_claims", "counterparty_entity_id"),
+    ("public.google_accounts", "entity_id"),
+    ("public.steam_accounts", "entity_id"),
+    ("relationship.credentials", "entity_id"),
+    # The retired contacts table that this test database still carries.
+    ("public.contacts", "entity_id"),
+}
+
+
 @pytest.fixture
 async def rel_pool(db):
     return await db("core", "memory", "relationship", "approvals", min_size=2, max_size=8)
@@ -187,3 +226,108 @@ async def test_a_merge_refuses_a_target_the_reap_already_took(rel_pool) -> None:
         await rel_pool.fetchval("SELECT subject FROM relationship.entity_facts WHERE id = $1", fact)
         == source
     )
+
+
+async def _predicate(pool: asyncpg.Pool, *, is_edge: bool) -> str:
+    name = f"reap_{uuid.uuid4().hex}"
+    await pool.execute(
+        "INSERT INTO predicate_registry (name, is_edge, is_temporal, status) "
+        "VALUES ($1, $2, false, 'active')",
+        name,
+        is_edge,
+    )
+    return name
+
+
+async def _memory_fact(pool, subject, *, obj=None, validity="active") -> None:
+    predicate = await _predicate(pool, is_edge=obj is not None)
+    await pool.execute(
+        "INSERT INTO facts (subject, entity_id, object_entity_id, predicate, content, validity) "
+        "VALUES ('opaque', $1, $2, $3, 'opaque', $4)",
+        subject,
+        obj,
+        predicate,
+        validity,
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("as_object", [False, True], ids=["subject", "object"])
+async def test_the_reap_leaves_a_placeholder_a_live_memory_fact_references(
+    rel_pool, as_object
+) -> None:
+    """bu-dhloi1.127: memory facts are references too, so the placeholder is not reaped."""
+    placeholder = await _placeholder(rel_pool)
+    other = await _entity(rel_pool, "Other")
+    if as_object:
+        await _memory_fact(rel_pool, other, obj=placeholder)
+    else:
+        await _memory_fact(rel_pool, placeholder)
+
+    assert await reap(rel_pool) == 0
+
+    assert await _deleted_at(rel_pool, placeholder) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_reap_leaves_a_placeholder_a_contact_is_linked_to(rel_pool) -> None:
+    placeholder = await _placeholder(rel_pool)
+    await rel_pool.execute(
+        "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
+        uuid.uuid4(),
+        placeholder,
+    )
+
+    assert await reap(rel_pool) == 0
+
+    assert await _deleted_at(rel_pool, placeholder) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    "insert",
+    [
+        "INSERT INTO public.entity_info (entity_id, type, value) VALUES ($1, 'email', 'a@b.test')",
+        "INSERT INTO public.priority_contacts (contact_id, entity_id, added_by) "
+        "VALUES ($1, $1, 'test')",
+    ],
+    ids=["entity_info", "priority_contacts"],
+)
+async def test_the_reap_leaves_a_placeholder_with_other_entity_references(rel_pool, insert) -> None:
+    placeholder = await _placeholder(rel_pool)
+    await rel_pool.execute(insert, placeholder)
+
+    assert await reap(rel_pool) == 0
+
+    assert await _deleted_at(rel_pool, placeholder) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("validity", ["retracted", "superseded"])
+async def test_a_dead_memory_fact_does_not_keep_a_placeholder_alive(rel_pool, validity) -> None:
+    placeholder = await _placeholder(rel_pool)
+    await _memory_fact(rel_pool, placeholder, validity=validity)
+
+    assert await reap(rel_pool) >= 1
+
+    assert await _deleted_at(rel_pool, placeholder) is not None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_every_table_referencing_entities_is_checked_by_the_reap_or_excused(rel_pool) -> None:
+    """A new table with an FK to public.entities must be decided, not silently missed."""
+    rows = await rel_pool.fetch(
+        """
+        SELECT DISTINCT n.nspname || '.' || c.relname AS tbl, a.attname AS col
+        FROM pg_constraint k
+        JOIN pg_class c ON c.oid = k.conrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY (k.conkey)
+        WHERE k.contype = 'f' AND k.confrelid = 'public.entities'::regclass
+          AND n.nspname IN ('public', 'relationship')
+          AND c.relname !~ '(_bak_|_dropbak_)'
+        """
+    )
+    seen = {(row["tbl"], row["col"]) for row in rows}
+    assert seen - (_CHECKED | _EXCUSED) == set(), "decide these in the reap or excuse them"
+    assert _CHECKED <= seen  # a checked reference that no longer exists is a stale test
