@@ -15,6 +15,12 @@ embedded web UI, workers, compile settings and version smoke. No lifecycle,
 plugin, model, authentication or tool feature is removed. `OPENCODE_RELEASE` is
 absent. This preparation is explicitly NONFINAL.
 
+Native dependency lifecycles which spawn the bare `node-gyp` command use a
+builder-owned symlink to the original executable bundled in the verified full
+Node/npm input. Its private tools directory precedes the ordinary builder PATH;
+missing, replaced or extra tools refuse. The existing pinned Node headers and
+Python remain the build inputs. No lifecycle is skipped or dependency replaced.
+
 The complete model catalogue and logos are delivered by the source-owned data
 snapshot described in `model-inputs.md`. The producer verifies the archive,
 finite member set, nonexecutable modes and every original public payload hash

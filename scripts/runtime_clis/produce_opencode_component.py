@@ -315,7 +315,10 @@ def models_identity(models: dict, *, root: Path | None = None) -> None:
 def environment() -> dict[str, str]:
     return {
         "HOME": os.environ["HOME"],
-        "PATH": str(ROOT / "bun/bun-linux-x64") + ":/opt/node/bin:/usr/local/bin:/usr/bin:/bin",
+        "PATH": str(ROOT / "build-tools")
+        + ":"
+        + str(ROOT / "bun/bun-linux-x64")
+        + ":/opt/node/bin:/usr/local/bin:/usr/bin:/bin",
         "LANG": "C.UTF-8",
         "TZ": "UTC",
         "SOURCE_DATE_EPOCH": "0",
@@ -329,6 +332,27 @@ def environment() -> dict[str, str]:
         "npm_config_nodedir": str(NODE),
         "npm_config_python": "/usr/local/bin/python3",
     }
+
+
+def prepare_build_tools() -> None:
+    """Expose the original pinned npm tool under the name native lifecycles spawn."""
+    tool = NODE / "lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js"
+    directory = ROOT / "build-tools"
+    launcher = directory / "node-gyp"
+    if tool.is_symlink() or not tool.is_file() or not tool.stat().st_mode & 0o111:
+        raise ValueError("pinned npm node-gyp executable missing")
+    if directory.is_symlink() or directory.exists() and not directory.is_dir():
+        raise ValueError("build tools require an owned real directory")
+    if not directory.exists():
+        directory.mkdir(mode=0o755)
+        directory.chmod(0o755)
+    if any(path.name != "node-gyp" for path in directory.iterdir()):
+        raise ValueError("undeclared build tool present")
+    if launcher.exists() or launcher.is_symlink():
+        if not launcher.is_symlink() or launcher.readlink() != tool:
+            raise ValueError("node-gyp launcher differs from pinned npm tool")
+    else:
+        launcher.symlink_to(tool)
 
 
 def command(operations, argv: list[str], *, cwd: Path, capture: bool = False) -> str:
@@ -399,6 +423,7 @@ def public_seed(operations) -> None:
     prepare(series)
     original = transport.inventory(ROOT / "source")
     lock = lock_identity(operations)
+    prepare_build_tools()
     build_commands(operations)
     source_identity(original, lock, operations)
     if before != pins() or plugin_input(manifest) != plugin_entries:
@@ -416,6 +441,7 @@ def public_seed(operations) -> None:
                 for name in (
                     "archives",
                     "models",
+                    "build-tools",
                     "bun",
                     "bun-cache",
                     "bun-install",
@@ -525,6 +551,7 @@ def build(operations) -> None:
     prepare(series)
     if transport.inventory(ROOT / "source") != seed["source"]:
         raise ValueError("fresh complete OpenCode source differs")
+    prepare_build_tools()
     build_commands(operations)
     source_identity(seed["source"], seed["lock"], operations)
     assemble(manifest, series, seed, operations)

@@ -53,6 +53,39 @@ def test_stock_commands_keep_lifecycles_ui_platform_installers_and_no_release(
         assert "BUTLERS_EGRESS_MODE" not in environment
 
 
+@pytest.mark.parametrize("drift", [None, "missing", "nonexec", "foreign", "replacement"])
+def test_native_lifecycles_resolve_only_original_pinned_npm_node_gyp(tmp_path, monkeypatch, drift):
+    root = tmp_path / "work"
+    root.mkdir()
+    node = tmp_path / "node"
+    target = node / "lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"#!/usr/bin/env node\n// original npm tool\n")
+    target.chmod(0o755)
+    monkeypatch.setattr(producer, "ROOT", root)
+    monkeypatch.setattr(producer, "NODE", node)
+    original = target.read_bytes()
+    if drift == "missing":
+        target.unlink()
+    elif drift == "nonexec":
+        target.chmod(0o644)
+    elif drift in {"foreign", "replacement"}:
+        (root / "build-tools").mkdir()
+        (root / "build-tools" / ("other" if drift == "foreign" else "node-gyp")).write_bytes(
+            b"not the pinned tool"
+        )
+    if drift is not None:
+        with pytest.raises(ValueError, match="node-gyp|build tool"):
+            producer.prepare_build_tools()
+        return
+    producer.prepare_build_tools()
+    producer.prepare_build_tools()
+    launcher = root / "build-tools/node-gyp"
+    assert launcher.is_symlink() and launcher.readlink() == target
+    assert shutil.which("node-gyp", path=producer.environment()["PATH"]) == str(launcher)
+    assert launcher.read_bytes() == original == target.read_bytes()
+
+
 def test_complete_lock_semantics_and_all_original_source_are_preserved(tmp_path, monkeypatch):
     monkeypatch.setattr(producer, "RECIPE", SCRIPTS.parents[1])
     transport = producer.helper("produce_codex_artifacts")
@@ -290,6 +323,7 @@ def build_inputs(tmp_path, monkeypatch):
         shutil.copytree(template, root / "source")
 
     monkeypatch.setattr(producer, "prepare", prepare)
+    monkeypatch.setattr(producer, "prepare_build_tools", lambda: calls.append("tools"))
     monkeypatch.setattr(
         producer, "build_commands", lambda _operations: calls.append("full-stock-build")
     )
@@ -301,7 +335,15 @@ def build_inputs(tmp_path, monkeypatch):
 def test_offline_build_requires_preparation_then_fresh_full_build(build_inputs):
     _root, _recipe, _seed, calls = build_inputs
     producer.build(None)
-    assert calls == ["guard", "models", "prepare", "full-stock-build", "source-lock", "assemble"]
+    assert calls == [
+        "guard",
+        "models",
+        "prepare",
+        "tools",
+        "full-stock-build",
+        "source-lock",
+        "assemble",
+    ]
 
 
 @pytest.mark.parametrize("drift", ["recipe", "cache", "archive", "bun", "plugin"])
