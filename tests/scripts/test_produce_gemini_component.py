@@ -79,7 +79,15 @@ def build_fixture(tmp_path, monkeypatch):
     template = tmp_path / "original-source"
     template.mkdir()
     producer.write_json(template / "package.json", {"version": "0.66.0"})
-    (template / "package-lock.json").write_bytes(b"all locked dependencies")
+    producer.write_json(
+        template / "package-lock.json",
+        {
+            "packages": {
+                "node_modules/node-pty": {"version": "1.0.0"},
+                "node_modules/nan": {"version": "2.23.0"},
+            }
+        },
+    )
     (template / "CONTRIBUTING.md").write_bytes(b"original documentation")
     (template / "source.ts").write_bytes(b"original transport and tools")
     (root / "source.tgz").write_bytes(b"whole source archive")
@@ -124,6 +132,14 @@ def build_fixture(tmp_path, monkeypatch):
         graph.mkdir(parents=True)
         (graph / "asset").write_bytes(b"native asset")
         (graph / "asset").chmod(0o751)
+        for name, version in (("node-pty", "1.0.0"), ("nan", "2.23.0")):
+            directory = source / "node_modules" / name
+            directory.mkdir()
+            producer.write_json(directory / "package.json", {"name": name, "version": version})
+        native = source / "node_modules/node-pty/build/Release/pty.node"
+        native.parent.mkdir(parents=True)
+        native.write_bytes(b"synthetic native payload; never executed")
+        (source / "node_modules/nan/nan.h").write_bytes(b"synthetic header")
         for relative in producer.DOC_LINKS:
             link = source / relative
             link.parent.mkdir(parents=True, exist_ok=True)
@@ -131,6 +147,13 @@ def build_fixture(tmp_path, monkeypatch):
 
     monkeypatch.setattr(producer, "prepare", prepare)
     monkeypatch.setattr(producer, "build_commands", compile)
+
+    def native_load(argv, *, offline, cwd, commit):
+        assert offline and cwd == root / "source" and commit == "pinned-commit"
+        assert argv[:3] == [str(producer.NODE / "bin/node"), "--input-type=commonjs", "-e"]
+        assert 'require("node-pty")' in argv[3] and "pty.native.fork" in argv[3]
+
+    monkeypatch.setattr(producer, "command", native_load)
     producer.write_json(
         root / "seed.json",
         {
@@ -277,3 +300,61 @@ def test_real_command_environment_binds_commit_without_ambient_passthrough(monke
     assert environment["npm_config_offline"] == "true"
     assert "HTTPS_PROXY" not in environment
     assert commands[0][1]["check"] is True
+
+
+@pytest.mark.parametrize("drift", ["package", "version", "native", "header", "link"])
+def test_optional_native_hook_failure_cannot_publish_complete_component(
+    build_fixture, monkeypatch, drift
+):
+    root, _recipe, _calls, compile = build_fixture
+
+    def incomplete(series, *, offline):
+        compile(series, offline=offline)
+        source = root / "source/node_modules"
+        if drift == "package":
+            shutil.rmtree(source / "node-pty")
+        elif drift == "version":
+            producer.write_json(source / "nan/package.json", {"name": "nan", "version": "0.0.0"})
+        elif drift == "native":
+            (source / "node-pty/build/Release/pty.node").unlink()
+        elif drift == "header":
+            (source / "nan/nan.h").unlink()
+        else:
+            package = source / "node-pty/package.json"
+            data = package.read_bytes()
+            package.unlink()
+            target = root / "outside-package.json"
+            target.write_bytes(data)
+            package.symlink_to(target)
+
+    monkeypatch.setattr(producer, "build_commands", incomplete)
+    refusal = "target native|unsafe runtime relative path" if drift == "link" else "target native"
+    with pytest.raises(ValueError, match=refusal):
+        producer.build()
+    assert not producer.OUTPUT.exists()
+
+
+def test_lifecycle_commands_use_the_existing_pinned_node_headers(tmp_path, monkeypatch):
+    import types
+
+    monkeypatch.setattr(producer, "NODE", tmp_path / "pinned-node")
+    environment = {"HOME": "/home/orca", "npm_config_offline": "true"}
+    monkeypatch.setattr(
+        producer,
+        "helper",
+        lambda name: types.SimpleNamespace(environment=lambda **kwargs: environment),
+    )
+    calls = []
+    monkeypatch.setattr(
+        producer.subprocess, "run", lambda argv, **kwargs: calls.append((argv, kwargs))
+    )
+    producer.command(
+        ["npm", "ci", "--foreground-scripts", "--offline"],
+        offline=True,
+        cwd=tmp_path,
+        commit="preserved",
+    )
+    assert calls[0][0] == ["npm", "ci", "--foreground-scripts", "--offline"]
+    assert calls[0][1]["env"].get("npm_config_nodedir") == str(tmp_path / "pinned-node")
+    assert calls[0][1]["env"]["GIT_COMMIT"] == "preserved"
+    assert calls[0][1]["env"]["npm_config_offline"] == "true"

@@ -148,6 +148,9 @@ def sdk_inputs() -> dict[str, Path]:
 def command(argv: list[str], *, offline: bool, cwd: Path, commit: str) -> None:
     environment = helper("produce_npm_artifact").environment(offline=offline)
     environment["GIT_COMMIT"] = commit
+    # Use the complete official Node input, including its pinned headers;
+    # node-gyp must not fetch a separate header archive during lifecycle hooks.
+    environment["npm_config_nodedir"] = str(NODE)
     subprocess.run(argv, cwd=cwd, env=environment, stdin=subprocess.DEVNULL, check=True)
 
 
@@ -185,6 +188,44 @@ def build_commands(series: dict, *, offline: bool) -> None:
     command(npm("run", "build"), offline=offline, cwd=ROOT / "source", commit=series["commit"])
 
 
+def native_identity(series: dict, *, offline: bool) -> None:
+    """Refuse npm's successful exit after a dropped target-native optional hook."""
+    source = ROOT / "source"
+    lock = json.loads((source / "package-lock.json").read_bytes())["packages"]
+    for name in ("node-pty", "nan"):
+        relative = "node_modules/" + name
+        directory = source / relative
+        package = directory / "package.json"
+        if (
+            directory.is_symlink()
+            or not directory.is_dir()
+            or package.is_symlink()
+            or not package.is_file()
+        ):
+            raise ValueError("complete target native dependency is missing")
+        actual = json.loads(package.read_bytes())
+        if actual["name"] != name or actual["version"] != lock[relative]["version"]:
+            raise ValueError("target native dependency differs from the original lock")
+    for relative in ("node-pty/build/Release/pty.node", "nan/nan.h"):
+        payload = source / "node_modules" / relative
+        if payload.is_symlink() or not payload.is_file():
+            raise ValueError("complete target native payload is missing")
+    command(
+        [
+            str(NODE / "bin/node"),
+            "--input-type=commonjs",
+            "-e",
+            'const pty = require("node-pty"); '
+            'if (typeof pty.spawn !== "function" || typeof pty.native.fork !== "function") '
+            'throw new Error("locked node-pty native interface differs"); '
+            'console.log("COMPLETE: locked node-pty native addon loaded");',
+        ],
+        offline=offline,
+        cwd=source,
+        commit=series["commit"],
+    )
+
+
 def public_seed() -> None:
     series = identity()
     before = pins()
@@ -199,6 +240,7 @@ def public_seed() -> None:
         (ROOT / name).touch()
     source = transport.inventory(ROOT / "source")
     build_commands(series, offline=False)
+    native_identity(series, offline=False)
     npm.source_identity(ROOT / "source", source, transport)
     if before != pins() or inputs != {name: digest(path) for name, path in sdk_inputs().items()}:
         raise ValueError("Gemini source or SDK recipe changed during public preparation")
@@ -258,6 +300,7 @@ def build() -> None:
     if transport.inventory(ROOT / "source") != seed["source"]:
         raise ValueError("fresh Gemini source preparation differs")
     build_commands(series, offline=True)
+    native_identity(series, offline=True)
     npm.source_identity(ROOT / "source", seed["source"], transport)
     package = json.loads((ROOT / "source/package.json").read_bytes())
     if package["version"] != series["version"] or not (ROOT / "source/bundle/gemini.js").is_file():

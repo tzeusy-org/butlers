@@ -34,3 +34,18 @@ cache timestamps or task receipts. Its computed whole-component digest must
 still be reproduced and committed to the final six-component installer input
 before image delivery can be accepted. Source tests do not certify a full
 build, native auth/tool behavior, final images or network enforcement.
+
+The target-native optional fallback is part of this complete graph. Every child
+uses `npm_config_nodedir=/opt/node`, whose entire official distribution and
+headers are already pinned and verified. The unchanged node-gyp lifecycle uses
+those headers instead of downloading another header archive. After each normal
+install/build, the producer verifies the original locked `node-pty` and `nan`
+versions and their native/header payloads, then loads `node-pty` with the pinned
+Node executable and verifies its native interface. An npm success that dropped
+this optional target package cannot publish a complete component.
+
+The first retained producer run exited successfully after node-gyp's separate
+header extraction failed and npm removed that optional package. That run proves
+its recorded commands and copied payload only; it does not prove preservation
+of the complete target-native fallback. The corrected recipe must earn a fresh
+actual lifecycle/native-load result before its whole-tree anchor is adopted.
