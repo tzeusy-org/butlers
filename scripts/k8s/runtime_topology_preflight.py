@@ -47,16 +47,38 @@ def _mode(spec: dict[str, Any], role: str) -> str:
         "unknown-runtime-container",
     )
     command = matches[0].get("command")
+    # Both rendered installed-only images and the exact previous live image
+    # commands identify the same role. Additional Kubernetes args alter it.
+    _require(matches[0].get("args") in (None, []), "unknown-runtime-command")
     if role == "butlers-up":
-        if command == [*_UP, "uv sync --dev && exec uv run butlers up"]:
+        if command in (
+            [*_UP, "uv sync --dev && exec uv run butlers up"],
+            [*_UP[:2], "butlers", "up"],
+        ):
             return "cohost"
-        if command == [*_UP, "uv sync --dev && exec uv run butlers up --exclude switchboard"]:
+        if command in (
+            [*_UP, "uv sync --dev && exec uv run butlers up --exclude switchboard"],
+            [*_UP[:2], "butlers", "up", "--exclude", "switchboard"],
+        ):
             return "domains"
-    elif command == [
-        *_CONTROL,
-        "uv sync --dev && exec uv run butlers control --profile KEY_ABSENT_STAGE "
-        "--config roster/switchboard --session-host 0.0.0.0",
-    ]:
+    elif command in (
+        [
+            *_CONTROL,
+            "uv sync --dev && exec uv run butlers control --profile KEY_ABSENT_STAGE "
+            "--config roster/switchboard --session-host 0.0.0.0",
+        ],
+        [
+            *_CONTROL[:2],
+            "butlers",
+            "control",
+            "--profile",
+            "KEY_ABSENT_STAGE",
+            "--config",
+            "roster/switchboard",
+            "--session-host",
+            "0.0.0.0",
+        ],
+    ):
         return "control"
     raise Refused("unknown-runtime-command")
 

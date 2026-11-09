@@ -215,6 +215,26 @@ def test_deploy_target_bootstraps_the_deployed_tag_before_helm(fake_repo: Path) 
         copy.deepcopy(control["spec"]["template"]["spec"]["containers"][0])
     )
     mixed_pod = pod(mixed)
+
+    def legacy(carrier, payload):
+        value = copy.deepcopy(carrier)
+        container = value["spec"]["template"]["spec"]["containers"][0]
+        container["command"] = [*container["command"][:2], "sh", "-c", payload]
+        return value
+
+    legacy_up = legacy(up, "uv sync --dev && exec uv run butlers up")
+    legacy_domains = legacy(
+        domains, "uv sync --dev && exec uv run butlers up --exclude switchboard"
+    )
+    legacy_control = legacy(
+        control,
+        "uv sync --dev && exec uv run butlers control --profile KEY_ABSENT_STAGE "
+        "--config roster/switchboard --session-host 0.0.0.0",
+    )
+    extra_args = copy.deepcopy(up)
+    extra_args["spec"]["template"]["spec"]["containers"][0]["args"] = ["--exclude", "switchboard"]
+    altered_payload = copy.deepcopy(up)
+    altered_payload["spec"]["template"]["spec"]["containers"][0]["command"].append("--unknown")
     cases = [
         ("fresh", "cohost", None, None, [], True),
         ("same-cohost", "cohost", up, None, [pod(up)], True),
@@ -222,6 +242,17 @@ def test_deploy_target_bootstraps_the_deployed_tag_before_helm(fake_repo: Path) 
         ("same-topology-missing-counter", "cohost", same_missing, None, [pod(up)], False),
         ("leftover-stopped-control", "cohost", up, zero_control, [pod(up)], True),
         ("same-split", "split", domains, control, [pod(domains), pod(control)], True),
+        ("legacy-live-cohost", "cohost", legacy_up, None, [pod(legacy_up)], True),
+        (
+            "legacy-live-split",
+            "split",
+            legacy_domains,
+            legacy_control,
+            [pod(legacy_domains), pod(legacy_control)],
+            True,
+        ),
+        ("installed-extra-args", "cohost", extra_args, None, [pod(extra_args)], False),
+        ("installed-altered-payload", "cohost", altered_payload, None, [], False),
         ("split-to-cohost-stopped", "cohost", zero_domains, zero_control, [], True),
         ("cohost-to-split-stopped", "split", zero_up, None, [], True),
         ("observed-zero-omitted-counters", "cohost", absent_counters, zero_control, [], True),

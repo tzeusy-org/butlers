@@ -278,6 +278,8 @@ def test_production_roster_execution_has_one_owner(tmp_path):
         "src/butlers/migration_preflight.py": 1,
         # Dedicated private migration copies for tests, not roster runtime execution.
         "src/butlers/testing/migration.py": 1,
+        # Fixed image-owned validator sibling under a private name, never a roster loader.
+        "scripts/runtime_clis/python_entrypoint.py": 1,
     }
     planted = tmp_path / "src" / "escape.py"
     planted.parent.mkdir()
