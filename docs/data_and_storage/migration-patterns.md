@@ -179,7 +179,10 @@ REVOKE/GRANT line per change (relation, role and privilege names only);
 unless a re-plan is empty. Relations the connecting login neither owns nor is a
 member of (definer-owned boundary tables) cannot be revoked by it, so their
 changes print as `SKIPPED (login does not own it)` and are never claimed;
-moving ownership is the login-split slice. The migrations initContainer runs the dry run on every
+moving ownership is the login-split slice. Column-level grants are outside the
+manifest: a table-level REVOKE drops them, so apply snapshots and restores them
+and fails if they differ afterwards. A plan containing GRANT lines (widening) is
+refused under `--execute` unless `--allow-grants` is passed. The migrations initContainer runs the dry run on every
 deploy and `--execute` only when `database.applyGrants` is true (off by default;
 enabling it is an owner act).
 

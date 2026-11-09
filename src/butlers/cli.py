@@ -689,7 +689,12 @@ def migrate(only: tuple[str, ...], butlers_dir: Path, dry_run: bool) -> None:
     is_flag=True,
     help="Apply the changes. Without it the command only prints what it would revoke and grant.",
 )
-def apply_grants(database: str, execute: bool) -> None:
+@click.option(
+    "--allow-grants",
+    is_flag=True,
+    help="With --execute, also run GRANT changes (widening). Refused otherwise.",
+)
+def apply_grants(database: str, execute: bool, allow_grants: bool) -> None:
     """Converge runtime-role privileges on public relations to the grant manifest.
 
     Default is a dry run: it prints one REVOKE/GRANT line per change (relation, role and
@@ -712,7 +717,7 @@ def apply_grants(database: str, execute: bool) -> None:
     try:
         with engine.begin() as conn:
             if execute:
-                changes = apply_public_grants(conn)
+                changes = apply_public_grants(conn, allow_grants=allow_grants)
             else:
                 conn.exec_driver_sql("SET TRANSACTION READ ONLY")
                 changes = plan_public_grants(

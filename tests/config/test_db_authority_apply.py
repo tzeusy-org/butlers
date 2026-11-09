@@ -76,6 +76,22 @@ def test_unmanaged_relations_are_listed_as_skipped_not_executed() -> None:
     assert plan[0].describe().startswith("SKIPPED (login does not own it) REVOKE")
 
 
+def test_widening_grants_are_refused_before_any_statement(monkeypatch) -> None:
+    from unittest.mock import MagicMock
+
+    from butlers.db_authority import apply as apply_module
+
+    grant = GrantChange("GRANT", "audit_log", "butler_health_rw", ("DELETE",))
+    monkeypatch.setattr(apply_module, "unmanaged_relations", lambda conn: frozenset())
+    monkeypatch.setattr(apply_module, "read_public_catalog", lambda conn: None)
+    monkeypatch.setattr(apply_module, "plan_public_grants", lambda c, unmanaged=(): [grant])
+    conn = MagicMock()
+    with pytest.raises(RuntimeError, match="would widen"):
+        apply_module.apply_public_grants(conn)
+    # Only the advisory lock ran; no REVOKE/GRANT statement was sent.
+    assert conn.execute.call_count == 1
+
+
 def test_relation_outside_the_manifest_is_never_touched() -> None:
     privileges = _catalog(after_init_db_replay=False)
     privileges[("not_in_manifest", "butler_general_rw")] = frozenset({"SELECT", "DELETE"})

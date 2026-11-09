@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 import pytest
 from sqlalchemy import create_engine
 
-from butlers.db_authority.apply import apply_public_grants, unmanaged_relations
+from butlers.db_authority.apply import apply_public_grants, column_acls, unmanaged_relations
 from butlers.db_authority.catalog import read_public_catalog
 from butlers.db_authority.grants import REPLAY_WIDENED
 from butlers.testing.migration import (
@@ -73,16 +73,28 @@ def test_apply_after_replay_restores_the_fresh_migrated_state(postgres_container
 
     engine = create_engine(db_url)
     try:
+        with engine.connect() as conn:
+            columns_before = column_acls(conn)
         with engine.begin() as conn:
             unmanaged = unmanaged_relations(conn)
             changes = apply_public_grants(conn)
+        with engine.connect() as conn:
+            columns_after = column_acls(conn)
+            prune_ok = conn.exec_driver_sql(
+                "SELECT has_column_privilege('butler_qa_rw', 'public.qa_publication_exports',"
+                " 'pruned_at', 'UPDATE')"
+            ).scalar()
     finally:
         engine.dispose()
+
+    # Column grants live outside the manifest; a table-level REVOKE drops them unless apply
+    # restores them (QA export pruning updates pruned_at under a column-only grant).
+    assert columns_after == columns_before
+    assert prune_ok, "butler_qa_rw lost UPDATE (pruned_at) on qa_publication_exports"
 
     # Definer-owned relations (the migration login is neither owner nor member) cannot be
     # revoked by this login; apply must list them as skipped rather than pretend.
     assert unmanaged, "expected definer-owned public relations the migrator cannot administer"
-    assert {c.relation for c in changes if c.skipped} <= unmanaged
     assert all(c.relation in unmanaged for c in changes if c.skipped)
 
     applied = _privileges(db_url)
