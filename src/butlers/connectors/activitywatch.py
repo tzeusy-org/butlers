@@ -111,6 +111,7 @@ from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
@@ -1046,6 +1047,9 @@ class ActivityWatchConnector:
             connector_type=_CONNECTOR_TYPE,
             endpoint_identity=self._endpoint_identity,
         )
+        # A failed ingest keeps the checkpoint before the event, so the next
+        # cycle reads it again, until its attempts are spent (bu-dhloi1.149).
+        self._ingest_retry = IngestRetryBudget()
 
         self._health_server: uvicorn.Server | None = None
         self._health_thread: Thread | None = None
@@ -1298,6 +1302,9 @@ class ActivityWatchConnector:
                 logger.warning("ActivityWatchConnector: skipping malformed event: %s", exc)
                 continue
 
+            # Events arrive in ascending order, so the checkpoint before this
+            # one is what a failed ingest of it holds the cycle to.
+            checkpoint_before = latest_ts
             if latest_ts is None or ts > latest_ts:
                 latest_ts = ts
 
@@ -1312,6 +1319,7 @@ class ActivityWatchConnector:
                 endpoint_identity=self._endpoint_identity, app_class=app_class
             ).inc()
 
+            retry_key = f"{window_bucket_id}:{ts.isoformat()}"
             try:
                 await self._process_window_event(
                     bucket_id=window_bucket_id,
@@ -1325,17 +1333,37 @@ class ActivityWatchConnector:
                     browser_domain=(browser_match.domain if browser_match is not None else None),
                     raw_web_event=(browser_match.raw_event if browser_match is not None else None),
                 )
+                self._ingest_retry.succeeded(retry_key)
                 self._last_event_at = datetime.now(UTC)
                 self._events_today += 1
-            except Exception:
-                # Log and continue — a single bad event should not block the
-                # rest of the batch or wedge the checkpoint on a transient
-                # per-event failure. The event's idempotency_key means a
-                # future retry (if the checkpoint is re-run) stays safe.
+            except Exception as exc:
+                # Never checkpoint past a failed event (bu-dhloi1.149): stop the
+                # batch with the checkpoint before it, so the next cycle reads it
+                # again; the idempotency_key keeps the re-read events safe. Once
+                # its attempts are spent, park it as a replayable error row and
+                # carry on.
+                if not self._ingest_retry.failed(retry_key):
+                    logger.warning(
+                        "ActivityWatchConnector: failed to ingest event at %s; holding the "
+                        "checkpoint for a retry (error_class=%s)",
+                        ts.isoformat(),
+                        type(exc).__name__,
+                    )
+                    latest_ts = checkpoint_before
+                    break
                 logger.warning(
-                    "ActivityWatchConnector: failed to process event at %s (non-fatal)",
+                    "ActivityWatchConnector: event at %s failed every retry; parked for "
+                    "replay (error_class=%s)",
                     ts.isoformat(),
-                    exc_info=True,
+                    type(exc).__name__,
+                )
+                self._park_window_event(
+                    bucket_id=window_bucket_id,
+                    ts=ts,
+                    duration_seconds=duration_seconds,
+                    app=app,
+                    app_class=app_class,
+                    exc=exc,
                 )
 
         if latest_ts is not None and (
@@ -1440,6 +1468,43 @@ class ActivityWatchConnector:
                     "ActivityWatchConnector: failed to persist activity evidence (non-fatal)",
                     exc_info=True,
                 )
+
+    def _park_window_event(
+        self,
+        *,
+        bucket_id: str,
+        ts: datetime,
+        duration_seconds: float,
+        app: str,
+        app_class: AppClass,
+        exc: Exception,
+    ) -> None:
+        """Keep an event whose retries are spent as a replayable error row.
+
+        The row carries the same coarse envelope :meth:`_process_window_event`
+        submits (rebuilt from the same inputs, so the idempotency key matches);
+        window titles and URLs stay out of it, as they stay out of ingest.
+        """
+        envelope = build_activity_envelope(
+            machine_id=self._config.machine_id,
+            endpoint_identity=self._endpoint_identity,
+            bucket_id=bucket_id,
+            ts=ts,
+            duration_seconds=duration_seconds,
+            app=app,
+            app_class=app_class,
+            ingestion_tier=self._config.ingestion_tier,
+        )
+        self._filtered_event_buffer.record(
+            external_message_id=f"{bucket_id}:{ts.isoformat()}",
+            source_channel=_DESCRIPTOR.channel,
+            sender_identity=self._endpoint_identity,
+            subject_or_preview=f"ActivityWatch {app_class} activity",
+            filter_reason=FilteredEventBuffer.reason_submission_error(),
+            full_payload=FilteredEventBuffer.stored_envelope(envelope),
+            status="error",
+            error_detail=type(exc).__name__,
+        )
 
     async def _submit_envelope(self, envelope: dict[str, Any]) -> None:
         """Submit an ingest.v1 envelope to the Switchboard (for replay drain)."""

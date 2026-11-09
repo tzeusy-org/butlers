@@ -128,6 +128,10 @@ INSERT INTO connectors.filtered_events (
 # SQL for the replay drain loop.
 # Locks up to 10 replay_pending rows with skip-locked concurrency safety,
 # then updates each to replay_complete or replay_failed after submission.
+# A stored full_payload carrying this key has no real content to submit; its
+# value is the reason. Replay refuses the row with that reason (bu-dhloi1.149).
+REPLAY_UNAVAILABLE_KEY = "replay_unavailable"
+
 _REPLAY_SELECT_SQL = """\
 SELECT id, received_at, external_message_id, full_payload
 FROM connectors.filtered_events
@@ -317,6 +321,23 @@ async def drain_replay_pending(
                             continue
                     else:
                         payload_dict = dict(raw_payload)
+
+                    # A row parked without real content (e.g. a Gmail message that
+                    # never fetched) would replay as a hollow event; refuse it.
+                    unavailable = payload_dict.get(REPLAY_UNAVAILABLE_KEY)
+                    if unavailable:
+                        _log.warning(
+                            "replay drain: id=%s is not replayable; marking replay_failed",
+                            row_id,
+                        )
+                        await conn.execute(
+                            _REPLAY_UPDATE_SQL,
+                            "replay_failed",
+                            f"not replayable: {unavailable}",
+                            row_id,
+                            received_at,
+                        )
+                        continue
 
                     # Sanitize stored payload: older rows may have None values for
                     # fields that IngestEnvelopeV1 requires as non-None.
@@ -717,6 +738,7 @@ class FilteredEventBuffer:
         classification: dict[str, Any] | None = None,
         untrusted_spans: list[dict[str, Any]] | None = None,
         in_reply_to_ref: str | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         """Build an ``ingest.v1``-shaped payload dict for storage.
 
@@ -744,6 +766,9 @@ class FilteredEventBuffer:
                 Exact records survive unchanged text. If privacy omits the text,
                 whole-placeholder spans retain the kinds without restoring a body.
             policy_tier: Policy tier assigned to the message (optional).
+            idempotency_key: The envelope's ``control.idempotency_key``
+                (optional). Stored so a replay keys exactly like the original
+                submission and ingest deduplicates the two.
             important_dropped_basis: Set (e.g. ``"known_contact"``) when the
                 drop silently discards a message the owner would want to see.
                 Stored as ``drop_context``; carries no message content.
@@ -764,6 +789,8 @@ class FilteredEventBuffer:
         control_section: dict[str, Any] = {}
         if policy_tier is not None:
             control_section["policy_tier"] = policy_tier
+        if idempotency_key is not None:
+            control_section["idempotency_key"] = idempotency_key
 
         event_section: dict[str, Any] = {
             "external_event_id": external_event_id,
@@ -815,3 +842,15 @@ class FilteredEventBuffer:
                     "observed_at": observed.isoformat(),
                 }
         return stored
+
+    @staticmethod
+    def stored_envelope(envelope: Mapping[str, Any]) -> dict[str, Any]:
+        """The exact ingest.v1 envelope a connector tried, shaped for storage.
+
+        For an item parked after its retries are spent (bu-dhloi1.149): the row
+        keeps everything the submission carried, ``control.idempotency_key``
+        included, so a replay is the same submission and ingest deduplicates
+        it against any attempt that landed. ``schema_version`` is dropped, as
+        for every stored payload; replay adds it back.
+        """
+        return {key: value for key, value in envelope.items() if key != "schema_version"}

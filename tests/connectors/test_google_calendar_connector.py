@@ -30,6 +30,7 @@ from butlers.connectors.google_calendar import (
     build_event_envelope,
     build_starting_soon_envelope,
 )
+from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.ingestion_policy import PolicyDecision
 
 _ENDPOINT = "google_calendar:user:test@example.com"
@@ -423,6 +424,7 @@ async def test_submission_error_preserves_resolved_organizer_identity(
     identity the policy-filter paths preserve.
     """
     runtime = CalendarConnectorRuntime(account_config)
+    runtime._ingest_retry = IngestRetryBudget(1)  # park on the first failure (bu-dhloi1.149)
     event = {
         "id": "evt-submit-err",
         "status": "confirmed",
@@ -466,6 +468,7 @@ async def test_submission_error_without_organizer_matches_policy_filter_conventi
     rather than fabricating a different placeholder.
     """
     runtime = CalendarConnectorRuntime(account_config)
+    runtime._ingest_retry = IngestRetryBudget(1)  # park on the first failure (bu-dhloi1.149)
     event = {
         "id": "evt-submit-err-noorg",
         "status": "confirmed",
@@ -605,6 +608,7 @@ async def test_submission_error_retains_raw_payload(
     """Errored content (status='error') is exempt: the raw payload is retained
     for diagnosis and replay."""
     runtime = CalendarConnectorRuntime(account_config)
+    runtime._ingest_retry = IngestRetryBudget(1)  # park on the first failure (bu-dhloi1.149)
     event = {
         "id": "evt-err-priv",
         "status": "confirmed",
