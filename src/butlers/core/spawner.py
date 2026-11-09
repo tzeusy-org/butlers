@@ -146,6 +146,7 @@ from butlers.core.spawner_context import (
 from butlers.core.spawner_env import (
     _build_env,  # noqa: F401 — re-export for test patches
     _capture_pipeline_routing_context,  # noqa: F401 — re-export for test patches
+    _with_workload_egress,
 )
 from butlers.core.spawner_guardrails import (
     _check_degenerate_tool_loop,
@@ -2534,6 +2535,10 @@ class Spawner:
                 env.update(get_traceparent_env())
             else:
                 env = await _build_env(self._config, self._credential_store)
+
+            # Sandbox overrides and healing retain workload transport selection;
+            # neither can replace it with credential or caller environment data.
+            env = _with_workload_egress(env)
 
             # Owner authentication belongs to the dashboard, including when an
             # explicit caller override or a custom adapter is used.

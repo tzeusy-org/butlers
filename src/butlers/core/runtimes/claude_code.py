@@ -40,6 +40,7 @@ from butlers.core.runtimes.served_identity import (
     observe_invocation,
     token,
 )
+from butlers.egress.claude import child_environment
 
 if TYPE_CHECKING:
     from butlers.credential_store import CredentialStore
@@ -595,7 +596,7 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=without_owner_auth(env),
+                env=child_environment(without_owner_auth(env)),
                 cwd=str(cwd) if cwd else None,
             )
 

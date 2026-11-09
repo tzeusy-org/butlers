@@ -165,6 +165,27 @@ construction selects the request transport; incomplete configuration refuses.
 Internal/site-local clients remain separate. Off-mode preserves existing caller
 proxy behavior. No ambient proxy variable forwards into selected mode.
 
+The spawner forwards only this validated deployment pair into native CLI children,
+including QA override and healing paths. Declared credential variables or child
+override dictionaries cannot replace it. This does not forward other daemon
+environment values. Patched Codex, Gemini and OpenCode factories consume the pair
+at their terminal transport seams; their complete artifact/native coverage remains
+separately required.
+
+For unmodified native Claude, the adapter maps the supported
+`ANTHROPIC_BASE_URL` to the request prefix using the original HTTPS host, port and
+base path. It preserves API-key lookup, custom auth headers, model/resume arguments,
+strict MCP configuration and the native tool surface. A custom Host must match
+the logical API authority; the internal request uses the gateway Host and a
+controlled `Connection: close`. Selected children receive no conventional proxy
+environment override. Off-mode retains the existing native environment.
+This supported API-base setting is a partial transport interface. Native API-key
+inference and the fixture's actual bare-mode Bash/Edit/Read operations have owned
+synthetic evidence; the separate native `/api/hello` check is refused for its
+internal header shape. Whole native auth/MCP/other configured operation coverage
+and actual network policy enforcement remain unearned. No tool is removed or
+replaced to obtain the inference result.
+
 ## Current limits
 
 - **Vendor/runtime compatibility is incomplete.** The Python request transport does

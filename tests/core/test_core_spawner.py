@@ -1118,6 +1118,61 @@ class TestCredentialPassthrough:
     # Env-only path (no credential_store — backwards compatibility)
     # ------------------------------------------------------------------
 
+    @pytest.mark.parametrize("source", ["tick", "qa", "healing"])
+    @pytest.mark.parametrize("selection", ["selected", "off", "invalid"])
+    async def test_workload_transport_survives_actual_environment_selection(
+        self, tmp_path: Path, source: str, selection: str
+    ):
+        """Deployment selection governs ordinary, QA-override and healing children."""
+        controls = {
+            "BUTLERS_EGRESS_MODE": "request-v1",
+            "BUTLERS_EGRESS_GATEWAY": "http://egress-gateway:3115",
+        }
+        parent = {"PATH": "/deployment/bin", "UNDECLARED_SECRET": "synthetic-parent"}
+        if selection != "off":
+            parent.update(controls)
+        if selection == "invalid":
+            parent["BUTLERS_EGRESS_GATEWAY"] = "http://foreign:3115"
+        override = {
+            "PATH": "/sandbox/bin",
+            "QA_ONLY": "synthetic-sandbox",
+            "DASHBOARD_API_KEY": "synthetic-owner",
+            "BUTLERS_EGRESS_MODE": "forged",
+            "BUTLERS_EGRESS_GATEWAY": "http://foreign:9999",
+        }
+        store = AsyncMock()
+        store.resolve = AsyncMock(return_value="synthetic-declared")
+        adapter = MockAdapter(result_text="ok", capture=True)
+        with patch.dict(os.environ, parent, clear=True):
+            result = await Spawner(
+                config=_make_config(env_required=["DECLARED", *controls]),
+                config_dir=tmp_path,
+                runtime=adapter,
+                credential_store=store,
+            ).trigger(
+                "synthetic transport", source, env_override=override if source == "qa" else None
+            )
+        if selection == "invalid":
+            assert result.error is not None
+            assert adapter.calls == []
+            return
+        assert result.error is None
+        child = adapter.calls[0]["env"]
+        assert "UNDECLARED_SECRET" not in child and "DASHBOARD_API_KEY" not in child
+        assert not controls.keys() & {call.args[0] for call in store.resolve.await_args_list}
+        if selection == "selected":
+            assert {key: child.get(key) for key in controls} == controls
+        else:
+            assert not controls.keys() & child.keys()
+        if source == "qa":
+            assert child["PATH"] == "/sandbox/bin" and child["QA_ONLY"] == "synthetic-sandbox"
+            assert "DECLARED" not in child
+            assert adapter.calls[0]["mcp_servers"] == {}
+        else:
+            assert child["PATH"] == "/deployment/bin"
+            assert ("DECLARED" in child) == (source == "tick")
+            assert "QA_ONLY" not in child
+
     async def test_env_path_passthrough_and_optional_exclusion(self, tmp_path: Path):
         """Declared env and tracing survive; daemon channel credentials do not."""
         config = _make_config(
