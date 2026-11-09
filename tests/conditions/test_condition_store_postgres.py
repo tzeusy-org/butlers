@@ -130,15 +130,31 @@ class TestPostgresStoreContract(StoreContract):
         )
         return [Label.from_row(*r.values()) for r in rows]
 
-    async def test_intent_label_must_equal_the_instances_label(self):
+    async def test_intent_label_may_widen_but_never_narrow_the_instances_label(self):
         store, inst = await self.seeded()
         await self.fire(store, inst)
-        widened = replace(self.intent_for(inst), label=inst.label.join(Label.unknown()))
+        narrower = Label(frozenset({"owner"}), frozenset({"owner"}), frozenset())
         with pytest.raises(ConnectionError) as raised:  # a bug, so the outage path
             async with store.transaction() as tx:
-                await tx.insert_fire_intent(widened)
+                await tx.insert_fire_intent(replace(self.intent_for(inst), label=narrower))
         assert not isinstance(raised.value, RegistrationRefused)
         assert await self.intent_count(store) == 0
+        wider = inst.label.join(Label.unknown())
+        async with store.transaction() as tx:
+            stored = await tx.insert_fire_intent(replace(self.intent_for(inst), label=wider))
+        assert stored.label == wider and await self.intent_count(store) == 1
+
+    async def test_receipt_label_may_widen_but_never_narrow_the_instances_label(self):
+        store, inst = await self.seeded()
+        evaluator = ConditionEvaluator(store)
+        out = await evaluator.evaluate("c1", [], now=NOW)
+        receipt = out.receipt
+        narrower = Label(frozenset({"owner"}), frozenset({"owner"}), frozenset())
+        with pytest.raises(ConnectionError):
+            async with store.transaction() as tx:
+                await tx.append_receipt(replace(receipt, label=narrower))
+        async with store.transaction() as tx:
+            await tx.append_receipt(replace(receipt, label=inst.label.join(Label.unknown())))
 
     async def receipt_reasons(self, store) -> list[str]:
         rows = await self.owner.fetch("SELECT reason FROM public.condition_receipts ORDER BY id")

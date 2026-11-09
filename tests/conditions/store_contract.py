@@ -25,6 +25,7 @@ from butlers.conditions.model import FireIntent
 from butlers.conditions.service import StoreConflict
 from butlers.core.goal_labels import Label
 from tests.conditions.test_conditions import (
+    AT,
     DECISION,
     EFFECT_LEAF,
     EXPIRES,
@@ -273,16 +274,26 @@ class StoreContract:
         assert inst.label == LABEL
         assert (await self.instance(store, "c1")).label == LABEL
 
-    async def test_fire_intent_and_receipts_carry_the_registered_label(self):
+    async def test_event_fire_intent_and_receipts_join_the_unknown_label(self):
         store = self.make_store()
         evaluator = ConditionEvaluator(store)
         await register(evaluator, DECISION)
         fired = await evaluator.evaluate("c1", [decision_ev()], now=NOW)
         assert fired.intent is not None
+        joined = LABEL.join(Label.unknown())
         claimed = await evaluator.consume_fire("c1", "runner")
-        assert claimed is not None and claimed.label == LABEL
+        assert claimed is not None and claimed.label == joined
         labels = await self.receipt_labels(store)
-        assert len(labels) >= 2 and set(labels) == {LABEL}
+        assert labels[0] == LABEL and labels[-1] == joined  # register, then the fire
+        assert (await self.instance(store, "c1")).label == LABEL
+
+    async def test_clock_fire_keeps_the_registered_label(self):
+        store = self.make_store()
+        evaluator = ConditionEvaluator(store)
+        await register(evaluator, AT)
+        fired = await evaluator.evaluate("c1", [], now=NOW + timedelta(minutes=31))
+        assert fired.intent is not None and fired.intent.label == LABEL
+        assert set(await self.receipt_labels(store)) == {LABEL}
 
     async def test_a_label_differing_from_the_registered_one_is_a_changed_boundary(self):
         store, _ = await self.seeded()

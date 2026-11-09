@@ -193,9 +193,9 @@ Scope: v1-mandatory
 - **WHEN** an envelope condition is true before its subscription is installed
 - **THEN** registration evaluates the current snapshot and commits one unique successor intent
 
-#### Scenario: A fire cannot narrow or widen the envelope label
+#### Scenario: A fire cannot narrow the envelope label
 - **WHEN** a trusted condition fires for a waiting goal
-- **THEN** the intent the runner consumes carries the envelope's registered label snapshot unchanged, and the epoch and inbox row join it, so the wake never launders or drops accumulated labels
+- **THEN** the intent the runner consumes carries a label that covers the envelope's registered label snapshot, and the epoch and inbox row join it, so the wake never launders or drops accumulated labels
 
 #### Scenario: Crash between fire and launch preserves one successor
 - **WHEN** a worker crashes after the fire transaction, then another replays it

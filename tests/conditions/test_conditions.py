@@ -23,7 +23,7 @@ from butlers.conditions import (
 )
 from butlers.conditions.memory import InMemoryConditionStore
 from butlers.conditions.predicate import PredicateError, validate
-from butlers.core.goal_labels import Label
+from butlers.core.goal_labels import CATEGORIES, Label
 
 #: A non-trivial registered label snapshot, so a default or dropped label cannot pass.
 LABEL = Label(frozenset({"owner"}), frozenset({"owner", "domain:calendar"}), frozenset({"routine"}))
@@ -615,31 +615,47 @@ class TestReplayFloorIsImmutable:
 
 
 class TestLabels:
-    """RFC 0038 S4: evaluation joins labels; the registered snapshot is immutable (bu-dhloi1.196)."""
+    """RFC 0038 S1/S4: a fire joins labels; the registered snapshot is immutable (bu-dhloi1.196).
 
-    async def test_registration_fire_carries_the_registered_label(self, evaluator, store):
-        out = await register(
-            evaluator, DECISION, snapshot=Snapshot(now=NOW, decisions={SUBJECT: "approved"})
-        )
+    ``ConditionEvent`` carries no label yet (producers stamp them under bu-dhloi1.9), and S1 makes
+    missing provenance the unknown label, so event and registration-snapshot fires join it into
+    the registered label. A clock fire conveys no source data and carries the registered label.
+    """
+
+    FIRE = LABEL.join(Label.unknown())
+
+    async def test_registration_fire_joins_the_unknown_label(self, evaluator, store):
+        snap = Snapshot(now=NOW, decisions={SUBJECT: "approved"})
+        out = await register(evaluator, DECISION, snapshot=snap)
         assert out.instance.label == LABEL
-        assert out.intent is not None and out.intent.label == LABEL
-        assert out.receipt.label == LABEL
+        assert out.intent is not None and out.intent.label == self.FIRE
+        assert out.receipt.label == self.FIRE
 
-    async def test_event_fire_carries_the_registered_label(self, evaluator, store):
+    async def test_unlabelled_event_fire_carries_unknown_provenance_and_sensitivity(
+        self, evaluator, store
+    ):
         await register(evaluator, DECISION)
         out = await evaluator.evaluate("c1", [decision_ev()], now=NOW)
-        assert out.intent is not None and out.intent.label == LABEL
-        assert {r.label for r in store.receipts} == {LABEL}
+        assert out.intent is not None and out.intent.label == self.FIRE
+        label = out.intent.label
+        assert "world" in label.instr and "world" in label.data
+        assert label.sens == CATEGORIES  # all six, as the registered routine alone is not enough
+        assert out.receipt.label == self.FIRE
+        assert out.instance.label == LABEL  # the stored snapshot itself never changes
+        assert label.covers(LABEL)
 
-    async def test_clock_fire_expiry_and_cancel_receipts_carry_the_label(self, evaluator, store):
-        await register(evaluator, AT, instance_id="a")
-        await evaluator.evaluate("a", [], now=NOW + timedelta(minutes=31))
+    async def test_clock_fire_keeps_the_registered_label(self, evaluator, store):
+        await register(evaluator, AT)
+        out = await evaluator.evaluate("c1", [], now=NOW + timedelta(minutes=31))
+        assert out.intent is not None and out.intent.reason.startswith("fired:clock")
+        assert out.intent.label == LABEL and out.receipt.label == LABEL
+
+    async def test_non_fire_receipts_carry_the_registered_label(self, evaluator, store):
         await register(evaluator, DECISION, instance_id="b")
         await evaluator.evaluate("b", [], now=EXPIRES + timedelta(minutes=1))
         await register(evaluator, DECISION, instance_id="c")
         await evaluator.cancel("c", now=NOW)
-        assert len(store.receipts) >= 6 and {r.label for r in store.receipts} == {LABEL}
-        assert all(i.label == LABEL for i in store.intents.values())
+        assert len(store.receipts) >= 4 and {r.label for r in store.receipts} == {LABEL}
 
     async def test_reregistering_with_a_different_label_refuses(self, evaluator):
         await register(evaluator, DECISION)

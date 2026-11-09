@@ -227,7 +227,7 @@ Scope: v1-mandatory
 
 #### Scenario: A time fire carries the envelope label
 - **WHEN** a registered at leaf fires on a time occurrence
-- **THEN** the intent carries the registered envelope label; the clock occurrence contributes no label of its own and cannot widen or narrow it
+- **THEN** the intent carries the registered envelope label; the clock occurrence adds no label of its own and the intent is never narrower than the registered label
 
 #### Scenario: A transition is too old for a real-time wake
 - **WHEN** a replayed transition is more than10 minutes old

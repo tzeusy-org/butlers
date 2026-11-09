@@ -31,13 +31,16 @@ consumes `ConditionEvaluator.consume_fire`; it never evaluates predicates itself
   instance at or past `expires_at` expires before any event or clock fire is considered.
 - Labels (RFC 0038 S1/S4): `register` takes the wait envelope's `Label` snapshot (required; a
   non-`Label` refuses). It is stored with the instance (`core_324`), is part of the immutable
-  boundary, and is the only label the fire intent and every receipt carry. Nothing joins a wider
-  label into a fire and nothing narrows it; `ConditionEvent` carries no label today, so there is
-  nothing to launder. The runner joins the intent's label into the epoch and inbox row it
-  creates. In PostgreSQL the label is CHECK-validated (`public.condition_label_valid`),
-  immutable once written, and a receipt or fire intent whose label differs from its instance's
-  is refused (23514, an outage-path bug, never `RegistrationRefused`). Rows older than `core_324`
-  took the unknown label.
+  boundary. A fire joins labels (S4): the intent and its receipt carry the registered label
+  joined with the unknown label (`{world}` in I and D, all six categories in C) when the cause is
+  the registration snapshot or an event, because `ConditionEvent` carries no label until the
+  producers stamp them (`bu-dhloi1.9`) and S1 makes missing provenance unknown. A clock (`at`)
+  fire conveys no source data and carries the registered label alone. No fire is ever narrower.
+  The runner joins the intent's label into the epoch and inbox row it creates. In PostgreSQL the
+  label is CHECK-validated (`public.condition_label_valid`) and immutable once written, and a
+  receipt or fire intent whose label does not cover its instance's is refused (23514, an
+  outage-path bug, never `RegistrationRefused`). Rows older than `core_324` took the unknown
+  label.
 - One fire intent exists per instance generation (`Instance.fire_key`); the instance row, the
   receipt and the intent commit in one store transaction. `FireIntent.event_id` is the
   causing event's UUID, or a stable synthetic UUID for registration and clock fires, so the

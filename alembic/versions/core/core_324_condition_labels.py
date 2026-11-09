@@ -11,9 +11,10 @@ and ``label_sens`` (C), with the same grammar as ``butlers.core.goal_labels``.
 * The instance's label is the registering wait envelope's snapshot. It is immutable once
   written (``condition_label_guard``), and it is part of the instance's boundary, so a
   re-registration under a different label is refused by the service.
-* A fire intent and every receipt must carry exactly its instance's label
-  (``condition_label_fence``): nothing is widened and nothing is laundered into a fire, even
-  by the trusted evaluator role.
+* A fire intent and every receipt must carry a label that covers its instance's (version equal,
+  each set a superset; ``condition_label_fence``). S4 has evaluation join labels, so a fire may
+  be wider than the registered snapshot but is never narrower, even from the trusted evaluator
+  role.
 * Rows written before this revision (the store was dark, so normally none) take the unknown
   label, ``{world}`` and all six categories, never owner data. The columns then have no
   default, so a writer that omits a label is refused.
@@ -78,10 +79,11 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM public.condition_instances i
         WHERE i.id = NEW.instance_id
-          AND ROW(i.label_version, i.label_instr, i.label_data, i.label_sens)
-              IS NOT DISTINCT FROM
-              ROW(NEW.label_version, NEW.label_instr, NEW.label_data, NEW.label_sens)) THEN
-        RAISE EXCEPTION 'a receipt or fire intent carries its instance label exactly'
+          AND i.label_version = NEW.label_version
+          AND NEW.label_instr @> i.label_instr
+          AND NEW.label_data @> i.label_data
+          AND NEW.label_sens @> i.label_sens) THEN
+        RAISE EXCEPTION 'a receipt or fire intent label never narrows its instance label'
             USING ERRCODE = '23514';
     END IF;
     RETURN NEW;
