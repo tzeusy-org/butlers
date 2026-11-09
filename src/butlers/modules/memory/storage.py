@@ -62,7 +62,7 @@ def _refuse_dead_entities(rows: Any, wanted: set[Any]) -> None:
         if isinstance(meta, str):
             meta = json.loads(meta)
         meta = meta or {}
-        if meta.get("deleted_at"):
+        if meta.get("deleted_at") or meta.get("tombstone") in (True, "true"):
             raise EntityUnavailableError(f"entity {eid!r} was deleted")
         if meta.get("merged_into"):
             raise EntityUnavailableError(

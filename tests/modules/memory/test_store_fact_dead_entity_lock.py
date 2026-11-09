@@ -54,8 +54,12 @@ async def _fact_count(pool, entity_id) -> int:
 
 @pytest.mark.parametrize(
     "marker",
-    [{"deleted_at": "2026-11-09T00:00:00+00:00"}, {"merged_into": str(uuid.uuid4())}],
-    ids=["deleted", "merged"],
+    [
+        {"deleted_at": "2026-11-09T00:00:00+00:00"},
+        {"merged_into": str(uuid.uuid4())},
+        {"tombstone": "true"},
+    ],
+    ids=["deleted", "merged", "forgotten"],
 )
 @pytest.mark.parametrize("as_object", [False, True], ids=["subject", "object"])
 async def test_insert_that_waited_on_the_entity_lock_refuses_a_marked_entity(
