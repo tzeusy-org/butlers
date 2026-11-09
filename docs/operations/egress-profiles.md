@@ -231,6 +231,12 @@ The Dashboard readiness canary is an actual internal outbound resolver, bound to
 metadata records the Dashboard workload and existing control peer; it grants no
 additional route.
 
+Inventory schema `butlers.egress-profile-coverage/v2` stores bundle and topology
+identities as explicit `{"sha256": "<digest>"}` records. These readable public
+content hashes remain exact source checks, distinct from credential assignments;
+unknown fields, wrong algorithms, types or digest bytes fail the same comparison.
+Secret scanning and its real-shaped credential detection remain unchanged.
+
 There is deliberately no automatic inventory refresh or classification command.
 
 The guard reports compatibility gaps separately from structural completeness:

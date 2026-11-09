@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
     "egress_coverage", ROOT / "scripts/check_egress_profile_coverage.py"
 )
+assert SPEC is not None and SPEC.loader is not None
 coverage = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(coverage)
 pytestmark = pytest.mark.unit
@@ -324,3 +325,36 @@ def test_dashboard_readiness_canary_is_bound_to_its_outbound_resolver_and_worklo
     profile = tomllib.loads((ROOT / coverage.PROFILES).read_text())["workloads"]["dashboard-api"]
     assert len([item for item in profile["dynamic"] if item["source"] == source]) == 1
     assert {"component": "butlers-control", "port": 41100} in profile["internal"]
+
+
+@pytest.mark.parametrize("field", ["bundles", "topology"])
+@pytest.mark.parametrize("shape", ["bare", "wrong-key", "extra-key", "wrong-digest", "wrong-type"])
+def test_explicit_public_digest_records_refuse_shape_or_hash_drift(source, field, shape):
+    root, inventory = source
+    if field == "bundles":
+        path = root / "deploy/runtime-clis/shared/package.json"
+        path.parent.mkdir(parents=True)
+        path.write_text('{"name":"owned-source-fixture"}\n')
+        inventory[field] = coverage.bundle_pins(root)
+    else:
+        path = root / "deploy/helm/butlers/templates/role.yaml"
+        path.parent.mkdir(parents=True)
+        path.write_text("kind: Deployment\n")
+        inventory[field] = coverage.topology_pins(root)
+    assert errors(source) == []
+    key = path.relative_to(root).as_posix()
+    original = copy.deepcopy(inventory[field][key])
+    assert set(original) == {"sha256"}
+    if shape == "bare":
+        inventory[field][key] = original["sha256"]
+    elif shape == "wrong-key":
+        inventory[field][key] = {"sha512": original["sha256"]}
+    elif shape == "extra-key":
+        inventory[field][key]["unreviewed"] = "extra"
+    elif shape == "wrong-digest":
+        inventory[field][key]["sha256"] = "0" * 64
+    else:
+        inventory[field][key]["sha256"] = 123
+    assert any("drift" in error for error in errors(source))
+    inventory[field][key] = original
+    assert errors(source) == []

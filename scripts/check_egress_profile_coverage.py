@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = "scripts/egress-profile-coverage.json"
 PROFILES = "deploy/egress-profiles.toml"
-SCHEMA = "butlers.egress-profile-coverage/v1"
+SCHEMA = "butlers.egress-profile-coverage/v2"
 URL = re.compile(r"(?:https?|wss?)://[^\s\"'<>]*")
 CONFIG = re.compile(r"[A-Z][A-Z0-9_]*(?:URL|URI|HOST|ENDPOINT)\Z")
 CLASSES = {"external", "internal", "site", "reference", "blocked", "dynamic"}
@@ -179,7 +179,7 @@ def declarations(root: Path) -> dict[str, dict]:
     return dict(sorted(records.items()))
 
 
-def bundle_pins(root: Path) -> dict[str, str]:
+def bundle_pins(root: Path) -> dict[str, dict[str, str]]:
     """Bind non-Python vendor/shared sources without pretending to parse an archive."""
     pins = {}
     base = root / "deploy/runtime-clis"
@@ -190,11 +190,11 @@ def bundle_pins(root: Path) -> dict[str, str]:
         if "node_modules" in item.relative_to(base).parts:
             continue
         if item.is_file() and item.suffix not in {".md", ".pem"}:
-            pins[item.relative_to(root).as_posix()] = digest(item.read_bytes())
+            pins[item.relative_to(root).as_posix()] = {"sha256": digest(item.read_bytes())}
     return pins
 
 
-def topology_pins(root: Path) -> dict[str, str]:
+def topology_pins(root: Path) -> dict[str, dict[str, str]]:
     """A changed role/module declaration invalidates reviewed workload reachability."""
     paths = set((root / "roster").glob("*/butler.toml"))
     paths.update((root / "deploy/helm/butlers/templates").glob("*.yaml"))
@@ -207,7 +207,9 @@ def topology_pins(root: Path) -> dict[str, str]:
         )
     )
     return {
-        p.relative_to(root).as_posix(): digest(p.read_bytes()) for p in sorted(paths) if p.is_file()
+        p.relative_to(root).as_posix(): {"sha256": digest(p.read_bytes())}
+        for p in sorted(paths)
+        if p.is_file()
     }
 
 
