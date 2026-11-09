@@ -174,6 +174,32 @@ async def test_a_channel_failure_is_reported_without_its_text(caplog):
     assert _SECRET not in caplog.text and _TOKEN not in caplog.text
 
 
+@pytest.mark.parametrize("revoke_fails", [False, True])
+async def test_a_launch_whose_reply_is_lost_is_revoked_on_the_host(revoke_fails):
+    # A read timeout leaves the host running the launch with the credential
+    # and its one active slot; the runner must revoke it (r4513585120).
+    class TimedOut(Channel):
+        async def __call__(self, command: dict) -> Any:
+            self.sent.append(command)
+            if command["operation"] == "launch" or revoke_fails:
+                raise TimeoutError("read timed out")
+            return {"status": "completed"}
+
+    channel = TimedOut()
+    launch = _launch()
+
+    outcome = await _host(Store({"cli-auth/openai": _SECRET}), channel).launch(launch)
+
+    assert isinstance(outcome.failure, SessionHostRefused)
+    assert str(outcome.failure) == "session_host_unavailable"
+    assert [command["operation"] for command in channel.sent] == ["launch", "revoke"]
+    assert channel.sent[1] == {
+        "version": 1,
+        "operation": "revoke",
+        "invocation_id": str(launch.invocation_id),
+    }
+
+
 async def test_terminate_revokes_the_invocation_and_tolerates_an_unknown_one():
     channel = Channel(error=OSError("invocation_unavailable"))
     invocation = uuid4()

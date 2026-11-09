@@ -120,6 +120,12 @@ class ControlSessionHost:
                 launch.invocation_id,
                 type(failure).__name__,
             )
+            # The host may still hold the launch (a reply that outlived the read
+            # timeout): revoke it, so it frees the credential and its slot now.
+            try:
+                await self.terminate(launch.invocation_id)
+            except Exception:
+                logger.warning("session host revoke failed invocation=%s", launch.invocation_id)
             return HostOutcome(failure=SessionHostRefused("session_host_unavailable"))
         status = reply.get("status") if type(reply) is dict else None
         if status == "completed" and set(reply) == {"status"}:
