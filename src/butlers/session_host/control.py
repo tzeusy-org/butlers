@@ -15,6 +15,8 @@ import fcntl
 import hashlib
 import hmac
 import json
+import logging
+import math
 import os
 import re
 import ssl
@@ -26,12 +28,26 @@ from uuid import UUID
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
 
-from .contracts import BrokerBinding, LaunchRequest, Refused
+from .contracts import BrokerBinding, LaunchRequest, Refused, RuntimeTimeout
 from .credential_volume import CredentialVolume
 from .lifecycle import Domain, InvocationOwner
 
+logger = logging.getLogger(__name__)
+
 _MAX_FRAME = 280 * 1024
 _IO_SECONDS = 3
+#: The most invocations one host runs at once; a launch beyond the bound is refused ``host_busy``.
+_MAX_CONCURRENT = 64
+_DEFAULT_CONCURRENT = 4
+#: Invocation ids remembered (launched or revoked early). A host that has used them all refuses
+#: new work rather than forget an id, because forgetting one would allow a replay.
+_MAX_SEEN = 65536
+#: What the owner may spend settling a cancelled or timed-out invocation (``InvocationOwner``'s
+#: own cap is 30s), plus slack for the reply to travel. Added to a launch's own ``timeout_s``.
+_SETTLE_ALLOWANCE_S = 35.0
+_LARGEST_LAUNCH_TIMEOUT_S = 300.0
+_USAGE_KEYS = frozenset({"input_tokens", "output_tokens", "cached_input_tokens"})
+_USAGE_MAX = 2**53
 _CREDENTIAL_OPERATIONS = frozenset({"codex_auth_status", "codex_auth_read", "codex_auth_install"})
 
 
@@ -112,8 +128,8 @@ def _peer(writer: asyncio.StreamWriter, expected: str) -> None:
         raise Refused("control_identity_refused")
 
 
-async def _read(reader: asyncio.StreamReader) -> dict:
-    async with asyncio.timeout(_IO_SECONDS):
+async def _read(reader: asyncio.StreamReader, seconds: float | None = None) -> dict:
+    async with asyncio.timeout(_IO_SECONDS if seconds is None else seconds):
         length = struct.unpack("!I", await reader.readexactly(4))[0]
         if not 0 < length <= _MAX_FRAME:
             raise Refused("invalid_control_frame")
@@ -145,6 +161,94 @@ async def _write(writer: asyncio.StreamWriter, data: dict) -> None:
         await writer.drain()
 
 
+def _reply_timeout(command: dict) -> float:
+    """How long the runner side waits for a reply.
+
+    A launch's reply arrives when the invocation settles, so it is tied to the launch's own
+    ``timeout_s`` plus the owner's settlement allowance, never a fixed short bound. A timeout
+    that is not a plausible launch timeout gets the largest bound, not an unbounded wait. Every
+    other command keeps the short I/O bound.
+    """
+    if command.get("operation") != "launch":
+        return _IO_SECONDS
+    requested = command.get("timeout_s")
+    timeout = _LARGEST_LAUNCH_TIMEOUT_S
+    if (
+        isinstance(requested, (int, float))
+        and not isinstance(requested, bool)
+        and math.isfinite(requested)
+        and 0 < requested <= _LARGEST_LAUNCH_TIMEOUT_S
+    ):
+        timeout = float(requested)
+    return timeout + _SETTLE_ALLOWANCE_S
+
+
+def _failure_class(task: asyncio.Task) -> str | None:
+    """The D14 class of a settled invocation: ``None`` for a clean exit.
+
+    The host never inspects runtime output, so it reports only what it observed: a timeout, a
+    runtime that failed or exited unsuccessfully, a cleanup it could not prove (containment), or
+    a cancellation (Stop or shutdown). A launch that never started (profile or staging refused,
+    the host unhealthy) is not a class: its reply is a bare ``refused``, as before.
+    Provider classes (auth, quota) are not knowable here; the runner treats an unknown class as
+    non-retryable.
+    """
+    if task.cancelled():
+        return "cancelled"
+    error = task.exception()
+    if error is None:
+        return None
+    if isinstance(error, RuntimeTimeout):
+        return "timeout"
+    if isinstance(error, Refused):
+        reason = str(error)
+        if reason in ("domain_cleanup_unproven", "stage_cleanup_failed"):
+            return "containment_failed"
+    return "runtime_failed"
+
+
+_NEVER_STARTED = frozenset(
+    {
+        "host_unavailable",
+        "domain_unavailable",
+        "staging_failed",
+        "domain_task_unavailable",
+        "invocation_already_started",
+    }
+)
+
+
+def _never_started(task: asyncio.Task) -> bool:
+    """Whether the owner refused before any process could have started."""
+    if task.cancelled():
+        return False
+    error = task.exception()
+    return isinstance(error, Refused) and str(error) in _NEVER_STARTED
+
+
+def _usage(domain: object | None) -> dict[str, int] | None:
+    """The runtime's final usage, if the domain reports one in the closed shape; else ``None``.
+
+    Counts only: no key outside ``_USAGE_KEYS``, no bool, negative or oversized value. A report
+    that raises or is malformed is dropped, never forwarded.
+    """
+    report = getattr(domain, "usage", None)
+    if not callable(report):
+        return None
+    try:
+        value = report()
+    except Exception:
+        return None
+    if (
+        type(value) is not dict
+        or not value
+        or not set(value) <= _USAGE_KEYS
+        or any(type(v) is not int or not 0 <= v <= _USAGE_MAX for v in value.values())
+    ):
+        return None
+    return dict(value)
+
+
 def _uuid(value: object) -> UUID:
     if type(value) is not str:
         raise Refused("invalid_control_request")
@@ -157,12 +261,20 @@ def _uuid(value: object) -> UUID:
         raise Refused("invalid_control_request") from None
 
 
+class _Busy(Refused):
+    """No free invocation slot; nothing was started or remembered."""
+
+
 class LocalControl:
     """One in-memory launch/revoke owner, reachable only on IPv4 loopback port0.
 
     Disconnecting does not abandon the invocation: launch runs to bounded owner
-    settlement. Revoke cancels that exact owned task, waits for owner cleanup,
-    and never claims broker token revocation. Unknown/replayed IDs refuse.
+    settlement, and its reply arrives then (``completed`` or ``failed`` with a D14
+    class, plus usage when the domain reports it). Up to ``max_concurrent``
+    invocations run at once. Revoke cancels that exact owned task, waits for owner
+    cleanup, and never claims broker token revocation. A revoke for an id not yet
+    launched tombstones it, so a later launch of that id refuses (a Stop that lands
+    before its launch). Unknown/replayed IDs refuse.
     """
 
     def __init__(
@@ -177,7 +289,15 @@ class LocalControl:
         server_sha256: str,
         broker_origin: str,
         credentials: CredentialVolume | None = None,
+        max_concurrent: int = _DEFAULT_CONCURRENT,
     ) -> None:
+        if (
+            type(max_concurrent) is not int
+            or isinstance(max_concurrent, bool)
+            or not 1 <= max_concurrent <= _MAX_CONCURRENT
+        ):
+            raise Refused("invalid_control_identity")
+        self._max_concurrent = max_concurrent
         self._caller = _pin(caller_sha256)
         self._credentials = credentials
         context, actual_server = _server_context(certificate_pem, private_key_pem, client_ca_pem)
@@ -190,8 +310,9 @@ class LocalControl:
         self._factory = factory
         self._context = context
         self._origin = broker_origin
-        self._active: tuple[UUID, asyncio.Task] | None = None
+        self._active: dict[UUID, asyncio.Task] = {}
         self._seen: set[UUID] = set()
+        self._tombstones: set[UUID] = set()
         self._handlers: set[asyncio.Task] = set()
         self._server: asyncio.Server | None = None
         self._closing = False
@@ -307,31 +428,62 @@ class LocalControl:
             ):
                 raise Refused("invalid_control_request")
             invocation = _uuid(data["invocation_id"])
-            if self._active is None or self._active[0] != invocation:
-                raise Refused("invocation_unavailable")
-            task = self._active[1]
+            task = self._active.get(invocation)
+            if task is None:
+                if invocation in self._tombstones:
+                    return {"status": "revoked"}
+                if invocation in self._seen or len(self._seen) >= _MAX_SEEN:
+                    raise Refused("invocation_unavailable")
+                # Not launched yet (a Stop that outran its launch): remember it, so the launch
+                # that follows refuses instead of starting a session on a dead token.
+                self._seen.add(invocation)
+                self._tombstones.add(invocation)
+                return {"status": "revoked"}
             task.cancel()
             await self._observe(task)
             return {"status": "revoked" if self._owner.healthy else "quarantined"}
         request = self._request(data)
-        if request.invocation_id in self._seen or self._active is not None:
+        if request.invocation_id in self._seen or len(self._seen) >= _MAX_SEEN:
             raise Refused("invocation_unavailable")
+        if len(self._active) >= self._max_concurrent:
+            # Never started and not remembered: the same id may be offered again.
+            raise _Busy("host_busy")
         self._seen.add(request.invocation_id)
+        domains: list[object] = []
+
+        def resolve() -> Domain:
+            domain = self._factory(request.runtime, request.model)
+            domains.append(domain)
+            return domain
+
         # No await between ownership and task publication. Profile resolution is
         # a trusted factory closure, not an import/path supplied in this frame.
-        coroutine = self._owner.run(request, lambda: self._factory(request.runtime, request.model))
+        coroutine = self._owner.run(request, resolve)
         try:
             task = asyncio.create_task(coroutine)
         except BaseException:
             coroutine.close()
             raise Refused("control_unavailable") from None
-        self._active = (request.invocation_id, task)
+        self._active[request.invocation_id] = task
         try:
-            success = await self._observe(task)
-            return {"status": "completed" if success else "refused"}
+            await self._observe(task)
+            return self._reply(task, domains[0] if domains else None)
         finally:
-            if self._active and self._active[1] is task:
-                self._active = None
+            if self._active.get(request.invocation_id) is task:
+                del self._active[request.invocation_id]
+
+    @staticmethod
+    def _reply(task: asyncio.Task, domain: object | None) -> dict:
+        if _never_started(task):
+            return {"status": "refused"}
+        failure = _failure_class(task)
+        reply: dict = {"status": "completed"} if failure is None else {"status": "failed"}
+        if failure is not None:
+            reply["failure_class"] = failure
+        usage = _usage(domain)
+        if usage is not None:
+            reply["usage"] = usage
+        return reply
 
     async def _observe(self, task: asyncio.Task) -> bool:
         while True:
@@ -354,9 +506,12 @@ class LocalControl:
             _peer(writer, self._caller)
             response = await self._command(await _read(reader))
             await _write(writer, response)
-        except Exception:
+        except Exception as error:
             try:
-                await _write(writer, {"status": "refused"})
+                reply = {"status": "refused"}
+                if isinstance(error, _Busy):
+                    reply["reason"] = "host_busy"  # the one refusal a runner may retry
+                await _write(writer, reply)
             except Exception:
                 pass
         finally:
@@ -371,11 +526,14 @@ class LocalControl:
         self._closing = True
         if self._server:
             self._server.close()
-            await self._server.wait_closed()
-        if self._active:
-            task = self._active[1]
+        # Settle every running invocation before waiting on the listener: a connection
+        # stays open until its launch replies, so waiting first would sit out the launch.
+        for task in tuple(self._active.values()):
             task.cancel()
+        for task in tuple(self._active.values()):
             await self._observe(task)
+        if self._server:
+            await self._server.wait_closed()
         if self._handlers:
             await asyncio.gather(*tuple(self._handlers), return_exceptions=True)
 
@@ -387,8 +545,13 @@ async def local_command(
     server_hostname: str,
     server_sha256: str,
     command: dict,
+    reply_timeout_s: float | None = None,
 ) -> dict:
-    """Synthetic/local runner side: CA+hostname AND exact out-of-band leaf pin."""
+    """Synthetic/local runner side: CA+hostname AND exact out-of-band leaf pin.
+
+    A launch's reply arrives when its invocation settles, so the wait for it is tied to the
+    launch's ``timeout_s`` (``_reply_timeout``); every other command keeps the short bound.
+    """
     expected = _pin(server_sha256)
     if not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED:
         raise Refused("invalid_control_identity")
@@ -403,7 +566,9 @@ async def local_command(
     try:
         _peer(writer, expected)
         await _write(writer, command)
-        return await _read(reader)
+        return await _read(
+            reader, _reply_timeout(command) if reply_timeout_s is None else reply_timeout_s
+        )
     finally:
         writer.close()
         try:

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
 
-from .contracts import LaunchRequest, Refused
+from .contracts import LaunchRequest, Refused, RuntimeTimeout
 from .material import InvocationMaterial, StagingCleanupFailed
 
 
@@ -146,10 +146,12 @@ class InvocationOwner:
         cancelled = False
         output: bytes | None = None
         failed = False
+        timed_out = False
         try:
             done, _ = await asyncio.wait({work}, timeout=request.timeout_s)
             if not done:
                 failed = True
+                timed_out = True
             elif work.cancelled():
                 failed = True
             else:
@@ -193,6 +195,8 @@ class InvocationOwner:
             raise Refused("domain_cleanup_unproven")
         if cancelled:
             raise asyncio.CancelledError
+        if timed_out:
+            raise RuntimeTimeout("runtime_failed")
         if failed or output is None:
             raise Refused("runtime_failed")
         return output
