@@ -206,3 +206,31 @@ under a network namespace without external routes. The combined diagnostic
 succeeds; the others refuse. Bun's dry-run still executes root lifecycle commands,
 so those controls are diagnostics, not a full install/UI/native build or final
 component proof. Fresh source-owned complete build conformance remains required.
+
+
+## Selected WebSocket fallback budget
+
+Patch thirteen shares the existing selected session retry budget through a pure
+constant module. Session policy, delay limits, public exports and native off-mode
+retry counters/timing remain unchanged. The pool reserves the final scheduled
+operation for the existing validated HTTP fetch after repeated selected failures.
+
+A definitive HTTP 426 upgrade refusal switches the session to HTTP immediately.
+Retryable handshake refusals (including 429 and 5xx) retain their current typed
+status, body and Retry-After headers; the third failure marks future HTTP fallback
+without issuing another request. The existing policy delay runs before the fourth
+operation uses HTTP. Generic connection failures and unfinished streams likewise
+return their original failed response at the threshold and defer HTTP to the next
+scheduled operation. Later requests in that session remain HTTP. This differs
+from the original six-attempt timing to fit the existing finite selected budget.
+Authorization, redirect and gateway policy refusals never enable fallback. No
+direct or global fetch fallback, retry-budget growth or new destination is added.
+
+Thirteen pool controls position typed handshakes, connection and stream failures,
+sticky HTTP, terminal refusals, cancellation, HTTP successor diagnostics and the
+unchanged off-mode six-attempt threshold. Separate owned real-wire controls couple
+the actual production factory and error parser to the real session policy/clock,
+including preserved retry hints and four-operation terminal outage behavior.
+These source controls do not replace a changed-source compiled CLI, component,
+context, installed native or image proof. Prior twelve-patch artifacts remain
+immutable historical evidence.

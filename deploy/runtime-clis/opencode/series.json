@@ -330,8 +330,34 @@
           "after_sha256": "4a5c3bcb457ab1c2c68f3ef6f7f24d56655ea60704cce95ed632a192b591b8d7"
         }
       ]
+    },
+    {
+      "path": "patches/0013-selected-upgrade-refusal-fallback.patch",
+      "sha256": "dad8b00b3c636d32977e6532581110fadf0772839553de228a174b3783a5d256",
+      "files": [
+        {
+          "path": "packages/opencode/src/plugin/openai/ws-pool.ts",
+          "before_sha256": "a48699fc0eac33a815fe8e56b01a42e0a3e94ed8ca468a5009fa6bace4405153",
+          "after_sha256": "26ecbe35669ed0a0a9483ddc681dd4af20415c8908df15965f6342b8e23a81a0"
+        },
+        {
+          "path": "packages/opencode/src/session/retry.ts",
+          "before_sha256": "09721477cc898403f5df4cfb5404336cea7d05c13ebbbb709f63681ec702efb2",
+          "after_sha256": "af8b73f2ad4bf572c22bf8a2fc7afe377d8b2427cfdaacfde379b6052065294d"
+        },
+        {
+          "path": "packages/opencode/src/util/gateway-retry.ts",
+          "before_sha256": null,
+          "after_sha256": "ba9731c995b07cec2d73b6b0105e519219f86370f2bfefa5f4c87433fdbba436"
+        },
+        {
+          "path": "packages/opencode/test/plugin/openai-selected-fallback.test.ts",
+          "before_sha256": null,
+          "after_sha256": "1891de6f5c4dbc124ab27e726aa04dd87cce9ef35511aa069a8626b4c7ca1821"
+        }
+      ]
     }
   ],
-  "source_tree_sha256": "b04d05fe88c4c0741b25db9b230614b4f13fb26d200ae4017ad1c57dfda95d6d",
+  "source_tree_sha256": "e4149e2ef55e9bdb4c5288821074b52961b208ca3521e020ad8753fd72ef9a7c",
   "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches."
 }

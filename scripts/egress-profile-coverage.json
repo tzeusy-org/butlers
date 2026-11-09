@@ -143,8 +143,11 @@
     "deploy/runtime-clis/opencode/patches/0012-align-existing-workspace-build-metadata.patch": {
       "sha256": "605676dcd90f674520fb42ea02f8db447330046f77c2e734ddeae185ae249bdc"
     },
+    "deploy/runtime-clis/opencode/patches/0013-selected-upgrade-refusal-fallback.patch": {
+      "sha256": "dad8b00b3c636d32977e6532581110fadf0772839553de228a174b3783a5d256"
+    },
     "deploy/runtime-clis/opencode/series.json": {
-      "sha256": "90a57c9860440f6dc366e71cc191457b2206581643eb9ac27270284c387b4d0c"
+      "sha256": "6bb0e966e6d3f628445351f1ac1b49551b13a95306197bf82458ee2abccac191"
     },
     "deploy/runtime-clis/python-artifacts/build-lock.toml": {
       "sha256": "f02fb9ac77ff654765ea1ef97508e0a417b115e9b56e26285721cccae8047bb2"
@@ -6087,7 +6090,7 @@
         "sha256": "d81c22620e1b6bc369a43066a49ad9f6208169995ca0a5c96595957acad0ec44",
         "symbol": "authorizeURL"
       },
-      "source_tree_sha256": "b04d05fe88c4c0741b25db9b230614b4f13fb26d200ae4017ad1c57dfda95d6d",
+      "source_tree_sha256": "e4149e2ef55e9bdb4c5288821074b52961b208ca3521e020ad8753fd72ef9a7c",
       "vendor": "opencode",
       "workloads": [
         "butlers-up",
@@ -6122,7 +6125,7 @@
         "sha256": "368af6ccd1dffce8b81ea4d7ccc8d7c8a60dc96d260b9255d74003342eb74bcf",
         "symbol": "ModelsDev.fetchApi"
       },
-      "source_tree_sha256": "b04d05fe88c4c0741b25db9b230614b4f13fb26d200ae4017ad1c57dfda95d6d",
+      "source_tree_sha256": "e4149e2ef55e9bdb4c5288821074b52961b208ca3521e020ad8753fd72ef9a7c",
       "vendor": "opencode",
       "workloads": [
         "butlers-up",
@@ -6149,7 +6152,7 @@
         "sha256": "7eec49668d2f64db9e61b6a4bfd2872f920a7c7a4160806a1e3be771c660a1e4",
         "symbol": "WebSocket"
       },
-      "source_tree_sha256": "b04d05fe88c4c0741b25db9b230614b4f13fb26d200ae4017ad1c57dfda95d6d",
+      "source_tree_sha256": "e4149e2ef55e9bdb4c5288821074b52961b208ca3521e020ad8753fd72ef9a7c",
       "vendor": "opencode",
       "workloads": [
         "butlers-up",
@@ -6177,7 +6180,7 @@
         "sha256": "a7eba2d328a36a2486b50245ad98ef0daa769d4109c9e50470d8493b0936c4c0",
         "symbol": "loadExternal"
       },
-      "source_tree_sha256": "b04d05fe88c4c0741b25db9b230614b4f13fb26d200ae4017ad1c57dfda95d6d",
+      "source_tree_sha256": "e4149e2ef55e9bdb4c5288821074b52961b208ca3521e020ad8753fd72ef9a7c",
       "vendor": "opencode",
       "workloads": [
         "butlers-up",
@@ -6205,7 +6208,7 @@
         "sha256": "1cf407997171fb2ff7f870a891ac227d23240b201cda86876ed91e075da84f99",
         "symbol": "ConfigV2.Provider"
       },
-      "source_tree_sha256": "b04d05fe88c4c0741b25db9b230614b4f13fb26d200ae4017ad1c57dfda95d6d",
+      "source_tree_sha256": "e4149e2ef55e9bdb4c5288821074b52961b208ca3521e020ad8753fd72ef9a7c",
       "vendor": "opencode",
       "workloads": [
         "butlers-up",
