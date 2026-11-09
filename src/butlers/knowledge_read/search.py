@@ -313,7 +313,7 @@ async def fetch(
     ``not_found``; ``text`` is cut to 16 KiB and the cut is marked ``metadata.truncated``.
     """
     args = Arguments(arguments, {"id"})
-    item_id = args.text("id", max_length=256, required=True)
+    item_id = args.text("id", max_length=256, required=True) or ""
     # D17 precedence: staleness refuses before any id is judged unknown.
     _refuse_stale(context)
     if item_id.startswith("proposal:"):

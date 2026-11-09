@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import asyncpg
 import pytest
@@ -34,6 +35,9 @@ class _Untouchable:
 
     def __getattr__(self, name):
         raise AssertionError(f"the reader touched the connection ({name})")
+
+
+_UNTOUCHABLE: Any = _Untouchable()
 
 
 def _context(**changes) -> ReadContext:
@@ -83,7 +87,7 @@ async def test_search_refuses_a_stale_projection_and_answers_empty_when_all_is_o
     stale = _context(as_of=NOW - timedelta(minutes=16))
     assert (await _code(search, {"query": "x"}, stale))[0] == "projection_stale"
     off = _context(disabled_domains=frozenset(INDEX_DOMAINS))
-    assert await search(_Untouchable(), off, {"query": "x"}) == {"results": []}
+    assert await search(_UNTOUCHABLE, off, {"query": "x"}) == {"results": []}
 
 
 @pytest.mark.parametrize(
@@ -129,7 +133,7 @@ async def test_search_filtered_refuses_out_of_contract_arguments(arguments, argu
 
 async def test_search_filtered_names_requested_disabled_domains_without_reading():
     off = _context(disabled_domains=frozenset({"travel"}))
-    result = await search_filtered(_Untouchable(), off, {"query": "x", "domains": ["travel"]})
+    result = await search_filtered(_UNTOUCHABLE, off, {"query": "x", "domains": ["travel"]})
     assert result == {
         "items": [],
         "next_cursor": None,

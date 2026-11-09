@@ -130,6 +130,11 @@ async def _context(reader, *, sub="github|1", disabled=frozenset()) -> ReadConte
     return context
 
 
+def _as_of(context: ReadContext) -> datetime:
+    assert context.as_of is not None
+    return context.as_of
+
+
 async def _refused(call) -> ReadError:
     with pytest.raises(ReadError) as caught:
         await call
@@ -1170,7 +1175,7 @@ async def test_search_filtered_filters_pages_and_names_degraded_domains(projecte
         assert named["sources_degraded"] == [{"domain": "travel", "reason": "disabled"}]
 
         lagging = await read_context(
-            reader, sub="github|1", cursor_key=KEY, now=context.as_of + timedelta(minutes=6)
+            reader, sub="github|1", cursor_key=KEY, now=_as_of(context) + timedelta(minutes=6)
         )
         late = await search_filtered(reader, lagging, {"query": "Marmorkatze"})
         assert late["items"] and all(i["source"]["as_of"] for i in late["items"])
@@ -1358,7 +1363,7 @@ async def test_describe_reports_switches_freshness_and_the_replicated_digest(
         sub="github|1",
         cursor_key=KEY,
         disabled_domains=frozenset({"finance"}),
-        now=context.as_of + timedelta(minutes=20),
+        now=_as_of(context) + timedelta(minutes=20),
     )
     late = await describe(reader, stale, {})
     assert late["domains"]["finance"] == "disabled"
