@@ -202,6 +202,19 @@ async def test_a_document_over_the_size_bound_is_omitted_not_cut(roster, caplog)
     assert await ButlerGuidance(roster, "finance", limits).load("CLAUDE.md", READER) is None
 
 
+async def test_one_included_file_over_the_bound_only_by_its_notes_is_served(roster):
+    # chronicler's shape: CLAUDE.md is just "@AGENTS.md", and AGENTS.md carries the notes.
+    limits = RosterGuidanceLimits(document_bytes=64)
+    write(roster / "finance" / "CLAUDE.md", "@AGENTS.md")
+    agents = "# Finance\nok\n# Notes to self\n" + "n" * 200 + "\n"  # 230 raw bytes
+    write(roster / "finance" / "AGENTS.md", agents)
+    loaded = await ButlerGuidance(roster, "finance", limits).load("CLAUDE.md", READER)
+    assert loaded is not None and loaded.text == "# Finance\nok\n"
+    # A raw file past the expansion cap is never read whole, notes or not.
+    write(roster / "finance" / "AGENTS.md", agents + "n" * (8 * 64) + "\n")
+    assert await ButlerGuidance(roster, "finance", limits).load("CLAUDE.md", READER) is None
+
+
 async def test_the_bound_is_on_the_served_text_so_session_notes_never_push_a_document_out(roster):
     limits = RosterGuidanceLimits(document_bytes=64)
     write(roster / "finance" / "notes.md", "# Notes to self\n" + "n" * 40 + "\n")

@@ -99,9 +99,12 @@ class _Reader:
         return resolved
 
     def text(self, path: Path) -> str:
+        # A raw file may carry session notes the served bound does not count, so its cap is
+        # the expansion cap; ``served`` bounds what is actually returned.
+        raw_bytes = _EXPANSION * self.limits.document_bytes
         with path.open("rb") as handle:
-            data = handle.read(self.limits.document_bytes + 1)
-        if len(data) > self.limits.document_bytes:
+            data = handle.read(raw_bytes + 1)
+        if len(data) > raw_bytes:
             raise _Refused("size")
         try:
             return data.decode("utf-8")
