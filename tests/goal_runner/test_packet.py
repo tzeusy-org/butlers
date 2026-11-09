@@ -118,6 +118,28 @@ def test_an_empty_recovery_ledger_still_states_that_there_is_nothing_recorded():
     assert "nothing recorded" in section(compose(context(ledger=LedgerSummary())), "ledger")
 
 
+def test_a_summary_lead_is_told_of_pending_replies_by_id_and_where_to_read_them():
+    first, second = str(uuid.uuid4()), str(uuid.uuid4())
+    ledger = LedgerSummary(inbox=(first, second), inbox_pending=2)
+    text = section(compose(context(ledger=ledger)), "ledger")
+    assert "inbox_pending: 2" in text
+    assert f"inbox: {first}" in text and f"inbox: {second}" in text
+    assert "goal__inbox" in text  # the lead pulls them; the packet consumes nothing
+    assert "nothing recorded" not in text
+
+
+def test_more_pending_replies_than_listed_are_still_counted():
+    listed = tuple(str(uuid.uuid4()) for _ in range(2))
+    text = section(compose(context(ledger=LedgerSummary(inbox=listed, inbox_pending=7))), "ledger")
+    assert "inbox_pending: 7" in text
+    assert text.count("inbox: ") == 2
+
+
+def test_no_pending_reply_adds_no_inbox_lines():
+    text = section(compose(context(ledger=LEDGER)), "ledger")
+    assert "inbox" not in text
+
+
 def test_a_child_packet_carries_only_its_brief_grant_and_own_share():
     brief = Brief(
         "Find the receipt",

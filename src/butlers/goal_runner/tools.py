@@ -28,6 +28,7 @@ from butlers.capability_broker.service import Broker
 
 from .context_search import TOOL as CONTEXT_SEARCH
 from .context_search import ContextSearch
+from .packet import PacketComposer
 from .runner import GoalRunner
 
 NAMESPACE = "goal"
@@ -65,7 +66,8 @@ _TOOLS = (
     GoalTool(
         "goal__await",
         (0,),
-        "Read a child's status, typed result and effect statuses.",
+        "Read a child's status, end reason (launch_failed: it never ran), typed result and "
+        "effect statuses.",
         {
             "type": "object",
             "properties": {"child_id": _UUID},
@@ -161,6 +163,9 @@ class GoalTools:
         self.broker = broker
         self.runner = runner
         self.context = context
+        # The packet's refs point at exactly the context tools this endpoint serves.
+        if isinstance(runner.composer, PacketComposer):
+            runner.composer = runner.composer.serving(() if context is None else (CONTEXT_SEARCH,))
         self._handlers: dict[str, Handler] = {
             "goal__delegate": self._delegate,
             "goal__await": self._await,

@@ -40,6 +40,8 @@ _STOPPABLE = ("admitted", "running", "awaiting_approval", "recovering", "settlin
 # Goal states a failed lead or exhausted budget ends (never settling: its lead is done).
 _ACTIVE = ("admitted", "running", "awaiting_approval", "recovering")
 _TERMINAL = ("completed", "partial", "failed", "stopped", "budget_exhausted")
+# Pending inbox ids a summary lead's packet lists; the count covers the rest.
+INBOX_LISTED = 20
 # Effects that may still change: settling waits for them (D11).
 _UNSETTLED = ("requested", "parked", "approved", "dispatched")
 Outcome = Literal["completed", "partial", "failed"]
@@ -908,8 +910,24 @@ class RunnerLedger:
         )
         return [row["id"] for row in rows]
 
-    async def summary(self, goal_id: UUID) -> LedgerSummary:
-        """The effect ledger and returned child results, identifiers only (D14)."""
+    async def summary(self, goal_id: UUID, lead_id: UUID) -> LedgerSummary | None:
+        """What an earlier lead left for lead ``lead_id``, identifiers only (D14).
+
+        ``None`` when no earlier lead of the goal ran (each ended ``launch_failed``:
+        the host had no room for it), so the lead starts as a first lead. Pending
+        inbox replies are stated by id and count, never consumed: the lead reads
+        them through ``goal.inbox``, which joins their labels.
+        """
+        ran = await self.connection.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM switchboard.invocations WHERE goal_id = $1 "
+            "AND depth = 0 AND id <> $2 AND end_reason IS DISTINCT FROM 'launch_failed')",
+            goal_id,
+            lead_id,
+        )
+        if not ran:
+            return None
+        inbox = await self.broker.pending_inbox(goal_id, INBOX_LISTED)
+        pending = await self.broker.pending_inbox_count(goal_id) if inbox else 0
         effects = await self.connection.fetch(
             "SELECT id, capability, status FROM switchboard.effects WHERE goal_id = $1 "
             "ORDER BY created_at, id",
@@ -923,6 +941,8 @@ class RunnerLedger:
         return LedgerSummary(
             tuple((str(e["id"]), e["capability"], e["status"]) for e in effects),
             tuple((str(c["id"]), c["status"]) for c in children),
+            tuple(str(row["id"]) for row in inbox),
+            pending,
         )
 
     async def launch_facts(self, goal_id: UUID, invocation_id: UUID) -> LaunchFacts:
