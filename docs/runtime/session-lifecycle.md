@@ -48,6 +48,7 @@ from it. Counts and sizes only, never prompts, messages, tool arguments or resul
 
 | Key | Meaning |
 | --- | --- |
+| `prompt_context_ms`, `memory_context_ms`, `blind_spot_ms` | end of each pre-row composition step, in order: system prompt plus situational, timezone and routing context; memory recall; blind-spot preamble. The gaps between them are the step costs. |
 | `row_created_ms` | session row inserted (before it: prompt and context composition) |
 | `invoke_start_ms` | runtime adapter about to be invoked (setup done) |
 | `first_mcp_request_ms` | the spawned CLI's first request to the butler MCP endpoint (spawn plus CLI startup, as seen by the daemon) |

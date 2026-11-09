@@ -5,6 +5,9 @@ small in-process clock per runtime session and records millisecond offsets from 
 spawner's origin (the start of ``Spawner._run``) for the stages the daemon can
 observe itself:
 
+``prompt_context_ms`` / ``memory_context_ms`` / ``blind_spot_ms``
+    the pre-runtime composition steps in order: system prompt plus situational,
+    timezone and routing context; memory recall; the blind-spot preamble.
 ``row_created_ms``
     session row inserted (everything before it is prompt/context composition).
 ``invoke_start_ms``
@@ -83,6 +86,19 @@ def mark(session_id: str, stage: str, *, overwrite: bool = False) -> None:
         clock = _clocks.get(session_id)
         if clock is not None and (overwrite or stage not in clock.stages):
             clock.stages[stage] = clock.offset_ms()
+
+
+def mark_at(session_id: str, stage: str, at: float) -> None:
+    """Record ``stage`` for a ``time.monotonic`` reading ``at`` taken earlier.
+
+    The clock only begins once the session row exists, so the stages before it are
+    read from the same monotonic clock as the origin and replayed here. First mark
+    wins; no-op for an unknown session.
+    """
+    with _lock:
+        clock = _clocks.get(session_id)
+        if clock is not None and stage not in clock.stages:
+            clock.stages[stage] = max(0, int((at - clock.origin) * 1000))
 
 
 def mark_tool_done(session_id: str) -> None:

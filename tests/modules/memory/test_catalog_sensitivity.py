@@ -92,6 +92,61 @@ class TestSearchCatalogEmbeddingHandoff:
         assert limit == 10
 
 
+class TestCatalogVisibilityRunsLazily:
+    """The per-row visibility function must not run over every candidate (bu-dhloi1.190).
+
+    It costs ~0.5 ms a row; evaluated in the scan's WHERE it made each context fetch
+    take ~4 s on dev. It may only run on rows already ranked, until the limit is met.
+    """
+
+    @staticmethod
+    async def _sql(mode: str) -> str:
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[])
+        engine = MagicMock()
+        engine.embed.return_value = [0.5]
+
+        await catalog_search.search_catalog(
+            pool,
+            "prompt",
+            engine,
+            mode=mode,
+            read_policy=catalog_search.resolve_catalog_read_policy("normal"),
+        )
+        return pool.fetch.await_args.args[0]
+
+    @pytest.mark.parametrize("mode", ["semantic", "keyword"])
+    async def test_visibility_function_is_applied_after_ranking_not_in_the_scan(
+        self, mode: str
+    ) -> None:
+        sql = await self._sql(mode)
+        ranked, visible = sql.split("visible AS MATERIALIZED")
+
+        assert "ranked AS MATERIALIZED" in ranked
+        assert "ORDER BY" in ranked
+        assert "chronicler_catalog_row_visible" not in ranked
+        assert "public.chronicler_catalog_row_visible(memory_catalog.id)" in visible
+        assert visible.index("chronicler_catalog_row_visible") < visible.index("LIMIT $")
+        assert sql.count("chronicler_catalog_row_visible") == 1
+
+    @pytest.mark.parametrize("mode", ["semantic", "keyword"])
+    async def test_cheap_filters_stay_in_the_ranking_scan(self, mode: str) -> None:
+        sql = await self._sql(mode)
+        ranked = sql.split("visible AS MATERIALIZED")[0]
+
+        for predicate in ("tenant_id = $2", "invalid_at IS NULL", "sensitivity"):
+            assert predicate in ranked
+
+    async def test_results_keep_the_ranked_order_and_score_columns(self) -> None:
+        semantic = await self._sql("semantic")
+        keyword = await self._sql("keyword")
+
+        assert "ORDER BY visible.distance ASC" in semantic
+        assert "1 - visible.distance AS similarity" in semantic
+        assert "ORDER BY visible.rank DESC" in keyword
+        assert "visible.rank AS rank" in keyword
+
+
 # ---------------------------------------------------------------------------
 # Integration tests — require Docker + Postgres
 # ---------------------------------------------------------------------------
