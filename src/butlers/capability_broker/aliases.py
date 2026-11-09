@@ -26,13 +26,19 @@ keeps the id it named: a merge tool must keep naming its source, and a grant on
 the source must not reach what the survivor already held.
 
 The call and the terms resolve in separate statements, so a merge can commit
-between them. A match-only kind therefore compares the raw ids beside the
-survivors on both sides: a term holds a call it would have held before any
-aliasing, however the chain moved between the reads. Two cases still release, as
-raw ids would: a call on X against a term on Y when X merges into Y between the
-reads, and, with X already merged into Y, a call on Y against a term on X when Y
-merges into Z between the reads. The second matches no serial order of the reads
-and the merge; closing it needs both reads in one statement.
+between them. A match-only kind therefore keeps every id each side walked, not
+only the end: the call's own id and its chain, and each term id with its chain
+(``lineage``, answered by the same read as the survivor). A chain only grows by
+appending at its end, so whichever read comes first holds an id the later read's
+chain still contains, and a term holds a call it would have held in either serial
+order of the reads and the merge. That includes a call on Y against a term on X
+(X already merged into Y) when Y merges into Z between the reads. A resolver with
+no ``lineage`` answers its end alone.
+
+``alias_free_params`` stays: it is the declared way to name a resource param whose
+ids have no alias at all, which owner law narrows on without a resolver. No
+inventory tool declares one today; removing it is a catalog-contract change, not
+a cleanup of this seam.
 
 The seam is a trusted constructor input, like ``Domains``. Nothing constructs
 the broker until the M6 switch.
@@ -66,24 +72,41 @@ async def _canonical(
     kind: str,
     values: set[str],
     deadline: float,
-) -> dict[str, str]:
-    """value -> canonical id, only for values whose answer is a fixed point."""
+) -> dict[str, tuple[str, ...]]:
+    """value -> the ids it walked to its canonical id, last; only for fixed-point answers.
+
+    A resolver that can say where it walked (``lineage``) answers the first read with the
+    whole chain; any other answers with the canonical id alone.
+    """
     if resolver is None or not values:
         return {}
     try:
         async with asyncio.timeout(deadline):
-            first = await resolver.resolve(domain, kind, frozenset(values))
+            lineage = getattr(resolver, "lineage", None)
+            if lineage is None:
+                first = await resolver.resolve(domain, kind, frozenset(values))
+                chains = {
+                    value: (canon,) for value in values if type(canon := first.get(value)) is str
+                }
+            else:
+                chains = {
+                    value: tuple(chain)
+                    for value, chain in (await lineage(domain, kind, frozenset(values))).items()
+                    if value in values
+                }
             answers = {
-                value: canonical
-                for value in values
-                if type(canonical := first.get(value)) is str and canonical
+                value: chain
+                for value, chain in chains.items()
+                if chain and all(type(item) is str and item for item in chain)
             }
-            fixed = await resolver.resolve(domain, kind, frozenset(answers.values()))
+            fixed = await resolver.resolve(
+                domain, kind, frozenset(chain[-1] for chain in answers.values())
+            )
     except asyncio.CancelledError:
         raise
     except Exception:
         return {}
-    return {value: canon for value, canon in answers.items() if fixed.get(canon) == canon}
+    return {value: chain for value, chain in answers.items() if fixed.get(chain[-1]) == chain[-1]}
 
 
 def _values(value: Any) -> list[str] | None:
@@ -127,9 +150,10 @@ async def resolve_args(
         canonical = answers.get(declared[name], {})
         if values is None or any(value not in canonical for value in values):
             continue
-        mapped = [canonical[value] for value in values]
+        mapped = [canonical[value][-1] for value in values]
         if declared[name] in _MATCH_ONLY:
-            matched[name] = [*mapped, *values]
+            walked = [item for value in values for item in canonical[value]]
+            matched[name] = [*walked, *values]
         else:
             matched[name] = pinned[name] = mapped[0] if type(args[name]) is str else mapped
         resolved.add(name)
@@ -169,8 +193,16 @@ async def canonical_policy(
                 continue
             canonical = answers.get(declared[name], {})
             if all(item in canonical for item in ids):
-                mapped = frozenset(canonical_resource(canonical[item]) for item in ids)
-                kept = ids if declared[name] in _MATCH_ONLY else frozenset()
+                match_only = declared[name] in _MATCH_ONLY
+                # A match-only term keeps every id it walked, not only its end, so a
+                # chain that grows between this read and the call's still meets the call.
+                walked = (
+                    [step for item in ids for step in canonical[item]]
+                    if match_only
+                    else [canonical[item][-1] for item in ids]
+                )
+                mapped = frozenset(canonical_resource(step) for step in walked)
+                kept = ids if match_only else frozenset()
                 narrowed.append((name, kept | frozenset(m for m in mapped if m is not None)))
         return replace(term, resources=tuple(narrowed))
 
@@ -232,6 +264,15 @@ class EntityAliases:
         self._pool = pool
 
     async def resolve(self, domain: str, kind: str, values: Collection[str]) -> Mapping[str, str]:
+        return {value: chain[-1] for value, chain in (await self._walk(kind, values)).items()}
+
+    async def lineage(
+        self, domain: str, kind: str, values: Collection[str]
+    ) -> Mapping[str, tuple[str, ...]]:
+        """Each value's walk: itself, every merged-into step, then its live identity."""
+        return await self._walk(kind, values)
+
+    async def _walk(self, kind: str, values: Collection[str]) -> dict[str, tuple[str, ...]]:
         if kind != self.KIND:
             return {}
         parsed: dict[str, uuid.UUID] = {}
@@ -253,12 +294,12 @@ class EntityAliases:
                 JOIN public.entities s ON s.id::text = walk.next
                 WHERE NOT s.id = ANY(walk.visited)
             )
-            SELECT origin, id FROM walk WHERE next IS NULL
+            SELECT origin, visited FROM walk WHERE next IS NULL
             """,
             list(set(parsed.values())),
         )
-        survivors = {row["origin"]: str(row["id"]) for row in rows}
-        return {value: survivors[item] for value, item in parsed.items() if item in survivors}
+        walks = {row["origin"]: tuple(str(step) for step in row["visited"]) for row in rows}
+        return {value: walks[item] for value, item in parsed.items() if item in walks}
 
 
 class AliasesByKind:
@@ -270,3 +311,15 @@ class AliasesByKind:
     async def resolve(self, domain: str, kind: str, values: Collection[str]) -> Mapping[str, str]:
         resolver = self._resolvers.get(kind)
         return {} if resolver is None else await resolver.resolve(domain, kind, values)
+
+    async def lineage(
+        self, domain: str, kind: str, values: Collection[str]
+    ) -> Mapping[str, tuple[str, ...]]:
+        """Where the kind's resolver walked; a resolver with no lineage answers its end alone."""
+        resolver = self._resolvers.get(kind)
+        if resolver is None:
+            return {}
+        walk = getattr(resolver, "lineage", None)
+        if walk is not None:
+            return await walk(domain, kind, values)
+        return {v: (c,) for v, c in (await resolver.resolve(domain, kind, values)).items()}
