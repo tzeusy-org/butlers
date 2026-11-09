@@ -228,29 +228,28 @@ class ArtifactTests(unittest.TestCase):
             "extra",
             "duplicate",
         ]:
-            with self.subTest(change=change):
-                value = json.loads(original)
-                if change == "schema":
-                    value["schema"] = "foreign"
-                elif change == "target":
-                    value["target"]["python"] = "3.12.14"
-                elif change == "versions":
-                    value["versions"]["npm"] = "11.0.0"
-                elif change == "components":
-                    del value["components"]["claude"]
-                elif change == "digest":
-                    value["components"]["claude"]["tree_sha256"] = "G" * 64
-                elif change == "provenance":
-                    value["provenance"] = {}
-                elif change == "extra":
-                    value["foreign"] = True
-                data = json.dumps(value).encode()
-                if change == "duplicate":
-                    data = data[:-1] + b',"schema":"butlers.runtime-inputs/v1"}'
-                self.inputs.write_bytes(data)
-                with self.assertRaises(ValueError):
-                    self.close()
-                self.assertFalse(self.context.exists())
+            value = json.loads(original)
+            if change == "schema":
+                value["schema"] = "foreign"
+            elif change == "target":
+                value["target"]["python"] = "3.12.14"
+            elif change == "versions":
+                value["versions"]["npm"] = "11.0.0"
+            elif change == "components":
+                del value["components"]["claude"]
+            elif change == "digest":
+                value["components"]["claude"]["tree_sha256"] = "G" * 64
+            elif change == "provenance":
+                value["provenance"] = {}
+            elif change == "extra":
+                value["foreign"] = True
+            data = json.dumps(value).encode()
+            if change == "duplicate":
+                data = data[:-1] + b',"schema":"butlers.runtime-inputs/v1"}'
+            self.inputs.write_bytes(data)
+            with self.assertRaises(ValueError, msg=change):
+                self.close()
+            self.assertFalse(self.context.exists())
         self.inputs.write_bytes(original)
         self.close()  # Genuine complete-shaped healthy companion.
 
@@ -275,43 +274,41 @@ class ArtifactTests(unittest.TestCase):
         member = self.components["claude"] / "unsafe"
         file(self.base / "outside", b"owned outside control")
         for change in ["absolute", "escape", "dangling", "cycle", "fifo", "setid", "unsafe-name"]:
-            with self.subTest(change=change):
-                if change == "absolute":
-                    member.symlink_to(self.base / "outside")
-                elif change == "escape":
-                    member.symlink_to("../../outside")
-                elif change == "dangling":
-                    member.symlink_to("missing")
-                elif change == "cycle":
-                    member.symlink_to("unsafe")
-                elif change == "fifo":
-                    os.mkfifo(member)
-                elif change == "setid":
-                    file(member, mode=0o4755)
-                else:
-                    member = member.with_name("bad\\name")
-                    file(member)
-                try:
-                    with self.assertRaises(ValueError):
-                        self.close()
-                    self.assertFalse(self.context.exists())
-                finally:
-                    member.unlink()
+            if change == "absolute":
+                member.symlink_to(self.base / "outside")
+            elif change == "escape":
+                member.symlink_to("../../outside")
+            elif change == "dangling":
+                member.symlink_to("missing")
+            elif change == "cycle":
+                member.symlink_to("unsafe")
+            elif change == "fifo":
+                os.mkfifo(member)
+            elif change == "setid":
+                file(member, mode=0o4755)
+            else:
+                member = member.with_name("bad\\name")
+                file(member)
+            try:
+                with self.assertRaises(ValueError, msg=change):
+                    self.close()
+                self.assertFalse(self.context.exists())
+            finally:
+                member.unlink()
         self.assertEqual((self.base / "outside").read_bytes(), b"owned outside control")
         self.close()
 
     def test_missing_or_nonexecutable_original_entrypoint_is_not_a_complete_component(self):
         entry = self.components["codex"] / "bin/codex.js"
         for change in ["missing", "not-executable"]:
-            with self.subTest(change=change):
-                if change == "missing":
-                    entry.unlink()
-                else:
-                    file(entry, mode=0o644)
-                self.review()  # Digest is valid: failure must be actual required layout.
-                with self.assertRaises(ValueError):
-                    self.close()
-                self.assertFalse(self.context.exists())
+            if change == "missing":
+                entry.unlink()
+            else:
+                file(entry, mode=0o644)
+            self.review()  # Digest is valid: failure must be actual required layout.
+            with self.assertRaises(ValueError, msg=change):
+                self.close()
+            self.assertFalse(self.context.exists())
         file(entry, mode=0o755)
         self.review()
         self.close()
@@ -332,54 +329,53 @@ class ArtifactTests(unittest.TestCase):
             "component-root-mode",
             "context-mode",
         ]:
-            with self.subTest(change=change):
-                old_provenance, old_inputs = provenance.read_bytes(), inputs.read_bytes()
-                extra = self.context / "foreign"
-                changed = self.context / "components/claude/assets/complete-data"
-                directory = self.context / "components/claude/assets"
-                old_member = changed.read_bytes()
-                if change == "provenance":
-                    value = json.loads(old_provenance)
-                    value["foreign"] = True
-                    provenance.write_text(json.dumps(value))
-                elif change == "manifest-bytes":
-                    inputs.write_bytes(old_inputs + b"\n")
-                elif change == "extra-component":
-                    extra = self.context / "components/foreign"
-                    extra.mkdir()
-                elif change == "extra-root":
-                    file(extra)
-                elif change == "metadata-link":
+            old_provenance, old_inputs = provenance.read_bytes(), inputs.read_bytes()
+            extra = self.context / "foreign"
+            changed = self.context / "components/claude/assets/complete-data"
+            directory = self.context / "components/claude/assets"
+            old_member = changed.read_bytes()
+            if change == "provenance":
+                value = json.loads(old_provenance)
+                value["foreign"] = True
+                provenance.write_text(json.dumps(value))
+            elif change == "manifest-bytes":
+                inputs.write_bytes(old_inputs + b"\n")
+            elif change == "extra-component":
+                extra = self.context / "components/foreign"
+                extra.mkdir()
+            elif change == "extra-root":
+                file(extra)
+            elif change == "metadata-link":
+                inputs.unlink()
+                inputs.symlink_to(self.inputs)
+            elif change == "directory-mode":
+                directory.chmod(0o700)
+            elif change == "metadata-mode":
+                inputs.chmod(0o600)
+            elif change == "component-root-mode":
+                (self.context / "components/claude").chmod(0o700)
+            elif change == "context-mode":
+                self.context.chmod(0o700)
+            else:
+                changed.write_bytes(b"different")
+            try:
+                with self.assertRaises((ValueError, OSError), msg=change):
+                    runtime.install(self.inputs, self.context, self.prefix)
+                self.assertEqual([], snapshot(self.prefix))
+            finally:
+                if inputs.is_symlink():
                     inputs.unlink()
-                    inputs.symlink_to(self.inputs)
-                elif change == "directory-mode":
-                    directory.chmod(0o700)
-                elif change == "metadata-mode":
-                    inputs.chmod(0o600)
-                elif change == "component-root-mode":
-                    (self.context / "components/claude").chmod(0o700)
-                elif change == "context-mode":
-                    self.context.chmod(0o700)
-                else:
-                    changed.write_bytes(b"different")
-                try:
-                    with self.assertRaises((ValueError, OSError)):
-                        runtime.install(self.inputs, self.context, self.prefix)
-                    self.assertEqual([], snapshot(self.prefix))
-                finally:
-                    if inputs.is_symlink():
-                        inputs.unlink()
-                    inputs.write_bytes(old_inputs)
-                    inputs.chmod(0o644)
-                    provenance.write_bytes(old_provenance)
-                    self.context.chmod(0o755)
-                    (self.context / "components/claude").chmod(0o755)
-                    directory.chmod(0o755)
-                    changed.write_bytes(old_member)
-                    if extra.is_dir():
-                        extra.rmdir()
-                    elif extra.exists():
-                        extra.unlink()
+                inputs.write_bytes(old_inputs)
+                inputs.chmod(0o644)
+                provenance.write_bytes(old_provenance)
+                self.context.chmod(0o755)
+                (self.context / "components/claude").chmod(0o755)
+                directory.chmod(0o755)
+                changed.write_bytes(old_member)
+                if extra.is_dir():
+                    extra.rmdir()
+                elif extra.exists():
+                    extra.unlink()
         runtime.install(self.inputs, self.context, self.prefix)
 
     def test_destination_links_and_late_file_conflicts_leave_prefix_unchanged(self):
