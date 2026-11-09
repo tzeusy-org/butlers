@@ -217,6 +217,19 @@ _NO_CONNECTOR = {_CONNECTOR: _NONE}
 # LEGACY_FLEET_DML (the bu-yfd9v1 class), which is why the apply step must converge.
 _REPLAY_WIDENED: dict[str, RelationGrant] = {
     "ambient_projections": _replay_widened(_SELECT, {}, "migration: read-only to runtime roles"),
+    **{
+        name: _replay_widened(
+            _NONE,
+            {_SWITCHBOARD: privileges},
+            "core_323: condition store, Switchboard evaluator only; RLS fences a replay",
+        )
+        for name, privileges in (
+            ("condition_cursors", frozenset({"SELECT", "INSERT", "UPDATE"})),
+            ("condition_fire_intents", frozenset({"SELECT", "INSERT", "UPDATE"})),
+            ("condition_instances", frozenset({"SELECT", "INSERT", "UPDATE"})),
+            ("condition_receipts", frozenset({"SELECT", "INSERT"})),
+        )
+    },
     "dashboard_conversation_turn_sessions": _replay_widened(
         _NONE, {_CONCIERGE: _DML}, "migration: dashboard conversation store, concierge only"
     ),

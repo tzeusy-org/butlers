@@ -59,6 +59,11 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   `butler_<schema>_rw` to its own `owning_schema` rows; triggers enforce immutability,
   generation fences and append-only history for every role. See
   [Owner delivery](../api_and_protocols/owner-delivery.md).
+- **`public.condition_*`** -- Goal-condition store (core_323, dark): instances, per-source
+  cursors, append-only receipts and unique fire intents for `butlers.conditions`. In `public`
+  because RFC 0038 S3 makes condition instances shared coordination projections. Only
+  `butler_switchboard_rw` is granted anything, and non-FORCE RLS keeps every other role out even
+  after an init-db replay re-grants public DML. See [Goal conditions](conditions.md).
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
   [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
 
