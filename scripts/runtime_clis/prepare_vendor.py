@@ -100,6 +100,9 @@ def prepare(series_path: Path, archive: Path, destination: Path) -> dict:
                 cwd=root,
                 check=True,
                 stdout=subprocess.DEVNULL,
+                # Bind newly added source modes independently of the caller's
+                # shell. Existing archive modes are preserved by patch.
+                umask=0o027,
             )
             for item in patch["files"]:
                 if digest(checked_path(root, item["path"])) != item["after_sha256"]:

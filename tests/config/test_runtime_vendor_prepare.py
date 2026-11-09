@@ -123,3 +123,35 @@ def test_unsafe_monorepo_subdirectory_refuses_without_output(package, subdirecto
     with pytest.raises(ValueError, match="unsafe source subdirectory"):
         prepare(manifest, archive, output)
     assert not output.exists()
+
+
+def test_new_source_modes_do_not_depend_on_callers_umask(package, tmp_path):
+    import os
+
+    manifest, archive, _, series = package
+    patch = manifest.parent / "change.patch"
+    patch.write_bytes(
+        patch.read_bytes() + b"--- /dev/null\n+++ b/added.txt\n@@ -0,0 +1 @@\n+new source\n"
+    )
+    series["patches"][0]["sha256"] = sha(patch.read_bytes())
+    series["patches"][0]["files"].append(
+        {"path": "added.txt", "before_sha256": None, "after_sha256": sha(b"new source\n")}
+    )
+    entries = [
+        ["added.txt", "file", 0o640, sha(b"new source\n")],
+        ["source.txt", "file", 0o644, sha(b"after\n")],
+    ]
+    series["source_tree_sha256"] = sha(
+        b"".join(json.dumps(entry, separators=(",", ":")).encode() + b"\n" for entry in entries)
+    )
+    manifest.write_text(json.dumps(series))
+    receipts = []
+    for mask in [0o022, 0o077]:
+        old = os.umask(mask)
+        try:
+            output = tmp_path / f"output-{mask}"
+            receipts.append(prepare(manifest, archive, output))
+        finally:
+            os.umask(old)
+        assert (output / "added.txt").stat().st_mode & 0o777 == 0o640
+    assert receipts[0] == receipts[1]
