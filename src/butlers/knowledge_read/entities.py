@@ -16,6 +16,7 @@ from butlers.knowledge_read.core import (
     ReadContext,
     ReadError,
     fields,
+    fit,
     in_snapshot,
     published,
     record_uri,
@@ -25,6 +26,8 @@ from butlers.knowledge_read.core import (
 LOOKUP_LIMIT = 10
 PROFILE_FACT_LIMIT = 200
 TRIGRAM_THRESHOLD = 0.3
+# Candidates ranked in SQL before merge resolution; the type filter applies before this cut.
+CANDIDATE_LIMIT = 100
 _MERGE_HOPS = 8
 _MATCH_RANK = {"exact": 0, "alias": 1, "trigram": 2}
 
@@ -94,6 +97,7 @@ async def entity_lookup(
                        ARRAY(SELECT jsonb_array_elements_text(
                            COALESCE(fields->'aliases', '[]'::jsonb))) AS aliases
                 FROM {view}
+                WHERE $3::text IS NULL OR lower(fields->>'entity_type') = lower($3)
             ), scored AS (
                 SELECT source_id, fields,
                        CASE WHEN lower(name) = lower($1) THEN 'exact'
@@ -109,10 +113,12 @@ async def entity_lookup(
             WHERE match <> 'trigram' OR similarity >= $2
             ORDER BY CASE match WHEN 'exact' THEN 0 WHEN 'alias' THEN 1 ELSE 2 END,
                      similarity DESC, source_id
-            LIMIT 100
+            LIMIT $4
             """,
             name,
             TRIGRAM_THRESHOLD,
+            wanted_type,
+            CANDIDATE_LIMIT,
         )
         survivors = await _survivors(
             conn, view, {r["source_id"]: fields(r["fields"]) for r in rows}
@@ -226,21 +232,24 @@ async def entity_profile(
             facts.sort(key=lambda f: f["valid_at"] or "", reverse=True)
             complete = len(facts) <= PROFILE_FACT_LIMIT
             facts = facts[:PROFILE_FACT_LIMIT]
-        if "edges" not in sections:
-            edges = None
-        else:
-            edges = await _edge_counts(target)
-        return {
-            "entity": _entity(context, entities, survivor),
-            "facts": facts,
-            "edges": edges,
-            "coverage": {
-                "sections": list(sections),
-                "facts_complete": complete,
-                "facts_limit": PROFILE_FACT_LIMIT,
-                "domains_omitted": disabled_domains,
-            },
-        }
+        edges = await _edge_counts(target) if "edges" in sections else None
+        entity = _entity(context, entities, survivor)
+
+        def build(kept: list, cut: bool) -> dict[str, Any]:
+            return {
+                "entity": entity,
+                "facts": kept,
+                "edges": edges,
+                "coverage": {
+                    "sections": list(sections),
+                    "facts_complete": complete and not cut,
+                    "facts_limit": PROFILE_FACT_LIMIT,
+                    "domains_omitted": disabled_domains,
+                },
+            }
+
+        # The 256 KiB cap (D10): a cut keeps the newest facts and marks the response.
+        return fit(facts, build)
 
     async def _edge_counts(target: str) -> dict[str, int]:
         known = await conn.fetchval(

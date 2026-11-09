@@ -188,12 +188,28 @@ async def test_entity_profile_serves_facts_and_edges_and_drops_a_retraction(
             "'active') RETURNING id",
             uuid.UUID(person),
         )
+        # Facts that name Avery only as their object belong to Avery's profile too.
+        befriended = await primary.fetchval(
+            "INSERT INTO relationship.entity_facts(subject,predicate,object,object_kind,src) "
+            "VALUES ($1,'friend-of',$2,'entity','reader-test') RETURNING id",
+            uuid.UUID(other),
+            person,
+        )
+        gift = await primary.fetchval(
+            "INSERT INTO relationship.facts(subject,predicate,content,entity_id,"
+            "object_entity_id,sensitivity,validity,valid_at) VALUES ('Blake','gift',"
+            "'Blake gave Avery a book',$1,$2,'normal','active',now()) RETURNING id",
+            uuid.UUID(other),
+            uuid.UUID(person),
+        )
         created += [
             ("relationship.entity_facts", works_at),
             ("relationship.entity_facts", knows),
             ("relationship.entity_facts", email),
+            ("relationship.entity_facts", befriended),
             ("relationship.facts", interaction),
             ("relationship.facts", contact),
+            ("relationship.facts", gift),
         ]
         graph_facts = []
         async with primary.acquire() as conn, conn.transaction():
@@ -233,7 +249,15 @@ async def test_entity_profile_serves_facts_and_edges_and_drops_a_retraction(
         assert profile["entity"]["entity_id"] == person
         assert profile["entity"]["name"] == "Profile Subject Avery"
         by_id = {f["id"]: f for f in profile["facts"]}
-        assert set(by_id) == {str(works_at), str(knows), str(interaction)}
+        assert set(by_id) == {
+            str(works_at),
+            str(knows),
+            str(interaction),
+            str(befriended),
+            str(gift),
+        }
+        assert by_id[str(befriended)]["subject_entity_id"] == other
+        assert by_id[str(gift)]["object_entity_id"] == person
         assert by_id[str(works_at)]["predicate"] == "works-at"
         assert by_id[str(works_at)]["object_entity_id"] == other
         assert by_id[str(interaction)]["content"] == "Lunch with Avery"
@@ -257,14 +281,19 @@ async def test_entity_profile_serves_facts_and_edges_and_drops_a_retraction(
         dropped = await entity_profile(reader, knowledge_off, {"entity_id": person})
         assert dropped["edges"] == {"known": 0, "withheld": 0}
         assert dropped["coverage"]["domains_omitted"] == ["knowledge"]
-        assert len(dropped["facts"]) == 3
+        assert len(dropped["facts"]) == 5
 
         await primary.execute(
             "UPDATE relationship.entity_facts SET validity='retracted' WHERE id=$1", works_at
         )
         _barrier(projected)
         after = await entity_profile(reader, await _context(reader), {"entity_id": person})
-        assert {f["id"] for f in after["facts"]} == {str(knows), str(interaction)}
+        assert {f["id"] for f in after["facts"]} == {
+            str(knows),
+            str(interaction),
+            str(befriended),
+            str(gift),
+        }
 
         missing = await _refused(entity_profile(reader, context, {"entity_id": str(uuid.uuid4())}))
         assert missing.code == "not_found"
@@ -353,6 +382,111 @@ async def test_entity_lookup_matches_resolves_merges_and_follows_flags(projected
         assert long_name.code == "invalid_argument"
     finally:
         for entity in (merged, survivor, healthy, doomed, placeholder):
+            await primary.execute("DELETE FROM public.entities WHERE id=$1", uuid.UUID(entity))
+        _barrier(projected)
+
+
+async def test_entity_profile_fits_the_response_cap(projected, primary, reader):
+    """REQ-public-mcp-surface-012: 200 long facts are cut to 256 KiB and marked, newest kept."""
+    from butlers.knowledge_read.core import MAX_RESPONSE_BYTES
+
+    person = await _entity(primary, "Profile Cap Subject")
+    try:
+        await primary.execute(
+            "INSERT INTO relationship.facts(subject,predicate,content,entity_id,sensitivity,"
+            "validity,valid_at) SELECT 'cap-' || n, 'note', repeat('x', 1400) || n, $1, "
+            "'normal','active', now() - n * interval '1 minute' "
+            "FROM generate_series(1, 200) AS n",
+            uuid.UUID(person),
+        )
+        _barrier(projected)
+        profile = await entity_profile(reader, await _context(reader), {"entity_id": person})
+        assert len(json.dumps(profile, separators=(",", ":")).encode()) <= MAX_RESPONSE_BYTES
+        assert profile["truncated"] is True
+        assert profile["coverage"]["facts_complete"] is False
+        assert 100 < len(profile["facts"]) < 200
+        # The cut drops the oldest facts: what remains is the newest prefix.
+        kept = [f["content"].lstrip("x") for f in profile["facts"]]
+        assert kept == [str(n) for n in range(1, len(kept) + 1)]
+        small = await entity_profile(
+            reader, await _context(reader), {"entity_id": person, "sections": ["edges"]}
+        )
+        assert "truncated" not in small and small["coverage"]["facts_complete"] is True
+    finally:
+        await primary.execute(
+            "DELETE FROM relationship.facts WHERE entity_id=$1", uuid.UUID(person)
+        )
+        await primary.execute("DELETE FROM public.entities WHERE id=$1", uuid.UUID(person))
+        _barrier(projected)
+
+
+async def test_entity_lookup_drops_merges_into_hidden_survivors_and_types_before_the_cut(
+    projected, primary, reader, monkeypatch
+):
+    """A merge into a deleted or placeholder survivor publishes neither (REQ-...-007)."""
+    from butlers.knowledge_read import entities
+
+    deleted_survivor = await _entity(primary, "Hidden Survivor Ottoline")
+    deleted_merged = await _entity(
+        primary, "Hidden Merged Ottilie", metadata={"merged_into": deleted_survivor}
+    )
+    placeholder_survivor = await _entity(primary, "Hidden Survivor Peregrine")
+    placeholder_merged = await _entity(
+        primary, "Hidden Merged Peregryn", metadata={"merged_into": placeholder_survivor}
+    )
+    # Three organizations match by alias, which outranks the person's trigram match.
+    organizations = [
+        await _entity(
+            primary,
+            f"Typecut Holdings {n}",
+            aliases=["Typecut Corvidae"],
+            entity_type="organization",
+        )
+        for n in range(3)
+    ]
+    person = await _entity(primary, "Typecut Corvidae Fan")
+    hidden = (deleted_survivor, deleted_merged, placeholder_survivor, placeholder_merged)
+    names = (
+        "Hidden Survivor Ottoline",
+        "Hidden Merged Ottilie",
+        "Hidden Survivor Peregrine",
+        "Hidden Merged Peregryn",
+    )
+    try:
+        _barrier(projected)
+        context = await _context(reader)
+        # Positive control: both merged names resolve to their published survivors.
+        for merged_name, survivor in (
+            ("Hidden Merged Ottilie", deleted_survivor),
+            ("Hidden Merged Peregryn", placeholder_survivor),
+        ):
+            found = await entity_lookup(reader, context, {"name": merged_name})
+            assert found["matches"][0]["entity_id"] == survivor
+
+        await primary.execute(
+            "UPDATE public.entities SET metadata=metadata||jsonb_build_object('deleted_at',now()) "
+            "WHERE id=$1",
+            uuid.UUID(deleted_survivor),
+        )
+        await primary.execute(
+            "UPDATE public.entities SET metadata=metadata||jsonb_build_object("
+            "'source_channel','email','source_value','peregrine@example.test'), "
+            "canonical_name='Unknown (email peregrine@example.test)' WHERE id=$1",
+            uuid.UUID(placeholder_survivor),
+        )
+        _barrier(projected)
+        context = await _context(reader)
+        for name in names:
+            result = await entity_lookup(reader, context, {"name": name})
+            assert not set(hidden) & {m["entity_id"] for m in result["matches"]}, name
+
+        # The type filter runs before the candidate cut, so other-type matches cannot crowd out.
+        monkeypatch.setattr(entities, "CANDIDATE_LIMIT", 2)
+        typed = await entity_lookup(reader, context, {"name": "Typecut Corvidae", "type": "person"})
+        assert [m["entity_id"] for m in typed["matches"]] == [person]
+        assert typed["matches"][0]["match"] == "trigram"
+    finally:
+        for entity in (*hidden, *organizations, person):
             await primary.execute("DELETE FROM public.entities WHERE id=$1", uuid.UUID(entity))
         _barrier(projected)
 
