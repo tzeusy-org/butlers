@@ -76,7 +76,13 @@ def _carrier(deployment: dict[str, Any], role: str, release: str) -> str:
 
 
 def _observed(deployment: dict[str, Any]) -> bool:
-    """Return proven quiescence; absent counters mean zero only after observed scale0."""
+    """Return proven quiescence. Kubernetes omits a zero counter, so an absent one reads as 0.
+
+    That holds whatever the desired replicas are: a rollout stuck unready reports replicas,
+    updatedReplicas and unavailableReplicas but no readyReplicas or availableReplicas, and the
+    preflight must still admit a redeploy then. Only a Deployment at scale 0 with every counter
+    zero is quiescent.
+    """
     metadata, spec, status = deployment["metadata"], deployment["spec"], deployment["status"]
     _require(not metadata.get("deletionTimestamp"), "deleting-runtime-deployment")
     generation, observed = metadata["generation"], status["observedGeneration"]
@@ -91,7 +97,7 @@ def _observed(deployment: dict[str, Any]) -> bool:
     _require(type(desired) is int and desired in (0, 1), "invalid-runtime-replicas")
     values = []
     for name in _COUNTERS:
-        value = status.get(name, 0 if desired == 0 else None)
+        value = status.get(name, 0)
         _require(type(value) is int and value >= 0, "invalid-runtime-status")
         values.append(value)
     _require(all(value <= values[0] for value in values[1:]), "inconsistent-runtime-status")
