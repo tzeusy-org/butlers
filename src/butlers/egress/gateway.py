@@ -523,6 +523,8 @@ async def handle_request(
                         await _write(upstream, origin.send(h11.Data(data=event.data)))
 
                 response = await _upload_and_response(origin, origin_reader, upload())
+            if response is None:
+                raise Refused("invalid_websocket_handshake", 502)
             if 300 <= response.status_code <= 399:
                 raise Refused("redirect_refused")
             nominated = {
