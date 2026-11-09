@@ -237,7 +237,7 @@ check-duplicate-names:
 # GUARDS_BASE is the fork point the frontend guard diffs against.
 GUARDS_BASE ?= origin/main
 export GUARDS_BASE
-check-guards: check-host-policy-selectors check-lock lint check-format check-for-update-joins check-em-dashes check-requirement-trace check-requirement-citations check-duplicate-names check-session-links
+check-guards: check-egress-profile-coverage check-host-policy-selectors check-lock lint check-format check-for-update-joins check-em-dashes check-requirement-trace check-requirement-citations check-duplicate-names check-session-links
 	python3 scripts/check_owner_emails.py
 	python3 scripts/frontend_guards.py --base "$${GUARDS_BASE}"
 	@if command -v openspec >/dev/null 2>&1; then \
@@ -245,6 +245,10 @@ check-guards: check-host-policy-selectors check-lock lint check-format check-for
 	else \
 		echo "check-guards: openspec not on PATH, skipping check-openspec-strict (CI runs it)"; \
 	fi
+
+.PHONY: check-egress-profile-coverage
+check-egress-profile-coverage:
+	python3 scripts/check_egress_profile_coverage.py
 
 .PHONY: check-host-policy-selectors
 check-host-policy-selectors:

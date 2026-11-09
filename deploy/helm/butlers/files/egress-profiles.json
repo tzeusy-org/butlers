@@ -19,7 +19,36 @@
       "summary": "Nightly pg_dump to the backups volume"
     },
     "butlers-control": {
-      "dynamic": [],
+      "dynamic": [
+        {
+          "reason": "Supported API-base and MCP configuration are named in the source inventory; opaque native auth/tool destinations remain unproven and gain no route",
+          "source": "local:claude"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:codex"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:gemini"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:google-auth-library"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:js-genai"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:opencode"
+        },
+        {
+          "reason": "CLI base override: only already-declared exact origins may pass; no destination is granted by this metadata",
+          "source": "ANTHROPIC_BASE_URL"
+        }
+      ],
       "external": [
         {
           "host": "pypi.org",
@@ -88,6 +117,46 @@
     },
     "butlers-up": {
       "dynamic": [
+        {
+          "reason": "Supported API-base and MCP configuration are named in the source inventory; opaque native auth/tool destinations remain unproven and gain no route",
+          "source": "local:claude"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:codex"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:gemini"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:google-auth-library"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:js-genai"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:opencode"
+        },
+        {
+          "reason": "CLI base override: only already-declared exact origins may pass; no destination is granted by this metadata",
+          "source": "ANTHROPIC_BASE_URL"
+        },
+        {
+          "reason": "QA repository/API resolver: only already-declared exact origins may pass; arbitrary results remain denied",
+          "source": "src/butlers/core/qa/github_pr.py:GithubPrClient._fetch_uncached"
+        },
+        {
+          "reason": "QA repository/API resolver: only already-declared exact origins may pass; arbitrary results remain denied",
+          "source": "src/butlers/core/qa/publication/github_reader.py:GithubPublicationReader._client"
+        },
+        {
+          "reason": "QA repository/API resolver: only already-declared exact origins may pass; arbitrary results remain denied",
+          "source": "src/butlers/core/qa/repo_clone.py:ManagedRepoClone._read_repo_url"
+        },
         {
           "reason": "site-configured; not admitted until declared as a site peer",
           "source": "LIVE_LISTENER_TRANSCRIPTION_URL"
@@ -224,7 +293,12 @@
       "summary": "Domain butler daemons, their modules and the LLM CLIs they spawn"
     },
     "connector-activitywatch": {
-      "dynamic": [],
+      "dynamic": [
+        {
+          "reason": "Pod-local default; nonlocal overrides have no added route and require separate peer review",
+          "source": "ACTIVITYWATCH_BASE_URL"
+        }
+      ],
       "external": [],
       "gateway_port": null,
       "held": null,
@@ -698,6 +772,34 @@
     "dashboard-api": {
       "dynamic": [
         {
+          "reason": "Supported API-base and MCP configuration are named in the source inventory; opaque native auth/tool destinations remain unproven and gain no route",
+          "source": "local:claude"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:codex"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:gemini"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:google-auth-library"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:js-genai"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:opencode"
+        },
+        {
+          "reason": "CLI base override: only already-declared exact origins may pass; no destination is granted by this metadata",
+          "source": "ANTHROPIC_BASE_URL"
+        },
+        {
           "reason": "secret-held URL; its host is not declared here, so the deadman ping is refused",
           "source": "EXTERNAL_DEADMAN_URL"
         },
@@ -827,7 +929,36 @@
       "summary": "restic over SFTP to the owner's off-node device"
     },
     "session-host": {
-      "dynamic": [],
+      "dynamic": [
+        {
+          "reason": "Supported API-base and MCP configuration are named in the source inventory; opaque native auth/tool destinations remain unproven and gain no route",
+          "source": "local:claude"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:codex"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:gemini"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:google-auth-library"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:js-genai"
+        },
+        {
+          "reason": "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied",
+          "source": "vendor:opencode"
+        },
+        {
+          "reason": "CLI base override: only already-declared exact origins may pass; no destination is granted by this metadata",
+          "source": "ANTHROPIC_BASE_URL"
+        }
+      ],
       "external": [
         {
           "host": "api.anthropic.com",

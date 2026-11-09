@@ -63,6 +63,16 @@ external = [
   "github.com:443",
 ]
 dynamic = [
+  { source = "local:claude", reason = "Supported API-base and MCP configuration are named in the source inventory; opaque native auth/tool destinations remain unproven and gain no route" },
+  { source = "vendor:codex", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "vendor:gemini", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "vendor:google-auth-library", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "vendor:js-genai", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "vendor:opencode", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "ANTHROPIC_BASE_URL", reason = "CLI base override: only already-declared exact origins may pass; no destination is granted by this metadata" },
+  { source = "src/butlers/core/qa/github_pr.py:GithubPrClient._fetch_uncached", reason = "QA repository/API resolver: only already-declared exact origins may pass; arbitrary results remain denied" },
+  { source = "src/butlers/core/qa/publication/github_reader.py:GithubPublicationReader._client", reason = "QA repository/API resolver: only already-declared exact origins may pass; arbitrary results remain denied" },
+  { source = "src/butlers/core/qa/repo_clone.py:ManagedRepoClone._read_repo_url", reason = "QA repository/API resolver: only already-declared exact origins may pass; arbitrary results remain denied" },
   { source = "LIVE_LISTENER_TRANSCRIPTION_URL", reason = "site-configured; not admitted until declared as a site peer" },
 ]
 
@@ -87,6 +97,16 @@ external = [
   "generativelanguage.googleapis.com:443",
   "api.telegram.org:443",
 ]
+dynamic = [
+  { source = "local:claude", reason = "Supported API-base and MCP configuration are named in the source inventory; opaque native auth/tool destinations remain unproven and gain no route" },
+  { source = "vendor:codex", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "vendor:gemini", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "vendor:google-auth-library", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "vendor:js-genai", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "vendor:opencode", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "ANTHROPIC_BASE_URL", reason = "CLI base override: only already-declared exact origins may pass; no destination is granted by this metadata" },
+]
+
 
 [workloads.session-host]
 summary = "RFC 0038 D3 session host: the control session listener and model providers only"
@@ -101,6 +121,16 @@ external = [
   "auth.openai.com:443",
   "generativelanguage.googleapis.com:443",
 ]
+dynamic = [
+  { source = "local:claude", reason = "Supported API-base and MCP configuration are named in the source inventory; opaque native auth/tool destinations remain unproven and gain no route" },
+  { source = "vendor:codex", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "vendor:gemini", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "vendor:google-auth-library", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "vendor:js-genai", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "vendor:opencode", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "ANTHROPIC_BASE_URL", reason = "CLI base override: only already-declared exact origins may pass; no destination is granted by this metadata" },
+]
+
 
 [workloads.dashboard-api]
 summary = "Dashboard API, its migrations and the runtime CLI login sandbox"
@@ -128,6 +158,13 @@ external = [
   "auth.openai.com:443",
 ]
 dynamic = [
+  { source = "local:claude", reason = "Supported API-base and MCP configuration are named in the source inventory; opaque native auth/tool destinations remain unproven and gain no route" },
+  { source = "vendor:codex", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "vendor:gemini", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "vendor:google-auth-library", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "vendor:js-genai", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "vendor:opencode", reason = "Reviewed CLI/provider/auth/model/plugin resolver inventory; only exact existing profile origins may pass; arbitrary results and undeclared native tools remain denied" },
+  { source = "ANTHROPIC_BASE_URL", reason = "CLI base override: only already-declared exact origins may pass; no destination is granted by this metadata" },
   { source = "EXTERNAL_DEADMAN_URL", reason = "secret-held URL; its host is not declared here, so the deadman ping is refused" },
   { source = "PROMETHEUS_URL", reason = "site-configured; not admitted until declared as a site peer" },
   { source = "OWNTRACKS_CONNECTOR_HOST", reason = "the public tailnet host builds webhook URLs; it is never dialled" },
@@ -243,6 +280,10 @@ sites = [
   { site = "database", port = 5432 },
   { site = "otlp", port = 4318 },
 ]
+dynamic = [
+  { source = "ACTIVITYWATCH_BASE_URL", reason = "Pod-local default; nonlocal overrides have no added route and require separate peer review" },
+]
+
 
 [workloads.connector-home-assistant]
 summary = "Home Assistant REST and websocket"

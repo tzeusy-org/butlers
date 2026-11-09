@@ -186,6 +186,68 @@ internal header shape. Whole native auth/MCP/other configured operation coverage
 and actual network policy enforcement remain unearned. No tool is removed or
 replaced to obtain the inference result.
 
+## Structural source coverage
+
+`make check-egress-profile-coverage` is a required local/default and hosted guard.
+It reads `scripts/egress-profile-coverage.json`, the workload profiles and production
+source without importing application modules or using DNS, credentials or a cluster.
+Its positive result is `SOURCE_ACCOUNTING_ONLY`, never runtime conformance.
+
+Discovery inventories non-docstring Python URL literals, URL/URI/HOST/ENDPOINT
+configuration names and `base_url` factory expressions under `src/butlers` and
+`roster`; URL-valued roster TOML; and URL-bearing noncomment deployment scalar
+lines, including Helm templates and Compose. Tests/testing helpers are outside this
+production boundary. Each discovered declaration needs an explicit disposition,
+real workload reachability and owning explanation. New, removed, duplicated or
+changed declarations refuse. Internal peers, site locations, browser callbacks,
+OAuth scope identifiers, help references and build inputs are distinguished from
+terminal external bases. Conservative candidates do not grant destinations.
+
+Dynamic Python declarations additionally name their actual owning function/class
+and bind its AST plus the exact configuration identity to `profile.dynamic.source`.
+The reviewed upstream inventory names 21 finite resolver families across Codex,
+Gemini, GoogleAuth, GenAI and OpenCode: provider/model configuration, separate
+auth/ADC/STS/AWS/impersonation endpoints, CodeAssist, upload-returned URLs, HTTP/WS,
+model-catalogue refresh and plugin/MCP configuration. Each names an actual source
+file/symbol, configuration keys, workload and resolution policy. CLI `dynamic`
+metadata grants no origin. Three additional local Claude records bind the supported
+`ANTHROPIC_BASE_URL` mapping at `src/butlers/egress/claude.py:child_environment`,
+`ClaudeCodeAdapter.invoke` auth/invocation and `build_config_file` MCP configuration.
+Their explicit unresolved native-auth/tools status grants no destination; opaque
+native tool/network behavior remains unproven rather than inferred from inference-base
+coverage.
+
+Vendor locator bytes were reviewed in the exact pinned public archives/replayed
+patches. CI binds archive/commit/tree identities and terminal patched-file hashes;
+it does not fetch or parse the full upstream source archive. Every tracked vendor,
+shared executor, toolchain and model/plugin build input is digest-bound so a change
+requires a fresh named resolver review. The complete OpenCode catalogue identity
+includes all 235 providers and 8939 models; their configured API values are dynamic,
+not a list of granted hosts. Build catalogue/logo downloads are build inputs, not
+runtime route declarations. Workload/module topology changes also invalidate the
+reviewed reachability map. Keep the canonical parser's rendered JSON synchronized.
+There is deliberately no automatic inventory refresh or classification command.
+
+The guard reports compatibility gaps separately from structural completeness:
+OneMap search/token and Nominatim defaults currently have no route, as do the named
+site-configured transcription/S3/Prometheus/SimpleFIN/deadman declarations without
+an adequate peer/destination. Several upstream defaults (for example CodeAssist,
+Vertex, STS/impersonation and catalogue refresh) are also absent from some workload
+profiles. Their required functionality remains incomplete and cannot be enabled
+merely by accepting this inventory. Arbitrary provider/model/plugin/credential-file
+results, held workloads and the absent analysis host remain denied. Review any
+necessary route change independently; do not widen profiles to make this guard pass.
+
+For a source/config change, review the discovered declaration and actual caller
+before editing its inventory row. For an upstream revision/patch, inspect the
+named resolver and any newly introduced destination families before updating its
+archive/locator/bundle pins. Preserve the documented denied/held behavior and run
+the owning checker/profile controls. A new resolver family requires an explicit
+family entry; a file hash alone is not an explanation. These finite discovery
+boundaries are not a universal parser for computed endpoints, dynamically loaded
+code or opaque binaries; actual supported callers and configured/native tool
+behavior still require their separate runtime/network evidence.
+
 ## Current limits
 
 - **Vendor/runtime compatibility is incomplete.** The Python request transport does
@@ -193,8 +255,9 @@ replaced to obtain the inference result.
   closure, or actual per-workload CNI/principal/outage/cursor behavior. Those are required
   subsequent stages; no opaque TLS success or permanently held required caller replaces
   them. No real rollout/credential activation is authorized by source controls.
-- **The external host lists are a seed inventory.** Static/dynamic source coverage and
-  connector outage behavior still require their named runtime evidence.
+- **The external host lists retain known compatibility gaps.** Structural source
+  accounting above does not establish caller compatibility or connector outage behavior;
+  those still require their named runtime evidence.
 - **IPv4 only.** The gateway resolves and dials IPv4; a declared host with no IPv4
   address is unreachable.
 - **Internal peers are reachability only.** RFC 0038 S7 also requires both endpoints to
@@ -206,7 +269,7 @@ replaced to obtain the inference result.
 
 Not authorized by this source change. Each step needs its own authorization:
 
-1. Prove connector outage behaviour and land the static base-URL coverage check.
+1. Prove connector outage behaviour and preserve the structural base-URL coverage guard.
 2. Run per-workload conformance in the disposable `butlers-rehearsal` namespace: each
    workload reaches a declared service, and is refused an undeclared public host,
    private/link-local/metadata destinations, another workload's gateway port and an

@@ -252,6 +252,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check_host_policy_selectors.py
 
+      # Source accounting only; neither route admission nor network conformance.
+      - name: Check egress profile source coverage
+        id: egress_profile_coverage
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_egress_profile_coverage.py
+
       - name: Fail if any guard failed
         if: ${{ !cancelled() }}
         env:
@@ -268,6 +274,7 @@ jobs:
             requirement_citations=${{ steps.requirement_citations.outcome }}
             duplicate_names=${{ steps.duplicate_names.outcome }}
             host_policy_selectors=${{ steps.host_policy_selectors.outcome }}
+            egress_profile_coverage=${{ steps.egress_profile_coverage.outcome }}
         run: |
           failed=0
           while IFS= read -r line; do
