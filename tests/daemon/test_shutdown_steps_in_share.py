@@ -131,47 +131,43 @@ async def test_a_tick_that_ignores_cancel_is_left_after_the_remaining_share(
     await task
 
 
+def _server(daemon: ButlerDaemon) -> SimpleNamespace:
+    """A stopped MCP server whose graceful timeout reports the deadline shutdown used."""
+    config = SimpleNamespace(timeout_graceful_shutdown=30.0)
+    daemon._server = SimpleNamespace(should_exit=False, config=config)
+    daemon._server_task = asyncio.create_task(asyncio.sleep(0))
+    return config
+
+
+async def _slow_retire(_daemon) -> None:
+    await asyncio.sleep(1.0)
+
+
 async def test_the_deadline_is_taken_before_the_catalog_retires_when_a_share_is_set(
     tmp_path: Path,
 ) -> None:
     daemon = _daemon(tmp_path, share=10.0)
-    seen: list[float] = []
+    config = _server(daemon)
 
-    async def slow_retire(_daemon) -> None:
-        await asyncio.sleep(1.0)
-
-    async def spy(_daemon, deadline=None) -> None:
-        seen.append(deadline)
-
-    start = asyncio.get_running_loop().time()
-    with (
-        patch("butlers.core.catalog_publication.close_catalog_publication", new=slow_retire),
-        patch.object(lifecycle, "_shutdown_resources", new=spy),
-    ):
+    with patch("butlers.core.catalog_publication.close_catalog_publication", new=_slow_retire):
         await lifecycle._run_shutdown(daemon)
 
-    assert seen[0] == pytest.approx(start + 10.0, abs=0.5)  # not start + 1s retire + 10s
+    # The real shutdown sets the server's timeout to what is left of the share: the 1s
+    # retirement came out of it (about 9s), not a fresh 10s taken after it.
+    assert config.timeout_graceful_shutdown == pytest.approx(9.0, abs=0.4)
 
 
 async def test_without_a_share_the_deadline_is_still_taken_after_the_catalog_retires(
     tmp_path: Path,
 ) -> None:
     daemon = _daemon(tmp_path, share=None)
-    seen: list[float | None] = []
+    config = _server(daemon)
 
-    async def slow_retire(_daemon) -> None:
-        await asyncio.sleep(1.0)
-
-    async def spy(_daemon, deadline=None) -> None:
-        seen.append(deadline)
-
-    with (
-        patch("butlers.core.catalog_publication.close_catalog_publication", new=slow_retire),
-        patch.object(lifecycle, "_shutdown_resources", new=spy),
-    ):
+    with patch("butlers.core.catalog_publication.close_catalog_publication", new=_slow_retire):
         await lifecycle._run_shutdown(daemon)
 
-    assert seen == [None]  # _shutdown_resources takes it itself, as before
+    # No share: no deadline reaches the server, which keeps its own timeout, as before.
+    assert config.timeout_graceful_shutdown == 30.0
 
 
 async def test_a_step_that_swallows_cancel_is_still_bounded_and_logged(
