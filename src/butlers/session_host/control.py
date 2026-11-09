@@ -546,9 +546,12 @@ async def local_command(
     server_sha256: str,
     command: dict,
     reply_timeout_s: float | None = None,
+    host: str = "127.0.0.1",
 ) -> dict:
-    """Synthetic/local runner side: CA+hostname AND exact out-of-band leaf pin.
+    """Runner side: CA+hostname AND exact out-of-band leaf pin.
 
+    ``host`` is the address dialed, by trusted construction only; TLS still checks
+    ``server_hostname`` and the pin, so a wrong address reaches no other identity.
     A launch's reply arrives when its invocation settles, so the wait for it is tied to the
     launch's ``timeout_s`` (``_reply_timeout``); every other command keeps the short bound.
     """
@@ -556,7 +559,7 @@ async def local_command(
     if not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED:
         raise Refused("invalid_control_identity")
     reader, writer = await asyncio.open_connection(
-        "127.0.0.1",
+        host,
         port,
         ssl=context,
         server_hostname=server_hostname,

@@ -547,7 +547,17 @@ def test_no_live_module_constructs_a_session_host_auth_target():
     assert _live_constructions(_REPO / "src" / "butlers") == []
 
 
-_TARGETS = {"SessionHostCodexAuth", "CredentialVolume"}
+_TARGETS = {
+    "SessionHostCodexAuth",
+    "CredentialVolume",
+    # The control plane's client side (bu-kiuh8v.11): a channel to the host, and
+    # the factory and fence that build one. Calling any of them is the switch.
+    "ControlSessionHost",
+    "CodexAuthFencedHost",
+    "session_host_clients",
+}
+# The one control-plane module that defines the factory, and so builds targets.
+_FACTORY_MODULE = Path("goal_runner") / "session_host_client.py"
 
 
 def _live_constructions(root: Path) -> list[str]:
@@ -558,7 +568,8 @@ def _live_constructions(root: Path) -> list[str]:
     """
     found = []
     for path in root.rglob("*.py"):
-        if "session_host" in path.relative_to(root).parts:
+        relative = path.relative_to(root)
+        if "session_host" in relative.parts or relative == _FACTORY_MODULE:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         names, controls = set(_TARGETS), {"LocalControl"}
@@ -589,6 +600,12 @@ def _live_constructions(root: Path) -> list[str]:
         "import butlers.session_host.credential_volume as v\nv.CredentialVolume(root)\n",
         "from butlers.session_host.control import LocalControl as C\nC(credentials=volume)\n",
         "from butlers.session_host.control import LocalControl\nLocalControl(**options)\n",
+        "from butlers.goal_runner.session_host_client import session_host_clients\n"
+        "session_host_clients(config, credentials, broker_origin=o)\n",
+        "from butlers.goal_runner.session_host_client import CodexAuthFencedHost as F\n"
+        "F(host, authority, target, runtimes={'codex'})\n",
+        "from butlers.goal_runner.staging import ControlSessionHost\n"
+        "ControlSessionHost(send, credentials, broker_origin=o)\n",
     ],
 )
 def test_the_construction_scan_catches_each_shape(tmp_path, source):
