@@ -545,6 +545,42 @@ async def test_an_invocation_past_its_turns_ends_alone(broker_db_url):
         assert spend == "goal_exhausted"
 
 
+async def test_a_settled_runs_host_counts_are_charged_to_it_and_the_goal(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEARCH))
+        usage = {"input_tokens": 30, "output_tokens": 20, "cached_input_tokens": 25}
+        h.host.script = [None, HostOutcome(usage=usage)]
+        lead = await h.lead(goal)
+        before = (await h.budget(goal))["used_tokens"]
+        child = await h.delegate(goal, lead.token, SEARCH.identity, tokens=100)
+        await until(lambda: _equals(_used_tokens(h, child), 50))  # cached is part of input
+        assert (await h.budget(goal))["used_tokens"] == before + 50
+        assert await h.goal_status(goal) == "running"
+
+
+async def test_a_failed_run_that_spent_its_budget_is_never_relaunched(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEARCH))
+        # Retryable on its own (no call recorded), but its counts exhaust the lead's tokens.
+        usage = {"input_tokens": 400, "output_tokens": 200}
+        h.host.script = [HostOutcome(failure=TimeoutError("timeout"), usage=usage)]
+        lead = await h.lead(goal)
+        await until(lambda: _equals(_status(h, lead.invocation_id), "failed"))
+        async with asyncio.timeout(5):  # a relaunch would be held open by the host
+            await h.runner.drain()
+        assert len(h.host.launches) == 1
+        row = await h.row(lead.invocation_id)
+        assert row["end_reason"] == "tokens_exhausted"
+
+
+async def _used_tokens(h: Harness, invocation_id: UUID) -> int:
+    return (await h.row(invocation_id))["used_tokens"]
+
+
+async def _status(h: Harness, invocation_id: UUID) -> str:
+    return (await h.row(invocation_id))["status"]
+
+
 # -- AC4: D11 states, settling and the owner reply -------------------------------
 
 

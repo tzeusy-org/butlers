@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal
@@ -231,6 +231,12 @@ class GoalRunner:
             attempts.append(started.invocation_id)
             adapter.last_process_info = {"runtime_type": candidate.runtime_type}
             outcome = await self._launch(plan, started, candidate)
+            if outcome.usage:
+                # The host's settled counts (D10), charged before the relaunch decision,
+                # so a run that spent the budget is never relaunched.
+                await self.record_usage(
+                    plan.goal_id, started.invocation_id, tokens=_host_tokens(outcome.usage)
+                )
             async with self._txn() as ledger:
                 status = await ledger.status_of(plan.goal_id, started.invocation_id)
                 if outcome.failure is None or status not in ("launching", "running"):
@@ -643,6 +649,15 @@ class GoalRunner:
             )
         await self._terminate_all(ended)
         return verdict
+
+
+def _host_tokens(usage: Mapping[str, Any]) -> int:
+    """Tokens a settled run used: input plus output. Cached input is part of input."""
+    return sum(
+        value
+        for key in ("input_tokens", "output_tokens")
+        if type(value := usage.get(key)) is int and value >= 0
+    )
 
 
 def _uuid(value: Any) -> UUID:

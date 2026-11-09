@@ -15,12 +15,17 @@ from uuid import uuid4
 
 import pytest
 
+from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
+from butlers.core.model_call import NotInvoked
 from butlers.goal_runner.contracts import Launch
 from butlers.goal_runner.staging import (
     ControlSessionHost,
     CredentialUnavailable,
     ModelCredentials,
+    SessionHostBusy,
+    SessionHostFailed,
     SessionHostRefused,
+    SessionHostTimeout,
 )
 from butlers.session_host.contracts import BrokerBinding, LaunchRequest
 
@@ -154,13 +159,134 @@ async def test_an_unreachable_store_is_a_refusal_not_a_crash():
     assert _SECRET not in repr(refused.value)
 
 
-@pytest.mark.parametrize(
-    "reply", [{"status": "refused"}, {"status": "completed", "extra": 1}, ["completed"]]
-)
-async def test_anything_but_a_bare_completed_reply_is_a_reported_failure(reply):
-    outcome = await _host(Store({"cli-auth/openai": _SECRET}), Channel(reply)).launch(_launch())
+_USAGE = {"input_tokens": 1200, "output_tokens": 300, "cached_input_tokens": 1000}
 
-    assert isinstance(outcome.failure, SessionHostRefused)
+
+async def _outcome(reply: Any):
+    return await _host(Store({"cli-auth/openai": _SECRET}), Channel(reply)).launch(_launch())
+
+
+def _eligible(failure: BaseException) -> bool:
+    return classify_failover_eligibility(FailoverContext(exception=failure)).eligible
+
+
+@pytest.mark.parametrize("usage", [None, _USAGE, {"output_tokens": 0}, {"input_tokens": 2**53}])
+async def test_a_completed_reply_ends_cleanly_with_its_counts(usage):
+    reply = {"status": "completed"} if usage is None else {"status": "completed", "usage": usage}
+
+    outcome = await _outcome(reply)
+
+    assert outcome.failure is None
+    assert outcome.usage == usage
+
+
+@pytest.mark.parametrize(
+    ("failure_class", "kind", "retryable"),
+    [
+        ("timeout", SessionHostTimeout, True),
+        ("runtime_failed", SessionHostFailed, False),
+        ("containment_failed", SessionHostFailed, False),
+        ("cancelled", SessionHostFailed, False),
+        ("provider_quota", SessionHostFailed, False),  # unknown: default-closed
+    ],
+)
+async def test_a_failed_reply_maps_its_class_onto_the_runtime_taxonomy(
+    failure_class, kind, retryable
+):
+    outcome = await _outcome({"status": "failed", "failure_class": failure_class, "usage": _USAGE})
+
+    assert type(outcome.failure) is kind
+    assert _eligible(outcome.failure) is retryable
+    expected = failure_class if failure_class != "provider_quota" else "failure_class_unknown"
+    assert str(outcome.failure) == expected  # a fixed code, never the host's text
+    assert outcome.usage == _USAGE  # a failed run's usage is still charged
+
+
+async def test_a_bare_refusal_is_a_non_retryable_failure():
+    outcome = await _outcome({"status": "refused"})
+
+    assert type(outcome.failure) is SessionHostRefused
+    assert str(outcome.failure) == "session_host_refused"
+    assert not _eligible(outcome.failure)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        ["completed"],
+        {"status": "completed", "extra": 1},
+        {"status": "completed", "usage": {}},
+        {"status": "completed", "usage": {"input_tokens": True}},
+        {"status": "completed", "usage": {"input_tokens": -1}},
+        {"status": "completed", "usage": {"input_tokens": 2**53 + 1}},
+        {"status": "completed", "usage": {"input_tokens": 1.0}},
+        {"status": "completed", "usage": {"input_tokens": 1, "cost": 1}},
+        {"status": "completed", "usage": [1, 2]},
+        {"status": "failed"},
+        {"status": "failed", "failure_class": 7},
+        {"status": "failed", "failure_class": "timeout", "detail": _SECRET},
+        {"status": "refused", "reason": "staging_refused"},
+        {"status": "refused", "reason": "host_busy", "usage": _USAGE},
+        {"status": "revoked"},
+        {"status": True},
+    ],
+)
+async def test_any_other_reply_is_malformed_and_never_logged(reply, caplog):
+    caplog.set_level(logging.DEBUG)
+
+    outcome = await _outcome(reply)
+
+    assert type(outcome.failure) is SessionHostRefused
+    assert str(outcome.failure) == "session_host_malformed_reply"
+    assert outcome.usage is None
+    assert not _eligible(outcome.failure)
+    assert _SECRET not in caplog.text and "staging_refused" not in caplog.text
+
+
+class Busy(Channel):
+    """Refuses ``host_busy`` the first ``busy`` launches, then completes."""
+
+    def __init__(self, busy: int) -> None:
+        super().__init__()
+        self.busy = busy
+
+    async def __call__(self, command: dict) -> Any:
+        self.sent.append(command)
+        if command["operation"] == "launch" and self.busy:
+            self.busy -= 1
+            return {"status": "refused", "reason": "host_busy"}
+        return {"status": "completed", "usage": _USAGE}
+
+
+async def test_a_busy_host_is_offered_the_same_launch_again():
+    channel = Busy(busy=2)
+    host = ControlSessionHost(
+        channel, ModelCredentials(Store({"cli-auth/openai": _SECRET})), broker_origin=_ORIGIN
+    )
+    host.busy_backoff_s = 0.0
+
+    outcome = await host.launch(_launch())
+
+    assert outcome.failure is None and outcome.usage == _USAGE
+    launches = [c for c in channel.sent if c["operation"] == "launch"]
+    assert len(launches) == 3
+    assert all(c == launches[0] for c in launches)  # same invocation id: it was not burned
+    assert not [c for c in channel.sent if c["operation"] == "revoke"]
+
+
+async def test_a_host_that_stays_busy_refuses_before_any_model_runs():
+    channel = Busy(busy=99)
+    host = ControlSessionHost(
+        channel, ModelCredentials(Store({"cli-auth/openai": _SECRET})), broker_origin=_ORIGIN
+    )
+    host.busy_backoff_s = 0.0
+
+    with pytest.raises(SessionHostBusy) as busy:
+        await host.launch(_launch())
+
+    assert isinstance(busy.value, NotInvoked)  # suppressed by the kernel, never a relaunch
+    assert str(busy.value) == "session_host_busy"
+    assert len(channel.sent) == host.busy_attempts
 
 
 async def test_a_channel_failure_is_reported_without_its_text(caplog):
@@ -176,8 +302,9 @@ async def test_a_channel_failure_is_reported_without_its_text(caplog):
 
 @pytest.mark.parametrize("revoke_fails", [False, True])
 async def test_a_launch_whose_reply_is_lost_is_revoked_on_the_host(revoke_fails):
-    # A read timeout leaves the host running the launch with the credential
-    # and its one active slot; the runner must revoke it (r4513585120).
+    # A send that fails (a dropped connection, or a reply that outlived even the
+    # long launch wait) may leave the host running the launch with its credential
+    # and a concurrency slot; the runner must revoke it (r4513585120).
     class TimedOut(Channel):
         async def __call__(self, command: dict) -> Any:
             self.sent.append(command)
