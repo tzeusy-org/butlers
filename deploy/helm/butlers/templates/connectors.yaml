@@ -43,7 +43,7 @@ spec:
         - name: wait-for-health-routes
           image: {{ include "butlers.image" $ }}
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
-          command: ["uv", "run", "--frozen", "--no-dev", "python", "scripts/wait_for_butler_routes.py"]
+          command: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "python", "scripts/wait_for_butler_routes.py"]
           args: ["--url", "http://butlers-up:41103/internal/control-plane/identity", "--butler", "health"]
         {{- end }}
       containers:
@@ -53,10 +53,6 @@ spec:
           command:
             - /app/scripts/dev_entrypoint.sh
             - connectors/{{ $c.logSubdir }}
-            - uv
-            - run
-            - --frozen
-            - --no-dev
             - python
             - -m
             - butlers.connectors.{{ $c.module }}

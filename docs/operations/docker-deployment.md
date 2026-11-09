@@ -160,6 +160,16 @@ checkout refuse before the role starts; startup never invokes uv, resolves,
 installs or downloads. Console/module/script arguments, PID1 signal delivery and
 exit status are preserved. The default remains `run --config /etc/butler`.
 
+Helm connectors pass `python -m <connector>` through the logging wrapper and
+installed-only dispatcher. OAuth gates, the health-route waiter, the selected
+egress gateway and the Compose restore-drill executor explicitly invoke
+`/usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py python`
+with their original script/module arguments. These command overrides validate the
+same seal before starting their role; they do not invoke runtime uv. The
+stdlib-only connector metrics proxy and restore-drill TCP relay remain separate.
+This source invocation boundary does not establish container/network readiness
+or authorize a restore, gateway activation or credential use.
+
 Mounted `/app/src` payload edits remain supported without reinstalling. They do
 not change the lock or dependency set. Hotreload now mounts both project and lock
 metadata, so changing either requires rebuilding the matching image, rather than

@@ -52,7 +52,7 @@ spec:
         - name: gateway
           image: {{ include "butlers.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.egress.gateway", "--profiles", "/etc/butlers-egress/egress-profiles.json"]
+          command: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "python", "-m", "butlers.egress.gateway", "--profiles", "/etc/butlers-egress/egress-profiles.json"]
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: {drop: [ALL]}

@@ -192,10 +192,9 @@ def test_google_health_target_gate_rendering_preserves_other_connectors(split):
             gate = initializers[-1]
             assert gate["image"] == pod["containers"][0]["image"]
             assert gate["command"] == [
-                "uv",
-                "run",
-                "--frozen",
-                "--no-dev",
+                "/usr/local/bin/python",
+                "-I",
+                "/app/scripts/runtime_clis/python_entrypoint.py",
                 "python",
                 "scripts/wait_for_butler_routes.py",
             ]
