@@ -48,6 +48,9 @@ from .typed import TypedRefused, parse_schema, typed_value_label, validate_value
 
 logger = logging.getLogger(__name__)
 
+# The goal tools' namespaces (RFC 0038 D8) are served by the runner, never by a domain.
+RESERVED_DOMAINS = frozenset({"goal", "context"})
+
 ActuationRiskMap = Callable[[Capability, dict[str, Any]], ActuationRisk]
 
 # A domain action's terminal decision and the parked effect state it ends in.
@@ -191,7 +194,7 @@ class Broker:
                 for grant in principal.grants
                 if (capability := catalog.get(grant.capability)) is not None
                 and listable(capability, principal.depth)
-                and capability.domain != "goal"
+                and capability.domain not in RESERVED_DOMAINS
                 and not (capability.selection_bound - {k for k, _ in grant.resources})
             )
 
@@ -280,7 +283,7 @@ class Broker:
             or grant is None
             or not listable(capability, principal.depth)
             # The goal tools' namespace (D8) is reserved: never a domain capability.
-            or capability.domain == "goal"
+            or capability.domain in RESERVED_DOMAINS
         ):
             raise self._refused(principal, name, Reason.CAPABILITY)
         if not _in_scope(capability, grant, args):
