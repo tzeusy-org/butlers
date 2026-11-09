@@ -378,8 +378,10 @@ removes authentication data nor authorizes an old image or live rollback.
 
 The chart passes `dashboardAuth.trustedProxyPeers` to the API as
 `DASHBOARD_AUTH_TRUSTED_PROXY_PEERS`. The checked-in `values.dev.yaml` sets
-`10.42.0.1`, matching the single-node k3s host ingress source described by
-`hostIngress.nodeSourceCidr` (`10.42.0.1/32` in shared values). This is the
+`10.42.0.1,10.42.0.0`, matching the host ingress sources described by
+`hostIngress.nodeSourceCidr` (`10.42.0.1/32`, the `cni0` address for pods on the
+host's node) and `hostIngress.extraSourceCidrs` (`10.42.0.0/32`, the `flannel.1`
+address for pods on another node) in shared values. This is the
 configured source of the host Tailscale Serve hop to `dashboard-api-host`,
 whose NodePort is `32200` on dev and uses `externalTrafficPolicy: Local`.
 The `butlers-host-ingress` NetworkPolicy admits that source and namespace pods.

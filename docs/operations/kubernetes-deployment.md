@@ -135,10 +135,18 @@ tailscale serve --bg --set-path /owntracks-dev   http://localhost:32086/owntrack
 
 NodePorts listen on every node address, unlike compose's `127.0.0.1` bindings. The
 `butlers-host-ingress` NetworkPolicy therefore admits only the node itself and pods in the
-namespace. Host-originated connections reach pods from the `cni0` address `10.42.0.1`. That
-address is both the policy's allowed source and `dashboardAuth.trustedProxyPeers`; it plays the
-role the Docker bridge gateway played under compose. The NodePort Services use
-`externalTrafficPolicy: Local`, so remote clients keep their own source IP and are refused.
+namespace. Host-originated connections reach pods on the same node from the `cni0` address
+`10.42.0.1`, and pods on another node from the host's `flannel.1` address `10.42.0.0`
+(`hostIngress.extraSourceCidrs`). Both are allowed sources and both belong in
+`dashboardAuth.trustedProxyPeers`; they play the role the Docker bridge gateway played under
+compose. The NodePort Services use `externalTrafficPolicy: Local`, so remote clients keep their
+own source IP and are refused.
+
+A `Local` NodePort answers only on a node that hosts the pod. If the pod is scheduled onto
+another node, `localhost:<nodePort>` on the `tailscale serve` host refuses connections and the
+route returns 502. Point `tailscale serve` at the Service ClusterIP instead (for example
+`http://<frontend ClusterIP>:80/butlers-dev`), which kube-proxy routes to the pod on any node;
+the flannel source above is what makes that cross-node hop admissible.
 
 Every other pod is covered too. `butlers-default-deny-ingress` selects all pods, and allowed
 ingress is the union of the policies selecting a pod, so a deny cannot subtract an allow.

@@ -26,6 +26,9 @@ _NAMESPACE = {"dev": "butlers-dev", "prod": "butlers"}
 _MONITORING_NAMESPACE = "lgtm"
 _METRICS_PORT = 9464
 _NODE_SOURCE = "10.42.0.1"
+# The host's flannel.1 address: the source of host -> pod-on-another-node traffic.
+_FLANNEL_SOURCE = "10.42.0.0"
+_NODE_SOURCES = {_NODE_SOURCE, _FLANNEL_SOURCE}
 _NARROWER_COMPONENTS = {
     "dashboard-api",
     "frontend",
@@ -201,7 +204,7 @@ def _peer_offence(rule: dict, peer: dict, labels: dict[str, str]) -> str | None:
     if component == "butlers-up" and set(peer) == {"podSelector"}:
         return _daemon_peer_offence(rule, peer["podSelector"])
     if "ipBlock" in peer:
-        if peer != {"ipBlock": {"cidr": f"{_NODE_SOURCE}/32"}}:
+        if peer not in [{"ipBlock": {"cidr": f"{source}/32"}} for source in sorted(_NODE_SOURCES)]:
             return "ipBlock other than the node's address"
         return None if component in _HOST_COMPONENTS else "node address on a non-host pod"
     if "namespaceSelector" in peer:
@@ -322,6 +325,13 @@ def test_reviewed_flows_keep_working():
     assert admitted("frontend", node, 8080)
     assert admitted("connector-owntracks", node, 40086)
     assert not admitted("butlers-up", node, 41101)
+    # The host also reaches host-served pods on another node, seen as its flannel.1 address.
+    flannel = Source("<host>", ip=_FLANNEL_SOURCE)
+    assert admitted("dashboard-api", flannel, 41200)
+    assert admitted("frontend", flannel, 8080)
+    assert admitted("connector-owntracks", flannel, 40086)
+    assert not admitted("butlers-up", flannel, 41101)
+    assert not admitted("connector-gmail", flannel, _METRICS_PORT)
     # The configured scraper reaches declared metrics ports, on both kinds of connector.
     assert admitted("connector-gmail", monitor, _METRICS_PORT)
     assert admitted("connector-owntracks", monitor, _METRICS_PORT)
@@ -621,6 +631,8 @@ def test_an_unknown_peer_shape_refuses_instead_of_being_ignored():
         (("connectorMetrics.sourceNamespace=lgtm\nextra: label",), "sourceNamespace"),
         (("hostIngress.nodeSourceCidr=0.0.0.0/0",), "nodeSourceCidr"),
         (("hostIngress.nodeSourceCidr=10.42.0.128/25",), "nodeSourceCidr"),
+        (("hostIngress.extraSourceCidrs[0]=0.0.0.0/0",), "extraSourceCidrs"),
+        (("hostIngress.extraSourceCidrs[0]=10.42.0.0/24",), "extraSourceCidrs"),
         (("connectorMetrics.allowFrom[0].ipBlock.cidr=0.0.0.0/0",), "allowFrom"),
         (("hostIngress.restrict=false",), "restrict"),
     ],

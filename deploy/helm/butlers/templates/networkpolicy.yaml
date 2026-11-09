@@ -13,6 +13,11 @@ tests/scripts/test_chart_ingress_union.py evaluates that union on the rendered c
 {{- if not (regexMatch "^[0-9.]+/32$" (toString .Values.hostIngress.nodeSourceCidr)) }}
 {{- fail "hostIngress.nodeSourceCidr must be the node's single /32 address" }}
 {{- end }}
+{{- range $cidr := .Values.hostIngress.extraSourceCidrs }}
+{{- if not (regexMatch "^[0-9.]+/32$" (toString $cidr)) }}
+{{- fail "hostIngress.extraSourceCidrs entries must each be a single /32 node address" }}
+{{- end }}
+{{- end }}
 {{- $source := toString $metrics.sourceNamespace }}
 {{- if $metrics.enabled }}
 {{- /* Validate the exact string that renders, so quoting or spacing cannot slip a name past the checks. */ -}}
@@ -126,7 +131,9 @@ spec:
 # compose ports bound to 127.0.0.1. Admit only the node itself (host
 # `tailscale serve`, seen as hostIngress.nodeSourceCidr) and pods in this
 # namespace. externalTrafficPolicy: Local keeps remote client IPs, so they
-# do not match.
+# do not match. A host reaching a pod on another node (Service ClusterIP) is
+# seen as that node's flannel.1 address instead, so each such address is listed
+# in hostIngress.extraSourceCidrs.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -143,6 +150,9 @@ spec:
   ingress:
     - from:
         - ipBlock: {cidr: {{ .Values.hostIngress.nodeSourceCidr }}}
+        {{- range .Values.hostIngress.extraSourceCidrs }}
+        - ipBlock: {cidr: {{ . }}}
+        {{- end }}
         - podSelector: {}
     {{- if $metrics.enabled }}
     # The cluster scraper lives outside this namespace; it may reach only the
