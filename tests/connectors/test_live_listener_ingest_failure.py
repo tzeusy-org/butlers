@@ -27,8 +27,9 @@ _MIC = "kitchen"
 _SECRET_TEXT = "upstream echoed: order milk"
 
 
-def _connector(call_tool: AsyncMock) -> tuple[LiveListenerConnector, FilteredEventBuffer]:
-    connector = object.__new__(LiveListenerConnector)
+def _connector(call_tool: AsyncMock) -> tuple[Any, Any]:
+    # A bare instance with only what _process_segment reads.
+    connector: Any = object.__new__(LiveListenerConnector)
     connector._ll_metrics = {_MIC: MagicMock()}
     connector._mic_states = {_MIC: SimpleNamespace()}
     connector._transcription_clients = {
@@ -53,23 +54,25 @@ def _connector(call_tool: AsyncMock) -> tuple[LiveListenerConnector, FilteredEve
     connector._mcp_client = SimpleNamespace(call_tool=call_tool)
     connector._connector_metrics = MagicMock()
     connector._db_pool = MagicMock()
-    buffer = FilteredEventBuffer(
+    assert ll._FILTERED_EVENTS_CONNECTOR_TYPE is not None
+    buffer: Any = FilteredEventBuffer(
         connector_type=ll._FILTERED_EVENTS_CONNECTOR_TYPE, endpoint_identity=endpoint_identity(_MIC)
     )
-    buffer.flush = AsyncMock()  # type: ignore[method-assign]
+    buffer.flush = AsyncMock()
     connector._filtered_event_buffers = {_MIC: buffer}
     return connector, buffer
 
 
-async def _segment(connector: LiveListenerConnector) -> AsyncMock:
-    segment = SimpleNamespace(duration_ms=1000, audio_bytes=b"x", offset_ts=1_782_000_000.0)
+async def _segment(connector: Any) -> AsyncMock:
+    segment: Any = SimpleNamespace(duration_ms=1000, audio_bytes=b"x", offset_ts=1_782_000_000.0)
+    spec: Any = SimpleNamespace(name=_MIC)
     drain = AsyncMock()
     with (
         patch.object(ll, "evaluate_voice_filter", return_value=SimpleNamespace(allowed=True)),
         patch.object(ll, "save_voice_checkpoint", AsyncMock()),
         patch.object(ll, "drain_replay_pending", drain),
     ):
-        await connector._process_segment(SimpleNamespace(name=_MIC), segment, object())
+        await connector._process_segment(spec, segment, object())
     return drain
 
 
@@ -79,6 +82,7 @@ async def test_a_failed_utterance_is_parked_for_replay() -> None:
 
     await _segment(connector)
 
+    assert call_tool.await_args is not None
     envelope: dict[str, Any] = call_tool.await_args.args[1]
     (row,) = buffer._rows
     assert row[8] == "error"  # status
@@ -99,6 +103,7 @@ async def test_a_delivered_utterance_drains_this_mics_replay_queue() -> None:
 
     assert buffer._rows == []
     drain.assert_awaited_once()
+    assert drain.await_args is not None
     kwargs = drain.await_args.kwargs
     assert kwargs["pool"] is connector._db_pool
     assert kwargs["connector_type"] == ll._FILTERED_EVENTS_CONNECTOR_TYPE

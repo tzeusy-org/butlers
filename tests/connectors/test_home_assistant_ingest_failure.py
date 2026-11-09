@@ -93,7 +93,8 @@ _WEIGHT = _state_event(
 
 
 def _attempted(connector: HAConnector) -> dict[str, dict[str, Any]]:
-    calls = connector._mcp_client.call_tool.call_args_list
+    client: Any = connector._mcp_client
+    calls = client.call_tool.call_args_list
     return {c.args[1]["source"]["channel"]: c.args[1] for c in calls if c.args[0] == "ingest"}
 
 

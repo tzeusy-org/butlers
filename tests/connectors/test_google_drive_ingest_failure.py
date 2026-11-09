@@ -50,7 +50,7 @@ def _change(file_id: str, name: str) -> dict[str, Any]:
 
 
 def _account(
-    *, batch_window_s: float = 0, fail: list[bool] | None = None
+    *, batch_window_s: int = 0, fail: list[bool] | None = None
 ) -> tuple[GDriveAccountLoop, list[dict[str, Any]], AsyncMock]:
     config = GDriveAccountConfig(
         email=_EMAIL,

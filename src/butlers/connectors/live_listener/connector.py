@@ -748,7 +748,8 @@ class LiveListenerConnector:
 
     async def _drain_replays(self, mic: str) -> None:
         """Submit up to 10 replay-requested rows for this mic (best effort)."""
-        if self._db_pool is None:
+        connector_type = _FILTERED_EVENTS_CONNECTOR_TYPE
+        if self._db_pool is None or connector_type is None:
             return
 
         async def submit(envelope: dict[str, Any]) -> None:
@@ -757,7 +758,7 @@ class LiveListenerConnector:
         try:
             await drain_replay_pending(
                 pool=self._db_pool,
-                connector_type=_FILTERED_EVENTS_CONNECTOR_TYPE,
+                connector_type=connector_type,
                 endpoint_identity=endpoint_identity(mic),
                 submit_fn=submit,
                 drain_logger=logger,
