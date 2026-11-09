@@ -39,7 +39,9 @@ def _copy_closed(source: Path, destination: Path, root: Path, ancestors: tuple[P
         # Independent bytes prevent later seed-cache writes changing the
         # already-hashed context through a shared inode.
         shutil.copyfile(resolved, destination)
-        destination.chmod(0o644)
+        # Extracted cache payloads include native helpers and console scripts.
+        # Retain execution without copying setid/sticky or writable-group bits.
+        destination.chmod(0o755 if resolved.stat().st_mode & 0o111 else 0o644)
     else:
         raise ValueError("Python seed contains an unsupported filesystem entry")
 

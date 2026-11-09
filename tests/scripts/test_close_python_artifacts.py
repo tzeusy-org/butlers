@@ -46,6 +46,8 @@ def seed(tmp_path):
 def test_closed_context_matches_image_validator_and_owns_independent_bytes(seed):
     producer = _module("_closed_python_artifacts", "close_python_artifacts.py")
     image = _module("_closed_python_image_validator", "python_entrypoint.py")
+    original = seed["cache"] / "archive/fixture/payload.py"
+    original.chmod(0o6751)
     value = producer.close_context(**seed)
     output = seed["output"]
     assert value["profiles"] == {
@@ -54,9 +56,11 @@ def test_closed_context_matches_image_validator_and_owns_independent_bytes(seed)
     }
     assert len(value["inputs"]) == 4
     assert all(not path.is_symlink() for path in output.rglob("*"))
+    assert (output / "uv-cache/archive/fixture/payload.py").stat().st_mode & 0o7777 == 0o755
+    assert (output / "uv-cache/reference/payload.py").stat().st_mode & 0o7777 == 0o755
+    assert next((output / "wheelhouse").iterdir()).stat().st_mode & 0o7777 == 0o644
     image.verify_build(output, seed["project"], "production", ["live-listener"])
     image.verify_build(output, seed["project"], "development", ["live-listener"])
-    original = seed["cache"] / "archive/fixture/payload.py"
     copied = output / "uv-cache/reference/payload.py"
     assert original.stat().st_ino != copied.stat().st_ino
     original.write_bytes(b"later seed mutation")

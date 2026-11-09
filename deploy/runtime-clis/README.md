@@ -66,7 +66,8 @@ python scripts/runtime_clis/close_python_artifacts.py \
 ```
 
 Omit `--extra` for the ordinary application profile. The producer copies independent
-regular bytes, dereferences cache links only within their declared input root,
+regular bytes, preserves executable payloads as `0755` and other files as `0644`,
+dereferences cache links only within their declared input root,
 and refuses escaping/cyclic links or a preexisting output. It inventories every
 input and records the exact project/lock and production/development groups/extras.
 It performs no network operation or install. The constraints file records the
