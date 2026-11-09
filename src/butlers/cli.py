@@ -682,6 +682,49 @@ def migrate(only: tuple[str, ...], butlers_dir: Path, dry_run: bool) -> None:
     asyncio.run(_migrate_all(configs, dry_run=dry_run))
 
 
+@db.command("check-grants")
+@click.option("--database", default="butlers", show_default=True, help="Database name")
+@click.option(
+    "--after-init-db-replay",
+    is_flag=True,
+    help="Compare with the grants an init-db.sql replay leaves (a deployed database has been "
+    "through one) instead of the freshly migrated intent.",
+)
+def check_grants(database: str, after_init_db_replay: bool) -> None:
+    """Diff runtime-role privileges on public relations against the grant manifest.
+
+    Read-only and content-blind: reads catalog privileges (relation and role names),
+    never rows. Exits non-zero and prints one line per difference when the database
+    and ``butlers.db_authority.grants`` disagree. The default compares with migration
+    intent; a database that init-db.sql has since re-widened differs on the
+    ``REPLAY_WIDENED`` rows unless ``--after-init-db-replay`` is given.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from butlers.db import db_params_from_env
+    from butlers.db_authority.catalog import diff_public_catalog, read_public_catalog
+    from butlers.db_authority.grants import WA_BRIDGE_RELATIONS
+
+    engine = create_engine(_migration_db_url(db_params_from_env(), db_name=database, schema=None))
+    try:
+        with engine.connect() as conn:
+            catalog = read_public_catalog(conn)
+    except SQLAlchemyError:
+        # Driver errors can include a URL or statement. Keep this surface closed.
+        raise click.ClickException("Grant check refused: database operation failed") from None
+    finally:
+        engine.dispose()
+    problems = diff_public_catalog(
+        catalog, absent_ok=WA_BRIDGE_RELATIONS, after_init_db_replay=after_init_db_replay
+    )
+    for problem in problems:
+        click.echo(problem)
+    if problems:
+        raise click.ClickException(f"{len(problems)} grant difference(s) from the manifest")
+    click.echo("Public grants match the manifest")
+
+
 @db.command()
 @click.option(
     "--only",
