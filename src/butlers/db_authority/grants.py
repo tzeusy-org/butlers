@@ -350,3 +350,25 @@ def expected_privileges(
         role: grant.privileges(role, after_init_db_replay=after_init_db_replay)
         for role in (roles or runtime_roles())
     }
+
+
+PROJECTION_PUBLISHER = "butlers_projection_publisher"
+"""The CNPG-managed logical-replication publisher (RFC 0039 D9, OD14).
+
+Not a runtime role and never in :func:`runtime_roles`: it has ``REPLICATION``, no password
+and a local-peer-only login, and its only table privilege is ``SELECT`` on the tables of
+publication ``butlers_public_v1``. ``scripts/init-db.sql`` and the owner program sync that
+grant from ``pg_publication_tables``; this declaration is the reviewed statement of what
+the sync may leave on ``public``.
+"""
+
+
+def publisher_relations() -> frozenset[str]:
+    """Return the ``public`` relations the projection manifest publishes (publisher SELECT)."""
+    from butlers.knowledge_read.manifest import load_manifest
+
+    return frozenset(
+        table.source.split(".", 1)[1]
+        for table in load_manifest().tables
+        if table.source.startswith("public.")
+    )

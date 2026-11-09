@@ -164,6 +164,12 @@ difference. A deployed database has been through init-db replays, so pass
 applied: converging grants to it under the migrate initContainer, and removing
 init-db's blanket grants, are the next slices of bu-dss7he.6.
 
+The CNPG-managed `butlers_projection_publisher` (RFC 0039 D9) is declared beside the runtime
+roles, not among them: `PROJECTION_PUBLISHER` and `publisher_relations()` state that it holds
+`SELECT` on exactly the `public` tables of the projection manifest, and nothing once
+publication `butlers_public_v1` does not exist. `butlers db check-grants` diffs it too, and
+skips it where the role is absent (Compose, testcontainers).
+
 ### Database-global protected public boundaries
 
 Core migrations may be replayed once for each target schema even when they

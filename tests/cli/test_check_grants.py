@@ -37,11 +37,21 @@ def _replayed_catalog() -> PublicCatalog:
     return PublicCatalog(privileges, {}, frozenset(runtime_roles()))
 
 
-def _run(monkeypatch: pytest.MonkeyPatch, catalog: PublicCatalog, *args: str):
+def _run(
+    monkeypatch: pytest.MonkeyPatch,
+    catalog: PublicCatalog,
+    *args: str,
+    publisher: PublicCatalog | None = None,
+):
     params = {"host": "h", "port": 5432, "user": "u", "password": "p"}
     monkeypatch.setattr("butlers.db.db_params_from_env", lambda: params)
     monkeypatch.setattr("sqlalchemy.create_engine", lambda url: MagicMock())
-    monkeypatch.setattr("butlers.db_authority.catalog.read_public_catalog", lambda conn: catalog)
+    absent = PublicCatalog({}, {}, frozenset())
+
+    def read(conn, roles=None):
+        return catalog if roles is None else (publisher or absent)
+
+    monkeypatch.setattr("butlers.db_authority.catalog.read_public_catalog", read)
     return CliRunner().invoke(cli, ["db", "check-grants", *args])
 
 
@@ -69,3 +79,16 @@ def test_replayed_database_differs_from_intent_but_matches_with_the_flag(
 
     flagged = _run(monkeypatch, _replayed_catalog(), "--after-init-db-replay")
     assert flagged.exit_code == 0, flagged.output
+
+
+def test_extra_publisher_grant_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+    from butlers.db_authority.grants import PROJECTION_PUBLISHER
+
+    publisher = PublicCatalog(
+        {("audit_log", PROJECTION_PUBLISHER): frozenset({"SELECT"})},
+        {},
+        frozenset({PROJECTION_PUBLISHER}),
+    )
+    result = _run(monkeypatch, _catalog(widen=False), publisher=publisher)
+    assert result.exit_code == 1
+    assert f"audit_log {PROJECTION_PUBLISHER}: manifest - catalog SELECT" in result.output

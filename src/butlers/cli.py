@@ -699,17 +699,27 @@ def check_grants(database: str, after_init_db_replay: bool) -> None:
     intent; a database that init-db.sql has since re-widened differs on the
     ``REPLAY_WIDENED`` rows unless ``--after-init-db-replay`` is given.
     """
-    from sqlalchemy import create_engine
+    from sqlalchemy import create_engine, text
     from sqlalchemy.exc import SQLAlchemyError
 
     from butlers.db import db_params_from_env
-    from butlers.db_authority.catalog import diff_public_catalog, read_public_catalog
-    from butlers.db_authority.grants import WA_BRIDGE_RELATIONS
+    from butlers.db_authority.catalog import (
+        diff_public_catalog,
+        diff_publisher_catalog,
+        read_public_catalog,
+    )
+    from butlers.db_authority.grants import PROJECTION_PUBLISHER, WA_BRIDGE_RELATIONS
 
     engine = create_engine(_migration_db_url(db_params_from_env(), db_name=database, schema=None))
     try:
         with engine.connect() as conn:
             catalog = read_public_catalog(conn)
+            publisher = read_public_catalog(conn, (PROJECTION_PUBLISHER,))
+            published = bool(
+                conn.execute(
+                    text("SELECT 1 FROM pg_publication WHERE pubname='butlers_public_v1'")
+                ).first()
+            )
     except SQLAlchemyError:
         # Driver errors can include a URL or statement. Keep this surface closed.
         raise click.ClickException("Grant check refused: database operation failed") from None
@@ -718,6 +728,7 @@ def check_grants(database: str, after_init_db_replay: bool) -> None:
     problems = diff_public_catalog(
         catalog, absent_ok=WA_BRIDGE_RELATIONS, after_init_db_replay=after_init_db_replay
     )
+    problems += diff_publisher_catalog(publisher, published=published)
     for problem in problems:
         click.echo(problem)
     if problems:

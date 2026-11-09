@@ -769,3 +769,83 @@ def test_remaining_filtered_sources_iud_through_owning_writers(manifest_primary)
         with engine.begin() as conn:
             conn.exec_driver_sql("DROP PUBLICATION butlers_public_v1")
             conn.exec_driver_sql("DELETE FROM mcp_surface.manifest_state")
+
+
+def _remaining_columns(conn, source):
+    return set(
+        conn.execute(
+            text(
+                "SELECT attname FROM pg_attribute WHERE attrelid=to_regclass(:s) "
+                "AND attnum>0 AND NOT attisdropped"
+            ),
+            {"s": source},
+        ).scalars()
+    )
+
+
+def test_dropping_or_renaming_a_published_column_fails_the_catalog_check(primary):
+    """Drift check 5: a migration that drops or renames a published or filter column is red."""
+    import re
+
+    manifest = load_manifest()
+    cases = 0
+    for table in manifest.tables:
+        filters = [c for c, _ in table.filters]
+        plain = next((c for c in table.columns if c not in table.key and c not in filters), None)
+        for column in dict.fromkeys(c for c in [plain, *filters] if c):
+            for ddl in (
+                f'ALTER TABLE {table.source} DROP COLUMN "{column}" CASCADE',
+                f'ALTER TABLE {table.source} RENAME COLUMN "{column}" TO "{column}_renamed"',
+            ):
+                with primary.begin_nested() as savepoint:
+                    primary.exec_driver_sql(ddl)
+                    present = _remaining_columns(primary, table.source)
+                    # CASCADE may also drop generated dependents; the check names the first
+                    # manifest column that no longer exists.
+                    first = next(c for c, _ in table.types if c not in present)
+                    with pytest.raises(
+                        ManifestError, match=rf"{re.escape(table.source)}\.{first}: missing column"
+                    ):
+                        validate_catalog(primary, Manifest((table,)))
+                    savepoint.rollback()
+                cases += 1
+    assert cases >= 2 * len(manifest.tables)
+    validate_catalog(primary, manifest)
+
+
+def test_every_row_filtered_table_accepts_update_and_delete_with_the_real_publication(primary):
+    """Drift check 1, last rule: PostgreSQL checks replica identity at executor start."""
+    from sqlalchemy.exc import DBAPIError
+
+    from butlers.knowledge_read.manifest import qualified
+
+    manifest = load_manifest()
+    reconcile_connection(primary, manifest)
+    filtered = [t for t in manifest.tables if t.filters]
+    assert {t.source for t in filtered} >= {
+        "public.entities",
+        "public.entity_graph_withheld_counts",
+        "general.facts",
+        "relationship.entity_facts",
+    }
+
+    def write_statements(table):
+        relation = qualified(table.source)
+        key = f'"{table.key[0]}"'
+        return (
+            f"UPDATE {relation} SET {key}={key} WHERE false",
+            f"DELETE FROM {relation} WHERE false",
+        )
+
+    for table in filtered:
+        for statement in write_statements(table):
+            primary.exec_driver_sql(statement)
+    # Red: the same statements fail once the replica identity no longer carries the
+    # filter columns (a primary-key-only identity under a row-filtered publication).
+    facts = next(t for t in filtered if t.source == "general.facts")
+    with primary.begin_nested() as savepoint:
+        primary.exec_driver_sql("ALTER TABLE general.facts REPLICA IDENTITY DEFAULT")
+        with pytest.raises(DBAPIError, match="replica identity"):
+            primary.exec_driver_sql(write_statements(facts)[0])
+        savepoint.rollback()
+    primary.exec_driver_sql(write_statements(facts)[0])
