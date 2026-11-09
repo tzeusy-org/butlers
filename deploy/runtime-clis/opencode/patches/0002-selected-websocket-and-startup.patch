@@ -1,78 +1,37 @@
 --- a/bun.lock
 +++ b/bun.lock
-@@ -482,10 +482,13 @@
-         "@smithy/util-utf8": "4.2.2",
-         "aws4fetch": "1.0.20",
-         "butlers-egress-undici": "npm:undici@7.24.5",
+@@ -484,0 +485 @@
 +        "butlers-egress-ws": "npm:ws@8.21.0",
-         "effect": "catalog:",
+@@ -485,0 +487 @@
 +        "ws": "8.21.0",
-       },
-       "devDependencies": {
-         "@clack/prompts": "1.0.0-alpha.1",
+@@ -488,0 +491 @@
 +        "@types/ws": "8.18.1",
-         "@effect/platform-node": "catalog:",
-         "@opencode-ai/http-recorder": "workspace:*",
-         "@tsconfig/bun": "catalog:",
-@@ -993,6 +996,7 @@
-     "zod": "4.1.8",
-   },
-   "packages": {
+@@ -995,0 +999 @@
 +    "butlers-egress-ws": ["ws@8.21.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g=="],
-     "7zip-bin": ["7zip-bin@5.2.0", "", {}, "sha512-ukTPVhqG4jNzMro2qA9HSCSSVJN3aN7tlb+hfqYCt3ER0yWroeA2VR38MNrOHLQ/cVj+DaIMad0kFCtWWowh/A=="],
- 
-     "@actions/artifact": ["@actions/artifact@5.0.1", "", { "dependencies": { "@actions/core": "^2.0.0", "@actions/github": "^6.0.1", "@actions/http-client": "^3.0.0", "@azure/storage-blob": "^12.29.1", "@octokit/core": "^5.2.1", "@octokit/plugin-request-log": "^1.0.4", "@octokit/plugin-retry": "^3.0.9", "@octokit/request": "^8.4.1", "@octokit/request-error": "^5.1.1", "@protobuf-ts/plugin": "^2.2.3-alpha.1", "archiver": "^7.0.1", "jwt-decode": "^3.1.2", "unzip-stream": "^0.3.1" } }, "sha512-dHJ5rHduhCKUikKTT9eXeWoUvfKia3IjR1sO/VTAV3DVAL4yMTRnl2iO5mcfiBjySHLwPNezwENAVskKYU5ymw=="],
 --- a/packages/core/src/models-dev.ts
 +++ b/packages/core/src/models-dev.ts
-@@ -1,6 +1,7 @@
- import path from "path"
- import { Context, Duration, Effect, Layer, Option, Schedule, Schema } from "effect"
+@@ -3 +3,2 @@
 -import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
 +import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 +import { gatewayHttpLayer } from "@opencode-ai/llm/route"
- import { Global } from "./global"
- import { Flag } from "./flag/flag"
- import { Flock } from "./util/flock"
-@@ -244,7 +245,7 @@
- )
- 
- export const defaultLayer = layer.pipe(
+@@ -247 +248 @@
 -  Layer.provide(FetchHttpClient.layer),
 +  Layer.provide(gatewayHttpLayer),
-   Layer.provide(FSUtil.defaultLayer),
-   Layer.provide(EventV2.defaultLayer),
- )
 --- a/packages/llm/package.json
 +++ b/packages/llm/package.json
-@@ -32,7 +32,8 @@
-     "./protocols/gemini": "./src/protocols/gemini.ts",
-     "./protocols/openai-chat": "./src/protocols/openai-chat.ts",
-     "./protocols/openai-compatible-chat": "./src/protocols/openai-compatible-chat.ts",
+@@ -35 +35,2 @@
 -    "./protocols/openai-responses": "./src/protocols/openai-responses.ts"
 +    "./protocols/openai-responses": "./src/protocols/openai-responses.ts",
 +    "./route/gateway-websocket": "./src/route/gateway-websocket.ts"
-   },
-   "devDependencies": {
-     "@clack/prompts": "1.0.0-alpha.1",
-@@ -40,13 +41,16 @@
-     "@opencode-ai/http-recorder": "workspace:*",
-     "@tsconfig/bun": "catalog:",
-     "@types/bun": "catalog:",
+@@ -43 +44,2 @@
 -    "@typescript/native-preview": "catalog:"
 +    "@typescript/native-preview": "catalog:",
 +    "@types/ws": "8.18.1"
-   },
-   "dependencies": {
-     "@smithy/eventstream-codec": "4.2.14",
-     "@smithy/util-utf8": "4.2.2",
-     "aws4fetch": "1.0.20",
-     "effect": "catalog:",
+@@ -50 +52,3 @@
 -    "butlers-egress-undici": "npm:undici@7.24.5"
 +    "butlers-egress-undici": "npm:undici@7.24.5",
 +    "ws": "8.21.0",
 +    "butlers-egress-ws": "npm:ws@8.21.0"
-   }
- }
 --- /dev/null
 +++ b/packages/llm/src/route/gateway-websocket.ts
 @@ -0,0 +1,170 @@
@@ -248,16 +207,10 @@
 +export const gatewaySocket = createGatewayWebSocket()
 --- a/packages/llm/src/route/transport/websocket.ts
 +++ b/packages/llm/src/route/transport/websocket.ts
-@@ -1,4 +1,4 @@
+@@ -1 +1 @@
 -import { gatewayWebSocket } from "../../butlers-egress"
 +import { gatewaySocket, gatewayHandshakeError } from "../gateway-websocket"
- import { Cause, Context, Effect, Layer, Queue, Stream } from "effect"
- import { Headers } from "effect/unstable/http"
- import { LLMError, TransportReason } from "../../schema"
-@@ -78,11 +78,19 @@
-     }
-     const onError = (event: Event) => {
-       cleanup()
+@@ -81,5 +81,13 @@
 -      resume(
 -        Effect.fail(
 -          transportError("open", `Failed to open WebSocket: ${eventMessage(event)}`, { url: input.url, kind: "open" }),
@@ -276,13 +229,7 @@
 +          } }),
 +        }),
 +      })))
-     }
-     const onClose = (event: CloseEvent) => {
-       cleanup()
-@@ -126,9 +134,10 @@
- export const open = (input: WebSocketRequest) =>
-   Effect.try({
-     try: () => {
+@@ -129,3 +137,4 @@
 -      const selected = gatewayWebSocket(input.url, input.headers)
 -      return new (globalThis.WebSocket as unknown as WebSocketConstructorWithHeaders)(selected?.url ?? input.url, {
 -        headers: selected?.headers ?? input.headers,
@@ -290,9 +237,6 @@
 +      if (selected) return selected as unknown as globalThis.WebSocket
 +      return new (globalThis.WebSocket as unknown as WebSocketConstructorWithHeaders)(input.url, {
 +        headers: input.headers,
-       })
-     },
-     catch: (error) =>
 --- /dev/null
 +++ b/packages/llm/src/ws-private.d.ts
 @@ -0,0 +1,5 @@
@@ -483,15 +427,9 @@
 +})
 --- a/packages/opencode/src/plugin/openai/ws-pool.ts
 +++ b/packages/opencode/src/plugin/openai/ws-pool.ts
-@@ -1,3 +1,4 @@
+@@ -0,0 +1 @@
 +import { APICallError } from "ai"
- import { ButlersEgress } from "@opencode-ai/llm/route"
- import WebSocket from "ws"
- import { ProviderError } from "@/provider/error"
-@@ -150,6 +151,13 @@
-         throw error
-       }
- 
+@@ -152,0 +154,7 @@
 +      if (APICallError.isInstance(error)) {
 +        invalidate(entry)
 +        return new Response(error.responseBody ?? "", {
@@ -499,43 +437,19 @@
 +          headers: error.responseHeaders,
 +        })
 +      }
-       recordStreamFailure(entry)
-       invalidate(entry)
-       if (entry.fallback) return httpFetch(input, httpInit)
 --- a/packages/opencode/src/plugin/openai/ws.ts
 +++ b/packages/opencode/src/plugin/openai/ws.ts
-@@ -1,3 +1,4 @@
+@@ -0,0 +1 @@
 +import { gatewaySocket, GatewayHandshakeError, logicalWebSocketURL } from "@opencode-ai/llm/route/gateway-websocket"
- import { ButlersEgress } from "@opencode-ai/llm/route"
- // Low-level OpenAI Responses WebSocket protocol helpers. Session pooling,
- // fallback, and continuation state intentionally live above this file.
-@@ -89,7 +90,7 @@
-         ? undefined
-         : ProxyEnv.getProxyForUrl(options.url.replace(/^wss:/, "https:").replace(/^ws:/, "http:"))
-     const connect = { headers: selected?.headers ?? headers, ...(proxy ? { proxy } : {}), followRedirects: false }
+@@ -92 +93 @@
 -    const socket = new WebSocket(selected?.url ?? options.url, connect)
 +    const socket = gatewaySocket(options.url, headers, options.timeout) ?? new WebSocket(options.url, connect)
-     const timeout = options.timeout
-       ? setTimeout(() => {
-           cleanup()
-@@ -115,7 +116,10 @@
-     function onError(error: unknown) {
-       socket.on("error", () => {})
-       cleanup()
+@@ -118 +119,4 @@
 -      reject(error instanceof Error ? error : new Error(errorMessage(error), { cause: error }))
 +      reject(error instanceof GatewayHandshakeError ? new APICallError({
 +        message: error.message, url: error.url, requestBodyValues: undefined,
 +        statusCode: error.status, responseHeaders: error.headers, responseBody: error.body,
 +      }) : error instanceof Error ? error : new Error(errorMessage(error), { cause: error }))
-     }
- 
-     function onClose(code: number, reason: Buffer) {
-@@ -229,7 +233,7 @@
-       controller?.error(
-         new APICallError({
-           message: wrappedError.message,
+@@ -232 +236 @@
 -          url: socket.url,
 +          url: logicalWebSocketURL(socket),
-           requestBodyValues: options.body,
-           statusCode: wrappedError.status,
-           responseHeaders: wrappedError.headers,

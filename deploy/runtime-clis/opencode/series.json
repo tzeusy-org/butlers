@@ -5,12 +5,13 @@
   "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
   "archive": {
     "root": "opencode-4ed4f749e644ffb5b279fb30b7b915e743d80142",
-    "sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58"
+    "sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
+    "url": "https://codeload.github.com/anomalyco/opencode/tar.gz/4ed4f749e644ffb5b279fb30b7b915e743d80142"
   },
   "patches": [
     {
       "path": "patches/0001-request-auth-effect.patch",
-      "sha256": "017b95b559befef251dacae0db8425f96173f04d732cf6c7500ab681bee6e08e",
+      "sha256": "53d0e366679fa37424111666d136e29e6277227ee6ceca5a99a50fb5be59e1bf",
       "files": [
         {
           "path": "bun.lock",
@@ -86,7 +87,7 @@
     },
     {
       "path": "patches/0002-selected-websocket-and-startup.patch",
-      "sha256": "79cdd2d34ffb1ff27cd48db257d4297497c65672ddd3b224d974174cb89b54be",
+      "sha256": "bdf4516c30974ec30e982ad567dbedb14aa5b5c85a9ac9fb1af82f565d8d1e92",
       "files": [
         {
           "path": "bun.lock",
@@ -142,7 +143,7 @@
     },
     {
       "path": "patches/0003-complete-local-ui-inputs.patch",
-      "sha256": "438e1b250baf8e550fda3609bffc43f516151751fdd3757f85067b96e692212c",
+      "sha256": "a8e33a75bec5dfd02931409b6e6099489c3b2d19f5a20fafba32a9199ff1f856",
       "files": [
         {
           "path": "packages/ui/script/provider-icons.test.ts",
@@ -162,5 +163,6 @@
       ]
     }
   ],
-  "source_tree_sha256": "3d2bcd3bc760d8295d98b89f9cfbfb0f04ed22d224e2aecb47109fa839e44ed2"
+  "source_tree_sha256": "3d2bcd3bc760d8295d98b89f9cfbfb0f04ed22d224e2aecb47109fa839e44ed2",
+  "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches."
 }

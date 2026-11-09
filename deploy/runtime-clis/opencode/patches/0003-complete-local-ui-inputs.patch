@@ -71,25 +71,13 @@
 +}
 --- a/packages/ui/vite.config.ts
 +++ b/packages/ui/vite.config.ts
-@@ -1,7 +1,7 @@
- import { defineConfig } from "vite"
- import solidPlugin from "vite-plugin-solid"
- import { iconsSpritesheet } from "vite-plugin-icons-spritesheet"
+@@ -4 +4 @@
 -import fs from "fs"
 +import { writeProviderIcons } from "./script/provider-icons"
- 
- export default defineConfig({
-   plugins: [
-@@ -39,21 +39,16 @@
-       void fetchProviderIcons()
-     },
-     buildStart() {
+@@ -42 +42 @@
 -      void fetchProviderIcons()
 +      return fetchProviderIcons()
-     },
-   }
- }
- 
+@@ -47,12 +47,7 @@
 -async function fetchProviderIcons() {
 -  const url = process.env.OPENCODE_MODELS_URL || "https://models.dev"
 -  const providers = await fetch(`${url}/api.json`)
@@ -109,4 +97,3 @@
 +    baseURL: process.env.OPENCODE_MODELS_URL || "https://models.dev",
 +    output: "./src/assets/icons/provider",
 +  })
- }

@@ -3,7 +3,8 @@
 This finite series targets upstream OpenCode 1.17.7 at
 `4ed4f749e644ffb5b279fb30b7b915e743d80142`. Apply it with the repository's
 `scripts/runtime_clis/prepare_vendor.py` and the digest-bound public source
-archive in `series.json`. That tool checks each preimage, patch, output and the
+archive in `series.json`. Zero-context hunks follow the existing repository series
+convention; exact complete-file preimage hashes bind their context. The tool checks each preimage, patch, output and the
 entire resulting source tree, including modes and symlinks. `LICENSE.upstream`
 retains the upstream MIT notice; the complete replay also retains upstream's
 other notices and native/UI inputs.

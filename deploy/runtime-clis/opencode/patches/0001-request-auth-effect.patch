@@ -1,74 +1,35 @@
 --- a/bun.lock
 +++ b/bun.lock
-@@ -481,6 +481,7 @@
-         "@smithy/eventstream-codec": "4.2.14",
-         "@smithy/util-utf8": "4.2.2",
-         "aws4fetch": "1.0.20",
+@@ -483,0 +484 @@
 +        "butlers-egress-undici": "npm:undici@7.24.5",
-         "effect": "catalog:",
-       },
-       "devDependencies": {
-@@ -5168,6 +5169,8 @@
- 
-     "uncrypto": ["uncrypto@0.1.3", "", {}, "sha512-Ql87qFHB3s/De2ClA9e0gsnS6zXG27SkTiSJwjCc9MebbfapQfuPzumMIUMi38ezPZVNFcHI9sUIepeQfw8J8Q=="],
- 
+@@ -5170,0 +5172,2 @@
 +    "butlers-egress-undici": ["undici@7.24.5", "", {}, "sha512-3IWdCpjgxp15CbJnsi/Y9TCDE7HWVN19j1hmzVhoAkY/+CJx449tVxT5wZc1Gwg8J+P0LWvzlBzxYRnHJ+1i7Q=="],
 +
-     "undici": ["undici@8.3.0", "", {}, "sha512-TkUDgb6tl7KOGZ+7e8E3d2FYgUQgF6z5YypqjWmixVQSQERFcVrVg0ySADm2LVLRh5ljAaHTCR5Fmz3Q34rB7Q=="],
- 
-     "undici-types": ["undici-types@7.16.0", "", {}, "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="],
 --- a/packages/core/src/effect/layer-node-platform.ts
 +++ b/packages/core/src/effect/layer-node-platform.ts
-@@ -1,11 +1,10 @@
- import { NodeFileSystem, NodePath } from "@effect/platform-node"
+@@ -2,2 +2 @@
 -import { LLMClient, RequestExecutor } from "@opencode-ai/llm/route"
 -import { FetchHttpClient } from "effect/unstable/http"
 +import { LLMClient, RequestExecutor, gatewayHttpLayer } from "@opencode-ai/llm/route"
- import { LayerNode } from "./layer-node"
- 
- export const filesystem = LayerNode.make(NodeFileSystem.layer, [])
- export const path = LayerNode.make(NodePath.layer, [])
+@@ -8 +7 @@
 -export const httpClient = LayerNode.make(FetchHttpClient.layer, [])
 +export const httpClient = LayerNode.make(gatewayHttpLayer, [])
- export const requestExecutor = LayerNode.make(RequestExecutor.layer, [httpClient])
- export const llmClient = LayerNode.make(LLMClient.layer, [requestExecutor])
- 
 --- a/packages/core/src/plugin/provider/openai-auth.ts
 +++ b/packages/core/src/plugin/provider/openai-auth.ts
-@@ -1,3 +1,4 @@
+@@ -0,0 +1 @@
 +import { ButlersEgress } from "@opencode-ai/llm/route"
- import { createServer } from "node:http"
- import { Deferred, Effect } from "effect"
- import { Integration } from "../../integration"
-@@ -113,7 +114,7 @@
-           while (true) {
-             const response = yield* Effect.tryPromise({
-               try: (signal) =>
+@@ -116 +117 @@
 -                fetch(`${issuer}/api/accounts/deviceauth/token`, {
 +                ButlersEgress.egressFetch(`${issuer}/api/accounts/deviceauth/token`, {
-                   method: "POST",
-                   headers: headers("application/json"),
-                   body: JSON.stringify({ device_auth_id: device.device_auth_id, user_code: device.user_code }),
-@@ -186,7 +187,7 @@
- function request<A>(url: string, init: RequestInit) {
-   return Effect.tryPromise({
-     try: async (signal) => {
+@@ -189 +190 @@
 -      const response = await fetch(url, { ...init, signal })
 +      const response = await ButlersEgress.egressFetch(url, { ...init, signal })
-       if (!response.ok) throw new Error(`Request failed: ${response.status}`)
-       return response.json() as Promise<A>
-     },
 --- a/packages/llm/package.json
 +++ b/packages/llm/package.json
-@@ -46,6 +46,7 @@
-     "@smithy/eventstream-codec": "4.2.14",
-     "@smithy/util-utf8": "4.2.2",
-     "aws4fetch": "1.0.20",
+@@ -49 +49,2 @@
 -    "effect": "catalog:"
 +    "effect": "catalog:",
 +    "butlers-egress-undici": "npm:undici@7.24.5"
-   }
- }
 --- /dev/null
 +++ b/packages/llm/src/butlers-egress.ts
 @@ -0,0 +1,425 @@
@@ -510,42 +471,24 @@
 +)
 --- a/packages/llm/src/route/executor.ts
 +++ b/packages/llm/src/route/executor.ts
-@@ -1,6 +1,6 @@
+@@ -0,0 +1 @@
 +import { gatewayHttpLayer } from "./egress"
- import { Cause, Context, Effect, Layer, Random } from "effect"
- import {
+@@ -3 +3,0 @@
 -  FetchHttpClient,
-   Headers,
-   HttpClient,
-   HttpClientError,
-@@ -380,6 +380,6 @@
-   }),
- )
- 
+@@ -383 +383 @@
 -export const defaultLayer = layer.pipe(Layer.provide(FetchHttpClient.layer))
 +export const defaultLayer = layer.pipe(Layer.provide(gatewayHttpLayer))
- 
- export * as RequestExecutor from "./executor"
 --- a/packages/llm/src/route/index.ts
 +++ b/packages/llm/src/route/index.ts
-@@ -23,3 +23,6 @@
- export type { Framing as FramingDef } from "./framing"
- export type { Protocol as ProtocolDef } from "./protocol"
- export type { Transport as TransportDef, TransportRuntime } from "./transport"
+@@ -25,0 +26,3 @@
 +
 +export { gatewayHttpLayer } from "./egress"
 +export * as ButlersEgress from "../butlers-egress"
 --- a/packages/llm/src/route/transport/websocket.ts
 +++ b/packages/llm/src/route/transport/websocket.ts
-@@ -1,3 +1,4 @@
+@@ -0,0 +1 @@
 +import { gatewayWebSocket } from "../../butlers-egress"
- import { Cause, Context, Effect, Layer, Queue, Stream } from "effect"
- import { Headers } from "effect/unstable/http"
- import { LLMError, TransportReason } from "../../schema"
-@@ -124,8 +125,12 @@
- 
- export const open = (input: WebSocketRequest) =>
-   Effect.try({
+@@ -127,2 +128,6 @@
 -    try: () =>
 -      new (globalThis.WebSocket as unknown as WebSocketConstructorWithHeaders)(input.url, { headers: input.headers }),
 +    try: () => {
@@ -554,9 +497,6 @@
 +        headers: selected?.headers ?? input.headers,
 +      })
 +    },
-     catch: (error) =>
-       transportError("open", error instanceof Error ? error.message : "Failed to construct WebSocket", {
-         url: input.url,
 --- /dev/null
 +++ b/packages/llm/src/undici-private.d.ts
 @@ -0,0 +1,17 @@
@@ -579,154 +519,63 @@
 +}
 --- a/packages/opencode/src/plugin/openai/codex.ts
 +++ b/packages/opencode/src/plugin/openai/codex.ts
-@@ -1,3 +1,4 @@
+@@ -0,0 +1 @@
 +import { ButlersEgress } from "@opencode-ai/llm/route"
- import type { Hooks, PluginInput } from "@opencode-ai/plugin"
- import { InstallationVersion } from "@opencode-ai/core/installation/version"
- import { OAUTH_DUMMY_KEY } from "../../auth"
-@@ -103,7 +104,7 @@
- }
- 
- async function exchangeCodeForTokens(code: string, redirectUri: string, pkce: PkceCodes): Promise<TokenResponse> {
+@@ -106 +107 @@
 -  const response = await fetch(`${ISSUER}/oauth/token`, {
 +  const response = await ButlersEgress.egressFetch(`${ISSUER}/oauth/token`, {
-     method: "POST",
-     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-     body: new URLSearchParams({
-@@ -121,7 +122,7 @@
- }
- 
- async function refreshAccessToken(refreshToken: string, issuer = ISSUER): Promise<TokenResponse> {
+@@ -124 +125 @@
 -  const response = await fetch(`${issuer}/oauth/token`, {
 +  const response = await ButlersEgress.egressFetch(`${issuer}/oauth/token`, {
-     method: "POST",
-     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-     body: new URLSearchParams({
-@@ -398,7 +399,7 @@
-       async loader(getAuth) {
-         const auth = await getAuth()
-         const websocketFetch = options.experimentalWebSockets
+@@ -401 +402 @@
 -          ? OpenAIWebSocketPool.createWebSocketFetch({ httpFetch: fetch })
 +          ? OpenAIWebSocketPool.createWebSocketFetch({ httpFetch: ButlersEgress.egressFetch as typeof globalThis.fetch })
-           : undefined
-         if (websocketFetch) {
-           websocketFetches.push(websocketFetch)
-@@ -430,7 +431,7 @@
- 
-             const currentAuth = await getAuth()
-             if (currentAuth.type !== "oauth")
+@@ -433 +434 @@
 -              return websocketFetch ? websocketFetch(requestInput, init) : fetch(requestInput, init)
 +              return websocketFetch ? websocketFetch(requestInput, init) : ButlersEgress.egressFetch(requestInput, init)
- 
-             const authWithAccount = currentAuth as typeof currentAuth & { accountId?: string }
- 
-@@ -497,7 +498,7 @@
-               headers,
-             }
-             if (websocketFetch && parsed.pathname.endsWith("/responses")) return websocketFetch(url, requestInit)
+@@ -500 +501 @@
 -            return fetch(url, OpenAIWebSocketPool.withoutInternalHeaders(requestInit))
 +            return ButlersEgress.egressFetch(url, OpenAIWebSocketPool.withoutInternalHeaders(requestInit))
-           },
-         }
-       },
-@@ -536,7 +537,7 @@
-           label: "ChatGPT Pro/Plus (headless)",
-           type: "oauth",
-           authorize: async () => {
+@@ -539 +540 @@
 -            const deviceResponse = await fetch(`${ISSUER}/api/accounts/deviceauth/usercode`, {
 +            const deviceResponse = await ButlersEgress.egressFetch(`${ISSUER}/api/accounts/deviceauth/usercode`, {
-               method: "POST",
-               headers: {
-                 "Content-Type": "application/json",
-@@ -560,7 +561,7 @@
-               method: "auto" as const,
-               async callback() {
-                 while (true) {
+@@ -563 +564 @@
 -                  const response = await fetch(`${ISSUER}/api/accounts/deviceauth/token`, {
 +                  const response = await ButlersEgress.egressFetch(`${ISSUER}/api/accounts/deviceauth/token`, {
-                     method: "POST",
-                     headers: {
-                       "Content-Type": "application/json",
-@@ -578,7 +579,7 @@
-                       code_verifier: string
-                     }
- 
+@@ -581 +582 @@
 -                    const tokenResponse = await fetch(`${ISSUER}/oauth/token`, {
 +                    const tokenResponse = await ButlersEgress.egressFetch(`${ISSUER}/oauth/token`, {
-                       method: "POST",
-                       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                       body: new URLSearchParams({
 --- a/packages/opencode/src/plugin/openai/ws-pool.ts
 +++ b/packages/opencode/src/plugin/openai/ws-pool.ts
-@@ -1,3 +1,4 @@
+@@ -0,0 +1 @@
 +import { ButlersEgress } from "@opencode-ai/llm/route"
- import WebSocket from "ws"
- import { ProviderError } from "@/provider/error"
- import { isRecord } from "@/util/record"
-@@ -29,7 +30,7 @@
- const CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached"
- 
- export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
+@@ -32 +33 @@
 -  const httpFetch = options?.httpFetch ?? globalThis.fetch
 +  const httpFetch = options?.httpFetch ?? (ButlersEgress.egressFetch as typeof globalThis.fetch)
-   const pool = new Map<string, PoolEntry>()
-   const connectTimeout = options?.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT
-   const idleTimeout = options?.idleTimeout ?? DEFAULT_IDLE_TIMEOUT
 --- a/packages/opencode/src/plugin/openai/ws.ts
 +++ b/packages/opencode/src/plugin/openai/ws.ts
-@@ -1,3 +1,4 @@
+@@ -0,0 +1 @@
 +import { ButlersEgress } from "@opencode-ai/llm/route"
- // Low-level OpenAI Responses WebSocket protocol helpers. Session pooling,
- // fallback, and continuation state intentionally live above this file.
- 
-@@ -82,12 +83,13 @@
-     delete headers["content-length"]
- 
-     // Bun does not apply HTTP(S)_PROXY to WebSockets unless the proxy is supplied explicitly.
+@@ -84,0 +86 @@
 +    const selected = ButlersEgress.gatewayWebSocket(options.url, headers)
-     const proxy =
+@@ -86 +88 @@
 -      typeof Bun === "undefined"
 +      selected || typeof Bun === "undefined"
-         ? undefined
-         : ProxyEnv.getProxyForUrl(options.url.replace(/^wss:/, "https:").replace(/^ws:/, "http:"))
+@@ -89,2 +91,2 @@
 -    const connect = { headers, ...(proxy ? { proxy } : {}) }
 -    const socket = new WebSocket(options.url, connect)
 +    const connect = { headers: selected?.headers ?? headers, ...(proxy ? { proxy } : {}), followRedirects: false }
 +    const socket = new WebSocket(selected?.url ?? options.url, connect)
-     const timeout = options.timeout
-       ? setTimeout(() => {
-           cleanup()
 --- a/packages/opencode/src/provider/provider.ts
 +++ b/packages/opencode/src/provider/provider.ts
-@@ -1,3 +1,4 @@
+@@ -0,0 +1 @@
 +import { ButlersEgress } from "@opencode-ai/llm/route"
- import { LayerNode } from "@opencode-ai/core/effect/layer-node"
- import os from "os"
- import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
-@@ -525,7 +526,7 @@
-             const headers = new Headers(init?.headers)
-             headers.set("Authorization", `Bearer ${token.token}`)
- 
+@@ -528 +529 @@
 -            return fetch(input, { ...init, headers })
 +            return ButlersEgress.egressFetch(input, { ...init, headers })
-           },
-         },
-         async getModel(sdk: any, modelID: string) {
-@@ -899,7 +900,7 @@
-             } catch {}
-           }
- 
+@@ -902 +903 @@
 -          const response = await fetch(url, init)
 +          const response = await ButlersEgress.egressFetch(url, init)
- 
-           if (!response.ok && response.status === 400) {
-             try {
-@@ -1690,7 +1691,7 @@
-         delete options["headerTimeout"]
- 
-         options["fetch"] = async (input: any, init?: BunFetchRequestInit) => {
+@@ -1693 +1694 @@
 -          const fetchFn = customFetch ?? fetch
 +          const fetchFn = customFetch ?? ButlersEgress.egressFetch
-           const opts = init ?? {}
-           const chunkAbortCtl = typeof chunkTimeout === "number" && chunkTimeout > 0 ? new AbortController() : undefined
-           const headerTimeoutMs = headerTimeout === false ? undefined : headerTimeout
