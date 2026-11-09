@@ -203,8 +203,11 @@ async def test_probe_all_hands_the_target_to_codex_only(monkeypatch):
         return health.AuthHealthResult(provider.name, health.AuthHealthState.unavailable)
 
     monkeypatch.setattr(health, "probe_provider", probe)
+    # Hermetic: probe_all skips a provider whose CLI is not on this host's PATH.
+    monkeypatch.setattr(type(PROVIDERS["codex"]), "is_available", lambda self: True)
     target = object()
     await health.probe_all(codex_authority=None, session_host=target)  # type: ignore[arg-type]
+    assert set(calls) == set(PROVIDERS) and len(calls) > 1
     assert calls["codex"]["session_host"] is target
     assert all(
         kwargs.get("session_host") is None for name, kwargs in calls.items() if name != "codex"
