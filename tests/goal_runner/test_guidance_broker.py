@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 from uuid import UUID
 
 import pytest
 
 from butlers.capability_broker.contracts import Reason
 from butlers.goal_runner.guidance import (
+    LEAD_POLICY_DOMAIN,
     Guidance,
     GuidanceItem,
     GuidanceLimits,
     GuidanceReader,
 )
+from butlers.goal_runner.roster_guidance import roster_guidance
 from butlers.goal_runner.tools import GoalTools
 from tests.capability_broker.test_broker_ledger import SEARCH, StaticCatalog, _grant
 from tests.goal_runner.test_context_search_broker import (
@@ -398,3 +401,60 @@ async def test_a_domain_outside_the_slug_is_refused_at_construction(broker_db_ur
     async with harness(broker_db_url) as h:
         with pytest.raises(ValueError):
             Guidance(h.w.broker, {domain: Source()})
+
+
+# -- the roster adapters and the lead policy ------------------------------------
+
+
+def roster_dir(tmp_path: Path, *butlers: str) -> Path:
+    root = tmp_path / "roster"
+    for butler in butlers:
+        (root / butler).mkdir(parents=True)
+        (root / butler / "butler.toml").write_text("[butler]\n")
+        (root / butler / "CLAUDE.md").write_text(f"# {butler}\nHow {butler} files records.\n")
+    policy = root / "switchboard" / "goal-policy"
+    policy.mkdir(parents=True)
+    (policy / "LEAD.md").write_text("# Lead policy\nDelegate records narrowly.\n")
+    return root
+
+
+def configure_roster(h, root: Path) -> None:
+    h.w.broker.catalog = StaticCatalog(CATALOG)
+    h.tools = GoalTools(h.w.broker, h.runner, guidance=roster_guidance(h.w.broker, root))
+
+
+async def test_a_lead_finds_its_domains_and_the_lead_policy_in_the_roster(broker_db_url, tmp_path):
+    async with harness(broker_db_url) as h:
+        configure_roster(h, roster_dir(tmp_path, "mail", "health"))
+        goal = await h.goal(_grant(HEALTH_READ))
+        lead = await h.lead(goal)
+        found = await h.call(goal, lead.token, FIND, {"query": "records", "k": 5})
+        assert found["sources"] == {"health": "ok", "lead": "ok"}  # mail is not granted
+        assert {hit["ref"] for hit in found["hits"]} == {"health:CLAUDE.md", "lead:LEAD.md"}
+        loaded = await h.call(goal, lead.token, LOAD, {"ref": "lead:LEAD.md"})
+        assert loaded["inline"] and loaded["text"] == "# Lead policy\nDelegate records narrowly.\n"
+        assert loaded["version"].startswith("sha256:")
+        for ref in ("health:../mail/CLAUDE.md", "health:skills/../../mail", "mail:CLAUDE.md"):
+            assert await refused(h.call(goal, lead.token, LOAD, {"ref": ref})) is (Reason.RESOURCE)
+
+
+async def test_the_lead_policy_needs_no_grant_and_never_reaches_a_child(broker_db_url, tmp_path):
+    async with harness(broker_db_url) as h:
+        configure_roster(h, roster_dir(tmp_path, "health"))
+        goal = await h.goal(_grant(MAIL_READ), _grant(HEALTH_READ))  # mail has no guidance
+        lead = await h.lead(goal)
+        loaded = await h.call(goal, lead.token, LOAD, {"ref": "lead:LEAD.md"})
+        assert loaded["text"].startswith("# Lead policy")
+        await h.delegate(goal, lead.token, HEALTH_READ.identity)
+        child = await h.launched(2)
+        assert await refused(h.call(goal, child.token, LOAD, {"ref": "lead:LEAD.md"})) is (
+            Reason.RESOURCE
+        )
+        found = await h.call(goal, child.token, FIND, {"query": "records"})
+        assert found["sources"] == {"health": "ok"}
+
+
+async def test_no_butler_may_take_the_lead_policy_domain(broker_db_url, sources):
+    async with harness(broker_db_url) as h:
+        with pytest.raises(ValueError):
+            Guidance(h.w.broker, {**sources, LEAD_POLICY_DOMAIN: Source()})
