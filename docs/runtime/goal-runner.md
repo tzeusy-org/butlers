@@ -64,6 +64,15 @@ namespace is reserved like `goal`: no catalog capability of that domain is liste
   through resource-restricted grants is not searched, because a source cannot honour a per-resource
   restriction. A grant that covers no source refuses `CAPABILITY` and charges nothing. A child holds
   a subset of its lead's grant, so it sees a subset of the sources.
+- **S5 trust rules.** An exposed reader, or one of third-party origin, is refused `POLICY` before
+  anything is charged: S5 gives it availability only, never recall. Only owner-authored
+  (`owner`, `owner_correction`), provably untainted text is inlined; every other hit is a bare
+  reference (`inline: false`, no excerpt) carrying its `category`, `authority` and `taint` label,
+  and a missing authority or taint never inlines. The six sensitive categories are excluded unless
+  the query names one in `regions` or `kinds` and a granted read capability declares it (otherwise
+  `RESOURCE`, uncharged). A hit in an excluded category is dropped whatever the source returned,
+  and not counted. A source gets `ReaderContext` (depth, exposure, the categories allowed), never a
+  token, goal or grant.
 - **Read-pure.** A call is charged to the goal budget and the caller's share like every goal tool
   (`BUDGET` when spent, before any source is asked). It writes no effect row. The only other write
   is the reader's label join for what it read (D6): a source's stamp account sets the label, and
@@ -74,9 +83,16 @@ namespace is reserved like `goal`: no catalog capability of that domain is liste
   `omitted` (count and reason `k` or `packet_budget`). Sources are fused by rank, never raw score,
   and shown in the order of credence. One slow or failed source makes the status `degraded`; all
   failing refuses `UNAVAILABLE`.
-- **Not yet covered.** Owner-law `never` terms on a domain's read capability do not yet exclude its
-  source, and there is no production `ContextSource` adapter (each domain's memory and fact search
-  is a separate package). Limits are a constructor argument, not yet read from `runtime_config`.
+- **Not yet covered.** Preconditions for any production `ContextSource` adapter, which the engine
+  cannot enforce from outside a source:
+  - an availability-only view for exposed and third-party goals (`busy_until` or unknown); they are
+    refused outright today;
+  - private-custody exclusion and raw-coordinate exclusion in every hit;
+  - per-hit `category`, `authority` and `tainted` supplied truthfully (a hit with no taint is never
+    inlined, so an adapter that cannot say loses inlining, not safety);
+  - resolving an opaque reference to its text, which must be its own label-joining read;
+  - owner-law `never` terms on a domain's read capability do not yet exclude its source.
+  Limits are a constructor argument, not yet read from `runtime_config`.
 
 ## Delegation (D9)
 

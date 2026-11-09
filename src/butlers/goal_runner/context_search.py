@@ -10,6 +10,11 @@ merged into a single envelope of whole, labelled items.
   at its depth. A domain reachable only through resource-restricted grants is not
   searched, because a source cannot honour a per-resource restriction; so a child,
   holding a subset of its lead's grant, can only ever see a subset of its sources.
+* **S5 trust rules.** An exposed reader, or one of third-party origin, is refused: it gets
+  availability only, never recall. Only owner-authored, provably untainted text is inlined;
+  every other hit is a bare reference with its category, authority and taint label. The six
+  sensitive categories are excluded unless the query names one and the grant covers it, and a
+  hit in an excluded category is dropped whatever the source returned.
 * **Read-pure.** The call writes only what every goal-tool call writes: one call on
   the goal budget and the invocation's share (refused ``BUDGET`` when spent), and
   the reader's label join for what it actually read (D6). It creates no effect row,
@@ -28,7 +33,7 @@ import asyncio
 import logging
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
@@ -173,6 +178,10 @@ class SourceHit:
     observed_at: datetime | None = None
     authority: str = "unknown"
     conflict_set: str | None = None
+    category: str | None = None
+    """One of the six sensitive categories, or ``None`` for a hit that carries none."""
+    tainted: bool | None = None
+    """``False`` only when the record is provably untainted; ``None`` is unknown."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,10 +199,30 @@ class SourceResult:
     categories: frozenset[str] = CATEGORIES
 
 
-class ContextSource(Protocol):
-    """A domain's read-only memory and fact search; it must not record the read."""
+@dataclass(frozen=True, slots=True)
+class ReaderContext:
+    """What a source may know about its reader: never a token, a goal or a grant.
 
-    async def search(self, query: ContextQuery) -> SourceResult: ...
+    ``categories`` are the sensitive categories this search may return from this source:
+    explicitly requested and inside the reader's grant. Everything else is excluded, and the
+    engine drops it again whatever the source returns. ``exposed`` is always false today,
+    because an exposed reader is refused; a source must still honour it, for when an
+    availability-only view exists.
+    """
+
+    depth: int
+    exposed: bool
+    categories: frozenset[str]
+
+
+class ContextSource(Protocol):
+    """A domain's read-only memory and fact search; it must not record the read.
+
+    It must also keep private-custody content and raw coordinates out of every hit; the
+    engine cannot see inside a source to enforce either.
+    """
+
+    async def search(self, query: ContextQuery, reader: ReaderContext) -> SourceResult: ...
 
 
 @dataclass(slots=True)
@@ -217,6 +246,8 @@ def _valid(result: Any) -> bool:
             isinstance(hit, SourceHit)
             and all(type(v) is str for v in (hit.ref, hit.region, hit.kind, hit.excerpt))
             and 0 < len(hit.ref) <= _REF_CHARS
+            and (hit.category is None or hit.category in CATEGORIES)
+            and (hit.tainted is None or type(hit.tainted) is bool)
             for hit in result.hits
         )
     )
@@ -247,16 +278,29 @@ def _tokens(entry: dict[str, Any]) -> int:
     return math.ceil(len(repr(entry).encode("utf-8")) / 4)
 
 
+_OWNER_AUTHORED = frozenset({"owner_correction", "owner"})
+
+
+def inlined(hit: SourceHit) -> bool:
+    """S5: only owner-authored, provably untainted text may inline; the rest is a bare
+    reference. A missing or unknown authority or taint never inlines."""
+    return hit.authority in _OWNER_AUTHORED and hit.tainted is False
+
+
 def _entry(item: _Item, limit: int) -> dict[str, Any]:
     hit = item.hit
     authority = hit.authority if hit.authority in _CREDENCE else "unknown"
+    inline = inlined(hit)
     return {
         "ref": f"{item.source}:{hit.ref}",
         "source": item.source,
         "region": hit.region,
         "kind": hit.kind,
-        "excerpt": hit.excerpt[:limit],
-        "excerpt_truncated": len(hit.excerpt) > limit,
+        "inline": inline,
+        "excerpt": hit.excerpt[:limit] if inline else None,
+        "excerpt_truncated": inline and len(hit.excerpt) > limit,
+        "category": hit.category,
+        "taint": "unknown" if hit.tainted is None else ("tainted" if hit.tainted else "untainted"),
         "observed_at": None
         if hit.observed_at is None
         else hit.observed_at.astimezone(UTC).isoformat(),
@@ -304,12 +348,14 @@ class ContextSearch:
             "goal.context_search", record_exception=False, set_status_on_exception=False
         ) as span:
             span.set_attribute("goal_id", str(goal_id))
-            principal, exhausted, sources = await self._admit(goal_id, token)
+            principal, exhausted, sources, included = await self._admit(goal_id, token, query)
             span.set_attribute("invocation_id", str(principal.invocation_id))
             span.set_attribute("depth", principal.depth)
             if exhausted is not None:
                 raise exhausted
-            outcomes = await self._fan_out(sources, query)
+            outcomes = self._within_categories(
+                await self._fan_out(sources, query, included, principal.depth), included
+            )
             if not any(o.status == "ok" for o in outcomes.values()):
                 raise BrokerRefused(Reason.UNAVAILABLE)  # all failed: not an empty success
             await self._join(goal_id, token, outcomes)
@@ -325,16 +371,25 @@ class ContextSearch:
         }
 
     async def _admit(
-        self, goal_id: UUID, token: str
-    ) -> tuple[Principal, BrokerRefused | None, dict[str, ContextSource]]:
-        """Authenticate, find the sources this grant covers, and charge the call."""
+        self, goal_id: UUID, token: str, query: ContextQuery
+    ) -> tuple[
+        Principal, BrokerRefused | None, dict[str, ContextSource], dict[str, frozenset[str]]
+    ]:
+        """Authenticate, find the sources this grant covers, and charge the call.
+
+        S5: an exposed reader, or one of third-party origin, gets availability only, never
+        recall, so it is refused here before anything is charged. A sensitive category is
+        searched only when the query names it and the grant covers it.
+        """
         self.broker._require_available()
         async with self.broker._transaction() as ledger:
             principal = await ledger.authenticate(goal_id, token)
             catalog = await self.broker._live_catalog.load(ledger.connection)
             if catalog.digest != principal.catalog_digest:
                 raise BrokerRefused(Reason.CATALOG)
-            granted = set()
+            if principal.exposed or principal.origin == "third_party":
+                raise BrokerRefused(Reason.POLICY)
+            granted: dict[str, frozenset[str]] = {}
             for grant in principal.grants:
                 capability = catalog.get(grant.capability)
                 if (
@@ -344,20 +399,33 @@ class ContextSearch:
                     and not grant.resources  # a restricted grant cannot be honoured by a source
                     and capability.domain in self.sources
                 ):
-                    granted.add(capability.domain)
+                    covered = capability.categories & CATEGORIES
+                    granted[capability.domain] = (
+                        granted.get(capability.domain, frozenset()) | covered
+                    )
             if not granted:
                 raise BrokerRefused(Reason.CAPABILITY)
+            asked = frozenset(query.regions + query.kinds) & CATEGORIES
+            if asked - frozenset().union(*granted.values()):
+                raise BrokerRefused(Reason.RESOURCE)  # a category the grant does not cover
+            included = {name: asked & covered for name, covered in granted.items()}
             exhausted = await ledger.charge_call(principal)
-        return principal, exhausted, {name: self.sources[name] for name in sorted(granted)}
+        sources = {name: self.sources[name] for name in sorted(granted)}
+        return principal, exhausted, sources, included
 
     async def _fan_out(
-        self, sources: Mapping[str, ContextSource], query: ContextQuery
+        self,
+        sources: Mapping[str, ContextSource],
+        query: ContextQuery,
+        included: Mapping[str, frozenset[str]],
+        depth: int,
     ) -> dict[str, _Outcome]:
-        async def one(source: ContextSource) -> SourceResult:
+        async def one(name: str, source: ContextSource) -> SourceResult:
+            reader = ReaderContext(depth=depth, exposed=False, categories=included[name])
             async with asyncio.timeout(self.limits.per_domain_s):
-                return await source.search(query)
+                return await source.search(query, reader)
 
-        tasks = {name: asyncio.ensure_future(one(source)) for name, source in sources.items()}
+        tasks = {name: asyncio.ensure_future(one(name, source)) for name, source in sources.items()}
         try:
             await asyncio.wait(tasks.values(), timeout=self.limits.total_s)
         finally:
@@ -381,6 +449,25 @@ class ContextSearch:
                 outcomes[name] = _Outcome("ok", task.result())
         return outcomes
 
+    @staticmethod
+    def _within_categories(
+        outcomes: dict[str, _Outcome], included: Mapping[str, frozenset[str]]
+    ) -> dict[str, _Outcome]:
+        """Drop every hit in a sensitive category this search was not entitled to.
+
+        Whatever a source returned, a hit in an excluded category never leaves the engine,
+        and is not counted: its absence must not reveal that it exists.
+        """
+        for name, outcome in outcomes.items():
+            result = outcome.result
+            if result is None:
+                continue
+            kept = tuple(
+                h for h in result.hits if h.category is None or h.category in included[name]
+            )
+            outcome.result = replace(result, hits=kept)
+        return outcomes
+
     async def _join(self, goal_id: UUID, token: str, outcomes: Mapping[str, _Outcome]) -> None:
         """What was read joins the reader (D6); a reader that is no longer current gets nothing."""
         async with self.broker._transaction() as ledger:
@@ -389,8 +476,8 @@ class ContextSearch:
             label: Label | None = None
             for outcome in outcomes.values():
                 result = outcome.result
-                if result is None or not result.hits:
-                    continue  # nothing came back from this source, so nothing was learned
+                if result is None or not any(inlined(h) for h in result.hits):
+                    continue  # no text came back from this source, so nothing was read
                 part = output_label("stamped", result.stamped_owner_untainted, result.categories)
                 for pointer in result.stamped_writers:
                     part = part.join(await ledger.writer_label(pointer))
@@ -408,7 +495,9 @@ __all__ = [
     "ContextSearch",
     "ContextSearchLimits",
     "ContextSource",
+    "ReaderContext",
     "SourceHit",
     "SourceResult",
+    "inlined",
     "parse_query",
 ]
