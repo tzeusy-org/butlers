@@ -161,8 +161,29 @@
           "after_sha256": "2cfeabd366d493d1d71b3c16f1754888878f0281c5e90006195164b69ab61049"
         }
       ]
+    },
+    {
+      "path": "patches/0004-redact-effect-websocket-errors.patch",
+      "sha256": "f17ad9b0b47a93e22cf3ed41364a9677f668250951a41e0dc2eed1804e964e88",
+      "files": [
+        {
+          "path": "packages/llm/src/route/executor.ts",
+          "before_sha256": "d506737f4296511cde5c8d3dfa091617700533579046d4eeae4050d447d59246",
+          "after_sha256": "807463d2f2d60965fbaf89740020dc8014ebed4b8f27bbb5559c69dfd5d0c325"
+        },
+        {
+          "path": "packages/llm/src/route/transport/websocket.ts",
+          "before_sha256": "6b24f9ffc5e14c7588535fb62d6b82aaed9f2201395d7c94c7ed32b3dae6368a",
+          "after_sha256": "044dd6f39adc28c4bcaeed1d4e1d18a0c02b8c2c728aec0b43799341a53b4298"
+        },
+        {
+          "path": "packages/llm/test/gateway-websocket-errors.test.ts",
+          "before_sha256": null,
+          "after_sha256": "32b1dbbb3f87d44aa01d5a759f4a6f0ba246c17d2aa4f011ede8bca561d3b448"
+        }
+      ]
     }
   ],
-  "source_tree_sha256": "3d2bcd3bc760d8295d98b89f9cfbfb0f04ed22d224e2aecb47109fa839e44ed2",
+  "source_tree_sha256": "94044a9857d725cd242495cffe21d902f7b31994f1a708873e78499494c1d311",
   "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches."
 }
