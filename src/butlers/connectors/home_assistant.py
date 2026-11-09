@@ -61,7 +61,7 @@ import logging
 import os
 import random
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -1758,7 +1758,7 @@ async def emit_with_wellness_promotion(
     emit_home_assistant: bool = True,
     classification_result: ClassifyResult | None = None,
     content_blind_errors: bool = False,
-    on_failed: Callable[[dict[str, Any], BaseException], None] | None = None,
+    on_failed: Callable[[dict[str, Any], BaseException], Awaitable[None]] | None = None,
 ) -> bool:
     """Submit the ``home_assistant`` envelope and, when warranted, a second
     ``wellness`` envelope for the same event (design ADR-3).
@@ -1818,7 +1818,7 @@ async def emit_with_wellness_promotion(
                 # Primary failed (or its scrub withheld it): do not attempt the
                 # secondary channel, do not advance.
                 return False
-            on_failed(scrubbed, exc)
+            await on_failed(scrubbed, exc)
             submitted_all = False
 
     if not promotion_enabled:
@@ -1880,7 +1880,7 @@ async def emit_with_wellness_promotion(
         if metrics is not None:
             metrics.inc_submission("wellness", "error")
         if on_failed is not None and scrubbed_wellness is not None:
-            on_failed(scrubbed_wellness, exc)
+            await on_failed(scrubbed_wellness, exc)
         # Secondary failed: leave the checkpoint un-advanced so a re-read
         # re-emits both channels (the accepted primary will dedupe).
         return False
@@ -2270,11 +2270,12 @@ def _make_event_dispatcher(
             return transport
         return "rest_fallback" if connector._rest_fallback_active else "websocket"
 
-    def _parker(entity_id: str) -> Callable[[dict[str, Any], BaseException], None]:
+    def _parker(entity_id: str) -> Callable[[dict[str, Any], BaseException], Awaitable[None]]:
         # The live stream never re-delivers an event, so a failed submission is
-        # parked as a replayable error row instead of dropped (bu-dhloi1.224).
-        def park(envelope: dict[str, Any], exc: BaseException) -> None:
-            ha_filter_persistence.record_submission_failure(
+        # parked durably as a replayable error row instead of dropped
+        # (bu-dhloi1.224).
+        async def park(envelope: dict[str, Any], exc: BaseException) -> None:
+            await ha_filter_persistence.park_submission_failure(
                 envelope=envelope, entity_id=entity_id, exc=exc
             )
 
@@ -2382,8 +2383,7 @@ def _make_event_dispatcher(
                 )
                 connector.on_event_received(passed_all_filters=False)
                 if scrubbed is not None:
-                    _parker(entity_id)(scrubbed, exc)
-                    await ha_filter_persistence.flush()
+                    await _parker(entity_id)(scrubbed, exc)
                 return
 
             connector.on_event_received(passed_all_filters=True)
@@ -2559,8 +2559,6 @@ def _make_event_dispatcher(
                         classification_result=wellness_result,
                         on_failed=_parker(entity_id),
                     )
-                    if not wellness_submitted:
-                        await ha_filter_persistence.flush()
                     if connector._ha_metrics is not None:
                         connector._ha_metrics.observe_event_latency(time.monotonic() - ingest_start)
                     if wellness_submitted and db_pool is not None:
@@ -2618,9 +2616,8 @@ def _make_event_dispatcher(
             connector._ha_metrics.observe_event_latency(time.monotonic() - ingest_start)
 
         if not submitted_all:
-            # The failed envelopes are parked as replayable error rows; persist
-            # them now. The checkpoint stays put (it only deduplicates).
-            await ha_filter_persistence.flush()
+            # The failed envelopes were parked durably as replayable error rows.
+            # The checkpoint stays put (it only deduplicates).
             return
 
         # Persist person.* state-change events to the history evidence table

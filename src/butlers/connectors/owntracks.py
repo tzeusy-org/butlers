@@ -969,6 +969,8 @@ class OwnTracksConnector:
         # and sends it again, until its attempts are spent and it is parked as a
         # replayable error row (bu-dhloi1.224). Keyed by idempotency key.
         self._ingest_retry = IngestRetryBudget()
+        # One background flush + replay drain per device (endpoint identity).
+        self._flush_drain_tasks: dict[str, asyncio.Task[None]] = {}
 
         # Health server
         self._health_server: uvicorn.Server | None = None
@@ -1083,6 +1085,15 @@ class OwnTracksConnector:
         # Stop retention purge task
         if self._retention is not None:
             await self._retention.stop()
+
+        # Stop background flush/drain tasks; a cancelled drain releases its
+        # claims, and the flush below persists what they had not.
+        background = [t for t in self._flush_drain_tasks.values() if not t.done()]
+        for task in background:
+            task.cancel()
+        if background:
+            await asyncio.gather(*background, return_exceptions=True)
+        self._flush_drain_tasks.clear()
 
         # Flush every device's filtered event buffer and send its final
         # heartbeat (bu-86zll: each resolved device has its own independent
@@ -1437,15 +1448,18 @@ class OwnTracksConnector:
                 )
                 raise
             # Attempts spent: park the exact envelope (idempotency key included)
-            # as a replayable error row, then acknowledge the point.
-            device.filtered_event_buffer.record(
+            # as a replayable error row. The row is the only copy once the
+            # point is acknowledged, so park() writes it at once and raises
+            # (ParkNotDurableError -> 503, the phone keeps the point) unless
+            # it was committed. Error detail is the class only: transport
+            # text can echo content.
+            await device.filtered_event_buffer.park(
+                self._db_pool,
                 external_message_id=str(envelope["event"]["external_event_id"]),
                 source_channel=_DESCRIPTOR.channel,
                 sender_identity=device.endpoint_identity,
                 subject_or_preview=f"OwnTracks {payload_type} event",
-                filter_reason=FilteredEventBuffer.reason_submission_error(),
-                status="error",
-                error_detail=str(exc),
+                error_detail=type(exc).__name__,
                 full_payload=FilteredEventBuffer.stored_envelope(envelope),
             )
             logger.warning(
@@ -1482,21 +1496,38 @@ class OwnTracksConnector:
                 )
 
         # Flush filtered event buffer (task 6.4) and drain replay queue (task 6.5)
-        if self._db_pool is not None:
-            try:
-                await device.filtered_event_buffer.flush(self._db_pool)
-            except Exception:
-                logger.warning("OwnTracksConnector: filtered event flush failed", exc_info=True)
-            try:
-                await drain_replay_pending(
-                    pool=self._db_pool,
-                    connector_type=_CONNECTOR_TYPE,
-                    endpoint_identity=device.endpoint_identity,
-                    submit_fn=self._submit_envelope,
-                    drain_logger=logger,
-                )
-            except Exception:
-                logger.warning("OwnTracksConnector: replay queue drain failed", exc_info=True)
+        # in the background: the webhook waits on this method, and a slow drain
+        # must not turn an already-handled point into a 503 (bu-dhloi1.224).
+        self._schedule_flush_and_drain(device)
+
+    def _schedule_flush_and_drain(self, device: _OwnTracksDeviceState) -> None:
+        """Start one background flush + replay drain per device, if none is running."""
+        if self._db_pool is None:
+            return
+        running = self._flush_drain_tasks.get(device.endpoint_identity)
+        if running is not None and not running.done():
+            return
+        self._flush_drain_tasks[device.endpoint_identity] = asyncio.create_task(
+            self._flush_and_drain(device)
+        )
+
+    async def _flush_and_drain(self, device: _OwnTracksDeviceState) -> None:
+        if self._db_pool is None:
+            return
+        try:
+            await device.filtered_event_buffer.flush(self._db_pool)
+        except Exception:
+            logger.warning("OwnTracksConnector: filtered event flush failed", exc_info=True)
+        try:
+            await drain_replay_pending(
+                pool=self._db_pool,
+                connector_type=_CONNECTOR_TYPE,
+                endpoint_identity=device.endpoint_identity,
+                submit_fn=self._submit_envelope,
+                drain_logger=logger,
+            )
+        except Exception:
+            logger.warning("OwnTracksConnector: replay queue drain failed", exc_info=True)
 
     async def _submit_envelope(self, envelope: dict[str, Any]) -> None:
         """Submit an ingest.v1 envelope to the Switchboard (for replay drain)."""

@@ -27,6 +27,7 @@ from butlers.connectors.home_assistant import (
 from butlers.connectors.home_assistant_filter import HAFilterPersistence
 from butlers.connectors.home_assistant_pipeline import HAFilterPipeline, HAFilterPipelineConfig
 from butlers.connectors.home_assistant_wellness import WellnessClassifier
+from tests.connectors.filtered_event_fakes import FilteredEventsPool
 
 pytestmark = pytest.mark.unit
 
@@ -75,8 +76,9 @@ def _wire(
     connector._mcp_client = MagicMock()
     connector._mcp_client.call_tool = AsyncMock(side_effect=call_tool)
     connector._starting = False
+    pool: Any = FilteredEventsPool()
     persistence = HAFilterPersistence(
-        endpoint_identity=connector._endpoint_identity, db_pool=None, submit_fn=AsyncMock()
+        endpoint_identity=connector._endpoint_identity, db_pool=pool, submit_fn=AsyncMock()
     )
     dispatch = _make_event_dispatcher(
         connector=connector,
@@ -125,7 +127,10 @@ def _attempted(connector: HAConnector) -> dict[str, dict[str, Any]]:
 
 
 def _parked(persistence: HAFilterPersistence) -> dict[str, tuple]:
-    return {row[9]["source"]["channel"]: row for row in persistence._buffer._rows}
+    """Rows committed by a durable park (never left waiting in the buffer)."""
+    pool: Any = persistence._db_pool
+    assert persistence._buffer._rows == []
+    return {row[9]["source"]["channel"]: row for row in pool.written}
 
 
 def _assert_parked_exactly(row: tuple, envelope: dict[str, Any]) -> None:
@@ -235,6 +240,19 @@ async def test_a_non_transport_failure_is_parked_without_a_retry(
     assert _no_retry_pause == []
     row = _parked(persistence)["home_assistant"]
     assert row[10] == "RuntimeError"
+
+
+async def test_a_park_that_cannot_be_written_is_reported_as_lost(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    dispatch, _, persistence = _wire({"home_assistant"})
+    pool: Any = persistence._db_pool
+    pool.fail_writes = True
+
+    await dispatch("state_changed", _DOOR)
+
+    assert pool.written == []
+    assert any("could not be parked" in r.getMessage() for r in caplog.records)
 
 
 async def test_a_failed_automation_trigger_retries_a_transport_blip() -> None:

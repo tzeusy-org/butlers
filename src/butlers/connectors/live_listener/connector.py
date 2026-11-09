@@ -62,7 +62,11 @@ from butlers.connectors.discretion import (
     classify_ignore_kind,
 )
 from butlers.connectors.email_spans import email_untrusted_spans
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.filtered_event_buffer import (
+    FilteredEventBuffer,
+    ParkNotDurableError,
+    drain_replay_pending,
+)
 from butlers.connectors.health_socket import prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.live_listener.checkpoint import (
@@ -135,6 +139,9 @@ CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 # use this hyphenated "live-listener" spelling (see
 # butlers.connectors.live_listener.envelope.endpoint_identity).
 _FILTERED_EVENTS_CONNECTOR_TYPE = _DESCRIPTOR.stored_event_type
+
+# How often each mic's replay requests are drained (bu-dhloi1.224).
+_REPLAY_DRAIN_INTERVAL_S = 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +221,8 @@ class LiveListenerConnector:
 
         # Pipeline tasks (one per mic)
         self._pipeline_tasks: dict[str, asyncio.Task] = {}
+        # Timer that drains replay requests for every mic (started in start()).
+        self._replay_drain_task: asyncio.Task[None] | None = None
 
         # Background segment-processing tasks (fire-and-forget; held to prevent GC)
         self._background_tasks: set[asyncio.Task] = set()
@@ -320,6 +329,12 @@ class LiveListenerConnector:
             )
             self._pipeline_tasks[spec.name] = task
 
+        # Replay requests are drained on a timer, not only after an utterance.
+        if self._db_pool is not None:
+            self._replay_drain_task = asyncio.create_task(
+                self._replay_drain_loop(), name="live-listener-replay-drain"
+            )
+
         # Start heartbeat
         self._start_heartbeat()
 
@@ -340,6 +355,16 @@ class LiveListenerConnector:
             except Exception:
                 logger.exception("live-listener: error stopping pipeline for mic=%s", mic)
         self._pipeline_tasks.clear()
+
+        # A cancelled drain releases its claims (drain_replay_pending).
+        drain_task = getattr(self, "_replay_drain_task", None)
+        if drain_task is not None:
+            drain_task.cancel()
+            try:
+                await drain_task
+            except asyncio.CancelledError:
+                pass
+            self._replay_drain_task = None
 
         # Disconnect transcription clients
         for mic, client in self._transcription_clients.items():
@@ -714,9 +739,6 @@ class LiveListenerConnector:
             e2e_elapsed,
         )
 
-        # The Switchboard is reachable: send any replay the owner requested.
-        await self._drain_replays(mic)
-
     async def _park_failed_submission(
         self, mic: str, envelope: dict[str, Any], exc: BaseException
     ) -> None:
@@ -729,22 +751,36 @@ class LiveListenerConnector:
         transcript. Without a DB pool nothing can hold it, and that is logged.
         """
         buffer = self._filtered_event_buffers.get(mic)
-        if self._db_pool is None or buffer is None:
-            logger.error(
-                "live-listener: no DB to park a failed utterance for mic=%s; it is lost", mic
-            )
+        if buffer is None:
+            logger.error("live-listener: no buffer to park a failed utterance for mic=%s", mic)
             return
-        buffer.record(
-            external_message_id=str(envelope["event"]["external_event_id"]),
-            source_channel=_DESCRIPTOR.channel,
-            sender_identity="ambient",
-            subject_or_preview=None,
-            filter_reason=FilteredEventBuffer.reason_submission_error(),
-            status="error",
-            error_detail=type(exc).__name__,
-            full_payload=FilteredEventBuffer.stored_envelope(envelope),
-        )
-        await buffer.flush(self._db_pool)
+        try:
+            # Written at once, never left in the buffer: it is the only copy.
+            await buffer.park(
+                self._db_pool,
+                external_message_id=str(envelope["event"]["external_event_id"]),
+                source_channel=_DESCRIPTOR.channel,
+                sender_identity="ambient",
+                subject_or_preview=None,
+                error_detail=type(exc).__name__,
+                full_payload=FilteredEventBuffer.stored_envelope(envelope),
+            )
+        except ParkNotDurableError:
+            logger.error(
+                "live-listener: a failed utterance for mic=%s could not be parked; it is lost",
+                mic,
+            )
+
+    async def _replay_drain_loop(self) -> None:
+        """Drain each mic's replay requests on a timer, independent of utterances.
+
+        A quiet room produces no utterances, so draining only after a delivered
+        one would leave a requested replay waiting indefinitely (bu-dhloi1.224).
+        """
+        while True:
+            await asyncio.sleep(_REPLAY_DRAIN_INTERVAL_S)
+            for mic in list(self._filtered_event_buffers):
+                await self._drain_replays(mic)
 
     async def _drain_replays(self, mic: str) -> None:
         """Submit up to 10 replay-requested rows for this mic (best effort)."""
