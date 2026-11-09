@@ -22,8 +22,9 @@ without the CNPG projection prerequisites). After `record-deploy.sh`, whatever i
 `deploy-dev` runs `scripts/k8s/public-mcp-owner-step.sh`, the public MCP owner step (RFC 0039
 D3, OD20), and exits with the first non-zero status. The step renders its superuser SQL from the
 git tree of `TAG` in this checkout, so the tag must be a local commit. An image without
-`public-mcp reconcile` (a rollback) skips reconcile with a notice. `PUBLIC_MCP_OWNER_STEP_dev := off` in this
-makefile, set in a reviewed change, skips the step. See
+`public-mcp reconcile` (a rollback) skips reconcile with a notice; a command listing that crashes
+fails the rollout instead. `PUBLIC_MCP_OWNER_STEP_dev := off` in this makefile, set in a reviewed
+change, skips the step. See
 [Public MCP Read Surface](../../../docs/operations/public-mcp-read-surface.md).
 
 Dev Helm and kubectl must use the same inherited context/`KUBECONFIG`. All supported namespace

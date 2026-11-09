@@ -258,7 +258,8 @@ SELECT rolconfig FROM pg_roles WHERE rolname = 'mcp_public_ro';  -- {statement_t
 **Now on dev.** The migrations initContainer of `dashboard-api` (what RFC 0039 calls the
 migration Job) runs Alembic, then `butlers public-mcp reconcile` as the migration user. An image
 without that command (a rollback to a tag before it) skips it with a notice instead of failing the
-rollout; the owner step's guard then refuses, which is fail-closed. The chart
+rollout; the owner step's guard then refuses, which is fail-closed. The skip needs a command listing
+that succeeds and lacks the command: a listing that crashes fails the rollout. The chart
 value `publicMcp.reconcile` turns this on; it is true only in `values.dev.yaml`, because reconcile
 refuses where `init-db.sql` has not created `mcp_surface` (no CNPG projection roles or
 `butlers_public`). Reconcile makes publication `butlers_public_v1` equal the manifest and writes the

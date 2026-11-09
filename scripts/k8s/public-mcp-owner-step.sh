@@ -91,7 +91,7 @@ git -C "$ROOT" archive --format=tar "$commit" | tar -x -C "$tree" \
   || fail "could not export the tree of $TAG"
 
 render() {
-  env -u UV_PROJECT_ENVIRONMENT -u VIRTUAL_ENV \
+  env -u UV_PROJECT_ENVIRONMENT -u VIRTUAL_ENV -u PYTHONPATH -u PYTHONHOME \
     uv run --project "$tree" --frozen --no-dev --quiet butlers "$@"
 }
 

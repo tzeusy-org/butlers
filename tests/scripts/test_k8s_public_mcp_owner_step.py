@@ -60,6 +60,7 @@ _UV = r"""#!/usr/bin/env bash
 echo "uv $*" >> "$CALL_LOG"
 [ "$1 $2" = "run --project" ] && [ -f "$3/TREE_OF_TAG" ] || { echo "not the tag tree" >&2; exit 98; }
 [ -z "${UV_PROJECT_ENVIRONMENT:-}${VIRTUAL_ENV:-}" ] || { echo "inherited venv" >&2; exit 97; }
+[ -z "${PYTHONPATH+x}${PYTHONHOME+x}" ] || { echo "inherited python path" >&2; exit 94; }
 shift 3
 args="$*" rest="${args#--frozen --no-dev --quiet butlers }"
 [ "$args" = "--frozen --no-dev --quiet butlers $rest" ] || exit 96
@@ -159,11 +160,20 @@ def test_the_program_never_comes_from_a_pod(tools: Path) -> None:
     assert "\\!" not in (_psql_fed(tools) or "")
 
 
-def test_the_renderer_ignores_an_inherited_virtualenv(tools: Path) -> None:
-    code, stderr, _calls = _run(
-        tools, "dev", _TAG, "on", "butlers", UV_PROJECT_ENVIRONMENT="/shared/venv",
-        VIRTUAL_ENV="/shared/venv",
-    )  # fmt: skip
+@pytest.mark.parametrize(
+    "inherited",
+    [
+        {"UV_PROJECT_ENVIRONMENT": "/shared/venv", "VIRTUAL_ENV": "/shared/venv"},
+        {"PYTHONPATH": "/planted/site"},
+        {"PYTHONHOME": "/planted/home"},
+        {"PYTHONPATH": ""},
+    ],
+)
+def test_the_renderer_ignores_an_inherited_environment(
+    tools: Path, inherited: dict[str, str]
+) -> None:
+    """A venv or a Python path from the deployer's shell must not shape the render."""
+    code, stderr, _calls = _run(tools, "dev", _TAG, "on", "butlers", **inherited)
     assert code == 0, stderr
 
 
@@ -448,24 +458,36 @@ _UV_IN_IMAGE = r"""#!/bin/sh
 echo "uv $*" >> "$CALL_LOG"
 case "$*" in
   *"db migrate"*) exit "${MIGRATE_RC:-0}" ;;
-  *"public-mcp --help"*) [ -n "$PUBLIC_MCP_HELP" ] || exit 2; printf '%s\n' "$PUBLIC_MCP_HELP" ;;
+  *"butlers public-mcp --help")
+    printf '%s\n' "$PUBLIC_MCP_HELP"; [ "${PUBLIC_MCP_RC:-0}" = 0 ] || exit "$PUBLIC_MCP_RC" ;;
+  *"butlers --help")
+    printf '%s\n' "$TOP_HELP"; [ "${TOP_RC:-0}" = 0 ] || exit "$TOP_RC" ;;
 esac
 exit 0
 """
+_NO_GROUP = "Commands:\n  db        Database commands.\n  up        Start butlers."
 
 
 @pytest.mark.parametrize(
-    ("public_mcp_help", "migrate_rc", "reconciled", "status"),
+    ("env", "reconciled", "status", "stderr"),
     [
-        (None, "0", True, 0),
-        # An image before #5621 has no `public-mcp` group (exit 2) or no `reconcile` yet.
-        ("", "0", False, 0),
-        ("Commands:\n  reconcile-draft  Not it.", "0", False, 0),
-        (None, "1", False, 1),
+        ({}, True, 0, ""),
+        # An image before #5621: no `public-mcp` group, or a group without `reconcile`.
+        ({"TOP_HELP": _NO_GROUP}, False, 0, "not in this image"),
+        (
+            {"PUBLIC_MCP_HELP": "Commands:\n  reconcile-draft  Not it."},
+            False,
+            0,
+            "not in this image",
+        ),
+        # A listing that crashes (an import error) fails the rollout instead of skipping.
+        ({"PUBLIC_MCP_RC": "1"}, False, 1, ""),
+        ({"TOP_RC": "1"}, False, 1, ""),
+        ({"MIGRATE_RC": "1"}, False, 1, ""),
     ],
 )
-def test_dev_migrations_reconcile_last_and_skip_an_image_without_it(
-    tmp_path: Path, public_mcp_help: str | None, migrate_rc: str, reconciled: bool, status: int
+def test_dev_migrations_reconcile_last_and_skip_only_an_image_without_it(
+    tmp_path: Path, env: dict[str, str], reconciled: bool, status: int, stderr: str
 ) -> None:
     """The rendered initContainer command, run with a stubbed image `uv`."""
     args = _migrations("values.dev.yaml")
@@ -485,18 +507,20 @@ def test_dev_migrations_reconcile_last_and_skip_an_image_without_it(
         env={
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "CALL_LOG": str(log),
-            "MIGRATE_RC": migrate_rc,
-            "PUBLIC_MCP_HELP": _help("public-mcp") if public_mcp_help is None else public_mcp_help,
+            "TOP_HELP": _help(),
+            "PUBLIC_MCP_HELP": _help("public-mcp"),
+            **env,
         },
     )  # fmt: skip
     calls = log.read_text(encoding="utf-8").splitlines()
     assert result.returncode == status, result.stderr
     reconcile = "uv run --frozen --no-dev butlers public-mcp reconcile --database butlers"
     assert (calls[-1] == reconcile) is reconciled
-    if migrate_rc == "0" and not reconciled:
-        assert "not in this image" in result.stderr
-    if migrate_rc != "0":
-        assert not any("public-mcp" in call for call in calls)
+    assert stderr in result.stderr
+    if status:
+        assert "not in this image" not in result.stderr
+    if "MIGRATE_RC" in env:
+        assert not any("--help" in call for call in calls)
 
 
 @pytest.mark.parametrize("values", [(), ("values.prod.yaml",)])
