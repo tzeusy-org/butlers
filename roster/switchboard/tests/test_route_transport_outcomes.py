@@ -1207,6 +1207,41 @@ class TestCallButlerToolExceptionTypes:
         assert not isinstance(excinfo.value, TransportNotAttempted)
 
 
+class TestServerUnresponsiveIsNeverResent:
+    """bu-dhloi1.147: cancelling the client does not stop the server's handler, so a target that
+    stalled and then recovers would run ``route.execute`` twice if route reconnected and resent."""
+
+    async def test_a_stalled_target_gets_one_send_not_a_reconnect_and_resend(self) -> None:
+        from butlers.mcp_liveness import ServerUnresponsive
+
+        route_mod = sys.modules["butlers.tools.switchboard.routing.route"]
+        client = MagicMock()
+        client.call_tool = AsyncMock(side_effect=ServerUnresponsive("missed 3 pings"))
+        get_client = AsyncMock(return_value=client)
+
+        with patch.object(route_mod, "_get_cached_router_client", new=get_client):
+            with pytest.raises(ServerUnresponsive):
+                await route_mod._call_tool_with_router_client("http://x/mcp/", "route.execute", {})
+
+        assert client.call_tool.await_count == 1
+        assert get_client.await_count == 1  # no reconnect either
+
+    async def test_the_route_envelope_is_not_retryable_and_the_outcome_is_uncertain(self) -> None:
+        from butlers.mcp_liveness import ServerUnresponsive
+
+        pool = _mock_pool()
+
+        async def call_fn(_url: str, _tool: str, _args: dict[str, Any]) -> Any:
+            raise ServerUnresponsive("missed 3 pings")
+
+        with _resolves_target():
+            result = await route(pool, "messenger", "route.execute", {}, call_fn=call_fn)
+
+        assert result["retryable"] is False
+        assert result["transport"]["outcome"] == "uncertain"
+        assert result["transport"]["retryable"] is False
+
+
 class TestNoEventLoopStarvation:
     """Guard against a bookkeeping shield that silently swallows cancellation."""
 

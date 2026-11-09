@@ -22,6 +22,7 @@ import textwrap
 import time
 from pathlib import Path
 
+import httpx
 import pytest
 
 from butlers.mcp_liveness import LivenessClient, ServerUnresponsive
@@ -100,12 +101,14 @@ async def test_a_call_in_flight_ends_when_the_server_is_killed(server) -> None:
         process.kill()
 
         started = time.monotonic()
-        # The ping's own failure usually ends the call with the transport's error first.
-        with pytest.raises(Exception) as raised:  # noqa: B017, PT011
+        # A killed server refuses or resets the connection, so the transport's own error ends
+        # the call at once (ConnectError or ReadError, depending on which socket it touches
+        # first), well before three missed pings could declare the server unresponsive.
+        with pytest.raises(httpx.TransportError) as raised:
             await asyncio.wait_for(call, timeout=15)
 
-        assert not isinstance(raised.value, TimeoutError)
-        assert time.monotonic() - started < 10
+        assert not isinstance(raised.value, ServerUnresponsive)
+        assert time.monotonic() - started < 3
     finally:
         with contextlib.suppress(Exception):  # closing a session to a dead server fails
             await client.__aexit__(None, None, None)

@@ -18,13 +18,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime
 import logging
 from collections.abc import Awaitable
-from typing import Any
+from typing import Any, TypeVar
 
+import mcp.types
 from fastmcp import Client
+from fastmcp.client.progress import ProgressHandler
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 #: Seconds between pings while a call is in flight.
 DEFAULT_PING_INTERVAL_S = 10.0
@@ -59,11 +64,19 @@ class LivenessClient(Client):
         self._ping_timeout_s = ping_timeout_s
         self._max_missed_pings = max_missed_pings
 
-    async def call_tool(self, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
-        return await self._while_alive(super().call_tool(*args, **kwargs), "call_tool")
-
-    async def call_tool_mcp(self, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
-        return await self._while_alive(super().call_tool_mcp(*args, **kwargs), "call_tool_mcp")
+    async def call_tool_mcp(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        progress_handler: ProgressHandler | None = None,
+        timeout: datetime.timedelta | float | int | None = None,  # noqa: ASYNC109
+        meta: dict[str, Any] | None = None,
+    ) -> mcp.types.CallToolResult:
+        # ``Client.call_tool`` goes through this method, so watching here covers both.
+        return await self._while_alive(
+            super().call_tool_mcp(name, arguments, progress_handler, timeout, meta),
+            "call_tool",
+        )
 
     async def _watch(self) -> None:
         """Return only once the server has missed too many pings in a row."""
@@ -81,7 +94,7 @@ class LivenessClient(Client):
             else:
                 missed = 0
 
-    async def _while_alive(self, call: Awaitable[Any], what: str) -> Any:
+    async def _while_alive(self, call: Awaitable[_T], what: str) -> _T:
         call_task = asyncio.ensure_future(call)
         watch_task = asyncio.ensure_future(self._watch())
         watch_task.set_name("mcp-liveness-watch")
