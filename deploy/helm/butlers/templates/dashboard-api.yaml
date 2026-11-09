@@ -28,9 +28,9 @@ spec:
               uv run --frozen --no-dev butlers db prepare-chronicler-memory --dir /app/roster
               && uv run --frozen --no-dev butlers db migrate --dir /app/roster
               {{- if .Values.database.applyGrants }}
-              && uv run --frozen --no-dev butlers db apply-grants --execute
+              && uv run --frozen --no-dev butlers db apply-grants --database {{ .Values.database.name }} --execute
               {{- else }}
-              && (uv run --frozen --no-dev butlers db apply-grants || true)
+              && (uv run --frozen --no-dev butlers db apply-grants --database {{ .Values.database.name }} || true)
               {{- end }}
               {{- if .Values.publicMcp.reconcile }}
               && top="$(uv run --frozen --no-dev butlers --help)"
