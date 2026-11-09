@@ -10,7 +10,6 @@ from typing import Any
 
 import asyncpg
 import httpx
-from fastmcp import Client as MCPClient
 from opentelemetry import trace
 
 from butlers.core.control_plane_identity import PROBE_DEADLINE_S, probe_once
@@ -19,6 +18,8 @@ from butlers.core.model_routing import Complexity
 from butlers.core.route_observability import opaque_route_ref
 from butlers.core.telemetry import inject_trace_context
 from butlers.core_tools._switchboard_route_dispatch import is_retryable_route_exception
+from butlers.mcp_liveness import LivenessClient as MCPClient
+from butlers.mcp_liveness import ServerUnresponsive
 from butlers.tools.switchboard.registry.registry import (
     DEFAULT_ROUTE_CONTRACT_VERSION,
     ControlPlaneTargetDecision,
@@ -219,6 +220,9 @@ async def _call_tool_with_router_client(
             client = await _get_cached_router_client(endpoint_url, reconnect=reconnect)
             return await client.call_tool(tool_name, args, raise_on_error=False)
         except Exception as exc:
+            if isinstance(exc, ServerUnresponsive):
+                # Outcome unknown and the handler may still run: never reconnect and resend.
+                raise
             if telegram_effect and not proves_transport_not_attempted(exc):
                 raise
             if not is_retryable_route_exception(exc):
