@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import socket
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -96,6 +97,45 @@ def _jsonb_decoder(data: bytes) -> object:
     version (``\\x01``).  Strip it before passing to ``json.loads``.
     """
     return json.loads(data[1:])
+
+
+# A partitioned peer is detected by the kernel: a savepoint ROLLBACK TO or a COMMIT that follows
+# a client deadline carries no client timer (a second one recreates asyncpg's shared cancel
+# future bug), so without these a dead link would hold the connection, its open transaction and
+# its row locks until the OS default of about two hours.
+TCP_KEEPIDLE_S = 30
+TCP_KEEPINTVL_S = 10
+TCP_KEEPCNT = 3
+TCP_USER_TIMEOUT_MS = 60_000
+_TCP_USER_TIMEOUT = 18  # socket.TCP_USER_TIMEOUT where the platform defines it
+
+
+def _arm_tcp_liveness(conn: asyncpg.Connection) -> None:
+    """Arm keepalives and a user timeout on a TCP connection; best effort, never fatal.
+
+    A unix socket, a non-Linux option or a transport without a socket is left as it was. A
+    hung but reachable backend is not detected by this; ``statement_timeout`` bounds that.
+    """
+    try:
+        sock = conn._transport.get_extra_info("socket")  # noqa: SLF001 - asyncpg exposes no accessor
+        if sock is None or sock.family not in (socket.AF_INET, socket.AF_INET6):
+            return
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        for name, value in (
+            ("TCP_KEEPIDLE", TCP_KEEPIDLE_S),
+            ("TCP_KEEPINTVL", TCP_KEEPINTVL_S),
+            ("TCP_KEEPCNT", TCP_KEEPCNT),
+        ):
+            option = getattr(socket, name, None)
+            if option is not None:
+                sock.setsockopt(socket.IPPROTO_TCP, option, value)
+        sock.setsockopt(
+            socket.IPPROTO_TCP,
+            getattr(socket, "TCP_USER_TIMEOUT", _TCP_USER_TIMEOUT),
+            TCP_USER_TIMEOUT_MS,
+        )
+    except (OSError, AttributeError):
+        logger.warning("Could not arm TCP liveness options on a database connection")
 
 
 async def register_jsonb_codec(conn: asyncpg.Connection) -> None:
@@ -481,6 +521,7 @@ class Database:
         the underlying TCP connection is created.
         """
         await register_jsonb_codec(conn)
+        _arm_tcp_liveness(conn)
 
     async def provision(self) -> None:
         """Create the database if it doesn't exist.

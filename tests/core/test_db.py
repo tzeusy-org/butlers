@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import socket
 import uuid
 
 import asyncpg
@@ -67,6 +68,10 @@ async def test_provision_connect_pool_close(db_factory, postgres_container, monk
     # connect() returns usable pool
     pool = await db.connect()
     assert pool is not None and db.pool is pool and isinstance(pool, asyncpg.Pool)
+    async with pool.acquire() as live:  # bu-dhloi1.58: a partitioned peer is detected
+        sock = live._transport.get_extra_info("socket")
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
+        assert sock.getsockopt(socket.IPPROTO_TCP, 18) == 60_000
 
     # Pool executes queries
     assert await db.pool.fetchval("SELECT 1 + 1") == 2
