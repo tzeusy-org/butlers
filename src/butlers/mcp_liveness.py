@@ -38,6 +38,9 @@ DEFAULT_PING_TIMEOUT_S = 5.0
 #: Consecutive missed pings that declare the server dead. With the defaults a frozen server is
 #: detected after about 35s: 3 pings, 10s apart, each given 5s.
 DEFAULT_MAX_MISSED_PINGS = 3
+#: Seconds ``Client.__aenter__`` (the MCP ``initialize`` handshake) gets. fastmcp's own default is
+#: no deadline, so a first connect, or a reconnect, to a frozen server would hang (bu-dhloi1.246).
+DEFAULT_INIT_TIMEOUT_S = 30.0
 
 
 class ServerUnresponsive(ConnectionError):  # noqa: N818
@@ -57,9 +60,10 @@ class LivenessClient(Client):
         ping_interval_s: float = DEFAULT_PING_INTERVAL_S,
         ping_timeout_s: float = DEFAULT_PING_TIMEOUT_S,
         max_missed_pings: int = DEFAULT_MAX_MISSED_PINGS,
+        init_timeout: float | None = DEFAULT_INIT_TIMEOUT_S,
         **kwargs: Any,
     ) -> None:
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, init_timeout=init_timeout, **kwargs)
         self._ping_interval_s = ping_interval_s
         self._ping_timeout_s = ping_timeout_s
         self._max_missed_pings = max_missed_pings
