@@ -377,6 +377,36 @@ async def test_activitywatch_checkpoint_stays_before_a_failed_event() -> None:
     connector._save_checkpoint.assert_awaited_with(_AW_TS + timedelta(minutes=2))
 
 
+async def test_activitywatch_holds_at_a_timestamp_shared_with_an_ingested_event() -> None:
+    """A failed event sharing its timestamp with an ingested one holds at that timestamp."""
+    events = [
+        {"timestamp": _AW_TS.isoformat(), "duration": 120, "data": {"app": "Code", "title": t}}
+        for t in ("first", "second")
+    ] + [
+        {
+            "timestamp": (_AW_TS + timedelta(minutes=1)).isoformat(),
+            "duration": 120,
+            "data": {"app": "Code", "title": "later"},
+        }
+    ]
+    tool = AsyncMock(side_effect=[{"status": "accepted"}, RuntimeError("switchboard down")])
+    connector = _aw_connector(tool)
+    with (
+        patch(
+            "butlers.connectors.activitywatch.fetch_buckets",
+            new=AsyncMock(return_value={_AW_BUCKET: {"type": "currentwindow"}}),
+        ),
+        patch("butlers.connectors.activitywatch.fetch_events", new=AsyncMock(return_value=events)),
+    ):
+        await connector._execute_poll_cycle()
+
+    # The checkpoint stays at the shared timestamp, where the next cycle's
+    # ``start`` fetch begins, and never reaches the later event.
+    connector._save_checkpoint.assert_awaited_once_with(_AW_TS)
+    assert tool.await_count == 2
+    assert len(connector._filtered_event_buffer) == 0
+
+
 async def test_activitywatch_parks_an_event_whose_retries_are_spent() -> None:
     failing = f"{_AW_BUCKET}:{(_AW_TS + timedelta(minutes=1)).isoformat()}"
 

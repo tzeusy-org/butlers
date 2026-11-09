@@ -643,9 +643,10 @@ class GmailConnectorRuntime:
         """Keep a backfill message whose retries are spent as a replayable error row.
 
         The row carries the exact envelope that was tried, idempotency key
-        included, when one was built; otherwise (the message itself could not
-        be fetched) it carries the message id, which is what a replay needs to
-        find it again.
+        included, when one was built. Otherwise the message itself could not be
+        fetched, and the row is a stub with no text that records the message id
+        for diagnosis. Replay submits the stored payload as-is; it does not
+        re-fetch the message.
         """
         if envelope is not None:
             sender = str((envelope.get("sender") or {}).get("identity") or "unknown")
