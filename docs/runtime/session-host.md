@@ -543,12 +543,28 @@ resource, template or prompt.
 are no longer covered only by synthetic payloads. While the runtime waits on its
 first provider answer, the proof reads the domain from outside:
 
-- its mount view through `/proc/<pid>/root`;
+- its mount table through `/proc/<pid>/mountinfo`;
+- its files through `/proc/<pid>/root`;
 - its pid namespace through that root's `/proc`.
 
-Next to the launch, it stages a second invocation's real material under the same
-stage root, with a canary credential, and starts a host process. The checks fail
-if the domain sees any of these:
+The mount table is the primary filesystem check. A path walk cannot judge `/tmp`,
+the runtime's own scratch, where a host directory bound underneath looks like
+scratch. Every mount must be exactly one the production plan asks for, read from
+the unmutated bwrap argv:
+
+- `/` and `/tmp` must be fresh tmpfs;
+- `/proc` must be proc;
+- `/dev` must be bwrap's tmpfs and device nodes;
+- each staged file must be bwrap's deleted data file.
+
+A bind from the host anywhere, a planned mount point with a foreign source, a
+second mount over a planned point, or a missing planned mount fails the check. As
+a positive anchor, the walk must also find the staged runtime, invocation and
+Codex config paths, so an empty or wrong view cannot pass.
+
+Next to the launch, the proof stages a second invocation's real material under the
+same stage root, with a canary credential, and starts a host process. The checks
+also fail if the domain sees any of these:
 
 - a path outside its plan;
 - the canary in any readable file;
@@ -556,9 +572,14 @@ if the domain sees any of these:
 - any process other than the shim and `/runtime/codex`;
 - the host peer.
 
-Native rows loosen the bwrap plan: mount the peer's material, mount a host
-directory, or drop `--unshare-pid`. Each fails on a completed launch with a measured
-view, not because the launch broke.
+Native rows loosen the bwrap plan, and each fails on a completed launch with a
+measured view, not because the launch broke:
+
+- mount the peer's material;
+- mount a host directory, at its own path or under `/tmp` (`/etc` at `/tmp/etc`);
+- mount a host credential store under `/tmp`;
+- mount a host directory over `/invocation`;
+- drop `--unshare-pid`.
 
 That is this host's bwrap and kernel. `tests/session_host/exact_image_codex_proof.py`
 runs the same clean launches and every mutation row inside the rebuilt production

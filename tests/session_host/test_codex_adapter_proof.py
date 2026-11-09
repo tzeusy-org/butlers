@@ -124,6 +124,9 @@ def clean_observation():
         "events": [{"type": "item.completed", "item_type": "mcp_tool_call", "status": "completed"}],
         "isolation": {
             "measured": True,
+            "mount_count": 19,
+            "unplanned_mounts": [],
+            "missing_paths": [],
             "unexpected_paths": [],
             "canary_seen": [],
             "peer_path_visible": False,
@@ -424,6 +427,13 @@ def test_each_observed_violation_fails(change, expected, reason):
             "not measured (OSError())",
         ),
         ({"unexpected_paths": ["/etc"]}, {"filesystem_isolation"}, "outside its plan"),
+        (
+            {"unplanned_mounts": ["/tmp/etc (ext4 /etc)"]},
+            {"filesystem_isolation"},
+            "mounts outside the plan",
+        ),
+        ({"mount_count": 0}, {"filesystem_isolation"}, "mounts were not read"),
+        ({"missing_paths": ["/runtime/codex"]}, {"filesystem_isolation"}, "not this domain's"),
         ({"canary_seen": ["/tmp/peer/x"]}, {"filesystem_isolation"}, "material is readable"),
         ({"peer_path_visible": True}, {"filesystem_isolation"}, "stage directory is visible"),
         ({"foreign_processes": ["-zsh"]}, {"process_isolation"}, "processes outside it"),
@@ -442,6 +452,113 @@ def test_isolation_findings_fail_the_matching_check(isolation, expected, reason)
     failures = codex_proof.evaluate(observation)
     assert {check for check, reasons in failures.items() if reasons} == expected
     assert all(any(reason in r for r in failures[check]) for check in expected), failures
+
+
+@pytest.mark.parametrize("key", ["unplanned_mounts", "missing_paths"])
+def test_an_isolation_view_without_the_mount_or_path_check_fails(key):
+    observation = clean_observation()
+    del observation["isolation"][key]
+    assert failed(observation) == {"filesystem_isolation"}
+
+
+_PLAN = [
+    "/usr/bin/bwrap",
+    "--unshare-pid",
+    "--tmpfs",
+    "/",
+    "--proc",
+    "/proc",
+    "--dev",
+    "/dev",
+    "--tmpfs",
+    "/tmp",
+    "--dir",
+    "/invocation",
+    "--setenv",
+    "PATH",
+    "/runtime",
+    "--perms",
+    "0400",
+    "--ro-bind-data",
+    "5",
+    "/invocation/prompt",
+    "--info-fd",
+    "7",
+    "--",
+    "/runtime/init",
+    "--tmpfs",
+    "/after-the-separator",
+]
+
+
+def mount(point, root="/", fstype="tmpfs"):
+    return {"mountpoint": point, "root": root, "fstype": fstype, "source": "x"}
+
+
+def planned_view():
+    return [
+        mount("/"),
+        mount("/proc", fstype="proc"),
+        mount("/dev"),
+        mount("/dev/null", "/null", "devtmpfs"),
+        # In a container, /dev is itself a tmpfs.
+        mount("/dev/tty", "/tty", "tmpfs"),
+        mount("/dev/pts", fstype="devpts"),
+        mount("/tmp"),
+        mount("/invocation/prompt", "/bindfileuSe1Iw//deleted"),
+    ]
+
+
+def test_the_plan_mounts_are_read_up_to_the_separator():
+    assert codex_proof.planned_mounts(_PLAN) == {
+        "/": "tmpfs",
+        "/proc": "proc",
+        "/dev": "dev",
+        "/tmp": "tmpfs",
+        "/invocation/prompt": "data",
+    }
+
+
+def test_a_plan_option_the_reader_does_not_know_refuses():
+    with pytest.raises(ValueError, match="unknown bwrap option"):
+        codex_proof.planned_mounts(["bwrap", "--overlay-src", "/x", "--"])
+
+
+def test_exactly_the_planned_mounts_pass():
+    planned = codex_proof.planned_mounts(_PLAN)
+    assert codex_proof.unplanned_mounts(planned_view(), planned) == []
+
+
+@pytest.mark.parametrize(
+    ("change", "finding"),
+    [
+        # The review's reproductions: host trees bound under the runtime's scratch.
+        (lambda v: v + [mount("/tmp/etc", "/etc", "ext4")], "/tmp/etc (ext4 /etc)"),
+        (
+            lambda v: v + [mount("/tmp/hostcodex", "/home/orca/.codex", "ext4")],
+            "/tmp/hostcodex (ext4 /home/orca/.codex)",
+        ),
+        # A host tmpfs looks like scratch by filesystem type alone.
+        (lambda v: v + [mount("/tmp/shm")], "/tmp/shm (tmpfs /)"),
+        # A staged file replaced by a host file: two mounts at one point.
+        (
+            lambda v: v + [mount("/invocation/prompt", "/home/x/prompt", "ext4")],
+            "/invocation/prompt mounted 2 times",
+        ),
+        # A planned mount whose source is not the plan's.
+        (
+            lambda v: [
+                mount("/tmp", "/srv", "ext4") if m["mountpoint"] == "/tmp" else m for m in v
+            ],
+            "/tmp (ext4 /srv)",
+        ),
+        (lambda v: [m for m in v if m["mountpoint"] != "/proc"], "/proc missing"),
+        (lambda v: v + [mount("/dev/sda", "/sda", "devtmpfs")], "/dev/sda (devtmpfs /sda)"),
+    ],
+)
+def test_any_mount_outside_the_plan_is_a_finding(change, finding):
+    planned = codex_proof.planned_mounts(_PLAN)
+    assert finding in codex_proof.unplanned_mounts(change(planned_view()), planned)
 
 
 def test_report_maps_each_measured_failure_to_fail(tmp_path):

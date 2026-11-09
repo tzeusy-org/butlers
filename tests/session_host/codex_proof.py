@@ -15,6 +15,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -239,6 +240,22 @@ MUTATIONS = {
         {"add_bwrap": ["--ro-bind", "/usr", "/usr"]},
         "filesystem_isolation",
     ),
+    # /tmp is the runtime's scratch, so the path walk alone accepts anything
+    # there; only the mount table can tell a host bind from scratch.
+    "host-directory-under-tmp": (
+        {"add_bwrap": ["--ro-bind", "/etc", "/tmp/etc"]},
+        "filesystem_isolation",
+    ),
+    "host-credential-store-under-tmp": (
+        {"add_bwrap": ["--ro-bind", "$HOSTCRED", "/tmp/hostcodex"]},
+        "filesystem_isolation",
+    ),
+    # A host directory over a staged one. (bwrap cannot bind a file over an
+    # --ro-bind-data file, so a single staged file cannot be swapped this way.)
+    "staged-directory-overmounted": (
+        {"add_bwrap": ["--ro-bind", "$HOSTCRED", "/invocation"]},
+        "filesystem_isolation",
+    ),
     # Both go: with --as-pid-1 kept and --unshare-pid dropped, the run did not
     # finish within 300s here, which proves nothing either way.
     "pid-namespace-shared": (
@@ -451,6 +468,14 @@ def _evaluate_isolation(isolation: Any, failures: dict[str, list[str]]) -> None:
             failures[check].append(f"isolation was not measured ({detail})")
         return
     fs = failures["filesystem_isolation"]
+    if "unplanned_mounts" not in isolation or not isolation.get("mount_count"):
+        fs.append("the domain's mounts were not read")
+    if isolation.get("unplanned_mounts"):
+        fs.append(f"mounts outside the plan: {isolation['unplanned_mounts'][:8]}")
+    if "missing_paths" not in isolation:
+        fs.append("the domain's staged paths were not checked")
+    elif isolation["missing_paths"]:
+        fs.append(f"not this domain's view; missing {isolation['missing_paths'][:8]}")
     if isolation.get("unexpected_paths"):
         fs.append(f"domain sees paths outside its plan: {isolation['unexpected_paths'][:8]}")
     if isolation.get("canary_seen"):
@@ -880,7 +905,166 @@ PEER_CANARY = b"PEER-INVOCATION-CANARY-NOT-A-KEY"
 PEER_ARGV = b"/bin/sleep\x00127\x00"
 
 
-def observe_isolation(pid: int, peer: Path, peer_process: int) -> dict[str, Any]:
+# bwrap options and how many arguments each takes, for reading a plan's mounts.
+# An option outside this table refuses, so a plan change cannot slip a mount past.
+_BWRAP_ARITY = {
+    **dict.fromkeys(
+        (
+            "--unshare-user",
+            "--unshare-pid",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-net",
+            "--unshare-cgroup",
+            "--disable-userns",
+            "--assert-userns-disabled",
+            "--as-pid-1",
+            "--die-with-parent",
+            "--new-session",
+            "--clearenv",
+        ),
+        0,
+    ),
+    **dict.fromkeys(
+        (
+            "--cap-drop",
+            "--perms",
+            "--info-fd",
+            "--block-fd",
+            "--chdir",
+            "--dir",
+            "--tmpfs",
+            "--proc",
+            "--dev",
+            "--remount-ro",
+            "--unsetenv",
+            "--size",
+        ),
+        1,
+    ),
+    **dict.fromkeys(
+        (
+            "--setenv",
+            "--ro-bind-data",
+            "--bind-data",
+            "--bind",
+            "--ro-bind",
+            "--dev-bind",
+            "--symlink",
+            "--file",
+        ),
+        2,
+    ),
+}
+_MOUNT_KINDS = {
+    "--tmpfs": "tmpfs",
+    "--proc": "proc",
+    "--dev": "dev",
+    "--ro-bind-data": "data",
+    "--bind-data": "data",
+    "--bind": "bind",
+    "--ro-bind": "bind",
+    "--dev-bind": "bind",
+}
+# What bwrap's --dev puts under the new /dev.
+_DEV_NODES = frozenset({"null", "zero", "full", "random", "urandom", "tty"})
+# --ro-bind-data mounts a deleted file from bwrap's own tmpfs.
+_DATA_ROOT = re.compile(r"/bindfile[A-Za-z0-9]+(//deleted)?")
+# Paths the plan stages; a view without them is not this domain's view.
+_REQUIRED_PATHS = frozenset(
+    {
+        "/runtime/init",
+        "/runtime/codex",
+        "/invocation/prompt",
+        "/invocation/model-credential",
+        "/invocation/mcp.json",
+        "/tmp/home/.codex/config.toml",
+        "/tmp/home/.codex/catalog.json",
+        "/tmp/home/.codex/auth.json",
+    }
+)
+
+
+def planned_mounts(argv: list[str]) -> dict[str, str]:
+    """Mount point -> kind for each mount a bwrap argv asks for, up to its "--"."""
+    start = next(i for i, part in enumerate(argv) if part.startswith("--"))
+    planned: dict[str, str] = {}
+    index = start
+    while argv[index] != "--":
+        option = argv[index]
+        if option not in _BWRAP_ARITY:
+            raise ValueError(f"unknown bwrap option in plan: {option}")
+        arity = _BWRAP_ARITY[option]
+        if option in _MOUNT_KINDS:
+            target = argv[index + arity]
+            if target in planned:
+                raise ValueError(f"plan mounts {target} twice")
+            planned[target] = _MOUNT_KINDS[option]
+        index += 1 + arity
+    return planned
+
+
+def unplanned_mounts(mounts: list[dict[str, str]], planned: dict[str, str]) -> list[str]:
+    """Every mount that is not exactly the plan's, and every planned mount missing."""
+    findings: list[str] = []
+    seen: dict[str, int] = {}
+    devs = [target for target, kind in planned.items() if kind == "dev"]
+    for mount in mounts:
+        point, root, fstype = mount["mountpoint"], mount["root"], mount["fstype"]
+        kind = planned.get(point)
+        if kind is not None:
+            seen[point] = seen.get(point, 0) + 1
+        if kind in ("tmpfs", "dev"):
+            ok = fstype == "tmpfs" and root == "/"
+        elif kind == "proc":
+            ok = fstype == "proc"
+        elif kind == "data":
+            ok = fstype == "tmpfs" and _DATA_ROOT.fullmatch(root) is not None
+        elif kind == "bind":
+            ok = False  # the closed plan binds nothing from the host
+        else:
+            parent = next((d for d in devs if point.startswith(d + "/")), None)
+            name = point[len(parent) + 1 :] if parent else ""
+            ok = (name == "pts" and fstype == "devpts") or (
+                name in _DEV_NODES and root == f"/{name}"
+            )
+        if not ok:
+            findings.append(f"{point} ({fstype} {root})")
+    findings += [f"{point} missing" for point in planned if point not in seen]
+    findings += [f"{point} mounted {n} times" for point, n in seen.items() if n > 1]
+    return findings
+
+
+def _unescape(field: str) -> str:
+    """mountinfo octal-escapes space, tab, newline and backslash."""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+
+
+def read_mounts(pid: int) -> list[dict[str, str]]:
+    """Every mount in the domain's namespace, as the domain sees it.
+
+    ``/proc/<pid>/mountinfo`` reports mount points relative to the process's
+    own root, and ``root`` is the subtree of the source filesystem mounted
+    there, which is what tells a host bind from the domain's own tmpfs.
+    """
+    mounts = []
+    for line in Path(f"/proc/{pid}/mountinfo").read_text().splitlines():
+        head, _, tail = line.partition(" - ")
+        fields, rest = head.split(), tail.split()
+        mounts.append(
+            {
+                "mountpoint": _unescape(fields[4]),
+                "root": _unescape(fields[3]),
+                "fstype": rest[0],
+                "source": _unescape(rest[1]) if len(rest) > 1 else "",
+            }
+        )
+    return mounts
+
+
+def observe_isolation(
+    pid: int, peer: Path, peer_process: int, planned: dict[str, str]
+) -> dict[str, Any]:
     """Read the live domain's filesystem and process view from outside.
 
     ``/proc/<pid>/root`` is the domain's own root, through its own mount
@@ -889,6 +1073,11 @@ def observe_isolation(pid: int, peer: Path, peer_process: int) -> dict[str, Any]
     relying on it having a tool to try. ``peer`` is another invocation's staged
     material on the same host, ``peer_process`` a host process that is not part
     of this invocation.
+
+    The walk alone cannot judge ``/tmp``, which is the runtime's own scratch:
+    a host directory bound under it looks like scratch. ``planned`` is the
+    unmutated plan's mounts, and every mount in the domain must be exactly one
+    of them, so a bind anywhere, ``/tmp`` included, is a finding.
     """
     root = Path(f"/proc/{pid}/root")
     visible: list[str] = []
@@ -931,8 +1120,12 @@ def observe_isolation(pid: int, peer: Path, peer_process: int) -> dict[str, Any]
             peer_seen = peer_seen or cmdline == PEER_ARGV or entry.name == str(peer_process)
             processes.append(cmdline.split(b"\0", 1)[0].decode(errors="replace"))
     foreign = sorted({p for p in processes if p not in _PROCESS_IMAGES})
+    mounts = read_mounts(pid)
     return {
         "measured": True,
+        "mount_count": len(mounts),
+        "unplanned_mounts": unplanned_mounts(mounts, planned)[:32],
+        "missing_paths": sorted(_REQUIRED_PATHS - set(visible)),
         "unexpected_paths": unexpected[:32],
         "canary_seen": canary_seen[:32],
         "peer_path_visible": (root / str(peer).lstrip("/")).exists(),
@@ -977,6 +1170,11 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
         volume.install(scenario.get("document", oauth_document()), expected_sha256=None)
         lease = CodexOAuthVolume(volume)
         credential = str(volume.status()).encode()  # the pushed digest, not a secret
+    # A host credential store, like ~/.codex, holding nothing the canary scan
+    # would recognise: only the mount table can show it reached the domain.
+    host_credentials = work / "host-credentials"
+    host_credentials.mkdir(mode=0o700)
+    (host_credentials / "auth.json").write_text('{"OPENAI_API_KEY": "host-store-not-a-key"}')
 
     class ProofDomain(BubblewrapDomain):
         async def _info(self, descriptor: int) -> int:
@@ -984,7 +1182,7 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
             # listening before the runtime can start.
             pid = await super()._info(descriptor)
             server.observe = lambda: observe_isolation(  # type: ignore[attr-defined]
-                pid, peer["material"].directory, peer["process"].pid
+                pid, peer["material"].directory, peer["process"].pid, peer["planned"]
             )
             server.socket = _listener_inside(pid)
             threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -1015,6 +1213,8 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
         def _plan(self, material: InvocationMaterial):
             argv, *rest = super()._plan(material)
             assert "--unshare-net" in argv
+            # Judged against the production plan, never the mutated one.
+            peer["planned"] = planned_mounts(argv)
             # The command itself is the tail of argv, after the shim's "--".
             tail = len(argv) - len(settings.command)
             assert argv[tail:] == list(settings.command)
@@ -1035,7 +1235,9 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
                 assert option in argv, f"mutation does not apply: {option}"
                 argv.remove(option)
             extra = [
-                part.replace("$PEER", str(peer["material"].directory))
+                part.replace("$PEER", str(peer["material"].directory)).replace(
+                    "$HOSTCRED", str(host_credentials)
+                )
                 for part in scenario.get("add_bwrap", ())
             ]
             # After the plan's own mounts, which a later --tmpfs / would hide.
