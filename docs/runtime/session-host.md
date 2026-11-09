@@ -290,6 +290,23 @@ also dark:
 - The AST scan also fails on any live construction of `ControlSessionHost`,
   `CodexAuthFencedHost` or `session_host_clients` outside the factory module.
 
+Startup restore and the dashboard health probe take the same keyword-only
+`session_host` target, default `None` (bu-kiuh8v.14). Every live caller passes none.
+
+- `restore_tokens(..., session_host=)` pushes the Codex authority to the volume instead
+  of writing `~/.codex/auth.json`. Other providers restore as today. The push fails
+  closed, leaving the volume as it was. After a control-plane restart there is no fence,
+  so a host document that differs from the authority is not judged and restore reports
+  Codex `False` until a dashboard login.
+- `probe_provider` and `probe_all(..., session_host=)` check the volume's document
+  against the authority, for Codex only; the local file is neither read nor reconciled.
+  - A volume that is absent, differs or cannot be read is `probe_failed` without
+    contacting the backend.
+  - The probe never installs, rotates or collects. Push and collect around launches
+    reconcile the volume.
+  - The prepared path, used after a login test, re-reads the volume against the
+    prepared authority.
+
 Remaining before the switch, which is a live change:
 
 - A session-host entrypoint and a mounted credential volume in Compose/Helm. The host
@@ -297,7 +314,7 @@ Remaining before the switch, which is a live change:
 - Calling `session_host_clients` and `CodexAuthFencedHost` from the control plane.
 - Moving `runtime_codex` out of butlers-up, which is the switch itself while butlers-up
   runs Codex.
-- Retargeting the startup restore (`restore_tokens`) and the dashboard health probe.
+- Passing the session-host target to the startup restore and the dashboard health probe.
 - A Codex runtime mode on the session host that reads the volume. `CodexSettings` is
   API-key only today.
 
