@@ -33,9 +33,11 @@ class GrantChange:
     relation: str
     role: str
     privileges: tuple[str, ...]
+    skipped: bool = False  # the connecting login cannot administer this relation's ACL
 
     def describe(self) -> str:
-        return f"{self.action} {','.join(self.privileges)} ON {self.relation} {self.role}"
+        line = f"{self.action} {','.join(self.privileges)} ON {self.relation} {self.role}"
+        return f"SKIPPED (login does not own it) {line}" if self.skipped else line
 
 
 def _bounds(
@@ -52,10 +54,35 @@ def _bounds(
     return ceiling, {role: ceiling[role] & replayed[role] for role in roles}
 
 
+_UNMANAGED_SQL = text(
+    """
+    SELECT c.relname
+    FROM pg_catalog.pg_class AS c
+    JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+      AND NOT pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE')
+      AND NOT (SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user)
+    """
+)
+
+
+def unmanaged_relations(conn: Connection) -> frozenset[str]:
+    """``public`` relations whose ACL the connecting login cannot change (not owner/member)."""
+    return frozenset(conn.execute(_UNMANAGED_SQL).scalars())
+
+
 def plan_public_grants(
-    catalog: PublicCatalog, roles: tuple[str, ...] | None = None
+    catalog: PublicCatalog,
+    roles: tuple[str, ...] | None = None,
+    *,
+    unmanaged: frozenset[str] = frozenset(),
 ) -> list[GrantChange]:
-    """Return the changes that bring ``catalog`` inside the manifest bounds, revokes first."""
+    """Return the changes that bring ``catalog`` inside the manifest bounds, revokes first.
+
+    Changes on ``unmanaged`` relations are listed with ``skipped=True`` and never executed:
+    a REVOKE by a non-owner silently does nothing, so claiming it would be a lie.
+    """
     roles = roles or runtime_roles()
     revokes: list[GrantChange] = []
     grants: list[GrantChange] = []
@@ -70,21 +97,22 @@ def plan_public_grants(
             actual = catalog.privileges.get((relation, role), frozenset())
             extra = tuple(p for p in TABLE_PRIVILEGES if p in actual - ceiling[role])
             missing = tuple(p for p in TABLE_PRIVILEGES if p in floor[role] - actual)
+            skipped = relation in unmanaged
             if extra:
-                revokes.append(GrantChange("REVOKE", relation, role, extra))
+                revokes.append(GrantChange("REVOKE", relation, role, extra, skipped))
             if missing:
-                grants.append(GrantChange("GRANT", relation, role, missing))
+                grants.append(GrantChange("GRANT", relation, role, missing, skipped))
     return [*revokes, *grants]
 
 
 def _statement(conn: Connection, change: GrantChange) -> str:
     quote = conn.dialect.identifier_preparer.quote
-    target = f"public.{quote(change.relation)}"
+    target = "public." + quote(change.relation)
     role = quote(change.role)
     privileges = ", ".join(change.privileges)
     if change.action == "REVOKE":
-        return f"REVOKE {privileges} ON TABLE {target} FROM {role}"
-    return f"GRANT {privileges} ON TABLE {target} TO {role}"
+        return " ".join(["REVOKE", privileges, "ON TABLE", target, "FROM", role])
+    return " ".join(["GRANT", privileges, "ON TABLE", target, "TO", role])
 
 
 def apply_public_grants(conn: Connection) -> list[GrantChange]:
@@ -93,10 +121,16 @@ def apply_public_grants(conn: Connection) -> list[GrantChange]:
     The caller commits only when this returns, so a failed verification rolls everything back.
     """
     conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": GRANT_APPLY_LOCK_KEY})
-    changes = plan_public_grants(read_public_catalog(conn))
+    unmanaged = unmanaged_relations(conn)
+    changes = plan_public_grants(read_public_catalog(conn), unmanaged=unmanaged)
     for change in changes:
-        conn.execute(text(_statement(conn, change)))
-    leftover = plan_public_grants(read_public_catalog(conn))
+        if not change.skipped:
+            conn.execute(text(_statement(conn, change)))
+    leftover = [
+        c
+        for c in plan_public_grants(read_public_catalog(conn), unmanaged=unmanaged)
+        if not c.skipped
+    ]
     if leftover:
         raise RuntimeError(
             "grant apply did not converge; rolled back:\n"

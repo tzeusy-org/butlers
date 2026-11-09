@@ -63,6 +63,19 @@ def test_extra_privilege_on_a_boundary_row_is_revoked() -> None:
     ]
 
 
+def test_unmanaged_relations_are_listed_as_skipped_not_executed() -> None:
+    privileges = _catalog(after_init_db_replay=False)
+    privileges[("dnd_generation_mutations", "butler_general_rw")] = frozenset({"SELECT"})
+    plan = plan_public_grants(
+        PublicCatalog(privileges, {}, frozenset(_ROLES)),
+        unmanaged=frozenset({"dnd_generation_mutations"}),
+    )
+    assert plan == [
+        GrantChange("REVOKE", "dnd_generation_mutations", "butler_general_rw", ("SELECT",), True)
+    ]
+    assert plan[0].describe().startswith("SKIPPED (login does not own it) REVOKE")
+
+
 def test_relation_outside_the_manifest_is_never_touched() -> None:
     privileges = _catalog(after_init_db_replay=False)
     privileges[("not_in_manifest", "butler_general_rw")] = frozenset({"SELECT", "DELETE"})

@@ -176,7 +176,10 @@ row and an `init-db.sql` replay both allow, so it narrows and never re-grants a
 privilege the bootstrap removed. The default is a dry run that prints one
 REVOKE/GRANT line per change (relation, role and privilege names only);
 `--execute` runs it in one transaction under an advisory lock and rolls back
-unless a re-plan is empty. The migrations initContainer runs the dry run on every
+unless a re-plan is empty. Relations the connecting login neither owns nor is a
+member of (definer-owned boundary tables) cannot be revoked by it, so their
+changes print as `SKIPPED (login does not own it)` and are never claimed;
+moving ownership is the login-split slice. The migrations initContainer runs the dry run on every
 deploy and `--execute` only when `database.applyGrants` is true (off by default;
 enabling it is an owner act).
 

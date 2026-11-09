@@ -23,7 +23,11 @@ def _run(monkeypatch: pytest.MonkeyPatch, *args: str):
     )
     monkeypatch.setattr("sqlalchemy.create_engine", lambda url: MagicMock())
     monkeypatch.setattr("butlers.db_authority.catalog.read_public_catalog", lambda conn: None)
-    monkeypatch.setattr("butlers.db_authority.apply.plan_public_grants", lambda catalog: [_CHANGE])
+    monkeypatch.setattr("butlers.db_authority.apply.unmanaged_relations", lambda conn: frozenset())
+    monkeypatch.setattr(
+        "butlers.db_authority.apply.plan_public_grants",
+        lambda catalog, unmanaged=frozenset(): [_CHANGE],
+    )
     monkeypatch.setattr("butlers.db_authority.apply.apply_public_grants", applied)
     return CliRunner().invoke(cli, ["db", "apply-grants", *args]), applied
 
@@ -40,4 +44,4 @@ def test_execute_applies(monkeypatch: pytest.MonkeyPatch) -> None:
     result, applied = _run(monkeypatch, "--execute")
     assert result.exit_code == 0, result.output
     applied.assert_called_once()
-    assert "1 grant change(s) applied" in result.output
+    assert "1 grant change(s) applied; 0 skipped" in result.output

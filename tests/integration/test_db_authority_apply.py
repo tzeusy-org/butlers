@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 import pytest
 from sqlalchemy import create_engine
 
-from butlers.db_authority.apply import apply_public_grants
+from butlers.db_authority.apply import apply_public_grants, unmanaged_relations
 from butlers.db_authority.catalog import read_public_catalog
 from butlers.db_authority.grants import REPLAY_WIDENED
 from butlers.testing.migration import (
@@ -74,12 +74,19 @@ def test_apply_after_replay_restores_the_fresh_migrated_state(postgres_container
     engine = create_engine(db_url)
     try:
         with engine.begin() as conn:
+            unmanaged = unmanaged_relations(conn)
             changes = apply_public_grants(conn)
     finally:
         engine.dispose()
 
+    # Definer-owned relations (the migration login is neither owner nor member) cannot be
+    # revoked by this login; apply must list them as skipped rather than pretend.
+    assert unmanaged, "expected definer-owned public relations the migrator cannot administer"
+    assert {c.relation for c in changes if c.skipped} <= unmanaged
+    assert all(c.relation in unmanaged for c in changes if c.skipped)
+
     applied = _privileges(db_url)
-    managed = {key for key in fresh if key[0] in _manifest_relations()}
+    managed = {key for key in fresh if key[0] in _manifest_relations() and key[0] not in unmanaged}
     # No runtime role ends up with less than the fresh baseline, except privileges the
     # init-db replay itself had removed (the manifest never grants those back).
     assert all(applied[k] <= fresh[k] for k in managed), "apply must never widen beyond fresh"
@@ -94,7 +101,7 @@ def test_apply_after_replay_restores_the_fresh_migrated_state(postgres_container
     engine = create_engine(db_url)
     try:
         with engine.begin() as conn:
-            assert apply_public_grants(conn) == []
+            assert [c for c in apply_public_grants(conn) if not c.skipped] == []
     finally:
         engine.dispose()
 

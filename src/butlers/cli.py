@@ -701,7 +701,11 @@ def apply_grants(database: str, execute: bool) -> None:
     from sqlalchemy.exc import SQLAlchemyError
 
     from butlers.db import db_params_from_env
-    from butlers.db_authority.apply import apply_public_grants, plan_public_grants
+    from butlers.db_authority.apply import (
+        apply_public_grants,
+        plan_public_grants,
+        unmanaged_relations,
+    )
     from butlers.db_authority.catalog import read_public_catalog
 
     engine = create_engine(_migration_db_url(db_params_from_env(), db_name=database, schema=None))
@@ -711,7 +715,9 @@ def apply_grants(database: str, execute: bool) -> None:
                 changes = apply_public_grants(conn)
             else:
                 conn.exec_driver_sql("SET TRANSACTION READ ONLY")
-                changes = plan_public_grants(read_public_catalog(conn))
+                changes = plan_public_grants(
+                    read_public_catalog(conn), unmanaged=unmanaged_relations(conn)
+                )
     except SQLAlchemyError:
         # Driver errors can include a URL or statement. Keep this surface closed.
         raise click.ClickException("Grant apply refused: database operation failed") from None
@@ -721,8 +727,9 @@ def apply_grants(database: str, execute: bool) -> None:
         engine.dispose()
     for change in changes:
         click.echo(change.describe())
+    todo = [c for c in changes if not c.skipped]
     verb = "applied" if execute else "would apply (dry run; pass --execute)"
-    click.echo(f"{len(changes)} grant change(s) {verb}")
+    click.echo(f"{len(todo)} grant change(s) {verb}; {len(changes) - len(todo)} skipped")
 
 
 @db.command("check-grants")
