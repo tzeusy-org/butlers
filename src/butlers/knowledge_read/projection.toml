@@ -569,8 +569,9 @@ types = { "id" = "uuid", "trip_id" = "uuid", "type" = "text", "carrier" = "text"
 classes = { "id" = "system", "trip_id" = "system", "type" = "system", "carrier" = "personal_record", "departure_city" = "personal_record", "departure_at" = "system", "arrival_city" = "personal_record", "arrival_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
-tools = ["trips", "search", "fetch", "search_filtered"]
+tools = ["trips", "timeline", "search", "fetch", "search_filtered"]
 time_column = "departure_at"
+uri = "butlers://travel/leg/{id}"
 
 [[table]]
 source = "travel.trips"

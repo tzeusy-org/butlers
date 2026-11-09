@@ -83,8 +83,20 @@ view OIDs remain stable; only a source removed from the manifest loses its view.
 a view and freshness is a timestamp-only function; exactly two pinned-search-path definers
 exist, with no monitoring role.
 
-**Still pending:** hosted execution of the new real-PG17 lifecycle controls, public command,
-recipe/chart activation, request/canary/digest serving semantics, named read consumers,
+The owner step also installs `pg_trgm` in a projection-only `mcp_ext` schema; `mcp_public_ro`
+may execute only `mcp_ext.similarity(text, text)` there (the `entity_lookup` trigram match).
+
+The first pure readers exist in `butlers.knowledge_read` (`entities`, `chronology`, `finance`):
+`entity_lookup`, `entity_profile`, `timeline`, `time_use` and `finance_ledger`. Each takes an
+asyncpg connection to `butlers_public`, a host-built `ReadContext` (caller `sub`, the request's
+`replication_as_of()`, the union of kill-switch layers, the process cursor key) and the raw
+arguments, and returns JSON-ready data or raises `ReadError` with a D17 code. They read only
+`mcp_read` views, write nothing and keep no state; connections, authentication, budgets, DLP and
+transport stay with the future host. The other D10 tools, including the `knowledge_index` view
+behind `search`/`fetch`, are not built yet.
+
+**Still pending:** the remaining D10 read functions, public command,
+recipe/chart activation, request/canary/digest serving semantics,
 deployed privileges/network and live owner steps. The deployed API and migrations currently
 share a configured database login and the API does not SET ROLE. SQL ACLs cannot establish
 controls-only API writes while that effective identity also owns manifest state. Both

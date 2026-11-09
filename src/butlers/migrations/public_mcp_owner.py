@@ -1065,15 +1065,53 @@ IF EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON
     AND NOT (p.pronargs=0 AND p.prokind='f' AND
         p.proowner='mcp_projection_owner'::regrole
         AND ((n.nspname='mcp_read' AND p.proname='replication_as_of')
-             OR (n.nspname='mcp_inbox' AND p.proname='cap_proposals'))))
+             OR (n.nspname='mcp_inbox' AND p.proname='cap_proposals')))
+    AND NOT (n.nspname='mcp_ext' AND NOT p.prosecdef AND EXISTS(
+        SELECT 1 FROM pg_depend d JOIN pg_extension x ON x.oid=d.refobjid
+        WHERE d.classid='pg_proc'::regclass AND d.objid=p.oid
+          AND d.refclassid='pg_extension'::regclass AND d.deptype='e'
+          AND x.extname='pg_trgm')))
         THEN
     RAISE EXCEPTION 'foreign projection function refused'; END IF;
+IF EXISTS(SELECT 1 FROM pg_extension x JOIN pg_namespace n ON n.oid=x.extnamespace
+    WHERE NOT (x.extname='plpgsql' AND n.nspname='pg_catalog')
+      AND NOT (x.extname='pg_trgm' AND n.nspname='mcp_ext')) THEN
+    RAISE EXCEPTION 'foreign projection extension refused'; END IF;
 IF EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON
         n.oid=c.relnamespace
     WHERE n.nspname='mcp_read' AND (c.relkind<>'v' OR c.reloptions IS NOT
         NULL)) THEN
     RAISE EXCEPTION 'read view kind/options refused'; END IF;
 """)
+
+
+def _trigram_extension() -> str:
+    """pg_trgm for entity_lookup's trigram match (RFC 0039 D11), run as the superuser.
+
+    Extension members belong to the bootstrap superuser, so only it can strip PUBLIC EXECUTE;
+    ``mcp_public_ro`` gets back ``similarity(text, text)`` alone. The owner's revoke loop skips
+    this schema for the same reason.
+    """
+    return (
+        """CREATE SCHEMA IF NOT EXISTS mcp_ext AUTHORIZATION mcp_projection_owner;
+CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA mcp_ext;
+"""
+        + _do(
+            _raise_unless(
+                """(SELECT n.nspname FROM pg_extension x JOIN pg_namespace n ON
+        n.oid=x.extnamespace WHERE x.extname='pg_trgm')='mcp_ext'
+        AND (SELECT nspowner FROM pg_namespace WHERE
+        nspname='mcp_ext')='mcp_projection_owner'::regrole""",
+                "projection pg_trgm schema refused",
+            )
+        )
+        + """REVOKE ALL ON SCHEMA mcp_ext FROM PUBLIC, mcp_proposals_reader;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA mcp_ext FROM PUBLIC, mcp_public_ro,
+        mcp_proposals_reader;
+GRANT USAGE ON SCHEMA mcp_ext TO mcp_public_ro;
+GRANT EXECUTE ON FUNCTION mcp_ext.similarity(text, text) TO mcp_public_ro;
+"""
+    )
 
 
 def _identity_guard() -> str:
@@ -1379,6 +1417,7 @@ AS $fresh$ SELECT pg_catalog.max(latest_end_time) FROM
     # Revoke first, across every subscriber schema, including old removed sources.
     sql += _do("""FOR item IN SELECT nspname FROM pg_namespace
         WHERE left(nspname, 3)<>'pg_' AND nspname<>'information_schema'
+          AND nspname<>'mcp_ext'
         LOOP
         EXECUTE
 
@@ -1754,6 +1793,7 @@ DROP SUBSCRIPTION butlers_public_sub;
             "public MCP subscription superuser required",
         )
     )
+    sql += _trigram_extension()
     sql += """SELECT EXISTS(SELECT 1 FROM pg_subscription WHERE
         subname='butlers_public_sub' AND
         subdbid=(SELECT oid FROM pg_catalog.pg_database WHERE
