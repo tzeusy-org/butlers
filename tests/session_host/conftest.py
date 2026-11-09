@@ -8,7 +8,8 @@ import pytest
 
 
 @pytest.fixture(scope="module")
-def pki(tmp_path_factory):
+def pki_root(tmp_path_factory):
+    """The synthetic PKI's directory: ``<name>.crt`` / ``<name>.key`` and ``ca.crt``."""
     root = tmp_path_factory.mktemp("synthetic-control-pki")
 
     def run(*args):
@@ -86,6 +87,12 @@ def pki(tmp_path_factory):
         )
     for key in root.glob("*.key"):
         key.chmod(0o600)
+    return root
+
+
+@pytest.fixture(scope="module")
+def pki(pki_root):
+    root = pki_root
 
     def pin(name):
         cert = ssl.PEM_cert_to_DER_cert((root / f"{name}.crt").read_text())

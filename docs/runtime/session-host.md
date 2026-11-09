@@ -262,12 +262,41 @@ What pins the off path (`tests/session_host/test_codex_auth.py`):
 - An AST scan fails if any live module outside `session_host/` constructs
   `SessionHostCodexAuth` or `CredentialVolume`.
 
+The control plane's client side is `goal_runner/session_host_client.py` (bu-kiuh8v.11),
+also dark:
+
+- `session_host_clients(config, credentials, broker_origin=)` binds `local_command` to one
+  host. `SessionHostClientConfig` names the dialed address and port, the TLS server name,
+  the host's exact leaf pin, and three mounted files: CA, client leaf and client key.
+  - Files are opened once, must be regular and at most 64 KiB, and the TLS library loads
+    the descriptors that were checked. A secret mount's links are followed.
+  - The key must not be readable by group or others, and the host's pin must not be the
+    client's own leaf.
+  - Every refusal is `session_host_client_unavailable`; no path or byte appears in it.
+  - It returns the runner's `ControlSessionHost` and the volume's `SessionHostCodexAuth`
+    over that one channel. Production CA, workload identity and rotation stay their own
+    gate: this takes whatever a trusted deployment mounts.
+- `CodexAuthFencedHost(host, authority, target, runtimes=)` wraps the runner's host for
+  the runtimes named, which must be passed explicitly.
+  - Before each such launch it pushes the authority (fenced by the last push). A push
+    that fails closed refuses the launch as `NotInvoked` (`codex_auth_unavailable`), so
+    no model runs.
+  - After the launch, whether it succeeded or failed, it collects a rotation. A
+    rotation a collect missed is flushed by the next push, under the same fence.
+  - Those launches run one at a time: two runs on one document would spend a single-use
+    refresh token twice. Other runtimes pass straight through and are never held.
+- `local_command` takes the dialed `host` by trusted construction (default `127.0.0.1`).
+  TLS still checks the server name and the pin.
+- The AST scan also fails on any live construction of `ControlSessionHost`,
+  `CodexAuthFencedHost` or `session_host_clients` outside the factory module.
+
 Remaining before the switch, which is a live change:
 
-- The control-plane factory that binds `local_command` to production PKI.
-- A session-host entrypoint and a mounted credential volume in Compose/Helm.
-- Calling push and collect around runtime invocations.
-- Moving `runtime_codex` out of butlers-up.
+- A session-host entrypoint and a mounted credential volume in Compose/Helm. The host
+  binds loopback only today, while the control plane dials it from another pod.
+- Calling `session_host_clients` and `CodexAuthFencedHost` from the control plane.
+- Moving `runtime_codex` out of butlers-up, which is the switch itself while butlers-up
+  runs Codex.
 - Retargeting the startup restore (`restore_tokens`) and the dashboard health probe.
 - A Codex runtime mode on the session host that reads the volume. `CodexSettings` is
   API-key only today.
