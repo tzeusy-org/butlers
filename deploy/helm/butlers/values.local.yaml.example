@@ -6,6 +6,10 @@ frontendImage:
   repository: <registry-host>/butlers-frontend
 publicUrl:
   host: <public-dashboard-host>
+# Optional: fix the Service ClusterIPs that host `tailscale serve` targets.
+# serviceClusterIPs:
+#   frontend: <free-cluster-ip-1>
+#   dashboardApi: <free-cluster-ip-2>
 commonEnv:
   OTEL_EXPORTER_OTLP_ENDPOINT: http://<otel-host>:4318
   # Optional: LIVE_LISTENER_TRANSCRIPTION_URL: tcp://<wyoming-host>:10300

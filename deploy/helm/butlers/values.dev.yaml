@@ -27,7 +27,8 @@ nodePorts:
 dashboardAuth:
   enabled: true
   deployment: dev
-  trustedProxyPeers: 10.42.0.1
+  # cni0 (host -> pod on this node) and flannel.1 (host -> pod on another node).
+  trustedProxyPeers: 10.42.0.1,10.42.0.0
 
 commonEnv:
   BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "1"
