@@ -236,8 +236,18 @@ Every call is also capped at `MAX_ATTEMPTS` (5) invocations and quota skips. Ada
 `butlers.core.runtimes.registry.AdapterRegistry`, the only place that special-cases the Codex
 runtime's construction.
 
-The connector `DiscretionDispatcher` runs on the kernel. The Spawner's session loop and the
-Switchboard's structured classifier keep their own loops for now.
+The connector `DiscretionDispatcher` and the [goal runner](goal-runner.md) run on the kernel. The
+Spawner's session loop and the Switchboard's structured classifier keep their own loops for now.
+
+### Roles, tiers and ladders
+
+RFC 0038 D16 goal invocations resolve by role and tier with `CallSpec(exact_tier=True)`. An
+exact-tier call passes `allow_tier_fallthrough=False` to resolution and raises
+`NoModelConfigured` before any attempt when no model of the requested tier qualifies, instead of
+silently running on another tier. Each role climbs a finite ladder
+(`butlers.goal_runner.models.ModelLadders`): lead `workhorse → reasoning`; monitor
+`cheap → workhorse → reasoning`; delegated children choose `cheap` or `workhorse`.
+`goal.escalate` moves to the next tier of the ladder that qualifies and refuses at the top.
 
 ## Resolution Flow in the Spawner
 

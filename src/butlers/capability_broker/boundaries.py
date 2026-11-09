@@ -73,7 +73,7 @@ class BoundaryLedger:
 
     async def charge(self, principal: Principal) -> BrokerRefused | None:
         """One goal-tool call against the D10 budget; exhaustion is *returned*."""
-        return await self.ledger.charge_call(principal.goal_id)
+        return await self.ledger.charge_call(principal)
 
     async def join(self, principal: Principal, label: Label, cause: str) -> None:
         if not await self.ledger._join(principal.goal_id, principal.invocation_id, label, cause):
@@ -258,10 +258,12 @@ class BoundaryLedger:
                 "r.result::text AS result FROM switchboard.invocations i "
                 "LEFT JOIN switchboard.goal_child_results r "
                 "ON (r.goal_id, r.invocation_id) = (i.goal_id, i.id) "
-                "WHERE i.goal_id = $1 AND i.id = $2 AND i.parent_invocation_id = $3",
+                # Any child of the goal, not only the caller's own: children of a
+                # replaced lead report to its successor (D14). The caller is an
+                # authenticated current-epoch lead (``goal_await``).
+                "WHERE i.goal_id = $1 AND i.id = $2 AND i.depth = 1",
                 principal.goal_id,
                 identity,
-                principal.invocation_id,
             )
         if row is None:
             raise BrokerRefused(Reason.RESOURCE)

@@ -191,6 +191,7 @@ class Broker:
                 for grant in principal.grants
                 if (capability := catalog.get(grant.capability)) is not None
                 and listable(capability, principal.depth)
+                and capability.domain != "goal"
                 and not (capability.selection_bound - {k for k, _ in grant.resources})
             )
 
@@ -274,7 +275,13 @@ class Broker:
             raise self._refused(principal, name, Reason.CATALOG)
         capability = catalog.get(name)
         grant = principal.grant_for(name)
-        if capability is None or grant is None or not listable(capability, principal.depth):
+        if (
+            capability is None
+            or grant is None
+            or not listable(capability, principal.depth)
+            # The goal tools' namespace (D8) is reserved: never a domain capability.
+            or capability.domain == "goal"
+        ):
             raise self._refused(principal, name, Reason.CAPABILITY)
         if not _in_scope(capability, grant, args):
             raise self._refused(principal, name, Reason.RESOURCE)

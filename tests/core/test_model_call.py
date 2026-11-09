@@ -256,6 +256,27 @@ async def test_empty_tier_raises_no_model_configured_without_attempting() -> Non
     assert attempt.seen == [] and sink.events == []
 
 
+async def test_an_exact_tier_call_refuses_the_fallthrough_without_attempting() -> None:
+    """RFC 0038 D16: a goal invocation runs on its ladder tier or not at all."""
+    seen: list[dict[str, Any]] = []
+
+    async def resolve(pool, butler, tier, **kwargs):
+        seen.append(kwargs)
+        return (*A, "cheap")  # a resolver that fell through anyway
+
+    sink = _Sink()
+    attempt = _attempts()
+    with (
+        _Catalog(),
+        patch(f"{_K}.resolve_model_with_effective_tier", AsyncMock(side_effect=resolve)),
+        pytest.raises(NoModelConfigured, match="fallthrough refused"),
+    ):
+        await _call(_spec(exact_tier=True), attempt, sink)
+
+    assert seen[0]["allow_tier_fallthrough"] is False
+    assert attempt.seen == [] and sink.events == []
+
+
 async def test_spend_rule_override_dispatches_the_routed_model_with_its_receipt_reason() -> None:
     sink = _Sink()
     attempt = _attempts(AttemptOutcome("ok"))
