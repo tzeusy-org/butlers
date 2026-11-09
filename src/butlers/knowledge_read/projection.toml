@@ -330,7 +330,7 @@ types = { "id" = "text", "source_table" = "text", "row_id" = "text", "path" = "t
 classes = { "id" = "system", "source_table" = "system", "row_id" = "system", "path" = "system", "value_text" = "personal_record", "value_numeric" = "personal_record", "value_type" = "system" }
 key = ["id"]
 replica_identity = ["id"]
-tools = ["health_records"]
+tools = ["health_records", "health_profile"]
 uri = "butlers://health/json_fields_public/{id}"
 
 [[table]]
