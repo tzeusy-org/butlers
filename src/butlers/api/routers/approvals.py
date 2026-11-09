@@ -27,7 +27,6 @@ from uuid import UUID
 import anyio
 import asyncpg
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
-from fastmcp import Client as MCPClient
 from pydantic import BaseModel, ValidationError
 
 from butlers.api.approval_review import resolve_messenger_reviews
@@ -86,6 +85,7 @@ from butlers.api.routers import audit as audit_router
 from butlers.core import owner_delivery
 from butlers.core.audit_transaction import audit_transaction
 from butlers.core.dashboard_stepup import verified_dashboard_session
+from butlers.mcp_liveness import LivenessClient as MCPClient
 from butlers.modules.approvals import operations as approvals_ops
 from butlers.modules.approvals import reply_templates
 from butlers.modules.approvals.decision_memory import (
