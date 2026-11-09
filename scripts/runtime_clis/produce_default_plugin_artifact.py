@@ -484,7 +484,16 @@ def package_population(directory: Path, lock: dict, manifest: dict, *, complete:
             raise ValueError("installed package differs from original full lock")
     expected_absent = set() if complete else {item["lock_path"] for item in manifest["supplements"]}
     if absent != expected_absent:
-        raise ValueError("ordinary or complete package population differs")
+        # These are committed public lock paths, never environment values or
+        # arbitrary filesystem paths. Preserve the exact failed population so
+        # a failed temporary build can be diagnosed without weakening its gate.
+        raise ValueError(
+            "ordinary or complete package population differs: "
+            + json.dumps(
+                {"absent": sorted(absent), "expected_absent": sorted(expected_absent)},
+                sort_keys=True,
+            )
+        )
     for name in ("package.json", "package-lock.json"):
         if digest(directory / name) != digest(RECIPE / DECLARATION / name):
             raise ValueError("npm changed the original root declarations")

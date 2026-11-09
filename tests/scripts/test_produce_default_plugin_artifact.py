@@ -367,6 +367,27 @@ def test_supplement_identity_refusal_keeps_output_absent(graph, monkeypatch):
     assert not graph.output.exists()
 
 
+def test_ordinary_population_diagnostic_binds_only_public_lock_paths(graph):
+    directory = graph.root / "project"
+    producer.project(directory)
+    graph.install(directory)
+    item = graph.manifest["supplements"][0]
+    additional = directory / item["lock_path"]
+    additional.mkdir(parents=True)
+    (additional / "package.json").write_text(
+        json.dumps({"name": item["package"], "version": item["version"]})
+    )
+    with pytest.raises(ValueError, match="population differs: ") as caught:
+        producer.package_population(directory, graph.lock, graph.manifest, complete=False)
+    diagnostic = json.loads(str(caught.value).split(": ", 1)[1])
+    expected = {record["lock_path"] for record in graph.manifest["supplements"]}
+    assert diagnostic == {
+        "absent": sorted(expected - {item["lock_path"]}),
+        "expected_absent": sorted(expected),
+    }
+    assert str(graph.root) not in str(caught.value)
+
+
 @pytest.mark.parametrize("field", ["dependencies", "population", "authority", "integrity"])
 def test_committed_declarations_drift_is_refused(tmp_path, monkeypatch, field):
     root = SCRIPTS.parents[1]
