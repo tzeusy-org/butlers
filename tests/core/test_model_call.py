@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.core import model_call
+from butlers.core.dispatch_outcomes import _QUALIFYING_BREAKER_OUTCOMES
 from butlers.core.failover_classifier import FailoverDecision
 from butlers.core.model_call import (
     AttemptOutcome,
@@ -24,6 +25,7 @@ from butlers.core.model_call import (
     CallSpec,
     Candidate,
     NoModelConfigured,
+    NotInvoked,
     SpendCeilingReached,
     call_model,
     registry_adapters,
@@ -418,6 +420,44 @@ async def test_ineligible_failure_re_raises_the_original_exception() -> None:
     assert raised.value is failure
     catalog.next.assert_not_awaited()
     sink.metrics.record_failover_suppressed.assert_called_once()
+
+
+class _Refused(NotInvoked):
+    """An attempt refused before any model was invoked (a goal-ledger open, say)."""
+
+
+@pytest.mark.parametrize("redact", [False, True])
+async def test_an_attempt_refused_before_invocation_is_not_a_model_failure(redact) -> None:
+    """bu-dhloi1.208: a refusal that never reached a model must not feed the breaker.
+
+    Only ``runtime_failure`` and ``success`` rows qualify for the breaker and the
+    routing evidence, so the refusal is recorded as ``suppressed``, with no
+    duration, no failover and no runtime-failure signal, and re-raised unchanged.
+    """
+    sink = _Sink()
+    refusal = _Refused("lead_active")
+    with _Catalog(fallbacks=[B]) as catalog, pytest.raises(_Refused) as raised:
+        await _call(_spec(redact_failures=redact), _attempts(refusal), sink)
+
+    assert raised.value is refusal
+    assert sink.outcomes == ["suppressed"]
+    row = sink.events[0][1]
+    assert row["failure_reason"] == "not_invoked:lead_active"
+    assert row["served_identity"]["observation_state"] == "not_invoked"
+    assert "duration_ms" not in row and "error_message" not in row
+    assert sink.failures == []
+    catalog.next.assert_not_awaited()
+    sink.metrics.record_failover_suppressed.assert_not_called()
+    assert "suppressed" not in _QUALIFYING_BREAKER_OUTCOMES
+
+
+async def test_a_not_invoked_reason_is_bounded_to_a_code() -> None:
+    sink = _Sink()
+    with _Catalog(), pytest.raises(_Refused):
+        await _call(_spec(), _attempts(_Refused("x" * 500 + " private\ntext")), sink)
+
+    reason = sink.events[0][1]["failure_reason"]
+    assert reason == "not_invoked:unclassified"
 
 
 async def test_a_capability_call_forbids_the_relaunch() -> None:

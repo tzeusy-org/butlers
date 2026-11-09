@@ -23,7 +23,10 @@ from butlers.conditions import (
 )
 from butlers.conditions.memory import InMemoryConditionStore
 from butlers.conditions.predicate import PredicateError, validate
+from butlers.core.goal_labels import CATEGORIES, Label
 
+#: A non-trivial registered label snapshot, so a default or dropped label cannot pass.
+LABEL = Label(frozenset({"owner"}), frozenset({"owner", "domain:calendar"}), frozenset({"routine"}))
 NS = UUID("11111111-1111-1111-1111-111111111111")
 GOAL = str(uuid5(NS, "goal"))
 SUBJECT = str(uuid5(NS, "subject"))
@@ -95,7 +98,7 @@ async def register(evaluator, predicate, *, snapshot=None, instance_id="c1", **k
         goal_id=GOAL,
         snapshot=snapshot or Snapshot(now=NOW),
         expires_at=EXPIRES,
-        **kw,
+        **{"label": LABEL, **kw},
     )
 
 
@@ -218,6 +221,25 @@ class TestTransitionHorizon:
         await register(evaluator, TRANSITION)
         edge = transition_ev(at=NOW - timedelta(minutes=10))
         assert (await evaluator.evaluate("c1", [edge], now=NOW)).intent is not None
+
+    async def test_future_dated_event_is_ignored_and_does_not_move_the_cursor(self, evaluator):
+        await register(evaluator, TRANSITION)
+        future = transition_ev(at=NOW + timedelta(hours=1))
+        out = await evaluator.evaluate("c1", [future], now=NOW)
+        assert out.instance.state is State.OPEN and out.intent is None
+        assert out.instance.cursors == {}
+
+    async def test_future_dated_event_counts_once_the_clock_reaches_it(self, evaluator):
+        await register(evaluator, TRANSITION)
+        future = transition_ev(at=NOW + timedelta(minutes=5))
+        assert (await evaluator.evaluate("c1", [future], now=NOW)).intent is None
+        later = await evaluator.evaluate("c1", [future], now=NOW + timedelta(minutes=5))
+        assert later.intent is not None
+
+    async def test_small_clock_skew_is_tolerated(self, evaluator):
+        await register(evaluator, TRANSITION)
+        skewed = transition_ev(at=NOW + timedelta(seconds=30))
+        assert (await evaluator.evaluate("c1", [skewed], now=NOW)).intent is not None
 
     @pytest.mark.parametrize(
         "make",
@@ -351,6 +373,7 @@ class TestRefusal:
                 predicate=DECISION,
                 grant=grant,
                 goal_id=GOAL,
+                label=LABEL,
                 snapshot=Snapshot(now=NOW),
                 expires_at=EXPIRES,
             )
@@ -362,6 +385,7 @@ class TestRefusal:
                 predicate=DECISION,
                 grant=GRANT,
                 goal_id=str(uuid5(NS, "x")),
+                label=LABEL,
                 snapshot=Snapshot(now=NOW),
                 expires_at=EXPIRES,
             )
@@ -371,6 +395,7 @@ class TestRefusal:
                 predicate=DECISION,
                 grant=GRANT,
                 goal_id=GOAL,
+                label=LABEL,
                 snapshot=Snapshot(now=NOW),
                 expires_at=NOW + timedelta(days=400),
             )
@@ -380,6 +405,7 @@ class TestRefusal:
                 predicate=DECISION,
                 grant=GRANT,
                 goal_id=GOAL,
+                label=LABEL,
                 snapshot=Snapshot(now=NOW),
                 expires_at=NOW,
             )
@@ -586,3 +612,63 @@ class TestReplayFloorIsImmutable:
         await register(evaluator, DECISION, cursors={"goal.decision": 4})
         with pytest.raises(RegistrationRefused):
             await register(evaluator, DECISION, cursors={"goal.decision": 9})
+
+
+class TestLabels:
+    """RFC 0038 S1/S4: a fire joins labels; the registered snapshot is immutable (bu-dhloi1.196).
+
+    ``ConditionEvent`` carries no label yet (producers stamp them under bu-dhloi1.9), and S1 makes
+    missing provenance the unknown label, so event and registration-snapshot fires join it into
+    the registered label. A clock fire conveys no source data and carries the registered label.
+    """
+
+    FIRE = LABEL.join(Label.unknown())
+
+    async def test_registration_fire_joins_the_unknown_label(self, evaluator, store):
+        snap = Snapshot(now=NOW, decisions={SUBJECT: "approved"})
+        out = await register(evaluator, DECISION, snapshot=snap)
+        assert out.instance.label == LABEL
+        assert out.intent is not None and out.intent.label == self.FIRE
+        assert out.receipt.label == self.FIRE
+
+    async def test_unlabelled_event_fire_carries_unknown_provenance_and_sensitivity(
+        self, evaluator, store
+    ):
+        await register(evaluator, DECISION)
+        out = await evaluator.evaluate("c1", [decision_ev()], now=NOW)
+        assert out.intent is not None and out.intent.label == self.FIRE
+        label = out.intent.label
+        assert "world" in label.instr and "world" in label.data
+        assert label.sens == CATEGORIES  # all six, as the registered routine alone is not enough
+        assert out.receipt.label == self.FIRE
+        assert out.instance.label == LABEL  # the stored snapshot itself never changes
+        assert label.covers(LABEL)
+
+    async def test_clock_fire_keeps_the_registered_label(self, evaluator, store):
+        await register(evaluator, AT)
+        out = await evaluator.evaluate("c1", [], now=NOW + timedelta(minutes=31))
+        assert out.intent is not None and out.intent.reason.startswith("fired:clock")
+        assert out.intent.label == LABEL and out.receipt.label == LABEL
+
+    async def test_non_fire_receipts_carry_the_registered_label(self, evaluator, store):
+        await register(evaluator, DECISION, instance_id="b")
+        await evaluator.evaluate("b", [], now=EXPIRES + timedelta(minutes=1))
+        await register(evaluator, DECISION, instance_id="c")
+        await evaluator.cancel("c", now=NOW)
+        assert len(store.receipts) >= 4 and {r.label for r in store.receipts} == {LABEL}
+
+    async def test_reregistering_with_a_different_label_refuses(self, evaluator):
+        await register(evaluator, DECISION)
+        wider = LABEL.join(Label.unknown())
+        with pytest.raises(RegistrationRefused):
+            await register(evaluator, DECISION, label=wider)
+        narrower = Label(frozenset({"owner"}), frozenset({"owner"}), frozenset())
+        with pytest.raises(RegistrationRefused):
+            await register(evaluator, DECISION, label=narrower)
+
+    async def test_reregistering_with_the_same_label_is_a_retry(self, evaluator):
+        first = await register(evaluator, DECISION)
+        again = await register(
+            evaluator, DECISION, label=Label(LABEL.instr, LABEL.data, LABEL.sens)
+        )
+        assert again.instance == first.instance

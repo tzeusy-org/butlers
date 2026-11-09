@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from butlers.modules.memory.embedding import EmbeddingEngine
+from butlers.modules.memory.embedding import EmbeddingEngine, embed_async
 from butlers.modules.memory.search_vector import preprocess_text, tsvector_sql
 
 if TYPE_CHECKING:
@@ -140,6 +140,18 @@ def _is_catalog_write_excluded(sensitivity: str | None) -> bool:
 # Default episode time-to-live.
 _DEFAULT_EPISODE_TTL_DAYS = 7
 _RUNTIME_PROVENANCE_PLACEHOLDER = "[runtime session provenance placeholder]"
+# The placeholder is a constant, so its vector is per model, not per write.
+_placeholder_embeddings: dict[str, list[float]] = {}
+
+
+async def _provenance_placeholder_embedding(embedding_engine: EmbeddingEngine) -> list[float]:
+    key = embedding_engine.model_name
+    cached = _placeholder_embeddings.get(key)
+    if cached is None:
+        cached = await embed_async(embedding_engine, _RUNTIME_PROVENANCE_PLACEHOLDER)
+        _placeholder_embeddings[key] = cached
+    return list(cached)
+
 
 # ---------------------------------------------------------------------------
 # Permanence -> decay-rate mapping (from butler.toml)
@@ -1200,7 +1212,7 @@ async def store_episode(
     authority = await _stamp_authority(
         pool, content_authority, authority_entity_id, routing_context
     )
-    embedding = embedding_engine.embed(content)
+    embedding = await embed_async(embedding_engine, content)
     search_text = preprocess_text(content)
     ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
     expires_at = datetime.now(UTC) + timedelta(days=ttl_days)
@@ -1421,7 +1433,7 @@ async def _resolve_write_provenance_with_conn(
     placeholder_now = now or datetime.now(UTC)
     ttl_days = _DEFAULT_EPISODE_TTL_DAYS
     expires_at = placeholder_now + timedelta(days=ttl_days)
-    placeholder_embedding = embedding_engine.embed(_RUNTIME_PROVENANCE_PLACEHOLDER)
+    placeholder_embedding = await _provenance_placeholder_embedding(embedding_engine)
     placeholder_search_text = preprocess_text(_RUNTIME_PROVENANCE_PLACEHOLDER)
     episode_id = uuid.uuid4()
     await _insert_episode_record(
@@ -1723,7 +1735,7 @@ async def store_fact(
     authority = await _stamp_authority(pool, content_authority, authority_entity_id)
     fact_id = uuid.uuid4()
     searchable = f"{subject} {predicate} {content}"
-    embedding = embedding_engine.embed(searchable)
+    embedding = await embed_async(embedding_engine, searchable)
     search_text = preprocess_text(searchable)
     decay_rate = validate_permanence(permanence)
     now = datetime.now(UTC)
@@ -1973,6 +1985,22 @@ async def store_fact(
                     # fact already exists; no new guidance is needed).
                     return {"id": existing_idem_id, "supersedes_id": None}
 
+            # The inverse fact's embedding is computed before any lock below: an encode can
+            # queue behind others on the engine lock, and it must not do so while holding
+            # FOR KEY SHARE on entities, gap reservations or superseded-row locks.
+            _inverse_predicate: str | None = None
+            _inv_searchable = ""
+            _inv_embedding: list[float] | None = None
+            if _registry_row is not None and entity_id is not None and object_entity_id is not None:
+                if _registry_row.get("is_symmetric"):
+                    _inverse_predicate = predicate
+                else:
+                    _inverse_predicate = _registry_row.get("inverse_of") or None
+                if _inverse_predicate is not None:
+                    # The inverse swaps labels: the object label is its subject.
+                    _inv_searchable = f"{content} {_inverse_predicate} {subject}"
+                    _inv_embedding = await embed_async(embedding_engine, _inv_searchable)
+
             # Lock order: entities before facts, as merge, rebind, forget and delete take
             # them. A supersede that took its fact first would then wait on the entity for
             # the insert's foreign key, in a cycle with any of them. FOR KEY SHARE is that
@@ -1987,17 +2015,15 @@ async def store_fact(
             # Mirrored writes reserve both closure pairs before taking fact-row
             # locks. Reciprocal writers must share one lock order, not first lock
             # their respective forward pair and then wait on each other's inverse.
-            _inverse_predicate: str | None = None
             _gap_closure_allowed = True
-            if _registry_row is not None and entity_id is not None and object_entity_id is not None:
-                if _registry_row.get("is_symmetric"):
-                    _inverse_predicate = predicate
-                else:
-                    _inverse_predicate = _registry_row.get("inverse_of") or None
-                if _inverse_predicate is not None:
-                    _gap_closure_allowed = await knowledge_gaps.reserve_gap_pairs(
-                        conn, [(entity_id, predicate), (object_entity_id, _inverse_predicate)]
-                    )
+            if (
+                _inverse_predicate is not None
+                and entity_id is not None
+                and object_entity_id is not None
+            ):
+                _gap_closure_allowed = await knowledge_gaps.reserve_gap_pairs(
+                    conn, [(entity_id, predicate), (object_entity_id, _inverse_predicate)]
+                )
 
             # Supersession applies only to property facts (valid_at IS NULL).
             # Temporal facts (valid_at IS NOT NULL) always coexist as independent
@@ -2258,8 +2284,7 @@ async def store_fact(
                         # Inverse subject/content: swap labels.
                         _inv_subject = content  # object entity label used as subject
                         _inv_content = subject  # forward subject becomes content
-                        _inv_searchable = f"{_inv_subject} {_inverse_predicate} {_inv_content}"
-                        _inv_embedding = embedding_engine.embed(_inv_searchable)
+                        assert _inv_embedding is not None  # computed before the locks
                         _inv_search_text = preprocess_text(_inv_searchable)
                         await _insert_fact_record(
                             conn,
@@ -2524,7 +2549,7 @@ async def store_rule(
     """
     authority = await _stamp_authority(pool, content_authority, authority_entity_id)
     rule_id = uuid.uuid4()
-    embedding = embedding_engine.embed(content)
+    embedding = await embed_async(embedding_engine, content)
     search_text = preprocess_text(content)
     now = datetime.now(UTC)
     tags_json = tags or []
@@ -3889,7 +3914,7 @@ async def invert_to_anti_pattern(
             )
 
             # Re-embed the new content
-            new_embedding = embedding_engine.embed(anti_pattern_content)
+            new_embedding = await embed_async(embedding_engine, anti_pattern_content)
             search_text = preprocess_text(anti_pattern_content)
 
             # Preserve original content in metadata

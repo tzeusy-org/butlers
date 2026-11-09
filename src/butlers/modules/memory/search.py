@@ -6,15 +6,19 @@ All functions accept an asyncpg connection pool and return ranked results.
 
 from __future__ import annotations
 
+import logging
 import math
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+import asyncpg
+
 from butlers.core.chronicler_visibility import (
     catalog_projection_visible,
     local_fact_visibility_condition,
 )
+from butlers.db import _RuntimeRoleError
 from butlers.modules.memory.content_authority import RULE_ADMITTED_SQL
 from butlers.modules.memory.embedding import embed_async
 
@@ -22,6 +26,8 @@ if TYPE_CHECKING:
     from asyncpg import Pool
 
 from butlers.modules.memory.search_vector import preprocess_search_query
+
+logger = logging.getLogger(__name__)
 
 _VALID_TABLES = frozenset({"episodes", "facts", "rules"})
 # Tables that support scope filtering (facts/rules use `scope` column).
@@ -754,18 +760,32 @@ async def _bump_reference_counts(pool: Pool, results: list[dict]) -> None:
     Data-modifying CTEs run whether or not their output is read, so one round trip covers
     both tables (it was one UPDATE per result, ~30 sequential awaits per memory_context).
     """
-    fact_ids = [r["id"] for r in results if r["memory_type"] == "fact"]
-    rule_ids = [r["id"] for r in results if r["memory_type"] == "rule"]
+    # Sorted, so every multi-row writer takes row locks in one order and two bumps (or a bump
+    # and a consolidation) cannot deadlock each other.
+    fact_ids = sorted(r["id"] for r in results if r["memory_type"] == "fact")
+    rule_ids = sorted(r["id"] for r in results if r["memory_type"] == "rule")
     if not fact_ids and not rule_ids:
         return
-    await pool.execute(
-        "WITH f AS (UPDATE facts SET reference_count = reference_count + 1, "
-        "last_referenced_at = now() WHERE id = ANY($1::uuid[])), "
-        "r AS (UPDATE rules SET reference_count = reference_count + 1, "
-        "last_referenced_at = now() WHERE id = ANY($2::uuid[])) SELECT 1",
-        fact_ids,
-        rule_ids,
-    )
+    # Best effort: a deadlock with another multi-row writer must not fail the recall itself.
+    try:
+        await pool.execute(
+            "WITH f AS (UPDATE facts SET reference_count = reference_count + 1, "
+            "last_referenced_at = now() WHERE id = ANY($1::uuid[])), "
+            "r AS (UPDATE rules SET reference_count = reference_count + 1, "
+            "last_referenced_at = now() WHERE id = ANY($2::uuid[])) SELECT 1",
+            fact_ids,
+            rule_ids,
+        )
+    except (
+        asyncpg.PostgresError,
+        asyncpg.InterfaceError,
+        OSError,
+        TimeoutError,
+        _RuntimeRoleError,  # Database._setup_connection: SET ROLE failed at acquire
+    ):
+        # Reference counts are bookkeeping, not the answer. A database, connection or role
+        # failure is tolerated; a real bug (TypeError and the like) still surfaces.
+        logger.warning("could not bump memory reference counts", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

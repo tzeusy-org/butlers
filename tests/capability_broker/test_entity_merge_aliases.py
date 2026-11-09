@@ -58,6 +58,8 @@ def _from_inventory(name: str) -> Capability:
 
 EPISODES = _from_inventory("chronicler_list_episodes")
 ENTITY_MERGE = _from_inventory("memory_entity_merge")
+SET_POSTURE = _from_inventory("entity_set_posture")
+ASSERT_SENDER = _from_inventory("identity_assert_sender_channel")
 NOTES = capability(
     "entity_note",
     "record",
@@ -66,7 +68,10 @@ NOTES = capability(
     alias_resolvers=(("entity_ids", "entity"),),
     recipient_params=RecipientParameters(),
 )
-ALIASED = Catalog("catalog-v1", (*CATALOG.capabilities, EPISODES, ENTITY_MERGE, NOTES))
+ALIASED = Catalog(
+    "catalog-v1",
+    (*CATALOG.capabilities, EPISODES, ENTITY_MERGE, NOTES, SET_POSTURE, ASSERT_SENDER),
+)
 PARAM = "participant_entity_id"
 
 
@@ -129,6 +134,28 @@ async def test_a_term_on_a_merged_away_id_holds_its_survivor(broker_db_url, reso
         await _never(w, EPISODES, PARAM, [source])
         await _merge(broker_db_url, source, survivor)
         held = await _refused(_episodes_call(w, survivor))
+        assert held.reason is Reason.POLICY
+
+
+@pytest.mark.parametrize(
+    ("cap", "other_args"),
+    [(SET_POSTURE, {"posture": "quiet"}), (ASSERT_SENDER, {"channel_type": "telegram"})],
+    ids=["entity_set_posture", "identity_assert_sender_channel"],
+)
+async def test_person_id_tools_resolve_a_merged_away_term_to_its_survivor(
+    broker_db_url, cap, other_args
+):
+    """bu-dhloi1.46: a term written on a merged-away person must hold these tools' survivor."""
+    assert dict(cap.alias_resolvers) == {"entity_id": "entity"}
+    async with _world(broker_db_url) as w:
+        source, survivor = await _person(w), await _person(w)
+        await _never(w, cap, "entity_id", [source])
+        await _merge(broker_db_url, source, survivor)
+        goal = await w.goal(_grant(cap))
+        _, token = await w.invocation(goal, _grant(cap))
+        held = await _refused(
+            w.broker.call(goal, token, cap.identity, {"entity_id": str(survivor), **other_args})
+        )
         assert held.reason is Reason.POLICY
 
 
@@ -259,11 +286,18 @@ class _MergesBetweenReads:
         self._resolver, self._url, self._merge = resolver, url, (source, target)
         self._reads = 0
 
-    async def resolve(self, domain, kind, values):
+    async def _read(self):
         self._reads += 1
         if self._reads == 3:  # The call's read is an answer and its fixed-point check.
             await _merge(self._url, *self._merge)
+
+    async def resolve(self, domain, kind, values):
+        await self._read()
         return await self._resolver.resolve(domain, kind, values)
+
+    async def lineage(self, domain, kind, values):
+        await self._read()
+        return await self._resolver.lineage(domain, kind, values)
 
 
 def _merge_between_reads(w, url, source: UUID, target: UUID) -> None:
@@ -293,6 +327,39 @@ async def test_a_chain_growing_between_the_reads_cannot_release_it_either(broker
         held = await _refused(_episodes_call(w, first))
         assert held.reason is Reason.POLICY
         assert await _survivor_of(w, middle) == str(last)
+
+
+async def test_a_survivor_merging_between_the_reads_cannot_release_an_old_term(broker_db_url):
+    """bu-dhloi1.45: X into Y, a term on X, a call on Y, then Y into Z between the two reads.
+
+    The call reads Y as its own end, the term reads X's new end Z, and no raw id met. Every
+    serial order holds the call, so the chain each side walked must stay in what it matches.
+    """
+    async with _world(broker_db_url) as w:
+        first, middle, last = await _person(w), await _person(w), await _person(w)
+        await _merge(broker_db_url, first, middle)
+        await _never(w, EPISODES, PARAM, [first])
+        _merge_between_reads(w, broker_db_url, middle, last)
+        held = await _refused(_episodes_call(w, middle))
+        assert held.reason is Reason.POLICY
+        assert await _survivor_of(w, middle) == str(last)
+
+
+async def test_a_lineage_widens_nothing_for_other_people(broker_db_url):
+    from butlers.capability_broker.aliases import EntityAliases
+
+    async with _world(broker_db_url) as w:
+        first, middle, last, other = [await _person(w) for _ in range(4)]
+        await _merge(broker_db_url, first, middle)
+        await _merge(broker_db_url, middle, last)
+        resolver = EntityAliases(w.broker.pool)
+        lineage = await resolver.lineage(DOMAIN, "entity", {str(first), str(other)})
+        assert lineage == {
+            str(first): (str(first), str(middle), str(last)),
+            str(other): (str(other),),
+        }
+        await _never(w, EPISODES, PARAM, [first])
+        assert (await _episodes_call(w, other)).status == "returned"
 
 
 async def test_a_merge_between_the_reads_still_releases_other_people(broker_db_url):

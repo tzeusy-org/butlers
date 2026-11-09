@@ -7,7 +7,7 @@ The runner (bu-u5s4w8 / bu-dhloi1.7) consumes ``consume_fire``; it never evaluat
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -27,6 +27,7 @@ from butlers.conditions.model import (
     State,
     Tri,
 )
+from butlers.core.goal_labels import Label
 
 MAX_LIFETIME = timedelta(days=90)
 DEPENDENCY = "system.dep.conditions"
@@ -129,6 +130,20 @@ def check_registration(
     return canonical
 
 
+#: Fires caused by registration-snapshot or event data. Neither carries a label yet (producers
+#: stamp events under bu-dhloi1.9), and S1 makes missing provenance the unknown label.
+_DATA_FIRES = frozenset({"fired:registration", "fired:event"})
+
+
+def _outcome_label(inst: Instance, reason: str) -> Label:
+    """The label a fire intent or receipt carries: the registered snapshot, joined (S4).
+
+    Data-caused fires join the unknown label, so they fail closed until events carry their own
+    labels. A clock fire conveys no source data and keeps the registered label. Never narrower.
+    """
+    return inst.label.join(Label.unknown()) if reason in _DATA_FIRES else inst.label
+
+
 def _boundary(inst: Instance) -> tuple:
     """The immutable part of an instance; a re-registration must match it exactly."""
     return (
@@ -139,6 +154,7 @@ def _boundary(inst: Instance) -> tuple:
         inst.expires_at,
         tuple(inst.source_boundary),
         tuple(sorted(inst.floor.items())),
+        inst.label,
     )
 
 
@@ -176,12 +192,21 @@ class ConditionEvaluator:
         predicate: object,
         grant: Grant,
         goal_id: str,
+        label: Label,
         snapshot: Snapshot,
         expires_at: datetime,
         generation: int = 1,
         cursors: dict[str, int] | None = None,
     ) -> Outcome:
-        """Validate, evaluate current state (no lost wake), persist, fire if already true."""
+        """Validate, evaluate current state (no lost wake), persist, fire if already true.
+
+        ``label`` is the S1 label snapshot of the registering wait envelope. It is stored with
+        the instance and is part of its immutable boundary. A fire intent and its receipt carry
+        that label joined (S4): with the unknown label for a data-caused fire, alone for a clock
+        fire. They are never narrower than the registered label.
+        """
+        if not isinstance(label, Label):
+            raise RegistrationRefused("a registered label snapshot is required")
         canonical = check_registration(
             predicate,
             grant,
@@ -203,6 +228,7 @@ class ConditionEvaluator:
             leaves=initial_leaves(canonical, snapshot),
             cursors=dict(cursors or {}),
             floor=dict(cursors or {}),
+            label=label,
         )
         inst = replace(inst, result=combine(canonical, dict(inst.leaves)))
 
@@ -212,7 +238,7 @@ class ConditionEvaluator:
                 if not inserted:
                     if _boundary(stored) != _boundary(inst):
                         raise RegistrationRefused("immutable condition instance changed")
-                    return await self._existing(tx, stored, snapshot.now)
+                    return await self._reregister(tx, stored, inst.leaves, snapshot)
                 if inst.result is Tri.TRUE:
                     fired = replace(inst, state=State.FIRED, version=1)
                     await tx.save_instance(fired, 0)
@@ -294,6 +320,43 @@ class ConditionEvaluator:
 
         return await self._guard(run)
 
+    async def _reregister(
+        self, tx: ConditionTx, stored: Instance, seen: Mapping[str, Tri], snapshot: Snapshot
+    ) -> Outcome:
+        """A register retry evaluates the caller's fresher snapshot against the stored instance.
+
+        Only the leaves may move, and only upward (a ``true`` latches; nothing is downgraded by
+        a stale snapshot). Floor, boundary and cursors are never touched, and the fire intent
+        is the instance's one-per-generation row, so a retry can fire once and never twice.
+        """
+        if stored.state is not State.OPEN:
+            return await self._existing(tx, stored, snapshot.now)
+        leaves = {
+            path: Tri.TRUE if seen.get(path) is Tri.TRUE else value
+            for path, value in stored.leaves.items()
+        }
+        seeded = replace(stored, leaves=leaves, result=combine(stored.predicate, leaves))
+        if seeded.result is Tri.TRUE:
+            new = replace(seeded, state=State.FIRED, version=stored.version + 1)
+            trigger, reason = new.synthetic_event_id("registration"), "fired:registration"
+        else:
+            adv = advance(seeded, [], snapshot.now, unmeasurable=snapshot.unmeasurable)
+            if adv.changed:
+                new, trigger, reason = adv.instance, adv.trigger, adv.reason
+            elif leaves != dict(stored.leaves):
+                new = replace(seeded, version=stored.version + 1)
+                trigger, reason = None, "pending"
+            else:
+                return await self._existing(tx, stored, snapshot.now)
+        await tx.save_instance(new, stored.version)
+        intent = None
+        if trigger is not None:
+            intent = await tx.insert_fire_intent(self._intent(new, trigger, reason, snapshot))
+        kind = "expire" if new.state is State.EXPIRED else "register"
+        receipt = self._receipt(new, kind, reason, str(trigger) if trigger else None, snapshot)
+        await tx.append_receipt(receipt)
+        return Outcome(new, receipt, intent)
+
     async def _existing(
         self, tx: ConditionTx, inst: Instance, now: datetime, reason: str | None = None
     ) -> Outcome:
@@ -317,6 +380,7 @@ class ConditionEvaluator:
             fired_at=snap.now,
             snapshot_generation=snap.generation,
             cursors=dict(inst.cursors),
+            label=_outcome_label(inst, reason),
         )
 
     def _receipt(
@@ -334,4 +398,5 @@ class ConditionEvaluator:
             at=snap.now,
             snapshot_generation=snap.generation,
             clock=self.clock,
+            label=_outcome_label(inst, reason),
         )

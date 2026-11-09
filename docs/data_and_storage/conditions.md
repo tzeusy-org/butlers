@@ -12,17 +12,35 @@ consumes `ConditionEvaluator.consume_fire`; it never evaluates predicates itself
   this evaluator accept the same predicates. There are no text expressions or model calls.
 - `register` refuses before any write when a leaf names an identity or source outside the
   caller-derived `Grant`, or when expiry is not finite (at most 90 days). It evaluates the
-  current `Snapshot`, so an already-true condition fires at registration (no lost wake).
+  current `Snapshot`, so an already-true condition fires at registration (no lost wake). A retry
+  of the same instance (same boundary) evaluates its fresher snapshot too: a leaf the snapshot
+  shows `true` latches, the instance may fire once (`fired:registration`, same one intent), and
+  nothing is ever downgraded or re-floored. A different boundary still refuses.
 - `evaluate` takes trusted `ConditionEvent`s and an explicit `now`. Leaves latch, so
   replay, duplicates and reordering are idempotent. Results are three-valued; an
   unmeasurable source is `unknown`, never `false`. Transition leaves ignore events that are
-  late, retracted, retraction records, or older than 10 minutes. An `at` leaf crossed by a
+  late, retracted, retraction records, or older than 10 minutes. A transition event stamped more
+  than 60 seconds ahead of `now` is ignored, not refused, and does not move the cursor: a
+  batch of trusted events cannot be rejected whole, and a redelivery counts once the clock
+  reaches it. An `at` leaf crossed by a
   clock jump fires once (`fired:clock_late`) if the instance has not expired.
 - Events at or below the instance's immutable per-source replay floor (the cursors given at
   registration, part of its boundary) are ignored: a rearm that passes the prior generation's
   cursors cannot re-fire on its event. The advancing `cursors` are high-water marks for
   receipts and resume only; within a generation latching makes reordering safe. Expiry wins: an
   instance at or past `expires_at` expires before any event or clock fire is considered.
+- Labels (RFC 0038 S1/S4): `register` takes the wait envelope's `Label` snapshot (required; a
+  non-`Label` refuses). It is stored with the instance (`core_324`), is part of the immutable
+  boundary. A fire joins labels (S4): the intent and its receipt carry the registered label
+  joined with the unknown label (`{world}` in I and D, all six categories in C) when the cause is
+  the registration snapshot or an event, because `ConditionEvent` carries no label until the
+  producers stamp them (`bu-dhloi1.9`) and S1 makes missing provenance unknown. A clock (`at`)
+  fire conveys no source data and carries the registered label alone. No fire is ever narrower.
+  The runner joins the intent's label into the epoch and inbox row it creates. In PostgreSQL the
+  label is CHECK-validated (`public.condition_label_valid`) and immutable once written, and a
+  receipt or fire intent whose label does not cover its instance's is refused (23514, an
+  outage-path bug, never `RegistrationRefused`). Rows older than `core_324` took the unknown
+  label.
 - One fire intent exists per instance generation (`Instance.fire_key`); the instance row, the
   receipt and the intent commit in one store transaction. `FireIntent.event_id` is the
   causing event's UUID, or a stable synthetic UUID for registration and clock fires, so the

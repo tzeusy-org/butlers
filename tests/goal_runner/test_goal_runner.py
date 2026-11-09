@@ -108,9 +108,11 @@ class Sink(AttemptSink):
     def __init__(self) -> None:
         super().__init__(MagicMock())
         self.outcomes: list[str] = []
+        self.reasons: list[str | None] = []
 
     async def attempt(self, **fields: Any) -> None:
         self.outcomes.append(fields["outcome"])
+        self.reasons.append(fields.get("failure_reason"))
 
 
 @dataclass
@@ -291,6 +293,9 @@ async def test_a_duplicate_that_loses_the_open_race_is_a_no_op(broker_db_url):
         assert (await h.row(lead.invocation_id))["status"] == "running"
         assert len(h.host.launches) == 1 and h.host.terminated == []
         assert (await h.budget(goal))["used_invocations"] == 1
+        # bu-dhloi1.208: no model ran, so the breaker and evidence never see it.
+        assert h.sink.outcomes == ["suppressed"]
+        assert h.sink.reasons == ["not_invoked:lead_active"]
 
 
 async def test_a_child_never_lists_or_calls_a_lead_tool_or_administer(broker_db_url):
@@ -907,6 +912,10 @@ async def test_an_exhausted_invocation_budget_ends_the_goal_budget_exhausted(bro
         h.host.script = [HostOutcome(failure=_retryable())]
         await h.lead(goal)
         await until(lambda: _equals(h.goal_status(goal), "budget_exhausted"))
+        await h.runner.drain()
+        # The model failure counts; the relaunch the budget refused never ran one.
+        assert h.sink.outcomes == ["runtime_failure", "suppressed"]
+        assert h.sink.reasons[-1] == "not_invoked:invocation_budget_exhausted"
 
 
 # -- D14: a runner that dies between ending a lead and launching its successor ----

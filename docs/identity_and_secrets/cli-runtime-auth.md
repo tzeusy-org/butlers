@@ -159,6 +159,22 @@ their ordinary restore behavior.
 
 This restore happens during the dashboard API lifespan startup, ensuring tokens are available before any butler attempts to spawn a CLI instance.
 
+### Session-host target (dark)
+
+RFC 0038 D3 moves runtime OAuth to the session host. The target for that move exists
+but is off. A dashboard Codex login can be retargeted from this process's
+`~/.codex/auth.json` to the session host's credential volume. Runtime sync can push
+the authority there and collect rotations back, with the same fencing as the local
+path.
+
+- No live caller passes a `session_host` target, so login, restore and sync behave
+  exactly as described above.
+- A test pins the off path:
+  - the parameters are keyword-only and default to `None`;
+  - an AST scan proves no live module builds a target.
+- What has to happen before the switch is listed in
+  [Codex auth credential volume](../runtime/session-host.md#codex-auth-credential-volume-dark).
+
 ## Verification
 
 To confirm CLI auth provider registration, token persistence, and health probe behavior are operating as described:

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.connectors.telegram_user_client import (
     TelegramUserClientConnector,
     TelegramUserClientConnectorConfig,
@@ -27,6 +28,8 @@ def connector() -> TelegramUserClientConnector:
     conn = TelegramUserClientConnector(config, cursor_pool=MagicMock())
     conn._flush_and_drain = AsyncMock()
     conn._build_ingestion_envelope = MagicMock(side_effect=RuntimeError("boom"))
+    # Park on the first failure, so the error row is written now (bu-dhloi1.149).
+    conn._ingest_retry = IngestRetryBudget(1)
     return conn
 
 

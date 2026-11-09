@@ -40,6 +40,13 @@ _CLASSES: dict[str, re.Pattern[str]] = {
     "domain": re.compile(
         r"(^|_)(BUTLER|BUTLERS|DASHBOARD|SWITCHBOARD|BWS|RUNTIME_PROBE|CONTROL)(_|$)"
     ),
+    # Credential store, encryption, backup, beads/Dolt, GitHub and kube material. Once
+    # model-credential staging widens _ALLOWED_ENV, these regexes are the backstop.
+    "credential": re.compile(
+        r"(^|_)(CREDENTIAL|CREDENTIALS|CREDENTIAL_STORE|ENCRYPTION|FERNET|SECRET|SECRETS"
+        r"|PASSWORD|PASSPHRASE|SIGNING|SSH|RESTIC|RESTORE|OFFSITE|BACKUP|DOLT|BEADS"
+        r"|GITHUB|GH|KUBE|KUBECONFIG|KUBERNETES|HELM)(_|$)"
+    ),
 }
 # Template constructs that pull in the shared credential plumbing.
 _FORBIDDEN_TEMPLATE_TOKENS = (
@@ -77,7 +84,18 @@ def compose_violations(service: dict | None) -> list[str]:
     if service is None:
         return [f"{_SERVICE} service definition is missing"]
     found = _classify(_compose_env_names(service.get("environment")))
-    for key in ("env_file", "secrets", "configs", "volumes", "volumes_from", "ports", "expose"):
+    # ``extends`` inherits another service's environment, secrets and volumes, which this
+    # scan of the service's own keys would not see. The repo uses none, so refuse it.
+    for key in (
+        "extends",
+        "env_file",
+        "secrets",
+        "configs",
+        "volumes",
+        "volumes_from",
+        "ports",
+        "expose",
+    ):
         if service.get(key):
             found.append(f"{key} is not allowed on the session host")
     if service.get("networks") != ["control-session"]:
@@ -196,6 +214,17 @@ def test_a_missing_service_definition_fails_the_scan() -> None:
         ("domain", "DASHBOARD_API_KEY"),
         ("domain", "BWS_ACCESS_TOKEN"),
         ("domain", "SWITCHBOARD_MCP_URL"),
+        ("credential", "CREDENTIAL_STORE_KEY"),
+        ("credential", "ENCRYPTION_KEY"),
+        ("credential", "FERNET_KEY"),
+        ("credential", "RESTIC_PASSWORD_FILE"),
+        ("credential", "OFFSITE_SSH_KEY_FILE"),
+        ("credential", "BEADS_DOLT_SERVER_HOST"),
+        ("credential", "DOLT_REMOTE_PASSWORD"),
+        ("credential", "GITHUB_TOKEN"),
+        ("credential", "GH_TOKEN"),
+        ("credential", "KUBECONFIG"),
+        ("credential", "KUBE_TOKEN"),
     ],
 )
 def test_each_forbidden_credential_class_fails_in_compose_and_helm(
@@ -217,6 +246,8 @@ def test_each_forbidden_credential_class_fails_in_compose_and_helm(
         ("database", "POSTGRES_PASSWORD"),
         ("connector", "TELEGRAM_BOT_TOKEN"),
         ("domain", "BWS_ACCESS_TOKEN"),
+        ("credential", "GITHUB_TOKEN"),
+        ("credential", "KUBECONFIG"),
     ],
 )
 def test_forbidden_class_fails_in_the_rendered_pod(label: str, name: str) -> None:
@@ -238,6 +269,8 @@ def test_the_postgres_anchor_merge_is_caught(compose_service) -> None:
 
 def test_structural_credential_routes_fail(compose_service) -> None:
     for key, value in (
+        ("extends", {"service": "butlers-control"}),
+        ("extends", {"file": "docker-compose.yml", "service": "butlers-up"}),
         ("env_file", [".env"]),
         ("secrets", ["runtime_probe_control_signing_key"]),
         ("configs", [{"source": "runtime_probe_control_verifiers"}]),

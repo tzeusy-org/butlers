@@ -460,18 +460,23 @@ the check and before the domain runs: a handler that follows `merged_into` itsel
 would then reach the survivor.
 
 The call and the terms resolve in separate statements, so a merge can commit
-between them. This kind therefore compares raw ids beside survivors on both sides,
-at the call and at the fence, so a term holds any call the raw ids would have held,
-however the chain moved between the reads. That is the whole guarantee during a
-merge. Two cases still release, as raw comparison would, so neither is a regression:
+between them. This kind therefore keeps every id each side walked, not only the
+end: the call's id and its chain, and each term id with its chain, answered by the
+same read as the survivor (`EntityAliases.lineage`). A chain only grows at its end,
+so whichever read comes first holds an id the later read's chain still contains,
+and a term holds any call it would have held in either serial order of the reads
+and the merge. The same holds at the approval fence. The raw ids still match
+beside the chains. One case still releases, as a check run wholly before the merge
+also does, so it is not a regression:
 
 - X merges into Y between the reads, with the call on X and the term on Y. The call
-  was read before the merge, and a check run wholly before it also releases.
-- X has already merged into Y, the term is on X, the call is on Y, and Y merges into
-  Z between the reads. The call reads as Y and the term as X and Z, so they are
-  disjoint, although a check run wholly before or wholly after that merge holds the
-  call. This one is not equivalent to any serial order. Closing it needs both reads
-  in one statement, or a narrowing that keeps every id on its chain.
+  was read before the merge, so its chain is X alone, and a check run wholly before
+  the merge releases it too.
+
+A resolver with no `lineage` answers its survivor alone. `alias_free_params` stays
+in the descriptor contract as the declared way to name a resource param whose ids
+have no alias; no inventory tool declares one today, and removing it is a catalog
+contract change rather than a cleanup of this seam.
 
 Only a merge writes `merged_into`. `entity_create` and `entity_update`, the shared
 writers behind `memory_entity_create`, `memory_entity_update` and relationship

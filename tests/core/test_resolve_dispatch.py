@@ -414,3 +414,87 @@ async def test_breaker_open_candidate_is_explained_and_receipt_persists(
     )
     assert stored["winner"]["catalog_entry_id"] == str(selected_id)
     assert stored["truncated"] is False
+
+
+# -- owner-pinned even split (bu-dhloi1.193) -------------------------------------------------
+
+
+async def _pin(pool: asyncpg.Pool, entry_id: uuid.UUID, priority: int = 50) -> None:
+    await pool.execute(
+        "INSERT INTO public.butler_model_overrides (butler_name, catalog_entry_id, enabled, "
+        "priority) VALUES ($1, $2, true, $3)",
+        BUTLER,
+        entry_id,
+        priority,
+    )
+
+
+async def _history(pool: asyncpg.Pool, entry_id: uuid.UUID, duration_ms: int, n: int = 8) -> None:
+    for _ in range(n):
+        await pool.execute(
+            "INSERT INTO public.model_dispatch_attempts (catalog_entry_id, butler, outcome, "
+            "attempt_index, duration_ms) VALUES ($1, $2, 'success', 0, $3)",
+            entry_id,
+            BUTLER,
+            duration_ms,
+        )
+
+
+async def _winners(pool: asyncpg.Pool, n: int) -> list[uuid.UUID]:
+    clear_routing_decision_cache()
+    winners = []
+    for _ in range(n):
+        clear_routing_decision_cache()
+        result = await resolve_model_with_effective_tier(
+            pool, BUTLER, Complexity.CHEAP, allow_tier_fallthrough=False
+        )
+        assert result is not None
+        winners.append(result[3])
+    return winners
+
+
+async def test_pinned_overrides_split_evenly_despite_evidence(dispatch_pool: asyncpg.Pool) -> None:
+    fast = await _insert_entry(dispatch_pool, alias="even-fast", priority=10)
+    slow = await _insert_entry(dispatch_pool, alias="even-slow", priority=10)
+    await _pin(dispatch_pool, fast)
+    await _pin(dispatch_pool, slow)
+    await _history(dispatch_pool, fast, 500)
+    await _history(dispatch_pool, slow, 400_000)  # would lose every evidence comparison
+
+    winners = await _winners(dispatch_pool, 8)
+    assert winners.count(fast) == 4 and winners.count(slow) == 4
+    assert winners[0] != winners[1]
+
+
+async def test_the_receipt_names_the_owner_split(dispatch_pool: asyncpg.Pool) -> None:
+    a = await _insert_entry(dispatch_pool, alias="rcpt-a", priority=10)
+    b = await _insert_entry(dispatch_pool, alias="rcpt-b", priority=10)
+    for entry in (a, b):
+        await _pin(dispatch_pool, entry)
+        await _history(dispatch_pool, entry, 500 if entry == a else 300_000)
+    clear_routing_decision_cache()
+    resolution = await resolve_dispatch(
+        dispatch_pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False
+    )
+    assert resolution.winner_reason == "owner_even_split"
+
+
+async def test_unpinned_tie_keeps_evidence_scoring(dispatch_pool: asyncpg.Pool) -> None:
+    fast = await _insert_entry(dispatch_pool, alias="ev-fast", priority=10)
+    slow = await _insert_entry(dispatch_pool, alias="ev-slow", priority=10)
+    await _history(dispatch_pool, fast, 500)
+    await _history(dispatch_pool, slow, 400_000)
+    assert set(await _winners(dispatch_pool, 6)) == {fast}
+
+
+async def test_an_unverified_pinned_candidate_is_still_excluded(
+    dispatch_pool: asyncpg.Pool,
+) -> None:
+    ok = await _insert_entry(dispatch_pool, alias="pin-ok", priority=10)
+    broken = await _insert_entry(dispatch_pool, alias="pin-broken", priority=10)
+    await _pin(dispatch_pool, ok)
+    await _pin(dispatch_pool, broken)
+    await dispatch_pool.execute(
+        "UPDATE public.model_catalog SET last_verified_ok = false WHERE id = $1", broken
+    )
+    assert set(await _winners(dispatch_pool, 4)) == {ok}

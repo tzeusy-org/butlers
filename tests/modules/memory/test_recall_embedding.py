@@ -13,8 +13,10 @@ import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
+import asyncpg
 import pytest
 
+from butlers.db import _RuntimeRoleError
 from butlers.modules.memory import search as _search
 from butlers.modules.memory.tools import context as _context
 
@@ -169,3 +171,42 @@ async def test_a_caller_supplied_embedding_is_not_recomputed(searches):
     engine = MagicMock()
     await _search.recall(_pool(), "topic", engine, read_policy=POLICY, query_embedding=[0.5] * 384)
     engine.embed.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        asyncpg.DeadlockDetectedError("deadlock detected"),
+        asyncpg.InterfaceError("connection is closed"),
+        ConnectionRefusedError("refused"),
+        TimeoutError("acquire timed out"),
+        _RuntimeRoleError("SET ROLE failed on a dropped connection"),
+    ],
+    ids=["deadlock", "interface", "connection-refused", "timeout", "runtime-role"],
+)
+async def test_reference_bump_failure_does_not_fail_recall(error, caplog):
+    # A deadlock, a dropped connection or a failed SET ROLE must not fail memory_context.
+    pool = AsyncMock()
+    pool.execute.side_effect = error
+    with caplog.at_level("WARNING"):
+        await _search._bump_reference_counts(pool, [{"id": uuid.uuid4(), "memory_type": "fact"}])
+    assert "reference" in caplog.text.lower()
+
+
+@pytest.mark.parametrize("bug", [RuntimeError("a real bug"), TypeError("bad arg")])
+async def test_reference_bump_only_swallows_database_errors(bug):
+    pool = AsyncMock()
+    pool.execute.side_effect = bug
+    with pytest.raises(type(bug)):
+        await _search._bump_reference_counts(pool, [{"id": uuid.uuid4(), "memory_type": "fact"}])
+
+
+async def test_reference_bump_locks_rows_in_sorted_order():
+    # Every multi-row writer takes the same order, so two bumps cannot deadlock each other.
+    ids = [uuid.UUID(int=n) for n in (9, 3, 7, 1)]
+    results = [{"id": i, "memory_type": "fact"} for i in ids]
+    results += [{"id": i, "memory_type": "rule"} for i in reversed(ids)]
+    pool = AsyncMock()
+    await _search._bump_reference_counts(pool, results)
+    _, fact_ids, rule_ids = pool.execute.await_args.args
+    assert fact_ids == sorted(ids) and rule_ids == sorted(ids)
