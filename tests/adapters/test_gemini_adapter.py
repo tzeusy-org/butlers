@@ -429,16 +429,16 @@ def test_catalog_gemini_model_ids_were_probed_against_the_pinned_cli() -> None:
     gemini-3.8-flash), and its usage labels never raise ``requested_not_served``. So
     every Gemini catalog id needs a recorded probe for the pinned CLI (see the fixture
     README), and an entry may be enabled only if the CLI serves its id unchanged."""
-    import re
     import tomllib
 
     root = Path(__file__).parents[2]
-    dockerfile = (root / "Dockerfile.base").read_text()
-    match = re.search(r"@google/gemini-cli@([0-9.]+)", dockerfile)
-    assert match
+    # The image installs the closed component declared here, rather than an
+    # online npm version literal in Dockerfile.base.
+    runtime_inputs = json.loads((root / "deploy/runtime-clis/runtime-inputs.json").read_text())
+    pinned_version = runtime_inputs["versions"]["gemini"]
     probes = json.loads((_RECORDED / "model_resolution.json").read_text())
-    served = probes.get(match.group(1))
-    assert served is not None, f"record a model probe for gemini-cli {match.group(1)}"
+    served = probes.get(pinned_version)
+    assert served is not None, f"record a model probe for gemini-cli {pinned_version}"
     catalog = tomllib.loads((root / "model_catalog_defaults.toml").read_text())["models"]
     for entry in (e for e in catalog if e["runtime_type"] == "gemini"):
         assert entry["model_id"] in served, f"probe {entry['model_id']} on the pinned CLI"
