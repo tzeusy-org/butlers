@@ -272,6 +272,20 @@ class PublicMcpTopology:
         )
         return create_engine(url, connect_args={"connect_timeout": 5})
 
+    async def reader_connection(self, role: str = "mcp_public_ro"):
+        """An asyncpg TCP login to the projection as a public role, as the server connects."""
+        import asyncpg
+
+        url = make_url(self.container.get_connection_url())
+        return await asyncpg.connect(
+            host=url.host,
+            port=url.port,
+            user=role,
+            password=self.role_passwords[role],
+            database="butlers_public",
+            timeout=5,
+        )
+
     def execute(self, program: str):
         """Run the actual emitted psql program as OS postgres on its fixed socket."""
         name = "public_mcp_program_" + uuid.uuid4().hex + ".sql"
