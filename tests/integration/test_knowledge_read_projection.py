@@ -887,3 +887,66 @@ async def test_owner_planted_trigram_extension_is_refused(projected):
         superuser("DROP SCHEMA IF EXISTS mcp_ext CASCADE")
         healed = topology.execute(program)
         assert healed.exit_code == 0, repr(healed.output)[-4000:]
+
+
+async def test_owner_shadowed_catalog_names_cannot_admit_a_planted_extension(projected):
+    """A database-level search_path and a shadowing ``public.pg_roles`` do not fool the step.
+
+    The projection owner owns ``butlers_public``, so it can set the database's search_path and
+    create objects in ``public``. The step pins its own search_path, qualifies catalog names
+    and refuses both footholds before it trusts any catalog read.
+    """
+    topology, projection = projected
+    program = render_owner_program(load_manifest())
+
+    def superuser(sql):
+        with projection.begin() as conn:
+            conn.exec_driver_sql(sql)
+
+    def as_owner(*statements):
+        with projection.begin() as conn:
+            conn.exec_driver_sql("SET LOCAL ROLE mcp_projection_owner")
+            for statement in statements:
+                conn.exec_driver_sql(statement)
+
+    applied = _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied")
+    try:
+        superuser("DROP EXTENSION pg_trgm")
+        superuser("DROP SCHEMA mcp_ext")
+        as_owner(
+            "CREATE SCHEMA mcp_ext",
+            "CREATE EXTENSION pg_trgm WITH SCHEMA mcp_ext",
+            "CREATE FUNCTION mcp_ext.planted(text) RETURNS text LANGUAGE sql AS 'SELECT $1'",
+            "ALTER EXTENSION pg_trgm ADD FUNCTION mcp_ext.planted(text)",
+            "ALTER DATABASE butlers_public SET search_path = public, pg_catalog",
+            "CREATE VIEW public.pg_roles AS SELECT oid, rolname, true AS rolsuper"
+            " FROM pg_catalog.pg_roles",
+        )
+        refused = topology.execute(program)
+        assert refused.exit_code != 0, "the step must not trust a shadowed pg_roles"
+        assert _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied") == applied
+        owner = _scalar(
+            projection,
+            "SELECT x.extowner::regrole::text FROM pg_catalog.pg_extension x"
+            " WHERE x.extname='pg_trgm'",
+        )
+        assert owner == "mcp_projection_owner", "the planted extension must not be adopted"
+
+        # Each foothold is refused on its own.
+        superuser("DROP VIEW public.pg_roles")
+        refused = topology.execute(program)
+        assert refused.exit_code != 0 and b"database setting" in bytes(refused.output)
+        superuser("ALTER DATABASE butlers_public RESET search_path")
+        superuser("DROP EXTENSION pg_trgm")
+        superuser("DROP SCHEMA mcp_ext CASCADE")
+        as_owner("CREATE FUNCTION public.shadow() RETURNS int LANGUAGE sql AS 'SELECT 1'")
+        refused = topology.execute(program)
+        assert refused.exit_code != 0 and b"public schema object" in bytes(refused.output)
+    finally:
+        superuser("ALTER DATABASE butlers_public RESET search_path")
+        superuser("DROP VIEW IF EXISTS public.pg_roles")
+        superuser("DROP FUNCTION IF EXISTS public.shadow()")
+        superuser("DROP EXTENSION IF EXISTS pg_trgm")
+        superuser("DROP SCHEMA IF EXISTS mcp_ext CASCADE")
+        healed = topology.execute(program)
+        assert healed.exit_code == 0, repr(healed.output)[-4000:]

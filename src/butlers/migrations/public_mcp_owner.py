@@ -972,43 +972,59 @@ $decode$;
 # add its own functions to it. Only a superuser-owned mcp_ext, extension and member set is
 # accepted, and only similarity(text, text) may be executable by anyone but its owner. Absent
 # objects pass: the superuser step creates them.
-_SUPERUSER = "EXISTS(SELECT 1 FROM pg_roles r WHERE r.oid={} AND r.rolsuper)"
-_TRGM_SAFE = f"""NOT EXISTS(SELECT 1 FROM pg_namespace n WHERE n.nspname='mcp_ext'
+_SUPERUSER = "EXISTS(SELECT 1 FROM pg_catalog.pg_roles r WHERE r.oid={} AND r.rolsuper)"
+_TRGM_SAFE = f"""NOT EXISTS(SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname='mcp_ext'
         AND NOT {_SUPERUSER.format("n.nspowner")})
-    AND NOT EXISTS(SELECT 1 FROM pg_namespace n, LATERAL aclexplode(n.nspacl) a
+    AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_namespace n, LATERAL aclexplode(n.nspacl) a
         WHERE n.nspname='mcp_ext' AND a.grantee<>n.nspowner
           AND (a.privilege_type<>'USAGE' OR a.grantee<>'mcp_public_ro'::regrole))
-    AND NOT EXISTS(SELECT 1 FROM pg_extension x JOIN pg_namespace n ON n.oid=x.extnamespace
+    AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_extension x JOIN pg_catalog.pg_namespace n
+            ON n.oid=x.extnamespace
         WHERE x.extname='pg_trgm'
           AND (n.nspname<>'mcp_ext' OR NOT {_SUPERUSER.format("x.extowner")}))
-    AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+    AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n
+            ON n.oid=p.pronamespace
         WHERE n.nspname='mcp_ext' AND (p.prosecdef
           OR NOT {_SUPERUSER.format("p.proowner")}
-          OR NOT EXISTS(SELECT 1 FROM pg_depend d JOIN pg_extension x ON x.oid=d.refobjid
-              WHERE d.classid='pg_proc'::regclass AND d.objid=p.oid
-                AND d.refclassid='pg_extension'::regclass AND d.deptype='e'
+          OR NOT EXISTS(SELECT 1 FROM pg_catalog.pg_depend d
+                  JOIN pg_catalog.pg_extension x ON x.oid=d.refobjid
+              WHERE d.classid='pg_catalog.pg_proc'::regclass AND d.objid=p.oid
+                AND d.refclassid='pg_catalog.pg_extension'::regclass AND d.deptype='e'
                 AND x.extname='pg_trgm')
           OR EXISTS(SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantee<>p.proowner
               AND NOT (a.grantee='mcp_public_ro'::regrole
                        AND p.oid=to_regprocedure('mcp_ext.similarity(text,text)')))))
-    AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+    AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n
+            ON n.oid=c.relnamespace
         WHERE n.nspname='mcp_ext')"""
 
 
 def _subscriber_preflight() -> str:
     return _do(
         """
+IF EXISTS(SELECT 1 FROM pg_catalog.pg_db_role_setting s
+    WHERE s.setdatabase=(SELECT oid FROM pg_catalog.pg_database
+        WHERE datname=current_database())) THEN
+    RAISE EXCEPTION 'projection database setting refused'; END IF;
+-- public holds the replicated public.* source tables; anything that could shadow a catalog
+-- name, or run code, is refused.
+IF EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n
+        ON n.oid=c.relnamespace WHERE n.nspname='public'
+        AND (c.relkind NOT IN ('r','p','i','I','S','t') OR c.relname LIKE 'pg\\_%'))
+   OR EXISTS(SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n
+        ON n.oid=p.pronamespace WHERE n.nspname='public') THEN
+    RAISE EXCEPTION 'projection public schema object refused'; END IF;
 IF current_database()<>'butlers_public' OR NOT EXISTS(SELECT 1 FROM
         pg_catalog.pg_database
     WHERE datname=current_database() AND
         datdba='mcp_projection_owner'::regrole) THEN
     RAISE EXCEPTION 'projection database owner refused'; END IF;
-IF EXISTS(SELECT 1 FROM pg_subscription WHERE subdbid=(SELECT oid FROM
+IF EXISTS(SELECT 1 FROM pg_catalog.pg_subscription WHERE subdbid=(SELECT oid FROM
         pg_catalog.pg_database
     WHERE datname=current_database()) AND subname<>'butlers_public_sub')
         THEN
     RAISE EXCEPTION 'foreign subscriber refused'; END IF;
-IF EXISTS(SELECT 1 FROM pg_subscription WHERE
+IF EXISTS(SELECT 1 FROM pg_catalog.pg_subscription WHERE
         subname='butlers_public_sub' AND
         subdbid=(SELECT oid FROM pg_catalog.pg_database WHERE
         datname=current_database()) AND
@@ -1022,71 +1038,72 @@ IF EXISTS(SELECT 1 FROM pg_subscription WHERE
         subrunasowner)) THEN
     RAISE EXCEPTION 'existing subscription identity/options refused'; END
         IF;
-IF EXISTS(SELECT 1 FROM pg_namespace WHERE nspname IN ('mcp_local',
+IF EXISTS(SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname IN ('mcp_local',
         'mcp_read', 'mcp_inbox')
           AND nspowner<>'mcp_projection_owner'::regrole)
-   OR EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON
+   OR EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON
         n.oid=c.relnamespace
              WHERE n.nspname IN ('mcp_local', 'mcp_read', 'mcp_inbox')
              AND c.relowner<>'mcp_projection_owner'::regrole) THEN
     RAISE EXCEPTION 'existing projection catalog owner refused'; END IF;
-IF EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+IF EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
     WHERE c.relkind IN ('r','p','v','m','f','S') AND
         ((n.nspname='mcp_local' AND c.relname NOT IN ('manifest_applied','rebuild_state'))
          OR (n.nspname='mcp_inbox' AND c.relname<>'proposals'))) THEN
     RAISE EXCEPTION 'undeclared local catalog relation refused'; END IF;
 IF to_regclass('mcp_local.manifest_applied') IS NOT NULL AND NOT EXISTS(
-    SELECT 1 FROM pg_class WHERE
+    SELECT 1 FROM pg_catalog.pg_class WHERE
         oid=to_regclass('mcp_local.manifest_applied') AND
         relkind='r'
         AND relowner='mcp_projection_owner'::regrole) THEN
     RAISE EXCEPTION 'applied record relation refused'; END IF;
-IF EXISTS(SELECT 1 FROM pg_namespace WHERE left(nspname, 3)<>'pg_'
+IF EXISTS(SELECT 1 FROM pg_catalog.pg_namespace WHERE left(nspname, 3)<>'pg_'
     AND nspname<>'information_schema' AND
         nspowner<>'mcp_projection_owner'::regrole
     AND NOT (nspname='public' AND nspowner='pg_database_owner'::regrole)
-    AND NOT (nspname='mcp_ext' AND EXISTS(SELECT 1 FROM pg_roles r
+    AND NOT (nspname='mcp_ext' AND EXISTS(SELECT 1 FROM pg_catalog.pg_roles r
         WHERE r.oid=nspowner AND r.rolsuper)))
         THEN
     RAISE EXCEPTION 'foreign projection schema owner refused'; END IF;
-IF EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON
+IF EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON
         n.oid=c.relnamespace,
     LATERAL aclexplode(c.relacl) a WHERE left(n.nspname, 3)<>'pg_'
     AND n.nspname<>'information_schema' AND a.grantee NOT IN
 
         (0, 'mcp_projection_owner'::regrole, 'mcp_public_ro'::regrole,
         'mcp_proposals_reader'::regrole))
-   OR EXISTS(SELECT 1 FROM pg_namespace n, LATERAL aclexplode(n.nspacl) a
+   OR EXISTS(SELECT 1 FROM pg_catalog.pg_namespace n, LATERAL aclexplode(n.nspacl) a
     WHERE left(n.nspname, 3)<>'pg_' AND n.nspname<>'information_schema'
     AND n.nspname<>'mcp_ext'
     AND a.grantee NOT IN (0, 'pg_database_owner'::regrole,
         'mcp_projection_owner'::regrole,
                           'mcp_public_ro'::regrole,
         'mcp_proposals_reader'::regrole))
-   OR EXISTS(SELECT 1 FROM pg_attribute c JOIN pg_class r ON
+   OR EXISTS(SELECT 1 FROM pg_catalog.pg_attribute c JOIN pg_catalog.pg_class r ON
         r.oid=c.attrelid
-    JOIN pg_namespace n ON n.oid=r.relnamespace, LATERAL
+    JOIN pg_catalog.pg_namespace n ON n.oid=r.relnamespace, LATERAL
         aclexplode(c.attacl) a
     WHERE left(n.nspname, 3)<>'pg_' AND n.nspname<>'information_schema'
     AND a.grantee NOT IN
         (0, 'mcp_projection_owner'::regrole, 'mcp_public_ro'::regrole,
         'mcp_proposals_reader'::regrole))
-   OR EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace,
+   OR EXISTS(SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n
+           ON n.oid=p.pronamespace,
     LATERAL aclexplode(p.proacl) a
     WHERE left(n.nspname, 3)<>'pg_' AND n.nspname NOT IN ('information_schema', 'mcp_ext')
     AND a.grantee NOT IN
         ('mcp_projection_owner'::regrole, 'mcp_public_ro'::regrole))
         THEN
     RAISE EXCEPTION 'foreign projection ACL refused'; END IF;
-IF EXISTS(SELECT 1 FROM pg_class c, LATERAL aclexplode(c.relacl) a
+IF EXISTS(SELECT 1 FROM pg_catalog.pg_class c, LATERAL aclexplode(c.relacl) a
     WHERE c.oid=to_regclass('mcp_local.rebuild_state') AND
         a.grantee<>'mcp_projection_owner'::regrole)
-   OR EXISTS(SELECT 1 FROM pg_attribute c, LATERAL aclexplode(c.attacl) a
+   OR EXISTS(SELECT 1 FROM pg_catalog.pg_attribute c, LATERAL aclexplode(c.attacl) a
     WHERE c.attrelid=to_regclass('mcp_local.rebuild_state') AND
         a.grantee<>'mcp_projection_owner'::regrole) THEN
     RAISE EXCEPTION 'rebuild journal ACL refused'; END IF;
-IF EXISTS(SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
-    JOIN pg_namespace n ON n.oid=c.relnamespace
+IF EXISTS(SELECT 1 FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid
+    JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
     WHERE left(n.nspname, 3)<>'pg_' AND n.nspname<>'information_schema'
         AND NOT t.tgisinternal
     AND NOT (n.nspname='mcp_inbox' AND c.relname='proposals' AND
@@ -1097,7 +1114,7 @@ IF EXISTS(SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
     RAISE EXCEPTION 'foreign projection trigger refused'; END IF;
 IF NOT (__TRGM_SAFE__) THEN
     RAISE EXCEPTION 'projection pg_trgm ownership or grants refused'; END IF;
-IF EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON
+IF EXISTS(SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON
         n.oid=p.pronamespace
     WHERE left(n.nspname, 3)<>'pg_' AND n.nspname<>'information_schema'
     AND NOT (p.pronargs=0 AND p.prokind='f' AND
@@ -1107,11 +1124,12 @@ IF EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON
     AND n.nspname<>'mcp_ext')
         THEN
     RAISE EXCEPTION 'foreign projection function refused'; END IF;
-IF EXISTS(SELECT 1 FROM pg_extension x JOIN pg_namespace n ON n.oid=x.extnamespace
+IF EXISTS(SELECT 1 FROM pg_catalog.pg_extension x JOIN pg_catalog.pg_namespace n
+        ON n.oid=x.extnamespace
     WHERE NOT (x.extname='plpgsql' AND n.nspname='pg_catalog')
       AND NOT (x.extname='pg_trgm' AND n.nspname='mcp_ext')) THEN
     RAISE EXCEPTION 'foreign projection extension refused'; END IF;
-IF EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON
+IF EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON
         n.oid=c.relnamespace
     WHERE n.nspname='mcp_read' AND (c.relkind<>'v' OR c.reloptions IS NOT
         NULL)) THEN
@@ -1131,7 +1149,8 @@ def _trigram_extension() -> str:
     """
     refused = "projection pg_trgm ownership or grants refused"
     return (
-        _do(_raise_unless(_TRGM_SAFE, refused))
+        "BEGIN;\n"
+        + _do(_raise_unless(_TRGM_SAFE, refused))
         + """CREATE SCHEMA IF NOT EXISTS mcp_ext;
 CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA mcp_ext;
 REVOKE ALL ON SCHEMA mcp_ext FROM PUBLIC, mcp_projection_owner, mcp_proposals_reader;
@@ -1144,13 +1163,14 @@ GRANT EXECUTE ON FUNCTION mcp_ext.similarity(text, text) TO mcp_public_ro;
             _raise_unless(
                 _TRGM_SAFE
                 + """
-    AND EXISTS(SELECT 1 FROM pg_extension WHERE extname='pg_trgm')
-    AND NOT EXISTS(SELECT 1 FROM pg_proc p WHERE
+    AND EXISTS(SELECT 1 FROM pg_catalog.pg_extension WHERE extname='pg_trgm')
+    AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc p WHERE
         p.pronamespace='mcp_ext'::regnamespace AND p.proacl IS NULL)
     AND has_function_privilege('mcp_public_ro', 'mcp_ext.similarity(text,text)', 'EXECUTE')""",
                 refused,
             )
         )
+        + "COMMIT;\n"
     )
 
 
@@ -1865,12 +1885,17 @@ WHERE (mcp_local.manifest_applied.digest,
 COMMIT;
 RESET ROLE;
 """
+    # The projection owner owns butlers_public, so it can set the database's search_path and
+    # create objects in public. Every session pins its own path before any catalog read; the
+    # preflight refuses both footholds.
     return sql.replace(
         "\\connect butlers\n",
-        "\\connect butlers\nSET standard_conforming_strings=on; "
+        "\\connect butlers\nSET search_path=pg_catalog, pg_temp; "
+        "SET standard_conforming_strings=on; "
         "SET lock_timeout='5s'; SET statement_timeout='60s';\n",
     ).replace(
         "\\connect butlers_public\n",
-        "\\connect butlers_public\nSET standard_conforming_strings=on; "
+        "\\connect butlers_public\nSET search_path=pg_catalog, pg_temp; "
+        "SET standard_conforming_strings=on; "
         "SET lock_timeout='5s'; SET statement_timeout='60s';\n",
     )
