@@ -251,8 +251,24 @@
           "after_sha256": "2a594a84c133c6b5cf9fc92e0b5655d3572fdf8feda4a503c069020cb985c5ab"
         }
       ]
+    },
+    {
+      "path": "patches/0009-bound-selected-session-retries.patch",
+      "sha256": "52d7dbb76dedec1c1056e928b6947d180ad1df4a955095f436fad94bcce96a92",
+      "files": [
+        {
+          "path": "packages/opencode/src/session/retry.ts",
+          "before_sha256": "beb5c16324effc7c0987d7aea4a091f12282be940a4f49c704c813e810ffb837",
+          "after_sha256": "09721477cc898403f5df4cfb5404336cea7d05c13ebbbb709f63681ec702efb2"
+        },
+        {
+          "path": "packages/opencode/test/session/gateway-retry.test.ts",
+          "before_sha256": null,
+          "after_sha256": "ab47ba594bb53894602467c0e2e1ad1ec944f5afb653c8a51dcca4583a882be8"
+        }
+      ]
     }
   ],
-  "source_tree_sha256": "0e7898eb7045d89f05305dc644930887d4a73afbe48f093c4f38fd0b64a8c772",
+  "source_tree_sha256": "fef963b0c265a417c0be6f88adce2f9bb2bdd485292b538123601eb479d8b986",
   "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches."
 }

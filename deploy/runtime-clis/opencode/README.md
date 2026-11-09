@@ -125,6 +125,16 @@ partial runtime fixture, not the complete installed graph or native CLI. The
 original Effect-layer fetch control and whole legacy/caller suites still require
 the complete installed graph.
 
+The ninth patch bounds the selected session retry schedule to three retries
+following the initial operation. Each selected delay is clamped to 0–30 seconds,
+including provider millisecond, second and HTTP-date hints. The original provider
+error and headers remain intact, and the final failed operation is returned to
+the caller. Native off-mode retry count, backoff and provider hints remain
+unchanged. Eighteen owning Effect controls cover schedule termination, delay
+limits, recovery, nonretryable authorization errors and the SDK connection-error
+conversion seam. Their direct schedule-step checks use no watchdog to establish
+the bound; compiled-CLI outage parity remains a separate required check.
+
 This is an off-by-default source foundation. Four-CLI, image, CNI, inventory,
 operational credential custody and activation acceptance remain separate and
 incomplete. It does not expose an alternate operator path or activate egress.

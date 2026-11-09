@@ -533,7 +533,7 @@
       },
       "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
       "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
-      "source_tree_sha256": "0e7898eb7045d89f05305dc644930887d4a73afbe48f093c4f38fd0b64a8c772",
+      "source_tree_sha256": "fef963b0c265a417c0be6f88adce2f9bb2bdd485292b538123601eb479d8b986",
       "config": [
         "provider.*.api",
         "provider.*.models.*.api",
@@ -561,7 +561,7 @@
       },
       "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
       "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
-      "source_tree_sha256": "0e7898eb7045d89f05305dc644930887d4a73afbe48f093c4f38fd0b64a8c772",
+      "source_tree_sha256": "fef963b0c265a417c0be6f88adce2f9bb2bdd485292b538123601eb479d8b986",
       "config": [
         "OPENCODE_MODELS_URL",
         "OPENCODE_MODELS_PATH",
@@ -596,7 +596,7 @@
       },
       "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
       "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
-      "source_tree_sha256": "0e7898eb7045d89f05305dc644930887d4a73afbe48f093c4f38fd0b64a8c772",
+      "source_tree_sha256": "fef963b0c265a417c0be6f88adce2f9bb2bdd485292b538123601eb479d8b986",
       "config": [
         "authorize",
         "token",
@@ -627,7 +627,7 @@
       },
       "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
       "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
-      "source_tree_sha256": "0e7898eb7045d89f05305dc644930887d4a73afbe48f093c4f38fd0b64a8c772",
+      "source_tree_sha256": "fef963b0c265a417c0be6f88adce2f9bb2bdd485292b538123601eb479d8b986",
       "config": [
         "input.url",
         "input.headers"
@@ -654,7 +654,7 @@
       },
       "archive_sha256": "eae2687629314316649c370e311d87107723975f36e0948688d8f4f9b589ac58",
       "commit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
-      "source_tree_sha256": "0e7898eb7045d89f05305dc644930887d4a73afbe48f093c4f38fd0b64a8c772",
+      "source_tree_sha256": "fef963b0c265a417c0be6f88adce2f9bb2bdd485292b538123601eb479d8b986",
       "config": [
         "ConfigPluginV1.Spec",
         "plugin",
@@ -5975,7 +5975,8 @@
     "deploy/runtime-clis/opencode/patches/0006-complete-selected-websocket-diagnostics.patch": "27198fc160d0d685768ef5b3bb43e59a8cb893d89a9d7192519a078a8706884d",
     "deploy/runtime-clis/opencode/patches/0007-redact-selected-url-credentials.patch": "f6af8dc0c26ea1c0b73c06f89eaa98f075e8649bc6597a7c340941e22b5d07a6",
     "deploy/runtime-clis/opencode/patches/0008-redact-json-escaped-credential-echoes.patch": "96e40b94f1be5f56d09a92320f3a9046de3b67b5da3da3da645c686404790a84",
-    "deploy/runtime-clis/opencode/series.json": "56988bab96e2d3c7638c031f1b7a8cecf433413ef902f0a9c00618c1653ccf6a",
+    "deploy/runtime-clis/opencode/patches/0009-bound-selected-session-retries.patch": "52d7dbb76dedec1c1056e928b6947d180ad1df4a955095f436fad94bcce96a92",
+    "deploy/runtime-clis/opencode/series.json": "1f3e5c4642ef9ca1879e689ee619c86c6cdaf71b456406ecfe71fce7951d1934",
     "deploy/runtime-clis/shared/egress.ts": "c18a9d00ac0a4766aca736dc6e56c3f3b93c77e486b7be04b2a12b4b22817301",
     "deploy/runtime-clis/shared/package-lock.json": "006d3c715164a9444763d2c5d8fbcf3108b8961cd32c0dbd2466e9ae0958c27d",
     "deploy/runtime-clis/shared/package.json": "fae6ba695fe4f3d0d0da70829b3816441aa6ee7333a5f2402b271e29afb72fba",
