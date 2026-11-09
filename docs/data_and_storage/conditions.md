@@ -38,10 +38,30 @@ consumes `ConditionEvaluator.consume_fire`; it never evaluates predicates itself
 - A store outage raises `ConditionsUnavailable` and calls the optional `DependencyReporter`
   with `system.dep.conditions`; nothing is advanced or invented.
 
+## SQL store (`butlers.conditions.sql`, core_323)
+
+`PostgresConditionStore(pool)` implements `ConditionStore` over four `public` tables:
+`condition_instances` (immutable boundary and replay floor, version CAS), `condition_cursors`
+(high-water marks, never backward), `condition_receipts` (append-only) and
+`condition_fire_intents` (unique `fire_key`, inserted only for a fired instance, claim set
+once). `get_instance` is `SELECT .. FOR UPDATE`, so racing evaluators serialise and the loser
+re-reads the winner's fired row; `insert_instance` is `ON CONFLICT DO NOTHING RETURNING`.
+
+- Run it on a `butler_switchboard_rw` pool. Only that role is granted anything, and non-FORCE
+  RLS (`current_user = 'butler_switchboard_rw'`) keeps every other role out even after an
+  `init-db.sql` replay re-grants public DML. `db_authority/grants.py` records the grants.
+- Serialisation failures, deadlocks and a lost CAS raise `StoreConflict` (the service retries);
+  any other driver error raises `ConnectionError`, which the service reports as
+  `system.dep.conditions` and surfaces as `ConditionsUnavailable`.
+- JSON travels as text, so the store works with or without the repository jsonb codec.
+- Rollback: `core_323` downgrade drops the tables only for the last installed schema chain and
+  refuses while any instance exists, preserving receipts and intents.
+- `tests/conditions/store_contract.py` is the one contract both stores pass; the PostgreSQL
+  suite adds two-connection `FOR UPDATE`, crash/restart replay, the role fence and trigger
+  guards.
+
 ## Deferred
 
-- The SQL `ConditionStore` (control-plane tables, durable cursors, outbox) is not part of this
-  package. `InMemoryConditionStore` defines the transactional contract it must satisfy.
 - Producers feeding events (`.9` perception reader, goal ledger), the scheduler tick
   delivery, and the next-generation rearm (S2.2) belong to their owners.
 - Watches and advanced rules stay with `bu-4c7nvp.1.5`.
