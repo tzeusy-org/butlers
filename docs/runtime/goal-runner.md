@@ -28,6 +28,7 @@ serialises with Stop.
 | `tools.py` | `GoalTools`: the `goal__*` and `context__search` MCP tools, listed by invocation depth |
 | `context_search.py` | `ContextSearch`: the closed query, grant-scoped fan-out, fusion and the bounded envelope |
 | `guidance.py` | `Guidance`: `guidance.search` / `guidance.load` over per-domain `GuidanceSource`s |
+| `roster_guidance.py` | The roster `GuidanceSource`s (butler `CLAUDE.md` and skills, the lead policy) and the `roster_guidance` factory |
 | `contracts.py` | `SessionHost` protocol, `Launch`, `HostOutcome`, `LaunchContext`, `LaunchFacts`, prompt-composer protocol |
 | `packet.py` | `PacketComposer`: the four-section starting-context packet |
 | `control_plane.py` | `GoalRuntime`: admission to launch, the periodic sweep, owner Stop; `GoalRuntimeSwitch` |
@@ -127,6 +128,32 @@ versioned) through `GuidanceSource`s, one per domain. It follows `context.search
   source is `degraded` on search; all failing, or a failing load, is `UNAVAILABLE`.
 - **Sources see no caller.** A source gets the query or name and a `GuidanceReader` (depth
   only), never a token, goal or grant. It must not record the read.
+- **The lead policy.** `Guidance(..., lead_policy=source)` serves one more domain, `lead`, to a
+  lead (depth 0) whatever its grant, and never to a child (`RESOURCE`): the lead policy governs
+  every lead (D1), and a child has its brief instead. No butler may be named `lead`.
+
+The roster adapters (`roster_guidance.py`) are the real sources. `roster_guidance(broker, roster)`
+builds a `Guidance` with one `ButlerGuidance` per domain butler (a `roster/<butler>/` holding a
+`butler.toml`; `shared/` is not a domain) and `LeadPolicyGuidance` for
+`roster/switchboard/goal-policy/LEAD.md`. Nothing constructs it in a daemon yet (the goal runtime
+itself is unconstructed until its wiring lands).
+
+- **Documents.** A butler's `CLAUDE.md` (name `CLAUDE.md`) and each
+  `.claude/skills/<skill>/SKILL.md` (name `skills/<skill>`, `<skill>` a lowercase slug, so every
+  name is a closed reference); the lead policy is `lead:LEAD.md`.
+  Each is `owner` authority and untainted (git-reviewed owner config), versioned
+  `sha256:<16 hex>` of the served text, so the version is stable across reads and changes on any
+  edit, including to an included file.
+- **Includes and session notes.** Whole-line `@<file>.md` includes resolve as the CLI does (depth
+  3, no cycles). Every `Notes to self` section is dropped: sessions write it, not the owner (D2
+  moves it to a record capability), so it is never served as owner text.
+- **Confinement.** A name is a key in the set the adapter enumerates, never a path, so `../x` is
+  just unknown (`RESOURCE`). Every file, include and symlink target is resolved and must stay
+  inside the roster root; only `.md` files are read, never an env or secret-looking name. A
+  document over 64 KiB (after includes) is omitted, never served cut. Reads are fresh per call
+  on a worker thread; nothing is cached or recorded.
+- **Search.** Term counts over the document, a name or title hit weighing three body hits;
+  documents with no hit are not returned; ties break by name.
 
 ### Joined replies (inbox)
 
@@ -323,8 +350,9 @@ brief text, arguments or results.
 
 ## Not yet delivered
 
-- The per-domain `GuidanceSource` and `ContextSource` adapters (a domain's guidance documents,
-  memory and facts), and the lead-policy guidance.
+- The per-domain `ContextSource` adapters (a domain's memory and facts).
+- The lead policy's text: `roster/switchboard/goal-policy/LEAD.md` is owner-authored doctrine
+  and does not exist yet, so `lead:LEAD.md` serves nothing until the owner writes it.
 - The deployed session host (`bu-kiuh8v`), and a usage relay between tool calls; today the
   runner charges only the counts a settled run reports.
 - Constructing the runtime in the control plane: a live `Broker` needs the signing key and the

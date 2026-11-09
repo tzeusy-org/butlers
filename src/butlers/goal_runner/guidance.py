@@ -48,6 +48,8 @@ _tracer = trace.get_tracer(__name__)
 SEARCH_TOOL = "guidance__search"
 LOAD_TOOL = "guidance__load"
 TOOLS = (SEARCH_TOOL, LOAD_TOOL)
+#: The lead policy's guidance domain (``lead:LEAD.md``); no butler may take the name.
+LEAD_POLICY_DOMAIN = "lead"
 
 _OWNER_AUTHORED = frozenset({"owner", "owner_correction"})
 _AUTHORITIES = ("owner_correction", "owner", "domain", "third_party", "unknown")
@@ -114,6 +116,11 @@ def _refuse() -> BrokerRefused:
     return BrokerRefused(Reason.POLICY)
 
 
+def valid_name(name: str) -> bool:
+    """Whether a source may name a document ``name`` (a closed slug, see ``_NAME``)."""
+    return _NAME.fullmatch(name) is not None
+
+
 def inlined(item: GuidanceItem) -> bool:
     """S5: only owner-authored, provably untainted guidance text may reach a model."""
     return item.authority in _OWNER_AUTHORED and item.tainted is False
@@ -123,7 +130,7 @@ def _valid(item: Any) -> bool:
     return (
         isinstance(item, GuidanceItem)
         and all(type(v) is str for v in (item.name, item.title, item.version, item.text))
-        and _NAME.fullmatch(item.name) is not None
+        and valid_name(item.name)
         and (item.tainted is None or type(item.tainted) is bool)
     )
 
@@ -187,12 +194,19 @@ class Guidance:
         broker: Broker,
         sources: Mapping[str, GuidanceSource],
         limits: GuidanceLimits | None = None,
+        *,
+        lead_policy: GuidanceSource | None = None,
     ):
         if any(type(name) is not str or not _DOMAIN.fullmatch(name) for name in sources):
             raise ValueError("a guidance domain must be a lowercase slug")
+        if LEAD_POLICY_DOMAIN in sources:
+            raise ValueError(f"guidance domain {LEAD_POLICY_DOMAIN!r} is the lead policy's")
         self.broker = broker
         self.sources = dict(sources)
         self.limits = limits or GuidanceLimits()
+        # The lead policy governs every lead whatever its grant (D1, D8); a child has its
+        # brief instead, so the policy's domain is covered at depth 0 only.
+        self.lead_policy = lead_policy
 
     async def search(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
         query, k = parse_search(arguments, self.limits)
@@ -266,15 +280,18 @@ class Guidance:
                     and capability.domain in self.sources
                 ):
                     covered.add(capability.domain)
-            if wanted is not None and wanted not in covered:
+            available: dict[str, GuidanceSource] = {name: self.sources[name] for name in covered}
+            if self.lead_policy is not None and principal.depth == 0:
+                available[LEAD_POLICY_DOMAIN] = self.lead_policy
+            if wanted is not None and wanted not in available:
                 raise BrokerRefused(Reason.RESOURCE)
-            if not covered:
+            if not available:
                 raise BrokerRefused(Reason.CAPABILITY)
             exhausted = await ledger.charge_call(principal)
         if exhausted is not None:
             raise exhausted
-        domains = [wanted] if wanted is not None else sorted(covered)
-        return principal, {name: self.sources[name] for name in domains}
+        domains = [wanted] if wanted is not None else sorted(available)
+        return principal, {name: available[name] for name in domains}
 
     async def _fan_out(
         self,
@@ -326,6 +343,7 @@ class Guidance:
 
 
 __all__ = [
+    "LEAD_POLICY_DOMAIN",
     "LOAD_TOOL",
     "SEARCH_TOOL",
     "TOOLS",
@@ -337,4 +355,5 @@ __all__ = [
     "inlined",
     "parse_ref",
     "parse_search",
+    "valid_name",
 ]
