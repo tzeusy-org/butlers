@@ -32,6 +32,7 @@ from butlers.connectors.telegram_bot import (
     _classify_source_api_error,
 )
 from butlers.tools.switchboard.contracts import IngestAttachment, parse_ingest_envelope
+from tests.connectors.filtered_event_fakes import FilteredEventsPool
 
 _ENDPOINT = "telegram:bot:123456789"
 
@@ -437,11 +438,12 @@ async def test_submission_error_retains_raw_payload(connector: TelegramBotConnec
         return_value=PolicyDecision(action="pass_through")
     )
     connector._submit_to_ingest = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
 
     update = _text_update()
     await connector._process_update(update)
 
-    rows = connector._filtered_event_buffer._rows
+    rows = pool.written
     assert len(rows) == 1
     row = rows[0]
     assert row[8] == "error"

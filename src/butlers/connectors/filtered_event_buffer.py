@@ -9,10 +9,13 @@ If the process crashes before ``flush()`` is called the buffered events are
 lost. That is acceptable only for visibility rows whose source still holds the
 item. A failed submission whose source is about to be released (a cursor
 committed, a checkpoint saved, a page token advanced) is the only copy of that
-item, so it never goes through the buffer: ``park()`` writes it at once, raises
-:class:`ParkNotDurableError` unless it was committed, and the caller holds the
-source until it returns. Gmail backfill, Calendar, ActivityWatch and Drive park
-this way.
+item, so it should never go through the buffer: ``park()`` writes it at once,
+raises :class:`ParkNotDurableError` unless it was committed, and the caller holds
+the source until it returns. Whether a call site needs ``park()`` depends on one
+question: does the source move past the item after the error? If it does, park
+it. If the source still holds the item (a poll that is simply repeated, a
+diagnostic row about a failed poll rather than a copy of an item), ``record()``
+is enough.
 
 Typical usage inside a connector::
 
@@ -667,8 +670,12 @@ class FilteredEventBuffer:
         subject_or_preview: str | None,
         full_payload: dict[str, Any],
         error_detail: str | None = None,
+        filter_reason: str | None = None,
     ) -> None:
         """Durably park one failed submission as a replayable error row.
+
+        *filter_reason* defaults to ``submission_error``; a quarantine receipt
+        passes :meth:`reason_poison_quarantine`.
 
         A parked row is the only copy of an item whose source has been told it
         was handled, so it is written at once, on its own, and the call returns
@@ -687,7 +694,7 @@ class FilteredEventBuffer:
             source_channel=source_channel,
             sender_identity=sender_identity,
             subject_or_preview=subject_or_preview,
-            filter_reason=self.reason_submission_error(),
+            filter_reason=filter_reason or self.reason_submission_error(),
             full_payload=full_payload,
             status="error",
             error_detail=error_detail,

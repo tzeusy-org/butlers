@@ -1213,13 +1213,15 @@ class TelegramBotConnector:
                         "endpoint_identity": self._config.endpoint_identity,
                     },
                 )
-                # Record error event in the filtered event buffer
-                self._filtered_event_buffer.record(
+                # The offset moves past this update once it returns, so the error row is the
+                # only copy: commit it first. A park that is not written raises, which
+                # leaves the offset (and a webhook's 2xx) unconfirmed (bu-dhloi1.274).
+                await self._filtered_event_buffer.park(
+                    self._db_pool,
                     external_message_id=update_id,
                     source_channel=self._config.channel,
                     sender_identity=self._extract_sender_identity(update),
                     subject_or_preview=None,
-                    filter_reason=FilteredEventBuffer.reason_submission_error(),
                     full_payload=FilteredEventBuffer.full_payload(
                         channel=self._config.channel,
                         provider=self._config.provider,
@@ -1245,7 +1247,6 @@ class TelegramBotConnector:
                             else _replay_message_metadata(update).get("in_reply_to_ref")
                         ),
                     ),
-                    status="error",
                     error_detail=str(exc),
                 )
 

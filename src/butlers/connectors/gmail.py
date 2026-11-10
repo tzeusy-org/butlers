@@ -2167,7 +2167,8 @@ class GmailConnectorRuntime:
         Request, status and delivery-timeout errors are re-raised after all tasks
         complete so the caller does not advance the batch cursor without
         acceptance. Permanent per-message errors (e.g. malformed content) are
-        recorded for replay without blocking other messages.
+        parked for replay without blocking other messages; a park that is not written
+        is re-raised too.
         """
         tasks = [self._ingest_single_message(msg_id) for msg_id in message_ids]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -2175,7 +2176,9 @@ class GmailConnectorRuntime:
         # Settle siblings before holding the cursor; accepted siblings replay
         # harmlessly through their unchanged idempotency keys.
         for result in results:
-            if isinstance(result, self._TRANSIENT_DELIVERY_ERRORS):
+            # An error row that was not committed is the only copy of that message, so
+            # it holds the cursor like a delivery failure (bu-dhloi1.274).
+            if isinstance(result, (*self._TRANSIENT_DELIVERY_ERRORS, ParkNotDurableError)):
                 raise result
 
     async def _ingest_single_message(self, message_id: str) -> None:
@@ -2433,13 +2436,15 @@ class GmailConnectorRuntime:
                 raise
             except Exception as exc:
                 logger.error("Failed to ingest message %s: %s", message_id, exc, exc_info=True)
-                # Record error event in the filtered event buffer
-                self._filtered_event_buffer.record(
+                # The message is released after this, so the error row is its only copy:
+                # commit it first. A park that is not written raises, which holds the
+                # batch cursor like a delivery failure (bu-dhloi1.274).
+                await self._filtered_event_buffer.park(
+                    self._db_pool,
                     external_message_id=message_id,
                     source_channel=self._config.connector_channel,
                     sender_identity=replay_sender,
                     subject_or_preview=None,
-                    filter_reason=FilteredEventBuffer.reason_submission_error(),
                     full_payload=FilteredEventBuffer.full_payload(
                         channel=self._config.connector_channel,
                         provider=self._config.connector_provider,
@@ -2451,7 +2456,6 @@ class GmailConnectorRuntime:
                         raw={"message_id": message_id},
                         untrusted_spans=replay_spans,
                     ),
-                    status="error",
                     error_detail=str(exc),
                 )
 

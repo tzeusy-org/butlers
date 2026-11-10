@@ -67,7 +67,11 @@ from butlers.connectors.discretion import (
     DiscretionEvaluator,
     classify_ignore_kind,
 )
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.filtered_event_buffer import (
+    FilteredEventBuffer,
+    ParkNotDurableError,
+    drain_replay_pending,
+)
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.connectors.mcp_client import CachedMCPClient
@@ -1585,31 +1589,42 @@ class TelegramUserClientConnector:
                     error_sender = "unknown"
                 # The exact envelope that was tried, idempotency key included, when
                 # one was built; otherwise the message as Telethon gave it.
-                self._filtered_event_buffer.record(
-                    external_message_id=msg_id_str,
-                    source_channel=self._config.channel,
-                    sender_identity=error_sender,
-                    subject_or_preview=None,
-                    filter_reason=FilteredEventBuffer.reason_submission_error(),
-                    full_payload=(
-                        FilteredEventBuffer.stored_envelope(envelope)
-                        if envelope is not None
-                        else FilteredEventBuffer.full_payload(
-                            channel=self._config.channel,
-                            provider=self._config.provider,
-                            endpoint_identity=self._config.endpoint_identity,
-                            external_event_id=msg_id_str,
-                            external_thread_id=None,
-                            observed_at=datetime.now(UTC).isoformat(),
-                            sender_identity=error_sender,
-                            raw=raw_for_error,
-                            in_reply_to_ref=telethon_in_reply_to_ref(message),
-                            untrusted_spans=replay_spans,
-                        )
-                    ),
-                    status="error",
-                    error_detail=str(exc),
-                )
+                try:
+                    await self._filtered_event_buffer.park(
+                        self._db_pool,
+                        external_message_id=msg_id_str,
+                        source_channel=self._config.channel,
+                        sender_identity=error_sender,
+                        subject_or_preview=None,
+                        full_payload=(
+                            FilteredEventBuffer.stored_envelope(envelope)
+                            if envelope is not None
+                            else FilteredEventBuffer.full_payload(
+                                channel=self._config.channel,
+                                provider=self._config.provider,
+                                endpoint_identity=self._config.endpoint_identity,
+                                external_event_id=msg_id_str,
+                                external_thread_id=None,
+                                observed_at=datetime.now(UTC).isoformat(),
+                                sender_identity=error_sender,
+                                raw=raw_for_error,
+                                in_reply_to_ref=telethon_in_reply_to_ref(message),
+                                untrusted_spans=replay_spans,
+                            )
+                        ),
+                        error_detail=str(exc),
+                    )
+                except ParkNotDurableError:
+                    # The only copy was not written: keep the message for another
+                    # attempt, with the checkpoint held below it.
+                    self._retry_pending[retry_key] = message
+                    logger.error(
+                        "Telegram user-client message %s could not be parked; holding the "
+                        "checkpoint",
+                        msg_id_str,
+                    )
+                    await self._flush_and_drain()
+                    return
                 await self._flush_and_drain()
                 parked_id = getattr(message, "id", None)
                 if isinstance(parked_id, int):

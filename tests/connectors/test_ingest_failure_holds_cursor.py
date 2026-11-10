@@ -146,6 +146,7 @@ def _gmail_live_runtime(submit: AsyncMock) -> Any:
     from butlers.connectors.gmail import GmailCursor
 
     runtime = _gmail_runtime(submit)
+    runtime._db_pool = FilteredEventsPool()
     runtime._refresh_policy_tier_assigner = AsyncMock()
     runtime._load_cursor = AsyncMock(
         return_value=GmailCursor(history_id="100", last_updated_at="2026-01-01T00:00:00Z")
@@ -267,7 +268,7 @@ async def test_gmail_live_permanent_message_outcome_allows_checkpoint(outcome: s
     assert await _gmail_poll_once(runtime) == [5]
     assert runtime._save_cursor.await_args.args[0].history_id == "101"
     assert [call.args[0]["event"]["external_event_id"] for call in submit.await_args_list] == ["m2"]
-    assert len(runtime._filtered_event_buffer) == (1 if outcome == "malformed" else 0)
+    assert len(runtime._db_pool.written) == (1 if outcome == "malformed" else 0)
 
 
 async def test_gmail_backfill_holds_its_page_on_a_failed_ingest(evaluated) -> None:
@@ -621,6 +622,29 @@ async def test_activitywatch_parks_an_event_whose_retries_are_spent() -> None:
     )
 
 
+async def test_gmail_live_poll_holds_cursor_when_the_error_row_is_not_written() -> None:
+    """A swallowed per-message failure is parked first; unwritten, the cursor stays (.274)."""
+
+    async def fetch(mid: str) -> dict:
+        if mid == "m1":
+            raise ValueError("malformed message")
+        return {"id": mid}
+
+    runtime = _gmail_live_runtime(AsyncMock())
+    runtime._fetch_message = AsyncMock(side_effect=fetch)
+    runtime._db_pool.fail_writes = True
+
+    await _gmail_poll_once(runtime)
+    runtime._save_cursor.assert_not_awaited()
+    assert runtime._db_pool.written == []
+
+    runtime._db_pool.fail_writes = False
+    await _gmail_poll_once(runtime)
+    assert runtime._save_cursor.await_args.args[0].history_id == "101"
+    (row,) = runtime._db_pool.written
+    assert (row[_ID], row[_STATUS]) == ("m1", "error")
+
+
 # ── A park that cannot be written holds the source (bu-dhloi1.250) ─────────
 
 
@@ -728,6 +752,7 @@ def _telegram_connector() -> Any:
     connector._ingestion_policy.evaluate = MagicMock(return_value=allow)  # type: ignore[method-assign]
     connector._global_ingestion_policy.evaluate = MagicMock(return_value=allow)  # type: ignore[method-assign]
     connector._discretion_dispatcher = None
+    connector._db_pool = FilteredEventsPool()  # a park is committed to it
     connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
     connector._save_checkpoint = AsyncMock()  # type: ignore[method-assign]
     return connector
@@ -784,8 +809,36 @@ async def test_telegram_user_parks_a_message_whose_retries_are_spent() -> None:
 
     assert connector._retry_pending == {}
     assert connector._last_message_id == 5  # parked, so no longer holding the checkpoint
-    assert len(connector._filtered_event_buffer) == 1
-    row = connector._filtered_event_buffer._rows[0]
+    assert len(connector._filtered_event_buffer) == 0  # written at once, not buffered
+    (row,) = connector._db_pool.written
     assert (row[_ID], row[_STATUS]) == ("5", "error")
     assert row[_PAYLOAD]["control"]["idempotency_key"] == "tg:100:5"
     assert row[_PAYLOAD]["payload"]["raw"] == {"id": 5, "message": "hello 5"}
+
+
+async def test_telegram_user_holds_its_checkpoint_when_the_park_is_not_written() -> None:
+    connector = _telegram_connector()
+
+    async def submit(envelope: dict) -> None:
+        if envelope["event"]["external_event_id"] == "5":
+            raise RuntimeError("switchboard down")
+
+    connector._submit_to_ingest = AsyncMock(side_effect=submit)  # type: ignore[method-assign]
+    connector._db_pool.fail_writes = True
+    await connector._process_message(_telegram_message(4))
+    await connector._process_message(_telegram_message(5))
+    for _ in range(connector._ingest_retry.max_attempts - 1):
+        await connector._retry_pending_messages()
+
+    # Attempts spent but the only copy was not written: still pending, checkpoint below it.
+    assert set(connector._retry_pending) == {"100:5"}
+    assert connector._last_message_id == 4
+    assert connector._db_pool.written == []
+
+    connector._db_pool.fail_writes = False
+    for _ in range(connector._ingest_retry.max_attempts):
+        await connector._retry_pending_messages()
+    assert connector._retry_pending == {}
+    assert connector._last_message_id == 5
+    (row,) = connector._db_pool.written
+    assert (row[_ID], row[_STATUS]) == ("5", "error")
