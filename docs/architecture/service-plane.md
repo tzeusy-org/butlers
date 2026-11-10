@@ -59,18 +59,28 @@ Callers use `service_plane/client.py`, presenting their workload's
 relay-audience token and their daemon name. While the switch is off the route
 answers 404 to everything and callers keep the legacy route path.
 
+Only a `403` refusal (the relay's judgement of caller, target or arguments) is
+a permanent answer (`client.refusal_is_permanent`). A `404` (`not_found` while
+Switchboard's switch is off, `unknown_relay` from a Switchboard that predates
+the relay during a rolling deploy) and a `400` are treated like any other
+failure: retryable unavailability. QA reports these as `qa_unavailable`, the
+domain-event fan-out as a retryable dispatch, Travel as `health_unavailable`.
+
 | Relay | Target | Allowed callers | Notes |
 | --- | --- | --- | --- |
 | `qa.report_finding` | QA `report_finding` | every roster daemon on `butlers-up` except Switchboard | `source_butler` is set from the caller; stale QA still receives (`allow_stale`). |
 | `domain_event.receive` | a subscriber's `receive_domain_event` | publishers of a domain-event contract on `butlers-up` | The caller must publish the event type's contract and the target must be one of its `permitted_subscribers`; `source_butler` is set from the caller. |
-| `medication.travel_snapshot` | Health `medication_travel_snapshot_service` | `(butlers-up, travel)` only | No arguments. The target is a service-only twin (`presentable=False`) of the LLM-facing `medication_travel_snapshot`; a refusal reaches Travel as `permission_denied`, anything else as retryable `health_unavailable`. |
+| `medication.travel_snapshot` | Health `medication_travel_snapshot_service` | `(butlers-up, travel)` only | No arguments. The target is a service-only twin (`presentable=False`) of the LLM-facing `medication_travel_snapshot`; a 403 refusal reaches Travel as `permission_denied`, anything else as retryable `health_unavailable`. |
+| `contacts.resolve_channel` | Relationship `contacts_resolve_channel` | butlers declaring `[modules.contacts]` in `butler.toml`, on `butlers-up` | `channel_type`, `channel_value`, `request_id` (UUID). The Contacts module's owner lookup; any refusal or failure is `ContactsOwnerUnavailable`. |
+| `contacts.report_channel` | Relationship `contacts_report_channel` | as above | `subject` (UUID), `channel_type`, `channel_value`, `primary`. Provenance is fixed by the target (third party); the schema admits no authority field. |
 
 A relay target must be declared `presentable=False`, so a target that LLM
 sessions also use gets a service-only twin on its owning butler; the
-LLM-facing tool is never relay-reachable.
+LLM-facing tool is never relay-reachable. Relationship's `contacts_ingress`
+tools were already service-only, so the contacts relays need no twin.
 
-Still to come (each needs a service-only twin first): the contacts owner
-lookup, fleet-case writes and the memory catalog fetch. The calendar response
+Still to come (each needs a service-only twin first): fleet-case writes and
+the memory catalog fetch. The calendar response
 fence gets no relay: bu-qozovd.1 slice 3 deletes it before the switch (the
 owner made Relationship the sole invite-response owner), and the switch
 depends on that slice.

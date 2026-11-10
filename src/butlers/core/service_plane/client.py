@@ -37,6 +37,18 @@ def configured_switchboard_url(switchboard_client: Any) -> str | None:
     return url if isinstance(url, str) and url else None
 
 
+def refusal_is_permanent(exc: BaseException) -> bool:
+    """Whether a relay failure is a permanent answer rather than unavailability.
+
+    Only a ``403`` refusal is: the relay judged this caller, target or
+    arguments. A ``404`` (``not_found`` while Switchboard's switch is off,
+    ``unknown_relay`` from a Switchboard that predates the relay during a
+    rolling deploy) or a ``400`` can change with a deploy, so callers treat
+    them, like every other failure, as retryable unavailability.
+    """
+    return isinstance(exc, RelayRefused) and exc.status == 403
+
+
 def relay_url(switchboard_url: str, name: str) -> str:
     """The relay URL on the service listener named by Switchboard's MCP URL."""
     parts = urlsplit(switchboard_url)
@@ -71,7 +83,7 @@ async def call_relay(
     if not isinstance(body, dict):
         raise RelayUnavailable("malformed_reply")
     if body.get("status") == "refused" and isinstance(body.get("code"), str):
-        raise RelayRefused(body["code"])
+        raise RelayRefused(body["code"], status=response.status_code)
     if response.status_code != 200 or body.get("status") != "ok":
         raise RelayUnavailable(f"http_{response.status_code}")
     return body.get("result")

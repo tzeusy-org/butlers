@@ -14,14 +14,22 @@ from butlers.core.domain_event_contracts import (
     DomainEventContractRegistry,
     load_contract_registry,
 )
-from butlers.core.service_plane.client import RelayUnavailable, call_relay, relay_url
+from butlers.core.service_plane.client import (
+    RelayUnavailable,
+    call_relay,
+    refusal_is_permanent,
+    relay_url,
+)
 from butlers.core.service_plane.endpoint import build_relay_route
 from butlers.core.service_plane.registry import (
+    CONTACTS_REPORT_CHANNEL,
+    CONTACTS_RESOLVE_CHANNEL,
     DOMAIN_EVENT_RECEIVE,
     MEDICATION_TRAVEL_SNAPSHOT,
     QA_REPORT_FINDING,
     build_relays,
     roster_daemons,
+    roster_module_daemons,
 )
 from butlers.core.service_plane.relays import (
     RelayEndpoint,
@@ -36,7 +44,9 @@ from butlers.core.service_plane.workload_identity import (
 from tests.core.test_service_plane_workload_identity import _claims, _token, _verifier
 
 _CONTRACTS = load_contract_registry()
-_RELAYS = build_relays(roster_daemons(), _CONTRACTS)
+_RELAYS = build_relays(
+    roster_daemons(), _CONTRACTS, contacts_daemons=roster_module_daemons("contacts")
+)
 _SWITCHBOARD_URL = "http://butlers-control:41100/sse"
 _FINDING = {
     "fingerprint": "fp1",
@@ -166,6 +176,46 @@ async def test_the_switch_off_serves_no_relay(tmp_path: Path) -> None:
 
     assert refused.value.code == "not_found"
     assert harness.calls == []
+    # Not served is not a judgement on the caller: retryable, never permanent.
+    assert refused.value.status == 404
+    assert not refusal_is_permanent(refused.value)
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "permanent"),
+    [
+        (403, "caller_not_allowed", True),
+        (403, "args_invalid", True),
+        (404, "not_found", False),
+        (404, "unknown_relay", False),
+        (400, "args_invalid", False),
+    ],
+)
+async def test_only_a_403_refusal_is_permanent(
+    tmp_path: Path, status: int, code: str, permanent: bool
+) -> None:
+    (tmp_path / RELAY_AUDIENCE).write_text("t")
+    reply = httpx.Response(status, json={"status": "refused", "code": code})
+    transport = httpx.MockTransport(lambda request: reply)
+
+    with pytest.raises(RelayRefused) as refused:
+        await call_relay(
+            QA_REPORT_FINDING,
+            _FINDING,
+            daemon="travel",
+            switchboard_url=_SWITCHBOARD_URL,
+            token_dir=tmp_path,
+            transport=transport,
+        )
+
+    assert (refused.value.code, refused.value.status) == (code, status)
+    assert refusal_is_permanent(refused.value) is permanent
+
+
+def test_unavailability_and_other_errors_are_never_permanent() -> None:
+    assert not refusal_is_permanent(RelayUnavailable("http_502"))
+    assert not refusal_is_permanent(OSError("token missing"))
+    assert refusal_is_permanent(RelayRefused("caller_not_allowed"))
 
 
 def _a_contract():
@@ -350,6 +400,107 @@ def test_the_medication_relay_targets_a_non_presentable_twin_only_from_travel() 
     assert not target_is_llm_presentable(endpoint.target_tool)
     # The LLM-facing tool stays presentable; only its service twin is relay-reachable.
     assert target_is_llm_presentable("medication_travel_snapshot")
+
+
+_REQUEST_ID = "6f1c1a52-8f1e-4c43-9a43-2f5d1b0c9d11"
+_SUBJECT = "0b8f0a8e-7a0e-4d5e-8a52-3c2b1d0e9f77"
+_LOOKUP = {"channel_type": "email", "channel_value": "a@test", "request_id": _REQUEST_ID}
+_REPORT = {
+    "subject": _SUBJECT,
+    "channel_type": "email",
+    "channel_value": "a@test",
+    "primary": True,
+}
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "daemon", "tool"),
+    [
+        (CONTACTS_RESOLVE_CHANNEL, _LOOKUP, "health", "contacts_resolve_channel"),
+        (CONTACTS_REPORT_CHANNEL, _REPORT, "general", "contacts_report_channel"),
+    ],
+    ids=["resolve", "report"],
+)
+async def test_a_contacts_daemon_reaches_relationships_contacts_ingress(
+    tmp_path: Path, name: str, args: dict[str, Any], daemon: str, tool: str
+) -> None:
+    harness = _Harness()
+
+    result = await harness.call(name, args, tmp_path, daemon=daemon, token=_up_token())
+
+    assert result == {"accepted": True}
+    assert harness.calls == [("relationship", tool, args, False)]
+
+
+async def test_a_report_without_primary_defaults_it_to_false(tmp_path: Path) -> None:
+    harness = _Harness()
+    args = {key: value for key, value in _REPORT.items() if key != "primary"}
+
+    await harness.call(CONTACTS_REPORT_CHANNEL, args, tmp_path, daemon="home", token=_up_token())
+
+    assert harness.calls == [
+        ("relationship", "contacts_report_channel", {**args, "primary": False}, False)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "daemon", "code"),
+    [
+        # finance has no Contacts module, so it is not on either allowlist.
+        (CONTACTS_RESOLVE_CHANNEL, _LOOKUP, "finance", "caller_not_allowed"),
+        (CONTACTS_REPORT_CHANNEL, _REPORT, "finance", "caller_not_allowed"),
+        (CONTACTS_RESOLVE_CHANNEL, {**_LOOKUP, "source_butler": "x"}, "health", "args_invalid"),
+        (CONTACTS_RESOLVE_CHANNEL, {**_LOOKUP, "request_id": "r1"}, "health", "args_invalid"),
+        (CONTACTS_REPORT_CHANNEL, {**_REPORT, "subject": "s1"}, "health", "args_invalid"),
+        (CONTACTS_REPORT_CHANNEL, {**_REPORT, "src": "owner"}, "health", "args_invalid"),
+        (CONTACTS_REPORT_CHANNEL, {**_REPORT, "verified": True}, "health", "args_invalid"),
+    ],
+    ids=[
+        "resolve-from-non-contacts-daemon",
+        "report-from-non-contacts-daemon",
+        "source_butler-in-body",
+        "request_id-not-a-uuid",
+        "subject-not-a-uuid",
+        "authority-src-in-body",
+        "verified-in-body",
+    ],
+)
+async def test_contacts_relays_refuse_other_daemons_and_any_authority_in_the_body(
+    tmp_path: Path, name: str, args: dict[str, Any], daemon: str, code: str
+) -> None:
+    harness = _Harness()
+
+    with pytest.raises(RelayRefused) as refused:
+        await harness.call(name, args, tmp_path, daemon=daemon, token=_up_token())
+
+    assert refused.value.code == code
+    assert harness.calls == []
+
+
+def test_contacts_relays_admit_exactly_the_contacts_daemons_to_relationship_service_tools() -> None:
+    contacts = {"education", "general", "health", "home", "lifestyle", "relationship"}
+    assert roster_module_daemons("contacts") == frozenset(contacts)
+    for name, tool in [
+        (CONTACTS_RESOLVE_CHANNEL, "contacts_resolve_channel"),
+        (CONTACTS_REPORT_CHANNEL, "contacts_report_channel"),
+    ]:
+        endpoint = _RELAYS[name]
+        assert endpoint.allowed_callers == frozenset(
+            ServiceCaller("butlers-up", daemon) for daemon in contacts
+        )
+        assert endpoint.target_butlers == frozenset({"relationship"})
+        assert endpoint.target_tool == tool
+        assert not endpoint.allow_stale
+        # Already service-only: no twin is needed.
+        assert not target_is_llm_presentable(tool)
+
+
+def test_a_contacts_daemon_outside_the_roster_is_never_admitted() -> None:
+    relays = build_relays({"health"}, _CONTRACTS, contacts_daemons={"health", "ghost"})
+
+    assert relays[CONTACTS_RESOLVE_CHANNEL].allowed_callers == frozenset(
+        {ServiceCaller("butlers-up", "health")}
+    )
 
 
 def test_the_relay_url_is_on_the_switchboard_service_listener() -> None:

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 import butlers.core.service_plane.client as relay_client
 from butlers.core.qa.relay import QaRelay
 from butlers.core.service_plane.relays import RelayRefused
@@ -36,11 +38,12 @@ class _LegacyClient:
 
 
 class _Relay:
-    def __init__(self, reply: Any = None, refuse: str | None = None) -> None:
+    def __init__(self, reply: Any = None, refuse: str | None = None, status: int = 403) -> None:
         self.calls: list[tuple[str, dict[str, Any], str]] = []
         self.urls: list[str] = []
         self.reply = reply
         self.refuse = refuse
+        self.status = status
 
     async def __call__(
         self, name: str, args: dict[str, Any], *, daemon: str, switchboard_url: str, **_: Any
@@ -48,7 +51,7 @@ class _Relay:
         self.calls.append((name, args, daemon))
         self.urls.append(switchboard_url)
         if self.refuse:
-            raise RelayRefused(self.refuse)
+            raise RelayRefused(self.refuse, status=self.status)
         return self.reply
 
 
@@ -98,6 +101,20 @@ async def test_switch_on_a_relay_refusal_is_an_unconfirmed_reception(monkeypatch
 
     assert result["accepted"] is False
     assert result["reason"] == "relay_failed"
+
+
+@pytest.mark.parametrize("code", ["not_found", "unknown_relay"])
+async def test_switch_on_a_404_refusal_is_qa_unavailable_not_failed(monkeypatch, code) -> None:
+    # The switch is off on Switchboard, or it predates the relay (rolling deploy).
+    monkeypatch.setenv("BUTLERS_SERVICE_PLANE_AUTH", "1")
+    monkeypatch.setattr(relay_client, "call_relay", _Relay(refuse=code, status=404))
+
+    result = await QaRelay("travel", None, lambda: None, "http://sb:41100/sse")._try_qa_relay(
+        **_FINDING
+    )
+
+    assert result["accepted"] is False
+    assert result["reason"] == "qa_unavailable"
 
 
 _EVENT = {"event_id": "e1", "event_type": "t.v1", "source_butler": "health", "payload": {"a": 1}}
@@ -167,6 +184,13 @@ async def test_switch_on_fans_out_through_the_relay_and_classifies_refusal_as_pe
     )
 
     assert data is None and error == "relay_refused: target_not_allowed" and retryable is False
+
+    for code in ("not_found", "unknown_relay"):
+        monkeypatch.setattr(relay_client, "call_relay", _Relay(refuse=code, status=404))
+        data, error, retryable = await _domain_events._dispatch_receive_via_switchboard(
+            _ConfiguredClient(), None, "health", target_butler="finance", args=_EVENT
+        )
+        assert data is None and error == f"relay_unavailable: {code}" and retryable is True
 
 
 async def test_switch_on_without_a_configured_switchboard_is_retryable_not_legacy(

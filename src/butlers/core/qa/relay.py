@@ -199,7 +199,11 @@ class QaRelay:
 
     async def _try_named_relay(self, fingerprint: str, finding: dict[str, Any]) -> dict:
         """RFC 0038 D7: the qa.report_finding relay; QA attributes from the caller."""
-        from butlers.core.service_plane.client import RelayUnavailable, call_relay
+        from butlers.core.service_plane.client import (
+            RelayUnavailable,
+            call_relay,
+            refusal_is_permanent,
+        )
         from butlers.core.service_plane.registry import QA_REPORT_FINDING
         from butlers.core.service_plane.relays import RelayRefused
 
@@ -212,7 +216,11 @@ class QaRelay:
                 daemon=self._butler_name,
                 switchboard_url=self._switchboard_url,
             )
-        except (RelayRefused, RelayUnavailable, OSError):
+        except RelayRefused as refused:
+            # A relay that is not served (404) is QA being unreachable, not a refusal.
+            reason = "relay_failed" if refusal_is_permanent(refused) else "qa_unavailable"
+            return self._refused(fingerprint, reason)
+        except (RelayUnavailable, OSError):
             return self._refused(fingerprint, "relay_failed")
         return self._settle(fingerprint, raw)
 

@@ -10,15 +10,22 @@ import httpx
 from starlette.applications import Starlette
 
 import butlers.core.service_plane.wiring as wiring
-from butlers.core.service_plane.registry import QA_REPORT_FINDING
+from butlers.core.service_plane.registry import CONTACTS_RESOLVE_CHANNEL, QA_REPORT_FINDING
 from butlers.core.service_plane.workload_identity import DAEMON_HEADER, TOKEN_HEADER
-from tests.core.test_service_plane_relay_endpoint import _FINDING, _up_token
+from tests.core.test_service_plane_relay_endpoint import _FINDING, _LOOKUP, _up_token
 from tests.core.test_service_plane_workload_identity import _verifier
 
 _ROSTER = Path(__file__).resolve().parents[2] / "roster"
 
 
-async def _post(monkeypatch, *, enabled: bool) -> tuple[httpx.Response, list[dict[str, Any]]]:
+async def _post(
+    monkeypatch,
+    *,
+    enabled: bool,
+    name: str = QA_REPORT_FINDING,
+    args: dict[str, Any] = _FINDING,
+    daemon: str = "travel",
+) -> tuple[httpx.Response, list[dict[str, Any]]]:
     if enabled:
         monkeypatch.setenv("BUTLERS_SERVICE_PLANE_AUTH", "1")
     else:
@@ -36,11 +43,35 @@ async def _post(monkeypatch, *, enabled: bool) -> tuple[httpx.Response, list[dic
     app = Starlette(routes=[wiring.build_switchboard_relay_route("POOL", _ROSTER)])
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
         response = await client.post(
-            f"http://sb/internal/service-plane/relay/{QA_REPORT_FINDING}",
-            json={"args": _FINDING},
-            headers={TOKEN_HEADER: _up_token(), DAEMON_HEADER: "travel"},
+            f"http://sb/internal/service-plane/relay/{name}",
+            json={"args": args},
+            headers={TOKEN_HEADER: _up_token(), DAEMON_HEADER: daemon},
         )
     return response, routed
+
+
+async def test_the_roster_contacts_daemons_reach_relationship_through_route(monkeypatch) -> None:
+    # The allowlist comes from the roster's [modules.contacts] declarations.
+    response, routed = await _post(
+        monkeypatch, enabled=True, name=CONTACTS_RESOLVE_CHANNEL, args=_LOOKUP, daemon="lifestyle"
+    )
+    assert response.status_code == 200
+    assert routed == [
+        {
+            "pool": "POOL",
+            "butler": "relationship",
+            "tool": "contacts_resolve_channel",
+            "args": _LOOKUP,
+            "source_butler": f"relay:{CONTACTS_RESOLVE_CHANNEL}",
+            "allow_stale": False,
+        }
+    ]
+
+    refused, routed = await _post(
+        monkeypatch, enabled=True, name=CONTACTS_RESOLVE_CHANNEL, args=_LOOKUP, daemon="finance"
+    )
+    assert refused.json() == {"status": "refused", "code": "caller_not_allowed"}
+    assert routed == []
 
 
 async def test_on_the_qa_relay_reaches_qa_through_switchboard_route(monkeypatch) -> None:

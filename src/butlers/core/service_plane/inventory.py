@@ -172,6 +172,8 @@ ROUTE_CALLERS: tuple[RouteCaller, ...] = (
         "src/butlers/modules/contacts/owner.py",
         "ContactsOwner._call",
         "named_relay",
-        "relationship.contact_owner: module runtime wiring for contact lookup and report.",
+        "contacts.resolve_channel and contacts.report_channel relays (served): a Contacts "
+        "daemon reaches Relationship's service-only contacts_ingress tools; the route call is "
+        "the switch-off path.",
     ),
 )
