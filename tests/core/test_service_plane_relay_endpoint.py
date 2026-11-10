@@ -25,6 +25,10 @@ from butlers.core.service_plane.registry import (
     CONTACTS_REPORT_CHANNEL,
     CONTACTS_RESOLVE_CHANNEL,
     DOMAIN_EVENT_RECEIVE,
+    FLEET_CASE_CLOSE,
+    FLEET_CASE_OPEN,
+    FLEET_CASE_PROPOSE_POSTURE,
+    FLEET_CASE_RECORD_LINK,
     MEDICATION_TRAVEL_SNAPSHOT,
     QA_REPORT_FINDING,
     build_relays,
@@ -501,6 +505,64 @@ def test_a_contacts_daemon_outside_the_roster_is_never_admitted() -> None:
     assert relays[CONTACTS_RESOLVE_CHANNEL].allowed_callers == frozenset(
         {ServiceCaller("butlers-up", "health")}
     )
+
+
+_CASE = "11111111-1111-1111-1111-111111111111"
+_FLEET_WRITES = [
+    (FLEET_CASE_OPEN, "open_case_service", {"correlation_key": "health:owner:x"}),
+    (FLEET_CASE_CLOSE, "close_case_service", {"case_id": _CASE, "outcome": "resolved"}),
+    (
+        FLEET_CASE_PROPOSE_POSTURE,
+        "propose_case_posture_service",
+        {"case_id": _CASE, "posture": "urgent"},
+    ),
+    (
+        FLEET_CASE_RECORD_LINK,
+        "record_case_link_service",
+        {"case_id": _CASE, "link_kind": "owner_condition", "ref": "c1"},
+    ),
+]
+
+
+@pytest.mark.parametrize(("name", "tool", "args"), _FLEET_WRITES, ids=[w[1] for w in _FLEET_WRITES])
+async def test_a_domain_daemon_writes_a_fleet_case_through_switchboards_twin(
+    tmp_path: Path, name: str, tool: str, args: dict[str, Any]
+) -> None:
+    harness = _Harness()
+
+    result = await harness.call(name, args, tmp_path, daemon="finance", token=_up_token())
+
+    assert result == {"accepted": True}
+    assert harness.calls == [("switchboard", tool, args, False)]
+
+
+@pytest.mark.parametrize(("name", "tool", "args"), _FLEET_WRITES, ids=[w[1] for w in _FLEET_WRITES])
+async def test_fleet_case_relays_refuse_switchboards_name_and_extra_fields(
+    tmp_path: Path, name: str, tool: str, args: dict[str, Any]
+) -> None:
+    harness = _Harness()
+    cases = [
+        (args, "switchboard", "caller_not_allowed"),
+        ({**args, "source_butler": "health"}, "health", "args_invalid"),
+        ({**args, "origin_butler": "health"}, "health", "args_invalid"),
+    ]
+    for body, daemon, code in cases:
+        with pytest.raises(RelayRefused) as refused:
+            await harness.call(name, body, tmp_path, daemon=daemon, token=_up_token())
+        assert refused.value.code == code
+    assert harness.calls == []
+
+
+def test_fleet_case_relays_admit_every_domain_daemon_to_non_presentable_twins() -> None:
+    domain = {ServiceCaller("butlers-up", d) for d in roster_daemons() if d != "switchboard"}
+    for name, tool, _ in _FLEET_WRITES:
+        endpoint = _RELAYS[name]
+        assert endpoint.allowed_callers == frozenset(domain)
+        assert endpoint.target_butlers == frozenset({"switchboard"})
+        assert endpoint.target_tool == tool
+        assert not target_is_llm_presentable(tool)
+        # The LLM-facing tool stays presentable; only its twin is relay-reachable.
+        assert target_is_llm_presentable(tool.removesuffix("_service"))
 
 
 def test_the_relay_url_is_on_the_switchboard_service_listener() -> None:

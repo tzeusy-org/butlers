@@ -166,7 +166,7 @@ The complete merged-tree group inventory is:
 | `switchboard_backfill` | 2 | `backfill.poll`, `backfill.progress` | Both require `butler_name == "switchboard"`. |
 | `delegation` | 4 | `delegate_ask`, `delegate_receive`, `delegate_answer`, `delegate_wake` | All four require a non-staffer. |
 | `domain_events` | 6 | `publish_event`, `subscribe_to_event`, `unsubscribe_from_event`, `list_my_subscriptions`, `receive_domain_event`, `report_event_reaction` | All six require a non-staffer. |
-| `fleet_cases` | 7 | `find_open_case`, `open_case`, `contribute_case_evidence`, `propose_case_posture`, `close_case`, `record_case_link`, `read_case` | None; all seven are group-gated but registered for every butler type, including Switchboard. Call-time forwarding and write authority remain separate handler concerns. |
+| `fleet_cases` | 11 | `find_open_case`, `open_case`, `contribute_case_evidence`, `propose_case_posture`, `close_case`, `record_case_link`, `read_case`, `open_case_service`, `propose_case_posture_service`, `close_case_service`, `record_case_link_service` | The first seven: none; group-gated but registered for every butler type, including Switchboard. Call-time forwarding and write authority remain separate handler concerns. The four `*_service` twins require `butler_name == "switchboard"`: they are the `presentable=False` targets of the `fleet_case.*` service-plane relays (RFC 0038 D7). |
 
 The eight direct registrations are outside `KNOWN_CORE_GROUPS` and therefore
 do not become selectable merely by adding a group name:

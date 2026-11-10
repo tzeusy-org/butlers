@@ -140,7 +140,9 @@ ROUTE_CALLERS: tuple[RouteCaller, ...] = (
         "src/butlers/core_tools/_fleet_cases.py",
         "_dispatch_fleet_case_write",
         "named_relay",
-        "fleet_case.write: module runtime wiring into Switchboard's fleet-case store.",
+        "fleet_case.open/close/propose_posture/record_link relays (served): each reaches "
+        "Switchboard's service-only twin (open_case_service, ...); the route call is the "
+        "switch-off path.",
     ),
     RouteCaller(
         "src/butlers/core_tools/_memory_catalog.py",

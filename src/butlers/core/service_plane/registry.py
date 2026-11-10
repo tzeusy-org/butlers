@@ -29,6 +29,10 @@ DOMAIN_EVENT_RECEIVE = "domain_event.receive"
 MEDICATION_TRAVEL_SNAPSHOT = "medication.travel_snapshot"
 CONTACTS_RESOLVE_CHANNEL = "contacts.resolve_channel"
 CONTACTS_REPORT_CHANNEL = "contacts.report_channel"
+FLEET_CASE_OPEN = "fleet_case.open"
+FLEET_CASE_CLOSE = "fleet_case.close"
+FLEET_CASE_PROPOSE_POSTURE = "fleet_case.propose_posture"
+FLEET_CASE_RECORD_LINK = "fleet_case.record_link"
 
 
 class _Strict(BaseModel):
@@ -66,6 +70,35 @@ class ContactsReportArgs(_Strict):
     channel_type: str
     channel_value: str
     primary: bool = False
+
+
+class FleetCaseOpenArgs(_Strict):
+    correlation_key: str
+
+
+class FleetCaseCloseArgs(_Strict):
+    case_id: str
+    outcome: str
+
+
+class FleetCaseProposePostureArgs(_Strict):
+    case_id: str
+    posture: str
+
+
+class FleetCaseRecordLinkArgs(_Strict):
+    case_id: str
+    link_kind: str
+    ref: str
+
+
+#: Each Switchboard fleet-case write: relay name, its schema, the service twin.
+FLEET_CASE_WRITES: tuple[tuple[str, type[BaseModel], str], ...] = (
+    (FLEET_CASE_OPEN, FleetCaseOpenArgs, "open_case_service"),
+    (FLEET_CASE_CLOSE, FleetCaseCloseArgs, "close_case_service"),
+    (FLEET_CASE_PROPOSE_POSTURE, FleetCaseProposePostureArgs, "propose_case_posture_service"),
+    (FLEET_CASE_RECORD_LINK, FleetCaseRecordLinkArgs, "record_case_link_service"),
+)
 
 
 def _roster_root(roster_dir: Path | None) -> Path:
@@ -140,7 +173,21 @@ def build_relays(
         for contract in contracts.contracts()
         for subscriber in contract.permitted_subscribers
     )
+    # Fleet-case writes (RLS: only Switchboard's role writes fleet_cases and
+    # fleet_case_links). Every domain daemon may write, as today; each relay
+    # reaches Switchboard's own service-only twin of the tool.
+    fleet_case_relays = {
+        name: RelayEndpoint(
+            name=name,
+            target_butlers=frozenset({"switchboard"}),
+            target_tool=twin,
+            args_model=args_model,
+            allowed_callers=callers,
+        )
+        for name, args_model, twin in FLEET_CASE_WRITES
+    }
     return {
+        **fleet_case_relays,
         QA_REPORT_FINDING: RelayEndpoint(
             name=QA_REPORT_FINDING,
             target_butlers=frozenset({"qa"}),
