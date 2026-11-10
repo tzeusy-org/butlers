@@ -1015,6 +1015,23 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         )
     },
     **{
+        ("src/butlers/core/goal_wake.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: S2.1/S2.2 wake admission (sw_063) over the Switchboard-owned "
+            "goal ledger; qualified SQL allocated to core/goal_wake.py (bu-dhloi1.7)"
+        )
+        for relation in (
+            "admission_attempt_bindings",
+            "admission_decisions",
+            "goal_epochs",
+            "goal_inbox",
+            "goals",
+            "invocations",
+            "wait_envelopes",
+            "wait_generations",
+            "wake_intents",
+        )
+    },
+    **{
         ("src/butlers/goal_runner/ledger.py", f"switchboard.{relation}"): (
             "sanctioned:RFC-0038: D9-D11/D14 goal runner over the Switchboard-owned goal "
             "ledger (sw_062 outcomes and invocation accounting); qualified SQL allocated to "
