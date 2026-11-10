@@ -122,6 +122,17 @@
           "after_sha256": "386046c54f44dca7815dcbeb4247d5848001aa79b57ef4c921968a1d7c71a7b8"
         }
       ]
+    },
+    {
+      "path": "patches/005-bounded-normal-peer-close.patch",
+      "sha256": "0fce292ee4322e495d72deaca5768175dc48a3f3f9b2291df2b34ed80e996348",
+      "files": [
+        {
+          "path": "codex-rs/codex-api/src/endpoint/responses_websocket.rs",
+          "before_sha256": "e2af597f23bc95c54854dd0520eb85a8e5026c660e2a7eb10e5cd38f6817eeff",
+          "after_sha256": "ac48f705a5ce89393db8e90d69f3d390bcff943c324d041d1a0e2fcb82ea0633"
+        }
+      ]
     }
   ],
   "lock_normalization": {
@@ -154,6 +165,6 @@
       "-j2"
     ]
   },
-  "source_tree_sha256": "a3d6dc8d1e40e0ab10f27b1b8a74b6332fa74c2267c058ff7252d4cc85d2a1d9",
+  "source_tree_sha256": "7be953e354818b21d9d16cd451cd14062aa875fa405e91c22f65da5c813d0154",
   "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches."
 }

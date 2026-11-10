@@ -2,7 +2,7 @@
 
 `series.json` binds upstream commit
 `ff6aec96948b70d94983af2641a6b67c94faeff5` and its public source archive.
-The four ordered patches have separate purposes:
+The five ordered patches have separate purposes:
 
 1. Normalize the 159 internal lockfile package versions from the shipped `0.0.0`
    to the source workspace's `0.159.2`. External package versions, sources,
@@ -23,6 +23,10 @@ The four ordered patches have separate purposes:
    connection and TLS classifications retain their original behavior. Connector
    deadlines (including DNS stalls) are connection failures too; an accepted-hop
    response timeout keeps its original timeout category.
+5. Flush Tungstenite's queued reply to a normal peer close before delivering the
+   close event to a consumer that can immediately drop the connection. Bound the
+   flush to one second; a flush error or timeout remains an error. Preserve open
+   connection reuse, ping handling, cancellation and abrupt-error behavior.
 
 Build from the prepared source with Rust 1.95.0, the locked graph, default features
 and the target recorded in the series. The source commit is embedded explicitly:
@@ -56,7 +60,7 @@ docker buildx build --platform linux/amd64 -f Dockerfile.codex-artifacts \
 ```
 
 The public seed downloads the exact source archive and complete CMake wheel,
-applies the unchanged four-patch series, and vendors the full locked Cargo graph,
+applies the exact five-patch series, and vendors the full locked Cargo graph,
 including its non-target package sources. Hashes, modes, links and file population
 are recorded without task paths or timestamps. Every redirect is refused. The
 subsequent actual networkless layer checks the entire seeded graph, compiler
@@ -86,5 +90,20 @@ three OpenSSL development/runtime archives. The unchanged source preparer
 executes this tool; it is a build dependency, not a replacement patch engine.
 The complete four-archive install is bound to the declared original compiler
 profile and measured output dpkg status. A contained independent-root control
-runs that local installer and the actual four-patch preparer; absence of the
+runs that local installer and the actual source preparer; absence of the
 tool fails rather than selecting a different source or toolchain.
+
+The normal-close correction has a genuine old-source wire assertion failure,
+then a passing exact regression, three owning pump cases and all 184 tests in
+the upstream `codex-api` library using the pinned fork. These are source-bound
+Rust results, separate from a release build, installed-wrapper native operation
+or an image. In particular, they do not attribute the outstanding native
+auxiliary request observations or prove that process-exit shutdown is fixed.
+
+Source and series declarations advance with this patch. The existing Codex
+binary/component hashes in `native-package-artifacts/build-inputs.json` and
+`runtime-inputs.json` remain the prior earned artifact identities until a new
+build and complete package assembly are verified. Those old contexts are not
+requalified by a source-pin update; the native assembler refuses mismatched
+source/series provenance. Requalifying the complete wrapper, assets and runtime
+context, followed by native and image checks, remains required.

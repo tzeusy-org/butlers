@@ -207,16 +207,23 @@ def test_complete_assembly_retains_original_assets_and_hook_with_independent_mod
     assert set(metadata["archives"]) == set(producer.DESTINATIONS)
 
 
-@pytest.mark.parametrize("change", ["missing-archive", "binary", "feature", "recipe"])
+@pytest.mark.parametrize(
+    "change", ["missing-archive", "binary", "feature", "source", "series", "recipe"]
+)
 def test_seed_or_artifact_drift_refuses_before_original_hook(assembly, change):
     if change == "missing-archive":
         next((assembly.work / "archives").iterdir()).unlink()
     elif change == "binary":
         (assembly.code / "codex").write_bytes(b"unreviewed substitute")
-    elif change == "feature":
+    elif change in {"feature", "source", "series"}:
         path = assembly.code / "provenance.json"
         data = json.loads(path.read_text())
-        data["default_features"] = False
+        key = {
+            "feature": "default_features",
+            "source": "source_tree_sha256",
+            "series": "series_sha256",
+        }[change]
+        data[key] = False if change == "feature" else "0" * 64
         path.write_text(json.dumps(data))
     else:
         (assembly.recipe / "Dockerfile.native-package-artifacts").write_text("changed recipe")

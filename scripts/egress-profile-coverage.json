@@ -26,8 +26,11 @@
     "deploy/runtime-clis/codex/patches/004-bounded-selected-hop-errors.patch": {
       "sha256": "7c0216178ec5ee2ea29cb9014ce7fc60ebb4dcd4e15d3a205411605212bdfc13"
     },
+    "deploy/runtime-clis/codex/patches/005-bounded-normal-peer-close.patch": {
+      "sha256": "0fce292ee4322e495d72deaca5768175dc48a3f3f9b2291df2b34ed80e996348"
+    },
     "deploy/runtime-clis/codex/series.json": {
-      "sha256": "d476705b01d0b1818bdb4ad94109cf1a10147bbb950cbd384245f0215438bf8e"
+      "sha256": "80c5d00a2581beaa8a39f2026225167ae1ad803028c6b89d6b921e987847255c"
     },
     "deploy/runtime-clis/debian-system-inputs.json": {
       "sha256": "a42de4f1082b934775b2a36f24b9dcff29d6a7265f9255960c47ca4ee0cdcd28"
@@ -84,7 +87,7 @@
       "sha256": "8e1aa9b4c4e60cb92562a1efa6ec9061d52c8bdcb246d8f0ed1ce129cfa4c486"
     },
     "deploy/runtime-clis/native-package-artifacts/build-inputs.json": {
-      "sha256": "52d9fb4ea28c0d49f56dd404280a358ccb85f729ada259e12fb1d72f37419e32"
+      "sha256": "3cbd58859d5d0b61d87cc1161e3fa8144edb980e5d835cfdc9eddb0154c23509"
     },
     "deploy/runtime-clis/npm-artifacts/build-inputs.json": {
       "sha256": "dbef47f206c369c9c67186f6c79c8d4027b1e6541d619e134d478fc21ba7ed01"
@@ -153,7 +156,7 @@
       "sha256": "f02fb9ac77ff654765ea1ef97508e0a417b115e9b56e26285721cccae8047bb2"
     },
     "deploy/runtime-clis/runtime-inputs.json": {
-      "sha256": "251aa9ec0585823963b04afdff6b595766c134719994fb5f3ce3907ca19fae5a"
+      "sha256": "948cfe27bc91cc9a613f4adffe5a9f565134e8c47fecd11db1786b218a257b3b"
     },
     "deploy/runtime-clis/shared/egress.ts": {
       "sha256": "c18a9d00ac0a4766aca736dc6e56c3f3b93c77e486b7be04b2a12b4b22817301"
@@ -5677,7 +5680,7 @@
         "sha256": "17b49a6da8fb54ec6d43efa037fbd867291c804038329035929322e15de830c8",
         "symbol": "run_login_server"
       },
-      "source_tree_sha256": "a3d6dc8d1e40e0ab10f27b1b8a74b6332fa74c2267c058ff7252d4cc85d2a1d9",
+      "source_tree_sha256": "7be953e354818b21d9d16cd451cd14062aa875fa405e91c22f65da5c813d0154",
       "vendor": "codex",
       "workloads": [
         "butlers-up",
@@ -5699,12 +5702,12 @@
       "reason": "Responses HTTP/WS and configured realtime derive logical provider origins; selected transport does not admit any new origin.",
       "resolution": "exact-profile-only",
       "source": {
-        "binding": "archive",
+        "binding": "patched",
         "path": "codex-rs/codex-api/src/endpoint/responses_websocket.rs",
-        "sha256": "e2af597f23bc95c54854dd0520eb85a8e5026c660e2a7eb10e5cd38f6817eeff",
+        "sha256": "ac48f705a5ce89393db8e90d69f3d390bcff943c324d041d1a0e2fcb82ea0633",
         "symbol": "ResponsesWebsocketClient"
       },
-      "source_tree_sha256": "a3d6dc8d1e40e0ab10f27b1b8a74b6332fa74c2267c058ff7252d4cc85d2a1d9",
+      "source_tree_sha256": "7be953e354818b21d9d16cd451cd14062aa875fa405e91c22f65da5c813d0154",
       "vendor": "codex",
       "workloads": [
         "butlers-up",
@@ -5732,7 +5735,7 @@
         "sha256": "df6d6871a35a9e365e36beb3d388c2c39cae59d95bd84834321c8501390ec397",
         "symbol": "mcp_servers"
       },
-      "source_tree_sha256": "a3d6dc8d1e40e0ab10f27b1b8a74b6332fa74c2267c058ff7252d4cc85d2a1d9",
+      "source_tree_sha256": "7be953e354818b21d9d16cd451cd14062aa875fa405e91c22f65da5c813d0154",
       "vendor": "codex",
       "workloads": [
         "butlers-up",
@@ -5763,7 +5766,7 @@
         "sha256": "05e44e6232eebebb27d487bd8c665f55f9d5ab08b3997519af7a464960e17f3e",
         "symbol": "to_api_provider"
       },
-      "source_tree_sha256": "a3d6dc8d1e40e0ab10f27b1b8a74b6332fa74c2267c058ff7252d4cc85d2a1d9",
+      "source_tree_sha256": "7be953e354818b21d9d16cd451cd14062aa875fa405e91c22f65da5c813d0154",
       "vendor": "codex",
       "workloads": [
         "butlers-up",
