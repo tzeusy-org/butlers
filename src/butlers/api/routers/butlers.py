@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from butlers.api.butler_tool_calls import parse_tool_text, tool_result_is_error, tool_result_text
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -1027,33 +1028,6 @@ def _read_optional_text(path: Path) -> str | None:
     return None
 
 
-def _extract_mcp_result_text(result: object) -> str | None:
-    """Extract text content from an MCP tool result."""
-    content = getattr(result, "content", None)
-    if not isinstance(content, list):
-        return None
-
-    text_parts: list[str] = []
-    for block in content:
-        text = getattr(block, "text", None)
-        if isinstance(text, str) and text:
-            text_parts.append(text)
-
-    if not text_parts:
-        return None
-    return "\n".join(text_parts)
-
-
-def _parse_mcp_result_payload(raw_text: str | None) -> object:
-    """Parse MCP text payload as JSON when possible, else return plain text."""
-    if raw_text is None:
-        return None
-    try:
-        return json.loads(raw_text)
-    except (json.JSONDecodeError, TypeError):
-        return raw_text
-
-
 def _normalize_tool_info(tool: object) -> MCPToolInfo | None:
     """Normalize FastMCP tool metadata from dict- or object-shaped records."""
     if isinstance(tool, dict):
@@ -1293,9 +1267,9 @@ async def call_butler_mcp_tool(
             detail=f"MCP tool call '{tool_name}' failed for butler '{name}': {exc}",
         ) from exc
 
-    raw_text = _extract_mcp_result_text(result)
-    parsed_result = _parse_mcp_result_payload(raw_text)
-    is_error = bool(getattr(result, "is_error", False))
+    raw_text = tool_result_text(result)
+    parsed_result = parse_tool_text(raw_text)
+    is_error = tool_result_is_error(result)
     response = MCPToolCallResponse(
         tool_name=tool_name,
         arguments=request.arguments,
