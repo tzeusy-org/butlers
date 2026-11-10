@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +11,13 @@ import httpx
 from starlette.applications import Starlette
 
 import butlers.core.service_plane.wiring as wiring
-from butlers.core.service_plane.registry import CONTACTS_RESOLVE_CHANNEL, QA_REPORT_FINDING
+from butlers.core.service_plane.registry import (
+    CONTACTS_RESOLVE_CHANNEL,
+    MEMORY_CATALOG_FETCH,
+    QA_REPORT_FINDING,
+)
 from butlers.core.service_plane.workload_identity import DAEMON_HEADER, TOKEN_HEADER
+from butlers.testing.fake_pool import fake_pool
 from tests.core.test_service_plane_relay_endpoint import _FINDING, _LOOKUP, _up_token
 from tests.core.test_service_plane_workload_identity import _verifier
 
@@ -25,6 +31,7 @@ async def _post(
     name: str = QA_REPORT_FINDING,
     args: dict[str, Any] = _FINDING,
     daemon: str = "travel",
+    pool: Any = "POOL",
 ) -> tuple[httpx.Response, list[dict[str, Any]]]:
     if enabled:
         monkeypatch.setenv("BUTLERS_SERVICE_PLANE_AUTH", "1")
@@ -34,13 +41,15 @@ async def _post(
     routed: list[dict[str, Any]] = []
 
     async def fake_route(pool: Any, butler: str, tool: str, args: dict[str, Any], **kw: Any):
+        # Every relay call uses the relay's own tool call (tests/core/test_service_plane_relay_call_fn.py).
+        assert kw.pop("call_fn").__qualname__ == "relay_call_fn.<locals>.call"
         routed.append({"pool": pool, "butler": butler, "tool": tool, "args": args, **kw})
         return {"result": {"accepted": True}}
 
     # The package re-exports route() under the module's own name, so patch the module object.
     route_module = importlib.import_module("butlers.tools.switchboard.routing.route")
     monkeypatch.setattr(route_module, "route", fake_route)
-    app = Starlette(routes=[wiring.build_switchboard_relay_route("POOL", _ROSTER)])
+    app = Starlette(routes=[wiring.build_switchboard_relay_route(pool, _ROSTER)])
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
         response = await client.post(
             f"http://sb/internal/service-plane/relay/{name}",
@@ -71,6 +80,43 @@ async def test_the_roster_contacts_daemons_reach_relationship_through_route(monk
         monkeypatch, enabled=True, name=CONTACTS_RESOLVE_CHANNEL, args=_LOOKUP, daemon="finance"
     )
     assert refused.json() == {"status": "refused", "code": "caller_not_allowed"}
+    assert routed == []
+
+
+async def test_a_catalog_fetch_reads_the_owner_from_switchboards_catalog_row(monkeypatch) -> None:
+    source_id = "22222222-2222-2222-2222-222222222222"
+    pointer = {"source_schema": "health", "source_table": "facts", "source_id": source_id}
+    pool = fake_pool(fetchrow={"source_butler": "health", "memory_type": "fact"})
+
+    response, routed = await _post(
+        monkeypatch,
+        enabled=True,
+        name=MEMORY_CATALOG_FETCH,
+        args=pointer,
+        daemon="finance",
+        pool=pool,
+    )
+
+    assert response.status_code == 200
+    assert [(r["butler"], r["tool"], r["args"]) for r in routed] == [
+        ("health", "memory_get_service", {"memory_type": "fact", "memory_id": source_id})
+    ]
+    # One live, visible catalog row, read by Switchboard with the request's pointer.
+    sql, *params = pool.fetchrow.await_args.args
+    assert "public.memory_catalog" in sql and "invalid_at IS NULL" in sql
+    assert params == ["health", "facts", uuid.UUID(source_id)]
+
+    # A roster butler without the memory module is never a catalog target.
+    pool = fake_pool(fetchrow={"source_butler": "qa", "memory_type": "fact"})
+    refused, routed = await _post(
+        monkeypatch,
+        enabled=True,
+        name=MEMORY_CATALOG_FETCH,
+        args=pointer,
+        daemon="finance",
+        pool=pool,
+    )
+    assert refused.json() == {"status": "refused", "code": "target_not_allowed"}
     assert routed == []
 
 

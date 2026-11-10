@@ -54,7 +54,8 @@ async def test_an_allowed_caller_reaches_the_one_fixed_target_with_validated_arg
 
 
 async def test_a_multi_target_relay_dispatches_only_to_a_listed_butler_its_prepare_picks() -> None:
-    def prepare(caller: ServiceCaller, validated: BaseModel) -> tuple[str, dict[str, Any]]:
+    async def prepare(caller: ServiceCaller, validated: BaseModel) -> tuple[str, dict[str, Any]]:
+        # A prepare may read (the memory catalog's owner row) before it picks.
         return validated.model_dump()["trip_id"], {"from": caller.daemon}
 
     endpoint = RelayEndpoint(

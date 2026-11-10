@@ -47,12 +47,13 @@ class RelayRefused(Exception):
 
 Dispatch = Callable[[str, str, dict[str, Any]], Awaitable[Any]]
 #: Builds the (target butler, target args) pair from the authenticated caller
-#: and the validated request, or raises ``RelayRefused``.
-Prepare = Callable[[ServiceCaller, BaseModel], tuple[str, dict[str, Any]]]
+#: and the validated request, or raises ``RelayRefused``. It may read
+#: (the memory catalog relay looks up the pointer's owner) before it picks.
+Prepare = Callable[[ServiceCaller, BaseModel], Awaitable[tuple[str, dict[str, Any]]]]
 
 
 def _single_target(endpoint: RelayEndpoint) -> Prepare:
-    def prepare(caller: ServiceCaller, validated: BaseModel) -> tuple[str, dict[str, Any]]:
+    async def prepare(caller: ServiceCaller, validated: BaseModel) -> tuple[str, dict[str, Any]]:
         (butler,) = endpoint.target_butlers
         return butler, validated.model_dump(mode="json")
 
@@ -64,8 +65,9 @@ class RelayEndpoint:
     """One named relay, its one target tool and the butlers that tool may live on.
 
     Most relays have exactly one target butler. A relay with several (domain
-    events: the contract's permitted subscribers) must supply ``prepare``,
-    which picks one of them from the request; the pick is checked against
+    events: the contract's permitted subscribers; the memory catalog: every
+    memory-enabled butler) must supply ``prepare``, which picks one of them
+    from the request or from a read it makes; the pick is checked against
     ``target_butlers`` again before dispatch.
     """
 
@@ -110,7 +112,7 @@ async def relay_call(
     if endpoint.prepare is None and len(endpoint.target_butlers) != 1:
         raise RelayRefused("target_not_allowed")
     prepare = endpoint.prepare or _single_target(endpoint)
-    target_butler, target_args = prepare(caller, validated)
+    target_butler, target_args = await prepare(caller, validated)
     if target_butler not in endpoint.target_butlers:
         raise RelayRefused("target_not_allowed")
     return await dispatch(target_butler, endpoint.target_tool, target_args)

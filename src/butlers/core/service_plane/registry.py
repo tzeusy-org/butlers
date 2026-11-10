@@ -12,9 +12,9 @@ forbids extra fields, so a body cannot carry its own ``source_butler``.
 from __future__ import annotations
 
 import tomllib
-from collections.abc import Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -33,6 +33,12 @@ FLEET_CASE_OPEN = "fleet_case.open"
 FLEET_CASE_CLOSE = "fleet_case.close"
 FLEET_CASE_PROPOSE_POSTURE = "fleet_case.propose_posture"
 FLEET_CASE_RECORD_LINK = "fleet_case.record_link"
+MEMORY_CATALOG_FETCH = "memory.catalog_fetch"
+
+#: Reads one live, visible ``public.memory_catalog`` row by its source pointer:
+#: ``(source_schema, source_table, source_id)`` to a row with ``source_butler``
+#: and ``memory_type``, or ``None``.
+CatalogPointer = Callable[[str, str, UUID], Awaitable[Mapping[str, Any] | None]]
 
 
 class _Strict(BaseModel):
@@ -92,6 +98,14 @@ class FleetCaseRecordLinkArgs(_Strict):
     ref: str
 
 
+class MemoryCatalogFetchArgs(_Strict):
+    """Only the catalog pointer: the owner and memory type are Switchboard's to read."""
+
+    source_schema: str = Field(min_length=1)
+    source_table: Literal["facts", "rules"]
+    source_id: UUID
+
+
 #: Each Switchboard fleet-case write: relay name, its schema, the service twin.
 FLEET_CASE_WRITES: tuple[tuple[str, type[BaseModel], str], ...] = (
     (FLEET_CASE_OPEN, FleetCaseOpenArgs, "open_case_service"),
@@ -130,13 +144,13 @@ def _domain_callers(daemons: Iterable[str]) -> frozenset[ServiceCaller]:
     )
 
 
-def _qa_prepare(caller: ServiceCaller, validated: BaseModel) -> tuple[str, dict[str, Any]]:
+async def _qa_prepare(caller: ServiceCaller, validated: BaseModel) -> tuple[str, dict[str, Any]]:
     args = validated.model_dump(mode="json", exclude_none=True)
     return "qa", {**args, "source_butler": caller.daemon}
 
 
 def _domain_event_prepare(contracts: DomainEventContractRegistry):
-    def prepare(caller: ServiceCaller, validated: BaseModel) -> tuple[str, dict[str, Any]]:
+    async def prepare(caller: ServiceCaller, validated: BaseModel) -> tuple[str, dict[str, Any]]:
         assert isinstance(validated, DomainEventArgs)
         contract = contracts.get(validated.event_type)
         if contract is None or contract.publisher != caller.daemon:
@@ -153,18 +167,55 @@ def _domain_event_prepare(contracts: DomainEventContractRegistry):
     return prepare
 
 
+def _memory_catalog_prepare(catalog_pointer: CatalogPointer):
+    async def prepare(caller: ServiceCaller, validated: BaseModel) -> tuple[str, dict[str, Any]]:
+        assert isinstance(validated, MemoryCatalogFetchArgs)
+        row = await catalog_pointer(
+            validated.source_schema, validated.source_table, validated.source_id
+        )
+        if row is None:
+            raise RelayRefused("catalog_pointer_not_found")
+        # The owner and the memory type come from the catalog, never the caller.
+        return str(row["source_butler"]), {
+            "memory_type": row["memory_type"],
+            "memory_id": str(validated.source_id),
+        }
+
+    return prepare
+
+
 def build_relays(
     daemons: Iterable[str],
     contracts: DomainEventContractRegistry,
     *,
     contacts_daemons: Iterable[str] = (),
+    memory_daemons: Iterable[str] = (),
+    catalog_pointer: CatalogPointer | None = None,
 ) -> Mapping[str, RelayEndpoint]:
     """The relay registry for a roster and its domain-event contracts.
 
     ``contacts_daemons`` are the butlers hosting the Contacts module; only they
-    may reach Relationship's Contacts ingress.
+    may reach Relationship's Contacts ingress. ``memory_daemons`` host the
+    Memory module; ``catalog_pointer`` reads ``public.memory_catalog`` for the
+    memory catalog relay, which is served only when it is given.
     """
     callers = _domain_callers(daemons)
+    memory_relays = (
+        {
+            # A cross-butler catalog dereference. The caller has already applied
+            # its own held sensitivity ceiling; the owner applies its own again.
+            MEMORY_CATALOG_FETCH: RelayEndpoint(
+                name=MEMORY_CATALOG_FETCH,
+                target_butlers=frozenset(memory_daemons),
+                target_tool="memory_get_service",
+                args_model=MemoryCatalogFetchArgs,
+                allowed_callers=callers,
+                prepare=_memory_catalog_prepare(catalog_pointer),
+            )
+        }
+        if catalog_pointer is not None
+        else {}
+    )
     contacts = frozenset(contacts_daemons)
     contacts_callers = frozenset(c for c in callers if c.daemon in contacts)
     publishers = {contract.publisher for contract in contracts.contracts()}
@@ -188,6 +239,7 @@ def build_relays(
     }
     return {
         **fleet_case_relays,
+        **memory_relays,
         QA_REPORT_FINDING: RelayEndpoint(
             name=QA_REPORT_FINDING,
             target_butlers=frozenset({"qa"}),

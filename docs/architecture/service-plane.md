@@ -55,6 +55,11 @@ Switchboard serves `POST /internal/service-plane/relay/{name}` (body
 session listener does not serve it. It dispatches through Switchboard's own
 `route()`, so registry, staleness, quarantine and routing-log behaviour are
 unchanged; the relay decides only who may reach which target with what.
+The relay's tool call (`relay_call_fn`) differs from `route()`'s default in two
+ways: it drops the `trace_context` carrier `route()` adds while a span is
+active, because relay targets are strict service twins that refuse an
+unexpected keyword; and a target error result is a refused, non-retryable call,
+never a delivered one.
 Callers use `service_plane/client.py`, presenting their workload's
 relay-audience token and their daemon name. While the switch is off the route
 answers 404 to everything and callers keep the legacy route path.
@@ -78,15 +83,18 @@ delivery into a permanent failure.
 | `contacts.resolve_channel` | Relationship `contacts_resolve_channel` | butlers declaring `[modules.contacts]` in `butler.toml`, on `butlers-up` | `channel_type`, `channel_value`, `request_id` (UUID). The Contacts module's owner lookup; any refusal or failure is `ContactsOwnerUnavailable`. |
 | `contacts.report_channel` | Relationship `contacts_report_channel` | as above | `subject` (UUID), `channel_type`, `channel_value`, `primary`. Provenance is fixed by the target (third party); the schema admits no authority field. |
 | `fleet_case.open`, `fleet_case.close`, `fleet_case.propose_posture`, `fleet_case.record_link` | Switchboard `open_case_service`, `close_case_service`, `propose_case_posture_service`, `record_case_link_service` | every roster daemon on `butlers-up` except Switchboard | The fleet-case writes RLS reserves to Switchboard. Each schema is exactly its tool's arguments. The twins are registered on Switchboard only and run Switchboard's own write; a 403 refusal is a permanent error, anything else retryable. |
+| `memory.catalog_fetch` | the pointer owner's `memory_get_service` | every roster daemon on `butlers-up` except Switchboard | `source_schema`, `source_table` (`facts` or `rules`), `source_id` (UUID): only the catalog pointer. The relay's `prepare` reads Switchboard's own live, visible `public.memory_catalog` row and takes the owner and memory type from it; the owner must host the Memory module (`[modules.memory]`), else `target_not_allowed`. A pointer not in the catalog is `catalog_pointer_not_found` (the caller answers `not_found`). The caller's held sensitivity ceiling withholds before the call; the owner's twin applies its own. Switchboard itself keeps the in-process route. |
 
 A relay target must be declared `presentable=False`, so a target that LLM
 sessions also use gets a service-only twin on its owning butler; the
 LLM-facing tool is never relay-reachable. Relationship's `contacts_ingress`
-tools were already service-only, so the contacts relays need no twin.
+tools were already service-only, so the contacts relays need no twin. A
+relay's `prepare` is async, so it may read before it picks a target (the
+memory catalog relay does).
 
-Still to come (it needs a service-only twin first): the memory catalog
-fetch. The calendar response
-fence gets no relay: bu-qozovd.1 slice 3 deletes it before the switch (the
+Every `named_relay` row in the route-caller inventory
+(`src/butlers/core/service_plane/inventory.py`) now has its relay. The calendar
+response fence gets no relay: bu-qozovd.1 slice 3 deletes it before the switch (the
 owner made Relationship the sole invite-response owner), and the switch
 depends on that slice.
 

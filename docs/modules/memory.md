@@ -243,7 +243,8 @@ families:
 - **Writing** (`memory_store_episode`, `memory_store_fact`, `memory_store_rule`) -- store raw
   episodes, entity-anchored facts with predicate validation, and behavioural rules.
 - **Reading and context** (`memory_search`, `memory_recall`, `memory_get`, `memory_context`) --
-  retrieval (below) and token-budgeted, sectioned context assembly.
+  retrieval (below) and token-budgeted, sectioned context assembly. `memory_get_service` is
+  `memory_get`'s service-only twin, the `memory.catalog_fetch` relay target (below).
 - **Feedback** (`memory_confirm`, `memory_mark_helpful`, `memory_mark_harmful`) -- reset decay and
   drive rule maturity.
 - **Management** (`memory_forget`, `memory_stats`) -- retraction and statistics.
@@ -468,6 +469,17 @@ resolves the catalog row's owning butler, and asks that butler's existing
 `memory_get` tool through the Switchboard route. It never grants cross-schema
 database access. Inactive or missing pointers return `{"status":"not_found"}`.
 Both tools are read-only and idempotent.
+
+With `BUTLERS_SERVICE_PLANE_AUTH` on (RFC 0038 D7, dark until the switch), a
+domain butler instead calls the `memory.catalog_fetch` named relay with only
+the pointer. Switchboard reads the owner and memory type from its own
+`public.memory_catalog` row (live and visible, as above) and reaches that
+butler's `memory_get_service`, a service-only twin of `memory_get` in the
+`core` group (`presentable=False`) that reads under the owner's own held
+ceiling. The caller's held ceiling still withholds before anything is sent. A
+pointer Switchboard no longer finds is `not_found`; a failure is the same
+content-blind `unavailable` marker, retryable unless the relay refused with
+403. Switchboard itself keeps the in-process route.
 
 **Content authority.** Each catalog row carries the `content_authority` class of its source fact or rule (`owner`, `owner_device`, `third_party`, `system`, `mixed`, or NULL for unstamped legacy rows; core_299, REQ-module-memory-013). Only the class is public — the sender entity stays in the owning schema. Every catalog write (`store_fact`/`store_rule` write-behind, rule endorsement, the backfill) copies it in the same statement as the rest of the row, and `run_memory_catalog_backfill` re-copies it onto rows whose value drifted (for example rows cataloged before the column existed); a NULL source stays NULL. `search_catalog` and `GET /api/memory/catalog/search` return it per row; `memory_catalog_search` adds an `attribution` (`from a third party`, `partly from a third party`, or `source unverified`; none for owner/system content), and Fleet Knowledge lines show the same label.
 

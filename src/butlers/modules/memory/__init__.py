@@ -1293,12 +1293,7 @@ class MemoryModule(Module):
                 memory_schema=module._config.memory_schema,
             )
 
-        @_tool("core")
-        async def memory_get(
-            memory_type: str,
-            memory_id: str,
-        ) -> dict[str, Any] | None:
-            """Retrieve a specific memory by type and ID."""
+        async def _memory_get(memory_type: str, memory_id: str) -> dict[str, Any] | None:
             read_policy = await module._catalog_read_policy()
             return await _reading.memory_get(
                 module._get_pool(),
@@ -1307,6 +1302,28 @@ class MemoryModule(Module):
                 read_policy=read_policy,
                 memory_schema=module._config.memory_schema,
             )
+
+        @_tool("core")
+        async def memory_get(
+            memory_type: str,
+            memory_id: str,
+        ) -> dict[str, Any] | None:
+            """Retrieve a specific memory by type and ID."""
+            return await _memory_get(memory_type, memory_id)
+
+        @_tool("core")
+        async def memory_get_service(
+            memory_type: str,
+            memory_id: str,
+        ) -> dict[str, Any] | None:
+            """Service-only twin of ``memory_get`` for the ``memory.catalog_fetch`` relay.
+
+            Not relay-presentable and excluded from the goal catalog
+            (presentable=False, RFC 0038 D7); classic sessions still list it
+            until the goal-runtime cutover. It reads exactly as ``memory_get``,
+            under this butler's own held sensitivity ceiling.
+            """
+            return await _memory_get(memory_type, memory_id)
 
         # --- Feedback tools ---
 

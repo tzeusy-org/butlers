@@ -64,7 +64,7 @@ ROUTE_CALLERS: tuple[RouteCaller, ...] = (
     ),
     RouteCaller(
         "src/butlers/core/service_plane/wiring.py",
-        "build_switchboard_relay_route.dispatch_for.dispatch",
+        "relay_dispatch.dispatch",
         "named_relay",
         "The relays' own dispatch: Switchboard's in-process route(), after the relay's checks.",
     ),
@@ -148,7 +148,9 @@ ROUTE_CALLERS: tuple[RouteCaller, ...] = (
         "src/butlers/core_tools/_memory_catalog.py",
         "register_memory_catalog_tools.memory_catalog_fetch",
         "named_relay",
-        "memory.catalog_fetch: module runtime wiring for a cross-butler memory read.",
+        "memory.catalog_fetch relay (served): only the catalog pointer travels; Switchboard "
+        "reads the owner from public.memory_catalog and reaches its service-only "
+        "memory_get_service twin. The route call is the switch-off and Switchboard path.",
     ),
     RouteCaller(
         "src/butlers/core_tools/_switchboard.py",

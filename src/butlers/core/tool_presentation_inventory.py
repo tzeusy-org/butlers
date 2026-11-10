@@ -3794,6 +3794,27 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         categories=ALL_CATEGORIES,
     ),
+    # Service-only twin of memory_get: the memory.catalog_fetch relay target.
+    # Its output reaches a model only through memory_catalog_fetch, which is
+    # declared untrusted, so it is not one of the audited stamped reads.
+    *_declare(
+        "memory",
+        "core",
+        "memory_get_service",
+        effect_class="read",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=("memory_type", "memory_id"),
+        selection_bound={"memory_type": False, "memory_id": False},
+        safety_args=(),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=("episodes", "facts", "rules", "runtime_config", "{DYNAMIC}"),
+        write_stores=("episodes", "facts", "rules", "{DYNAMIC}"),
+        recipient_params=RecipientParameters(),
+        presentable=False,
+        categories=ALL_CATEGORIES,
+    ),
     *_declare(
         "memory",
         "core",

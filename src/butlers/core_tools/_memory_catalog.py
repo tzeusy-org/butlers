@@ -10,6 +10,7 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from butlers.core.chronicler_visibility import catalog_projection_visible
+from butlers.core.service_plane.messenger_delivery import service_plane_auth_enabled
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._switchboard_route_dispatch import dispatch_via_switchboard_route
 
@@ -52,6 +53,48 @@ async def _catalog_pointer(
     )
 
 
+def catalog_pointer_reader(pool: Any):
+    """Switchboard's read of one live, visible catalog row for the relay."""
+
+    async def read(source_schema: str, source_table: str, source_id: uuid.UUID) -> Any:
+        return await _catalog_pointer(
+            pool, source_schema=source_schema, source_table=source_table, source_id=source_id
+        )
+
+    return read
+
+
+async def _fetch_via_relay(
+    client: Any, butler_name: str, args: dict[str, str]
+) -> tuple[dict[str, Any] | None, str | None, bool]:
+    """The ``memory.catalog_fetch`` named relay (RFC 0038 D7, bu-2c1g7v).
+
+    Only the pointer travels. Switchboard reads the owner and memory type from
+    its own catalog row and reaches the owner's service-only ``memory_get``
+    twin. A pointer Switchboard no longer finds reads as ``not_found``.
+    """
+    from butlers.core.service_plane import client as relay_client
+    from butlers.core.service_plane.registry import MEMORY_CATALOG_FETCH
+    from butlers.core.service_plane.relays import RelayRefused
+
+    switchboard_url = relay_client.configured_switchboard_url(client)
+    if switchboard_url is None:
+        return None, "relay_unavailable: no configured Switchboard", True
+    try:
+        raw = await relay_client.call_relay(
+            MEMORY_CATALOG_FETCH, args, daemon=butler_name, switchboard_url=switchboard_url
+        )
+    except RelayRefused as refused:
+        if refused.code == "catalog_pointer_not_found" and refused.status == 403:
+            return None, None, False
+        if relay_client.refusal_is_permanent(refused):
+            return None, f"relay_refused: {refused.code}", False
+        return None, f"relay_unavailable: {refused.code}", True
+    except (relay_client.RelayUnavailable, OSError) as exc:
+        return None, f"relay_unavailable: {type(exc).__name__}", True
+    return _classify_fetch_route(raw)
+
+
 def register_memory_catalog_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
     """Register the read-only catalog provenance fetch tool."""
     pool = ctx.pool
@@ -70,7 +113,10 @@ def register_memory_catalog_tools(ctx: ToolContext, mcp: Any, _core_tool: Callab
         The server loads ``catalog_read_sensitivity`` from this butler's
         ``runtime_config`` row. Above-ceiling pointers return a fixed withheld
         marker. Authorized cross-butler reads are routed through Switchboard to
-        the owning butler's existing ``memory_get`` tool.
+        the owning butler's existing ``memory_get`` tool; with
+        ``BUTLERS_SERVICE_PLANE_AUTH`` on, through the ``memory.catalog_fetch``
+        relay to its service-only twin instead (Switchboard itself still
+        routes in-process).
         """
         if pool is None:
             return {"status": "unavailable", "reason": "database_unavailable"}
@@ -97,16 +143,28 @@ def register_memory_catalog_tools(ctx: ToolContext, mcp: Any, _core_tool: Callab
         if not isinstance(source_butler, str) or not source_butler.strip():
             return {"status": "not_found"}
 
-        result, error, retryable = await dispatch_via_switchboard_route(
-            getattr(daemon, "switchboard_client", None),
-            pool,
-            ctx.butler_name,
-            target_butler=source_butler,
-            tool_name="memory_get",
-            args={"memory_type": pointer["memory_type"], "memory_id": str(parsed_source_id)},
-            classify=_classify_fetch_route,
-            route_purpose="memory catalog fetch",
-        )
+        client = getattr(daemon, "switchboard_client", None)
+        if service_plane_auth_enabled() and not ctx.is_switchboard:
+            result, error, retryable = await _fetch_via_relay(
+                client,
+                ctx.butler_name,
+                {
+                    "source_schema": source_schema,
+                    "source_table": source_table,
+                    "source_id": str(parsed_source_id),
+                },
+            )
+        else:
+            result, error, retryable = await dispatch_via_switchboard_route(
+                client,
+                pool,
+                ctx.butler_name,
+                target_butler=source_butler,
+                tool_name="memory_get",
+                args={"memory_type": pointer["memory_type"], "memory_id": str(parsed_source_id)},
+                classify=_classify_fetch_route,
+                route_purpose="memory catalog fetch",
+            )
         if error is not None:
             response: dict[str, Any] = {
                 "status": "unavailable",
