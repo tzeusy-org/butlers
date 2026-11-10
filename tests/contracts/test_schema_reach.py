@@ -1046,6 +1046,7 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
             "goals",
             "invocations",
             "wait_envelopes",
+            "wait_generations",
             "wake_intents",
         )
     },
