@@ -200,7 +200,8 @@ class BrokerLedger:
     async def pending_inbox(self, goal_id: UUID, limit: int) -> list[Any]:
         """The goal's unconsumed inbox rows, oldest first (the goal is locked)."""
         return await self.connection.fetch(
-            "SELECT id, source_ref, reply_effect_id, created_at FROM switchboard.goal_inbox "
+            "SELECT id, source_ref, input_kind, reply_effect_id, envelope_id, event_id, created_at "
+            "FROM switchboard.goal_inbox "
             "WHERE goal_id = $1 AND consumed_at IS NULL ORDER BY created_at, id LIMIT $2",
             goal_id,
             limit,

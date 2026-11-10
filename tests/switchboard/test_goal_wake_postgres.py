@@ -9,6 +9,7 @@ import asyncio
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import asyncpg
 import pytest
 
 from butlers.conditions import ConditionEvaluator, FireIntent
@@ -19,6 +20,7 @@ from tests.conditions.test_conditions import DECISION, decision_ev, register
 from tests.conditions.test_conditions import NOW as CONDITION_NOW
 from tests.switchboard.goal_ledger_fixtures import admit
 from tests.switchboard.test_goal_waiting_postgres import (
+    decision,
     envelope,
     goal_with_lead,
     plan,
@@ -252,7 +254,7 @@ async def test_a_refused_fire_leaves_nothing_for_the_sweeper_to_retry(ledger):
         assert await WakeAdmission(conn).unadmitted(0) == []
 
 
-def test_every_refusal_reason_has_its_own_precedence():
+async def test_every_refusal_reason_has_its_own_precedence():
     refusal = WakeAdmission._refusal
 
     def env(**kw):
@@ -275,3 +277,33 @@ def test_every_refusal_reason_has_its_own_precedence():
     assert refusal({"status": "waiting"}, env(consumed_wakes=1), 0) == "cap_reached"
     assert refusal({"status": "waiting"}, env(), 0) is None
     assert admit is not None  # fixture import keeps the shared helpers' registration
+
+
+async def test_an_inbox_row_cannot_bind_a_refused_fire(ledger):
+    owner, runtime = ledger
+    goal_id, _, env = await waiting_goal(owner, runtime)
+    await owner.execute("UPDATE switchboard.goals SET status = 'stopped' WHERE id = $1", goal_id)
+    fire = fire_for()
+    assert (await admit_fire(runtime, fire)).state == "not_admitted"
+    decision_id, key = await decision(
+        owner,
+        goal_id,
+        reason="condition_joined",
+        kind="condition_fire",
+        source_kind="occurrence",
+        source_ref=f"condition:{env}",
+        occurrence=f"gen:0:event:{fire.event_id}",
+    )
+
+    with pytest.raises(asyncpg.PostgresError, match="admitted wake intent"):
+        await owner.execute(
+            "INSERT INTO switchboard.goal_inbox (id,goal_id,decision_id,source_key,source_ref,"
+            "input_kind,event_id,envelope_id,envelope_generation) "
+            "VALUES ($1,$2,$3,$4,'ref','condition_fire',$5,$6,0)",
+            uuid4(),
+            goal_id,
+            decision_id,
+            key,
+            fire.event_id,
+            env,
+        )

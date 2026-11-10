@@ -27,6 +27,8 @@ from opentelemetry import trace
 
 from butlers.capability_broker.contracts import BrokerRefused, Reason
 from butlers.capability_broker.service import Broker
+from butlers.conditions import FireIntent
+from butlers.core.goal_wake import WakeAdmission, WakeResult
 from butlers.core.model_call import AttemptOutcome, AttemptSink, CallSpec, Candidate, call_model
 
 from .contracts import (
@@ -42,7 +44,7 @@ from .contracts import (
     SessionHost,
 )
 from .delegation import DelegationRequest, parse_delegation
-from .ledger import Leaderless, RunnerLedger, Started
+from .ledger import Leaderless, RunnerLedger, Started, WakeClaim
 from .models import ModelLadders, next_tier
 from .packet import PacketComposer
 
@@ -69,6 +71,10 @@ class RunnerConfig:
     # How long a goal may wait for room on the session host, from its first lead
     # the host turned away; the sweep offers the launch again until then.
     busy_defer_seconds: float = 900
+    # How long a fire intent may sit unadmitted before the sweep admits it (the step that
+    # follows the evaluator's commit normally runs at once), and how long a wake claim holds.
+    wake_grace_seconds: float = 30
+    wake_claim_seconds: float = 120
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +92,8 @@ class _Plan:
     """A sweep-resumed relaunch: it is the failed lead's one relaunch (D14)."""
     relaunch_spent: bool = False
     """Replaces a relaunch the host had no room for: it is that relaunch, so none follows."""
+    wake: WakeClaim | None = None
+    """The claimed wake intent this lead is the successor of (RFC 0038 S2.2)."""
 
 
 class _HostedAttempt:
@@ -204,6 +212,7 @@ class GoalRunner:
                 max_tokens=self.config.lead_max_tokens,
                 lease_seconds=lease,
                 relaunch_of=attempts[-1] if attempts else plan.relaunch_of,
+                wake=None if attempts else plan.wake,
             )
 
     async def _wanted(self, plan: _Plan) -> bool:
@@ -281,6 +290,9 @@ class GoalRunner:
             if unopened:
                 # The open was refused under the goal lock: nothing of this
                 # plan is live, and the goal belongs to whoever holds it.
+                if plan.wake is not None:
+                    async with self._txn() as ledger:
+                        await ledger.fail_wake(plan.goal_id, plan.wake.intent_id)
                 logger.info(
                     "goal runner launch not opened goal=%s role=%s reason=%s",
                     plan.goal_id,
@@ -552,8 +564,38 @@ class GoalRunner:
             # cancellation itself is retried by the next sweep.
             logger.warning("goal runner parked-effect cancel unavailable goal=%s", goal_id)
 
+    async def admit_wake(self, fire: FireIntent) -> WakeResult:
+        """Complete a condition fire: its successor epoch, or a terminal refusal receipt.
+
+        The evaluator's fire intent is already committed; this is the second committed step.
+        Called by whoever consumes fires, and by the sweep for any it missed.
+        """
+        async with self._txn() as ledger:
+            return await WakeAdmission(ledger.connection).admit(fire)
+
+    async def _launch_wakes(self) -> None:
+        async with self._txn() as ledger:
+            await ledger.lapse_wakes()
+            due = await ledger.wakes_due()
+        for goal_id, intent_id in due:
+            async with self._txn() as ledger:
+                claim = await ledger.claim_wake(
+                    goal_id, intent_id, "goal-runner", self.config.wake_claim_seconds
+                )
+            if claim is not None:
+                self._spawn(
+                    _Plan(goal_id, "lead", self.ladders.first("lead"), 0, summary=True, wake=claim)
+                )
+
     async def supervise_once(self) -> None:
         """One sweep: unlaunched admissions, lapsed leases, deadlines, ended and settling goals."""
+        async with self._txn() as ledger:
+            fires = await WakeAdmission(ledger.connection).unadmitted(
+                self.config.wake_grace_seconds
+            )
+        for fire in fires:
+            await self.admit_wake(fire)
+        await self._launch_wakes()
         async with self._txn() as ledger:
             unlaunched = await ledger.unlaunched(self.config.resume_grace_seconds)
         for goal_id in unlaunched:

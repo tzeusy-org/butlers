@@ -89,6 +89,11 @@ def _holds(reader: Label, output: Label) -> bool:
     return output.exposed and not (reader.instr >= output.instr and reader.data >= output.data)
 
 
+def _opt_str(value: Any) -> str | None:
+    """A reference as text, or None when the row kind carries none (never the string "None")."""
+    return None if value is None else str(value)
+
+
 class Broker:
     def __init__(
         self,
@@ -643,14 +648,18 @@ class Broker:
             if exhausted is None:
                 for row in await ledger.pending_inbox(goal_id, _INBOX_BATCH):
                     if await ledger.consume_inbox(goal_id, principal.invocation_id, row["id"]):
-                        delivered.append(
-                            {
-                                "inbox_id": str(row["id"]),
-                                "source_ref": row["source_ref"],
-                                "reply_effect_id": str(row["reply_effect_id"]),
-                                "received_at": row["created_at"].isoformat(),
-                            }
-                        )
+                        item = {
+                            "inbox_id": str(row["id"]),
+                            "source_ref": row["source_ref"],
+                            "kind": row["input_kind"],
+                            "reply_effect_id": _opt_str(row["reply_effect_id"]),
+                            "received_at": row["created_at"].isoformat(),
+                        }
+                        if row["input_kind"] == "condition_fire":
+                            # Identifiers only: the lead reads what woke it, never a body.
+                            item["envelope_id"] = str(row["envelope_id"])
+                            item["event_id"] = str(row["event_id"])
+                        delivered.append(item)
         if exhausted is not None:
             raise exhausted
         return {"replies": delivered}

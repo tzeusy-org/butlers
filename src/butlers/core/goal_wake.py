@@ -188,6 +188,8 @@ class WakeAdmission:
                 generation,
                 fire.event_id,
             )
+            if existing is None:  # a conflict names a stored row, so this cannot happen
+                raise RuntimeError("wake intent vanished after conflict")
             return WakeResult(
                 "not_admitted" if existing["state"] == "not_admitted" else "admitted",
                 existing["not_admitted_reason"],
