@@ -34,6 +34,7 @@ The downgrade refuses while any new record exists.
 """
 
 from alembic import op
+from butlers.db_authority.roles import runtime_roles
 
 revision = "sw_063"
 down_revision = "sw_062"
@@ -792,13 +793,12 @@ def _runtime_access() -> str:
             f"CREATE TRIGGER goal_waiting_durable BEFORE DELETE OR TRUNCATE ON {qualified} "
             "FOR EACH STATEMENT EXECUTE FUNCTION switchboard.goal_waiting_durable()"
         )
+    # Every runtime login role, derived: the butler roles (switchboard's own included) and
+    # connector_writer. None may be a superuser, bypass RLS or own the ledger.
+    roles = ",".join(f"'{role}'" for role in sorted({*runtime_roles(), _RUNTIME}))
     role_guard = f"""
         DO $$ BEGIN
-            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN (
-                'butler_chronicler_rw','butler_concierge_rw','butler_education_rw',
-                'butler_finance_rw','butler_general_rw','butler_health_rw','butler_home_rw',
-                'butler_lifestyle_rw','butler_messenger_rw','butler_qa_rw',
-                'butler_relationship_rw','{_RUNTIME}','butler_calendar_rw','connector_writer')
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ({roles})
                 AND (rolsuper OR rolbypassrls OR pg_has_role(oid,
                     (SELECT relowner FROM pg_class WHERE
                      oid='switchboard.wait_envelopes'::regclass),'MEMBER'))) THEN
