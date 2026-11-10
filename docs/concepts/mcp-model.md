@@ -341,6 +341,18 @@ never copy message content, bearer material or a sender address. A missing,
 expired, revoked, edited or unreadable cause remains routine. This is the
 pre-switch boundary; RFC0038 first-switch delivery remains separate work.
 
+## Prompts that await a reply
+
+`notify(awaits_reply_seconds=N)`, 30-86400, marks a Telegram `send` or `reply` as a prompt the
+owner may answer by replying to that exact message within the window. Any other channel or intent
+refuses with `awaits_reply_validation`. The argument is part of the call's argument digest, so
+approvals and the broker's assertion bind it. A delivered prompt returns an additive `delivery`
+block (`transport`, `endpoint`, `conversation`, `locator`, `prompt_expires_at`) built from
+Messenger's report of the message it sent; a call without the argument, or a delivery Messenger
+cannot report, returns what it always did. The block is a claim: the capability broker derives
+the reply ref from it and from the owner entity and channel it recorded itself, and never lets
+the expiry exceed the window the call named (see the goal runner's owner-answer wait).
+
 ## Informational confirm admission
 
 `notify(intent="confirm")` accepts 2-4 unique `{value,label}` options, an expiry

@@ -16,9 +16,11 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from butlers.config import ButlerType
+from butlers.conversation_identity import telegram_conversation_id
 from butlers.core.attention_ledger import get_suppressing_context, record_attention_event
 from butlers.core.entity_posture import EGRESS_BLOCKED_POSTURES, fetch_entity_posture
 from butlers.core.permissions import NOTIFY_PERMISSION, check_permission
+from butlers.core.reply_scope import MAX_AWAITS_REPLY_SECONDS, MIN_AWAITS_REPLY_SECONDS
 from butlers.core.scheduler.crud import schedule_create as _schedule_create
 from butlers.core.telemetry import tool_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
@@ -34,6 +36,41 @@ _NO_TELEGRAM_CHAT_CONFIGURED_ERROR = (
     "No bot <-> user telegram chat has been configured - please add a "
     "telegram_chat_id entity_info entry on the owner entity via the dashboard"
 )
+
+
+def _reply_delivery(
+    result: Any, channel: str | None, awaits_reply_seconds: int | None
+) -> dict[str, Any]:
+    """The additive ``delivery`` block of a delivered prompt, or nothing.
+
+    Present only when the call asked for an answer (``awaits_reply_seconds``) and Messenger
+    reported where the message landed. It is the domain's claim: the capability broker derives
+    the reply ref from it and from the owner entity and channel it recorded itself, and clamps
+    the expiry to the window the call named. Without the ask, or without a report, the result
+    is exactly what it was before.
+    """
+    if awaits_reply_seconds is None or (channel or "telegram") != "telegram":
+        return {}
+    receipt = result.get("result") if isinstance(result, dict) else None
+    sent = receipt.get("delivery") if isinstance(receipt, dict) else None
+    if not isinstance(sent, dict):
+        return {}
+    locator, endpoint = sent.get("locator"), sent.get("endpoint")
+    chat = locator.partition(":")[0] if isinstance(locator, str) else ""
+    if not chat or not isinstance(endpoint, str) or not endpoint:
+        return {}
+    return {
+        "delivery": {
+            "transport": "telegram",
+            "endpoint": endpoint,
+            "conversation": telegram_conversation_id(chat),
+            "locator": locator,
+            "prompt_expires_at": (
+                datetime.now(UTC) + timedelta(seconds=awaits_reply_seconds)
+            ).isoformat(),
+        }
+    }
+
 
 _REQUEST_CONTEXT_KEYS_HINT = (
     "Pass request_context as a JSON object (not a string) with keys "
@@ -398,6 +435,15 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 str | None,
                 Field(description="Optional confirm timeout value; must match an offered value."),
             ] = None,
+            awaits_reply_seconds: Annotated[
+                int | None,
+                Field(
+                    description=(
+                        "Marks a Telegram send/reply as a prompt the owner may answer by "
+                        "replying to it, for 30-86400 seconds. Omit for an ordinary message."
+                    )
+                ),
+            ] = None,
             emoji: Annotated[
                 str | None,
                 Field(description="Required when intent=react."),
@@ -517,6 +563,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             - `options` (list): required for `confirm`, 2-4 unique `{value,label}` choices
             - `timeout_seconds` (integer): confirm expiry, 30-86400 seconds (default 600)
             - `on_timeout_value` (string): optional offered value applied on expiry
+            - `awaits_reply_seconds` (integer): 30-86400, telegram `send`/`reply` only. Marks the
+              message as a prompt: the owner's reply to that exact message, within the window,
+              answers a goal that waits on it (`goal__wait_owner`). The window is recorded with
+              the delivery and the broker never extends it. Omit for an ordinary message.
             - `emoji` (string): required when `intent="react"`
             - `_why` (string): required for a non-owner recipient that enters approval gating;
               owner-directed notifications may omit it
@@ -660,6 +710,28 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     "status": "error",
                     "error": "Unsupported notify intent. Supported intents: send, reply, react, insight, confirm",  # noqa: E501
                 }
+
+            if awaits_reply_seconds is not None:
+                if (
+                    type(awaits_reply_seconds) is not int
+                    or not MIN_AWAITS_REPLY_SECONDS
+                    <= awaits_reply_seconds
+                    <= MAX_AWAITS_REPLY_SECONDS
+                ):
+                    return {
+                        "status": "error",
+                        "code": "awaits_reply_validation",
+                        "error": (
+                            f"awaits_reply_seconds must be between {MIN_AWAITS_REPLY_SECONDS} "
+                            f"and {MAX_AWAITS_REPLY_SECONDS}"
+                        ),
+                    }
+                if intent not in {"send", "reply"} or (channel or "telegram") != "telegram":
+                    return {
+                        "status": "error",
+                        "code": "awaits_reply_validation",
+                        "error": "awaits_reply_seconds applies to telegram send or reply only",
+                    }
 
             confirm_options = None
             if intent == "confirm":
@@ -1681,7 +1753,11 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         else None,
                         session_id=_ledger_session_id,
                     )
-                    return {"status": "ok", "result": result}
+                    return {
+                        "status": "ok",
+                        "result": result,
+                        **_reply_delivery(result, channel, awaits_reply_seconds),
+                    }
                 except Exception as exc:
                     logger.warning(
                         "notify() direct deliver failed for switchboard: %s",
@@ -1733,7 +1809,11 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     ),
                     session_id=_ledger_session_id,
                 )
-                return {"status": "ok", "result": data}
+                return {
+                    "status": "ok",
+                    "result": data,
+                    **_reply_delivery(data, channel, awaits_reply_seconds),
+                }
             except TimeoutError:
                 logger.warning(
                     "notify() timed out after %ds for butler %s",

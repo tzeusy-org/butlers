@@ -56,7 +56,7 @@ async def test_an_owner_prompt_records_its_binding(broker_db_url):
         result, effect = await sent(w, NOTIFY, ASK, receipt)
 
         assert result.status == "committed" and effect["status"] == "committed"
-        assert (effect["recipient_entity"], effect["recipient_channel"]) == (OWNER, "telegram")
+        assert (effect["recipient_entity"], effect["recipient_channel"]) == (OWNER, "telegram_bot")
         assert effect["delivery_ref"] == receipt.delivery.ref
         assert effect["prompt_accepts_input"] is True
         assert effect["prompt_expires_at"] == receipt.delivery.prompt_expires_at
@@ -82,7 +82,7 @@ async def test_the_recipient_is_recorded_before_dispatch(broker_db_url):
         assert seen["row"]["status"] == "dispatched"
         assert (seen["row"]["recipient_entity"], seen["row"]["recipient_channel"]) == (
             OWNER,
-            "telegram",
+            "telegram_bot",
         )
         assert seen["row"]["delivery_ref"] is None
 

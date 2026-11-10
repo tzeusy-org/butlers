@@ -17,15 +17,19 @@ from uuid import UUID, uuid4
 import pytest
 
 from butlers.capability_broker.contracts import Reason
-from butlers.capability_broker.domains import Delivery, DomainReceipt
+from butlers.capability_broker.domains import DeliveryReport, DomainReceipt
 from butlers.conditions import FireIntent
+from butlers.core.goal_admission import Evidence, SourceRef
 from butlers.core.goal_labels import Label
 from butlers.core.goal_waiting import EnvelopeSpec, WaitLedger
 from butlers.core.goal_wake import WakeAdmission
+from butlers.core.reply_scope import scoped_reply_ref
 from butlers.goal_runner.contracts import GoalEnded
 from butlers.goal_runner.ledger import RunnerLedger
 from tests.capability_broker.test_broker_ledger import NOTIFY, OWNER, SEND, TO_OWNER, _joined_reply
 from tests.goal_runner.test_goal_runner import SEARCH, _grant, harness, refused
+from tests.switchboard.goal_admission_fixtures import limits
+from tests.switchboard.goal_ledger_fixtures import admit, configure, pools
 
 pytestmark = pytest.mark.integration  # the harness module carries the shared marks
 pytest_plugins = ("tests.capability_broker.test_broker_ledger",)
@@ -334,16 +338,29 @@ async def test_a_wait_that_expires_without_firing_ends_the_goal(broker_db_url):
         assert len(h.host.launches) == 1
 
 
-async def owner_prompt(h, goal, lead):
-    """A real owner delivery through the broker whose receipt reports an interactive prompt."""
-    expires = datetime.now(UTC) + timedelta(minutes=30)
+PROMPT_SCOPE = dict(
+    transport="telegram", endpoint="telegram:bot:@butler", conversation="telegram:100"
+)
+
+
+async def owner_prompt(h, goal, lead, locator="100:77"):
+    """A real owner prompt through the broker: notify with a window, Messenger's report back."""
     h.w.forwarder.receipt = DomainReceipt(
         "committed",
         "receipt-prompt",
         {"sent": True},
-        delivery=Delivery(ref=f"tg:{uuid4()}", prompt_expires_at=expires),
+        report=DeliveryReport(
+            **PROMPT_SCOPE,
+            locator=locator,
+            prompt_expires_at=datetime.now(UTC) + timedelta(minutes=30),
+        ),
     )
-    args = {"entity_id": str(OWNER), "message": "Shall I book it?", "channel": "telegram"}
+    args = {
+        "entity_id": str(OWNER),
+        "message": "Shall I book it?",
+        "channel": "telegram",
+        "awaits_reply_seconds": 1800,
+    }
     sent = await h.w.broker.call(goal, lead.token, NOTIFY.identity, args)
     assert sent.status == "committed"
     return sent.effect_id
@@ -383,6 +400,64 @@ async def test_waiting_on_the_owner_needs_a_live_prompt_to_the_owner(broker_db_u
             )
             assert reason is Reason.RESOURCE
         assert await h.goal_status(goal) == "running"
+
+
+async def test_a_telegram_reply_to_a_real_prompt_wakes_the_goal_without_a_direct_insert(
+    broker_db_url,
+):
+    """notify(awaits_reply_seconds) -> goal__wait_owner -> the owner's reply, joined by admission.
+
+    Nothing is inserted by hand: the prompt's reply ref is the broker's, derived from the
+    Messenger report and the owner recipient the broker recorded; the reply's ref is derived by
+    the ingress side from the inbound message's own scope; admission matches the two.
+    """
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEND), _grant(NOTIFY))
+        lead = await h.lead(goal)
+        prompt = await owner_prompt(h, goal, lead, locator="100:77")
+        assert await h.call(goal, lead.token, "goal__wait_owner", {"effect_id": str(prompt)}) == {
+            "status": "waiting"
+        }
+
+        inbound = scoped_reply_ref(
+            **PROMPT_SCOPE,
+            recipient_entity=OWNER,
+            recipient_channel="telegram_bot",
+            locator="100:77",
+        )
+        reply = Evidence(
+            "message",
+            "owner",
+            owner=True,
+            reply_delivery=inbound,
+            owner_entity=OWNER,
+            owner_channel="telegram_bot",
+        )
+        async with pools(broker_db_url) as (owner, runtime):
+            await configure(owner, limits())
+            wrong = Evidence(
+                "message",
+                "owner",
+                owner=True,
+                reply_delivery=scoped_reply_ref(
+                    **PROMPT_SCOPE,
+                    recipient_entity=OWNER,
+                    recipient_channel="telegram_bot",
+                    locator="100:78",  # a reply to some other message
+                ),
+                owner_entity=OWNER,
+                owner_channel="telegram_bot",
+            )
+            elsewhere = await admit(runtime, wrong, SourceRef("message", "tg-other"), uuid4())
+            assert elsewhere.reason != "reply_joined" and elsewhere.goal_id != goal
+
+            joined = await admit(runtime, reply, SourceRef("message", "tg-reply-1"), uuid4())
+
+        assert (joined.result, joined.reason, joined.goal_id) == ("joined", "reply_joined", goal)
+        await h.runner.supervise_once()
+        successor = await h.launched(2)
+        (item,) = (await h.call(goal, successor.token, "goal__inbox", {}))["replies"]
+        assert item["kind"] == "owner_reply" and UUID(item["reply_effect_id"]) == prompt
 
 
 async def test_the_joined_reply_launches_a_successor_that_reads_it(broker_db_url):

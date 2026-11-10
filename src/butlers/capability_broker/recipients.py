@@ -80,9 +80,19 @@ def _channel(capability: Capability, args: dict[str, Any]) -> str | None:
     return None
 
 
+# Notify names the delivery channel; admission names the channel an inbound message arrived on.
+# An owner's Telegram reply arrives as ``telegram_bot``, so that is what the recorded recipient
+# channel must be for the reply to find its prompt.
+_INGRESS_CHANNEL = {"telegram": "telegram_bot"}
+
+
 def communication_channel(capability: Capability, args: dict[str, Any]) -> str | None:
-    """The channel a communicate call names, recorded with its owner recipient at reserve."""
-    return _channel(capability, args)
+    """The channel a communicate call names, recorded with its owner recipient at reserve.
+
+    Recorded in the ingress channel's vocabulary, which is what an inbound reply carries.
+    """
+    channel = _channel(capability, args)
+    return _INGRESS_CHANNEL.get(channel, channel) if channel is not None else None
 
 
 async def _is_owner(connection, value: Any, owner: UUID | None, channel: str | None) -> bool:

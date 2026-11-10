@@ -848,6 +848,29 @@ def _format_validation_error(prefix: str, exc: ValidationError) -> str:
     return f"{prefix}: {message}"
 
 
+async def _telegram_reply_target(telegram_module: Any, adapter_result: Any) -> dict[str, str]:
+    """Where a sent Telegram message landed: its reply locator and the bot that sent it.
+
+    ``locator`` is ``<chat_id>:<message_id>`` of the last part sent, the form an inbound reply
+    carries. Best effort and additive: any gap returns nothing and the delivery receipt is what
+    it was before. It never raises, because the message is already delivered.
+    """
+    try:
+        sent = adapter_result.get("result") if isinstance(adapter_result, dict) else None
+        if telegram_module is None or not isinstance(sent, dict):
+            return {}
+        chat = (sent.get("chat") or {}).get("id")
+        message_id = sent.get("message_id")
+        if chat in (None, "") or message_id in (None, "") or isinstance(message_id, bool):
+            return {}
+        endpoint = await telegram_module.bot_endpoint_identity()
+        if not isinstance(endpoint, str) or not endpoint:
+            return {}
+        return {"locator": f"{chat}:{message_id}", "endpoint": endpoint}
+    except Exception:
+        return {}
+
+
 def _extract_delivery_id(
     *,
     channel: str,
@@ -2414,6 +2437,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             "delivery": {
                 "channel": channel,
                 "delivery_id": delivery_id,
+                **(
+                    await _telegram_reply_target(modules_by_name.get("telegram"), adapter_result)
+                    if channel == "telegram" and intent in {"send", "reply"}
+                    else {}
+                ),
             },
         }
         return _route_success_response(
