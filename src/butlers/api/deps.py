@@ -14,6 +14,7 @@ import asyncio
 import datetime
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
@@ -134,11 +135,25 @@ class DashboardButlerClient(MCPClient):
     data --- runs the same on both paths. ``tests/contracts/
     test_dashboard_tool_call_inventory.py`` holds every dashboard call site to
     this client and classifies each one.
+
+    The carrier is handed in, never imported here: this module sits inside
+    the relationship Finder's no-LLM import walk, and the signed-call client
+    reaches the runtime graph. The app wires
+    ``butlers.api.control_plane_carrier.carry_via_control_plane`` at startup;
+    without a carrier a call that must be carried fails closed as unreachable,
+    and never falls back to the direct path.
     """
 
-    def __init__(self, *args: Any, butler_name: str, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        butler_name: str,
+        carrier: ControlPlaneCarrier | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.butler_name = butler_name
+        self._carrier = carrier
 
     async def call_tool_mcp(
         self,
@@ -153,24 +168,26 @@ class DashboardButlerClient(MCPClient):
             return await super().call_tool_mcp(name, arguments, progress_handler, timeout, meta)
         if meta:
             raise ToolError("the control plane carries no request meta")
-        from butlers.core.service_plane.dashboard_client import (
-            ServiceCallUnavailable,
-            call_via_control_plane,
-        )
-
-        try:
-            return await call_via_control_plane(
-                self.butler_name, name, arguments, request_timeout=timeout
+        if self._carrier is None:
+            raise ButlerUnreachableError(
+                self.butler_name, cause=RuntimeError("no control-plane carrier is wired")
             )
-        except ServiceCallUnavailable as exc:
-            raise ButlerUnreachableError(self.butler_name, cause=exc) from exc
+        return await self._carrier(self.butler_name, name, arguments, timeout)
+
+
+#: Carries one dashboard tool call through Switchboard: ``(butler, tool,
+#: arguments, timeout)``. Raises ``ButlerUnreachableError`` when it cannot.
+ControlPlaneCarrier = Callable[
+    [str, str, dict[str, Any], datetime.timedelta | float | int | None],
+    Awaitable[mcp.types.CallToolResult],
+]
 
 
 def control_plane_carries(tool: str, meta: dict[str, Any] | None = None) -> bool:
     """Whether a dashboard call to *tool* goes through the control plane now."""
-    from butlers.core.owner_creation import META_KEY
+    from butlers.core.owner_creation_claim import META_KEY
     from butlers.core.service_plane.dashboard_call import routes_through_control_plane
-    from butlers.core.service_plane.messenger_delivery import service_plane_auth_enabled
+    from butlers.core.service_plane.switch import service_plane_auth_enabled
 
     if not service_plane_auth_enabled() or not routes_through_control_plane(tool):
         return False
@@ -219,9 +236,10 @@ class MCPClientManager:
         await mgr.close()
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, carrier: ControlPlaneCarrier | None = None) -> None:
         self._registry: dict[str, ButlerConnectionInfo] = {}
         self._clients: dict[str, MCPClient] = {}
+        self._carrier = carrier
 
     def register(self, butler_name: str, info: ButlerConnectionInfo) -> None:
         """Register a butler's connection info.
@@ -287,7 +305,10 @@ class MCPClientManager:
 
         try:
             client = DashboardButlerClient(
-                info.sse_url, name=f"dashboard-{butler_name}", butler_name=butler_name
+                info.sse_url,
+                name=f"dashboard-{butler_name}",
+                butler_name=butler_name,
+                carrier=self._carrier,
             )
             await client.__aenter__()
             self._clients[butler_name] = client
@@ -478,18 +499,22 @@ def get_discovery_diagnostics() -> DiscoveryDiagnostics:
 
 def init_dependencies(
     roster_dir: Path | None = None,
+    *,
+    carrier: ControlPlaneCarrier | None = None,
 ) -> tuple[MCPClientManager, list[ButlerConnectionInfo]]:
     """Initialize the module-level singletons.
 
     Called once during app startup (in the lifespan handler). Discovers
     butlers from the roster and pre-registers them in the MCP client manager.
+    *carrier* carries model-reachable calls through Switchboard (RFC 0038 D7;
+    see :class:`DashboardButlerClient`).
 
     Returns the manager and config list for use in the lifespan handler.
     """
     global _mcp_manager, _butler_configs, _discovery_diagnostics  # noqa: PLW0603
 
     configs, _discovery_diagnostics = discover_butlers_with_diagnostics(roster_dir)
-    manager = MCPClientManager()
+    manager = MCPClientManager(carrier=carrier)
 
     for info in configs:
         manager.register(info.name, info)

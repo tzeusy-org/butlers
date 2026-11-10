@@ -19,6 +19,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from starlette.applications import Starlette
 
+from butlers.api.control_plane_carrier import carry_via_control_plane
 from butlers.api.deps import ButlerUnreachableError, DashboardButlerClient, control_plane_carries
 from butlers.core.owner_creation import META_KEY
 from butlers.core.runtime_probe_control.keys import (
@@ -140,7 +141,9 @@ class _Stack:
                 transport=httpx.ASGITransport(app=Starlette(routes=[route])),
             ),
         )
-        self.client = DashboardButlerClient(_target(self.direct), butler_name="health")
+        self.client = DashboardButlerClient(
+            _target(self.direct), butler_name="health", carrier=carry_via_control_plane
+        )
 
 
 async def test_a_presentable_tool_goes_through_switchboard_not_the_butler(monkeypatch) -> None:
@@ -209,6 +212,38 @@ async def test_no_signer_fails_closed_as_unreachable_and_sends_nothing(monkeypat
 
     assert isinstance(raised.value.cause, dclient.ServiceCallUnavailable)
     assert stack.direct == [] and stack.routed_to == []
+
+
+async def test_without_a_carrier_a_carried_call_fails_closed_and_sends_nothing(
+    monkeypatch,
+) -> None:
+    """A client nobody wired a carrier into never falls back to the direct path."""
+    stack = _Stack(monkeypatch)
+    client = DashboardButlerClient(_target(stack.direct), butler_name="health")
+    async with client:
+        with pytest.raises(ButlerUnreachableError, match="no control-plane carrier"):
+            await client.call_tool("state_set", {"key": "k", "value": 1})
+        # A service-only tool still needs none.
+        await client.call_tool(_SERVICE_ONLY, {})
+
+    assert stack.direct == [_SERVICE_ONLY] and stack.routed_to == []
+
+
+async def test_the_manager_hands_its_carrier_to_every_client(monkeypatch) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from butlers.api import deps
+
+    built = MagicMock()
+    built.__aenter__ = AsyncMock(return_value=built)
+    factory = MagicMock(return_value=built)
+    monkeypatch.setattr(deps, "DashboardButlerClient", factory)
+    manager = deps.MCPClientManager(carrier=carry_via_control_plane)
+    manager.register("health", deps.ButlerConnectionInfo("health", 41103))
+
+    assert await manager.get_client("health") is built
+    assert factory.call_args.kwargs["carrier"] is carry_via_control_plane
+    assert factory.call_args.kwargs["butler_name"] == "health"
 
 
 async def test_an_unreachable_target_is_unreachable_not_a_tool_error(monkeypatch) -> None:

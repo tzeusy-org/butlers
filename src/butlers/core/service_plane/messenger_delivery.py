@@ -17,6 +17,12 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from butlers.core.service_plane.relays import ServiceCaller
+from butlers.core.service_plane.switch import (  # re-exported: callers import both from here
+    SWITCH_ENV as SWITCH_ENV,
+)
+from butlers.core.service_plane.switch import (
+    service_plane_auth_enabled as service_plane_auth_enabled,
+)
 from butlers.core.service_plane.workload_identity import (
     DAEMON_HEADER,
     DELIVERY_AUDIENCE,
@@ -28,7 +34,6 @@ from butlers.core.service_plane.workload_identity import (
     WorkloadTokenVerifier,
 )
 
-SWITCH_ENV = "BUTLERS_SERVICE_PLANE_AUTH"
 ISSUER_ENV = "BUTLERS_SERVICE_PLANE_ISSUER"
 DEFAULT_ISSUER = "https://kubernetes.default.svc.cluster.local"
 _NAMESPACE_FILE = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
@@ -39,11 +44,6 @@ MESSENGER_DELIVERY_CALLERS = frozenset({ServiceCaller("butlers-control", "switch
 REFUSED = "messenger_delivery_caller_refused"
 #: The caller could not be verified right now (no verifier, key set unreadable).
 AUTH_UNAVAILABLE = "messenger_delivery_auth_unavailable"
-
-
-def service_plane_auth_enabled(environ: Mapping[str, str] = os.environ) -> bool:
-    """The default-off verification switch for every service-plane check."""
-    return environ.get(SWITCH_ENV) == "1"
 
 
 def build_verifier(audience: str, environ: Mapping[str, str] = os.environ) -> WorkloadTokenVerifier:
