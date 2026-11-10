@@ -3,13 +3,20 @@
 import base64
 import json
 import os
-from uuid import uuid4
+from unittest.mock import patch
+from uuid import UUID, uuid4
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from butlers.capability_broker.assertions import FIELDS, AssertionSigner, verify_assertion
+from butlers.capability_broker import assertions
+from butlers.capability_broker.assertions import (
+    FIELDS,
+    AssertionSigner,
+    dashboard_assertion_payload,
+    verify_assertion,
+)
 from butlers.capability_broker.contracts import BrokerRefused, Reason
 from butlers.core.capability_json import arguments_digest
 
@@ -22,6 +29,7 @@ NOW = 1_800_000_000
 def _payload(**overrides):
     payload = {
         "aud": "messenger",
+        "principal": "goal",
         "goal_id": str(uuid4()),
         "invocation_id": str(uuid4()),
         "depth": 0,
@@ -104,9 +112,89 @@ def test_replayed_and_tampered_assertions_are_refused(signer):
 
 def test_signer_refuses_a_payload_outside_the_field_list(signer):
     with pytest.raises(ValueError):
-        signer.sign({**_payload(), "principal": "dashboard"})
+        signer.sign({**_payload(), "session_id": str(uuid4())})
+    with pytest.raises(ValueError):
+        signer.sign({k: v for k, v in _payload().items() if k != "principal"})
     with pytest.raises(ValueError):
         signer.sign(_payload(effect_id=None, approval_ref="action-1"))
+
+
+def _dashboard(**overrides):
+    base = {"principal": "dashboard", "goal_id": None, "invocation_id": None, "effect_id": None}
+    return _payload(**{**base, **overrides})
+
+
+def _forge(signer, payload):
+    """Sign a payload the signer itself would refuse, as a compromised caller could."""
+    with patch.object(assertions, "_check_payload"):
+        return signer.sign(payload)
+
+
+def test_a_dashboard_assertion_is_owner_origin_with_no_goal(signer):
+    payload = _dashboard()
+    assert _verify(signer, signer.sign(payload)) == payload
+
+    built = dashboard_assertion_payload(
+        audience="messenger", capability="notify", arguments=ARGS, now=NOW
+    )
+    assert {k: v for k, v in built.items() if k != "call_id"} == {
+        k: v for k, v in payload.items() if k != "call_id"
+    }
+    assert str(UUID(built["call_id"])) == built["call_id"]
+    assert _verify(signer, signer.sign(built)) == built
+    other = dashboard_assertion_payload(
+        audience="messenger", capability="notify", arguments=ARGS, now=NOW
+    )
+    assert other["call_id"] != built["call_id"]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"goal_id": None},
+        {"invocation_id": None},
+        {"goal_id": None, "invocation_id": None},
+        {"goal_id": None, "invocation_id": None, "effect_id": None},
+    ],
+)
+def test_a_goal_assertion_with_a_null_goal_is_refused(signer, overrides):
+    payload = _payload(**overrides)
+    with pytest.raises(ValueError):
+        signer.sign(payload)
+    with pytest.raises(BrokerRefused) as refused:
+        _verify(signer, _forge(signer, payload))
+    assert refused.value.reason is Reason.AUTHENTICATION
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"origin": "obligation"},
+        {"origin": "third_party"},
+        {"origin": "staffer"},
+        {"goal_id": str(uuid4())},
+        {"invocation_id": str(uuid4())},
+        {"depth": 1},
+        {"exposed": True},
+        {"effect_id": str(uuid4())},
+        {"effect_id": str(uuid4()), "approval_ref": "action-1"},
+    ],
+)
+def test_a_dashboard_assertion_is_only_the_owner_acting_directly(signer, overrides):
+    payload = _dashboard(**overrides)
+    with pytest.raises(ValueError):
+        signer.sign(payload)
+    with pytest.raises(BrokerRefused):
+        _verify(signer, _forge(signer, payload))
+
+
+@pytest.mark.parametrize("principal", ["owner", "Dashboard", "", None, 1])
+def test_an_unknown_principal_is_refused(signer, principal):
+    for payload in (_payload(principal=principal), _dashboard(principal=principal)):
+        with pytest.raises(ValueError):
+            signer.sign(payload)
+        with pytest.raises(BrokerRefused):
+            _verify(signer, _forge(signer, payload))
 
 
 def _write_key(path, key, mode=0o400):

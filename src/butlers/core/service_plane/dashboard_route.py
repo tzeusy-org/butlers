@@ -24,6 +24,14 @@ The target's whole MCP result comes back --- content, structured content and
 ``isError`` --- so the dashboard parses it exactly as it would a direct call.
 A target ``route()`` could not reach is ``503 target_unavailable`` with its
 ``retryable`` flag. No refusal names anything about the target.
+
+Given an assertion signer, Switchboard forwards each call with one
+``X-Butlers-Assertion`` whose principal is ``dashboard``, origin ``owner`` and
+goal null (``assertion_call_fn``), and the target's verification middleware
+binds that lineage for the call. A gated call that messages someone other than
+the owner then parks in the target's approvals gate exactly as before, unless a
+standing rule matches. No deployment provides that signer yet: it is the
+broker's assertion key, provisioned with the broker at cutover.
 """
 
 from __future__ import annotations
@@ -32,14 +40,21 @@ import functools
 import importlib
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Final
 
+from fastmcp.client.transports import StreamableHttpTransport
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from butlers.capability_broker.assertions import (
+    ASSERTION_HEADER,
+    AssertionSigner,
+    dashboard_assertion_payload,
+)
 from butlers.core.runtime_probe_control.capability import CapabilityRejected
 from butlers.core.runtime_probe_control.endpoint import _bearer_capability
 from butlers.core.runtime_probe_control.service_call import (
@@ -49,6 +64,7 @@ from butlers.core.runtime_probe_control.service_call import (
     verify_deployed_service_call,
 )
 from butlers.core.service_plane.dashboard_call import routes_through_control_plane
+from butlers.mcp_liveness import LivenessClient
 
 logger = logging.getLogger(__name__)
 
@@ -161,9 +177,7 @@ def mcp_result_call_fn(
     import mcp.types
 
     async def call(endpoint_url: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
-        if _TRACE_CONTEXT_KEY not in original_args:
-            args = {key: value for key, value in args.items() if key != _TRACE_CONTEXT_KEY}
-        result = await call_tool(endpoint_url, tool, args)
+        result = await call_tool(endpoint_url, tool, _sent_args(args, original_args))
         return mcp.types.CallToolResult(
             content=list(result.content),
             structuredContent=result.structured_content,
@@ -173,7 +187,52 @@ def mcp_result_call_fn(
     return call
 
 
-def switchboard_dashboard_dispatch(pool: Any) -> Dispatch:
+def _sent_args(args: dict[str, Any], original_args: dict[str, Any]) -> dict[str, Any]:
+    """What the target receives: route()'s trace carrier, unless the dashboard sent that key."""
+    if _TRACE_CONTEXT_KEY in original_args:
+        return args
+    return {key: value for key, value in args.items() if key != _TRACE_CONTEXT_KEY}
+
+
+def assertion_call_fn(
+    signer: AssertionSigner,
+    audience: str,
+    original_args: dict[str, Any],
+    *,
+    clock: Callable[[], float] = time.time,
+    httpx_client_factory: Callable[..., Any] | None = None,
+) -> Callable[[str, str, dict[str, Any]], Awaitable[dict[str, Any]]]:
+    """A ``route()`` ``call_fn`` that forwards with one dashboard assertion (D7).
+
+    The assertion names the target butler as ``aud`` and digests exactly the
+    arguments sent, after the trace carrier is dropped, so the target's
+    verification middleware checks it against what it received. Each call
+    opens its own session: the header is per call, so the router's cached
+    clients are never reused, and the call is sent once, never resent. The
+    target's whole MCP result comes back, as ``mcp_result_call_fn`` returns it;
+    a refused assertion is an error result.
+    """
+
+    async def call(endpoint_url: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        sent = _sent_args(args, original_args)
+        payload = dashboard_assertion_payload(
+            audience=audience, capability=tool, arguments=sent, now=int(clock())
+        )
+        transport = StreamableHttpTransport(
+            endpoint_url,
+            headers={ASSERTION_HEADER: signer.sign(payload)},
+            httpx_client_factory=httpx_client_factory,
+        )
+        async with LivenessClient(transport) as client:
+            result = await client.call_tool_mcp(tool, sent)
+        return result.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    return call
+
+
+def switchboard_dashboard_dispatch(
+    pool: Any, *, assertion_signer: AssertionSigner | None = None
+) -> Dispatch:
     """Dispatch one dashboard call through Switchboard's own ``route()``.
 
     The call is never resent once it may have reached the target: a reset or
@@ -185,21 +244,24 @@ def switchboard_dashboard_dispatch(pool: Any) -> Dispatch:
     nothing was sent. route() calls a timeout retryable whether or not the
     request went out; a dashboard retry after an ambiguous send could repeat
     the write, so that failure is reported not retryable.
+
+    With an assertion signer, each call is forwarded with a dashboard
+    assertion (D7). Without one it is forwarded as Switchboard itself, as
+    before; a domain that verifies assertions refuses that call.
     """
 
     async def dispatch(butler: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
         # Switchboard's routing package is loaded from the roster at runtime.
         routing = importlib.import_module("butlers.tools.switchboard.routing.route")
-        call_tool = functools.partial(
-            routing._call_tool_with_router_client, resend_after_send=False
-        )
+        if assertion_signer is not None:
+            call_fn = assertion_call_fn(assertion_signer, butler, args)
+        else:
+            call_tool = functools.partial(
+                routing._call_tool_with_router_client, resend_after_send=False
+            )
+            call_fn = mcp_result_call_fn(call_tool, args)
         outcome = await routing.route(
-            pool,
-            butler,
-            tool,
-            args,
-            source_butler=DASHBOARD_SOURCE,
-            call_fn=mcp_result_call_fn(call_tool, args),
+            pool, butler, tool, args, source_butler=DASHBOARD_SOURCE, call_fn=call_fn
         )
         return _retryable_only_if_not_sent(outcome)
 
@@ -214,7 +276,9 @@ def _retryable_only_if_not_sent(outcome: Any) -> Any:
     return {**outcome, "retryable": outcome["retryable"] is True and not_sent}
 
 
-def build_switchboard_dashboard_call_route(pool: Any) -> Route:
+def build_switchboard_dashboard_call_route(
+    pool: Any, *, assertion_signer: AssertionSigner | None = None
+) -> Route:
     """The route, dispatching through Switchboard's own ``route()``."""
     from butlers.core.runtime_probe_control.receipts import RuntimeProbeControlReceipts
     from butlers.core.runtime_probe_control.service_call import SERVICE_CALL_AUDIENCE
@@ -223,5 +287,5 @@ def build_switchboard_dashboard_call_route(pool: Any) -> Route:
     return build_dashboard_call_route(
         enabled=service_plane_auth_enabled,
         receipts=RuntimeProbeControlReceipts(pool, audience=SERVICE_CALL_AUDIENCE),
-        dispatch=switchboard_dashboard_dispatch(pool),
+        dispatch=switchboard_dashboard_dispatch(pool, assertion_signer=assertion_signer),
     )

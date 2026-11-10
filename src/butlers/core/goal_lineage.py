@@ -58,10 +58,17 @@ _carried: contextvars.ContextVar[CarriedSource | None] = contextvars.ContextVar(
 
 @dataclass(frozen=True, slots=True)
 class VerifiedLineage:
-    """The verified D7 assertion fields for one call."""
+    """The verified D7 assertion fields for one call.
 
-    goal_id: uuid.UUID
-    invocation_id: uuid.UUID
+    ``principal`` is ``goal`` for a broker-forwarded goal call, which always
+    names its goal and invocation, or ``dashboard`` for the owner acting
+    directly through the authenticated dashboard: origin ``owner``, depth 0,
+    unexposed, with no goal, invocation, effect or approval. Nothing else can
+    be built, so a consumer never sees a goal call without its goal.
+    """
+
+    goal_id: uuid.UUID | None
+    invocation_id: uuid.UUID | None
     depth: int
     origin: str
     exposed: bool
@@ -70,13 +77,33 @@ class VerifiedLineage:
     call_id: uuid.UUID
     effect_id: uuid.UUID | None = None
     approval_ref: str | None = None
+    principal: str = "goal"
+
+    def __post_init__(self) -> None:
+        if self.principal == "goal":
+            if self.goal_id is None or self.invocation_id is None:
+                raise ValueError("a goal lineage names its goal and invocation")
+        elif self.principal == "dashboard":
+            if (
+                self.origin != "owner"
+                or self.depth != 0
+                or self.exposed is not False
+                or self.goal_id is not None
+                or self.invocation_id is not None
+                or self.effect_id is not None
+                or self.approval_ref is not None
+            ):
+                raise ValueError("a dashboard lineage is the owner acting directly, with no goal")
+        else:
+            raise ValueError("unknown lineage principal")
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> VerifiedLineage:
         effect = payload.get("effect_id")
+        goal, invocation = payload["goal_id"], payload["invocation_id"]
         return cls(
-            goal_id=uuid.UUID(payload["goal_id"]),
-            invocation_id=uuid.UUID(payload["invocation_id"]),
+            goal_id=uuid.UUID(goal) if goal is not None else None,
+            invocation_id=uuid.UUID(invocation) if invocation is not None else None,
             depth=payload["depth"],
             origin=payload["origin"],
             exposed=payload["exposed"],
@@ -85,6 +112,7 @@ class VerifiedLineage:
             call_id=uuid.UUID(payload["call_id"]),
             effect_id=uuid.UUID(effect) if effect else None,
             approval_ref=payload.get("approval_ref"),
+            principal=payload["principal"],
         )
 
     def covers(self, tool_name: str, tool_args: dict[str, Any] | None) -> bool:

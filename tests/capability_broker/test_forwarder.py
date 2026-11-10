@@ -61,6 +61,7 @@ def _assertion(signer: AssertionSigner, reserved: Reservation) -> str:
     return signer.sign(
         {
             "aud": reserved.capability.domain,
+            "principal": "goal",
             "goal_id": str(p.goal_id),
             "invocation_id": str(p.invocation_id),
             "depth": p.depth,
@@ -321,6 +322,21 @@ async def test_a_wrapper_refusal_is_a_failed_effect_never_a_committed_one():
         )
     assert receipt.status == "failed" and receipt.value is None
     assert seen == []
+
+
+async def test_the_broker_signs_every_call_as_its_goal():
+    from butlers.capability_broker.service import Broker
+
+    signer = AssertionSigner("broker-1", Ed25519PrivateKey.generate())
+    seen: list = []
+    reserved = _reservation()
+    broker = Broker(None, None, None, signer)
+    async with _domain(signer, seen) as forwarder:
+        receipt = await forwarder.dispatch(
+            reserved, _ARGS, broker._assertion(reserved, None), idempotency_key=None
+        )
+    assert receipt.status == "committed"
+    assert seen == [(reserved.principal.goal_id, reserved.principal.invocation_id)]
 
 
 async def test_unreachable_domain_is_not_received():

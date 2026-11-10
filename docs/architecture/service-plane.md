@@ -265,9 +265,12 @@ too.
   the namespace can obtain a valid token for these workloads. These permissions
   are already equivalent to reading the workloads' secrets, and they stay with
   the owner.
-- **A routed dashboard call carries no goal assertion yet.** Switchboard
-  forwards it through `route()` as itself. The broker assertion with origin
-  `owner` and principal `dashboard` lands in the next change.
+- **No deployment forwards a routed dashboard call with an assertion yet.**
+  Given the broker's assertion signer, Switchboard forwards each call with a
+  dashboard assertion (principal `dashboard`, origin `owner`, goal null). No
+  deployment provides that signer: it is provisioned with the broker at
+  cutover. Until then Switchboard forwards the call through `route()` as
+  itself, and a domain that verifies assertions refuses it.
 - **The dashboard still holds a direct connection.** `get_client` opens the
   butler's MCP session as before, and service-only tools use it. A routed call
   does not send anything over it.

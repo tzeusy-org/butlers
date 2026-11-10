@@ -5,6 +5,12 @@ D7 field list. Both are RFC 8785 canonical JSON, base64url without padding, and
 the signature covers ASCII ``header.payload``. ``verify_assertion`` is the
 pure check domain verification (bu-pkuny2) wires into the core tool wrapper;
 it owns no keys and no replay store.
+
+``principal`` names who the call is for. A ``goal`` assertion carries its
+goal and invocation as UUIDs. A ``dashboard`` assertion is the owner acting
+directly through the authenticated dashboard (D7 service-plane callers): origin
+``owner``, depth 0, unexposed, and its goal, invocation, effect and approval
+are all null. No other principal, and no other null goal, verifies.
 """
 
 from __future__ import annotations
@@ -17,7 +23,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
@@ -31,6 +37,7 @@ ASSERTION_HEADER = "X-Butlers-Assertion"
 LIFETIME_SECONDS = 60
 FIELDS = (
     "aud",
+    "principal",
     "goal_id",
     "invocation_id",
     "depth",
@@ -43,6 +50,13 @@ FIELDS = (
     "approval_ref",
     "exp",
 )
+#: Who the call is for: a goal invocation through the broker, or the owner
+#: acting directly through the authenticated dashboard (D7 service-plane callers).
+GOAL_PRINCIPAL = "goal"
+DASHBOARD_PRINCIPAL = "dashboard"
+PRINCIPALS = (GOAL_PRINCIPAL, DASHBOARD_PRINCIPAL)
+#: A dashboard call names no goal, invocation, effect or approval; every one is null.
+_DASHBOARD_NULLS = ("goal_id", "invocation_id", "effect_id", "approval_ref")
 _KID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _MAX_KEY_FILE = 8192
 
@@ -75,15 +89,52 @@ def _check_payload(payload: dict[str, Any]) -> None:
         r"[0-9a-f]{64}", payload["args_digest"]
     ):
         raise ValueError("assertion_digest")
+    principal = payload["principal"]
+    if principal not in PRINCIPALS:
+        raise ValueError("assertion_principal")
+    if principal == DASHBOARD_PRINCIPAL and (
+        payload["origin"] != "owner"
+        or payload["depth"] != 0
+        or payload["exposed"] is not False
+        or any(payload[key] is not None for key in _DASHBOARD_NULLS)
+    ):
+        raise ValueError("assertion_dashboard")
     for key in ("goal_id", "invocation_id", "call_id", "effect_id"):
         value = payload[key]
-        if key == "effect_id" and value is None:
+        if value is None and (
+            key == "effect_id" or (principal == DASHBOARD_PRINCIPAL and key in _DASHBOARD_NULLS)
+        ):
             continue
         if type(value) is not str or str(UUID(value)) != value:
             raise ValueError("assertion_uuid")
     ref = payload["approval_ref"]
     if ref is not None and (type(ref) is not str or not ref or payload["effect_id"] is None):
         raise ValueError("assertion_approval")
+
+
+def dashboard_assertion_payload(
+    *, audience: str, capability: str, arguments: dict[str, Any], now: int
+) -> dict[str, Any]:
+    """The payload Switchboard signs for one dashboard call (D7 service-plane callers).
+
+    The owner acting directly through the authenticated dashboard: principal
+    ``dashboard``, origin ``owner``, no goal, invocation, effect or approval.
+    """
+    return {
+        "aud": audience,
+        "principal": DASHBOARD_PRINCIPAL,
+        "goal_id": None,
+        "invocation_id": None,
+        "depth": 0,
+        "origin": "owner",
+        "exposed": False,
+        "capability": capability,
+        "args_digest": arguments_digest(arguments),
+        "call_id": str(uuid4()),
+        "effect_id": None,
+        "approval_ref": None,
+        "exp": now + LIFETIME_SECONDS,
+    }
 
 
 @dataclass(frozen=True, slots=True)
