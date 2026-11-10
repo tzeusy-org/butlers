@@ -95,6 +95,7 @@ capability and never lists one. The runner serves these tools on the same per-go
 | `goal__stop_child` | lead | End one child (`child_stopped`) |
 | `goal__complete` | lead | Record the outcome; the goal settles |
 | `goal__wait_approval` | lead | End the lead and wait on one effect parked for approval (see below) |
+| `goal__wait_owner` | lead | End the lead and wait for the owner's answer to a delivered prompt (see below) |
 | `goal__inbox` | lead | Take the owner replies joined to this goal since the last call |
 | `goal__escalate` | lead | Hand the goal to a fresh lead on the next ladder tier |
 | `goal__return` | child | Return a result validated against the brief's `result_schema` |
@@ -446,6 +447,26 @@ sweep syncs the domain's decisions onto the effect and then reads the effect onc
 - A wait whose deadline passes with the effect still parked is expired by the expiry sweep below.
 - Stop cancels the parked effect and the envelope through the existing Stop path.
 
+### Waiting for the owner's answer (S2.1, S2.2)
+
+`goal__wait_owner {effect_id}` is for a lead that asked the owner a question and needs nothing
+else until the answer. The effect must be this goal's committed owner delivery that accepts input
+and has not expired. The lead and its live children end, and the goal enters `waiting` on an
+`owner_answer` envelope bound to that prompt (predicate `prompt_effect_id`; one wake; no grants;
+deadline is the prompt's expiry or the goal's budget deadline, whichever is sooner). The wait
+needs no approval: the answer is authenticated by admission's exact reply binding and cannot
+approve an unrelated effect.
+
+Admission is the wake. A reply whose delivery binds this prompt, from the owner entity and channel
+the prompt went to, joins the waiting goal as `reply_joined`; in the same transaction
+`WakeAdmission.admit_answer` fires the envelope (`open -> fired`, one wake), writes the `wake`
+epoch naming the `owner_reply` inbox row and a `pending` wake intent keyed on the decision, and
+returns the goal to `admitted`. The sweep then launches the successor through the wake path
+above, and the lead reads the reply from `goal__inbox` as `kind: owner_reply`. A reply to a
+waiting goal in any other case (another prompt, an expired wait, a settle, approval or conditions
+wait, a stopped goal) is new owner intent, as before. Same-chat non-reply joining of a running
+goal is not part of this change.
+
 ### Expiry of a wait
 
 No wait lasts forever. The sweep ends every `waiting` goal whose open envelope passed its deadline
@@ -471,6 +492,7 @@ ended.
   isolated `butlers-control` process (`bu-jnhxc5`).
 - Calling `GoalRuntime.admit` from ingress, confirms and obligations, and an owner Stop surface
   (the D19 dashboard change, or a control-plane service route).
-- Waking a `waiting` goal on a joined reply or condition (`bu-dhloi1.7`, next PRs); the records
-  exist (see above). The reply text itself: `goal__inbox` returns references only.
+- Same-chat non-reply joining of a running goal within the engineering window, the receipt chip
+  and `/new` (`bu-dhloi1.7`); it needs a conversation key from verified ingress. The reply text
+  itself: `goal__inbox` returns references only.
 - The lead's goal input, owner profile, lead policy and domain index in the packet (M6).

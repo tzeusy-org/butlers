@@ -138,11 +138,12 @@ class GoalLedger:
             columns = ",label_version,label_instr,label_data,label_sens"
             placeholders = ",$8,$9,$10,$11"
             values = (version, instr, data, sens)
+        inbox_id = uuid4()
         await self.connection.execute(
             "INSERT INTO switchboard.goal_inbox "
             f"(id,goal_id,decision_id,source_key,source_ref,delivery_ref,reply_effect_id{columns}) "
             f"VALUES ($1,$2,$3,$4,$5,$6,$7{placeholders})",
-            uuid4(),
+            inbox_id,
             decision.goal_id,
             decision.decision_id,
             source.key,
@@ -151,6 +152,7 @@ class GoalLedger:
             self.reply_effect,
             *values,
         )
+        return inbox_id
 
     async def quota_counts(self, origin, source):
         self.origin = origin

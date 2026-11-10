@@ -579,16 +579,26 @@ class GoalRunner:
 
     async def wait_approval(self, goal_id: UUID, token: str, effect_id: Any) -> str:
         """``goal.wait_approval`` (bu-dhloi1.204): the lead ends; the goal waits on one approval."""
+        return await self._wait_on(goal_id, token, effect_id, "wait_approval")
+
+    async def wait_owner(self, goal_id: UUID, token: str, effect_id: Any) -> str:
+        """``goal.wait_owner`` (S2.2): the lead ends; the goal waits for the owner's answer."""
+        return await self._wait_on(goal_id, token, effect_id, "wait_owner")
+
+    async def _wait_on(self, goal_id: UUID, token: str, effect_id: Any, tool: str) -> str:
         effect = _uuid(effect_id)
         with _tracer.start_as_current_span(
-            "goal.wait_approval", record_exception=False, set_status_on_exception=False
+            f"goal.{tool}", record_exception=False, set_status_on_exception=False
         ) as span:
             span.set_attribute("goal_id", str(goal_id))
             async with self.broker._transaction() as broker_ledger:
                 principal = await broker_ledger.authenticate(goal_id, token)
                 span.set_attribute("invocation_id", str(principal.invocation_id))
                 ledger = RunnerLedger(broker_ledger.connection)
-                children = await ledger.wait_approval(principal, effect)
+                if tool == "wait_approval":
+                    children = await ledger.wait_approval(principal, effect)
+                else:
+                    children = await ledger.wait_owner(principal, effect)
                 status = "" if isinstance(children, BrokerRefused) else "waiting"
             if isinstance(children, BrokerRefused):
                 raise children

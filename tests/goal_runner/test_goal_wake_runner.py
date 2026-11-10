@@ -16,13 +16,15 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from butlers.capability_broker.contracts import Reason
 from butlers.conditions import FireIntent
 from butlers.core.goal_labels import Label
 from butlers.core.goal_waiting import EnvelopeSpec, WaitLedger
 from butlers.core.goal_wake import WakeAdmission
 from butlers.goal_runner.contracts import GoalEnded
 from butlers.goal_runner.ledger import RunnerLedger
-from tests.goal_runner.test_goal_runner import SEARCH, _grant, harness
+from tests.capability_broker.test_broker_ledger import OWNER, SEND, TO_OWNER, _joined_reply
+from tests.goal_runner.test_goal_runner import SEARCH, _grant, harness, refused
 
 pytestmark = pytest.mark.integration  # the harness module carries the shared marks
 pytest_plugins = ("tests.capability_broker.test_broker_ledger",)
@@ -329,3 +331,82 @@ async def test_a_wait_that_expires_without_firing_ends_the_goal(broker_db_url):
         )
         assert state == "expired"
         assert len(h.host.launches) == 1
+
+
+async def owner_prompt(h, goal, lead):
+    """A committed owner message that accepts input (what a delivered prompt records)."""
+    effect_id = uuid4()
+    await h.w.owner.execute(
+        "INSERT INTO switchboard.effects (id, goal_id, invocation_id, capability, args_digest, "
+        "status, delivery_ref, recipient_entity, recipient_channel, prompt_accepts_input, "
+        "prompt_expires_at) VALUES ($1, $2, $3, 'messenger.send', 'args-digest', 'committed', "
+        "$4, $5, 'telegram', true, now() + interval '30 minutes')",
+        effect_id,
+        goal,
+        lead.invocation_id,
+        f"delivery-{effect_id}",
+        OWNER,
+    )
+    return effect_id
+
+
+async def test_waiting_on_the_owner_ends_the_lead_and_binds_the_wait_to_the_prompt(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEND))
+        lead = await h.lead(goal)
+        prompt = await owner_prompt(h, goal, lead)
+
+        result = await h.call(goal, lead.token, "goal__wait_owner", {"effect_id": str(prompt)})
+
+        assert result == {"status": "waiting"}
+        assert await h.goal_status(goal) == "waiting"
+        assert (await h.row(lead.invocation_id))["status"] == "returned"
+        env = await h.w.owner.fetchrow(
+            "SELECT kind, state, max_wakes, predicate FROM switchboard.wait_envelopes "
+            "WHERE goal_id = $1",
+            goal,
+        )
+        assert (env["kind"], env["state"], env["max_wakes"]) == ("owner_answer", "open", 1)
+        assert str(prompt) in str(env["predicate"])
+        # No message but the exact reply wakes it: the sweep launches nothing.
+        await h.runner.supervise_once()
+        assert len(h.host.launches) == 1
+
+
+async def test_waiting_on_the_owner_needs_a_live_prompt_to_the_owner(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEND), _grant(SEARCH))
+        lead = await h.lead(goal)
+        plain = await h.w.broker.call(goal, lead.token, SEND.identity, TO_OWNER)  # no prompt
+        for effect in (plain.effect_id, uuid4()):
+            reason = await refused(
+                h.call(goal, lead.token, "goal__wait_owner", {"effect_id": str(effect)})
+            )
+            assert reason is Reason.RESOURCE
+        assert await h.goal_status(goal) == "running"
+
+
+async def test_the_joined_reply_launches_a_successor_that_reads_it(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEND))
+        lead = await h.lead(goal)
+        prompt = await owner_prompt(h, goal, lead)
+        await h.call(goal, lead.token, "goal__wait_owner", {"effect_id": str(prompt)})
+        # Admission's reply join: decision + owner_reply inbox row, then the wait's wake.
+        inbox_id = await _joined_reply(h.w, goal, prompt)
+        decision = await h.w.owner.fetchval(
+            "SELECT decision_id FROM switchboard.goal_inbox WHERE id = $1", inbox_id
+        )
+        async with h.runner._txn() as ledger:
+            waits = WakeAdmission(ledger.connection)
+            envelope = await waits.answer_envelope(goal, prompt)
+            assert envelope is not None
+            woken = await waits.admit_answer(envelope, decision, inbox_id)
+        assert (woken.state, woken.epoch) == ("admitted", 1)
+
+        await h.runner.supervise_once()
+        successor = await h.launched(2)
+
+        assert (await h.row(successor.invocation_id))["lead_epoch"] == 1
+        (item,) = (await h.call(goal, successor.token, "goal__inbox", {}))["replies"]
+        assert item["kind"] == "owner_reply" and UUID(item["reply_effect_id"]) == prompt

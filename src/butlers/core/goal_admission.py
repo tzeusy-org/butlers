@@ -472,6 +472,8 @@ class GoalAdmission:
             hint = await ledger.effect_hint(facts.caused_by_effect)
             if not hint or hint["goal_id"] != facts.caused_by_goal:
                 return await ledger.decide(source, attempt_id, "refused", "cause_invalid")
+        from butlers.core.goal_wake import WakeAdmission  # goal_wake imports this module
+
         reply = (
             await ledger.reply_hint(facts.reply_delivery)
             if facts.owner and facts.reply_delivery
@@ -520,21 +522,32 @@ class GoalAdmission:
                 # Read the answered effect's label under the goal lock, also
                 # when an expired/terminal prompt becomes new owner intent.
                 exposed |= effect_exposed(binding, goal)
-            if (
+            prompt_live = bool(
                 matches
                 and binding["prompt_accepts_input"]
                 and binding["prompt_expires_at"] is not None
                 and binding["prompt_expires_at"] > prompt_now
-                # A waiting goal (settle envelope) has no waiting -> running edge here: it can
-                # never consume an inbox row, so a reply to it is admitted as new intent.
-                and goal["status"] in {"admitted", "running"}
-            ):
+            )
+            # A waiting goal joins only by the exact reply to the prompt its owner-answer wait
+            # is bound to (RFC 0038 S2.2); the reply is that wait's one wake. Any other waiting
+            # goal (settle, approval, conditions) has no waiting -> running edge for an inbox
+            # row, so a reply to it is admitted as new intent.
+            answer = None
+            if prompt_live and goal["status"] == "waiting":
+                answer = await WakeAdmission(ledger.connection).answer_envelope(
+                    goal["id"], binding["id"]
+                )
+            if prompt_live and (goal["status"] in {"admitted", "running"} or answer is not None):
                 joined = await ledger.decide(
                     source, attempt_id, "joined", "reply_joined", goal["id"]
                 )
                 # The inbox row carries the reply's label (sw_057); its reader
                 # joins it. Only the reply's own outside content is added here.
-                await ledger.deliver(joined, source, outside_content=plan.exposed)
+                inbox_id = await ledger.deliver(joined, source, outside_content=plan.exposed)
+                if answer is not None:
+                    await WakeAdmission(ledger.connection).admit_answer(
+                        answer, joined.decision_id, inbox_id
+                    )
                 return joined
         await ledger.lock_keys(
             [
