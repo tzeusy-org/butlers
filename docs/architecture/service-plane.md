@@ -15,14 +15,17 @@ Requirement: `REQ-butler-switchboard-008`
 site that reaches another butler through `route`, each with one disposition.
 `tests/contracts/test_service_plane_inventory.py` scans production code with
 the AST and fails if a call site is missing from the inventory, or if the
-inventory names a site that no longer calls `route`. A new caller is
-classified there first.
+inventory names a site that no longer calls `route`. The scan follows aliases:
+an `import ... as`, an assignment, `partial(route, ...)`, `call_fn=route`, and
+`call_tool(name="route")` all count. Files that the deletion inventory's
+section 1.1 removes whole are skipped. A new caller is classified there first.
 
 | Disposition | Meaning |
 | --- | --- |
 | `named_relay` | Moves to a named relay (below). |
 | `messenger_delivery` | Switchboard `deliver()` to Messenger. Messenger authenticates Switchboard as the caller. |
 | `dashboard_call` | An owner action. It goes through the service listener, authenticated by the signed dashboard control client. |
+| `control_plane_internal` | Switchboard's own deterministic code calling one fixed domain tool in process, under that call's own authentication. There is no daemon-to-daemon hop to authenticate, and it must not become a generic proxy. |
 | `removed` | Dies at the switch with the lane or module that owns it. |
 
 ## Named relays
