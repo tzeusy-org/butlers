@@ -635,6 +635,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:switchboard.{table}>",
     ): "dynamic-local: owning migration's loop over its fixed labelled ledger table tuple (bu-dhloi1.6); not a foreign-schema exception",
     (
+        "roster/switchboard/migrations/063_goal_waiting.py",
+        "<dynamic:{qualified}>",
+    ): "dynamic-local: owning migration's loop over its fixed waiting-record table tuple (bu-dhloi1.7); not a foreign-schema exception",
+    (
         "roster/switchboard/migrations/059_owner_policy.py",
         "<dynamic:{qualified}>",
     ): "dynamic-local: owning migration's loop over its fixed owner-policy table tuple (bu-dhloi1.10); not a foreign-schema exception",
@@ -992,6 +996,21 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
             "goal_child_results",
             "goal_handles",
             "invocations",
+        )
+    },
+    **{
+        ("src/butlers/core/goal_waiting.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: S2/S2.2 waiting records (sw_063) over the Switchboard-owned "
+            "goal ledger; qualified SQL allocated to core/goal_waiting.py (bu-dhloi1.7)"
+        )
+        for relation in (
+            "goal_plans",
+            "goals",
+            "invocations",
+            "owner_threads",
+            "wait_envelopes",
+            "wait_generations",
+            "wake_intents",
         )
     },
     **{

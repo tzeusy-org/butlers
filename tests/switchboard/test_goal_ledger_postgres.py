@@ -717,6 +717,20 @@ async def test_schema_rejects_cross_goal_and_mutable_authority(ledger):
     )
     # thread_id binds once; exposure is per invocation and only increases.
     thread = uuid4()
+    other_thread = uuid4()
+    for registered in (thread, other_thread):
+        await owner.execute(
+            "INSERT INTO switchboard.owner_threads (id,owner_entity_id,channel,conversation_key) "
+            "VALUES ($1,$2,'telegram',$3)",
+            registered,
+            uuid4(),
+            str(registered),
+        )
+    # sw_063: the thread is a real registry row, not an arbitrary UUID.
+    with pytest.raises(asyncpg.ForeignKeyViolationError):
+        await owner.execute(
+            "UPDATE switchboard.goals SET thread_id=$1 WHERE id=$2", uuid4(), a.goal_id
+        )
     await owner.execute("UPDATE switchboard.goals SET thread_id=$1 WHERE id=$2", thread, a.goal_id)
     owner_goal = await admit(runtime, Evidence("message", "owner", owner=True))
     clean_lead, _ = await effect(owner, owner_goal.goal_id)
@@ -725,7 +739,7 @@ async def test_schema_rejects_cross_goal_and_mutable_authority(ledger):
     )
     async with owner.acquire() as conn:
         for query, *values in [
-            ("UPDATE switchboard.goals SET thread_id=$1 WHERE id=$2", uuid4(), a.goal_id),
+            ("UPDATE switchboard.goals SET thread_id=$1 WHERE id=$2", other_thread, a.goal_id),
             ("UPDATE switchboard.goals SET thread_id=NULL WHERE id=$1", a.goal_id),
             ("UPDATE switchboard.invocations SET exposed=false WHERE id=$1", child),
         ]:
