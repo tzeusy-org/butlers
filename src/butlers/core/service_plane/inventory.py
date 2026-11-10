@@ -13,12 +13,19 @@ exactly one disposition:
 ``dashboard_call``
     An owner action from the dashboard. It goes through the control plane's
     service listener, authenticated by the signed dashboard control client.
+``control_plane_internal``
+    Switchboard's own deterministic code calling one fixed domain tool in
+    process, under that call's own authentication. No daemon-to-daemon hop
+    exists to authenticate; it must not become a generic proxy.
 ``removed``
     The call dies at the switch, with the module or lane that owns it.
 
 ``tests/contracts/test_service_plane_inventory.py`` scans production code and
 fails when a route call site is missing from this table or the table names a
-site that no longer exists. A new caller must be classified here first.
+site that no longer exists. The scan resolves import aliases, assignments,
+``partial`` and ``call_fn=route``. Files the deletion inventory removes whole
+(section 1.1, for example ``modules/pipeline.py`` and ``correct_route.py``) are
+excluded: their sites die with them. A new caller must be classified here first.
 """
 
 from __future__ import annotations
@@ -26,7 +33,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-Disposition = Literal["named_relay", "messenger_delivery", "dashboard_call", "removed"]
+Disposition = Literal[
+    "named_relay", "messenger_delivery", "dashboard_call", "control_plane_internal", "removed"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +49,19 @@ class RouteCaller:
 
 
 ROUTE_CALLERS: tuple[RouteCaller, ...] = (
+    RouteCaller(
+        "src/butlers/daemon.py",
+        "ButlerDaemon._start_mcp_server",
+        "control_plane_internal",
+        "Hands Switchboard's route() to FinanceWarningControlOwner: one fixed Finance read "
+        "under its own held-call bearer (finance_warning_control.py).",
+    ),
+    RouteCaller(
+        "src/butlers/core_tools/_switchboard.py",
+        "register_switchboard_tools.answer_question",
+        "removed",
+        "Passes route() to read_system_answer; dies with the dashboard answer lane.",
+    ),
     RouteCaller(
         "roster/switchboard/modules/tools.py",
         "register_tools.route",
@@ -103,8 +125,9 @@ ROUTE_CALLERS: tuple[RouteCaller, ...] = (
     RouteCaller(
         "src/butlers/core_tools/_domain_events.py",
         "_SwitchboardInProcessRouteClient.call_tool",
-        "named_relay",
-        "domain_event.receive: Switchboard's reconciliation sweep redelivering to a subscriber.",
+        "control_plane_internal",
+        "Switchboard's reconciliation sweep redelivering receive_domain_event to a subscriber "
+        "the fan-out ledger already resolved.",
     ),
     RouteCaller(
         "src/butlers/core_tools/_fleet_cases.py",

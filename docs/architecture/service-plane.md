@@ -105,6 +105,27 @@ their own ServiceAccounts, sets `BUTLERS_SERVICE_PLANE_AUTH=1`, and mounts the
 delivery token into `butlers-control` only. Butlers holds no private key for
 this: the API server signs and the kubelet rotates.
 
+## Limits
+
+- **No per-daemon separation inside `butlers-up`.** Any daemon in that process
+  can present any daemon name. A relay allowlist narrows by name, but only the
+  workload is authenticated, until domain daemons are split into separate
+  processes.
+- **Switchboard's own LLM sessions can read the delivery token.** Today they
+  run inside `butlers-control`, in the same container that mounts it. Until
+  sessions move to the session host (`bu-kiuh8v`), a Switchboard session that
+  can read files or run commands can present the token as Switchboard to
+  Messenger.
+- **Namespace admins can mint these tokens.** Anyone who can create pods,
+  create ServiceAccount tokens (`serviceaccounts/token`), or exec into a pod in
+  the namespace can obtain a valid token for these workloads. These permissions
+  are already equivalent to reading the workloads' secrets, and they stay with
+  the owner.
+- **Replay inside the token's window.** A token is a bearer credential for up
+  to its 600 s lifetime and is not bound to a request. The service listener is
+  plain HTTP inside the cluster, so a token seen on the pod network can be
+  replayed until it expires. This code never logs a token.
+
 ## The switch
 
 `BUTLERS_SERVICE_PLANE_AUTH` (Tier 0, exactly `"1"` to enable, default off)
