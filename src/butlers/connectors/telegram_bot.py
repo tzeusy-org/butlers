@@ -89,6 +89,7 @@ from butlers.core.approval_callbacks import (
 )
 from butlers.core.logging import configure_logging
 from butlers.core.owner_delivery import TOKEN_PREFIX as OWNER_DELIVERY_TOKEN_PREFIX
+from butlers.core.telegram_identity import resolve_telegram_endpoint_identity
 from butlers.credential_store import (
     CredentialStore,
     shared_db_name_from_env,
@@ -2957,41 +2958,6 @@ async def _resolve_telegram_blob_store() -> BlobStore | None:
     finally:
         for _, pool in connected_pools:
             await pool.close()
-
-
-async def resolve_telegram_endpoint_identity(token: str) -> str:
-    """Resolve the bot identity from the Telegram Bot API via ``getMe``.
-
-    Returns ``telegram:bot:@<username>`` (or ``telegram:bot:@<first_name>``
-    if the bot has no username set).
-
-    Raises:
-        RuntimeError: If the API call fails or returns no usable identity.
-    """
-    try:
-        async with external_async_client(timeout=10.0) as client:
-            response = await client.get(
-                f"https://api.telegram.org/bot{token}/getMe",
-            )
-            response.raise_for_status()
-            data = response.json()
-            if data.get("ok"):
-                result = data.get("result", {})
-                username = result.get("username") or result.get("first_name", "")
-                if username:
-                    identity = f"telegram:bot:@{username}"
-                    logger.info(
-                        "Telegram bot connector: resolved endpoint_identity=%s",
-                        identity,
-                    )
-                    return identity
-            raise RuntimeError("Telegram bot connector: getMe response missing username/first_name")
-    except RuntimeError:
-        raise
-    except Exception as exc:
-        raise RuntimeError(
-            f"Telegram bot connector: failed to resolve endpoint identity: {exc}"
-        ) from exc
 
 
 async def run_telegram_bot_connector() -> None:

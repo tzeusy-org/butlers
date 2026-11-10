@@ -36,6 +36,7 @@ from butlers.core.notify_attachments import (
     validate_attachment_specs,
 )
 from butlers.core.permissions import NOTIFY_PERMISSION, PermissionUnavailable, require_permission
+from butlers.core.telegram_identity import resolve_telegram_endpoint_identity
 from butlers.modules.base import Module
 from butlers.telegram_api import (
     TelegramPartialDeliveryError,
@@ -245,8 +246,6 @@ class TelegramModule(Module):
         if cached:
             return cached
         try:
-            from butlers.connectors.telegram_bot import resolve_telegram_endpoint_identity
-
             identity = await resolve_telegram_endpoint_identity(self._get_bot_token())
         except Exception:
             logger.warning("Telegram bot endpoint identity could not be resolved", exc_info=True)

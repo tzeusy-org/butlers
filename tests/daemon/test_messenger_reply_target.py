@@ -62,9 +62,7 @@ async def test_the_bot_identity_is_resolved_once_and_a_failure_is_not_cached(mon
             raise RuntimeError("getMe unavailable")
         return "telegram:bot:@butler"
 
-    monkeypatch.setattr(
-        "butlers.connectors.telegram_bot.resolve_telegram_endpoint_identity", resolve
-    )
+    monkeypatch.setattr("butlers.modules.telegram.resolve_telegram_endpoint_identity", resolve)
     bot = TelegramModule.__new__(TelegramModule)
     bot._get_bot_token = lambda: "token"
     assert await bot.bot_endpoint_identity() is None
