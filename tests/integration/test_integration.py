@@ -607,7 +607,8 @@ class TestSwitchboardRoutingIntegration:
         # Legacy ``/sse`` registry URLs are canonicalized to ``/mcp`` before dispatch.
         assert call_log[0]["endpoint_url"] == "http://localhost:9200/mcp"
         assert call_log[0]["args"]["key"] == "test"
-        assert "trace_context" in call_log[0]["args"]
+        # state_get declares no trace_context, so route() adds no carrier (bu-dhloi1.293).
+        assert "trace_context" not in call_log[0]["args"]
         assert result["result"] == {"status": "ok"}
         # Additive typed transport evidence (bu-0uqgo.3, REQ-core-notify-027).
         assert result["transport"] == {"outcome": "confirmed", "retryable": False}
