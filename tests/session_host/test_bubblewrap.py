@@ -568,10 +568,15 @@ async def test_native_launch_hung_before_its_receipt_ends_at_the_timeout(
         assert spawned.is_set() and domain._process is not None and not domain._released
         assert req.timeout_s <= elapsed < req.timeout_s + 5
         assert not owner.healthy and list(native_stage.iterdir())
+        # The bwrap process itself exits once run() has closed its gates: nothing of the
+        # launch outlives the bound except the quarantined material.
+        async with asyncio.timeout(10):
+            await domain._process.communicate()
+        assert domain._process.returncode is not None
     finally:
         # Test teardown only: the gates are closed by now, so the stuck child exits;
         # drain its pipe so the transport closes inside this loop.
-        if domain._process is not None:
+        if domain._process is not None and domain._process.returncode is None:
             async with asyncio.timeout(10):
                 await domain._process.communicate()
         for material in owner._quarantined:

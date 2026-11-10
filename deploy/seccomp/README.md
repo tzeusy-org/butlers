@@ -28,19 +28,15 @@ Upstream source: <https://raw.githubusercontent.com/moby/moby/v25.0.0/profiles/s
 
 ## Session host sandbox
 
-`session-host-sandbox.json` is the dashboard profile above with exactly two
-deltas (bu-kiuh8v.9), pinned by `tests/config/test_session_host_seccomp_profile.py`:
-
-- The namespace `clone` rule adds `CLONE_NEWNET`:
-  `clone(CLONE_NEWNS|CLONE_NEWUTS|CLONE_NEWIPC|CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET|SIGCHLD)`,
-  compared for equality. The session host's Bubblewrap plan passes
-  `--unshare-net`, and the test derives the mask from that plan's
-  `--unshare-*` flags, so a new namespace flag fails it.
-- `setns` is allowed when its `nstype` argument is exactly `CLONE_NEWUSER` or
-  exactly `CLONE_NEWNET`. Joining a user namespace still needs
-  `CAP_SYS_ADMIN` in it, so a process can enter only namespaces its own uid
-  created. The exact-image proof uses this to put its fake listeners inside the
-  domain's network namespace; the launch itself does not call `setns`.
+`session-host-sandbox.json` (the pod profile) is the dashboard profile above
+with exactly one delta (bu-kiuh8v.9), pinned by
+`tests/config/test_session_host_seccomp_profile.py`: the namespace `clone` rule
+adds `CLONE_NEWNET`:
+`clone(CLONE_NEWNS|CLONE_NEWUTS|CLONE_NEWIPC|CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET|SIGCHLD)`,
+compared for equality. The session host's Bubblewrap plan passes
+`--unshare-net`, and the test derives the mask from that plan's `--unshare-*`
+flags, so a new namespace flag fails it. The pod profile allows no `setns`:
+the launch never calls it.
 
 Everything else is unchanged:
 
@@ -64,6 +60,18 @@ Compose applies it to `session-host`. The Helm chart applies it as a
 `Localhost` profile when `sessionHost.seccompLocalhostProfile` names its
 installed path under the kubelet seccomp root; the default leaves the pod
 unchanged.
+
+### Exact-image proof profile
+
+`session-host-proof.json` is the pod profile plus exactly two rules, and is
+used only by the owner's exact-image proof
+(`tests/session_host/exact_image_codex_proof.py`); no deployment names it.
+The rules allow `setns` when its `nstype` argument is exactly `CLONE_NEWUSER`
+or exactly `CLONE_NEWNET`. Joining a user namespace still needs
+`CAP_SYS_ADMIN` in it, so a process can enter only namespaces its own uid
+created. The proof uses this to put its fake listeners inside the domain's
+network namespace. The same test file pins it to the pod profile plus those
+two rules and nothing else.
 
 ## Dashboard on Kubernetes
 
