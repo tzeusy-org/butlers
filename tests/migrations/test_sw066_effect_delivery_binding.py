@@ -115,8 +115,10 @@ def test_the_binding_is_set_once_and_only_by_the_commit(postgres_container):
     for rewrite in (
         "UPDATE switchboard.effects SET status = 'committed', delivery_ref = 'tg:other' "
         "WHERE id = $1",
-        "UPDATE switchboard.effects SET status = 'committed', prompt_accepts_input = false, "
-        "prompt_expires_at = NULL WHERE id = $1",
+        # The expiry stays set so only the accepts-input branch can refuse this;
+        # accepts_input=false with an expiry still satisfies ck_effect_prompt_binding.
+        "UPDATE switchboard.effects SET status = 'committed', prompt_accepts_input = false "
+        "WHERE id = $1",
         "UPDATE switchboard.effects SET status = 'committed', "
         "prompt_expires_at = prompt_expires_at + interval '1 minute' WHERE id = $1",
     ):
