@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastmcp.exceptions import ToolError
 
+from butlers.api.butler_tool_calls import tool_result_payload
 from butlers.api.calendar.quick_add import parse_quick_add
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, Db, MCPClientManager, get_mcp_manager
@@ -430,34 +431,6 @@ def _select_canonical_source_rows(
         )
         for source_key in sorted(grouped)
     ]
-
-
-def _extract_mcp_result_text(result: object) -> str | None:
-    content = getattr(result, "content", None)
-    if isinstance(content, list):
-        text_parts: list[str] = []
-        for block in content:
-            text = getattr(block, "text", None)
-            if isinstance(text, str) and text:
-                text_parts.append(text)
-        return "\n".join(text_parts) if text_parts else None
-    if isinstance(result, list):
-        text_parts = []
-        for block in result:
-            text = getattr(block, "text", None)
-            if isinstance(text, str) and text:
-                text_parts.append(text)
-        return "\n".join(text_parts) if text_parts else None
-    return None
-
-
-def _parse_mcp_payload(raw_text: str | None) -> object:
-    if raw_text is None:
-        return None
-    try:
-        return json.loads(raw_text)
-    except (TypeError, json.JSONDecodeError):
-        return raw_text
 
 
 def _sync_detail(parsed: object) -> str | None:
@@ -1965,7 +1938,7 @@ async def sync_workspace(
         try:
             client = await mcp_manager.get_client(butler_name)
             result = await client.call_tool("calendar_force_sync", forwarded_args)
-            parsed = _parse_mcp_payload(_extract_mcp_result_text(result))
+            parsed = tool_result_payload(result)
             raw_status = parsed.get("status", "queued") if isinstance(parsed, dict) else "queued"
             status = "failed" if raw_status in {"error", "failed"} else str(raw_status)
             recovery = bool(parsed.get("recovery")) if isinstance(parsed, dict) else False
@@ -2095,7 +2068,7 @@ async def _call_mcp_tool(
             detail=f"MCP call to '{butler_name}' failed: {exc}",
         ) from exc
 
-    parsed = _parse_mcp_payload(_extract_mcp_result_text(result))
+    parsed = tool_result_payload(result)
     if isinstance(parsed, dict):
         return parsed
     return {"result": parsed if parsed is not None else str(result)}

@@ -909,7 +909,6 @@
     "[\"src/butlers/api/routers/butler_management.py\", \"reportAttributeAccessIssue\", \"83fd5abef7c586e41717bd0d2671db0b0a92089436bbc8b08770a76e2513c909\"]": 1,
     "[\"src/butlers/api/routers/butler_management.py\", \"reportAttributeAccessIssue\", \"e0486c54f7724afc19b8f09064a3065ea83f3d2e2e948819cd0e22539fe46bd9\"]": 1,
     "[\"src/butlers/api/routers/butler_management.py\", \"reportAttributeAccessIssue\", \"f1388f8895f43f56bd0bf5e9303be819e104f8cbae39fa77fc2d149d7298358f\"]": 1,
-    "[\"src/butlers/api/routers/butlers.py\", \"reportArgumentType\", \"23116382c1b83068f3ab0dcd66be1f94669121923387801a63d969019f7953c9\"]": 1,
     "[\"src/butlers/api/routers/butlers.py\", \"reportArgumentType\", \"2b171cd6bb87381a9c37803ced4f9555442cdc7f7b340d8d7622f42dfd0f3df6\"]": 1,
     "[\"src/butlers/api/routers/butlers.py\", \"reportAttributeAccessIssue\", \"16cc929ca94c4f238c596b0aac0aaa3e6fba3cb4b3ba3a2dbd1836783ef67811\"]": 3,
     "[\"src/butlers/api/routers/butlers.py\", \"reportAttributeAccessIssue\", \"512e498aabf9a2cc736d6e9cf935fd353f48eb8fbbf8960de23ddb42a798f9a0\"]": 3,

@@ -22,10 +22,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from fastmcp.client.client import CallToolResult
 from pydantic import AwareDatetime, BaseModel, ConfigDict, model_validator
 
 from butlers.api.audit_emit import authenticated_principal
+from butlers.api.butler_tool_calls import parse_tool_text, tool_result_is_error, tool_result_text
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import ApiResponse, ErrorDetail, ErrorResponse
@@ -186,29 +186,21 @@ async def _call_mcp_tool(
         ) from exc
 
     unavailable = "Owner creation unavailable; retry the same operation"
-    if isinstance(result, CallToolResult):
-        if result.is_error:
-            raise HTTPException(503, unavailable if meta is not None else "MCP tool call failed")
-        blocks = result.content
-    else:
-        # Legacy clients return the content list directly.
-        blocks = result
-    if isinstance(blocks, list):
-        for block in blocks:
-            text = getattr(block, "text", None)
-            if text:
-                try:
-                    payload = json.loads(text)
-                except (json.JSONDecodeError, TypeError):
-                    if meta is not None:
-                        raise HTTPException(503, unavailable) from None
-                    return {"result": text}
-                if meta is not None and not isinstance(payload, dict):
-                    raise HTTPException(503, unavailable)
-                return payload
-    if meta is not None:
+    if tool_result_is_error(result):
+        raise HTTPException(503, unavailable if meta is not None else "MCP tool call failed")
+    text = tool_result_text(result)
+    if text is None:
+        if meta is not None:
+            raise HTTPException(503, unavailable)
+        return {"result": str(getattr(result, "content", result))}
+    payload = parse_tool_text(text)
+    if isinstance(payload, str):
+        if meta is not None:
+            raise HTTPException(503, unavailable)
+        return {"result": payload}
+    if meta is not None and not isinstance(payload, dict):
         raise HTTPException(503, unavailable)
-    return {"result": str(blocks)}
+    return payload
 
 
 async def _log_legacy_schedule_mutation(

@@ -24,11 +24,11 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastmcp.client.client import CallToolResult
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
 from butlers.api.audit_emit import authenticated_principal
+from butlers.api.butler_tool_calls import parse_tool_text, tool_result_is_error, tool_result_text
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db, MCPClientManager, OptionalDb, get_mcp_manager
 from butlers.api.models import (
@@ -1169,19 +1169,12 @@ _DRIVE_NOT_CONNECTED_PREFIX = "Google Drive not connected"
 
 
 def _tool_payload(result: Any) -> Any:
-    """The first JSON text block of an MCP tool result, or None."""
-    if isinstance(result, CallToolResult):
-        if result.is_error:
-            return None
-        result = result.content
-    for block in result if isinstance(result, list) else []:
-        text = getattr(block, "text", None)
-        if text:
-            try:
-                return json.loads(text)
-            except (json.JSONDecodeError, TypeError):
-                return None
-    return None
+    """The JSON payload of an MCP tool result; None for an SDK error or plain text."""
+    if tool_result_is_error(result):
+        return None
+    text = tool_result_text(result)
+    payload = parse_tool_text(text)
+    return None if payload is text else payload
 
 
 async def _drive_tool_absent(client: Any) -> bool:
@@ -1228,7 +1221,7 @@ async def get_drive_file(
             return _drive_not_connected()
         logger.info("Drive file reader unavailable", exc_info=True)
         return _project_error(_DRIVE_UNAVAILABLE)
-    if isinstance(result, CallToolResult) and result.is_error and await _drive_tool_absent(client):
+    if tool_result_is_error(result) and await _drive_tool_absent(client):
         return _drive_not_connected()
     payload = _tool_payload(result)
     if isinstance(payload, dict) and payload.get("status") == "not_found":

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
@@ -20,6 +19,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Res
 from fastapi.responses import JSONResponse
 
 from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
+from butlers.api.butler_tool_calls import parse_tool_text, tool_result_text
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerUnreachableError,
@@ -200,32 +200,6 @@ def _group_select_fragments(group_columns: set[str]) -> tuple[str, str]:
         "g.updated_at" if "updated_at" in group_columns else "g.created_at AS updated_at"
     )
     return description_sql, updated_at_sql
-
-
-def _extract_mcp_result_text(result: object) -> str | None:
-    """Extract text content from an MCP tool result."""
-    content = getattr(result, "content", None)
-    if not isinstance(content, list):
-        return None
-
-    parts: list[str] = []
-    for block in content:
-        text = getattr(block, "text", None)
-        if isinstance(text, str) and text:
-            parts.append(text)
-    if not parts:
-        return None
-    return "\n".join(parts)
-
-
-def _parse_mcp_result_payload(raw_text: str | None) -> object:
-    """Parse MCP text payload as JSON when possible, else return raw text."""
-    if raw_text is None:
-        return None
-    try:
-        return json.loads(raw_text)
-    except (json.JSONDecodeError, TypeError):
-        return raw_text
 
 
 def _extract_sync_summary(payload: object) -> dict[str, Any]:
@@ -6720,8 +6694,8 @@ async def _fetch_chronicler_activity(
         )
         return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
 
-    raw_text = _extract_mcp_result_text(result)
-    payload = _parse_mcp_result_payload(raw_text)
+    raw_text = tool_result_text(result)
+    payload = parse_tool_text(raw_text)
 
     is_error = bool(getattr(result, "is_error", False))
     if is_error or not isinstance(payload, dict):
