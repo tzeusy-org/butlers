@@ -223,7 +223,11 @@ check). Then Switchboard's own `route()` calls the target as
 `source_butler="dashboard"` and returns the target's whole MCP result, so
 FastMCP raises `ToolError` for a tool error exactly as on a direct call. A
 target `route()` cannot reach is `503 target_unavailable` with its `retryable`
-flag. The dashboard maps every refusal, and a missing signer, to
+flag. A dashboard call is never resent once it may have reached the target: a
+reset or timeout after the request went out is that `503`, not a second call,
+so a dashboard write is never duplicated. A failure that proves nothing was
+sent still reconnects once. Every other `route()` caller keeps the existing
+reconnect-and-resend policy. The dashboard maps every refusal, and a missing signer, to
 `ButlerUnreachableError`; it never falls back to a direct call.
 
 The switch reaches the dashboard through the same chart value:

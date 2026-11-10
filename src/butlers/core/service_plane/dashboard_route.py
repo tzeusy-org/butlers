@@ -28,6 +28,7 @@ A target ``route()`` could not reach is ``503 target_unavailable`` with its
 
 from __future__ import annotations
 
+import functools
 import importlib
 import json
 import logging
@@ -170,26 +171,41 @@ def mcp_result_call_fn(
     return call
 
 
-def build_switchboard_dashboard_call_route(pool: Any) -> Route:
-    """The route, dispatching through Switchboard's own ``route()``."""
-    from butlers.core.runtime_probe_control.receipts import RuntimeProbeControlReceipts
-    from butlers.core.runtime_probe_control.service_call import SERVICE_CALL_AUDIENCE
-    from butlers.core.service_plane.messenger_delivery import service_plane_auth_enabled
+def switchboard_dashboard_dispatch(pool: Any) -> Dispatch:
+    """Dispatch one dashboard call through Switchboard's own ``route()``.
+
+    The call is never resent once it may have reached the target: a reset or
+    timeout after the request went out fails the call (``503
+    target_unavailable``) instead of repeating a dashboard write. A failure
+    that proves nothing was sent still reconnects once, as route() always does.
+    """
 
     async def dispatch(butler: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
         # Switchboard's routing package is loaded from the roster at runtime.
         routing = importlib.import_module("butlers.tools.switchboard.routing.route")
+        call_tool = functools.partial(
+            routing._call_tool_with_router_client, resend_after_send=False
+        )
         return await routing.route(
             pool,
             butler,
             tool,
             args,
             source_butler=DASHBOARD_SOURCE,
-            call_fn=mcp_result_call_fn(routing._call_tool_with_router_client, args),
+            call_fn=mcp_result_call_fn(call_tool, args),
         )
+
+    return dispatch
+
+
+def build_switchboard_dashboard_call_route(pool: Any) -> Route:
+    """The route, dispatching through Switchboard's own ``route()``."""
+    from butlers.core.runtime_probe_control.receipts import RuntimeProbeControlReceipts
+    from butlers.core.runtime_probe_control.service_call import SERVICE_CALL_AUDIENCE
+    from butlers.core.service_plane.messenger_delivery import service_plane_auth_enabled
 
     return build_dashboard_call_route(
         enabled=service_plane_auth_enabled,
         receipts=RuntimeProbeControlReceipts(pool, audience=SERVICE_CALL_AUDIENCE),
-        dispatch=dispatch,
+        dispatch=switchboard_dashboard_dispatch(pool),
     )

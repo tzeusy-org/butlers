@@ -312,3 +312,90 @@ async def test_the_call_fn_carries_a_tool_error_as_a_result_not_a_failure() -> N
 
     assert result["isError"] is True
     assert "non-negative" in result["content"][0]["text"]
+
+
+# ---------------------------------------------------------------------------
+# A dashboard write is never resent once it may have reached the target
+# ---------------------------------------------------------------------------
+
+
+class _Peer:
+    """The cached router client: each call_tool fails with ``failure`` after the request went out."""
+
+    def __init__(self, failure: Exception) -> None:
+        self.failure = failure
+        self.calls = 0
+
+    async def call_tool(self, tool: str, args: dict, *, raise_on_error: bool) -> Any:
+        self.calls += 1
+        raise self.failure
+
+
+@pytest.fixture
+def routing(monkeypatch):
+    import importlib
+    from unittest.mock import AsyncMock
+
+    module = importlib.import_module("butlers.tools.switchboard.routing.route")
+    monkeypatch.delenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", raising=False)
+    monkeypatch.setattr(
+        module,
+        "resolve_routing_target",
+        AsyncMock(return_value=({"endpoint_url": "http://localhost:41104/mcp"}, None)),
+    )
+    monkeypatch.setattr(module, "_log_routing", AsyncMock())
+    monkeypatch.setattr(module, "_record_confirmed_route", AsyncMock())
+    return module
+
+
+def _connect(monkeypatch, routing, peer: _Peer) -> None:
+    async def cached(endpoint_url: str, *, reconnect: bool) -> _Peer:
+        return peer
+
+    monkeypatch.setattr(routing, "_get_cached_router_client", cached)
+
+
+async def test_a_timeout_after_send_is_503_and_the_write_is_sent_once(
+    monkeypatch, routing, keys
+) -> None:
+    signer, keyring = keys
+    peer = _Peer(httpx.ReadTimeout("timed out after the request was sent"))
+    _connect(monkeypatch, routing, peer)
+    route = dr.build_dashboard_call_route(
+        enabled=lambda: True,
+        receipts=_Receipts(),
+        dispatch=dr.switchboard_dashboard_dispatch("POOL"),
+        verify=lambda c, now: verify_deployed_service_call(
+            c, now=now, verifier=lambda: VerifierSnapshot(keyring=keyring)
+        ),
+        clock=lambda: _NOW,
+    )
+    transport = httpx.ASGITransport(app=Starlette(routes=[route]))
+    async with httpx.AsyncClient(transport=transport, base_url="http://sb") as client:
+        response = await client.post(
+            dr.SERVICE_CALL_PATH, headers=_capability(signer), json=_body()
+        )
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "target_unavailable"
+    assert peer.calls == 1
+    routing._record_confirmed_route.assert_not_awaited()
+
+
+async def test_other_route_callers_still_resend_once(monkeypatch, routing) -> None:
+    """Every other route() caller keeps the existing reconnect-and-resend policy."""
+    peer = _Peer(httpx.ReadTimeout("timed out after the request was sent"))
+    _connect(monkeypatch, routing, peer)
+
+    outcome = await routing.route("POOL", "health", _PRESENTABLE, dict(_ARGS))
+
+    assert "error" in outcome and peer.calls == 2
+
+
+async def test_a_failure_before_send_still_reconnects_once(monkeypatch, routing) -> None:
+    peer = _Peer(httpx.ConnectError("refused before the request was sent"))
+    _connect(monkeypatch, routing, peer)
+
+    outcome = await dr.switchboard_dashboard_dispatch("POOL")("health", _PRESENTABLE, dict(_ARGS))
+
+    assert "result" not in outcome and peer.calls == 2

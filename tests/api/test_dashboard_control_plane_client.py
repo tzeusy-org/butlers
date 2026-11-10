@@ -70,9 +70,13 @@ def _target(calls: list[str]) -> FastMCP:
     return server
 
 
+#: One pinned instant: the client signs at it and the route verifies at it.
+_NOW = datetime(2026, 11, 11, 12, 0, tzinfo=UTC)
+
+
 class _Stack:
     def __init__(self, monkeypatch, *, signer: bool = True, outcome: Any = None) -> None:
-        now = datetime.now(UTC)
+        now = _NOW
         seed, public_key = synthetic_keypair()
         encode = lambda d: json.dumps(d).encode()  # noqa: E731
         signer_key = parse_signer_document(
@@ -118,6 +122,7 @@ class _Stack:
             verify=lambda c, now: verify_deployed_service_call(
                 c, now=now, verifier=lambda: VerifierSnapshot(keyring=keyring)
             ),
+            clock=lambda: _NOW,
         )
         monkeypatch.setenv("BUTLERS_SERVICE_PLANE_AUTH", "1")
         monkeypatch.setattr(
@@ -131,6 +136,7 @@ class _Stack:
                     matched=keyring.current,
                 ),
                 base_url=lambda: "http://switchboard:41100",
+                now=_NOW,
                 transport=httpx.ASGITransport(app=Starlette(routes=[route])),
             ),
         )
