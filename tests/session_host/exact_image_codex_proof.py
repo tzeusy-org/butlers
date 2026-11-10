@@ -31,12 +31,24 @@ import codex_proof  # noqa: E402
 
 
 def shim_is_static(path: Path) -> bool:
-    """True for an x86-64 ELF executable with no interpreter and no dynamic section."""
-    data = path.read_bytes()
-    if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
+    """True only for a well-formed x86-64 ELF executable with no interpreter or dynamic section.
+
+    Anything malformed, truncated or of another shape is False and never raises, so the check
+    cannot pass a file it could not read.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
         return False
+    if len(data) < 64 or data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
+        return False  # ELF64, little endian
+    u16 = lambda at: int.from_bytes(data[at : at + 2], "little")  # noqa: E731
     phoff = int.from_bytes(data[32:40], "little")
-    entry, count = int.from_bytes(data[54:56], "little"), int.from_bytes(data[56:58], "little")
+    entry, count = u16(54), u16(56)
+    if u16(16) != 2 or u16(18) != 62 or entry != 56 or count < 1:
+        return False  # ET_EXEC, EM_X86_64, 56-byte program headers, at least one
+    if phoff + count * entry > len(data):
+        return False
     kinds = {
         int.from_bytes(data[phoff + i * entry : phoff + i * entry + 4], "little")
         for i in range(count)

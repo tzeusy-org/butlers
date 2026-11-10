@@ -155,7 +155,10 @@ def test_sandbox_init_builder_links_statically_and_refuses_a_dynamic_result() ->
     build = build[: build.index("\nFROM ") if "\nFROM " in build else None]
 
     link = build.index("gcc -static")
-    assert link < build.index("! readelf -lW /out/runtime-cli-sandbox-init | grep -q INTERP")
+    header = build.index("readelf -h /out/runtime-cli-sandbox-init >/dev/null")
+    assert (
+        link < header < build.index("! readelf -lW /out/runtime-cli-sandbox-init | grep -q INTERP")
+    )
     assert link < build.index("! readelf -dW /out/runtime-cli-sandbox-init")
     assert "-shared" not in build and "-dynamic" not in build
 

@@ -37,6 +37,7 @@ COPY scripts/runtime_cli_sandbox_init.c /src/runtime_cli_sandbox_init.c
 RUN --network=none mkdir -p /out \
     && gcc -static -O2 -Wall -Wextra -Werror -o /out/runtime-cli-sandbox-init \
     /src/runtime_cli_sandbox_init.c \
+    && readelf -h /out/runtime-cli-sandbox-init >/dev/null \
     && ! readelf -lW /out/runtime-cli-sandbox-init | grep -q INTERP \
     && ! readelf -dW /out/runtime-cli-sandbox-init 2>/dev/null | grep -q NEEDED
 

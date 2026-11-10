@@ -898,6 +898,46 @@ def test_exact_image_proof_accepts_only_a_static_shim(tmp_path):
     assert exact_image_codex_proof.shim_is_static(script) is False
 
 
+def _elf(*, machine=62, kind=2, phentsize=56, phnum=1, phoff=64, size=None, ptype=1):
+    header = bytearray(64)
+    header[:6] = b"\x7fELF\x02\x01"
+    header[16:18] = kind.to_bytes(2, "little")
+    header[18:20] = machine.to_bytes(2, "little")
+    header[32:40] = phoff.to_bytes(8, "little")
+    header[54:56] = phentsize.to_bytes(2, "little")
+    header[56:58] = phnum.to_bytes(2, "little")
+    body = bytearray(max(phnum, 1) * 56)
+    body[0:4] = ptype.to_bytes(4, "little")
+    return bytes(header + body)[:size] if size is not None else bytes(header + body)
+
+
+@pytest.mark.parametrize(
+    ("name", "data", "expected"),
+    [
+        ("a well-formed static executable", _elf(), True),
+        ("six bytes of header", b"\x7fELF\x02\x01", False),
+        ("four bytes", b"\x7fELF", False),
+        ("empty", b"", False),
+        ("no program headers", _elf(phnum=0), False),
+        ("program headers past the end", _elf(phoff=10_000, phnum=3), False),
+        ("program headers cut short", _elf(phnum=3, size=64 + 56), False),
+        ("wrong machine", _elf(machine=183), False),
+        ("a position-independent object", _elf(kind=3), False),
+        ("wrong header size", _elf(phentsize=32), False),
+        ("an interpreter", _elf(ptype=3), False),
+        ("a dynamic section", _elf(ptype=2), False),
+    ],
+)
+def test_shim_is_static_fails_closed_on_anything_malformed(tmp_path, name, data, expected):
+    shim = tmp_path / "shim"
+    shim.write_bytes(data)
+    assert exact_image_codex_proof.shim_is_static(shim) is expected, name
+
+
+def test_shim_is_static_is_false_for_a_missing_file(tmp_path):
+    assert exact_image_codex_proof.shim_is_static(tmp_path / "absent") is False
+
+
 def test_exact_image_proof_refuses_a_dynamic_shim_before_running(tmp_path, capsys):
     codex, shim = tmp_path / "codex", tmp_path / "init"
     codex.write_bytes(b"x")
