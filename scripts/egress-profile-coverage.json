@@ -5566,7 +5566,7 @@
   "schema": "butlers.egress-profile-coverage/v2",
   "topology": {
     "deploy/helm/butlers/templates/_helpers.tpl": {
-      "sha256": "e163a20ff26700605813561399421bbd8df97f25ebefa717fbf15a2faf3e8c67"
+      "sha256": "6a02c3fa500a05facf84aa9a615076377d404d8f435d71aedf6270c6ee357188"
     },
     "deploy/helm/butlers/templates/butlers-control.yaml": {
       "sha256": "dd9ed7085f268328756c936f7b4b0d804e34207b530aa19e42aac331cb1cea92"
@@ -5578,13 +5578,13 @@
       "sha256": "d910cfcf8a4ae5b79dc712e8f050fde764ef37f10d462dd63a2041d391d5c03a"
     },
     "deploy/helm/butlers/templates/connectors.yaml": {
-      "sha256": "3b7defec41e80ef38d231d1b2032a89305ec731e9199a3a7cceb012d2e886eaf"
+      "sha256": "6f9c7d42df5ea9d4901acaad28031e735d920514fa382975f94edd45075136ff"
     },
     "deploy/helm/butlers/templates/cronjobs.yaml": {
       "sha256": "174eccfe628196cc18d86b6175b4284301d5adb67169e1751313505d12b19697"
     },
     "deploy/helm/butlers/templates/dashboard-api.yaml": {
-      "sha256": "17ef7a8bb0d543707fc0e9e821dd926978eac957e11b2dc4f7d6ef3aecd91b81"
+      "sha256": "6e57815d09ad04d70f56ed080e4348479788127c28048c92032445dd97faa760"
     },
     "deploy/helm/butlers/templates/egress-gateway.yaml": {
       "sha256": "46726ddc9aa6cb92b69054cca56e5772923848af373dc68022d239cf8f4544bd"
@@ -5599,7 +5599,7 @@
       "sha256": "6d3d001e0f8891c6a9469d8a3f0f058b52deefa619b99b8de96d16db29aa8b8f"
     },
     "deploy/helm/butlers/templates/frontend.yaml": {
-      "sha256": "b0e580a6affd00a1d9d929ee04c6a58b64dce0ca7789f5c2c7dbca74d6d388bd"
+      "sha256": "207a3e1da2b2bb9e453186056b7d7b0803e6b8af246ecb06ef9bdb21cb235f87"
     },
     "deploy/helm/butlers/templates/networkpolicy.yaml": {
       "sha256": "6aa1ca4f158d1a61c0f21d2f67b10b0ab446f2cdd7188fc9426edc72e0774bdc"
