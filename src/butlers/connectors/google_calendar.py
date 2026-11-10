@@ -54,7 +54,11 @@ from fastapi import FastAPI
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.filtered_event_buffer import (
+    FilteredEventBuffer,
+    ParkNotDurableError,
+    drain_replay_pending,
+)
 from butlers.connectors.google_fleet import (
     AccountHealthStatus,
     GoogleAccountFleet,
@@ -1510,7 +1514,8 @@ class CalendarConnectorRuntime:
         A failure with attempts left sets ``_hold_sync_token`` so the cycle
         keeps its sync token and reads the event again. A failure that spends
         the event's last attempt parks the exact envelope as a replayable
-        error row, and the cycle moves on.
+        error row, committed before the cycle moves on; a park that is not
+        written holds the sync token like a failure with attempts left.
         """
         retry_key = str((envelope.get("control") or {}).get("idempotency_key") or event_id)
         try:
@@ -1550,17 +1555,26 @@ class CalendarConnectorRuntime:
                 )
                 return False
             # Attempts spent: park the exact envelope (idempotency key included)
-            # as a replayable error row, so the cycle can move on without losing it.
-            self._filtered_event_buffer.record(
-                external_message_id=event_id,
-                source_channel=_DESCRIPTOR.channel,
-                sender_identity=sender_identity,
-                subject_or_preview=preview,
-                filter_reason=FilteredEventBuffer.reason_submission_error(),
-                status="error",
-                error_detail=str(exc),
-                full_payload=FilteredEventBuffer.stored_envelope(envelope),
-            )
+            # as a replayable error row, committed before the cycle can move on.
+            try:
+                await self._filtered_event_buffer.park(
+                    self._db_pool,
+                    external_message_id=event_id,
+                    source_channel=_DESCRIPTOR.channel,
+                    sender_identity=sender_identity,
+                    subject_or_preview=preview,
+                    error_detail=str(exc),
+                    full_payload=FilteredEventBuffer.stored_envelope(envelope),
+                )
+            except ParkNotDurableError:
+                self._hold_sync_token = True
+                logger.error(
+                    "Calendar: event %s for email=%s failed every retry and could not be "
+                    "parked; keeping the syncToken",
+                    event_id,
+                    self._config.email,
+                )
+                return False
             logger.warning(
                 "Calendar: failed to ingest event %s for email=%s: %s",
                 event_id,
