@@ -124,8 +124,6 @@ def test_the_api_server_site_admits_only_the_jwks_port_from_both_verifiers() -> 
 
     # Messenger (butlers-up) verifies delivery tokens; Switchboard (control) verifies relays.
     for workload in ("butlers-up", "butlers-control"):
-        assert _egress_to(docs, workload, "198.51.100.20/32") == [
-            {"port": 6443, "protocol": "TCP"}
-        ]
+        assert _egress_to(docs, workload, "198.51.100.20/32") == [{"port": 6443, "protocol": "TCP"}]
     # Without the switch the optional site stays unadmitted unless located.
     assert _helm(*_PROFILED).returncode == 0

@@ -4608,13 +4608,14 @@
         "scope": "<module>",
         "sha256": "14c174c904d338fd24306ebd18a3cd6695c774014ae2a453204ba84be9768fa2"
       },
-      "reason": "Service-plane token verification (bu-2c1g7v, dark behind BUTLERS_SERVICE_PLANE_AUTH) fetches the cluster issuer JWKS from the in-cluster API server with the pod's own token. Messenger in butlers-up verifies Switchboard's delivery token. The API server is not a chart peer, so the deployment locates it as the kube-apiserver site; the chart refuses servicePlaneAuth.enabled under egress profiles without that site.",
+      "reason": "Service-plane token verification (bu-2c1g7v, dark behind BUTLERS_SERVICE_PLANE_AUTH) fetches the cluster issuer JWKS from the in-cluster API server with the pod's own token. Messenger in butlers-up verifies Switchboard's delivery token; Switchboard in butlers-control verifies relay callers' tokens. The API server is not a chart peer, so the deployment locates it as the kube-apiserver site; the chart refuses servicePlaneAuth.enabled under egress profiles without that site.",
       "resolver": null,
       "sites": [
         "kube-apiserver"
       ],
       "workloads": [
-        "butlers-up"
+        "butlers-up",
+        "butlers-control"
       ]
     },
     "src/butlers/core/spawner_env.py::_with_workload_egress::url::4d41a87dd494406a1240ae080cd092bc22548366e987e701a99f6c94348e5841": {
@@ -5630,7 +5631,7 @@
       "sha256": "dc093bc68e3f600d419af5950fa85d07f15c69a4441b7a8877184e2a194dd752"
     },
     "deploy/helm/butlers/templates/butlers-up.yaml": {
-      "sha256": "6c21180c953f9761a4ab89f63a530bd2bd231561459f4ed4295153fb51a5d25f"
+      "sha256": "e7cf17cc229d574f47e68fd69e185f90037f4791b92138aeefb1dad3eb49847c"
     },
     "deploy/helm/butlers/templates/connector-podmonitor.yaml": {
       "sha256": "d910cfcf8a4ae5b79dc712e8f050fde764ef37f10d462dd63a2041d391d5c03a"

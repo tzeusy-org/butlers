@@ -131,12 +131,13 @@ token per workload: the delivery token into `butlers-control`, the relay token
 into `butlers-up`. Each workload holds only the audience it presents. Butlers holds no private key for
 this: the API server signs and the kubelet rotates.
 
-**Reachability.** This adds one network edge and no new chart-peer edge:
+**Reachability.** This adds one site edge per verifying workload and no new chart-peer edge:
 
 | Hop | Under egress profiles |
 | --- | --- |
 | `butlers-control` to Messenger in `butlers-up` (delivery, token in a header) | Unchanged: the existing `butlers-control` → `butlers-up` 41101-41112 peer. |
-| `butlers-up` (Messenger) to the API server, for the JWKS | New `kube-apiserver` site on the `butlers-up` profile, port 6443, optional. The API server is not a chart peer (on k3s it listens on the node), so the deployment locates it with `egressProfiles.sites.kube-apiserver` (a /32). NetworkPolicy matches the endpoint after the `kubernetes.default` Service is translated, hence 6443, not 443. The chart refuses `servicePlaneAuth.enabled` under egress profiles without that site, because every verification would refuse. |
+| `butlers-up` domain daemons to Switchboard's relay endpoint (`/internal/service-plane/relay/<name>` on 41100) | Unchanged: the existing `butlers-up` → `butlers-control` 41100 peer. The domain-event relay targets the daemon's configured `switchboard_url` (its Switchboard client's URL), the same as the QA relay; the reconciliation sweep inside Switchboard stays in process. |
+| `butlers-up` (Messenger) and `butlers-control` (Switchboard, verifying relay callers) to the API server, for the JWKS | New `kube-apiserver` site on both profiles, port 6443, optional. The API server is not a chart peer (on k3s it listens on the node), so the deployment locates it with `egressProfiles.sites.kube-apiserver` (a /32). NetworkPolicy matches the endpoint after the `kubernetes.default` Service is translated, hence 6443, not 443. The chart refuses `servicePlaneAuth.enabled` under egress profiles without that site, because every verification would refuse. |
 
 The issuer string (`servicePlaneAuth.issuer`, `DEFAULT_ISSUER`) is compared
 against the token's `iss`; it is never dialed. Both are reviewed as references
@@ -149,10 +150,9 @@ in `scripts/egress-profile-coverage.json`.
   workload is authenticated, until domain daemons are split into separate
   processes.
 - **Domain LLM sessions in `butlers-up` can act as any domain daemon.** The
-  domain daemons spawn their LLM CLIs inside the `butlers-up` container. Once
-  that container mounts the relay token, a session that can read files or run
-  commands can read it and call any relay as any daemon name in the
-  allowlist. That is still narrower than today: the service listener (41100)
+  domain daemons spawn their LLM CLIs inside the `butlers-up` container, which
+  mounts the relay token. A session that can read files or run commands can
+  read it and call any relay as any daemon name in the allowlist. That is still narrower than today: the service listener (41100)
   now accepts any caller that can reach it, with no authentication at all.
   The owner question in #5713 weighs this.
 - **Switchboard's own LLM sessions can read the delivery token.** Today they
