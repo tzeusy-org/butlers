@@ -190,6 +190,24 @@ async def test_all_dashboard_loops_wired_through_supervisor_exactly_once(
             assert not task.done(), f"{name} task must be running, not finished, at steady state"
 
 
+async def test_lifespan_wires_the_control_plane_carrier_into_the_mcp_manager(monkeypatch):
+    """RFC 0038 D7: the dashboard's clients carry model-reachable calls.
+
+    ``butlers.api.deps`` cannot import the carrier itself: deps is reached by
+    the Finder's no-LLM import walk, and the carrier's signed-call client
+    reaches the runtime graph. So the app hands it in at startup.
+    """
+    from butlers.api.control_plane_carrier import carry_via_control_plane
+
+    monkeypatch.delenv(api_app.EXTERNAL_DEADMAN_URL_ENV, raising=False)
+    _install_common_mocks(monkeypatch, call_counts={})
+    init = MagicMock(return_value=(MagicMock(), []))
+    monkeypatch.setattr(api_app, "init_dependencies", init)
+
+    async with api_app.lifespan(FastAPI()):
+        init.assert_called_once_with(carrier=carry_via_control_plane)
+
+
 async def test_external_deadman_wired_only_when_url_configured(monkeypatch):
     monkeypatch.setenv(api_app.EXTERNAL_DEADMAN_URL_ENV, "https://deadman.example.test/ping")
     call_counts: dict[str, int] = {}

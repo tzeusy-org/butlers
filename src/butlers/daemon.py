@@ -612,6 +612,7 @@ class ButlerDaemon:
             butler_name=self.config.name,
             approval_push_runtime=self._approval_push_runtime,
             runtime_probe_coordinator=self._build_runtime_probe_coordinator(),
+            dashboard_call_route=self._build_dashboard_call_route(),
             identity_provider=self._identity_facts,
             route_preflight=self._build_route_preflight(),
             fact_source_registry=getattr(self, "_fact_source_registry", None),
@@ -733,6 +734,23 @@ class ButlerDaemon:
             credential_store=self._credential_store,
         )
 
+    def _build_dashboard_call_route(self) -> Any | None:
+        """RFC 0038 D7 dashboard service calls, on Switchboard's service listener only."""
+        config = self.config
+        if (
+            config is None
+            or config.name != "switchboard"
+            or self.db is None
+            or self.db.pool is None
+        ):
+            return None
+
+        from butlers.core.service_plane.dashboard_route import (
+            build_switchboard_dashboard_call_route,
+        )
+
+        return build_switchboard_dashboard_call_route(self.db.pool)
+
     def _build_route_preflight(self) -> Any | None:
         """Mount the effect-free route canary only on Switchboard's backend port."""
         if self.config.name != "switchboard" or self.db is None or self.db.pool is None:
@@ -763,6 +781,7 @@ class ButlerDaemon:
         butler_name: str,
         approval_push_runtime: Any | None = None,
         runtime_probe_coordinator: Any | None = None,
+        dashboard_call_route: Any | None = None,
         identity_provider: Any | None = None,
         route_preflight: Any | None = None,
         fact_source_registry: Any | None = None,
@@ -847,6 +866,12 @@ class ButlerDaemon:
             ):
                 if not cls._attach_route_via_public_api(streamable_app, control_route):
                     streamable_app.routes.append(control_route)
+
+        # RFC 0038 D7 dashboard service calls: never an MCP tool; 404 until
+        # BUTLERS_SERVICE_PLANE_AUTH is on. Only Switchboard builds the route.
+        if dashboard_call_route is not None:
+            if not cls._attach_route_via_public_api(streamable_app, dashboard_call_route):
+                streamable_app.routes.append(dashboard_call_route)
 
         if fact_source_registry is not None:
             for source_route in (

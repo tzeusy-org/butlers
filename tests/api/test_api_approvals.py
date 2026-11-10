@@ -3118,7 +3118,7 @@ async def test_retry_reports_unreachable_owner_truthfully(
     fresh.ping = AsyncMock(return_value=True)
     fresh.call_tool = AsyncMock(side_effect=fresh_dispatch)
     factory = MagicMock(return_value=fresh)
-    monkeypatch.setattr(deps, "MCPClient", factory)
+    monkeypatch.setattr(deps, "DashboardButlerClient", factory)
     if failure is RuntimeError:
         # A connect failure supplies no observed client and must not evict one.
         monkeypatch.setattr(manager, "get_client", AsyncMock(side_effect=failure("unreachable")))

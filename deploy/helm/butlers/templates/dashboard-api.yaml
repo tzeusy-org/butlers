@@ -57,6 +57,7 @@ spec:
             {{- with (include "butlers.egressProxyEnv" (dict "root" . "component" "dashboard-api") | trim) }}{{ . | nindent 12 }}{{- end }}
             - {name: BUTLERS_HOST, value: butlers-up}
             - {name: SWITCHBOARD_MCP_URL, value: "http://{{ include "butlers.switchboardHost" . }}:41100/sse"}
+            {{- include "butlers.servicePlaneEnv" . | nindent 12 }}
             - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
             - {name: BUTLERS_BACKUP_DIR, value: /backups}
             {{- if .Values.offsiteCopy.enabled }}

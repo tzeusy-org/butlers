@@ -225,7 +225,16 @@ async def _call_tool_with_router_client(
     endpoint_url: str,
     tool_name: str,
     args: dict[str, Any],
+    *,
+    resend_after_send: bool = True,
 ) -> Any:
+    """Call one tool on the cached router client, reconnecting once on a retryable failure.
+
+    With ``resend_after_send=False`` the reconnect happens only when the failure
+    proves the call was never sent; a failure after the request went out (a
+    reset or timeout mid-request) raises instead, so a write is never
+    duplicated. The default keeps route()'s existing policy.
+    """
     first_exc: Exception | None = None
     telemetry = get_switchboard_telemetry()
     # This narrowly guards effect calls, preserving existing read-only retry.
@@ -249,7 +258,9 @@ async def _call_tool_with_router_client(
             if isinstance(exc, ServerUnresponsive):
                 # Outcome unknown and the handler may still run: never reconnect and resend.
                 raise
-            if telegram_effect and not proves_transport_not_attempted(exc):
+            if (telegram_effect or not resend_after_send) and not proves_transport_not_attempted(
+                exc
+            ):
                 raise
             if not is_retryable_route_exception(exc):
                 raise

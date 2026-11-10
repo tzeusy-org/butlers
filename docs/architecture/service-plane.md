@@ -105,7 +105,7 @@ mechanisms, and no new private key.
 
 | Hop | Mechanism |
 | --- | --- |
-| Dashboard API to the control plane | The signed dashboard control client (`RUNTIME_PROBE_CONTROL_SIGNING_KEY`, already approved), under its own audience. Lands with the dashboard rerouting. |
+| Dashboard API to the control plane | The signed dashboard control client (`RUNTIME_PROBE_CONTROL_SIGNING_KEY`, already approved), under its own audience (`switchboard.service_call.v1`; see "Dashboard tool calls"). |
 | butlers-up daemons to a named relay; Switchboard to Messenger delivery | A projected Kubernetes ServiceAccount token, verified offline against the cluster issuer's JWKS (`src/butlers/core/service_plane/workload_identity.py`). |
 
 **The authenticated principal is the workload, not the daemon.** The domain
@@ -181,6 +181,68 @@ The issuer string (`servicePlaneAuth.issuer`, `DEFAULT_ISSUER`) is compared
 against the token's `iss`; it is never dialed. Both are reviewed as references
 in `scripts/egress-profile-coverage.json`.
 
+## Dashboard tool calls
+
+With the switch on, a dashboard call to a model-reachable tool reaches the
+butler only through Switchboard. The dashboard's one MCP client,
+`DashboardButlerClient` (`src/butlers/api/deps.py`), overrides
+`call_tool_mcp`, so every `call_tool` site passes through it. For each call it
+applies one rule, shared with Switchboard
+(`routes_through_control_plane` in `src/butlers/core/service_plane/dashboard_call.py`):
+
+| Tool | Path |
+| --- | --- |
+| Declared LLM-presentable, or not declared at all | Switchboard's service listener, under a signed service-call capability. |
+| Declared `presentable=False` (lifecycle, ingest, dispatch, status) | Direct to the butler, unchanged. |
+| `schedule_create` carrying exactly the owner-creation claim | Direct. The target verifies and consumes that single-use owner capability in its own transaction. Any other request meta on a model-reachable tool is refused. |
+
+`src/butlers/api/tool_call_inventory.py` lists every dashboard call site with
+its class (`control_plane`, `service_direct`, `runtime_classified`,
+`owner_capability`). `tests/contracts/test_dashboard_tool_call_inventory.py`
+scans the dashboard source and fails on an unlisted site, a stale entry, a
+class that disagrees with the tool's declaration, a `task=` call (it would skip
+the override), or any second MCP client. The generic `/api/butlers/{name}/mcp/call`
+proxy is `runtime_classified`: every model-reachable tool it reaches takes the
+capability path.
+
+**The capability.** The dashboard client
+(`src/butlers/core/service_plane/dashboard_client.py`) signs a compact EdDSA
+JWS with the runtime-probe control signer, reached only through
+`activated_signer_snapshot()`, under the audience `switchboard.service_call.v1`.
+The payload is exactly `aud`, `caller` (`dashboard`), `butler`, `tool`,
+`args_digest` (SHA-256 over the RFC 8785 encoding of the arguments, domain
+separated), `iat`, `exp` (at most 60 s later) and a 256-bit `nonce`. The codec
+lives with the runtime-probe capability
+(`src/butlers/core/runtime_probe_control/service_call.py`) and shares its
+verifier core; neither audience verifies as the other, and Switchboard reaches
+the deployment keyring only through that package.
+
+**The route.** `POST /internal/service-plane/dashboard-call` on Switchboard's
+service listener (`src/butlers/core/service_plane/dashboard_route.py`) takes the
+capability in one `Authorization: Bearer` header (no cookie, no query string)
+and the body `{"butler", "tool", "args"}`. Before the target is contacted it
+refuses: switch off (`404`), a badly carried capability (`401`), a malformed
+body (`400`), no verifier keyring (`503 auth_unavailable`), a capability that
+does not verify or is bound to another butler, tool or argument digest (`401`),
+a service-only tool (`403 not_presentable`), and a consumed nonce (`409
+replay`). The nonce is consumed through the same durable receipt table as
+runtime probes, under its own audience (core_327 widens the table's audience
+check). Then Switchboard's own `route()` calls the target as
+`source_butler="dashboard"` and returns the target's whole MCP result, so
+FastMCP raises `ToolError` for a tool error exactly as on a direct call. A
+target `route()` cannot reach is `503 target_unavailable`, with `retryable`
+true only when the failure proves nothing was sent. A dashboard call is never
+resent once it may have reached the target: a reset or timeout after the
+request went out is that `503` with `retryable: false`, not a second call, so
+a dashboard write is never duplicated. A failure that proves nothing was
+sent still reconnects once. Every other `route()` caller keeps the existing
+reconnect-and-resend policy. The dashboard maps every refusal, and a missing signer, to
+`ButlerUnreachableError`; it never falls back to a direct call.
+
+The switch reaches the dashboard through the same chart value:
+`servicePlaneAuth.enabled` sets `BUTLERS_SERVICE_PLANE_AUTH=1` on `dashboard-api`
+too.
+
 ## Limits
 
 - **No per-daemon separation inside `butlers-up`.** Any daemon in that process
@@ -203,6 +265,12 @@ in `scripts/egress-profile-coverage.json`.
   the namespace can obtain a valid token for these workloads. These permissions
   are already equivalent to reading the workloads' secrets, and they stay with
   the owner.
+- **A routed dashboard call carries no goal assertion yet.** Switchboard
+  forwards it through `route()` as itself. The broker assertion with origin
+  `owner` and principal `dashboard` lands in the next change.
+- **The dashboard still holds a direct connection.** `get_client` opens the
+  butler's MCP session as before, and service-only tools use it. A routed call
+  does not send anything over it.
 - **Replay inside the token's window.** A token is a bearer credential for up
   to its 600 s lifetime and is not bound to a request. The service listener is
   plain HTTP inside the cluster, so a token seen on the pod network can be

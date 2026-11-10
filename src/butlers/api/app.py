@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.staticfiles import StaticFiles
 
+from butlers.api.control_plane_carrier import carry_via_control_plane
 from butlers.api.dashboard_audit_middleware import DashboardAuditMiddleware
 from butlers.api.deps import (
     get_butler_configs,
@@ -172,7 +173,7 @@ async def lifespan(app: FastAPI):
         logger.warning("Owner authentication storage is unavailable")
 
     # Startup
-    init_dependencies()
+    init_dependencies(carrier=carry_via_control_plane)
 
     # Check infra creds for known-default values (A4 indicator: infra_creds_insecure_default).
     # Dev posture: warns loudly per credential.  Hardened posture: raises RuntimeError.
