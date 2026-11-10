@@ -87,7 +87,7 @@
       "sha256": "8e1aa9b4c4e60cb92562a1efa6ec9061d52c8bdcb246d8f0ed1ce129cfa4c486"
     },
     "deploy/runtime-clis/native-package-artifacts/build-inputs.json": {
-      "sha256": "3cbd58859d5d0b61d87cc1161e3fa8144edb980e5d835cfdc9eddb0154c23509"
+      "sha256": "68485d59767d5a8b5e2df8482117562ff0e4831bf913e361f4d43d5658f14e39"
     },
     "deploy/runtime-clis/npm-artifacts/build-inputs.json": {
       "sha256": "dbef47f206c369c9c67186f6c79c8d4027b1e6541d619e134d478fc21ba7ed01"
@@ -156,7 +156,7 @@
       "sha256": "f02fb9ac77ff654765ea1ef97508e0a417b115e9b56e26285721cccae8047bb2"
     },
     "deploy/runtime-clis/runtime-inputs.json": {
-      "sha256": "948cfe27bc91cc9a613f4adffe5a9f565134e8c47fecd11db1786b218a257b3b"
+      "sha256": "5db936926b1252ce564700edf477128a78ec2e5ac3f9f3a82449c9f1f7880b5c"
     },
     "deploy/runtime-clis/shared/egress.ts": {
       "sha256": "c18a9d00ac0a4766aca736dc6e56c3f3b93c77e486b7be04b2a12b4b22817301"

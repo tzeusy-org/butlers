@@ -100,10 +100,17 @@ Rust results, separate from a release build, installed-wrapper native operation
 or an image. In particular, they do not attribute the outstanding native
 auxiliary request observations or prove that process-exit shutdown is fixed.
 
-Source and series declarations advance with this patch. The existing Codex
-binary/component hashes in `native-package-artifacts/build-inputs.json` and
-`runtime-inputs.json` remain the prior earned artifact identities until a new
-build and complete package assembly are verified. Those old contexts are not
-requalified by a source-pin update; the native assembler refuses mismatched
-source/series provenance. Requalifying the complete wrapper, assets and runtime
-context, followed by native and image checks, remains required.
+The reviewed pinned compiler/locked graph has now produced the corrected release.
+The declared binary and Codex component hashes come from that actual release and a
+data-only measurement of all 65 original wrapper/platform entries. Only the main
+executable changed; every auxiliary asset, voice payload, license, type and mode
+matched the previously accepted complete inventory. The derived artifact receipt
+records the actual build lineage without claiming a stock public seed or producer
+execution.
+
+These measured pins are the desired outputs for the unmodified native assembler;
+its original Claude lifecycle and complete package verification must still run.
+Existing runtime contexts retain their old identities and are not requalified by
+updating `runtime-inputs.json`. A new aggregate close/install, installed-wrapper
+native checks and image checks remain required; auxiliary native request
+observations and process-exit shutdown remain separately qualified.
