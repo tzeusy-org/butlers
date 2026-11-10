@@ -157,6 +157,7 @@ def _detect_addressed_in_events(
 # ---------------------------------------------------------------------------
 
 _FLUSH_SCANNER_INTERVAL_S = 60  # How often the flush scanner wakes up
+_HELD_CEILING_FACTOR = 4  # A chat with a held batch buffers at most this many caps of events
 _LINK_WATCHDOG_INTERVAL_S = 60  # How often the stale-link watchdog checks the bridge
 _BRIDGE_STARTUP_TIMEOUT_S = 60.0  # Bridge startup timeout (longer for QR re-pair)
 _SSE_RECONNECT_DELAY_S = 5.0  # Delay before reconnecting SSE after failure
@@ -188,6 +189,19 @@ _WHATSAPP_UNKNOWN_SENDER_LABEL = "Unknown WhatsApp sender"
 # ---------------------------------------------------------------------------
 # Chat buffer data structure
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class _HeldBatch:
+    """A batch whose flush failed: frozen membership, tried again by the scanner timer.
+
+    ``key`` is the batch event id, so the idempotency key and the retry budget stay the same
+    across attempts. Events arriving meanwhile form their own batch with their own budget.
+    """
+
+    chat_jid: str
+    key: str
+    events: list[dict[str, Any]]
 
 
 @dataclass
@@ -563,6 +577,7 @@ class WhatsAppUserClientConnector:
         # A failed batch is held in its chat buffer for a bounded number of attempts
         # (bu-dhloi1.277); the bridge stream cannot replay it, so memory is the only copy.
         self._batch_retry = IngestRetryBudget()
+        self._held_batches: dict[str, list[_HeldBatch]] = {}
 
         # DB pools
         self._cursor_pool = cursor_pool
@@ -982,14 +997,27 @@ class WhatsAppUserClientConnector:
 
         buf = self._chat_buffers[chat_jid]
         async with buf.lock:
+            if self._held_batches.get(chat_jid) and len(buf.messages) >= (
+                self._config.buffer_max_messages * _HELD_CEILING_FACTOR
+            ):
+                # The bridge stream cannot replay, so this is a bounded, counted loss: a chat
+                # whose batches keep failing sheds its newest events instead of growing memory.
+                self._metrics.record_error("held_buffer_overflow", "buffer_event")
+                logger.error(
+                    "Chat buffer is over its ceiling while a batch is held; event dropped "
+                    "(chat_ref=%s)",
+                    _opaque_transport_ref(chat_jid),
+                )
+                return
             buf.messages.append(event)
             msg_count = len(buf.messages)
 
         chat_ref = _opaque_transport_ref(chat_jid)
         logger.debug("Buffered message for chat_ref=%s (buffer size: %d)", chat_ref, msg_count)
 
-        # Force-flush if buffer cap reached
-        if msg_count >= self._config.buffer_max_messages:
+        # Force-flush if buffer cap reached, unless a held batch waits for its retry timer:
+        # forcing one flush per event would rebuild and resubmit on every arrival.
+        if msg_count >= self._config.buffer_max_messages and not self._held_batches.get(chat_jid):
             logger.info(
                 "Chat buffer reached cap (chat_ref=%s, messages=%d), force-flushing",
                 chat_ref,
@@ -1047,6 +1075,7 @@ class WhatsAppUserClientConnector:
                     db_interval if db_interval is not None else self._config.flush_interval_s
                 )
                 await self._scan_and_flush(effective_interval)
+                await self._retry_held_batches()
         except asyncio.CancelledError:
             logger.debug("WA flush scanner cancelled")
             raise
@@ -1389,6 +1418,12 @@ class WhatsAppUserClientConnector:
                 )
                 await self._flush_chat_buffer(jid)
 
+    async def _retry_held_batches(self, *, final: bool = False) -> None:
+        """One attempt for each held batch (the retry timer), or its last when *final*."""
+        for chat_jid, held_batches in list(self._held_batches.items()):
+            for held in list(held_batches):
+                await self._flush_batch(chat_jid, held.events, final, held)
+
     async def _flush_all_buffers(self, reason: str = "force") -> None:
         """Force-flush all non-empty chat buffers."""
         chat_jids = list(self._chat_buffers.keys())
@@ -1414,6 +1449,8 @@ class WhatsAppUserClientConnector:
                     reason,
                     type(result).__name__,
                 )
+        if final:
+            await self._retry_held_batches(final=True)
 
     async def _flush_chat_buffer(self, chat_jid: str, *, final: bool = False) -> None:
         """Flush a single chat's buffer through the full batch pipeline.
@@ -1444,6 +1481,16 @@ class WhatsAppUserClientConnector:
             buf.messages = []
             buf.last_flush_ts = time.monotonic()
 
+        await self._flush_batch(chat_jid, buffered_events, final, None)
+
+    async def _flush_batch(
+        self,
+        chat_jid: str,
+        buffered_events: list[dict[str, Any]],
+        final: bool,
+        held: _HeldBatch | None,
+    ) -> None:
+        """Run one batch (fresh from the buffer, or a held one again) through the pipeline."""
         chat_ref = _opaque_transport_ref(chat_jid)
         logger.info("Flushing messages (chat_ref=%s, count=%d)", chat_ref, len(buffered_events))
 
@@ -1451,7 +1498,7 @@ class WhatsAppUserClientConnector:
         event_ids = [e.get("message_id") or e.get("id") or "" for e in buffered_events]
         min_id = min((i for i in event_ids if i), default="0")
         max_id = max((i for i in event_ids if i), default="0")
-        batch_event_id = f"batch:{chat_jid}:{min_id}-{max_id}"
+        batch_event_id = held.key if held is not None else f"batch:{chat_jid}:{min_id}-{max_id}"
         # The classification that decided the drop; every record site stores this one.
         drop_class: tuple[bool | None, dict[str, Any] | None] | None = None
 
@@ -1493,6 +1540,7 @@ class WhatsAppUserClientConnector:
                     events=buffered_events,
                     drop_class=drop_class,
                 )
+                self._release_batch(chat_jid, held, batch_event_id)
                 await self._flush_and_drain()
                 return
 
@@ -1515,6 +1563,7 @@ class WhatsAppUserClientConnector:
                     events=buffered_events,
                     drop_class=drop_class,
                 )
+                self._release_batch(chat_jid, held, batch_event_id)
                 await self._flush_and_drain()
                 return
 
@@ -1562,6 +1611,7 @@ class WhatsAppUserClientConnector:
                         events=buffered_events,
                         drop_class=drop_class,
                     )
+                    self._release_batch(chat_jid, held, batch_event_id)
                     await self._flush_and_drain()
                     return
 
@@ -1569,6 +1619,7 @@ class WhatsAppUserClientConnector:
             await self._submit_to_ingest(envelope)
 
             # Flush filtered event buffer after successful submission
+            self._release_batch(chat_jid, held, batch_event_id)
             await self._flush_and_drain()
 
             # f. Advance checkpoint to latest event ID
@@ -1587,9 +1638,8 @@ class WhatsAppUserClientConnector:
                 chat_ref,
                 failure_class,
             )
-            retry_key = f"batch:{chat_jid}"
-            if not final and not self._batch_retry.failed(retry_key):
-                await self._requeue_batch(buf, buffered_events)
+            if not final and not self._batch_retry.failed(batch_event_id):
+                self._hold_batch(chat_jid, held, batch_event_id, buffered_events)
                 return
             unparked = await self._park_failed_batch(chat_jid, buffered_events, failure_class)
             if unparked:
@@ -1598,17 +1648,36 @@ class WhatsAppUserClientConnector:
                     chat_ref,
                     len(unparked),
                 )
-                await self._requeue_batch(buf, unparked)
+                self._hold_batch(chat_jid, held, batch_event_id, unparked)
                 return
+            self._release_batch(chat_jid, held, batch_event_id)
             await self._flush_and_drain()
-        else:
-            self._batch_retry.succeeded(f"batch:{chat_jid}")
 
-    @staticmethod
-    async def _requeue_batch(buf: ChatBuffer, events: list[dict[str, Any]]) -> None:
-        """Put a failed batch back ahead of anything buffered since."""
-        async with buf.lock:
-            buf.messages = [*events, *buf.messages]
+    def _hold_batch(
+        self,
+        chat_jid: str,
+        held: _HeldBatch | None,
+        key: str,
+        events: list[dict[str, Any]],
+    ) -> None:
+        """Hold a failed batch with its membership frozen until its retry timer."""
+        if held is None:
+            self._held_batches.setdefault(chat_jid, []).append(
+                _HeldBatch(chat_jid=chat_jid, key=key, events=list(events))
+            )
+        else:
+            held.events = list(events)
+
+    def _release_batch(self, chat_jid: str, held: _HeldBatch | None, key: str) -> None:
+        """A batch reached a terminal outcome: forget its hold (only its own) and its budget."""
+        self._batch_retry.succeeded(key)
+        if held is None:
+            return
+        batches = self._held_batches.get(chat_jid)
+        if batches is not None:
+            batches[:] = [b for b in batches if b is not held]
+            if not batches:
+                del self._held_batches[chat_jid]
 
     async def _park_failed_batch(
         self, chat_jid: str, events: list[dict[str, Any]], failure_class: str

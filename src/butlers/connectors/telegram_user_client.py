@@ -173,6 +173,8 @@ def _detect_addressed_in_batch(
 # ---------------------------------------------------------------------------
 
 _FLUSH_SCANNER_INTERVAL_S = 60  # How often the flush scanner wakes up
+# A chat with a held batch may buffer this many caps' worth of messages before it sheds new ones.
+_HELD_CEILING_FACTOR = 4
 
 
 @dataclass
@@ -192,6 +194,20 @@ class ChatBuffer:
     last_flush_ts: float = field(default_factory=time.monotonic)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     chat_title: str | None = None
+
+
+@dataclass
+class _HeldBatch:
+    """A batch whose flush failed: frozen membership, tried again by the scanner timer.
+
+    Its ``key`` is the batch event id, so the idempotency key and the retry budget stay the
+    same across attempts. Messages arriving meanwhile form their own batch with their own budget.
+    """
+
+    chat_id: str
+    key: str
+    messages: list[Any]
+    chat_title: str | None
 
 
 def _raise_site(exc: BaseException) -> str:
@@ -388,7 +404,10 @@ class TelegramUserClientConnector:
         # _batch_retry are spent each message is parked as its own replayable error row
         # (bu-dhloi1.277).
         self._batch_retry = IngestRetryBudget()
-        self._held_batches: dict[str, list[Any]] = {}
+        self._held_batches: dict[str, list[_HeldBatch]] = {}
+        # Lowest id dropped per chat once a held chat's buffer passed its ceiling. It holds the
+        # checkpoint below it until restart, which re-reads those ids from Telegram.
+        self._overflow_floor: dict[str, int] = {}
 
         # DB pool for cursor read/write to switchboard.connector_registry.
         self._cursor_pool = cursor_pool
@@ -760,6 +779,23 @@ class TelegramUserClientConnector:
 
         buf = self._chat_buffers[chat_id]
         async with buf.lock:
+            if self._held_batches.get(chat_id) and len(buf.messages) >= (
+                self._config.buffer_max_messages * _HELD_CEILING_FACTOR
+            ):
+                # A failing chat must not grow memory without bound. The held batch keeps the
+                # checkpoint below this id, so a restart re-reads it from Telegram.
+                message_id = getattr(message, "id", None)
+                if isinstance(message_id, int):
+                    floor = self._overflow_floor.get(chat_id)
+                    self._overflow_floor[chat_id] = (
+                        message_id if floor is None else min(floor, message_id)
+                    )
+                logger.error(
+                    "Chat %s buffer is over its ceiling while a batch is held; message not "
+                    "buffered (catch-up re-reads it)",
+                    chat_id,
+                )
+                return
             buf.messages.append(message)
             msg_count = len(buf.messages)
             # Opportunistically capture chat_title from message.chat (groups/channels
@@ -777,8 +813,9 @@ class TelegramUserClientConnector:
             msg_count,
         )
 
-        # Force-flush if the buffer has hit its cap
-        if msg_count >= self._config.buffer_max_messages:
+        # Force-flush if the buffer has hit its cap, unless a held batch is waiting for its
+        # retry timer: forcing one flush per message would refetch history each time.
+        if msg_count >= self._config.buffer_max_messages and not self._held_batches.get(chat_id):
             logger.info(
                 "Chat %s buffer reached cap (%d messages), force-flushing",
                 chat_id,
@@ -834,6 +871,7 @@ class TelegramUserClientConnector:
                 await self._scan_and_flush(effective_interval)
                 # Messages whose ingest failed get their next attempt here.
                 await self._retry_pending_messages()
+                await self._retry_held_batches()
         except asyncio.CancelledError:
             logger.debug("Flush scanner cancelled")
             raise
@@ -866,6 +904,12 @@ class TelegramUserClientConnector:
                 )
                 await self._flush_chat_buffer(chat_id)
 
+    async def _retry_held_batches(self, *, final: bool = False) -> None:
+        """One attempt for each held batch (the retry timer), or its last when *final*."""
+        for chat_id, held_batches in list(self._held_batches.items()):
+            for held in list(held_batches):
+                await self._flush_batch(chat_id, held.messages, held.chat_title, final, held)
+
     async def _flush_all_buffers(self, reason: str = "force") -> None:
         """Force-flush all non-empty chat buffers (called on shutdown)."""
         chat_ids = list(self._chat_buffers.keys())
@@ -883,6 +927,8 @@ class TelegramUserClientConnector:
                 for chat_id in chat_ids
             )
         )
+        if final:
+            await self._retry_held_batches(final=True)
 
     def _batch_has_service_sender(self, messages: list[Any] | None) -> bool:
         """Whether the login-code service sender (777000) wrote any batch message."""
@@ -989,10 +1035,27 @@ class TelegramUserClientConnector:
             buf.last_flush_ts = time.monotonic()
             chat_title = buf.chat_title
 
+        await self._flush_batch(chat_id, buffered_messages, chat_title, final, None)
+
+    async def _flush_batch(
+        self,
+        chat_id: str,
+        buffered_messages: list[Any],
+        chat_title: str | None,
+        final: bool,
+        held: _HeldBatch | None,
+    ) -> None:
+        """Run one batch (fresh from the buffer, or a held one again) through the pipeline."""
         logger.info(
             "Flushing %d messages for chat %s",
             len(buffered_messages),
             chat_id,
+        )
+        ids = [m.id for m in buffered_messages if isinstance(getattr(m, "id", None), int)]
+        batch_key = (
+            held.key
+            if held is not None
+            else f"batch:{chat_id}:{min(ids, default=0)}-{max(ids, default=0)}"
         )
 
         try:
@@ -1049,6 +1112,7 @@ class TelegramUserClientConnector:
                     ),
                     messages=buffered_messages,
                 )
+                self._release_batch(chat_id, held, batch_key)
                 await self._flush_and_drain()
                 return
 
@@ -1070,6 +1134,7 @@ class TelegramUserClientConnector:
                     ),
                     messages=buffered_messages,
                 )
+                self._release_batch(chat_id, held, batch_key)
                 await self._flush_and_drain()
                 return
 
@@ -1118,6 +1183,7 @@ class TelegramUserClientConnector:
                         subject_or_preview=normalized_text[:200] if normalized_text else None,
                         messages=buffered_messages,
                     )
+                    self._release_batch(chat_id, held, batch_key)
                     await self._flush_and_drain()
                     return
 
@@ -1130,8 +1196,7 @@ class TelegramUserClientConnector:
             # h. Advance checkpoint to max(msg.id for msg in buffered_messages).
             # Through _advance_checkpoint, so a batch never moves the checkpoint
             # past a single message still waiting for a retry.
-            self._batch_retry.succeeded(f"batch:{chat_id}")
-            self._held_batches.pop(chat_id, None)
+            self._release_batch(chat_id, held, batch_key)
             await self._advance_checkpoint(max(m.id for m in buffered_messages))
 
         except Exception as exc:
@@ -1146,8 +1211,8 @@ class TelegramUserClientConnector:
                 _raise_site(exc),
                 extra={"endpoint_identity": self._config.endpoint_identity},
             )
-            if not final and not self._batch_retry.failed(f"batch:{chat_id}"):
-                await self._hold_batch(buf, chat_id, buffered_messages)
+            if not final and not self._batch_retry.failed(batch_key):
+                self._hold_batch(chat_id, held, batch_key, buffered_messages, chat_title)
                 return
             unparked = await self._park_failed_batch(chat_id, buffered_messages, exc)
             if unparked:
@@ -1156,17 +1221,39 @@ class TelegramUserClientConnector:
                     chat_id,
                     len(unparked),
                 )
-                await self._hold_batch(buf, chat_id, unparked)
+                self._hold_batch(chat_id, held, batch_key, unparked, chat_title)
                 return
-            self._held_batches.pop(chat_id, None)
+            self._release_batch(chat_id, held, batch_key)
             await self._flush_and_drain()
             await self._advance_checkpoint(max(m.id for m in buffered_messages))
 
-    async def _hold_batch(self, buf: ChatBuffer, chat_id: str, messages: list[Any]) -> None:
-        """Put a failed batch back ahead of anything buffered since; hold the checkpoint."""
-        async with buf.lock:
-            buf.messages = [*messages, *buf.messages]
-        self._held_batches[chat_id] = list(messages)
+    def _hold_batch(
+        self,
+        chat_id: str,
+        held: _HeldBatch | None,
+        key: str,
+        messages: list[Any],
+        chat_title: str | None,
+    ) -> None:
+        """Hold a failed batch with its membership frozen; the checkpoint stays below it."""
+        if held is None:
+            held = _HeldBatch(
+                chat_id=chat_id, key=key, messages=list(messages), chat_title=chat_title
+            )
+            self._held_batches.setdefault(chat_id, []).append(held)
+        else:
+            held.messages = list(messages)
+
+    def _release_batch(self, chat_id: str, held: _HeldBatch | None, key: str) -> None:
+        """A batch reached a terminal outcome: forget its hold (only its own) and its budget."""
+        self._batch_retry.succeeded(key)
+        if held is None:
+            return
+        batches = self._held_batches.get(chat_id)
+        if batches is not None:
+            batches[:] = [b for b in batches if b is not held]
+            if not batches:
+                del self._held_batches[chat_id]
 
     async def _park_failed_batch(
         self, chat_id: str, messages: list[Any], exc: Exception
@@ -1721,8 +1808,10 @@ class TelegramUserClientConnector:
             self._done_max_id = message_id
         target = self._done_max_id
         pending = [getattr(m, "id", None) for m in self._retry_pending.values()]
-        for held in self._held_batches.values():
-            pending.extend(getattr(m, "id", None) for m in held)
+        for batches in self._held_batches.values():
+            for held in batches:
+                pending.extend(getattr(m, "id", None) for m in held.messages)
+        pending.extend(self._overflow_floor.values())
         pending_ids = [p for p in pending if isinstance(p, int)]
         if pending_ids:
             target = min(target, min(pending_ids) - 1)

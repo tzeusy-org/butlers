@@ -19,6 +19,7 @@ import time
 from contextlib import suppress
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1635,19 +1636,53 @@ def _held_msg(msg_id: int, chat_id: int = 300) -> SimpleNamespace:
     )
 
 
+_FAILED = ValueError("failed")
+
+
 async def _flush_failing(
-    connector: TelegramUserClientConnector, chat: str, *, final: bool = False
+    connector: TelegramUserClientConnector,
+    chat: str,
+    *,
+    final: bool = False,
+    retry: bool = False,
+    only: Any = None,
+    submit_error: Exception | None = _FAILED,
+    block: str | None = None,
 ) -> None:
+    """Flush the chat buffer (or run the held-batch retry timer) with a stubbed pipeline.
+
+    ``block`` ends the batch at a drop return: ``connector``, ``global`` or ``discretion``.
+    """
     allow = SimpleNamespace(allowed=True, action="pass_through")
-    connector._discretion_dispatcher = None
+    deny = SimpleNamespace(
+        allowed=False, action="skip", matched_rule_type="chat_id", reason="synthetic rule"
+    )
+    connector._discretion_dispatcher = AsyncMock() if block == "discretion" else None
+    connector._discretion_evaluators[chat] = SimpleNamespace(
+        evaluate=AsyncMock(return_value=SimpleNamespace(verdict="IGNORE", reason="noise"))
+    )
     with (
-        patch.object(connector._ingestion_policy, "evaluate", return_value=allow),
-        patch.object(connector._global_ingestion_policy, "evaluate", return_value=allow),
-        patch.object(connector, "_submit_to_ingest", AsyncMock(side_effect=ValueError("failed"))),
+        patch.object(
+            connector._ingestion_policy,
+            "evaluate",
+            return_value=deny if block == "connector" else allow,
+        ),
+        patch.object(
+            connector._global_ingestion_policy,
+            "evaluate",
+            return_value=deny if block == "global" else allow,
+        ),
+        patch.object(connector, "_resolve_batch_weight", AsyncMock(return_value=1.0)),
+        patch.object(connector, "_submit_to_ingest", AsyncMock(side_effect=submit_error)),
         patch.object(connector, "_flush_and_drain", AsyncMock()),
         patch.object(connector, "_save_checkpoint", AsyncMock()),
     ):
-        await connector._flush_chat_buffer(chat, final=final)
+        if only is not None:
+            await connector._flush_batch(chat, only.messages, None, final, only)
+        elif retry:
+            await connector._retry_held_batches(final=final)
+        else:
+            await connector._flush_chat_buffer(chat, final=final)
 
 
 async def _prime_two(connector: TelegramUserClientConnector) -> list[SimpleNamespace]:
@@ -1667,7 +1702,10 @@ async def test_failed_batch_is_held_and_the_checkpoint_stays_below_it(connector)
 
     await _flush_failing(connector, "300")
 
-    assert connector._chat_buffers["300"].messages == msgs
+    # Membership is frozen outside the buffer, so new arrivals cannot join the held batch.
+    assert not connector._chat_buffers["300"].messages
+    assert connector._held_batches["300"][0].messages == msgs
+    assert connector._held_batches["300"][0].key == "batch:300:10-11"
     assert not pool.written
     # Another chat succeeding past the held ids must not move the checkpoint over them.
     with patch.object(connector, "_save_checkpoint", AsyncMock()):
@@ -1683,14 +1721,13 @@ async def test_spent_attempts_park_each_message_then_advance(connector) -> None:
 
     await _flush_failing(connector, "300")
     assert not pool.written
-    await _flush_failing(connector, "300")
+    await _flush_failing(connector, "300", retry=True)
 
     assert [row[9]["event"]["external_event_id"] for row in pool.written] == [
         "batch:300:10-10",
         "batch:300:11-11",
     ]
     assert all(row[8] == "error" and row[9]["payload"]["raw"] for row in pool.written)
-    assert not connector._chat_buffers["300"].messages
     assert "300" not in connector._held_batches
     assert connector._last_message_id == 11
 
@@ -1704,12 +1741,13 @@ async def test_unwritable_park_keeps_the_batch_held(connector) -> None:
 
     await _flush_failing(connector, "300")
 
-    assert connector._chat_buffers["300"].messages == msgs
+    assert connector._held_batches["300"][0].messages == msgs
     assert connector._last_message_id == 5
     pool.fail_writes = False
     # The budget restarts after an unwritten park; spend it again, then the rows land.
-    await _flush_failing(connector, "300")
+    await _flush_failing(connector, "300", retry=True)
     assert len(pool.written) == 2
+    assert "300" not in connector._held_batches
     assert connector._last_message_id == 11
 
 
@@ -1720,4 +1758,74 @@ async def test_shutdown_flush_parks_a_failed_batch_at_once(connector) -> None:
     await _flush_failing(connector, "300", final=True)
 
     assert len(pool.written) == 2
-    assert not connector._chat_buffers["300"].messages
+    assert "300" not in connector._held_batches
+
+
+@pytest.mark.parametrize("block", ["connector", "global", "discretion"])
+async def test_a_held_batch_that_is_then_dropped_releases_the_checkpoint(connector, block) -> None:
+    await _prime_two(connector)
+    connector._db_pool = FilteredEventsPool()  # type: ignore[assignment]
+    connector._last_message_id = 5
+    await _flush_failing(connector, "300")
+    assert connector._held_batches["300"]
+
+    # The retry ends at a drop return (policy block, global skip, discretion IGNORE).
+    await _flush_failing(connector, "300", retry=True, submit_error=None, block=block)
+
+    assert "300" not in connector._held_batches
+    assert len(connector._batch_retry) == 0
+    with patch.object(connector, "_save_checkpoint", AsyncMock()):
+        await connector._advance_checkpoint(500)
+    assert connector._last_message_id == 500
+
+
+async def test_releasing_one_held_batch_keeps_another_chat_batch_held(connector) -> None:
+    from butlers.connectors.telegram_user_client import ChatBuffer
+
+    first, second = [_held_msg(10)], [_held_msg(20)]
+    connector._db_pool = FilteredEventsPool()  # type: ignore[assignment]
+    connector._last_message_id = 5
+    connector._fetch_conversation_history = AsyncMock(return_value=first)  # type: ignore[method-assign]
+    connector._resolve_reply_tos = AsyncMock(return_value=first)  # type: ignore[method-assign]
+    connector._chat_buffers["300"] = ChatBuffer(messages=list(first))
+    await _flush_failing(connector, "300")
+    connector._chat_buffers["300"].messages = list(second)
+    await _flush_failing(connector, "300")
+    assert [h.key for h in connector._held_batches["300"]] == ["batch:300:10-10", "batch:300:20-20"]
+
+    # The first batch succeeds on its retry; the second's hold is untouched.
+    held_first = connector._held_batches["300"][0]
+    await _flush_failing(connector, "300", only=held_first, submit_error=None)
+    assert [h.key for h in connector._held_batches["300"]] == ["batch:300:20-20"]
+    with patch.object(connector, "_save_checkpoint", AsyncMock()):
+        await connector._advance_checkpoint(500)
+    assert connector._last_message_id == 19
+
+
+async def test_a_held_chat_is_not_force_flushed_and_sheds_past_its_ceiling(connector) -> None:
+    from butlers.connectors.telegram_user_client import ChatBuffer
+
+    connector._config.buffer_max_messages = 2
+    msgs = await _prime_two(connector)
+    connector._db_pool = FilteredEventsPool()  # type: ignore[assignment]
+    connector._last_message_id = 5
+    await _flush_failing(connector, "300")
+    held_key = connector._held_batches["300"][0].key
+    connector._chat_buffers["300"] = ChatBuffer()
+    connector._flush_chat_buffer = AsyncMock()  # type: ignore[method-assign]
+
+    # New arrivals buffer as their own batch, with no cap-triggered flush while a batch is held.
+    for i in range(12, 12 + 8):
+        await connector._buffer_message(_held_msg(i))
+    connector._flush_chat_buffer.assert_not_awaited()
+    assert len(connector._chat_buffers["300"].messages) == 8
+    assert connector._held_batches["300"][0].key == held_key
+    assert connector._held_batches["300"][0].messages == msgs
+    # Past the ceiling nothing more is buffered; the dropped id holds the checkpoint instead.
+    await connector._buffer_message(_held_msg(40))
+    await connector._buffer_message(_held_msg(41))
+    assert len(connector._chat_buffers["300"].messages) == 8
+    held = connector._held_batches.pop("300")
+    with patch.object(connector, "_save_checkpoint", AsyncMock()):
+        await connector._advance_checkpoint(500)
+    assert held and connector._last_message_id == 39  # catch-up re-reads 40 and 41

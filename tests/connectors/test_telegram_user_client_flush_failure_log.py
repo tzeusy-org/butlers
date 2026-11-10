@@ -150,8 +150,8 @@ async def test_failure_still_records_the_error_row(connector, caplog):
         )
 
     # The failed batch is held in its buffer, not dropped or recorded in memory.
-    assert len(connector._chat_buffers["1001"].messages) == 1
-    assert connector._held_batches["1001"]
+    assert not connector._chat_buffers["1001"].messages
+    assert connector._held_batches["1001"][0].messages
     assert not connector._filtered_event_buffer._rows
 
 

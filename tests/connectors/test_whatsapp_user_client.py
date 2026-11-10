@@ -2101,42 +2101,64 @@ def _wa_event(message_id: str, chat_jid: str = "g1@g.us") -> dict[str, Any]:
 
 
 async def _flush_failing_wa(
-    connector: WhatsAppUserClientConnector, chat_jid: str, *, final: bool = False
+    connector: WhatsAppUserClientConnector,
+    chat_jid: str,
+    *,
+    final: bool = False,
+    retry: bool = False,
+    submit_error: Exception | None = RuntimeError("down"),  # noqa: B008
+    block: str | None = None,
 ) -> None:
     connector._refresh_lid_map = AsyncMock()  # type: ignore[method-assign]
     connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
     connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
-    connector._submit_to_ingest = AsyncMock(side_effect=RuntimeError("down"))  # type: ignore[method-assign]
+    if block == "connector":
+        connector._ingestion_policy.evaluate = MagicMock(  # type: ignore[method-assign]
+            return_value=MagicMock(allowed=False, reason="blocked")
+        )
+    elif block == "global":
+        connector._global_ingestion_policy.evaluate = MagicMock(  # type: ignore[method-assign]
+            return_value=MagicMock(allowed=False, reason="skip", action="skip")
+        )
+    connector._submit_to_ingest = AsyncMock(side_effect=submit_error)  # type: ignore[method-assign]
     connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
-    await connector._flush_chat_buffer(chat_jid, final=final)
+    if retry:
+        await connector._retry_held_batches(final=final)
+    else:
+        await connector._flush_chat_buffer(chat_jid, final=final)
 
 
-async def test_failed_batch_is_held_in_its_buffer(connector: WhatsAppUserClientConnector) -> None:
+async def test_failed_batch_is_held_not_buffered(connector: WhatsAppUserClientConnector) -> None:
     events = [_wa_event("m1"), _wa_event("m2")]
     connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", list(events))
     connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
 
     await _flush_failing_wa(connector, "g1@g.us")
 
-    assert connector._chat_buffers["g1@g.us"].messages == events
+    assert not connector._chat_buffers["g1@g.us"].messages
+    held = connector._held_batches["g1@g.us"]
+    assert [h.events for h in held] == [events]
     assert not pool.written
-    assert not connector._filtered_event_buffer._rows
 
 
-async def test_spent_attempts_park_each_message(connector: WhatsAppUserClientConnector) -> None:
+async def test_held_batch_keeps_its_key_and_parks_when_spent(
+    connector: WhatsAppUserClientConnector,
+) -> None:
     events = [_wa_event("m1"), _wa_event("m2")]
     connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", list(events))
     connector._batch_retry = IngestRetryBudget(2)
     connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
 
     await _flush_failing_wa(connector, "g1@g.us")
+    key = connector._held_batches["g1@g.us"][0].key
     assert not pool.written
-    await _flush_failing_wa(connector, "g1@g.us")
+    await _flush_failing_wa(connector, "g1@g.us", retry=True)
 
     ids = [row[9]["event"]["external_event_id"] for row in pool.written]
+    assert key == "batch:g1@g.us:m1-m2"
     assert ids == ["batch:g1@g.us:m1-m1", "batch:g1@g.us:m2-m2"]
     assert all(row[8] == "error" and row[9]["payload"]["raw"] for row in pool.written)
-    assert not connector._chat_buffers["g1@g.us"].messages
+    assert "g1@g.us" not in connector._held_batches
 
 
 async def test_unwritable_park_keeps_the_batch_held(
@@ -2149,12 +2171,12 @@ async def test_unwritable_park_keeps_the_batch_held(
     pool.fail_writes = True
 
     await _flush_failing_wa(connector, "g1@g.us")
-    assert connector._chat_buffers["g1@g.us"].messages == events
+    assert connector._held_batches["g1@g.us"][0].events == events
 
     pool.fail_writes = False
-    await _flush_failing_wa(connector, "g1@g.us")
+    await _flush_failing_wa(connector, "g1@g.us", retry=True)
     assert len(pool.written) == 1
-    assert not connector._chat_buffers["g1@g.us"].messages
+    assert "g1@g.us" not in connector._held_batches
 
 
 async def test_final_flush_parks_a_failed_batch_at_once(
@@ -2166,3 +2188,52 @@ async def test_final_flush_parks_a_failed_batch_at_once(
     await _flush_failing_wa(connector, "g1@g.us", final=True)
 
     assert len(pool.written) == 1
+    assert "g1@g.us" not in connector._held_batches
+
+
+@pytest.mark.parametrize("block", ["connector", "global"])
+async def test_held_then_dropped_releases_hold_and_budget(
+    connector: WhatsAppUserClientConnector, block: str
+) -> None:
+    connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", [_wa_event("m1")])
+    connector._db_pool = FilteredEventsPool()  # type: ignore[assignment]
+    await _flush_failing_wa(connector, "g1@g.us")
+    key = connector._held_batches["g1@g.us"][0].key
+    assert connector._batch_retry.attempts(key) == 1
+
+    await _flush_failing_wa(connector, "g1@g.us", retry=True, block=block)
+
+    assert "g1@g.us" not in connector._held_batches
+    assert connector._batch_retry.attempts(key) == 0
+
+
+async def test_same_chat_release_keeps_another_batchs_hold(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    connector._db_pool = FilteredEventsPool()  # type: ignore[assignment]
+    connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", [_wa_event("m1")])
+    await _flush_failing_wa(connector, "g1@g.us")
+    connector._chat_buffers["g1@g.us"].messages = [_wa_event("m2")]
+    await _flush_failing_wa(connector, "g1@g.us")
+    first, second = connector._held_batches["g1@g.us"]
+    assert first.key != second.key
+
+    connector._release_batch("g1@g.us", first, first.key)
+
+    assert connector._held_batches["g1@g.us"] == [second]
+
+
+async def test_held_chat_is_not_force_flushed_and_sheds_past_ceiling(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    cap = connector._config.buffer_max_messages
+    connector._db_pool = FilteredEventsPool()  # type: ignore[assignment]
+    connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", [_wa_event("h1")])
+    await _flush_failing_wa(connector, "g1@g.us")
+    connector._flush_chat_buffer = AsyncMock()  # type: ignore[method-assign]
+
+    for i in range(cap * 4 + 5):
+        await connector._buffer_event(_wa_event(f"n{i}"), "g1@g.us")
+
+    connector._flush_chat_buffer.assert_not_awaited()
+    assert len(connector._chat_buffers["g1@g.us"].messages) == cap * 4
