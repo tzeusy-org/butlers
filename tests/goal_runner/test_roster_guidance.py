@@ -292,7 +292,8 @@ async def test_the_real_lead_policy_is_served_whole_as_owner_text():
     assert policy.text == raw.strip() + "\n"  # no include, nothing cut or dropped
     assert inlined(policy) and len(policy.text.encode()) <= 64 * 1024
     assert "# Notes to self" not in policy.text  # session notes have no place in the policy
-    assert [hit.name for hit in await source.search("interactive reply", 5, READER)] == ["LEAD.md"]
+    # A term from the conforming body, not the owner-approval reply-style section.
+    assert [hit.name for hit in await source.search("escalate", 5, READER)] == ["LEAD.md"]
 
 
 async def test_every_fixture_document_name_is_a_closed_slug(roster):
