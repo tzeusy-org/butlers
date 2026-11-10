@@ -749,7 +749,11 @@ class ButlerDaemon:
             build_switchboard_dashboard_call_route,
         )
 
-        return build_switchboard_dashboard_call_route(self.db.pool)
+        # No broker signer reaches Switchboard yet: forward unsigned, as itself,
+        # until the broker cutover (bu-jnhxc5) wires the signer and drops this.
+        return build_switchboard_dashboard_call_route(
+            self.db.pool, unsigned_until_broker_cutover=True
+        )
 
     def _build_route_preflight(self) -> Any | None:
         """Mount the effect-free route canary only on Switchboard's backend port."""

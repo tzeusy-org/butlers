@@ -315,6 +315,7 @@ def _reset_enforcement():
 def _payload(args: dict[str, Any], **overrides: Any) -> dict[str, Any]:
     payload = {
         "aud": "relationship",
+        "principal": "goal",
         "goal_id": str(uuid4()),
         "invocation_id": str(uuid4()),
         "depth": 0,

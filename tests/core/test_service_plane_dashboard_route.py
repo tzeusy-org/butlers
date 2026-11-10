@@ -76,7 +76,9 @@ class _Receipts:
 
 
 class _Harness:
-    def __init__(self, keyring, *, enabled: bool = True, outcome: Any = None) -> None:
+    def __init__(
+        self, keyring, *, enabled: bool = True, outcome: Any = None, forwards: bool = True
+    ) -> None:
         self.calls: list[tuple[str, str, dict]] = []
         self.receipts = _Receipts()
         self.enabled = enabled
@@ -92,7 +94,7 @@ class _Harness:
         route = dr.build_dashboard_call_route(
             enabled=lambda: self.enabled,
             receipts=self.receipts,
-            dispatch=dispatch,
+            dispatch=dispatch if forwards else None,
             verify=lambda c, now: verify_deployed_service_call(
                 c, now=now, verifier=lambda: VerifierSnapshot(keyring=self.keyring)
             ),
@@ -224,6 +226,18 @@ async def test_no_keyring_is_retryable_auth_unavailable(keys) -> None:
 
     assert (response.status_code, response.json()["code"]) == (503, "auth_unavailable")
     assert harness.calls == []
+
+
+async def test_no_way_to_forward_is_retryable_auth_unavailable_with_no_call(keys) -> None:
+    """No assertion signer and no unsigned opt-in: refuse before anything is consumed."""
+    signer, keyring = keys
+    harness = _Harness(keyring, forwards=False)
+
+    response = await harness.post(headers=_capability(signer), body=_body())
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "refused", "code": "auth_unavailable", "retryable": True}
+    assert harness.calls == [] and harness.receipts.claimed == set()
 
 
 async def test_a_service_only_tool_does_not_take_this_path(keys) -> None:
@@ -365,7 +379,7 @@ async def test_a_timeout_after_send_is_503_and_the_write_is_sent_once(
     route = dr.build_dashboard_call_route(
         enabled=lambda: True,
         receipts=_Receipts(),
-        dispatch=dr.switchboard_dashboard_dispatch("POOL"),
+        dispatch=dr.switchboard_dashboard_dispatch("POOL", unsigned_until_broker_cutover=True),
         verify=lambda c, now: verify_deployed_service_call(
             c, now=now, verifier=lambda: VerifierSnapshot(keyring=keyring)
         ),
@@ -401,7 +415,8 @@ async def test_a_failure_before_send_still_reconnects_once(monkeypatch, routing)
     peer = _Peer(httpx.ConnectError("refused before the request was sent"))
     _connect(monkeypatch, routing, peer)
 
-    outcome = await dr.switchboard_dashboard_dispatch("POOL")("health", _PRESENTABLE, dict(_ARGS))
+    dispatch = dr.switchboard_dashboard_dispatch("POOL", unsigned_until_broker_cutover=True)
+    outcome = await dispatch("health", _PRESENTABLE, dict(_ARGS))
 
     assert "result" not in outcome and peer.calls == 2
     assert outcome["retryable"] is True
@@ -426,7 +441,8 @@ async def test_the_dashboard_dispatch_reports_a_post_send_timeout_not_retryable(
     peer = _Peer(httpx.ReadTimeout("timed out after the request was sent"))
     _connect(monkeypatch, routing, peer)
 
-    outcome = await dr.switchboard_dashboard_dispatch("POOL")("health", _PRESENTABLE, dict(_ARGS))
+    dispatch = dr.switchboard_dashboard_dispatch("POOL", unsigned_until_broker_cutover=True)
+    outcome = await dispatch("health", _PRESENTABLE, dict(_ARGS))
 
     assert outcome["retryable"] is False and peer.calls == 1
 
@@ -456,6 +472,7 @@ async def test_retryable_needs_both_route_and_proof_nothing_was_sent(
 
     monkeypatch.setattr(dr.importlib, "import_module", lambda name: _Routing())
 
-    result = await dr.switchboard_dashboard_dispatch("POOL")("health", _PRESENTABLE, {})
+    dispatch = dr.switchboard_dashboard_dispatch("POOL", unsigned_until_broker_cutover=True)
+    result = await dispatch("health", _PRESENTABLE, {})
 
     assert result["retryable"] is expected

@@ -633,6 +633,18 @@ runtime-probe keyring codec (one current entry, at most one retiring). A domain
 with no valid keyring refuses every call; there is no unsigned or shared-secret
 fallback.
 
+Every assertion names its `principal`. A `goal` assertion, the only kind the
+broker signs, carries its goal and invocation as UUIDs. A `dashboard` assertion
+is the owner acting directly through the authenticated dashboard (D7
+service-plane callers), forwarded by Switchboard's dashboard call route: origin
+`owner`, depth 0, unexposed, and goal, invocation, effect and approval all null.
+The signer, the verifier and `VerifiedLineage` each refuse any other principal,
+a goal assertion with a null goal or invocation, and a dashboard assertion with
+any other origin or a non-null goal, effect or approval. A dashboard call so
+carries owner authority, stamps no taint and approves nothing by itself: a gated
+call that messages someone other than the owner parks in the domain's approvals
+gate unless a standing rule matches.
+
 The verified lineage is bound (`core.goal_lineage`) for exactly that call and
 replaces the spawner-derived context:
 

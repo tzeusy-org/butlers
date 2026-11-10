@@ -27,7 +27,7 @@ from butlers.core.owner_policy import PolicyHold
 
 from .actuation import rfc0028_actuation_risk
 from .aliases import AliasResolver, Resolution, canonical_policy, resolve_args
-from .assertions import LIFETIME_SECONDS, AssertionSigner
+from .assertions import GOAL_PRINCIPAL, LIFETIME_SECONDS, AssertionSigner
 from .boundaries import BoundaryLedger, Extractor, content_bytes, extraction_key
 from .catalog import CatalogSource
 from .contracts import (
@@ -352,6 +352,7 @@ class Broker:
         return self._live_signer.sign(
             {
                 "aud": capability.domain,
+                "principal": GOAL_PRINCIPAL,
                 "goal_id": str(principal.goal_id),
                 "invocation_id": str(principal.invocation_id),
                 "depth": principal.depth,
