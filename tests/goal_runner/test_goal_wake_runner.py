@@ -17,13 +17,14 @@ from uuid import UUID, uuid4
 import pytest
 
 from butlers.capability_broker.contracts import Reason
+from butlers.capability_broker.domains import Delivery, DomainReceipt
 from butlers.conditions import FireIntent
 from butlers.core.goal_labels import Label
 from butlers.core.goal_waiting import EnvelopeSpec, WaitLedger
 from butlers.core.goal_wake import WakeAdmission
 from butlers.goal_runner.contracts import GoalEnded
 from butlers.goal_runner.ledger import RunnerLedger
-from tests.capability_broker.test_broker_ledger import OWNER, SEND, TO_OWNER, _joined_reply
+from tests.capability_broker.test_broker_ledger import NOTIFY, OWNER, SEND, TO_OWNER, _joined_reply
 from tests.goal_runner.test_goal_runner import SEARCH, _grant, harness, refused
 
 pytestmark = pytest.mark.integration  # the harness module carries the shared marks
@@ -334,25 +335,23 @@ async def test_a_wait_that_expires_without_firing_ends_the_goal(broker_db_url):
 
 
 async def owner_prompt(h, goal, lead):
-    """A committed owner message that accepts input (what a delivered prompt records)."""
-    effect_id = uuid4()
-    await h.w.owner.execute(
-        "INSERT INTO switchboard.effects (id, goal_id, invocation_id, capability, args_digest, "
-        "status, delivery_ref, recipient_entity, recipient_channel, prompt_accepts_input, "
-        "prompt_expires_at) VALUES ($1, $2, $3, 'messenger.send', 'args-digest', 'committed', "
-        "$4, $5, 'telegram', true, now() + interval '30 minutes')",
-        effect_id,
-        goal,
-        lead.invocation_id,
-        f"delivery-{effect_id}",
-        OWNER,
+    """A real owner delivery through the broker whose receipt reports an interactive prompt."""
+    expires = datetime.now(UTC) + timedelta(minutes=30)
+    h.w.forwarder.receipt = DomainReceipt(
+        "committed",
+        "receipt-prompt",
+        {"sent": True},
+        delivery=Delivery(ref=f"tg:{uuid4()}", prompt_expires_at=expires),
     )
-    return effect_id
+    args = {"entity_id": str(OWNER), "message": "Shall I book it?", "channel": "telegram"}
+    sent = await h.w.broker.call(goal, lead.token, NOTIFY.identity, args)
+    assert sent.status == "committed"
+    return sent.effect_id
 
 
 async def test_waiting_on_the_owner_ends_the_lead_and_binds_the_wait_to_the_prompt(broker_db_url):
     async with harness(broker_db_url) as h:
-        goal = await h.goal(_grant(SEND))
+        goal = await h.goal(_grant(SEND), _grant(NOTIFY))
         lead = await h.lead(goal)
         prompt = await owner_prompt(h, goal, lead)
 
@@ -388,7 +387,7 @@ async def test_waiting_on_the_owner_needs_a_live_prompt_to_the_owner(broker_db_u
 
 async def test_the_joined_reply_launches_a_successor_that_reads_it(broker_db_url):
     async with harness(broker_db_url) as h:
-        goal = await h.goal(_grant(SEND))
+        goal = await h.goal(_grant(SEND), _grant(NOTIFY))
         lead = await h.lead(goal)
         prompt = await owner_prompt(h, goal, lead)
         await h.call(goal, lead.token, "goal__wait_owner", {"effect_id": str(prompt)})

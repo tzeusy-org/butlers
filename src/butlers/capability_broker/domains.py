@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
@@ -27,6 +28,20 @@ from .contracts import BrokerRefused, Reason, Reservation
 
 
 @dataclass(frozen=True, slots=True)
+class Delivery:
+    """Where a committed communication landed, as its domain reports it (S2.1, S2.2).
+
+    ``ref`` is the provider's delivery reference, the key a reply to it binds to.
+    ``prompt_expires_at`` is set only for a message that asks for an answer and accepts one until
+    then; the broker honours it only for an owner delivery. The recipient and channel are not the
+    domain's to report: the broker recorded them at reserve. Both are written once, at commit.
+    """
+
+    ref: str
+    prompt_expires_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DomainReceipt:
     # ``not_received`` needs affirmative transport evidence; a timeout is unknown.
     status: Literal["committed", "failed", "unknown", "not_received"]
@@ -39,6 +54,8 @@ class DomainReceipt:
     # provenance and sensitivity.
     stamped_owner_untainted: bool = False
     stamped_writers: tuple[tuple[Any, Any], ...] = ()
+    # A communication's delivery binding (owner deliveries only are recorded as a reply target).
+    delivery: Delivery | None = None
 
 
 @dataclass(frozen=True, slots=True)

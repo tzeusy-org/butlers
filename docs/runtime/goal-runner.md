@@ -457,6 +457,14 @@ deadline is the prompt's expiry or the goal's budget deadline, whichever is soon
 needs no approval: the answer is authenticated by admission's exact reply binding and cannot
 approve an unrelated effect.
 
+A prompt exists because the owning domain says so. Its `DomainReceipt` carries a `Delivery` (the
+provider's delivery ref and, for a message that accepts an answer, the expiry). The broker records
+the owner recipient and the channel at reserve, and writes `delivery_ref`, `prompt_accepts_input` and
+`prompt_expires_at` once, in the UPDATE that commits the effect (`sw_066`: the trigger allows NULL to
+a value only in that transition and never changes them after). Only an owner delivery with a
+recorded channel is recorded as accepting input, and nothing is bound for a failed, unknown or
+still-parked effect. The Messenger adapter that reports a prompt's delivery is a separate change.
+
 Admission is the wake. A reply whose delivery binds this prompt, from the owner entity and channel
 the prompt went to, joins the waiting goal as `reply_joined`; in the same transaction
 `WakeAdmission.admit_answer` fires the envelope (`open -> fired`, one wake), writes the `wake`
