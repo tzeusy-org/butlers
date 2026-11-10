@@ -72,6 +72,10 @@ def _intent(row: asyncpg.Record) -> FireIntent:
     )
 
 
+intent_from_row = _intent
+"""A fire intent from a ``condition_fire_intents`` row (``_INTENT_COLUMNS`` shape)."""
+
+
 class _SqlTx:
     def __init__(self, connection: asyncpg.Connection | PoolConnectionProxy) -> None:
         self.c = connection

@@ -69,9 +69,10 @@ async def envelope(owner, goal_id, *, kind="conditions", max_wakes=2, deadline="
     )
     await owner.execute(
         "INSERT INTO switchboard.wait_generations (goal_id,envelope_id,generation,"
-        "condition_instance_ids) VALUES ($1,$2,0,'{c0}')",
+        "condition_instance_ids) VALUES ($1,$2,0,$3)",
         goal_id,
         envelope_id,
+        extra.get("instances", ["c0"]),
     )
     return envelope_id
 

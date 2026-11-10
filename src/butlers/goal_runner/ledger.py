@@ -62,6 +62,15 @@ class Started:
 
 
 @dataclass(frozen=True, slots=True)
+class WakeClaim:
+    """A claimed wake intent: the one successor epoch a fire minted (RFC 0038 S2.2)."""
+
+    goal_id: UUID
+    intent_id: UUID
+    epoch: int
+
+
+@dataclass(frozen=True, slots=True)
 class Leaderless:
     """A running or recovering goal whose latest lead ended with no successor (D14)."""
 
@@ -221,8 +230,13 @@ class RunnerLedger:
         max_tokens: int,
         lease_seconds: float,
         relaunch_of: UUID | None = None,
+        wake: WakeClaim | None = None,
     ) -> Started:
-        """Launch a lead: on admission, recovery, relaunch or escalation (D8, D14, D16).
+        """Launch a lead: on admission, wake, recovery, relaunch or escalation (D8, D14, D16).
+
+        A wake lead runs at the epoch its fire minted and marks that claimed wake intent
+        launched in the same transaction, so a crash either leaves the intent claimed (the
+        sweep retries the same intent) or the lead recorded (recovery owns it): never two.
 
         The epoch is one past every earlier lead of the goal, so the new lead's
         insert is what revokes any predecessor's token (D14). The goal ceiling
@@ -251,6 +265,16 @@ class RunnerLedger:
             "WHERE goal_id = $1 AND depth = 0",
             goal_id,
         )
+        if wake is not None and wake.epoch != epoch:
+            raise GoalEnded("wake_epoch_mismatch")
+        if wake is not None and not await self.connection.fetchval(
+            "UPDATE switchboard.wake_intents SET state = 'launched', claimed_by = NULL, "
+            "claim_expires_at = NULL, updated_at = now() WHERE goal_id = $1 AND id = $2 "
+            "AND state = 'claimed' AND claim_expires_at > clock_timestamp() RETURNING id",
+            goal_id,
+            wake.intent_id,
+        ):
+            raise GoalEnded("wake_not_claimed")
         await self.connection.execute(
             "UPDATE switchboard.goals SET status = 'running', updated_at = now() "
             "WHERE id = $1 AND status <> 'running'",
@@ -832,6 +856,73 @@ class RunnerLedger:
             )
         )
 
+    async def wakes_due(self) -> list[tuple[UUID, UUID]]:
+        """Wake intents ready to launch: new, failed before an invocation, or claim lapsed."""
+        rows = await self.connection.fetch(
+            "SELECT w.goal_id, w.id FROM switchboard.wake_intents w "
+            "JOIN switchboard.goals g ON g.id = w.goal_id JOIN switchboard.wait_envelopes e "
+            "ON (e.goal_id, e.id) = (w.goal_id, w.envelope_id) "
+            "WHERE g.status = 'admitted' AND w.epoch IS NOT NULL AND e.deadline > now() "
+            "AND (w.state IN ('pending', 'failed') OR "
+            "(w.state = 'claimed' AND w.claim_expires_at <= clock_timestamp())) "
+            "ORDER BY w.created_at, w.id"
+        )
+        return [(row["goal_id"], row["id"]) for row in rows]
+
+    async def claim_wake(
+        self, goal_id: UUID, intent_id: UUID, worker: str, lease_seconds: float
+    ) -> WakeClaim | None:
+        """Claim one due intent for ``worker`` under the goal lock; None if not claimable."""
+        goal = await self.lock(goal_id)
+        if goal is None or goal["status"] != "admitted":
+            return None
+        await self.connection.execute(
+            # A lapsed claim returns to pending first: the intent never skips its state machine.
+            "UPDATE switchboard.wake_intents SET state = 'pending', claimed_by = NULL, "
+            "claim_expires_at = NULL, updated_at = now() WHERE goal_id = $1 AND id = $2 "
+            "AND state = 'claimed' AND claim_expires_at <= clock_timestamp()",
+            goal_id,
+            intent_id,
+        )
+        epoch = await self.connection.fetchval(
+            "UPDATE switchboard.wake_intents SET state = 'claimed', claimed_by = $3, "
+            "claim_expires_at = clock_timestamp() + make_interval(secs => $4::float8), "
+            "attempts = attempts + 1, updated_at = now() WHERE goal_id = $1 AND id = $2 "
+            "AND state IN ('pending', 'failed') AND epoch IS NOT NULL RETURNING epoch",
+            goal_id,
+            intent_id,
+            worker,
+            lease_seconds,
+        )
+        return None if epoch is None else WakeClaim(goal_id, intent_id, epoch)
+
+    async def fail_wake(self, goal_id: UUID, intent_id: UUID) -> None:
+        """A launch that opened no invocation: the same intent is tried again by the sweep."""
+        await self.lock(goal_id)
+        await self.connection.execute(
+            "UPDATE switchboard.wake_intents SET state = 'failed', claimed_by = NULL, "
+            "claim_expires_at = NULL, updated_at = now() WHERE goal_id = $1 AND id = $2 "
+            "AND state = 'claimed'",
+            goal_id,
+            intent_id,
+        )
+
+    async def lapse_wakes(self) -> int:
+        """Cancel undelivered wake intents whose envelope deadline passed (S2.2 expiry).
+
+        A claim whose lease lapsed is undelivered too: its runner died, and a goal must not sit
+        admitted behind an intent nobody can launch.
+        """
+        rows = await self.connection.fetch(
+            "UPDATE switchboard.wake_intents w SET state = 'cancelled', "
+            "cancelled_reason = 'expired', claimed_by = NULL, claim_expires_at = NULL, "
+            "updated_at = now() FROM switchboard.wait_envelopes e "
+            "WHERE (e.goal_id, e.id) = (w.goal_id, w.envelope_id) AND e.deadline <= now() "
+            "AND (w.state IN ('pending', 'failed') OR "
+            "(w.state = 'claimed' AND w.claim_expires_at <= clock_timestamp())) RETURNING w.id"
+        )
+        return len(rows)
+
     async def child_wanted(self, goal_id: UUID, child_id: UUID) -> bool:
         """A delegated child still waits for its launch (pre-check only)."""
         return (
@@ -882,6 +973,9 @@ class RunnerLedger:
             "AND n.depth = 0 AND n.end_reason IS DISTINCT FROM 'launch_failed'), -1)) d "
             "ON l.end_reason = 'launch_failed' "
             "WHERE g.status IN ('running', 'admitted') "
+            # A fired wait's lead is the wake's to launch, not recovery's to replace.
+            "AND NOT EXISTS (SELECT 1 FROM switchboard.wake_intents w WHERE w.goal_id = g.id "
+            "AND w.state IN ('pending', 'claimed', 'failed')) "
             "AND l.status <> ALL($1::text[]) "
             "AND l.ended_at <= clock_timestamp() - make_interval(secs => $2::float8) "
             "AND NOT EXISTS (SELECT 1 FROM switchboard.goal_outcomes o WHERE o.goal_id = g.id) "
