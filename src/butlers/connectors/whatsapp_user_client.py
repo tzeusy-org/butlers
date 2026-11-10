@@ -71,8 +71,14 @@ from butlers.connectors.discretion import (
     classify_ignore_kind,
     record_discretion_ignore,
 )
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.filtered_event_buffer import (
+    REPLAY_UNAVAILABLE_KEY,
+    FilteredEventBuffer,
+    ParkNotDurableError,
+    drain_replay_pending,
+)
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.connectors.known_contact_snapshot import (
     PriorityContactSnapshotSource,
     normalize_phone_digits,
@@ -554,6 +560,9 @@ class WhatsAppUserClientConnector:
         self._semaphore = asyncio.Semaphore(config.max_inflight)
         self._last_event_id: str | None = None  # last processed bridge event ID / timestamp
         self._last_checkpoint_save: float | None = None
+        # A failed batch is held in its chat buffer for a bounded number of attempts
+        # (bu-dhloi1.277); the bridge stream cannot replay it, so memory is the only copy.
+        self._batch_retry = IngestRetryBudget()
 
         # DB pools
         self._cursor_pool = cursor_pool
@@ -1387,8 +1396,14 @@ class WhatsAppUserClientConnector:
             return
 
         logger.info("Flushing all %d chat buffers (%s)", len(chat_jids), reason)
+        # Nothing flushes these again after a shutdown or a link restart, so a failed
+        # batch is parked at once instead of held for another attempt.
+        final = reason in ("shutdown", "stale_link_restart")
         results = await asyncio.gather(
-            *(self._flush_chat_buffer(jid) for jid in chat_jids),
+            *(
+                self._flush_chat_buffer(jid, final=True) if final else self._flush_chat_buffer(jid)
+                for jid in chat_jids
+            ),
             return_exceptions=True,
         )
         for jid, result in zip(chat_jids, results, strict=True):
@@ -1400,7 +1415,7 @@ class WhatsAppUserClientConnector:
                     type(result).__name__,
                 )
 
-    async def _flush_chat_buffer(self, chat_jid: str) -> None:
+    async def _flush_chat_buffer(self, chat_jid: str, *, final: bool = False) -> None:
         """Flush a single chat's buffer through the full batch pipeline.
 
         Pipeline:
@@ -1411,6 +1426,12 @@ class WhatsAppUserClientConnector:
         e. Submit batch envelope via Switchboard MCP.
         f. Advance checkpoint to latest event ID.
         g. Record filtered events for policy/discretion rejections.
+
+        A failed batch goes back to the front of its chat buffer and is tried again on a
+        later flush, up to the ``IngestRetryBudget``. Once the attempts are spent (or at
+        once when *final*: nothing flushes again) each message is parked as its own
+        replayable error row, committed before the batch is released; if that cannot be
+        written the batch stays in the buffer (bu-dhloi1.277).
         """
         buf = self._chat_buffers.get(chat_jid)
         if buf is None:
@@ -1566,16 +1587,77 @@ class WhatsAppUserClientConnector:
                 chat_ref,
                 failure_class,
             )
-            self._record_batch_filtered_event(
-                chat_jid=chat_jid,
-                batch_event_id=batch_event_id,
-                filter_reason=FilteredEventBuffer.reason_submission_error(),
-                status="error",
-                error_detail=failure_class,
-                events=buffered_events,
-                drop_class=drop_class,
-            )
+            retry_key = f"batch:{chat_jid}"
+            if not final and not self._batch_retry.failed(retry_key):
+                await self._requeue_batch(buf, buffered_events)
+                return
+            unparked = await self._park_failed_batch(chat_jid, buffered_events, failure_class)
+            if unparked:
+                logger.error(
+                    "Failed batch could not be parked (chat_ref=%s, messages=%d); holding it",
+                    chat_ref,
+                    len(unparked),
+                )
+                await self._requeue_batch(buf, unparked)
+                return
             await self._flush_and_drain()
+        else:
+            self._batch_retry.succeeded(f"batch:{chat_jid}")
+
+    @staticmethod
+    async def _requeue_batch(buf: ChatBuffer, events: list[dict[str, Any]]) -> None:
+        """Put a failed batch back ahead of anything buffered since."""
+        async with buf.lock:
+            buf.messages = [*events, *buf.messages]
+
+    async def _park_failed_batch(
+        self, chat_jid: str, events: list[dict[str, Any]], failure_class: str
+    ) -> list[dict[str, Any]]:
+        """Park each message of a failed batch as its own error row; return those not written.
+
+        Each row carries the message as a batch of one, so it replays like any batch. If that
+        envelope cannot be built, the row keeps the bridge event itself and replay refuses it
+        with a reason.
+        """
+        remaining = list(events)
+        for event in events:
+            event_id = str(event.get("message_id") or event.get("id") or "")
+            batch_event_id = f"batch:{chat_jid}:{event_id}-{event_id}"
+            sender = "unknown"
+            try:
+                envelope = self._build_batch_envelope(chat_jid, [event], batch_event_id)
+                sender = str((envelope.get("sender") or {}).get("identity") or "unknown")
+                payload = FilteredEventBuffer.stored_envelope(envelope)
+            except Exception:
+                payload = FilteredEventBuffer.full_payload(
+                    channel=self._config.channel,
+                    provider=self._config.provider,
+                    endpoint_identity=self._config.endpoint_identity,
+                    external_event_id=batch_event_id,
+                    external_thread_id=None,
+                    external_conversation_id=(
+                        whatsapp_conversation_id(chat_jid) if chat_jid else None
+                    ),
+                    reply_target_ref=chat_jid or None,
+                    observed_at=datetime.now(UTC).isoformat(),
+                    sender_identity=sender,
+                    raw=event,
+                )
+                payload[REPLAY_UNAVAILABLE_KEY] = "the batch envelope could not be built"
+            try:
+                await self._filtered_event_buffer.park(
+                    self._db_pool,
+                    external_message_id=batch_event_id,
+                    source_channel=self._config.channel,
+                    sender_identity=sender,
+                    subject_or_preview=None,
+                    full_payload=payload,
+                    error_detail=failure_class,
+                )
+            except ParkNotDurableError:
+                return remaining
+            remaining.remove(event)
+        return remaining
 
     def _record_batch_filtered_event(
         self,

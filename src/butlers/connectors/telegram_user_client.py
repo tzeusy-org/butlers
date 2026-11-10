@@ -67,7 +67,12 @@ from butlers.connectors.discretion import (
     DiscretionEvaluator,
     classify_ignore_kind,
 )
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.filtered_event_buffer import (
+    REPLAY_UNAVAILABLE_KEY,
+    FilteredEventBuffer,
+    ParkNotDurableError,
+    drain_replay_pending,
+)
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.connectors.mcp_client import CachedMCPClient
@@ -378,6 +383,12 @@ class TelegramUserClientConnector:
         self._ingest_retry = IngestRetryBudget()
         self._retry_pending: dict[str, Any] = {}
         self._done_max_id: int | None = None
+        # A batch that fails to flush goes back into its chat buffer and is held here
+        # (chat_id -> messages) so the checkpoint stays below it; after the attempts in
+        # _batch_retry are spent each message is parked as its own replayable error row
+        # (bu-dhloi1.277).
+        self._batch_retry = IngestRetryBudget()
+        self._held_batches: dict[str, list[Any]] = {}
 
         # DB pool for cursor read/write to switchboard.connector_registry.
         self._cursor_pool = cursor_pool
@@ -862,7 +873,16 @@ class TelegramUserClientConnector:
             return
 
         logger.info("Flushing all %d chat buffers (%s)", len(chat_ids), reason)
-        await asyncio.gather(*(self._flush_chat_buffer(chat_id) for chat_id in chat_ids))
+        # Nothing flushes these again after a shutdown, so a failed batch is parked at once.
+        final = reason == "shutdown"
+        await asyncio.gather(
+            *(
+                self._flush_chat_buffer(chat_id, final=True)
+                if final
+                else self._flush_chat_buffer(chat_id)
+                for chat_id in chat_ids
+            )
+        )
 
     def _batch_has_service_sender(self, messages: list[Any] | None) -> bool:
         """Whether the login-code service sender (777000) wrote any batch message."""
@@ -936,7 +956,7 @@ class TelegramUserClientConnector:
             error_detail=error_detail,
         )
 
-    async def _flush_chat_buffer(self, chat_id: str) -> None:
+    async def _flush_chat_buffer(self, chat_id: str, *, final: bool = False) -> None:
         """Flush a single chat's buffer through the full batch pipeline.
 
         Pipeline:
@@ -949,6 +969,12 @@ class TelegramUserClientConnector:
         g. Submit batch envelope via _submit_to_ingest().
         h. Advance checkpoint to max message ID among buffered messages.
         i. Record filtered events for policy/discretion rejections.
+
+        A failed batch goes back to the front of its chat buffer, with the checkpoint held
+        below it, and is tried again on a later flush up to the ``IngestRetryBudget``. Once
+        the attempts are spent (or at once when *final*) each message is parked as its own
+        replayable error row, committed before the checkpoint moves past it; if that cannot
+        be written the batch stays held (bu-dhloi1.277).
         """
         buf = self._chat_buffers.get(chat_id)
         if buf is None:
@@ -1104,6 +1130,8 @@ class TelegramUserClientConnector:
             # h. Advance checkpoint to max(msg.id for msg in buffered_messages).
             # Through _advance_checkpoint, so a batch never moves the checkpoint
             # past a single message still waiting for a retry.
+            self._batch_retry.succeeded(f"batch:{chat_id}")
+            self._held_batches.pop(chat_id, None)
             await self._advance_checkpoint(max(m.id for m in buffered_messages))
 
         except Exception as exc:
@@ -1118,19 +1146,82 @@ class TelegramUserClientConnector:
                 _raise_site(exc),
                 extra={"endpoint_identity": self._config.endpoint_identity},
             )
-            # i. Record error event for the batch failure.
-            min_id_str = str(min((m.id for m in buffered_messages), default=0))
-            max_id_str = str(max((m.id for m in buffered_messages), default=0))
-            batch_event_id = f"batch:{chat_id}:{min_id_str}-{max_id_str}"
-            self._record_batch_filtered_event(
-                chat_id=chat_id,
-                batch_event_id=batch_event_id,
-                filter_reason=FilteredEventBuffer.reason_submission_error(),
-                status="error",
-                error_detail=str(exc),
-                messages=buffered_messages,
-            )
+            if not final and not self._batch_retry.failed(f"batch:{chat_id}"):
+                await self._hold_batch(buf, chat_id, buffered_messages)
+                return
+            unparked = await self._park_failed_batch(chat_id, buffered_messages, exc)
+            if unparked:
+                logger.error(
+                    "Failed batch could not be parked (chat %s, messages=%d); holding it",
+                    chat_id,
+                    len(unparked),
+                )
+                await self._hold_batch(buf, chat_id, unparked)
+                return
+            self._held_batches.pop(chat_id, None)
             await self._flush_and_drain()
+            await self._advance_checkpoint(max(m.id for m in buffered_messages))
+
+    async def _hold_batch(self, buf: ChatBuffer, chat_id: str, messages: list[Any]) -> None:
+        """Put a failed batch back ahead of anything buffered since; hold the checkpoint."""
+        async with buf.lock:
+            buf.messages = [*messages, *buf.messages]
+        self._held_batches[chat_id] = list(messages)
+
+    async def _park_failed_batch(
+        self, chat_id: str, messages: list[Any], exc: Exception
+    ) -> list[Any]:
+        """Park each message of a failed batch as its own error row; return those not written.
+
+        Each row carries the message as a batch of one, so it replays like any batch. If that
+        envelope cannot be built, the row keeps the message as Telethon gave it and replay
+        refuses it with a reason.
+        """
+        remaining = list(messages)
+        for message in messages:
+            msg_id = getattr(message, "id", 0)
+            batch_event_id = f"batch:{chat_id}:{msg_id}-{msg_id}"
+            try:
+                sender = self._extract_sender_identity(message)
+            except Exception:
+                sender = "unknown"
+            try:
+                payload = FilteredEventBuffer.stored_envelope(
+                    self._build_batch_envelope(chat_id, [message], [])
+                )
+            except Exception:
+                try:
+                    raw = message.to_dict() if hasattr(message, "to_dict") else {}
+                except Exception:
+                    raw = {}
+                payload = FilteredEventBuffer.full_payload(
+                    channel=self._config.channel,
+                    provider=self._config.provider,
+                    endpoint_identity=self._config.endpoint_identity,
+                    external_event_id=batch_event_id,
+                    external_thread_id=None,
+                    external_conversation_id=telegram_conversation_id(chat_id) if chat_id else None,
+                    observed_at=datetime.now(UTC).isoformat(),
+                    sender_identity=sender,
+                    raw=raw,
+                    in_reply_to_ref=telethon_in_reply_to_ref(message),
+                    untrusted_spans=telethon_message_spans(message, "") or None,
+                )
+                payload[REPLAY_UNAVAILABLE_KEY] = "the batch envelope could not be built"
+            try:
+                await self._filtered_event_buffer.park(
+                    self._db_pool,
+                    external_message_id=batch_event_id,
+                    source_channel=self._config.channel,
+                    sender_identity=sender,
+                    subject_or_preview=None,
+                    full_payload=payload,
+                    error_detail=type(exc).__name__,
+                )
+            except ParkNotDurableError:
+                return remaining
+            remaining.remove(message)
+        return remaining
 
     def _build_batch_envelope(
         self,
@@ -1630,6 +1721,8 @@ class TelegramUserClientConnector:
             self._done_max_id = message_id
         target = self._done_max_id
         pending = [getattr(m, "id", None) for m in self._retry_pending.values()]
+        for held in self._held_batches.values():
+            pending.extend(getattr(m, "id", None) for m in held)
         pending_ids = [p for p in pending if isinstance(p, int)]
         if pending_ids:
             target = min(target, min(pending_ids) - 1)

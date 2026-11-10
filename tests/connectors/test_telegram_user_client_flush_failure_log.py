@@ -15,11 +15,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.connectors.telegram_user_client import (
     ChatBuffer,
     TelegramUserClientConnector,
     TelegramUserClientConnectorConfig,
 )
+from tests.connectors.filtered_event_fakes import FilteredEventsPool  # noqa: E402
 
 _SERVICE = "777000"
 _CODE = "".join(("48", "29", "13"))  # bare login code, built at runtime
@@ -147,7 +149,24 @@ async def test_failure_still_records_the_error_row(connector, caplog):
             connector, sender_id=1001, text="hello", error=RuntimeError("submit failed")
         )
 
-    assert len(connector._filtered_event_buffer._rows) == 1
+    # The failed batch is held in its buffer, not dropped or recorded in memory.
+    assert len(connector._chat_buffers["1001"].messages) == 1
+    assert connector._held_batches["1001"]
+    assert not connector._filtered_event_buffer._rows
+
+
+async def test_failure_parks_the_error_row_once_attempts_are_spent(connector, caplog):
+    connector._batch_retry = IngestRetryBudget(1)
+    connector._db_pool = pool = FilteredEventsPool()
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+        await _failing_flush(
+            connector, sender_id=1001, text="hello", error=RuntimeError("submit failed")
+        )
+
+    (row,) = pool.written
+    assert row[8] == "error"
+    assert not connector._chat_buffers["1001"].messages
+    assert "1001" not in connector._held_batches
 
 
 async def test_real_submit_failure_log_withholds_an_echoed_ingest_rejection(connector, caplog):
