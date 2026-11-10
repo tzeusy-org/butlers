@@ -286,3 +286,94 @@ class WaitLedger:
             generation,
         )
         return generation
+
+    # -- the runner's own waits ----------------------------------------------------------
+
+    async def open_settle(self, goal_id: UUID, epoch: int) -> UUID | None:
+        """Wait on the effects that can still change; resolving needs no successor epoch.
+
+        The envelope's bounds are the goal's own: its label and budget deadline, one wake, no
+        grants (nothing is ever launched from a settle wait). The goal's plan is the latest
+        version, or an empty v1 when the lead never planned.
+        """
+        goal = await self.connection.fetchrow(
+            "SELECT plan_version, label_version, label_instr, label_data, label_sens "
+            "FROM switchboard.goals WHERE id = $1",
+            goal_id,
+        )
+        deadline = await self.connection.fetchval(
+            "SELECT deadline FROM switchboard.budgets WHERE goal_id = $1", goal_id
+        )
+        if goal is None or deadline is None:
+            return None
+        version = goal["plan_version"] or await self.append_plan(goal_id, epoch, [], [], [])
+        if version is None:
+            return None
+        plan = await self.connection.fetchval(
+            "SELECT digest FROM switchboard.goal_plans WHERE goal_id = $1 AND version = $2",
+            goal_id,
+            version,
+        )
+        predicate = {"kind": "settle"}
+        return await self.open_envelope(
+            EnvelopeSpec(
+                kind="settle",
+                goal_id=goal_id,
+                original_epoch=epoch,
+                plan_version=version,
+                plan_digest=plan,
+                predicate=predicate,
+                predicate_digest=hashlib.sha256(
+                    json.dumps(predicate, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest(),
+                source_set=["effects"],
+                permitted_sources=["effects"],
+                grant_snapshot=[],
+                grant_digest=hashlib.sha256(b"[]").hexdigest(),
+                label=Label.from_row(
+                    goal["label_version"],
+                    goal["label_instr"],
+                    goal["label_data"],
+                    goal["label_sens"],
+                ),
+                deadline=deadline,
+                max_wakes=1,
+                condition_instance_ids=[f"settle:{goal_id}"],
+            )
+        )
+
+    async def fire_settle(self, goal_id: UUID) -> bool:
+        """The deterministic settle fire: open -> fired with its one wake, no epoch or intent."""
+        row = await self.connection.fetchrow(
+            "UPDATE switchboard.wait_envelopes SET state = 'fired', "
+            "consumed_wakes = consumed_wakes + 1, updated_at = now() "
+            "WHERE goal_id = $1 AND kind = 'settle' AND state = 'open' RETURNING id",
+            goal_id,
+        )
+        return row is not None
+
+    async def open_settle_goals(self) -> list[UUID]:
+        rows = await self.connection.fetch(
+            "SELECT g.id FROM switchboard.goals g WHERE g.status = 'waiting' AND EXISTS "
+            "(SELECT 1 FROM switchboard.wait_envelopes e WHERE e.goal_id = g.id "
+            "AND e.kind = 'settle' AND e.state = 'open') ORDER BY g.id"
+        )
+        return [row["id"] for row in rows]
+
+    async def cancel_waits(self, goal_id: UUID, reason: str) -> None:
+        """Stop or expiry: close the goal's envelopes and cancel wake intents not yet launched."""
+        if reason not in ("stopped", "expired"):
+            raise ValueError("a wait is cancelled for Stop or expiry")
+        await self.connection.execute(
+            "UPDATE switchboard.wake_intents SET state = 'cancelled', cancelled_reason = $2, "
+            "claimed_by = NULL, claim_expires_at = NULL, updated_at = now() "
+            "WHERE goal_id = $1 AND state IN ('pending','failed','claimed')",
+            goal_id,
+            reason,
+        )
+        await self.connection.execute(
+            "UPDATE switchboard.wait_envelopes SET state = $2, updated_at = now() "
+            "WHERE goal_id = $1 AND state IN ('open','fired')",
+            goal_id,
+            "expired" if reason == "expired" else "cancelled",
+        )

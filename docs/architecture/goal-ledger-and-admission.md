@@ -88,9 +88,9 @@ the goal's reporting union can only grow, no running invocation is exposed by
 the join itself, and no invocation or approval is produced. The join writes one
 labelled `goal_inbox` row in the same transaction; that row is the goal's only
 delivery path for the reply, and the M2 runner consumes it through
-`Broker.consume_inbox`, which joins its label into the reader. A `settling`
-goal is not live for joins (D11 has no settling -> running edge, so nothing could
-consume its inbox row). A reply to a settling, terminal or expired prompt creates
+`Broker.consume_inbox`, which joins its label into the reader. A `waiting`
+goal (settle envelope) is not live for joins (there is no waiting -> running edge yet, so
+nothing could consume its inbox row). A reply to a waiting, terminal or expired prompt creates
 an ordinary verified owner goal with delivery/effect
 reference and no caused-goal link. Unknown/foreign/mismatched bindings follow
 ordinary message admission without guessing continuity.

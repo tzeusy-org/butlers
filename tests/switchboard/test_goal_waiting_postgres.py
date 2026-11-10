@@ -368,6 +368,21 @@ async def test_a_launched_wake_cannot_be_cancelled(ledger):
         )
 
 
+async def test_cancel_waits_closes_envelopes_and_unlaunched_wakes(ledger):
+    owner, runtime = ledger
+    goal_id, lead = await goal_with_lead(owner, runtime)
+    await plan(owner, goal_id)
+    env = await envelope(owner, goal_id)
+    await wake_epoch(owner, goal_id, lead, 1)
+    wake = await intent(owner, goal_id, env)
+    async with owner.acquire() as conn, conn.transaction():
+        await WaitLedger(conn).cancel_waits(goal_id, "stopped")
+    row = await owner.fetchrow("SELECT state, cancelled_reason FROM switchboard.wake_intents")
+    assert (row["state"], row["cancelled_reason"]) == ("cancelled", "stopped")
+    assert await owner.fetchval("SELECT state FROM switchboard.wait_envelopes") == "cancelled"
+    assert wake is not None
+
+
 async def test_inbox_kinds_are_discriminated_and_consumed_once(ledger):
     owner, runtime = ledger
     goal_id, lead = await goal_with_lead(owner, runtime)

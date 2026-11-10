@@ -361,7 +361,7 @@ async def test_reply_binding_preserves_goal_authority(ledger):
         )
         == "delivery-1"
     )
-    # D11 has no settling -> running edge, so a settling goal cannot consume an
+    # A waiting (settle) goal has no waiting -> running edge, so it cannot consume an
     # inbox row: a reply to its live prompt becomes a new owner goal instead.
     settling = await admit(runtime)
     await effect(
@@ -374,7 +374,7 @@ async def test_reply_binding_preserves_goal_authority(ledger):
         expiry=expiry,
     )
     await owner.execute(
-        "UPDATE switchboard.goals SET status='settling' WHERE id=$1", settling.goal_id
+        "UPDATE switchboard.goals SET status='waiting' WHERE id=$1", settling.goal_id
     )
     after_settling = await admit(runtime, replace(facts, reply_delivery="settling-1"))
     assert after_settling.result == "admitted" and after_settling.goal_id != settling.goal_id

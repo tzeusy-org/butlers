@@ -22,6 +22,7 @@ from butlers.capability_broker.ledger import BrokerLedger
 from butlers.capability_broker.recipients import live_owner
 from butlers.capability_broker.typed import TypedSchema, parse_schema
 from butlers.core.goal_admission import Grant, decode_grants, digest, encode_grants
+from butlers.core.goal_waiting import WaitLedger
 
 from .contracts import (
     GoalBudgetView,
@@ -35,10 +36,10 @@ from .contracts import (
 from .delegation import DelegationRequest, child_grant
 
 LIVE = ("launching", "running")
-# Goal states a Stop fences (D11: running and settling, plus the transient ones).
-_STOPPABLE = ("admitted", "running", "awaiting_approval", "recovering", "settling")
-# Goal states a failed lead or exhausted budget ends (never settling: its lead is done).
-_ACTIVE = ("admitted", "running", "awaiting_approval", "recovering")
+# Goal states a Stop fences (RFC 0038 S2: a waiting goal is stoppable too).
+_STOPPABLE = ("admitted", "running", "waiting")
+# Goal states a failed lead or exhausted budget ends (never waiting: its lead is done).
+_ACTIVE = ("admitted", "running")
 _TERMINAL = ("completed", "partial", "failed", "stopped", "budget_exhausted")
 # Pending inbox ids a summary lead's packet lists; the count covers the rest.
 INBOX_LISTED = 20
@@ -227,7 +228,7 @@ class RunnerLedger:
         insert is what revokes any predecessor's token (D14). The goal ceiling
         is the lead's grant; exposure and labels come from the ledger triggers.
         """
-        goal = await self._goal(goal_id, ("admitted", "running", "recovering"))
+        goal = await self._goal(goal_id, ("admitted", "running"))
         if await self.connection.fetchval(
             "SELECT EXISTS (SELECT 1 FROM switchboard.invocations WHERE goal_id = $1 "
             "AND depth = 0 AND status = ANY($2::text[]))",
@@ -545,8 +546,8 @@ class RunnerLedger:
         """``goal.complete``: record the outcome; the goal settles (D11, D12).
 
         Live children are stopped with it (returned for termination). The goal
-        enters ``settling`` and reaches its final state once no effect can still
-        change; ``resolve`` runs at once for a goal with nothing outstanding.
+        enters ``waiting`` on a settle envelope and reaches its final state once no effect
+        can still change; ``resolve`` runs at once for a goal with nothing outstanding.
         """
         goal = await self.lock(principal.goal_id)
         if goal is None or goal["status"] != "running":
@@ -580,8 +581,15 @@ class RunnerLedger:
         )
         children = await self._end_live(principal.goal_id, "stopped", "goal_ended", depth=1)
         await self.end(principal.goal_id, principal.invocation_id, "returned", "completed")
+        epoch = await self.connection.fetchval(
+            "SELECT lead_epoch FROM switchboard.invocations WHERE goal_id = $1 AND id = $2",
+            principal.goal_id,
+            principal.invocation_id,
+        )
+        if await WaitLedger(self.connection).open_settle(principal.goal_id, epoch) is None:
+            raise BrokerRefused(Reason.UNAVAILABLE)
         await self.connection.execute(
-            "UPDATE switchboard.goals SET status = 'settling', updated_at = now() WHERE id = $1",
+            "UPDATE switchboard.goals SET status = 'waiting', updated_at = now() WHERE id = $1",
             principal.goal_id,
         )
         await self.resolve(principal.goal_id)
@@ -605,14 +613,14 @@ class RunnerLedger:
         )
 
     async def resolve(self, goal_id: UUID) -> str | None:
-        """settling -> completed | partial | failed once no effect can change (D11).
+        """waiting (settle) -> completed | partial | failed once no effect can change (D11).
 
         A goal admitted from an owner message completes only if its reply is an
         owner delivery that committed; otherwise it ends ``partial`` with the
         delivery failure recorded.
         """
         goal = await self.lock(goal_id)
-        if goal is None or goal["status"] != "settling":
+        if goal is None or goal["status"] != "waiting":
             return None
         if await self.connection.fetchval(
             "SELECT EXISTS (SELECT 1 FROM switchboard.effects WHERE goal_id = $1 "
@@ -620,6 +628,9 @@ class RunnerLedger:
             goal_id,
             list(_UNSETTLED),
         ):
+            return None
+        # The settle fire: one wake, resolved here with no LLM epoch (RFC 0038 S2.2).
+        if not await WaitLedger(self.connection).fire_settle(goal_id):
             return None
         row = await self.connection.fetchrow(
             "SELECT o.outcome, o.reply_effect_id, g.source_kind, e.status AS reply_status "
@@ -688,6 +699,7 @@ class RunnerLedger:
             "UPDATE switchboard.goals SET status = 'stopped', updated_at = now() WHERE id = $1",
             goal_id,
         )
+        await WaitLedger(self.connection).cancel_waits(goal_id, "stopped")
         live = await self._end_live(goal_id, "stopped", "stopped")
         await self.connection.execute(
             "UPDATE switchboard.invocations SET token_hash = NULL, updated_at = now() "
@@ -749,10 +761,11 @@ class RunnerLedger:
         )
         if row is None:
             return None
-        recover = row["depth"] == 0 and goal["status"] in ("running", "awaiting_approval")
+        recover = row["depth"] == 0 and goal["status"] == "running"
         if recover:
+            # The recovery intent is this ended lead with no successor (see ``leaderless``).
             await self.connection.execute(
-                "UPDATE switchboard.goals SET status = 'recovering', updated_at = now() "
+                "UPDATE switchboard.goals SET status = 'admitted', updated_at = now() "
                 "WHERE id = $1",
                 goal_id,
             )
@@ -811,7 +824,7 @@ class RunnerLedger:
         return bool(
             await self.connection.fetchval(
                 "SELECT EXISTS (SELECT 1 FROM switchboard.goals g WHERE g.id = $1 "
-                "AND g.status IN ('admitted', 'running', 'recovering') "
+                "AND g.status IN ('admitted', 'running') "
                 "AND NOT EXISTS (SELECT 1 FROM switchboard.invocations i "
                 "WHERE i.goal_id = g.id AND i.depth = 0 AND i.status = ANY($2::text[])))",
                 goal_id,
@@ -848,7 +861,7 @@ class RunnerLedger:
         return [row["id"] for row in rows]
 
     async def leaderless(self, grace_seconds: float) -> list[Leaderless]:
-        """Running or recovering goals whose latest lead ended over ``grace_seconds`` ago.
+        """Running goals, or admitted ones recovering, whose latest lead ended long enough ago.
 
         A runner that dies between ending a lead (lease expiry, escalation, a
         runtime failure) and launching its successor leaves the goal here; an
@@ -868,7 +881,7 @@ class RunnerLedger:
             "max(n.lead_epoch) FROM switchboard.invocations n WHERE n.goal_id = g.id "
             "AND n.depth = 0 AND n.end_reason IS DISTINCT FROM 'launch_failed'), -1)) d "
             "ON l.end_reason = 'launch_failed' "
-            "WHERE g.status IN ('running', 'recovering') "
+            "WHERE g.status IN ('running', 'admitted') "
             "AND l.status <> ALL($1::text[]) "
             "AND l.ended_at <= clock_timestamp() - make_interval(secs => $2::float8) "
             "AND NOT EXISTS (SELECT 1 FROM switchboard.goal_outcomes o WHERE o.goal_id = g.id) "
@@ -905,10 +918,8 @@ class RunnerLedger:
         return await self.end_goal(goal_id, status, reason)
 
     async def settling(self) -> list[UUID]:
-        rows = await self.connection.fetch(
-            "SELECT id FROM switchboard.goals WHERE status = 'settling' ORDER BY id"
-        )
-        return [row["id"] for row in rows]
+        """Waiting goals on an open settle envelope: the runner resolves them as effects settle."""
+        return await WaitLedger(self.connection).open_settle_goals()
 
     async def summary(self, goal_id: UUID, lead_id: UUID) -> LedgerSummary | None:
         """What an earlier lead left for lead ``lead_id``, identifiers only (D14).

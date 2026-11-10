@@ -576,7 +576,7 @@ class BrokerLedger:
             raise BrokerRefused(Reason.POLICY)
         if effect["approval_ref"] != approval_ref:
             raise BrokerRefused(Reason.POLICY)
-        if goal["status"] not in ("running", "awaiting_approval", "settling"):
+        if goal["status"] not in ("running", "waiting"):
             # A stopped (or otherwise ended) goal never executes an approval.
             await self.connection.execute(
                 "UPDATE switchboard.effects SET status = 'cancelled', updated_at = now() "
@@ -674,7 +674,7 @@ class BrokerLedger:
             or effect["approval_ref"] != approval_ref
         ):
             raise BrokerRefused(Reason.POLICY)
-        if goal["status"] not in ("running", "awaiting_approval", "settling"):
+        if goal["status"] not in ("running", "waiting"):
             await self.connection.execute(
                 "UPDATE switchboard.effects SET status = 'cancelled', updated_at = now() "
                 "WHERE goal_id = $1 AND id = $2",
