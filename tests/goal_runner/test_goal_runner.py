@@ -28,6 +28,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from butlers.capability_broker.contracts import BrokerRefused, Reason
 from butlers.core.goal_admission import Grant
+from butlers.core.goal_waiting import WaitLedger
 from butlers.core.model_call import AttemptSink
 from butlers.core.model_routing import CeilingStatus, QuotaStatus, SpendRoutingResult
 from butlers.goal_runner.contracts import HostOutcome, Launch
@@ -711,9 +712,11 @@ async def test_settling_rechecks_that_the_reply_reached_the_owner(broker_db_url)
             lead.invocation_id,
             effect,
         )
-        await h.w.owner.execute(
-            "UPDATE switchboard.goals SET status = 'settling' WHERE id = $1", goal
-        )
+        async with h.w.owner.acquire() as conn, conn.transaction():
+            assert await WaitLedger(conn).open_settle(goal, 0) is not None
+            await conn.execute(
+                "UPDATE switchboard.goals SET status = 'waiting' WHERE id = $1", goal
+            )
         await h.runner.supervise_once()
         assert await h.goal_status(goal) == "partial"
         failure = await h.w.owner.fetchval(
@@ -742,16 +745,29 @@ async def test_a_completed_goal_settles_until_its_parked_effects_resolve(broker_
                 "relied_effects": [str(parked.effect_id)],
             },
         )
-        assert result == {"status": "settling"}
+        assert result == {"status": "waiting"}
         assert (await h.row(child.invocation_id))["status"] == "stopped"
         assert child.invocation_id in h.host.terminated
         await h.runner.supervise_once()
-        assert await h.goal_status(goal) == "settling"
+        assert await h.goal_status(goal) == "waiting"
         await h.w.domain.execute(
             "UPDATE pending_actions SET status = 'rejected' WHERE id = $1", parked.effect_id
         )
         await h.runner.supervise_once()
         assert await h.goal_status(goal) == "completed"
+        # The settle fire is the envelope's one wake, resolved with no successor epoch.
+        envelope = await h.w.owner.fetchrow(
+            "SELECT kind, state, consumed_wakes FROM switchboard.wait_envelopes WHERE goal_id = $1",
+            goal,
+        )
+        assert (envelope["kind"], envelope["state"], envelope["consumed_wakes"]) == (
+            "settle",
+            "fired",
+            1,
+        )
+        assert not await h.w.owner.fetchval(
+            "SELECT count(*) FROM switchboard.wake_intents WHERE goal_id = $1", goal
+        )
 
 
 async def test_a_lead_that_exits_without_completing_fails_its_goal(broker_db_url):
@@ -823,17 +839,22 @@ async def test_stop_racing_delegations_leaves_no_running_child(broker_db_url):
         assert live == 0 and await h.goal_status(goal) == "stopped"
 
 
-async def test_stop_after_completion_stops_a_settling_goal(broker_db_url):
+async def test_stop_after_completion_stops_a_waiting_goal(broker_db_url):
     async with harness(broker_db_url) as h:
         goal = await h.goal(_grant(NOTIFY))
         lead = await h.lead(goal)
         args = {"entity_id": str(uuid4()), "message": "Hello", "channel": "telegram"}
         parked = await h.w.broker.call(goal, lead.token, NOTIFY.identity, args)
         await h.call(goal, lead.token, "goal__complete", {"outcome": "partial"})
-        assert await h.goal_status(goal) == "settling"
+        assert await h.goal_status(goal) == "waiting"
         await h.runner.stop(goal)
         assert await h.goal_status(goal) == "stopped"
         assert (await h.w.effect(parked.effect_id))["status"] == "cancelled"
+        # The settle wait closes with the goal; Stop leaves no open envelope behind.
+        states = await h.w.owner.fetch(
+            "SELECT kind, state FROM switchboard.wait_envelopes WHERE goal_id = $1", goal
+        )
+        assert [(r["kind"], r["state"]) for r in states] == [("settle", "cancelled")]
 
 
 # -- AC6: lease recovery and runtime-failure relaunch (D14) ----------------------
@@ -1009,7 +1030,7 @@ async def _crash_after(h: Harness, lead: Launch, step) -> None:
     await until(lambda: len(h.runner._tasks) == 0)
 
 
-async def test_a_goal_left_recovering_by_a_dead_runner_gets_its_replacement(broker_db_url):
+async def test_a_goal_left_admitted_by_a_dead_runner_gets_its_replacement(broker_db_url):
     async with harness(broker_db_url, config=_RESUMING) as h:
         goal = await h.goal(_grant(SEARCH))
         old = await h.lead(goal)
@@ -1019,7 +1040,7 @@ async def test_a_goal_left_recovering_by_a_dead_runner_gets_its_replacement(brok
             old.invocation_id,
         )
         await _crash_after(h, old, lambda ledger: ledger.expire(goal, old.invocation_id))
-        assert await h.goal_status(goal) == "recovering" and len(h.host.launches) == 1
+        assert await h.goal_status(goal) == "admitted" and len(h.host.launches) == 1
         await h.runner.supervise_once()
         new = await h.launched(2)
         row = await h.row(new.invocation_id)

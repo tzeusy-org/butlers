@@ -525,9 +525,9 @@ class GoalAdmission:
                 and binding["prompt_accepts_input"]
                 and binding["prompt_expires_at"] is not None
                 and binding["prompt_expires_at"] > prompt_now
-                # D11 has no settling -> running edge: a settling goal can never
-                # consume an inbox row, so a reply to it is admitted as new intent.
-                and goal["status"] in {"admitted", "running", "awaiting_approval", "recovering"}
+                # A waiting goal (settle envelope) has no waiting -> running edge here: it can
+                # never consume an inbox row, so a reply to it is admitted as new intent.
+                and goal["status"] in {"admitted", "running"}
             ):
                 joined = await ledger.decide(
                     source, attempt_id, "joined", "reply_joined", goal["id"]

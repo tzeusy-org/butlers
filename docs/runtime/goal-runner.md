@@ -160,7 +160,7 @@ itself is unconstructed until its wiring lands).
 ### Joined replies (inbox)
 
 An owner reply that admission joins to a goal lands in `switchboard.goal_inbox`. A joined goal is
-always `running` (a settling goal takes no joins, and D11 has no `waiting` state yet), so its
+always `running` or `admitted` (a waiting goal takes no joins until owner-thread joining lands), so its
 reader is the live lead, or the lead the sweep starts next after a lapse, resume or escalation.
 The session host cannot push input into a live session, so the lead pulls replies between tool
 calls with `goal__inbox` (`Broker.goal_inbox`):
@@ -274,20 +274,27 @@ Budgets fail closed and are charged atomically inside the broker's per-call tran
   the goal budget ends the goal `budget_exhausted` and fences every live invocation.
 - Launch goes through `call_model`, so the monthly spend ceiling is enforced at every launch.
 
-## State machine and settling (D11)
+## State machine and settling (D11, S2)
 
-`running → settling → completed | partial | failed`, plus `stopped`, `budget_exhausted` and
-`recovering`.
+`admitted → running → waiting → completed | partial | failed`, plus `stopped` and
+`budget_exhausted`. Since `sw_064` the old `settling`, `awaiting_approval` and `recovering` states
+are gone: `settling` is `waiting` on a `settle` envelope, `awaiting_approval` is `waiting` on an
+`approval` envelope bound to the parked effect (one with no parked effect is held on a
+`conditions` envelope whose predicate is `evidence_unavailable`, reason `legacy_approval_unbound`:
+never approved, ended only by Stop or an owner action), and `recovering` is `admitted` with an ended lead
+and no successor (the resume sweep replaces it at the next epoch). `goals.legacy_status` keeps
+the original status of every converted row.
 
 - `goal.complete` validates every relied-on effect, records the outcome in `goal_outcomes`, stops
-  the children and moves the goal to `settling`.
-- The sweep syncs parked effects and resolves settling goals. A goal answering an owner message
+  the children and moves the goal to `waiting` on a `settle` envelope.
+- The sweep syncs parked effects and resolves waiting goals with an open settle envelope. The
+  settle fire is the envelope's one wake and runs `resolve()` directly: no LLM epoch. A goal answering an owner message
   completes only if its reply is an owner delivery that committed; otherwise it ends `partial`
   with the `delivery_failure` (`reply_missing`, `reply_not_owner_delivery` or
   `reply_not_committed`) recorded.
 - An owner delivery is an effect whose `recipient_entity` is the live owner. The broker records
   it only for a `communicate` capability whose every party resolved to the owner. `goal.complete`
-  refuses (`RESOURCE`) any other effect named as the reply, and settling checks it again. An
+  refuses (`RESOURCE`) any other effect named as the reply, and resolving checks it again. An
   owner-edited approval re-dispatches as a new effect without a recorded recipient, so it cannot
   be the reply.
 - A lead that exits without calling `goal.complete` leaves the goal `failed`
@@ -295,11 +302,12 @@ Budgets fail closed and are charged atomically inside the broker's per-call tran
 
 ## Stop, recovery and relaunch (D14)
 
-- **Stop** takes the goal row `FOR UPDATE`, marks it `stopped`, revokes every invocation token,
+- **Stop** takes the goal row `FOR UPDATE`, marks it `stopped`, cancels its open wait envelopes and
+  unlaunched wake intents, revokes every invocation token,
   terminates the processes, then cancels parked effects. A cancellation the broker cannot perform
   now is retried by the sweep; a stopped goal never executes an approval.
 - **Leases.** Each live invocation renews a lease (`lease_seconds=90`, `renew_every=30`). When a
-  lead's lease lapses the sweep expires it, moves the goal to `recovering`, and launches a summary
+  lead's lease lapses the sweep expires it, moves the goal back to `admitted`, and launches a summary
   lead under a new lead epoch. Children past their deadline end `timed_out` (`deadline`).
 - **Relaunch.** `call_model` owns failover and relaunch (`max_relaunches=1`). The runner attaches
   the capability calls the broker recorded for the failed attempt to the failure, which makes any
@@ -309,7 +317,7 @@ Budgets fail closed and are charged atomically inside the broker's per-call tran
   held, opens nothing and ends nothing. A duplicate `start_goal` (an at-least-once admission
   retry) leaves the running lead alone, and a recovery or escalation that loses a race is a no-op.
   Only a failure of an invocation the launch itself opened can end the goal.
-- **Resuming after a runner crash.** A goal that is `running` or `recovering`, has no live lead
+- **Resuming after a runner crash.** A goal that is `running` or `admitted` after a lapse, has no live lead
   and no outcome, and whose latest lead ended more than `resume_grace_seconds` ago (default 90)
   is resumed by the sweep. A lapsed lead is replaced at the next epoch, and an escalated one by a
   lead on the next ladder tier. A lead that failed at runtime gets its one relaunch only if it was
@@ -354,8 +362,7 @@ brief text, arguments or results.
 
 Migration `sw_063` (`roster/switchboard/migrations/063_goal_waiting.py`) adds the records a goal
 needs to wait without holding a session slot and to resume through one fenced successor epoch.
-Nothing consumes them yet: the runner and admission are unchanged, and the legacy
-`settling`, `awaiting_approval` and `recovering` states still exist beside the new `waiting`.
+The runner uses the settle envelope since `sw_064`; wake admission and joins are later PRs.
 
 | Record | What it holds |
 | --- | --- |
@@ -398,8 +405,8 @@ evaluator bridge and the runner integration follow in later changes.
   isolated `butlers-control` process (`bu-jnhxc5`).
 - Calling `GoalRuntime.admit` from ingress, confirms and obligations, and an owner Stop surface
   (the D19 dashboard change, or a control-plane service route).
-- Waking a `waiting` goal on a joined reply or condition, and the status remap that retires
-  `settling`, `awaiting_approval` and `recovering` (`bu-dhloi1.7`, next PRs); the records exist
-  (see above). The reply text itself: `goal__inbox` returns references only.
-- `awaiting_approval` and parked-wait continuation (`bu-dhloi1.204`).
+- Waking a `waiting` goal on a joined reply or condition (`bu-dhloi1.7`, next PRs); the records
+  exist (see above). The reply text itself: `goal__inbox` returns references only.
+- The approval-kind wait and its successor summary lead (`bu-dhloi1.204`); the state remap itself
+  is done.
 - The lead's goal input, owner profile, lead policy and domain index in the packet (M6).
