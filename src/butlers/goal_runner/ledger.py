@@ -31,6 +31,7 @@ from .contracts import (
     InvocationShare,
     LaunchFacts,
     LedgerSummary,
+    PlanSummary,
     Role,
 )
 from .delegation import DelegationRequest, child_grant
@@ -46,6 +47,42 @@ INBOX_LISTED = 20
 # Effects that may still change: settling waits for them (D11).
 _UNSETTLED = ("requested", "parked", "approved", "dispatched")
 Outcome = Literal["completed", "partial", "failed"]
+# goal.plan: references per list (the sw_063 column bound is 64) and the goal-owned rows each
+# reference kind names. A reference is ``<kind>:<id>``; every id is checked against this goal.
+MAX_PLAN_REFS = 32
+_PLAN_REF_ROWS = {
+    "effect": "SELECT id::text FROM switchboard.effects WHERE goal_id = $1 AND id = ANY($2)",
+    "inbox": "SELECT id::text FROM switchboard.goal_inbox WHERE goal_id = $1 AND id = ANY($2)",
+    "child": "SELECT id::text FROM switchboard.invocations "
+    "WHERE goal_id = $1 AND depth = 1 AND id = ANY($2)",
+}
+
+
+def plan_refs(value: Any) -> tuple[str, ...]:
+    """One ``goal.plan`` reference list, canonical and bounded, or a POLICY refusal.
+
+    Only the closed ``effect:|inbox:|child:<uuid>`` and ``plan:<version>`` spellings are
+    references; anything else (free text included) is refused, as is a repeat or a list past
+    ``MAX_PLAN_REFS``. Ownership is the ledger's check, in the goal's transaction.
+    """
+    if type(value) is not list or len(value) > MAX_PLAN_REFS:
+        raise BrokerRefused(Reason.POLICY)
+    refs: list[str] = []
+    for item in value:
+        kind, _, ident = item.partition(":") if type(item) is str else ("", "", "")
+        if kind == "plan":
+            valid = ident.isascii() and ident.isdigit() and not ident.startswith("0")
+        elif kind in _PLAN_REF_ROWS:
+            try:
+                valid = str(UUID(ident)) == ident
+            except ValueError:
+                valid = False
+        else:
+            valid = False
+        if not valid or item in refs:
+            raise BrokerRefused(Reason.POLICY)
+        refs.append(item)
+    return tuple(refs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -691,6 +728,59 @@ class RunnerLedger:
         )
         return children
 
+    async def plan(
+        self,
+        principal: Principal,
+        premise: tuple[str, ...],
+        evidence: tuple[str, ...],
+        steps: tuple[str, ...],
+    ) -> int | BrokerRefused:
+        """``goal.plan``: record the lead's plan as the goal's next version (RFC 0038 S2).
+
+        Only a running goal's lead plans. Every reference must name a row this goal owns, else
+        RESOURCE and nothing is recorded. Identical content keeps the current version (a retry);
+        changed content appends the next version with its predecessor, so the version an open
+        or fired wait bound stays as it was approved. The version records the lead's epoch.
+        """
+        goal = await self.lock(principal.goal_id)
+        if goal is None or goal["status"] != "running":
+            raise BrokerRefused(Reason.GOAL)
+        if principal.depth != 0:
+            raise BrokerRefused(Reason.CAPABILITY)
+        named: dict[str, set[str]] = {}
+        for ref in (*premise, *evidence, *steps):
+            kind, _, ident = ref.partition(":")
+            named.setdefault(kind, set()).add(ident)
+        for kind, idents in named.items():
+            if kind == "plan":
+                found = await self.connection.fetchval(
+                    "SELECT count(*) FROM switchboard.goal_plans "
+                    "WHERE goal_id = $1 AND version = ANY($2::bigint[])",
+                    principal.goal_id,
+                    sorted(int(ident) for ident in idents),
+                )
+            else:
+                rows = await self.connection.fetch(
+                    _PLAN_REF_ROWS[kind], principal.goal_id, [UUID(i) for i in idents]
+                )
+                found = len(rows)
+            if found != len(idents):
+                raise BrokerRefused(Reason.RESOURCE)
+        exhausted = await self.broker.charge_call(principal)
+        if exhausted is not None:
+            return exhausted
+        epoch = await self.connection.fetchval(
+            "SELECT lead_epoch FROM switchboard.invocations WHERE goal_id = $1 AND id = $2",
+            principal.goal_id,
+            principal.invocation_id,
+        )
+        version = await WaitLedger(self.connection).append_plan(
+            principal.goal_id, epoch, premise, evidence, steps
+        )
+        if version is None:
+            raise BrokerRefused(Reason.GOAL)
+        return version
+
     async def approval_waits(self) -> list[UUID]:
         """Waiting goals whose open approval envelope is bound to a parked effect (to sync)."""
         rows = await self.connection.fetch(
@@ -1210,11 +1300,25 @@ class RunnerLedger:
             "ORDER BY created_at, id",
             goal_id,
         )
+        plan = await self.connection.fetchrow(
+            "SELECT p.version, p.premise_refs::text AS premise, p.evidence_refs::text AS evidence, "
+            "p.step_refs::text AS steps FROM switchboard.goals g JOIN switchboard.goal_plans p "
+            "ON (p.goal_id, p.version) = (g.id, g.plan_version) WHERE g.id = $1",
+            goal_id,
+        )
         return LedgerSummary(
             tuple((str(e["id"]), e["capability"], e["status"]) for e in effects),
             tuple((str(c["id"]), c["status"]) for c in children),
             tuple(str(row["id"]) for row in inbox),
             pending,
+            None
+            if plan is None
+            else PlanSummary(
+                plan["version"],
+                tuple(json.loads(plan["premise"])),
+                tuple(json.loads(plan["evidence"])),
+                tuple(json.loads(plan["steps"])),
+            ),
         )
 
     async def launch_facts(self, goal_id: UUID, invocation_id: UUID) -> LaunchFacts:

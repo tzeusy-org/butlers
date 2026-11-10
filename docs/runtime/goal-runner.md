@@ -96,6 +96,7 @@ capability and never lists one. The runner serves these tools on the same per-go
 | `goal__complete` | lead | Record the outcome; the goal settles |
 | `goal__wait_approval` | lead | End the lead and wait on one effect parked for approval (see below) |
 | `goal__wait_owner` | lead | End the lead and wait for the owner's answer to a delivered prompt (see below) |
+| `goal__plan` | lead | Record the plan as the goal's next version of goal-owned references (see below) |
 | `goal__inbox` | lead | Take the owner replies joined to this goal since the last call |
 | `goal__escalate` | lead | Hand the goal to a fresh lead on the next ladder tier |
 | `goal__return` | child | Return a result validated against the brief's `result_schema` |
@@ -239,8 +240,10 @@ from the model:
 3. `ledger`: only for a lead that follows one that ran (recovery, escalation, relaunch): the
    effects and children, as identifiers and statuses, and the goal's pending inbox replies as
    `inbox_pending: <count>` and up to 20 `inbox: <id>` lines. Stating them consumes nothing and
-   joins no label; the lead reads them with `goal__inbox`, which does both. A first lead has no
-   ledger, and neither does a lead re-offered after every earlier lead ended `launch_failed`
+   joins no label; the lead reads them with `goal__inbox`, which does both. When the goal has a
+   plan version, the ledger also states it: `plan_version: <n>` and its `plan_premise:`,
+   `plan_evidence:` and `plan_step:` references, exactly as `goal__plan` validated them. A
+   first lead has no ledger, and neither does a lead re-offered after every earlier lead ended `launch_failed`
    (the host had no room, so none ran). A child never gets one.
 4. `refs`: the context tools the broker serves (runner-authored only). `GoalTools` points the
    runner's `PacketComposer` at exactly the tools it serves (`context__search` when a
@@ -388,8 +391,24 @@ invented epoch, and the broker's inbox read now records the reader's lead epoch.
 `WaitLedger` (`src/butlers/core/goal_waiting.py`) holds the lifecycle operations: the thread
 registry, plan versions, opening an envelope (superseding a fired predecessor) and `rearm`, which
 opens the next generation only when the goal is live, no lead is running, the fired generation's
-successor launched, the cumulative cap and the original deadline hold. Wake admission, the
-evaluator bridge and the runner integration follow in later changes.
+successor launched, the cumulative cap and the original deadline hold. Plan versions are written
+by `goal__plan` (below) and, when a goal first waits with none recorded, as an empty version 1 for
+the envelope to bind. Nothing calls the thread registry yet (`bu-dhloi1.296`), and nothing opens a
+`conditions` envelope or calls `rearm` (`bu-dhloi1.305`).
+
+### Plan versions (S2)
+
+`goal__plan {premise_refs, evidence_refs, step_refs}` records the running lead's plan as the
+goal's next version. Each list holds at most 32 references, none repeated, in the closed spelling
+`effect:<uuid>`, `inbox:<uuid>`, `child:<uuid>` or `plan:<version>`. Free text, another spelling or
+a repeat is refused `policy`. In the goal's locked transaction, every reference must name a row of
+this goal (its effect, its inbox row, its child invocation, an earlier version of its plan), else
+the call is refused `resource` and nothing is recorded. Content identical to the goal's latest
+version returns that version (a retry). Changed content appends the next version with its
+predecessor and the lead's epoch, and moves `goals.plan_version` to it. A recorded version never
+changes, so a wait keeps the version it bound when it opened. A child cannot plan (`capability`),
+and neither can a goal that is not running. A successor, recovery or escalation lead reads the
+latest version's references in its packet ledger.
 
 ## Waking a waiting goal (S2.1, S2.2; sw_065)
 

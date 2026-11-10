@@ -14,6 +14,7 @@ from butlers.goal_runner.contracts import (
     LaunchContext,
     LaunchFacts,
     LedgerSummary,
+    PlanSummary,
 )
 from butlers.goal_runner.packet import PacketComposer
 
@@ -138,6 +139,22 @@ def test_more_pending_replies_than_listed_are_still_counted():
 def test_no_pending_reply_adds_no_inbox_lines():
     text = section(compose(context(ledger=LEDGER)), "ledger")
     assert "inbox" not in text
+
+
+def test_a_summary_lead_starts_from_the_latest_plan_version_by_reference():
+    reply = f"inbox:{uuid.uuid4()}"
+    plan = PlanSummary(2, (f"effect:{EFFECT}",), (reply,), (f"child:{CHILD}", "plan:1"))
+    text = section(compose(context(ledger=LedgerSummary(plan=plan))), "ledger")
+    assert "plan_version: 2" in text
+    assert f"plan_premise: effect:{EFFECT}" in text
+    assert f"plan_evidence: {reply}" in text
+    assert f"plan_step: child:{CHILD}" in text and "plan_step: plan:1" in text
+    assert "goal__plan" in text  # how to record the next version
+    assert "nothing recorded" not in text
+
+
+def test_no_recorded_plan_adds_no_plan_lines():
+    assert "plan" not in section(compose(context(ledger=LEDGER)), "ledger")
 
 
 def test_a_child_packet_carries_only_its_brief_grant_and_own_share():
