@@ -359,7 +359,7 @@ brief text, arguments or results.
   - Authorship (owner decision, 2026-11-10): an agent may draft it and open a PR. Text that
     conforms to the RFC and specs is adopted by independent conformance review.
   - Reply style, voice and any non-conforming text merge only with the owner's explicit
-    approval on that PR. LEAD.md has no reply-style section yet; it waits for that approval.
+    approval on that PR. LEAD.md's "Replying to the owner" section is that text.
 - The deployed session host (`bu-kiuh8v`), and a usage relay between tool calls; today the
   runner charges only the counts a settled run reports.
 - Constructing the runtime in the control plane: a live `Broker` needs the signing key and the
