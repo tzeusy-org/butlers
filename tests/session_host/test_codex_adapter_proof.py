@@ -27,7 +27,7 @@ from butlers.session_host.codex import (
 from butlers.session_host.contracts import Refused
 from butlers.session_host.material import InvocationMaterial
 from butlers.session_host.profiles import Profile, ProfileFactory, ReviewedProfile
-from tests.session_host import codex_proof
+from tests.session_host import codex_proof, exact_image_codex_proof
 from tests.session_host.test_core import request
 
 REPO = Path(__file__).resolve().parents[2]
@@ -877,6 +877,33 @@ def test_live_codex_adapter_argv_is_untouched():
     source = (REPO / "src/butlers/core/runtimes/codex.py").read_text()
     assert '"--dangerously-bypass-approvals-and-sandbox",' in source
     assert "session_host" not in source
+
+
+# The image's own shim ---------------------------------------------------------
+
+
+@pytest.mark.skipif(shutil.which("cc") is None, reason="no C compiler")
+def test_exact_image_proof_accepts_only_a_static_shim(tmp_path):
+    source = REPO / "scripts/runtime_cli_sandbox_init.c"
+    static, dynamic = tmp_path / "static", tmp_path / "dynamic"
+    for out, flags in ((static, ["-static"]), (dynamic, [])):
+        done = subprocess.run(
+            ["cc", "-O2", *flags, str(source), "-o", str(out)], capture_output=True, timeout=60
+        )
+        assert done.returncode == 0, done.stderr[-300:]
+    assert exact_image_codex_proof.shim_is_static(static) is True
+    assert exact_image_codex_proof.shim_is_static(dynamic) is False
+    script = tmp_path / "script"
+    script.write_text("#!/bin/sh\n")
+    assert exact_image_codex_proof.shim_is_static(script) is False
+
+
+def test_exact_image_proof_refuses_a_dynamic_shim_before_running(tmp_path, capsys):
+    codex, shim = tmp_path / "codex", tmp_path / "init"
+    codex.write_bytes(b"x")
+    shim.write_bytes(b"#!/bin/sh\n")
+    assert exact_image_codex_proof.main(codex, shim, tmp_path / "out.json") == 2
+    assert "static=false" in capsys.readouterr().out
 
 
 # Native proof -------------------------------------------------------------

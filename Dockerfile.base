@@ -31,9 +31,14 @@ RUN --network=none --mount=from=system-artifacts,source=debs,target=/opt/system-
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
     && rm /tmp/install_system_artifacts.py /tmp/debian-system-inputs.json
 COPY scripts/runtime_cli_sandbox_init.c /src/runtime_cli_sandbox_init.c
+# The session-host domain's root is empty, so the shim must carry no loader and no
+# shared object: link it statically with the pinned compiler profile's libc6-dev
+# and refuse the build if the result names an interpreter or a needed library.
 RUN --network=none mkdir -p /out \
-    && gcc -O2 -Wall -Wextra -Werror -o /out/runtime-cli-sandbox-init \
-    /src/runtime_cli_sandbox_init.c
+    && gcc -static -O2 -Wall -Wextra -Werror -o /out/runtime-cli-sandbox-init \
+    /src/runtime_cli_sandbox_init.c \
+    && ! readelf -lW /out/runtime-cli-sandbox-init | grep -q INTERP \
+    && ! readelf -dW /out/runtime-cli-sandbox-init 2>/dev/null | grep -q NEEDED
 
 FROM system-inputs
 

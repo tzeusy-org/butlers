@@ -144,8 +144,20 @@ def test_sandbox_init_builder_creates_its_declared_output_directory() -> None:
     text = _dockerfile_base_text()
 
     assert text.index("RUN --network=none mkdir -p /out") < text.index(
-        "gcc -O2 -Wall -Wextra -Werror -o /out/runtime-cli-sandbox-init"
+        "gcc -static -O2 -Wall -Wextra -Werror -o /out/runtime-cli-sandbox-init"
     )
+
+
+def test_sandbox_init_builder_links_statically_and_refuses_a_dynamic_result() -> None:
+    """bu-kiuh8v.10: the session-host domain's empty root cannot load an interpreter."""
+    text = _dockerfile_base_text()
+    build = text[text.index("RUN --network=none mkdir -p /out") :]
+    build = build[: build.index("\nFROM ") if "\nFROM " in build else None]
+
+    link = build.index("gcc -static")
+    assert link < build.index("! readelf -lW /out/runtime-cli-sandbox-init | grep -q INTERP")
+    assert link < build.index("! readelf -dW /out/runtime-cli-sandbox-init")
+    assert "-shared" not in build and "-dynamic" not in build
 
 
 def test_base_image_generates_the_exact_runtime_input_manifest() -> None:

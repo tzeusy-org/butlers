@@ -606,8 +606,10 @@ file row only by its device. A whole host tmpfs at `/tmp`, which is the review's
 That is this host's bwrap and kernel. `tests/session_host/exact_image_codex_proof.py`
 runs the same clean launches and every mutation row inside the rebuilt production
 image, with the image's own bwrap and Codex binary. It needs Docker, so the owner
-runs it. The shim there is compiled statically from the same source, because the
-image ships a dynamically linked one, which cannot run inside the empty domain root.
+runs it. The shim there is the image's own `/usr/local/libexec/butlers/runtime-cli-sandbox-init`.
+`Dockerfile.base` links it statically from the same source with the pinned compiler
+profile and fails the build if it names an interpreter or a needed library, because a
+dynamic one cannot run inside the empty domain root; the run refuses a dynamic shim.
 
 ### Measured checks
 
