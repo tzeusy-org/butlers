@@ -325,7 +325,12 @@ async def test_switch_on_a_relay_refusal_is_permanent_and_unavailability_retryab
     refused = await _request(pool, _configured_client())
     relay_on(_Relay(error=RelayUnavailable("no reply")))
     unavailable = await _request(pool, _configured_client())
+    # A 404 refusal (switch off on Switchboard, or one that predates the relay
+    # during a rolling deploy) is unavailability, not a permission answer.
+    relay_on(_Relay(error=RelayRefused("unknown_relay", status=404)))
+    not_served = await _request(pool, _configured_client())
 
+    assert not_served["error"] == unavailable["error"]
     assert refused["error"] == {
         "code": "permission_denied",
         "message": "Travel is not permitted to request Health medication data.",

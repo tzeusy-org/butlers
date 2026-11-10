@@ -96,8 +96,9 @@ async def _request_via_relay(switchboard_client: Any, *, timeout_s: float) -> di
     """The ``medication.travel_snapshot`` named relay (RFC 0038 D7, bu-2c1g7v).
 
     Switchboard authenticates this workload, admits only Travel, and reads
-    Health's service-only twin. A refusal means Travel is not allowed, so it is
-    permanent; anything else is retryable unavailability. The reply is Switchboard's
+    Health's service-only twin. A 403 refusal means Travel is not allowed, so it
+    is permanent; anything else, including a relay not served (404), is
+    retryable unavailability. The reply is Switchboard's
     route envelope, settled exactly as the legacy route reply.
     """
     from butlers.core.service_plane import client as relay_client
@@ -117,6 +118,13 @@ async def _request_via_relay(switchboard_client: Any, *, timeout_s: float) -> di
         )
     except RelayRefused as refused:
         logger.warning("Switchboard refused the medication relay: %s", refused.code)
+        if not relay_client.refusal_is_permanent(refused):
+            # Not served (404): Switchboard's switch is off or it predates the relay.
+            return _failure(
+                code="health_unavailable",
+                message="Health medication data is temporarily unavailable.",
+                retryable=True,
+            )
         return _failure(
             code="permission_denied",
             message="Travel is not permitted to request Health medication data.",

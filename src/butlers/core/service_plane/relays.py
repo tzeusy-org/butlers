@@ -31,11 +31,17 @@ class ServiceCaller:
 
 
 class RelayRefused(Exception):
-    """A relay refused the call before contacting its target."""
+    """A relay refused the call before contacting its target.
 
-    def __init__(self, code: str) -> None:
+    ``status`` is the HTTP status the relay endpoint answers with: ``403`` for
+    the relay's own judgement (caller, target, arguments), ``404`` when nothing
+    serves the relay, ``400`` for a malformed body.
+    """
+
+    def __init__(self, code: str, *, status: int = 403) -> None:
         super().__init__(code)
         self.code = code
+        self.status = status
 
 
 Dispatch = Callable[[str, str, dict[str, Any]], Awaitable[Any]]

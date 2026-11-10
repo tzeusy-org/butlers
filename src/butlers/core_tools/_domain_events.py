@@ -184,7 +184,7 @@ async def _dispatch_receive_via_switchboard(
 async def _dispatch_receive_via_relay(
     client: Any, butler_name: str, target_butler: str, args: dict[str, Any]
 ) -> tuple[dict[str, Any] | None, str | None, bool]:
-    """The ``domain_event.receive`` relay; a refusal is permanent, no reply retryable.
+    """The ``domain_event.receive`` relay; a 403 refusal is permanent, all else retryable.
 
     The relay goes to the Switchboard this daemon is configured for: its
     Switchboard client is built from ``config.switchboard_url``, which already
@@ -194,6 +194,7 @@ async def _dispatch_receive_via_relay(
         RelayUnavailable,
         call_relay,
         configured_switchboard_url,
+        refusal_is_permanent,
     )
     from butlers.core.service_plane.registry import DOMAIN_EVENT_RECEIVE
     from butlers.core.service_plane.relays import RelayRefused
@@ -214,7 +215,9 @@ async def _dispatch_receive_via_relay(
             switchboard_url=switchboard_url,
         )
     except RelayRefused as refused:
-        return None, f"relay_refused: {refused.code}", False
+        if refusal_is_permanent(refused):
+            return None, f"relay_refused: {refused.code}", False
+        return None, f"relay_unavailable: {refused.code}", True
     except (RelayUnavailable, OSError) as exc:
         return None, f"relay_unavailable: {type(exc).__name__}", True
     return _unwrap_route_result(raw)

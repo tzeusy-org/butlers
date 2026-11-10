@@ -14,7 +14,12 @@ from butlers.core.domain_event_contracts import (
     DomainEventContractRegistry,
     load_contract_registry,
 )
-from butlers.core.service_plane.client import RelayUnavailable, call_relay, relay_url
+from butlers.core.service_plane.client import (
+    RelayUnavailable,
+    call_relay,
+    refusal_is_permanent,
+    relay_url,
+)
 from butlers.core.service_plane.endpoint import build_relay_route
 from butlers.core.service_plane.registry import (
     CONTACTS_REPORT_CHANNEL,
@@ -171,6 +176,46 @@ async def test_the_switch_off_serves_no_relay(tmp_path: Path) -> None:
 
     assert refused.value.code == "not_found"
     assert harness.calls == []
+    # Not served is not a judgement on the caller: retryable, never permanent.
+    assert refused.value.status == 404
+    assert not refusal_is_permanent(refused.value)
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "permanent"),
+    [
+        (403, "caller_not_allowed", True),
+        (403, "args_invalid", True),
+        (404, "not_found", False),
+        (404, "unknown_relay", False),
+        (400, "args_invalid", False),
+    ],
+)
+async def test_only_a_403_refusal_is_permanent(
+    tmp_path: Path, status: int, code: str, permanent: bool
+) -> None:
+    (tmp_path / RELAY_AUDIENCE).write_text("t")
+    reply = httpx.Response(status, json={"status": "refused", "code": code})
+    transport = httpx.MockTransport(lambda request: reply)
+
+    with pytest.raises(RelayRefused) as refused:
+        await call_relay(
+            QA_REPORT_FINDING,
+            _FINDING,
+            daemon="travel",
+            switchboard_url=_SWITCHBOARD_URL,
+            token_dir=tmp_path,
+            transport=transport,
+        )
+
+    assert (refused.value.code, refused.value.status) == (code, status)
+    assert refusal_is_permanent(refused.value) is permanent
+
+
+def test_unavailability_and_other_errors_are_never_permanent() -> None:
+    assert not refusal_is_permanent(RelayUnavailable("http_502"))
+    assert not refusal_is_permanent(OSError("token missing"))
+    assert refusal_is_permanent(RelayRefused("caller_not_allowed"))
 
 
 def _a_contract():
