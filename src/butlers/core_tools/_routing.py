@@ -1219,15 +1219,26 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
 
         # RFC 0038 D7: behind BUTLERS_SERVICE_PLANE_AUTH (default off), Messenger
         # admits a delivery only from Switchboard on the butlers-control workload.
-        from butlers.core.service_plane.messenger_delivery import admit_delivery_request
+        from butlers.core.service_plane.messenger_delivery import (
+            admit_delivery_request,
+            delivery_refusal_error,
+        )
 
         delivery_refusal = await admit_delivery_request(daemon.config.name)
         if delivery_refusal is not None:
-            logger.warning("route.execute delivery caller refused: butler=%s", butler_name)
+            logger.warning(
+                "route.execute delivery caller refused: butler=%s reason=%s",
+                butler_name,
+                delivery_refusal,
+            )
+            error_class, retryable = delivery_refusal_error(delivery_refusal)
             return _route_error_response(
                 context_payload=route_context,
-                error_class="validation_error",
+                error_class=error_class,
                 message=delivery_refusal,
+                retryable=retryable,
+                # Refused before acceptance: nothing reached a provider.
+                transport=RECIPIENT_UNAVAILABLE if retryable else None,
             )
 
         # Public envelope fields never supply attribution. Resolve the private

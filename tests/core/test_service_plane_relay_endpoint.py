@@ -25,6 +25,10 @@ from butlers.core.service_plane.registry import (
     CONTACTS_REPORT_CHANNEL,
     CONTACTS_RESOLVE_CHANNEL,
     DOMAIN_EVENT_RECEIVE,
+    FLEET_CASE_CLOSE,
+    FLEET_CASE_OPEN,
+    FLEET_CASE_PROPOSE_POSTURE,
+    FLEET_CASE_RECORD_LINK,
     MEDICATION_TRAVEL_SNAPSHOT,
     QA_REPORT_FINDING,
     build_relays,
@@ -40,6 +44,7 @@ from butlers.core.service_plane.relays import (
 from butlers.core.service_plane.workload_identity import (
     DELIVERY_AUDIENCE,
     RELAY_AUDIENCE,
+    VerifierUnavailable,
 )
 from tests.core.test_service_plane_workload_identity import _claims, _token, _verifier
 
@@ -66,9 +71,23 @@ def _up_token(audience: str = RELAY_AUDIENCE) -> str:
     return _token(claims)
 
 
+_DEFAULT = object()
+
+
+class _UnavailableVerifier:
+    """The key set cannot be read right now (API-server blip, stale cache)."""
+
+    async def verify(self, token: str) -> str | None:
+        raise VerifierUnavailable("jwks unavailable")
+
+
 class _Harness:
     def __init__(
-        self, *, enabled: bool = True, relays: Mapping[str, RelayEndpoint] = _RELAYS
+        self,
+        *,
+        enabled: bool = True,
+        relays: Mapping[str, RelayEndpoint] = _RELAYS,
+        verifier: Any = _DEFAULT,
     ) -> None:
         self.calls: list[tuple[str, str, dict[str, Any], bool]] = []
         self.enabled = enabled
@@ -83,7 +102,9 @@ class _Harness:
         route = build_relay_route(
             enabled=lambda: self.enabled,
             relays=lambda: relays,
-            verifier=lambda: _verifier(RELAY_AUDIENCE),
+            verifier=(lambda: _verifier(RELAY_AUDIENCE))
+            if verifier is _DEFAULT
+            else (lambda: verifier),
             dispatch_for=dispatch_for,
         )
         self.transport = httpx.ASGITransport(app=Starlette(routes=[route]))
@@ -189,6 +210,7 @@ async def test_the_switch_off_serves_no_relay(tmp_path: Path) -> None:
         (404, "not_found", False),
         (404, "unknown_relay", False),
         (400, "args_invalid", False),
+        (503, "auth_unavailable", False),
     ],
 )
 async def test_only_a_403_refusal_is_permanent(
@@ -210,6 +232,36 @@ async def test_only_a_403_refusal_is_permanent(
 
     assert (refused.value.code, refused.value.status) == (code, status)
     assert refusal_is_permanent(refused.value) is permanent
+
+
+@pytest.mark.parametrize(
+    "verifier", [None, _UnavailableVerifier()], ids=["no-verifier", "key-set-unavailable"]
+)
+async def test_a_caller_that_cannot_be_verified_now_is_503_and_retryable(
+    tmp_path: Path, verifier: Any
+) -> None:
+    harness = _Harness(verifier=verifier)
+
+    with pytest.raises(RelayRefused) as refused:
+        await harness.call(
+            QA_REPORT_FINDING, _FINDING, tmp_path, daemon="travel", token=_up_token()
+        )
+
+    assert (refused.value.code, refused.value.status) == ("auth_unavailable", 503)
+    assert not refusal_is_permanent(refused.value)
+    assert harness.calls == []
+
+
+async def test_an_invalid_token_is_still_a_permanent_403(tmp_path: Path) -> None:
+    harness = _Harness()
+
+    with pytest.raises(RelayRefused) as refused:
+        await harness.call(
+            QA_REPORT_FINDING, _FINDING, tmp_path, daemon="travel", token=_up_token("other.aud")
+        )
+
+    assert (refused.value.code, refused.value.status) == ("caller_unauthenticated", 403)
+    assert refusal_is_permanent(refused.value)
 
 
 def test_unavailability_and_other_errors_are_never_permanent() -> None:
@@ -501,6 +553,64 @@ def test_a_contacts_daemon_outside_the_roster_is_never_admitted() -> None:
     assert relays[CONTACTS_RESOLVE_CHANNEL].allowed_callers == frozenset(
         {ServiceCaller("butlers-up", "health")}
     )
+
+
+_CASE = "11111111-1111-1111-1111-111111111111"
+_FLEET_WRITES = [
+    (FLEET_CASE_OPEN, "open_case_service", {"correlation_key": "health:owner:x"}),
+    (FLEET_CASE_CLOSE, "close_case_service", {"case_id": _CASE, "outcome": "resolved"}),
+    (
+        FLEET_CASE_PROPOSE_POSTURE,
+        "propose_case_posture_service",
+        {"case_id": _CASE, "posture": "urgent"},
+    ),
+    (
+        FLEET_CASE_RECORD_LINK,
+        "record_case_link_service",
+        {"case_id": _CASE, "link_kind": "owner_condition", "ref": "c1"},
+    ),
+]
+
+
+@pytest.mark.parametrize(("name", "tool", "args"), _FLEET_WRITES, ids=[w[1] for w in _FLEET_WRITES])
+async def test_a_domain_daemon_writes_a_fleet_case_through_switchboards_twin(
+    tmp_path: Path, name: str, tool: str, args: dict[str, Any]
+) -> None:
+    harness = _Harness()
+
+    result = await harness.call(name, args, tmp_path, daemon="finance", token=_up_token())
+
+    assert result == {"accepted": True}
+    assert harness.calls == [("switchboard", tool, args, False)]
+
+
+@pytest.mark.parametrize(("name", "tool", "args"), _FLEET_WRITES, ids=[w[1] for w in _FLEET_WRITES])
+async def test_fleet_case_relays_refuse_switchboards_name_and_extra_fields(
+    tmp_path: Path, name: str, tool: str, args: dict[str, Any]
+) -> None:
+    harness = _Harness()
+    cases = [
+        (args, "switchboard", "caller_not_allowed"),
+        ({**args, "source_butler": "health"}, "health", "args_invalid"),
+        ({**args, "origin_butler": "health"}, "health", "args_invalid"),
+    ]
+    for body, daemon, code in cases:
+        with pytest.raises(RelayRefused) as refused:
+            await harness.call(name, body, tmp_path, daemon=daemon, token=_up_token())
+        assert refused.value.code == code
+    assert harness.calls == []
+
+
+def test_fleet_case_relays_admit_every_domain_daemon_to_non_presentable_twins() -> None:
+    domain = {ServiceCaller("butlers-up", d) for d in roster_daemons() if d != "switchboard"}
+    for name, tool, _ in _FLEET_WRITES:
+        endpoint = _RELAYS[name]
+        assert endpoint.allowed_callers == frozenset(domain)
+        assert endpoint.target_butlers == frozenset({"switchboard"})
+        assert endpoint.target_tool == tool
+        assert not target_is_llm_presentable(tool)
+        # The LLM-facing tool stays presentable; only its twin is relay-reachable.
+        assert target_is_llm_presentable(tool.removesuffix("_service"))
 
 
 def test_the_relay_url_is_on_the_switchboard_service_listener() -> None:

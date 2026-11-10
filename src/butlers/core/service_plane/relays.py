@@ -35,7 +35,8 @@ class RelayRefused(Exception):
 
     ``status`` is the HTTP status the relay endpoint answers with: ``403`` for
     the relay's own judgement (caller, target, arguments), ``404`` when nothing
-    serves the relay, ``400`` for a malformed body.
+    serves the relay, ``400`` for a malformed body, ``503`` when the caller
+    cannot be verified right now (``auth_unavailable``).
     """
 
     def __init__(self, code: str, *, status: int = 403) -> None:

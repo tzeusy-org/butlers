@@ -15,9 +15,18 @@ every other. Neither audience is a broker call assertion: those are Ed25519
 JWS under ``X-Butlers-Assertion`` with ``aud`` equal to a domain name, and the
 two verifiers share no header, key or audience.
 
-Every failure refuses: an unreachable key set, an unknown ``kid``, a token
-outside its validity window or not bound to a pod. There is no fallback to an
-unsigned request or to a caller-supplied identity.
+Nothing unverified is ever admitted, and there is no fallback to an unsigned
+request or to a caller-supplied identity. Two outcomes are kept apart:
+
+- the token is invalid (bad signature, outside its validity window, not bound
+  to a pod, a ``kid`` still unknown after a fresh key set): ``verify`` returns
+  ``None`` and the caller is refused for good;
+- the token cannot be verified right now (the key set cannot be fetched, or
+  only a copy older than its stale window is held): ``verify`` raises
+  ``VerifierUnavailable`` and the recipient answers retryably.
+
+An unknown ``kid`` (the issuer may have rotated its key) forces one
+rate-limited key-set refresh before the token is judged.
 """
 
 from __future__ import annotations
@@ -59,6 +68,14 @@ LEEWAY_SECONDS = 30
 
 JwksKeys = Mapping[str, RSAPublicKey]
 FetchJwks = Callable[[], Awaitable[JwksKeys]]
+
+
+class VerifierUnavailable(Exception):
+    """A token cannot be verified right now; it was neither admitted nor judged."""
+
+
+class JwksUnavailable(Exception):
+    """A forced key-set refresh failed within the last ``min_forced_interval``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +124,9 @@ class ApiServerJwks:
     """Fetch and cache the issuer key set with the pod's own token.
 
     A failed refresh keeps serving the last key set until it is
-    ``stale_after`` old; after that every verification refuses.
+    ``stale_after`` old; after that the key set is unavailable and every
+    verification is too. ``refresh`` forces a fetch for an unknown ``kid``, at
+    most once per ``min_forced_interval``.
     """
 
     def __init__(
@@ -117,6 +136,7 @@ class ApiServerJwks:
         account_dir: Path = _POD_ACCOUNT,
         refresh_after: float = 300.0,
         stale_after: float = 3600.0,
+        min_forced_interval: float = 30.0,
         clock: Callable[[], float] = time.monotonic,
         transport: Any = None,
     ) -> None:
@@ -124,10 +144,30 @@ class ApiServerJwks:
         self._account_dir = account_dir
         self._refresh_after = refresh_after
         self._stale_after = stale_after
+        self._min_forced_interval = min_forced_interval
         self._clock = clock
         self._transport = transport
         self._keys: dict[str, RSAPublicKey] | None = None
         self._fetched_at = 0.0
+        self._forced_at: float | None = None
+
+    async def refresh(self) -> JwksKeys:
+        """A key set no older than ``min_forced_interval``, or raise.
+
+        A set fetched within the interval is returned as is: a ``kid`` it lacks
+        is really unknown. Otherwise one fetch, unless a forced fetch already
+        failed within the interval, which raises ``JwksUnavailable`` without
+        contacting the API server.
+        """
+        now = self._clock()
+        if self._keys is not None and now - self._fetched_at < self._min_forced_interval:
+            return self._keys
+        if self._forced_at is not None and now - self._forced_at < self._min_forced_interval:
+            raise JwksUnavailable("forced key-set refresh failed recently")
+        self._forced_at = now
+        keys = await self._fetch()
+        self._keys, self._fetched_at = keys, now
+        return keys
 
     async def __call__(self) -> JwksKeys:
         now = self._clock()
@@ -163,14 +203,19 @@ class WorkloadTokenVerifier:
         policy: WorkloadTokenPolicy,
         fetch_jwks: FetchJwks,
         *,
+        refresh_jwks: FetchJwks | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._policy = policy
         self._fetch = fetch_jwks
+        self._refresh = refresh_jwks
         self._clock = clock
 
     async def verify(self, token: str) -> str | None:
-        """The workload label, or ``None`` for any token that does not verify."""
+        """The workload label, or ``None`` for any token that does not verify.
+
+        Raises ``VerifierUnavailable`` when the key set cannot be read now.
+        """
         try:
             head_b64, body_b64, signature_b64 = token.split(".")
             header = json.loads(_unb64(head_b64))
@@ -182,12 +227,10 @@ class WorkloadTokenVerifier:
             return None
         if header.get("alg") != "RS256" or not isinstance(header.get("kid"), str):
             return None
-        try:
-            keys = await self._fetch()
-        except Exception:
-            logger.warning("service-plane JWKS unavailable; refusing workload token")
-            return None
-        key = keys.get(header["kid"])
+        key = (await self._keys(self._fetch)).get(header["kid"])
+        if key is None and self._refresh is not None:
+            # The issuer may have rotated its key: judge against a fresh set.
+            key = (await self._keys(self._refresh)).get(header["kid"])
         if key is None:
             return None
         try:
@@ -200,6 +243,14 @@ class WorkloadTokenVerifier:
         except InvalidSignature:
             return None
         return self._workload(claims)
+
+    @staticmethod
+    async def _keys(fetch: FetchJwks) -> JwksKeys:
+        try:
+            return await fetch()
+        except Exception:
+            logger.warning("service-plane JWKS unavailable; cannot verify workload token")
+            raise VerifierUnavailable("key set unavailable") from None
 
     def _workload(self, claims: dict[str, Any]) -> str | None:
         policy = self._policy

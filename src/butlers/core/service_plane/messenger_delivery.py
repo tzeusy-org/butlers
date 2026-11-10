@@ -23,6 +23,7 @@ from butlers.core.service_plane.workload_identity import (
     TOKEN_DIR,
     TOKEN_HEADER,
     ApiServerJwks,
+    VerifierUnavailable,
     WorkloadTokenPolicy,
     WorkloadTokenVerifier,
 )
@@ -36,6 +37,8 @@ _NAMESPACE_FILE = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 WORKLOAD_ACCOUNTS = ("butlers-control", "butlers-up", "dashboard-api")
 MESSENGER_DELIVERY_CALLERS = frozenset({ServiceCaller("butlers-control", "switchboard")})
 REFUSED = "messenger_delivery_caller_refused"
+#: The caller could not be verified right now (no verifier, key set unreadable).
+AUTH_UNAVAILABLE = "messenger_delivery_auth_unavailable"
 
 
 def service_plane_auth_enabled(environ: Mapping[str, str] = os.environ) -> bool:
@@ -50,7 +53,8 @@ def build_verifier(audience: str, environ: Mapping[str, str] = os.environ) -> Wo
         namespace=_NAMESPACE_FILE.read_text(encoding="utf-8").strip(),
         workloads={account: account for account in WORKLOAD_ACCOUNTS},
     )
-    return WorkloadTokenVerifier(policy, ApiServerJwks())
+    jwks = ApiServerJwks()
+    return WorkloadTokenVerifier(policy, jwks, refresh_jwks=jwks.refresh)
 
 
 _VERIFIERS: dict[str, WorkloadTokenVerifier] = {}
@@ -83,7 +87,10 @@ async def admit_delivery_request(butler_name: str) -> str | None:
 async def authenticate_caller(
     headers: Mapping[str, str], verifier: WorkloadTokenVerifier
 ) -> ServiceCaller | None:
-    """The authenticated workload plus its presented daemon, or ``None``."""
+    """The authenticated workload plus its presented daemon, or ``None``.
+
+    Raises ``VerifierUnavailable`` when the token cannot be verified right now.
+    """
     token, daemon = headers.get(TOKEN_HEADER), headers.get(DAEMON_HEADER)
     if not token or not daemon:
         return None
@@ -98,13 +105,27 @@ async def messenger_delivery_refusal(
     enabled: bool,
     verifier: WorkloadTokenVerifier | None,
 ) -> str | None:
-    """``REFUSED`` when Messenger must not accept this delivery, else ``None``."""
+    """``REFUSED`` or ``AUTH_UNAVAILABLE`` when Messenger must not accept, else ``None``."""
     if not enabled or butler_name != "messenger":
         return None
     if verifier is None:
-        return REFUSED
-    caller = await authenticate_caller(headers, verifier)
+        return AUTH_UNAVAILABLE
+    try:
+        caller = await authenticate_caller(headers, verifier)
+    except VerifierUnavailable:
+        return AUTH_UNAVAILABLE
     return None if caller in MESSENGER_DELIVERY_CALLERS else REFUSED
+
+
+def delivery_refusal_error(refusal: str) -> tuple[str, bool]:
+    """The route error class and retryability for a delivery refusal.
+
+    Nothing was accepted, so a delivery that could not be verified right now
+    is retryable; a caller that verified and is not Switchboard is not.
+    """
+    if refusal == AUTH_UNAVAILABLE:
+        return "target_unavailable", True
+    return "validation_error", False
 
 
 def messenger_delivery_headers(

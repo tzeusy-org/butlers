@@ -35,6 +35,11 @@ butler initiated it. ``propose_case_posture``'s "Switchboard arbitrates" is,
 in this slice, a plain last-write-wins update once forwarded; no quorum/
 voting model ships here.
 
+With ``BUTLERS_SERVICE_PLANE_AUTH`` on (RFC 0038 D7), the forward goes
+through the ``fleet_case.*`` named relays instead of the generic ``route``;
+each targets a Switchboard-only, service-only twin (``open_case_service``
+and so on) that runs the same Switchboard write as the tool.
+
 ``find_open_case`` and ``read_case`` need no forwarding: both
 ``fleet_cases``/``fleet_case_links`` are readable by every role. Evidence
 insertion inside ``contribute_case_evidence`` also needs no forwarding
@@ -47,7 +52,7 @@ Switchboard-forwarding helper as ``record_case_link`` itself, so
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 
 from pydantic import Field
@@ -78,20 +83,65 @@ def _unwrap_fleet_case_route_result(raw: Any) -> tuple[dict[str, Any] | None, st
     return (data if isinstance(data, dict) else None), None, False
 
 
+#: The named relay that replaces each generic route of a fleet-case write.
+_RELAYS = {
+    "open_case": "fleet_case.open",
+    "close_case": "fleet_case.close",
+    "propose_case_posture": "fleet_case.propose_posture",
+    "record_case_link": "fleet_case.record_link",
+}
+
+
+async def _dispatch_via_relay(
+    client: Any, butler_name: str, tool_name: str, args: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str | None, bool]:
+    """The ``fleet_case.*`` named relay (RFC 0038 D7, bu-2c1g7v).
+
+    Switchboard authenticates this workload and writes through its own
+    service-only twin of *tool_name*. A 403 refusal is permanent; anything
+    else is retryable. The reply is Switchboard's route envelope, settled
+    exactly as the legacy route reply.
+    """
+    from butlers.core.service_plane import client as relay_client
+    from butlers.core.service_plane.relays import RelayRefused
+
+    switchboard_url = relay_client.configured_switchboard_url(client)
+    if switchboard_url is None:
+        return None, "relay_unavailable: no configured Switchboard", True
+    try:
+        raw = await relay_client.call_relay(
+            _RELAYS[tool_name], args, daemon=butler_name, switchboard_url=switchboard_url
+        )
+    except RelayRefused as refused:
+        if relay_client.refusal_is_permanent(refused):
+            return None, f"relay_refused: {refused.code}", False
+        return None, f"relay_unavailable: {refused.code}", True
+    except (relay_client.RelayUnavailable, OSError) as exc:
+        return None, f"relay_unavailable: {type(exc).__name__}", True
+    return _unwrap_fleet_case_route_result(raw)
+
+
 async def _dispatch_fleet_case_write(
     daemon: Any, pool: Any, butler_name: str, *, tool_name: str, args: dict[str, Any]
 ) -> dict[str, Any]:
     """Forward one ``fleet_cases``-mutating tool call to Switchboard."""
-    data, error_text, retryable = await dispatch_via_switchboard_route(
-        daemon.switchboard_client,
-        pool,
-        butler_name,
-        target_butler="switchboard",
-        tool_name=tool_name,
-        args=args,
-        classify=_unwrap_fleet_case_route_result,
-        route_purpose="fleet case write",
-    )
+    from butlers.core.service_plane.messenger_delivery import service_plane_auth_enabled
+
+    if service_plane_auth_enabled():
+        data, error_text, retryable = await _dispatch_via_relay(
+            daemon.switchboard_client, butler_name, tool_name, args
+        )
+    else:
+        data, error_text, retryable = await dispatch_via_switchboard_route(
+            daemon.switchboard_client,
+            pool,
+            butler_name,
+            target_butler="switchboard",
+            tool_name=tool_name,
+            args=args,
+            classify=_unwrap_fleet_case_route_result,
+            route_purpose="fleet case write",
+        )
     if error_text is not None:
         result: dict[str, Any] = {"status": "error", "error": error_text}
         if retryable:
@@ -143,6 +193,48 @@ def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
     pool = ctx.pool
     butler_name = ctx.butler_name
 
+    # Switchboard's own writes: what each tool does on Switchboard's daemon,
+    # shared by the tool and its service-only twin.
+    async def _open_local(correlation_key: str) -> dict:
+        try:
+            case = await fleet_cases.open_case(pool, correlation_key=correlation_key)
+        except fleet_cases.FleetCaseError as exc:
+            return {"status": "error", "error": str(exc)}
+        return {"status": "ok", "case": case}
+
+    async def _propose_local(case_id: str, posture: str) -> dict:
+        try:
+            case = await fleet_cases.propose_posture(pool, case_id=case_id, posture=posture)
+        except fleet_cases.FleetCaseError as exc:
+            return {"status": "error", "error": str(exc)}
+        case_attention = await fleet_cases.evaluate_case_attention(
+            pool,
+            case_id=case_id,
+            correlation_key=case["correlation_key"],
+            posture=case["posture"],
+            state=case["state"],
+            origin_butler=butler_name,
+        )
+        attention_ledger_id = case_attention.get("attention_ledger_id")
+        if case_attention.get("bypass") and attention_ledger_id:
+            await _write_case_link(
+                ctx,
+                daemon,
+                pool,
+                butler_name,
+                case_id=case_id,
+                link_kind="attention_record",
+                ref=attention_ledger_id,
+            )
+        return {"status": "ok", "case": case, "case_attention": case_attention}
+
+    async def _close_local(case_id: str, outcome: str) -> dict:
+        try:
+            case = await fleet_cases.close_case(pool, case_id=case_id, outcome=outcome)
+        except fleet_cases.FleetCaseError as exc:
+            return {"status": "error", "error": str(exc)}
+        return {"status": "ok", "case": case}
+
     @_core_tool("fleet_cases")
     @tool_span("find_open_case", butler_name=butler_name)
     async def find_open_case(
@@ -188,11 +280,7 @@ def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
         Returns ``{"status": "ok", "case": {...}}``.
         """
         if ctx.is_switchboard:
-            try:
-                case = await fleet_cases.open_case(pool, correlation_key=correlation_key)
-            except fleet_cases.FleetCaseError as exc:
-                return {"status": "error", "error": str(exc)}
-            return {"status": "ok", "case": case}
+            return await _open_local(correlation_key)
         return await _dispatch_fleet_case_write(
             daemon,
             pool,
@@ -331,30 +419,7 @@ def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
         ``attention_ledger`` row via ``fleet_case_links`` (Slice 7).
         """
         if ctx.is_switchboard:
-            try:
-                case = await fleet_cases.propose_posture(pool, case_id=case_id, posture=posture)
-            except fleet_cases.FleetCaseError as exc:
-                return {"status": "error", "error": str(exc)}
-            case_attention = await fleet_cases.evaluate_case_attention(
-                pool,
-                case_id=case_id,
-                correlation_key=case["correlation_key"],
-                posture=case["posture"],
-                state=case["state"],
-                origin_butler=butler_name,
-            )
-            attention_ledger_id = case_attention.get("attention_ledger_id")
-            if case_attention.get("bypass") and attention_ledger_id:
-                await _write_case_link(
-                    ctx,
-                    daemon,
-                    pool,
-                    butler_name,
-                    case_id=case_id,
-                    link_kind="attention_record",
-                    ref=attention_ledger_id,
-                )
-            return {"status": "ok", "case": case, "case_attention": case_attention}
+            return await _propose_local(case_id, posture)
         return await _dispatch_fleet_case_write(
             daemon,
             pool,
@@ -384,11 +449,7 @@ def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
         Returns ``{"status": "ok", "case": {...}}``.
         """
         if ctx.is_switchboard:
-            try:
-                case = await fleet_cases.close_case(pool, case_id=case_id, outcome=outcome)
-            except fleet_cases.FleetCaseError as exc:
-                return {"status": "error", "error": str(exc)}
-            return {"status": "ok", "case": case}
+            return await _close_local(case_id, outcome)
         return await _dispatch_fleet_case_write(
             daemon,
             pool,
@@ -454,3 +515,58 @@ def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
         if case is None:
             return {"status": "error", "error": f"No fleet case with id={case_id!r}."}
         return {"status": "ok", "case": case}
+
+    if ctx.is_switchboard:
+        _register_service_twins(
+            _core_tool,
+            butler_name,
+            open_local=_open_local,
+            propose_local=_propose_local,
+            close_local=_close_local,
+            link=lambda case_id, link_kind, ref: _write_case_link(
+                ctx, daemon, pool, butler_name, case_id=case_id, link_kind=link_kind, ref=ref
+            ),
+        )
+
+
+def _register_service_twins(
+    _core_tool: Callable,
+    butler_name: str,
+    *,
+    open_local: Callable[[str], Awaitable[dict]],
+    propose_local: Callable[[str, str], Awaitable[dict]],
+    close_local: Callable[[str, str], Awaitable[dict]],
+    link: Callable[[str, str, str], Awaitable[dict]],
+) -> None:
+    """Switchboard's service-only twins, the ``fleet_case.*`` relay targets.
+
+    RFC 0038 D7: a relay target is ``presentable=False``, so each write tool
+    other butlers forward gets a twin that runs the same Switchboard write.
+    Not relay-presentable and excluded from the goal catalog; classic
+    Switchboard sessions still list them until the goal-runtime cutover, with
+    no power beyond the tools they mirror.
+    """
+
+    @_core_tool("fleet_cases")
+    @tool_span("open_case_service", butler_name=butler_name)
+    async def open_case_service(correlation_key: str) -> dict:
+        """Service-only twin of open_case for the fleet_case.open relay."""
+        return await open_local(correlation_key)
+
+    @_core_tool("fleet_cases")
+    @tool_span("propose_case_posture_service", butler_name=butler_name)
+    async def propose_case_posture_service(case_id: str, posture: str) -> dict:
+        """Service-only twin of propose_case_posture for the fleet_case.propose_posture relay."""
+        return await propose_local(case_id, posture)
+
+    @_core_tool("fleet_cases")
+    @tool_span("close_case_service", butler_name=butler_name)
+    async def close_case_service(case_id: str, outcome: str) -> dict:
+        """Service-only twin of close_case for the fleet_case.close relay."""
+        return await close_local(case_id, outcome)
+
+    @_core_tool("fleet_cases")
+    @tool_span("record_case_link_service", butler_name=butler_name)
+    async def record_case_link_service(case_id: str, link_kind: str, ref: str) -> dict:
+        """Service-only twin of record_case_link for the fleet_case.record_link relay."""
+        return await link(case_id, link_kind, ref)

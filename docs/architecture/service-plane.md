@@ -65,6 +65,10 @@ Switchboard's switch is off, `unknown_relay` from a Switchboard that predates
 the relay during a rolling deploy) and a `400` are treated like any other
 failure: retryable unavailability. QA reports these as `qa_unavailable`, the
 domain-event fan-out as a retryable dispatch, Travel as `health_unavailable`.
+So is a `503 auth_unavailable`: Switchboard could not verify the caller right
+now (no verifier outside a pod, or the issuer key set unreachable, see "Key
+set" below). The caller is not admitted, and a JWKS outage never turns a
+delivery into a permanent failure.
 
 | Relay | Target | Allowed callers | Notes |
 | --- | --- | --- | --- |
@@ -73,14 +77,15 @@ domain-event fan-out as a retryable dispatch, Travel as `health_unavailable`.
 | `medication.travel_snapshot` | Health `medication_travel_snapshot_service` | `(butlers-up, travel)` only | No arguments. The target is a service-only twin (`presentable=False`) of the LLM-facing `medication_travel_snapshot`; a 403 refusal reaches Travel as `permission_denied`, anything else as retryable `health_unavailable`. |
 | `contacts.resolve_channel` | Relationship `contacts_resolve_channel` | butlers declaring `[modules.contacts]` in `butler.toml`, on `butlers-up` | `channel_type`, `channel_value`, `request_id` (UUID). The Contacts module's owner lookup; any refusal or failure is `ContactsOwnerUnavailable`. |
 | `contacts.report_channel` | Relationship `contacts_report_channel` | as above | `subject` (UUID), `channel_type`, `channel_value`, `primary`. Provenance is fixed by the target (third party); the schema admits no authority field. |
+| `fleet_case.open`, `fleet_case.close`, `fleet_case.propose_posture`, `fleet_case.record_link` | Switchboard `open_case_service`, `close_case_service`, `propose_case_posture_service`, `record_case_link_service` | every roster daemon on `butlers-up` except Switchboard | The fleet-case writes RLS reserves to Switchboard. Each schema is exactly its tool's arguments. The twins are registered on Switchboard only and run Switchboard's own write; a 403 refusal is a permanent error, anything else retryable. |
 
 A relay target must be declared `presentable=False`, so a target that LLM
 sessions also use gets a service-only twin on its owning butler; the
 LLM-facing tool is never relay-reachable. Relationship's `contacts_ingress`
 tools were already service-only, so the contacts relays need no twin.
 
-Still to come (each needs a service-only twin first): fleet-case writes and
-the memory catalog fetch. The calendar response
+Still to come (it needs a service-only twin first): the memory catalog
+fetch. The calendar response
 fence gets no relay: bu-qozovd.1 slice 3 deletes it before the switch (the
 owner made Relationship the sole invite-response owner), and the switch
 depends on that slice.
@@ -129,7 +134,15 @@ ServiceAccount by default; on the dev k3s cluster, an unprivileged
 ServiceAccount read the discovery document (issuer
 `https://kubernetes.default.svc.cluster.local`) and a one-key RS256 JWKS. The set
 is cached for 5 minutes; a failed refresh serves the last set for up to an hour,
-then every verification refuses. TokenReview is not used: it needs a
+after which the key set is unavailable. A token whose `kid` is not in the cached
+set (the issuer may have rotated its key) forces one refresh, at most once per
+30 s, before it is judged. The verifier keeps two outcomes apart: a token that
+does not verify (including a `kid` still unknown after a fresh set) is refused
+for good, while a key set that cannot be read right now is retryable, never an
+admission. The relay route answers the latter `503 auth_unavailable`; Messenger
+answers a delivery with a retryable `target_unavailable` route error
+(`messenger_delivery_auth_unavailable`, transport `not_attempted`), which
+Switchboard's `deliver()` reports as retryable rather than failed for good. TokenReview is not used: it needs a
 cluster-scoped `create` grant and a round trip per call, and offline
 verification needs neither.
 
