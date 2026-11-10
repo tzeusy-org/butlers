@@ -82,7 +82,7 @@ AND NOT EXISTS (SELECT 1 FROM (VALUES
 ('perception_private','valid_predicate','3802 23',
  'c933e3415290dd1623b44708a04415fbef307abd88f98e94b92c5e0c1026fc36'),
 ('perception_private','valid_value','25 3802 25',
- '8e3438de8a269e65133448fae9ba2bfa75edab3e1f3bf473cf4a47eaaf36c36a'),
+ 'd6234350324359400b437d4635c07ba6c6da8728945da935c2cb41fd4170a05a'),
 ('public','perception_bind','3802',
  'af5292263aaebc1826bc0ea73bcec5034327553db0240bf07177abb2ed5d2f64'),
 ('public','perception_read','25 2950 1184',

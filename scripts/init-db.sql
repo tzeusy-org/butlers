@@ -8118,7 +8118,7 @@ ON CONFLICT(singleton) DO UPDATE SET migration_role=excluded.migration_role,
 CREATE OR REPLACE FUNCTION perception_admin.install_interface() RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp
 AS $perception_install$
-DECLARE t text; table_oid oid; f regprocedure; r text; v_role name; v_oid oid; v_backup_owner oid;
+DECLARE t text; table_oid oid; f regprocedure; r text; v_role name; v_oid oid; v_backup_owner oid; dep text;
 BEGIN
     IF to_regnamespace('perception_private') IS NULL THEN
         CREATE SCHEMA perception_private AUTHORIZATION perception_owner;
@@ -8136,6 +8136,18 @@ BEGIN
             RAISE EXCEPTION 'untrusted preexisting perception table';
         END IF;
     END LOOP;
+    -- system.dep changed from a bare state string to {state,cause,observed_at}.
+    -- Nothing is converted: a slot or event still holding the old shape needs
+    -- forward remediation, never a silent rewrite of immutable history.
+    IF to_regclass('public.situation_slots') IS NOT NULL AND to_regclass('public.timeline') IS NOT NULL THEN
+        IF EXISTS (SELECT 1 FROM public.situation_slots WHERE kind='system.dep'
+                AND jsonb_typeof(typed_value)='string')
+            OR EXISTS (SELECT 1 FROM public.timeline WHERE kind='system.dep'
+                AND (jsonb_typeof(typed_value)='string' OR jsonb_typeof(to_value)='string'
+                    OR jsonb_typeof(from_value)='string')) THEN
+            RAISE EXCEPTION 'legacy system.dep values require forward remediation';
+        END IF;
+    END IF;
     CREATE TABLE IF NOT EXISTS perception_private.kinds (
         kind text PRIMARY KEY, schema_version integer NOT NULL CHECK(schema_version=1),
         owning_domain text NOT NULL, writer_role name NOT NULL,
@@ -8156,8 +8168,8 @@ BEGIN
         ('owner.clock',1,'general','perception_context_writer','product',
          '{"zone":"IANA","basis":["phone","owner","home","utc_fallback","owner_confirmed_booking"],"evidence_ref":"uuid"}',
          ARRAY['location','routine'],'private_domain'),
-        ('system.dep',1,'general','perception_health_writer','enum',
-         '["available","degraded","blind","down","held","unconfigured"]',
+        ('system.dep',1,'general','perception_health_writer','product',
+         '{"state":["available","degraded","blind","down","held","unconfigured"],"cause":["oauth_revoked","credential_missing","provider_unavailable","domain_unreachable","signal_unmeasurable","policy_held","not_configured","unknown"],"observed_at":"UTC"}',
          ARRAY[]::text[],'filtered_health'),
         ('expect.window',1,'chronicler','perception_expect_writer','product',
          '{"start":"UTC","end":"UTC","deviation":["pending","within","missed"],"expectation_kind":"registered_enum"}',
@@ -8208,8 +8220,29 @@ BEGIN
         ('home.sensing','perception_sensing_writer','home.sensing'),
         ('attention.suppression','perception_attention_writer','owner.suppression')
     ON CONFLICT(source) DO NOTHING;
-    -- Freshness profiles and subject/source references stay unconfigured/dark
-    -- until their named producer owner has a verified finite profile.
+    -- The capability-health reducer (RFC 0038 S6, bu-dhloi1.14) is the named
+    -- producer owner of health.dependencies, so its profile is activated here:
+    -- finite 900s freshness, one subject and one evidence reference per declared
+    -- dependency (butlers.core.capability_dependencies). Only while the profile is
+    -- still unconfigured, so an operator-configured profile is never overwritten.
+    IF EXISTS (SELECT 1 FROM perception_private.sources
+            WHERE source='health.dependencies' AND max_age_seconds IS NULL) THEN
+        FOREACH dep IN ARRAY ARRAY['google','home_assistant','owntracks','spotify','steam','telegram'] LOOP
+            INSERT INTO perception_private.source_refs(id,source,ref_type,read_alias) VALUES
+                (public.uuid_generate_v5('fbb3d862-d597-5afb-b727-949f3a0e8829','dependency:'||dep),
+                    'health.dependencies','dependency',dep),
+                (public.uuid_generate_v5('fbb3d862-d597-5afb-b727-949f3a0e8829','evidence:'||dep),
+                    'health.dependencies','evidence',NULL)
+            ON CONFLICT DO NOTHING;
+        END LOOP;
+        UPDATE perception_private.sources SET max_age_seconds=900,
+            subjects=ARRAY(SELECT public.uuid_generate_v5('fbb3d862-d597-5afb-b727-949f3a0e8829','dependency:'||d)
+                FROM unnest(ARRAY['google','home_assistant','owntracks','spotify','steam','telegram']) d),
+            evidence_sources=ARRAY['capability_health']
+        WHERE source='health.dependencies' AND max_age_seconds IS NULL;
+    END IF;
+    -- Every other profile and its subject/source references stay unconfigured/dark
+    -- until its named producer owner has a verified finite profile.
     CREATE TABLE IF NOT EXISTS public.situation_slots (
         id uuid PRIMARY KEY, kind text NOT NULL REFERENCES perception_private.kinds(kind), subject_entity uuid,
         state text NOT NULL CHECK(state IN ('known','unknown','unmeasurable','unconfigured')),
@@ -8371,8 +8404,18 @@ BEGIN
             IF v->'record_ref'<>'null'::jsonb AND NOT EXISTS (SELECT 1 FROM perception_private.suppression_refs
                 WHERE id=(v->>'record_ref')::uuid AND source=s) THEN RETURN false; END IF;
         ELSIF k='system.dep' THEN
-            RETURN jsonb_typeof(v)='string' AND v#>>'{}' IN
-                ('available','degraded','blind','down','held','unconfigured');
+            names:=ARRAY['state','cause','observed_at'];
+            IF NOT COALESCE(v->>'state' IN ('available','degraded','blind','down','held','unconfigured'),false)
+                OR NOT (v ? 'cause') OR NOT (v ? 'observed_at') THEN RETURN false; END IF;
+            -- An available dependency has no cause; every other state names one of the closed eight.
+            IF v->>'state'='available' THEN
+                IF v->'cause'<>'null'::jsonb THEN RETURN false; END IF;
+            ELSIF jsonb_typeof(v->'cause') IS DISTINCT FROM 'string' OR v->>'cause' NOT IN
+                ('oauth_revoked','credential_missing','provider_unavailable','domain_unreachable',
+                 'signal_unmeasurable','policy_held','not_configured','unknown') THEN
+                RETURN false;
+            END IF;
+            PERFORM perception_private.instant(v->'observed_at');
         ELSIF k='home.sensing' THEN
             RETURN jsonb_typeof(v)='string' AND v#>>'{}' IN ('available','degraded','unavailable');
         ELSE RETURN false;
@@ -8970,7 +9013,7 @@ SELECT jsonb_build_object('tables',(SELECT jsonb_object_agg(name,value) FROM tab
         relations text[]:=ARRAY['perception_private.kinds','perception_private.sources','perception_private.source_refs','perception_private.suppression_refs','public.timeline','perception_private.receipts','public.situation_slots','public.owner_modes','public.perception_conditions','public.perception_suppressions'];
     BEGIN
         catalog:=perception_private.backup_catalog();
-        IF encode(sha256(convert_to(catalog::text,'UTF8')),'hex')<>'bfd04e904b65ac243bcdeea552f783cb93507601508e07e0cbe6a73068bee35b'
+        IF encode(sha256(convert_to(catalog::text,'UTF8')),'hex')<>'79abf9426ebbbee6474720af462b44e8c6a984fc3cf286b33c9183e6c65a3007'
             OR (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
                 WHERE n.nspname='perception_private' AND c.relkind IN ('r','v','m','f','p'))<>5
             OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
