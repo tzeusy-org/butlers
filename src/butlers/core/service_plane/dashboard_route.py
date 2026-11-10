@@ -66,6 +66,8 @@ _ROUTE_CONTEXT_KEY: Final = "__switchboard_route_context"
 _TRACE_CONTEXT_KEY: Final = "trace_context"
 
 _NO_STORE: Final = {"Cache-Control": "no-store"}
+# route()'s transport outcome when the failure proves nothing reached the target.
+_NOT_ATTEMPTED: Final = "not_attempted"
 
 Dispatch = Callable[[str, str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
@@ -178,6 +180,11 @@ def switchboard_dashboard_dispatch(pool: Any) -> Dispatch:
     timeout after the request went out fails the call (``503
     target_unavailable``) instead of repeating a dashboard write. A failure
     that proves nothing was sent still reconnects once, as route() always does.
+
+    For the same reason a failure is retryable only when route() reports that
+    nothing was sent. route() calls a timeout retryable whether or not the
+    request went out; a dashboard retry after an ambiguous send could repeat
+    the write, so that failure is reported not retryable.
     """
 
     async def dispatch(butler: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -186,7 +193,7 @@ def switchboard_dashboard_dispatch(pool: Any) -> Dispatch:
         call_tool = functools.partial(
             routing._call_tool_with_router_client, resend_after_send=False
         )
-        return await routing.route(
+        outcome = await routing.route(
             pool,
             butler,
             tool,
@@ -194,8 +201,17 @@ def switchboard_dashboard_dispatch(pool: Any) -> Dispatch:
             source_butler=DASHBOARD_SOURCE,
             call_fn=mcp_result_call_fn(call_tool, args),
         )
+        return _retryable_only_if_not_sent(outcome)
 
     return dispatch
+
+
+def _retryable_only_if_not_sent(outcome: Any) -> Any:
+    if not isinstance(outcome, dict) or "retryable" not in outcome:
+        return outcome
+    transport = outcome.get("transport")
+    not_sent = isinstance(transport, dict) and transport.get("outcome") == _NOT_ATTEMPTED
+    return {**outcome, "retryable": outcome["retryable"] is True and not_sent}
 
 
 def build_switchboard_dashboard_call_route(pool: Any) -> Route:

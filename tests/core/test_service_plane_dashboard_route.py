@@ -7,6 +7,7 @@ negatives refuse something that would otherwise have been routed.
 
 from __future__ import annotations
 
+import functools
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -377,7 +378,11 @@ async def test_a_timeout_after_send_is_503_and_the_write_is_sent_once(
         )
 
     assert response.status_code == 503
-    assert response.json()["code"] == "target_unavailable"
+    assert response.json() == {
+        "status": "refused",
+        "code": "target_unavailable",
+        "retryable": False,
+    }
     assert peer.calls == 1
     routing._record_confirmed_route.assert_not_awaited()
 
@@ -399,3 +404,58 @@ async def test_a_failure_before_send_still_reconnects_once(monkeypatch, routing)
     outcome = await dr.switchboard_dashboard_dispatch("POOL")("health", _PRESENTABLE, dict(_ARGS))
 
     assert "result" not in outcome and peer.calls == 2
+    assert outcome["retryable"] is True
+
+
+async def test_route_alone_would_call_a_post_send_timeout_retryable(monkeypatch, routing) -> None:
+    """Why the dashboard overrides it: a resend could duplicate the write."""
+    peer = _Peer(httpx.ReadTimeout("timed out after the request was sent"))
+    _connect(monkeypatch, routing, peer)
+    call_tool = functools.partial(routing._call_tool_with_router_client, resend_after_send=False)
+
+    outcome = await routing.route(
+        "POOL", "health", _PRESENTABLE, dict(_ARGS), call_fn=dr.mcp_result_call_fn(call_tool, {})
+    )
+
+    assert outcome["retryable"] is True and outcome["transport"]["outcome"] == "uncertain"
+
+
+async def test_the_dashboard_dispatch_reports_a_post_send_timeout_not_retryable(
+    monkeypatch, routing
+) -> None:
+    peer = _Peer(httpx.ReadTimeout("timed out after the request was sent"))
+    _connect(monkeypatch, routing, peer)
+
+    outcome = await dr.switchboard_dashboard_dispatch("POOL")("health", _PRESENTABLE, dict(_ARGS))
+
+    assert outcome["retryable"] is False and peer.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("retryable", "transport", "expected"),
+    [
+        (True, "not_attempted", True),
+        (False, "not_attempted", False),
+        (True, "uncertain", False),
+        (True, None, False),
+    ],
+)
+async def test_retryable_needs_both_route_and_proof_nothing_was_sent(
+    monkeypatch, retryable, transport, expected
+) -> None:
+    outcome = {"error": "x", "retryable": retryable}
+    if transport is not None:
+        outcome["transport"] = {"outcome": transport}
+
+    class _Routing:
+        async def _call_tool_with_router_client(self, *args, **kwargs):
+            raise AssertionError("route() is faked; nothing is called")
+
+        async def route(self, *args, **kwargs):
+            return outcome
+
+    monkeypatch.setattr(dr.importlib, "import_module", lambda name: _Routing())
+
+    result = await dr.switchboard_dashboard_dispatch("POOL")("health", _PRESENTABLE, {})
+
+    assert result["retryable"] is expected
