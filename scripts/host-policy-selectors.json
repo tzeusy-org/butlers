@@ -1046,15 +1046,15 @@
   },
   "current_public": "773d1d81b8112a951776db56241eaf6988717263",
   "counts": {
-    "direct": 93,
+    "direct": 94,
     "direct_files": 41,
-    "container": 115,
+    "container": 116,
     "supplementary": 44,
     "all_categories": {
       "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 64,
       "NON_NAME_ENUM_OR_MODULE": 29,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
-      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 37,
+      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 38,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 9,
       "SCHEMA_OWNERSHIP": 14
     },
@@ -1062,7 +1062,7 @@
       "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 46,
       "NON_NAME_ENUM_OR_MODULE": 5,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 3,
-      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 23,
+      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 24,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 8,
       "SCHEMA_OWNERSHIP": 8
     }
@@ -3075,6 +3075,32 @@
       ],
       "reason": "Retained selector and category; line offsets are informational and do not change identity.",
       "public_source_commit": "707070785be4e088ab990e51f5c38cee62cac694"
+    },
+    {
+      "id": "b76f8e94316f7dedaed4635d306bb67b497ba1a58c1a798550923c3541aeca35",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._build_dashboard_call_route",
+      "kind": "compare",
+      "expression": "config.name != 'switchboard'",
+      "occurrence": 1,
+      "line": 742,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Retain canonical daemon identity for _build_dashboard_call_route: only Switchboard serves dashboard service calls; group flags do not grant identity/transport/ownership authority.",
+      "reason": "bu-2c1g7v RFC 0038 D7 dark dashboard service-call route; same canonical Switchboard selector as the runtime-probe control route it sits beside.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "agent/bu-2c1g7v-dashcall"
     },
     {
       "id": "7f9527481cbcbe5a1c38d91aed1b637f881e59e9bba233f30f8f7a75c8fab190",

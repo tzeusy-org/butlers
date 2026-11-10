@@ -49,7 +49,13 @@ _ACTIVE_MODEL_SETTINGS_DELTA = (
 #: * the test fixture builder, which is importable but never imported by a
 #:   production path --- proven separately below;
 #: * domain assertion verification (bu-pkuny2), which borrows only the
-#:   non-secret verifier-keyring codec for its own keyring --- also proven below.
+#:   non-secret verifier-keyring codec for its own keyring --- also proven below;
+#: * the RFC 0038 D7 dashboard service call (bu-2c1g7v): its capability lives
+#:   in the package (``service_call``); Switchboard's route verifies it through
+#:   the package and consumes it, and the dashboard client is the one outside
+#:   module that reaches the signer --- through ``activated_signer_snapshot``
+#:   only, for a capability bound to one butler, tool and argument digest.
+#:   Proven below.
 _PERMITTED_IMPORTERS = {
     Path("src/butlers/core/runtime_probe_control"),
     Path("src/butlers/daemon.py"),
@@ -57,6 +63,8 @@ _PERMITTED_IMPORTERS = {
     Path("src/butlers/api/routers/model_settings.py"),
     Path("src/butlers/testing/runtime_probe_control.py"),
     Path("src/butlers/capability_broker/verification.py"),
+    Path("src/butlers/core/service_plane/dashboard_route.py"),
+    Path("src/butlers/core/service_plane/dashboard_client.py"),
 }
 
 
@@ -163,6 +171,23 @@ def test_assertion_verification_only_borrows_the_verifier_keyring_codec() -> Non
         f"{_PACKAGE}.keys.VerifierKeyring",
         f"{_PACKAGE}.keys.load_verifier_keyring",
     }
+
+
+def test_only_the_dashboard_service_call_client_reaches_the_signer() -> None:
+    """bu-2c1g7v: the route verifies through the package; one client signs."""
+    from butlers.core.service_plane import dashboard_client, dashboard_route
+
+    def control_imports(module) -> set[str]:
+        imported = _imported_modules(Path(module.__file__).read_text())
+        return {name for name in imported if name.startswith(_PACKAGE)}
+
+    route = control_imports(dashboard_route)
+    assert not any(name.startswith(f"{_PACKAGE}.activation") for name in route)
+    assert f"{_PACKAGE}.service_call.verify_deployed_service_call" in route
+    assert not any(name.startswith(f"{_PACKAGE}.keys") for name in route)
+    client = control_imports(dashboard_client)
+    assert f"{_PACKAGE}.activation.activated_signer_snapshot" in client
+    assert f"{_PACKAGE}.keys.signer_snapshot" not in client
 
 
 def test_model_settings_no_longer_holds_a_local_verification_adapter() -> None:

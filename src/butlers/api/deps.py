@@ -11,12 +11,14 @@ Provides:
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
+import mcp.types
 from fastapi import Depends
 from fastmcp.exceptions import ToolError
 
@@ -114,6 +116,66 @@ class ButlerUnreachableError(Exception):
         if cause:
             msg += f": {cause}"
         super().__init__(msg)
+
+
+class DashboardButlerClient(MCPClient):
+    """The dashboard's client for one butler; every tool call passes here.
+
+    RFC 0038 D7: with ``BUTLERS_SERVICE_PLANE_AUTH`` on, a call to a
+    model-reachable tool (declared presentable, or undeclared) is carried by
+    Switchboard's service listener under a signed service-call capability,
+    never sent to the butler directly. A service-only tool stays direct. One
+    exception is classified: ``schedule_create`` carrying exactly the
+    owner-creation claim stays direct, because the target verifies and
+    consumes that single-use owner capability in its own transaction.
+
+    The override sits on ``call_tool_mcp``, which ``call_tool`` itself calls,
+    so FastMCP's result parsing --- ``ToolError`` on ``isError``, structured
+    data --- runs the same on both paths. ``tests/contracts/
+    test_dashboard_tool_call_inventory.py`` holds every dashboard call site to
+    this client and classifies each one.
+    """
+
+    def __init__(self, *args: Any, butler_name: str, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.butler_name = butler_name
+
+    async def call_tool_mcp(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        progress_handler: Any | None = None,
+        # FastMCP's own signature, overridden as is.
+        timeout: datetime.timedelta | float | int | None = None,  # noqa: ASYNC109
+        meta: dict[str, Any] | None = None,
+    ) -> mcp.types.CallToolResult:
+        if not control_plane_carries(name, meta):
+            return await super().call_tool_mcp(name, arguments, progress_handler, timeout, meta)
+        if meta:
+            raise ToolError("the control plane carries no request meta")
+        from butlers.core.service_plane.dashboard_client import (
+            ServiceCallUnavailable,
+            call_via_control_plane,
+        )
+
+        try:
+            return await call_via_control_plane(
+                self.butler_name, name, arguments, request_timeout=timeout
+            )
+        except ServiceCallUnavailable as exc:
+            raise ButlerUnreachableError(self.butler_name, cause=exc) from exc
+
+
+def control_plane_carries(tool: str, meta: dict[str, Any] | None = None) -> bool:
+    """Whether a dashboard call to *tool* goes through the control plane now."""
+    from butlers.core.owner_creation import META_KEY
+    from butlers.core.service_plane.dashboard_call import routes_through_control_plane
+    from butlers.core.service_plane.messenger_delivery import service_plane_auth_enabled
+
+    if not service_plane_auth_enabled() or not routes_through_control_plane(tool):
+        return False
+    owner_creation = tool == "schedule_create" and meta is not None and set(meta) == {META_KEY}
+    return not owner_creation
 
 
 def is_tool_absent_error(exc: BaseException) -> bool:
@@ -224,7 +286,9 @@ class MCPClientManager:
             )
 
         try:
-            client = MCPClient(info.sse_url, name=f"dashboard-{butler_name}")
+            client = DashboardButlerClient(
+                info.sse_url, name=f"dashboard-{butler_name}", butler_name=butler_name
+            )
             await client.__aenter__()
             self._clients[butler_name] = client
             logger.info("Connected to butler %s at %s", butler_name, info.sse_url)

@@ -57,6 +57,13 @@ ROUTE_CALLERS: tuple[RouteCaller, ...] = (
         "under its own held-call bearer (finance_warning_control.py).",
     ),
     RouteCaller(
+        "src/butlers/core/service_plane/dashboard_route.py",
+        "build_switchboard_dashboard_call_route.dispatch",
+        "dashboard_call",
+        "The dashboard service-call route itself: a model-reachable tool the dashboard calls, "
+        "admitted only under a signed service-call capability bound to butler, tool and args.",
+    ),
+    RouteCaller(
         "src/butlers/core_tools/_switchboard.py",
         "register_switchboard_tools.answer_question",
         "removed",

@@ -55,7 +55,7 @@ def test_off_by_default_renders_no_accounts_switch_or_token() -> None:
     docs = _render()
 
     assert not [d for d in docs if d["kind"] == "ServiceAccount"]
-    for name in ("butlers-control", "butlers-up"):
+    for name in ("butlers-control", "butlers-up", "dashboard-api"):
         pod = _pod(docs, name)
         assert "serviceAccountName" not in pod
         assert "BUTLERS_SERVICE_PLANE_AUTH" not in _env(pod)
@@ -72,6 +72,8 @@ def test_on_gives_each_workload_its_account_and_its_one_bound_token() -> None:
     assert up["serviceAccountName"] == "butlers-up"
     assert _env(control)["BUTLERS_SERVICE_PLANE_AUTH"] == "1"
     assert _env(up)["BUTLERS_SERVICE_PLANE_AUTH"] == "1"
+    # The dashboard reroutes its model-reachable tool calls under the same switch.
+    assert _env(_pod(docs, "dashboard-api"))["BUTLERS_SERVICE_PLANE_AUTH"] == "1"
 
     def audiences(pod: dict) -> set[str]:
         (volume,) = [v for v in pod["volumes"] if v["name"] == "workload-token"]

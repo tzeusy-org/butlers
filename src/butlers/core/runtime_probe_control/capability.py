@@ -32,8 +32,10 @@ import base64
 import json
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import Any, Final
 from uuid import UUID
 
@@ -61,7 +63,10 @@ NONCE_BYTES: Final = 32
 DEFAULT_LIFETIME: Final = MAX_CAPABILITY_LIFETIME
 
 _HEADER_FIELDS: Final = frozenset({"alg", "kid"})
-_PAYLOAD_FIELDS: Final = frozenset({"aud", "caller", "catalog_entry_id", "iat", "exp", "nonce"})
+
+#: The signed envelope every audience shares; each audience adds its claims.
+_ENVELOPE_FIELDS: Final = frozenset({"aud", "iat", "exp", "nonce"})
+_PROBE_CLAIM_FIELDS: Final = frozenset({"caller", "catalog_entry_id"})
 
 #: Unpadded base64url, and nothing else: no padding, no standard alphabet, no
 #: whitespace.  Applied to every segment before it is decoded.
@@ -106,6 +111,25 @@ class VerifiedCapability:
 
     def __repr__(self) -> str:  # pragma: no cover - trivial redaction
         return "VerifiedCapability(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True)
+class SignedClaims:
+    """A verified envelope and its audience's claims, not yet interpreted.
+
+    The audience's own verifier checks ``claims``; this type only proves they
+    were signed under an acceptable deployment key, for this audience, within
+    the lifetime and skew bounds.  ``repr`` is redacted for the nonce.
+    """
+
+    kid: str
+    claims: Mapping[str, Any]
+    issued_at: datetime
+    expires_at: datetime
+    nonce: bytes
+
+    def __repr__(self) -> str:  # pragma: no cover - trivial redaction
+        return "SignedClaims(<redacted>)"
 
 
 # ---------------------------------------------------------------------------
@@ -228,24 +252,25 @@ def _sign_segments(signer: SignerKey, *, header: Any, payload: Any) -> str:
     )
 
 
-def sign_capability(
+def sign_claims(
     signer: SignerKey,
     *,
-    caller: str,
-    catalog_entry_id: UUID,
+    audience: str,
+    claims: Mapping[str, Any],
     now: datetime,
     lifetime: timedelta = DEFAULT_LIFETIME,
 ) -> str:
-    """Mint one capability, or refuse.
+    """Mint one capability for *audience* carrying *claims*, or refuse.
 
-    The signer refuses the same things the verifier would refuse, so a
-    misconfigured client fails locally instead of emitting a capability that
-    Switchboard will reject: an unregistered caller class, a lifetime outside
-    the protocol bound, or an instant outside the signer's own ``sign_from`` /
-    ``sign_until`` window.
+    Every audience this keyring signs shares the envelope: ``aud``, ``iat``,
+    ``exp`` and a fresh 256-bit ``nonce`` around the audience's own claims.
+    The signer refuses the same things the verifier would refuse --- a
+    lifetime outside the protocol bound, or an instant outside the signer's
+    ``sign_from`` / ``sign_until`` window --- so a misconfigured client fails
+    locally instead of emitting a capability Switchboard will reject.
     """
-    if caller not in CALLERS:
-        raise CapabilityRejected("capability caller is not a registered control caller")
+    if _ENVELOPE_FIELDS & set(claims):
+        raise CapabilityRejected("capability claims overlap the signed envelope")
     lifetime_seconds = int(lifetime.total_seconds())
     if lifetime != timedelta(seconds=lifetime_seconds):
         raise CapabilityRejected("capability lifetime is not a whole number of seconds")
@@ -259,13 +284,35 @@ def sign_capability(
         signer,
         header={"alg": ALGORITHM, "kid": signer.kid},
         payload={
-            "aud": CONTROL_AUDIENCE,
-            "caller": caller,
-            "catalog_entry_id": str(catalog_entry_id),
+            "aud": audience,
+            **claims,
             "iat": issued_at,
             "exp": issued_at + lifetime_seconds,
             "nonce": _b64u_encode(os.urandom(NONCE_BYTES)),
         },
+    )
+
+
+def sign_capability(
+    signer: SignerKey,
+    *,
+    caller: str,
+    catalog_entry_id: UUID,
+    now: datetime,
+    lifetime: timedelta = DEFAULT_LIFETIME,
+) -> str:
+    """Mint one runtime-probe capability, or refuse.
+
+    Beyond :func:`sign_claims`, an unregistered caller class is refused here.
+    """
+    if caller not in CALLERS:
+        raise CapabilityRejected("capability caller is not a registered control caller")
+    return sign_claims(
+        signer,
+        audience=CONTROL_AUDIENCE,
+        claims={"caller": caller, "catalog_entry_id": str(catalog_entry_id)},
+        now=now,
+        lifetime=lifetime,
     )
 
 
@@ -280,13 +327,44 @@ def verify_capability(
     keyring: VerifierKeyring,
     now: datetime,
 ) -> VerifiedCapability:
-    """Verify one compact JWS against the deployment keyring.
+    """Verify one runtime-probe capability against the deployment keyring."""
+    signed = verify_claims(
+        compact,
+        keyring=keyring,
+        now=now,
+        audience=CONTROL_AUDIENCE,
+        claim_fields=_PROBE_CLAIM_FIELDS,
+    )
+    caller = signed.claims["caller"]
+    if not isinstance(caller, str) or caller not in CALLERS:
+        raise CapabilityRejected("capability caller is not a registered control caller")
+    return VerifiedCapability(
+        kid=signed.kid,
+        caller=caller,
+        catalog_entry_id=_canonical_uuid(signed.claims["catalog_entry_id"]),
+        issued_at=signed.issued_at,
+        expires_at=signed.expires_at,
+        nonce=signed.nonce,
+    )
+
+
+def verify_claims(
+    compact: str | None,
+    *,
+    keyring: VerifierKeyring,
+    now: datetime,
+    audience: str,
+    claim_fields: frozenset[str],
+) -> SignedClaims:
+    """Verify one compact JWS for *audience* against the deployment keyring.
 
     Order matters.  The header is parsed and the key is resolved from the
     *keyring* first, then the signature is checked, and only then are the
-    claims read --- so no unsigned byte ever influences a decision.  Every
-    branch raises :class:`CapabilityRejected`; there is no ``None`` return and
-    no partial success.
+    claims read --- so no unsigned byte ever influences a decision.  The
+    payload must be exactly the envelope plus *claim_fields*; the audience's
+    own claims come back unread for its verifier to check.  Every branch
+    raises :class:`CapabilityRejected`; there is no ``None`` return and no
+    partial success.
     """
     header_segment, payload_segment, signature_segment = _split(compact)
 
@@ -314,14 +392,10 @@ def verify_capability(
 
     payload = _strict_object(
         _b64u_decode(payload_segment, reason="capability payload is not base64url"),
-        exact_fields=_PAYLOAD_FIELDS,
+        exact_fields=_ENVELOPE_FIELDS | claim_fields,
         reason="capability payload is not the approved shape",
     )
-    _exact_string(payload["aud"], CONTROL_AUDIENCE, reason="capability audience is not this plane")
-    caller = payload["caller"]
-    if not isinstance(caller, str) or caller not in CALLERS:
-        raise CapabilityRejected("capability caller is not a registered control caller")
-    catalog_entry_id = _canonical_uuid(payload["catalog_entry_id"])
+    _exact_string(payload["aud"], audience, reason="capability audience is not this plane")
     nonce = _nonce(payload["nonce"])
 
     issued_at = _numeric_date(payload["iat"])
@@ -348,10 +422,9 @@ def verify_capability(
     elif issued_instant < entry.sign_from:
         raise CapabilityRejected("capability was issued before its key became current")
 
-    return VerifiedCapability(
+    return SignedClaims(
         kid=kid,
-        caller=caller,
-        catalog_entry_id=catalog_entry_id,
+        claims=MappingProxyType({field: payload[field] for field in claim_fields}),
         issued_at=issued_instant,
         expires_at=datetime.fromtimestamp(expires_at, UTC),
         nonce=nonce,
