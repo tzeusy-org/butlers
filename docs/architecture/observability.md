@@ -69,6 +69,8 @@ Using a `ContextVar` (rather than a plain module-level variable) prevents cross-
 
 For routed requests, trace context is propagated through the `route.v1` envelope's `request_context.trace_context` field. The Switchboard injects W3C Trace Context headers, and target butlers extract them to establish parent-child span relationships across service boundaries.
 
+Switchboard's `route()` also adds a `trace_context` keyword argument while a span is active, but only for the tools that declare that parameter (`TRACE_CONTEXT_TOOLS` in `roster/switchboard/tools/routing/route.py`, kept exact by `tests/contracts/test_route_trace_context_tools.py`). Any other tool's fixed signature would refuse the unexpected keyword, so it receives no carrier.
+
 ## Span Instrumentation
 
 ### tool_span

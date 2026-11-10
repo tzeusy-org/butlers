@@ -44,6 +44,32 @@ from butlers.tools.switchboard.transport import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: The routed tools that declare a ``trace_context`` parameter. route() adds its
+#: trace carrier only to these: any other tool's fixed signature refuses an
+#: unexpected keyword. ``tests/contracts/test_route_trace_context_tools.py``
+#: keeps this exactly the set of declaring tools.
+TRACE_CONTEXT_TOOLS = frozenset(
+    {
+        "route.execute",
+        "calendar_response_fence_status",
+        "contacts_report_channel",
+        "contacts_resolve_channel",
+        "medication_travel_snapshot",
+        "medication_travel_snapshot_service",
+    }
+)
+
+
+def _is_error_result(result: Any) -> bool:
+    """Whether an MCP tool result is an error.
+
+    FastMCP's ``CallToolResult`` names the flag ``is_error``; ``isError`` is the
+    MCP wire name, which a raw ``mcp.types.CallToolResult`` still uses.
+    """
+    return getattr(result, "is_error", False) is True or getattr(result, "isError", False) is True
+
+
 _ROUTER_CLIENTS: dict[str, tuple[MCPClient, Any]] = {}
 _ROUTER_CLIENT_LOCKS: dict[str, asyncio.Lock] = {}
 _ROUTE_RECHECK_DEADLINE_S = PROBE_DEADLINE_S + 2.0
@@ -563,7 +589,7 @@ async def route(
 
             # Inject trace context into args
             trace_context = inject_trace_context()
-            if trace_context and finance_warning_call is None:
+            if trace_context and finance_warning_call is None and tool_name in TRACE_CONTEXT_TOOLS:
                 route_args = {**route_args, "trace_context": trace_context}
             # Only the transport call itself belongs in this try. Everything
             # after it is bookkeeping about a send that already happened, and
@@ -620,7 +646,7 @@ async def route(
                             result = await peer.call_tool(
                                 tool_name, route_args, raise_on_error=False
                             )
-                            if getattr(result, "isError", False):
+                            if _is_error_result(result):
                                 raise TransportRejected(_extract_mcp_error_text(result))
                             result = _extract_fact_route_result(result)
                             if (
@@ -719,8 +745,7 @@ async def _call_butler_tool(endpoint_url: str, tool_name: str, args: dict[str, A
     """
     result = await _call_tool_with_router_client(endpoint_url, tool_name, args)
 
-    # CallToolResult uses 'isError' (not 'is_error') per MCP spec.
-    if getattr(result, "isError", False):
+    if _is_error_result(result):
         error_text = _extract_mcp_error_text(result)
         if not error_text:
             error_text = f"Tool '{tool_name}' returned an error."

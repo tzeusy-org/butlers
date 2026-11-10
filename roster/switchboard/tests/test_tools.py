@@ -784,7 +784,10 @@ def otel_provider():
 
 
 async def test_route_injects_trace_context(switchboard_pool, otel_provider):
-    """route() injects trace_context into forwarded args when a span is active."""
+    """route() injects trace_context, while a span is active, into tools that declare it.
+
+    Any other tool's fixed signature would refuse the carrier (bu-dhloi1.293).
+    """
     from butlers.tools.switchboard import register_butler, route
 
     await register_butler(switchboard_pool, "traced", "http://localhost:8600/sse")
@@ -797,14 +800,20 @@ async def test_route_injects_trace_context(switchboard_pool, otel_provider):
 
     tracer = trace.get_tracer("test")
     with tracer.start_as_current_span("test-parent"):
+        await route(
+            switchboard_pool,
+            "traced",
+            "contacts_resolve_channel",
+            {"key": "val"},
+            call_fn=capture_call,
+        )
         await route(switchboard_pool, "traced", "ping", {"key": "val"}, call_fn=capture_call)
 
-    assert len(captured_args) == 1
-    forwarded = captured_args[0]
-    assert "key" in forwarded
+    assert len(captured_args) == 2
+    forwarded, undeclared = captured_args
     assert forwarded["key"] == "val"
-    assert "trace_context" in forwarded
     assert "traceparent" in forwarded["trace_context"]
+    assert undeclared == {"key": "val"}
 
 
 async def test_route_injects_empty_trace_context_without_span(switchboard_pool, otel_provider):
