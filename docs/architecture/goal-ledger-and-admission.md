@@ -26,7 +26,7 @@ All seven tables live in Switchboard's schema:
 | --- | --- |
 | `goals` | Unique normalized source identity; immutable origin, admitted exposure and admitted label, ceiling and policy digests; monotone reporting label union and exposure; `thread_id` bound at most once; same-goal cause/effect FK; D11 state |
 | `invocations` | Same-goal parent which is a lead; depth 0/1 shape; one launching/running lead; immutable grants/scopes and finite inert turn/token caps; monotone S1 label and derived exposure (starts at the admitted label joined with its caller or predecessors), once-set `exposure_cause`; timing placeholders and token hash only |
-| `effects` | Same-goal invocation FK; capability/argument digests and D11 state; immutable requesting label; exact unique delivery, verified recipient and finite prompt expiry |
+| `effects` | Same-goal invocation FK; capability/argument digests and D11 state; immutable requesting label; verified recipient and channel recorded at reserve; exact unique delivery and finite prompt expiry set once by the committing update |
 | `budgets` | One per goal; explicit finite maxima, reserved/used counters and child occupancy; sums bounded by maxima; absolute deadline and config snapshot |
 | `admission_decisions` | Append-only attempts; at most one accepted association per source; fixed refusal reasons, immutable quota window/retry-after, delivery/effect and valid cause references |
 | `admission_attempt_bindings` | Every returned server attempt maps immutably to its canonical decision and exact source, including a retry which reuses another attempt's accepted decision; composite FK, no extra goal/budget/decision |

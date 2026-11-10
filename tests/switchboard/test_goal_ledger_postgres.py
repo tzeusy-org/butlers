@@ -928,6 +928,9 @@ async def accepted_reply_sequences(owner, runtime):
                 recipient_channel="telegram_bot",
                 locator="100:" + transition,
             )
+            # A recorded prompt expiry never changes (sw_066), so the prompt that lapses while
+            # admission waits is one whose short expiry runs out during the wait.
+            lapsing = await owner.fetchval("SELECT clock_timestamp() + interval '2 seconds'")
             _, eid = await effect(
                 owner,
                 target.goal_id,
@@ -935,7 +938,7 @@ async def accepted_reply_sequences(owner, runtime):
                 entity=entity,
                 channel="telegram_bot",
                 accepts=True,
-                expiry=expiry,
+                expiry=lapsing if transition == "expire" else expiry,
             )
             accepted = await accept(owner, reference="100:" + transition)
             task = None
@@ -961,9 +964,14 @@ async def accepted_reply_sequences(owner, runtime):
                             target.goal_id,
                         )
                     else:
-                        await holder.execute(
-                            "UPDATE switchboard.effects SET prompt_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1",
-                            eid,
+                        await asyncio.sleep(
+                            max(
+                                0.0,
+                                (
+                                    lapsing - await owner.fetchval("SELECT clock_timestamp()")
+                                ).total_seconds(),
+                            )
+                            + 0.1
                         )
                 result, _ = await asyncio.wait_for(task, 5)
                 assert result.result == "admitted" and result.goal_id != target.goal_id

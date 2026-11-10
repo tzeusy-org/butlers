@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from butlers.core.goal_admission import decode_grants, digest, encode_grants
@@ -38,6 +38,9 @@ from .contracts import (
     token_hash,
 )
 from .recipients import live_owner
+
+if TYPE_CHECKING:
+    from .domains import Delivery
 
 # Effects a repeated call must not duplicate (D12): committed or unknown, plus
 # anything still in flight that could become either.
@@ -355,6 +358,7 @@ class BrokerLedger:
         decision: Decision,
         args_digest: str,
         recipient: Recipient,
+        channel: str | None = None,
     ) -> Reservation | BrokerRefused:
         """D7 steps 2 and 4: budget, duplicate digest, effect row, budget charge.
 
@@ -386,9 +390,9 @@ class BrokerLedger:
             if capability.effect_class == "communicate" and recipient == "owner":
                 owner = await live_owner(self.connection)
             await self.connection.execute(
-                "INSERT INTO switchboard.effects "
-                "(id, goal_id, invocation_id, capability, args_digest, status, recipient_entity) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                "INSERT INTO switchboard.effects (id, goal_id, invocation_id, capability, "
+                "args_digest, status, recipient_entity, recipient_channel) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                 effect_id,
                 principal.goal_id,
                 principal.invocation_id,
@@ -396,6 +400,7 @@ class BrokerLedger:
                 args_digest,
                 status,
                 owner,
+                channel if owner is not None else None,
             )
         await self._charge(principal)
         return Reservation(
@@ -467,6 +472,7 @@ class BrokerLedger:
         receipt_ref: str | None = None,
         output: Label | None = None,
         writers: tuple[tuple[Any, Any], ...] = (),
+        delivery: Delivery | None = None,
     ) -> None:
         """Record a domain receipt (D11) and join the label its output carries (D6, S1).
 
@@ -487,14 +493,25 @@ class BrokerLedger:
             raise BrokerRefused(Reason.UNAVAILABLE)
         if reservation.effect_id is None:
             return
+        # The delivery binding is set once, with the commit (sw_066). Only an owner delivery,
+        # whose recipient and channel the broker recorded at reserve, can accept input.
+        bound = delivery if status == "committed" else None
+        prompt = bound.prompt_expires_at if bound is not None else None
         row = await self.connection.fetchrow(
-            "UPDATE switchboard.effects SET status = $3, receipt_ref = $4, updated_at = now() "
+            "UPDATE switchboard.effects SET status = $3, receipt_ref = $4, delivery_ref = $5, "
+            "prompt_accepts_input = ($6::timestamptz IS NOT NULL AND recipient_entity IS NOT NULL "
+            "AND recipient_channel IS NOT NULL), "
+            "prompt_expires_at = CASE WHEN $6::timestamptz IS NOT NULL "
+            "AND recipient_entity IS NOT NULL AND recipient_channel IS NOT NULL THEN $6 END, "
+            "updated_at = now() "
             "WHERE goal_id = $1 AND id = $2 AND status IN ('requested', 'dispatched') "
             "RETURNING id",
             principal.goal_id,
             reservation.effect_id,
             status,
             receipt_ref,
+            None if bound is None else bound.ref,
+            prompt,
         )
         if row is None:
             raise BrokerRefused(Reason.UNAVAILABLE)

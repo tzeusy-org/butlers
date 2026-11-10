@@ -80,6 +80,11 @@ def _channel(capability: Capability, args: dict[str, Any]) -> str | None:
     return None
 
 
+def communication_channel(capability: Capability, args: dict[str, Any]) -> str | None:
+    """The channel a communicate call names, recorded with its owner recipient at reserve."""
+    return _channel(capability, args)
+
+
 async def _is_owner(connection, value: Any, owner: UUID | None, channel: str | None) -> bool:
     if type(value) is not str:
         return False

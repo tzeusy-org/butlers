@@ -43,7 +43,7 @@ from .contracts import (
 from .domains import DomainReceipt, Domains, ParkReceipt
 from .ledger import UNPUBLISHED_CAPABILITY, BrokerLedger
 from .policy import PER_EVENT, decide, listable
-from .recipients import classify_recipients
+from .recipients import classify_recipients, communication_channel
 from .typed import TypedRefused, parse_schema, typed_value_label, validate_value
 
 logger = logging.getLogger(__name__)
@@ -320,7 +320,12 @@ class Broker:
         if decision.disposition is Disposition.PARK and not capability.approvals_enabled:
             raise self._refused(principal, name, Reason.UNAVAILABLE, hold)
         reserved = await ledger.reserve(
-            principal, capability, decision, arguments_digest(args), recipient
+            principal,
+            capability,
+            decision,
+            arguments_digest(args),
+            recipient,
+            communication_channel(capability, args),
         )
         if hold is not None and isinstance(reserved, Reservation):
             await ledger.record_hold(
@@ -440,7 +445,12 @@ class Broker:
             handle = await self._settle_holding(reserved, status, receipt, output, writers)
         else:
             await self._settle(
-                reserved, status, receipt_ref=receipt.receipt_ref, output=output, writers=writers
+                reserved,
+                status,
+                receipt_ref=receipt.receipt_ref,
+                output=output,
+                writers=writers,
+                delivery=receipt.delivery,
             )
         if approval_ref is not None:
             await self._write_back(reserved, approval_ref, status, receipt.receipt_ref)
@@ -478,9 +488,17 @@ class Broker:
             for pointer in writers:
                 label = label.join(await ledger.writer_label(pointer))
             if raw is None or not _holds(reserved.principal.label, label):
-                await ledger.settle(reserved, status, receipt_ref=receipt.receipt_ref, output=label)
+                await ledger.settle(
+                    reserved,
+                    status,
+                    receipt_ref=receipt.receipt_ref,
+                    output=label,
+                    delivery=receipt.delivery,
+                )
                 return None
-            await ledger.settle(reserved, status, receipt_ref=receipt.receipt_ref)
+            await ledger.settle(
+                reserved, status, receipt_ref=receipt.receipt_ref, delivery=receipt.delivery
+            )
             return await BoundaryLedger(ledger).quarantine(
                 reserved.principal, reserved.effect_id, label, raw
             )
