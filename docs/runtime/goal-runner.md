@@ -279,7 +279,9 @@ Budgets fail closed and are charged atomically inside the broker's per-call tran
 `admitted → running → waiting → completed | partial | failed`, plus `stopped` and
 `budget_exhausted`. Since `sw_064` the old `settling`, `awaiting_approval` and `recovering` states
 are gone: `settling` is `waiting` on a `settle` envelope, `awaiting_approval` is `waiting` on an
-`approval` envelope bound to the parked effect, and `recovering` is `admitted` with an ended lead
+`approval` envelope bound to the parked effect (one with no parked effect is held on a
+`conditions` envelope whose predicate is `evidence_unavailable`, reason `legacy_approval_unbound`:
+never approved, ended only by Stop or an owner action), and `recovering` is `admitted` with an ended lead
 and no successor (the resume sweep replaces it at the next epoch). `goals.legacy_status` keeps
 the original status of every converted row.
 
