@@ -11,8 +11,10 @@ legacy states from ``goals_status_check``.
 * ``settling`` becomes ``waiting`` on a ``settle`` envelope: the goal waits on the exact effects
   that can still change, and resolves deterministically (no LLM epoch) once they settle.
 * ``awaiting_approval`` becomes ``waiting`` on an ``approval`` envelope bound to the exact parked
-  effect. A goal with no parked effect to bind is refused, never guessed into a state or
-  auto-approved.
+  effect. A goal with no parked effect to bind is held, never guessed or auto-approved: it
+  waits on a ``conditions`` envelope whose predicate records ``evidence_unavailable`` (reason
+  ``legacy_approval_unbound``) and which no condition is registered to fire. Only Stop or an
+  explicit owner action ends it, and the upgrade never aborts for it.
 * ``recovering`` becomes ``admitted``. The recovery intent is the ended lead with no successor
   (the runner's leaderless sweep already resumes it at the next epoch); no budget is reset and
   nothing is dispatched.
@@ -59,10 +61,6 @@ BEGIN
         IF g.status = 'awaiting_approval' THEN
             SELECT id, args_digest INTO effect_id, effect_args FROM switchboard.effects
             WHERE goal_id = g.id AND status = 'parked' ORDER BY created_at, id LIMIT 1;
-            IF effect_id IS NULL THEN
-                RAISE EXCEPTION
-                    'Goal % is awaiting_approval with no parked effect to bind its wait to', g.id;
-            END IF;
         END IF;
         plan_n := g.plan_version;
         IF plan_n IS NULL THEN
@@ -73,8 +71,12 @@ BEGIN
         END IF;
         SELECT digest INTO plan_dig FROM switchboard.goal_plans
             WHERE goal_id = g.id AND version = plan_n;
-        kind_n := CASE g.status WHEN 'settling' THEN 'settle' ELSE 'approval' END;
-        pred := jsonb_build_object('kind', kind_n);
+        kind_n := CASE WHEN g.status = 'settling' THEN 'settle'
+                       WHEN effect_id IS NOT NULL THEN 'approval' ELSE 'conditions' END;
+        pred := CASE WHEN g.status = 'awaiting_approval' AND effect_id IS NULL
+                     THEN jsonb_build_object('kind', 'evidence_unavailable',
+                                             'reason', 'legacy_approval_unbound')
+                     ELSE jsonb_build_object('kind', kind_n) END;
         SELECT deadline INTO deadline_n FROM switchboard.budgets WHERE goal_id = g.id;
         envelope := gen_random_uuid();
         INSERT INTO switchboard.wait_envelopes(id, goal_id, kind, original_epoch, plan_version,

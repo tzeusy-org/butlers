@@ -8,11 +8,11 @@ than guessed, and the downgrade restores the legacy states.
 """
 
 import asyncio
+import json
 from uuid import uuid4
 
 import asyncpg
 import pytest
-from sqlalchemy.exc import DBAPIError
 
 from alembic import command
 from butlers.core.goal_admission import Evidence
@@ -134,9 +134,26 @@ def test_sw064_converts_each_legacy_state_and_the_downgrade_restores_them(postgr
     assert {e["state"] for e in restored["settling"]["envelopes"]} == {"cancelled"}
 
 
-def test_sw064_refuses_an_approval_wait_with_nothing_parked_to_bind(postgres_container):
+def test_sw064_holds_an_approval_wait_with_nothing_parked_to_bind(postgres_container):
     url = _ledger(postgres_container, "sw_063")  # pinned-revision: sw_064 predecessor
-    asyncio.run(_populate(url, parked_approval=False))
+    ids = asyncio.run(_populate(url, parked_approval=False))
     config = _build_alembic_config(url, ["switchboard"], target_schema="switchboard")
-    with pytest.raises(DBAPIError, match="no parked effect"):
-        command.upgrade(config, "switchboard@sw_064")  # pinned-revision: owns the remap
+    command.upgrade(config, "switchboard@sw_064")  # pinned-revision: owns the remap
+    rows = asyncio.run(_read(url, ids))
+    held = rows["approval"]
+    assert (held["goal"]["status"], held["goal"]["legacy_status"]) == (
+        "waiting",
+        "awaiting_approval",
+    )
+    (envelope,) = held["envelopes"]
+    # Never an approval envelope (those stay bound to an effect), and nothing can fire it.
+    assert (envelope["kind"], envelope["state"], envelope["approval_effect_id"]) == (
+        "conditions",
+        "open",
+        None,
+    )
+    predicate = envelope["predicate"]
+    assert (json.loads(predicate) if isinstance(predicate, str) else predicate) == {
+        "kind": "evidence_unavailable",
+        "reason": "legacy_approval_unbound",
+    }
