@@ -24,6 +24,7 @@ import pytest
 
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
 from butlers.connectors.ingest_retry import IngestRetryBudget
+from tests.connectors.filtered_event_fakes import FilteredEventsPool
 
 # row tuple layout: see FilteredEventBuffer.record
 _ID, _STATUS, _REASON, _PAYLOAD = 3, 8, 7, 9
@@ -145,6 +146,7 @@ def _gmail_live_runtime(submit: AsyncMock) -> Any:
     from butlers.connectors.gmail import GmailCursor
 
     runtime = _gmail_runtime(submit)
+    runtime._db_pool = FilteredEventsPool()
     runtime._refresh_policy_tier_assigner = AsyncMock()
     runtime._load_cursor = AsyncMock(
         return_value=GmailCursor(history_id="100", last_updated_at="2026-01-01T00:00:00Z")
@@ -266,7 +268,7 @@ async def test_gmail_live_permanent_message_outcome_allows_checkpoint(outcome: s
     assert await _gmail_poll_once(runtime) == [5]
     assert runtime._save_cursor.await_args.args[0].history_id == "101"
     assert [call.args[0]["event"]["external_event_id"] for call in submit.await_args_list] == ["m2"]
-    assert len(runtime._filtered_event_buffer) == (1 if outcome == "malformed" else 0)
+    assert len(runtime._db_pool.written) == (1 if outcome == "malformed" else 0)
 
 
 async def test_gmail_backfill_holds_its_page_on_a_failed_ingest(evaluated) -> None:
@@ -312,6 +314,7 @@ async def test_gmail_backfill_parks_an_item_whose_retries_are_spent(evaluated) -
             raise RuntimeError("switchboard down")
 
     runtime = _gmail_runtime(AsyncMock(side_effect=submit))
+    runtime._db_pool = pool = FilteredEventsPool()
     for _ in range(runtime._backfill_ingest_retry.max_attempts):
         runtime._fetch_backfill_message_page = AsyncMock(  # type: ignore[method-assign]
             return_value=([{"id": "m1"}, {"id": "m2"}, {"id": "m3"}], None)
@@ -319,8 +322,8 @@ async def test_gmail_backfill_parks_an_item_whose_retries_are_spent(evaluated) -
         await runtime._execute_backfill_job(_job())
 
     assert _reports(runtime)[-1]["status"] == "completed"
-    assert len(runtime._filtered_event_buffer) == 1
-    row = runtime._filtered_event_buffer._rows[0]
+    assert len(runtime._filtered_event_buffer) == 0  # written at once, not buffered
+    (row,) = pool.written
     assert (row[_ID], row[_STATUS], row[_REASON]) == ("m2", "error", "submission_error")
     assert row[_PAYLOAD]["control"]["idempotency_key"] == "gmail:m2"
     assert row[_PAYLOAD]["payload"]["normalized_text"] == "text m2"
@@ -331,6 +334,7 @@ async def test_gmail_fetch_failure_parks_a_visible_row_that_replay_refuses(evalu
     from butlers.connectors.filtered_event_buffer import drain_replay_pending
 
     runtime = _gmail_runtime(AsyncMock())
+    runtime._db_pool = pool = FilteredEventsPool()
 
     async def fetch(mid: str) -> dict:
         if mid == "m2":
@@ -350,7 +354,7 @@ async def test_gmail_fetch_failure_parks_a_visible_row_that_replay_refuses(evalu
             assert len(runtime._filtered_event_buffer) == 0
 
     assert _reports(runtime)[-1]["status"] == "completed"
-    (row,) = runtime._filtered_event_buffer._rows
+    (row,) = pool.written
     assert (row[_ID], row[_STATUS]) == ("m2", "error")
     assert row[10] == "gmail 503"  # error_detail keeps the last error
     stored = row[_PAYLOAD]
@@ -458,6 +462,7 @@ async def test_calendar_parks_an_event_whose_retries_are_spent() -> None:
             raise RuntimeError("switchboard down")
 
     runtime = _calendar_runtime(AsyncMock(side_effect=submit))
+    runtime._db_pool = pool = FilteredEventsPool()
     events = [_calendar_event("e1"), _calendar_event("e2"), _calendar_event("e3")]
     runtime._incremental_sync = AsyncMock(return_value=(events, "tok-2"))  # type: ignore[method-assign]
 
@@ -465,8 +470,8 @@ async def test_calendar_parks_an_event_whose_retries_are_spent() -> None:
         await runtime._run_one_poll_cycle()
 
     assert runtime._sync_token == "tok-2"
-    assert len(runtime._filtered_event_buffer) == 1
-    row = runtime._filtered_event_buffer._rows[0]
+    assert len(runtime._filtered_event_buffer) == 0  # written at once, not buffered
+    (row,) = pool.written
     assert (row[_ID], row[_STATUS]) == ("e2", "error")
     key = row[_PAYLOAD]["control"]["idempotency_key"]
     assert key == "gcal:google_calendar:user:test@example.com:e2:2026-01-02T00:00:00Z"
@@ -603,17 +608,126 @@ async def test_activitywatch_parks_an_event_whose_retries_are_spent() -> None:
         return {"status": "accepted"}
 
     connector = _aw_connector(AsyncMock(side_effect=call_tool))
+    connector._db_pool = pool = FilteredEventsPool()
     for _ in range(connector._ingest_retry.max_attempts):
         await _aw_cycle(connector)
 
     connector._save_checkpoint.assert_awaited_with(_AW_TS + timedelta(minutes=2))
-    assert len(connector._filtered_event_buffer) == 1
-    row = connector._filtered_event_buffer._rows[0]
+    assert len(connector._filtered_event_buffer) == 0  # written at once, not buffered
+    (row,) = pool.written
     assert (row[_ID], row[_STATUS]) == (failing, "error")
     key = row[_PAYLOAD]["control"]["idempotency_key"]
     assert (
         key == f"activitywatch:desktop:{_AW_BUCKET}:{(_AW_TS + timedelta(minutes=1)).isoformat()}"
     )
+
+
+async def test_gmail_live_poll_holds_cursor_when_the_error_row_is_not_written() -> None:
+    """A swallowed per-message failure is parked first; unwritten, the cursor stays (.274)."""
+
+    async def fetch(mid: str) -> dict:
+        if mid == "m1":
+            raise ValueError("malformed message")
+        return {"id": mid}
+
+    runtime = _gmail_live_runtime(AsyncMock())
+    runtime._fetch_message = AsyncMock(side_effect=fetch)
+    runtime._db_pool.fail_writes = True
+
+    await _gmail_poll_once(runtime)
+    runtime._save_cursor.assert_not_awaited()
+    assert runtime._db_pool.written == []
+
+    runtime._db_pool.fail_writes = False
+    await _gmail_poll_once(runtime)
+    assert runtime._save_cursor.await_args.args[0].history_id == "101"
+    (row,) = runtime._db_pool.written
+    assert (row[_ID], row[_STATUS]) == ("m1", "error")
+
+
+# ── A park that cannot be written holds the source (bu-dhloi1.250) ─────────
+
+
+async def test_gmail_backfill_holds_its_page_when_the_park_is_not_written(evaluated) -> None:
+    async def submit(envelope: dict) -> None:
+        if envelope["event"]["external_event_id"] == "m2":
+            raise RuntimeError("switchboard down")
+
+    runtime = _gmail_runtime(AsyncMock(side_effect=submit))
+    runtime._db_pool = pool = FilteredEventsPool()
+    pool.fail_writes = True
+    for _ in range(runtime._backfill_ingest_retry.max_attempts):
+        runtime._fetch_backfill_message_page = AsyncMock(  # type: ignore[method-assign]
+            return_value=([{"id": "m1"}, {"id": "m2"}, {"id": "m3"}], None)
+        )
+        await runtime._execute_backfill_job(_job())
+
+    # Attempts are spent but the only copy was not written: the page is held.
+    assert _reports(runtime)[-1].get("status") != "completed"
+    assert pool.written == []
+
+    # The budget starts over after the unwritten park: the next attempts are spent anew.
+    pool.fail_writes = False
+    for _ in range(runtime._backfill_ingest_retry.max_attempts):
+        runtime._fetch_backfill_message_page = AsyncMock(  # type: ignore[method-assign]
+            return_value=([{"id": "m1"}, {"id": "m2"}, {"id": "m3"}], None)
+        )
+        await runtime._execute_backfill_job(_job(_reports(runtime)[-1]["cursor"]))
+    assert _reports(runtime)[-1]["status"] == "completed"
+    (row,) = pool.written
+    assert (row[_ID], row[_STATUS]) == ("m2", "error")
+
+
+async def test_calendar_keeps_its_sync_token_when_the_park_is_not_written() -> None:
+    async def submit(envelope: dict) -> None:
+        if envelope["event"]["external_event_id"] == "e2":
+            raise RuntimeError("switchboard down")
+
+    runtime = _calendar_runtime(AsyncMock(side_effect=submit))
+    runtime._db_pool = pool = FilteredEventsPool()
+    pool.fail_writes = True
+    events = [_calendar_event("e1"), _calendar_event("e2"), _calendar_event("e3")]
+    runtime._incremental_sync = AsyncMock(return_value=(events, "tok-2"))  # type: ignore[method-assign]
+
+    for _ in range(runtime._ingest_retry.max_attempts):
+        await runtime._run_one_poll_cycle()
+
+    assert runtime._sync_token == "tok-1"
+    runtime._save_sync_token.assert_not_awaited()
+    assert pool.written == []
+
+    pool.fail_writes = False
+    for _ in range(runtime._ingest_retry.max_attempts):
+        await runtime._run_one_poll_cycle()
+    assert runtime._sync_token == "tok-2"
+    (row,) = pool.written
+    assert (row[_ID], row[_STATUS]) == ("e2", "error")
+
+
+async def test_activitywatch_holds_its_checkpoint_when_the_park_is_not_written() -> None:
+    failing = f"{_AW_BUCKET}:{(_AW_TS + timedelta(minutes=1)).isoformat()}"
+
+    async def call_tool(_name: str, envelope: dict) -> dict:
+        if envelope["event"]["external_event_id"] == failing:
+            raise RuntimeError("switchboard down")
+        return {"status": "accepted"}
+
+    connector = _aw_connector(AsyncMock(side_effect=call_tool))
+    connector._db_pool = pool = FilteredEventsPool()
+    pool.fail_writes = True
+    for _ in range(connector._ingest_retry.max_attempts):
+        await _aw_cycle(connector)
+
+    # Never past the unparked event: the checkpoint stays at the event before it.
+    assert connector._save_checkpoint.await_args.args[0] == _AW_TS
+    assert pool.written == []
+
+    pool.fail_writes = False
+    for _ in range(connector._ingest_retry.max_attempts):
+        await _aw_cycle(connector)
+    connector._save_checkpoint.assert_awaited_with(_AW_TS + timedelta(minutes=2))
+    (row,) = pool.written
+    assert (row[_ID], row[_STATUS]) == (failing, "error")
 
 
 # ── Telegram user client ──────────────────────────────────────────────────
@@ -638,6 +752,7 @@ def _telegram_connector() -> Any:
     connector._ingestion_policy.evaluate = MagicMock(return_value=allow)  # type: ignore[method-assign]
     connector._global_ingestion_policy.evaluate = MagicMock(return_value=allow)  # type: ignore[method-assign]
     connector._discretion_dispatcher = None
+    connector._db_pool = FilteredEventsPool()  # a park is committed to it
     connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
     connector._save_checkpoint = AsyncMock()  # type: ignore[method-assign]
     return connector
@@ -694,8 +809,36 @@ async def test_telegram_user_parks_a_message_whose_retries_are_spent() -> None:
 
     assert connector._retry_pending == {}
     assert connector._last_message_id == 5  # parked, so no longer holding the checkpoint
-    assert len(connector._filtered_event_buffer) == 1
-    row = connector._filtered_event_buffer._rows[0]
+    assert len(connector._filtered_event_buffer) == 0  # written at once, not buffered
+    (row,) = connector._db_pool.written
     assert (row[_ID], row[_STATUS]) == ("5", "error")
     assert row[_PAYLOAD]["control"]["idempotency_key"] == "tg:100:5"
     assert row[_PAYLOAD]["payload"]["raw"] == {"id": 5, "message": "hello 5"}
+
+
+async def test_telegram_user_holds_its_checkpoint_when_the_park_is_not_written() -> None:
+    connector = _telegram_connector()
+
+    async def submit(envelope: dict) -> None:
+        if envelope["event"]["external_event_id"] == "5":
+            raise RuntimeError("switchboard down")
+
+    connector._submit_to_ingest = AsyncMock(side_effect=submit)  # type: ignore[method-assign]
+    connector._db_pool.fail_writes = True
+    await connector._process_message(_telegram_message(4))
+    await connector._process_message(_telegram_message(5))
+    for _ in range(connector._ingest_retry.max_attempts - 1):
+        await connector._retry_pending_messages()
+
+    # Attempts spent but the only copy was not written: still pending, checkpoint below it.
+    assert set(connector._retry_pending) == {"100:5"}
+    assert connector._last_message_id == 4
+    assert connector._db_pool.written == []
+
+    connector._db_pool.fail_writes = False
+    for _ in range(connector._ingest_retry.max_attempts):
+        await connector._retry_pending_messages()
+    assert connector._retry_pending == {}
+    assert connector._last_message_id == 5
+    (row,) = connector._db_pool.written
+    assert (row[_ID], row[_STATUS]) == ("5", "error")

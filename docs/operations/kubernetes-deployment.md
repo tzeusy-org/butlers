@@ -142,14 +142,21 @@ namespace. Host-originated connections reach pods on the same node from the `cni
 compose. The NodePort Services use `externalTrafficPolicy: Local`, so remote clients keep their
 own source IP and are refused.
 
-A `Local` NodePort answers only on a node that hosts the pod. If the pod is scheduled onto
-another node, `localhost:<nodePort>` on the `tailscale serve` host refuses connections and the
-route returns 502. Point `tailscale serve` at the Service ClusterIP instead (for example
-`http://<frontend ClusterIP>:80/butlers-dev`), which kube-proxy routes to the pod on any node;
-the flannel source above is what makes that cross-node hop admissible. A ClusterIP lasts only
-as long as its Service, so to keep the route valid across a Service recreate, fix the addresses
-in the gitignored `values.local.yaml` (`serviceClusterIPs.frontend`, `serviceClusterIPs.dashboardApi`);
-they are empty in committed values.
+The pods behind `tailscale serve` (frontend, dashboard API, OwnTracks) must run on the serve
+host's node. A `Local` NodePort answers only on a node that hosts the pod, so
+`localhost:<nodePort>` returns 502 when the pod is elsewhere. Pointing serve at a Service
+ClusterIP does not help: kube-proxy would route to the remote pod through the flannel VXLAN
+tunnel, and on a cluster whose flannel underlay is `tailscale0` that hop cannot work from
+`tailscaled`. Its sockets carry fwmark `0x80000`, the VXLAN outer packet inherits the mark, and
+the `0x80000` policy rule looks the underlay address up in the main table, which has no `100.x`
+route (those live in Tailscale's table 52). The tunnel packet leaves by the LAN default route
+and is lost, while an unmarked `curl` to the same ClusterIP works, which makes the failure
+easy to misread. Set `hostServedNodeSelector` in the gitignored `values.local.yaml`
+(`kubernetes.io/hostname: <serve-host-node>`); it renders as a `nodeSelector` on exactly those
+three pods and is empty in committed values.
+
+`serviceClusterIPs` (also gitignored-local) can still fix the frontend and dashboard API
+Service addresses if a serve route targets them, so the route survives a Service recreate.
 
 Every other pod is covered too. `butlers-default-deny-ingress` selects all pods, and allowed
 ingress is the union of the policies selecting a pod, so a deny cannot subtract an allow.

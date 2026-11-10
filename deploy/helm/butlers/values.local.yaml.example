@@ -10,6 +10,10 @@ publicUrl:
 # serviceClusterIPs:
 #   frontend: <free-cluster-ip-1>
 #   dashboardApi: <free-cluster-ip-2>
+# Multi-node clusters: keep the pods that host `tailscale serve` targets on the
+# serve host's node (tailscaled cannot reach pods across the flannel tunnel).
+# hostServedNodeSelector:
+#   kubernetes.io/hostname: <serve-host-node>
 commonEnv:
   OTEL_EXPORTER_OTLP_ENDPOINT: http://<otel-host>:4318
   # Optional: LIVE_LISTENER_TRANSCRIPTION_URL: tcp://<wyoming-host>:10300

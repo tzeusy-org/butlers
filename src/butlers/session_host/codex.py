@@ -172,9 +172,15 @@ class CodexSettings:
 
     def _catalog(self) -> bytes:
         # Deliberately not the bundled entry. Each omitted field is enforcing:
-        # apply_patch_tool_type, tool_mode, supports_search_tool,
-        # multi_agent_version. So is the empty experimental_supported_tools. Empty
-        # instructions: the runner supplies the governing prompt.
+        # apply_patch_tool_type, tool_mode, multi_agent_version. So is the empty
+        # experimental_supported_tools. Empty instructions: the runner supplies
+        # the governing prompt.
+        #
+        # supports_search_tool is kept on purpose. It enables the runtime's
+        # client-executed tool_search over the tools its MCP servers listed,
+        # which is RFC 0027 native deferred discovery (bu-r980fk needs it for
+        # leads), not provider-hosted search. The proof requires every search
+        # answer to be client-executed and to hold only the broker's tools.
         entry = {
             "slug": self.model,
             "display_name": self.model,
@@ -192,6 +198,7 @@ class CodexSettings:
             "supports_parallel_tool_calls": False,
             "context_window": 100000,
             "experimental_supported_tools": [],
+            "supports_search_tool": True,
         }
         return json.dumps({"models": [entry]}, separators=(",", ":"), sort_keys=True).encode()
 

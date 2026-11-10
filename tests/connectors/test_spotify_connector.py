@@ -41,6 +41,7 @@ from butlers.connectors.spotify import (
 )
 from butlers.spotify_client import SpotifyClient
 from butlers.testing.fake_pool import AsyncCtx
+from tests.connectors.filtered_event_fakes import FilteredEventsPool
 
 _ENDPOINT = "spotify_user_client:spotify:user123"
 _SPOTIFY_USER_ID = "user123"
@@ -1149,6 +1150,7 @@ async def test_submission_error_retains_raw_payload() -> None:
         SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
     )
     connector._filtered_event_buffer = FilteredEventBuffer("spotify_user_client", _ENDPOINT)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
     connector._ingestion_policy = None
     connector._mcp_client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))
 
@@ -1158,11 +1160,33 @@ async def test_submission_error_retains_raw_payload() -> None:
 
     await connector._submit_envelope(envelope)
 
-    rows = connector._filtered_event_buffer._rows
+    rows = pool.written
     assert len(rows) == 1
     row = rows[0]
     assert row[8] == "error"
     assert row[9]["payload"]["raw"] == expected_raw
+
+
+async def test_unwritten_error_row_raises_so_the_poll_does_not_move_past_the_item() -> None:
+    """A swallowed submit failure is parked first; unwritten, the poll stops (bu-dhloi1.274)."""
+    from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, ParkNotDurableError
+
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._filtered_event_buffer = FilteredEventBuffer("spotify_user_client", _ENDPOINT)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+    pool.fail_writes = True
+    connector._ingestion_policy = None
+    connector._mcp_client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))
+
+    with pytest.raises(ParkNotDurableError):
+        await connector._submit_envelope(_privacy_envelope())
+    assert pool.written == []
+
+    pool.fail_writes = False
+    await connector._submit_envelope(_privacy_envelope())
+    assert [row[8] for row in pool.written] == ["error"]
 
 
 # ---------------------------------------------------------------------------

@@ -108,7 +108,11 @@ from prometheus_client import Counter
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.filtered_event_buffer import (
+    FilteredEventBuffer,
+    ParkNotDurableError,
+    drain_replay_pending,
+)
 from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.ingest_retry import IngestRetryBudget
@@ -1340,12 +1344,29 @@ class ActivityWatchConnector:
                 # Never checkpoint past a failed event (bu-dhloi1.149): stop the
                 # batch with the checkpoint before it, so the next cycle reads it
                 # again; the idempotency_key keeps the re-read events safe. Once
-                # its attempts are spent, park it as a replayable error row and
-                # carry on.
+                # its attempts are spent, park it as a replayable error row,
+                # committed before the checkpoint can pass it, and carry on; a
+                # park that is not written holds the checkpoint like a retry.
                 if not self._ingest_retry.failed(retry_key):
                     logger.warning(
                         "ActivityWatchConnector: failed to ingest event at %s; holding the "
                         "checkpoint for a retry (error_class=%s)",
+                        ts.isoformat(),
+                        type(exc).__name__,
+                    )
+                    latest_ts = checkpoint_before
+                    break
+                if not await self._park_window_event(
+                    bucket_id=window_bucket_id,
+                    ts=ts,
+                    duration_seconds=duration_seconds,
+                    app=app,
+                    app_class=app_class,
+                    exc=exc,
+                ):
+                    logger.error(
+                        "ActivityWatchConnector: event at %s failed every retry and could not "
+                        "be parked; holding the checkpoint (error_class=%s)",
                         ts.isoformat(),
                         type(exc).__name__,
                     )
@@ -1356,14 +1377,6 @@ class ActivityWatchConnector:
                     "replay (error_class=%s)",
                     ts.isoformat(),
                     type(exc).__name__,
-                )
-                self._park_window_event(
-                    bucket_id=window_bucket_id,
-                    ts=ts,
-                    duration_seconds=duration_seconds,
-                    app=app,
-                    app_class=app_class,
-                    exc=exc,
                 )
 
         if latest_ts is not None and (
@@ -1469,7 +1482,7 @@ class ActivityWatchConnector:
                     exc_info=True,
                 )
 
-    def _park_window_event(
+    async def _park_window_event(
         self,
         *,
         bucket_id: str,
@@ -1478,8 +1491,12 @@ class ActivityWatchConnector:
         app: str,
         app_class: AppClass,
         exc: Exception,
-    ) -> None:
-        """Keep an event whose retries are spent as a replayable error row.
+    ) -> bool:
+        """Durably park an event whose retries are spent; True once written.
+
+        The row is the only copy once the checkpoint moves past the event, so it
+        is committed here first. False means it was not written and the caller
+        holds the checkpoint.
 
         The row carries the same coarse envelope :meth:`_process_window_event`
         submits (rebuilt from the same inputs, so the idempotency key matches);
@@ -1495,16 +1512,19 @@ class ActivityWatchConnector:
             app_class=app_class,
             ingestion_tier=self._config.ingestion_tier,
         )
-        self._filtered_event_buffer.record(
-            external_message_id=f"{bucket_id}:{ts.isoformat()}",
-            source_channel=_DESCRIPTOR.channel,
-            sender_identity=self._endpoint_identity,
-            subject_or_preview=f"ActivityWatch {app_class} activity",
-            filter_reason=FilteredEventBuffer.reason_submission_error(),
-            full_payload=FilteredEventBuffer.stored_envelope(envelope),
-            status="error",
-            error_detail=type(exc).__name__,
-        )
+        try:
+            await self._filtered_event_buffer.park(
+                self._db_pool,
+                external_message_id=f"{bucket_id}:{ts.isoformat()}",
+                source_channel=_DESCRIPTOR.channel,
+                sender_identity=self._endpoint_identity,
+                subject_or_preview=f"ActivityWatch {app_class} activity",
+                full_payload=FilteredEventBuffer.stored_envelope(envelope),
+                error_detail=type(exc).__name__,
+            )
+        except ParkNotDurableError:
+            return False
+        return True
 
     async def _submit_envelope(self, envelope: dict[str, Any]) -> None:
         """Submit an ingest.v1 envelope to the Switchboard (for replay drain)."""

@@ -97,6 +97,31 @@ async def test_duplicate_argument_names_are_refused_before_mcp():
         assert response.status_code == 400 and s.broker.calls == []
 
 
+async def test_the_runtime_resource_tools_reach_nothing_on_the_broker():
+    """Codex 0.159.2 always offers list/read MCP resource tools (no off switch).
+
+    They can only name configured servers, and the broker is the only one, so
+    the broker itself must serve no resource, template or prompt.
+    """
+    async with _endpoint() as s:
+        assert (await s.rpc("initialize", _INIT)).status_code == 200
+        for method, key in (
+            ("resources/list", "resources"),
+            ("resources/templates/list", "resourceTemplates"),
+            ("prompts/list", "prompts"),
+        ):
+            listed = (await s.rpc(method)).json()
+            assert listed.get("result", {}).get(key, []) == [], (method, listed)
+        for method, params in (
+            ("resources/read", {"uri": "file:///etc/passwd"}),
+            ("resources/read", {"uri": "broker://goal/ledger"}),
+            ("prompts/get", {"name": "anything"}),
+        ):
+            response = (await s.rpc(method, params)).json()
+            assert "error" in response and "result" not in response, (method, response)
+        assert s.broker.calls == []
+
+
 def test_session_app_is_the_refusal_app_until_switched_on():
     broker = _Broker(uuid4(), mint_token()[0])
     assert BrokerSwitch().enabled is False

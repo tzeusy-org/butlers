@@ -18,6 +18,7 @@ spec:
       labels:
         {{- include "butlers.selector" (dict "root" . "component" "dashboard-api") | nindent 8 }}
     spec:
+      {{- include "butlers.hostServedNodeSelector" . | nindent 6 }}
       initContainers:
         - name: migrations
           image: {{ include "butlers.image" . }}

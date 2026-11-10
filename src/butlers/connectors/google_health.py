@@ -107,7 +107,11 @@ from prometheus_client import REGISTRY, Counter, Gauge
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.filtered_event_buffer import (
+    FilteredEventBuffer,
+    ParkNotDurableError,
+    drain_replay_pending,
+)
 from butlers.connectors.google_health_client import (
     GoogleHealthClient,
     GoogleHealthCredentialError,
@@ -2103,7 +2107,7 @@ class GoogleHealthConnector:
                 if state.rejected_key == record_id:
                     state.rejected_key, state.rejected_count = None, 0
                 emitted += 1
-            elif outcome is SubmissionOutcome.REJECTED and self._quarantine_if_poison(
+            elif outcome is SubmissionOutcome.REJECTED and await self._quarantine_if_poison(
                 state, record_id, envelope, endpoint_identity=endpoint_identity
             ):
                 pass  # receipted; consumed so the rest of the window can commit
@@ -2138,7 +2142,7 @@ class GoogleHealthConnector:
         self._last_source_api_ok = True
         self._source_api_error_message = None
 
-    def _quarantine_if_poison(
+    async def _quarantine_if_poison(
         self,
         state: ResourceState,
         record_id: str,
@@ -2151,6 +2155,9 @@ class GoogleHealthConnector:
         Returns ``True`` when the envelope is quarantined: an ``error`` row with reason
         ``poison_quarantine`` and the full envelope lands in ``connectors.filtered_events`` (the
         receipt an operator replays from), and the caller treats the sample as consumed.
+        The receipt is the only copy once the sample is consumed, so it is committed first
+        (bu-dhloi1.274); if it cannot be written the sample is not consumed and the poll
+        stays incomplete.
         """
         if state.rejected_key == record_id:
             state.rejected_count += 1
@@ -2171,16 +2178,27 @@ class GoogleHealthConnector:
             endpoint_identity=endpoint_identity, resource=state.bundle.resource
         ).inc()
         if self._filtered_event_buffer is not None:
-            self._filtered_event_buffer.record(
-                external_message_id=external_event_id,
-                source_channel=envelope.get("source", {}).get("channel", ""),
-                sender_identity=envelope.get("sender", {}).get("identity", ""),
-                subject_or_preview=envelope.get("payload", {}).get("normalized_text", "")[:100],
-                filter_reason=FilteredEventBuffer.reason_poison_quarantine(),
-                full_payload=envelope,
-                status="error",
-                error_detail=f"ingest rejected {attempts} consecutive attempts",
-            )
+            try:
+                await self._filtered_event_buffer.park(
+                    self._shared_pool,
+                    external_message_id=external_event_id,
+                    source_channel=envelope.get("source", {}).get("channel", ""),
+                    sender_identity=envelope.get("sender", {}).get("identity", ""),
+                    subject_or_preview=envelope.get("payload", {}).get("normalized_text", "")[:100],
+                    filter_reason=FilteredEventBuffer.reason_poison_quarantine(),
+                    full_payload=envelope,
+                    error_detail=f"ingest rejected {attempts} consecutive attempts",
+                )
+            except ParkNotDurableError:
+                logger.error(
+                    "GoogleHealthConnector: %s rejected %d times but its quarantine receipt "
+                    "could not be written; holding the checkpoint",
+                    external_event_id,
+                    attempts,
+                )
+                # The next rejection reaches the limit again and retries the receipt.
+                state.rejected_key, state.rejected_count = record_id, attempts - 1
+                return False
         return True
 
     async def _get_window_records(

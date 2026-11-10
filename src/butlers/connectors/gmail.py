@@ -86,6 +86,7 @@ from butlers.connectors.email_spans import email_untrusted_spans
 from butlers.connectors.filtered_event_buffer import (
     REPLAY_UNAVAILABLE_KEY,
     FilteredEventBuffer,
+    ParkNotDurableError,
     drain_replay_pending,
 )
 from butlers.connectors.gmail_policy import (
@@ -641,14 +642,19 @@ class GmailConnectorRuntime:
         # holds its cursor on the message's page until the budget is spent.
         self._backfill_ingest_retry = IngestRetryBudget()
 
-    def _park_backfill_message(
+    async def _park_backfill_message(
         self,
         message_id: str,
         thread_id: str | None,
         envelope: dict[str, Any] | None,
         exc: Exception,
-    ) -> None:
-        """Keep a backfill message whose retries are spent as a visible error row.
+    ) -> bool:
+        """Durably park a backfill message whose retries are spent; True once written.
+
+        The parked row is the only copy of the message once the job moves past
+        it, so it is written and committed here, before the cursor can advance.
+        False (no pool, or the write failed) means the caller holds the cursor
+        and the message is tried and parked again on the next poll.
 
         When an envelope was built, the row carries it exactly as tried,
         idempotency key included, and replays it. Otherwise (the message never
@@ -675,16 +681,19 @@ class GmailConnectorRuntime:
             payload[REPLAY_UNAVAILABLE_KEY] = (
                 "the Gmail message never fetched, so no content was stored"
             )
-        self._filtered_event_buffer.record(
-            external_message_id=message_id,
-            source_channel=self._config.connector_channel,
-            sender_identity=sender,
-            subject_or_preview=None,
-            filter_reason=FilteredEventBuffer.reason_submission_error(),
-            full_payload=payload,
-            status="error",
-            error_detail=str(exc),
-        )
+        try:
+            await self._filtered_event_buffer.park(
+                self._db_pool,
+                external_message_id=message_id,
+                source_channel=self._config.connector_channel,
+                sender_identity=sender,
+                subject_or_preview=None,
+                full_payload=payload,
+                error_detail=str(exc),
+            )
+        except ParkNotDurableError:
+            return False
+        return True
 
     async def _refresh_policy_tier_assigner(self) -> None:
         """Refresh the PolicyTierAssigner's known_contacts from the DB-backed evaluator.
@@ -1580,9 +1589,25 @@ class GmailConnectorRuntime:
                                     job.job_id,
                                     exc,
                                 )
-                                self._park_backfill_message(
+                                if not await self._park_backfill_message(
                                     message_id, msg_stub.get("threadId"), envelope, exc
-                                )
+                                ):
+                                    # The only copy was not written: hold the cursor on this
+                                    # page; the next poll tries and parks the message again.
+                                    logger.error(
+                                        "Backfill: message %s (job %s) could not be parked; "
+                                        "holding the cursor",
+                                        message_id,
+                                        job.job_id,
+                                    )
+                                    await self._report_backfill_progress(
+                                        job_id=job.job_id,
+                                        rows_processed=rows_processed - reported_processed,
+                                        rows_skipped=rows_skipped - reported_skipped,
+                                        cost_spent_cents=cost_spent_cents,
+                                        cursor={"page_token": page_token or ""},
+                                    )
+                                    return
                                 rows_skipped += 1
 
                     progress_counter += 1
@@ -2142,7 +2167,8 @@ class GmailConnectorRuntime:
         Request, status and delivery-timeout errors are re-raised after all tasks
         complete so the caller does not advance the batch cursor without
         acceptance. Permanent per-message errors (e.g. malformed content) are
-        recorded for replay without blocking other messages.
+        parked for replay without blocking other messages; a park that is not written
+        is re-raised too.
         """
         tasks = [self._ingest_single_message(msg_id) for msg_id in message_ids]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -2150,7 +2176,9 @@ class GmailConnectorRuntime:
         # Settle siblings before holding the cursor; accepted siblings replay
         # harmlessly through their unchanged idempotency keys.
         for result in results:
-            if isinstance(result, self._TRANSIENT_DELIVERY_ERRORS):
+            # An error row that was not committed is the only copy of that message, so
+            # it holds the cursor like a delivery failure (bu-dhloi1.274).
+            if isinstance(result, (*self._TRANSIENT_DELIVERY_ERRORS, ParkNotDurableError)):
                 raise result
 
     async def _ingest_single_message(self, message_id: str) -> None:
@@ -2408,13 +2436,15 @@ class GmailConnectorRuntime:
                 raise
             except Exception as exc:
                 logger.error("Failed to ingest message %s: %s", message_id, exc, exc_info=True)
-                # Record error event in the filtered event buffer
-                self._filtered_event_buffer.record(
+                # The message is released after this, so the error row is its only copy:
+                # commit it first. A park that is not written raises, which holds the
+                # batch cursor like a delivery failure (bu-dhloi1.274).
+                await self._filtered_event_buffer.park(
+                    self._db_pool,
                     external_message_id=message_id,
                     source_channel=self._config.connector_channel,
                     sender_identity=replay_sender,
                     subject_or_preview=None,
-                    filter_reason=FilteredEventBuffer.reason_submission_error(),
                     full_payload=FilteredEventBuffer.full_payload(
                         channel=self._config.connector_channel,
                         provider=self._config.connector_provider,
@@ -2426,7 +2456,6 @@ class GmailConnectorRuntime:
                         raw={"message_id": message_id},
                         untrusted_spans=replay_spans,
                     ),
-                    status="error",
                     error_detail=str(exc),
                 )
 

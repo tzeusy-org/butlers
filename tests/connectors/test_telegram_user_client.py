@@ -32,7 +32,11 @@ from butlers.connectors.telegram_user_client import (
     TelegramUserClientConnector,
     TelegramUserClientConnectorConfig,
 )
-from tests.connectors.filtered_event_fakes import FilteredEventsPool  # noqa: E402
+from tests.connectors.filtered_event_fakes import (
+    FilteredEventsPool,
+    clear_stored_rows,
+    stored_rows,
+)
 
 _ENDPOINT = "telegram_user_client:telegram:user123"
 _OWNER_ENDPOINT = "telegram:user:999"
@@ -824,7 +828,7 @@ async def test_error_status_retains_full_raw_payload(
         }
     )
     connector._submit_to_ingest = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
-    connector._filtered_event_buffer.record = MagicMock()  # type: ignore[method-assign]
+    connector._filtered_event_buffer.park = AsyncMock()  # type: ignore[method-assign]
     connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
     # Park on the first failure, so the error row is written now (bu-dhloi1.149).
     connector._ingest_retry = IngestRetryBudget(1)
@@ -832,9 +836,8 @@ async def test_error_status_retains_full_raw_payload(
     msg = _make_message(msg_id=9, chat_id=100, sender_id=999, text="hi")
     await connector._process_message(msg)
 
-    connector._filtered_event_buffer.record.assert_called_once()
-    kwargs = connector._filtered_event_buffer.record.call_args.kwargs
-    assert kwargs["status"] == "error"
+    connector._filtered_event_buffer.park.assert_awaited_once()
+    kwargs = connector._filtered_event_buffer.park.call_args.kwargs
     assert kwargs["full_payload"]["payload"]["raw"] == {"id": 9, "message": "hi"}
 
 
@@ -1191,8 +1194,9 @@ async def test_forwarded_message_is_one_forwarded_span(
     # Park on the first submission failure, so its error row is written now.
     connector._ingest_retry = IngestRetryBudget(1)
     # Exercise the real single-message policy, discretion and error producers.
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
     for stage in ("connector", "global", "discretion", "submission"):
-        connector._filtered_event_buffer._rows.clear()
+        clear_stored_rows(connector._filtered_event_buffer, pool)
         allow = SimpleNamespace(allowed=True, action="pass_through")
         block = SimpleNamespace(
             allowed=False, action="skip", matched_rule_type="chat_id", reason="synthetic rule"
@@ -1218,7 +1222,7 @@ async def test_forwarded_message_is_one_forwarded_span(
             patch.object(connector, "_flush_and_drain", AsyncMock()),
         ):
             await connector._process_message(msg)
-        row = connector._filtered_event_buffer._rows[-1]
+        row = stored_rows(connector._filtered_event_buffer, pool)[-1]
         assert row[8] == ("error" if stage == "submission" else "filtered")
         stored = row[9]
         assert stored["sender"]["identity"] == "999"
@@ -1269,8 +1273,7 @@ async def test_batch_marks_only_the_forwarded_message_text(
     connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
     for stage in ("connector", "global", "discretion", "submission", "build"):
         await _prime_flush_buffer(connector, "200", forwarded)
-        connector._filtered_event_buffer._rows.clear()
-        pool.written.clear()
+        clear_stored_rows(connector._filtered_event_buffer, pool)
         allow = SimpleNamespace(allowed=True, action="pass_through")
         block = SimpleNamespace(
             allowed=False, action="skip", matched_rule_type="chat_id", reason="synthetic rule"
@@ -1303,7 +1306,7 @@ async def test_batch_marks_only_the_forwarded_message_text(
             patch.object(connector, "_flush_and_drain", AsyncMock()),
         ):
             await connector._flush_chat_buffer("200")
-        row = [*pool.written, *connector._filtered_event_buffer._rows][-1]
+        row = stored_rows(connector._filtered_event_buffer, pool)[-1]
         stored = row[9]
         assert row[8] == ("error" if stage in ("submission", "build") else "filtered")
         if stage == "submission":
@@ -1374,8 +1377,9 @@ async def test_provider_quotes_survive_single_batch_and_filtered_replay(connecto
     # Real policy/error producer loses text on purpose but must retain exposure.
     # Park on the first submission failure, so its error row is written now.
     connector._ingest_retry = IngestRetryBudget(1)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
     for stage in ("connector", "global", "submission"):
-        connector._filtered_event_buffer._rows.clear()
+        clear_stored_rows(connector._filtered_event_buffer, pool)
         allow = SimpleNamespace(allowed=True, action="pass_through")
         block = SimpleNamespace(
             allowed=False, action="skip", matched_rule_type="chat_id", reason="synthetic rule"
@@ -1397,7 +1401,7 @@ async def test_provider_quotes_survive_single_batch_and_filtered_replay(connecto
             patch.object(connector, "_flush_and_drain", AsyncMock()),
         ):
             await connector._process_message(msg)
-        stored = connector._filtered_event_buffer._rows[-1][9]
+        stored = stored_rows(connector._filtered_event_buffer, pool)[-1][9]
         _sanitize_replay_payload(stored)
         if stage == "submission":
             # A parked submission stores the envelope it tried to send (bu-dhloi1.149).

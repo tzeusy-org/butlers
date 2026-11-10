@@ -10,6 +10,18 @@ app.kubernetes.io/instance: {{ .root.Release.Name }}
 app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 
+{{- /*
+Pods that host `tailscale serve` proxies to must run on the serve host's node:
+tailscaled's marked sockets cannot cross the flannel tunnel (see
+docs/operations/kubernetes-deployment.md). Renders nothing when unset.
+*/ -}}
+{{- define "butlers.hostServedNodeSelector" -}}
+{{- with .Values.hostServedNodeSelector }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}
+
 {{- define "butlers.image" -}}
 {{ .Values.image.repository }}:{{ required "image.tag is required (git SHA)" .Values.image.tag }}
 {{- end -}}

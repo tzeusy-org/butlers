@@ -29,6 +29,11 @@ from butlers.connectors.gmail import (
     _classify_source_api_error,
 )
 from butlers.connectors.ingest_retry import IngestRetryBudget
+from tests.connectors.filtered_event_fakes import (
+    FilteredEventsPool,
+    clear_stored_rows,
+    stored_rows,
+)
 
 
 @pytest.fixture
@@ -49,7 +54,10 @@ def gmail_config() -> GmailConnectorConfig:
 
 @pytest.fixture
 def gmail_runtime(gmail_config: GmailConnectorConfig) -> GmailConnectorRuntime:
-    return GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    # A swallowed ingest error is parked durably, so it needs a pool to commit to.
+    runtime._db_pool = FilteredEventsPool()  # type: ignore[assignment]
+    return runtime
 
 
 def _make_message(
@@ -961,7 +969,9 @@ async def test_known_contact_drop_is_marked_important(
             ),
         ):
             await gmail_runtime._ingest_single_message("msg123")
-        next_stored = gmail_runtime._filtered_event_buffer._rows[-1][9]
+        next_stored = stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)[-1][
+            9
+        ]
         next_class = next_stored["drop_context"]["classification"]
         assert next_class["state"] == "loaded" and next_class["generation"] == loaded.generation
         assert next_stored["payload"]["raw"] == {}
@@ -1015,7 +1025,7 @@ async def test_submission_error_retains_raw_payload(
     ):
         await gmail_runtime._ingest_single_message("msg123")
 
-    rows = gmail_runtime._filtered_event_buffer._rows
+    rows = stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)
     assert len(rows) == 1
     row = rows[0]
     assert row[8] == "error"
@@ -1711,7 +1721,7 @@ async def test_forward_marker_starts_a_forwarded_span(
 
     message = _make_message(subject="Fwd: urgent", body_text=body)
     for stage in ("connector", "global", "submission", "label"):
-        gmail_runtime._filtered_event_buffer._rows.clear()
+        clear_stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)
         allow = PolicyDecision(action="pass_through")
         with (
             patch.object(gmail_runtime, "_fetch_message", AsyncMock(return_value=message)),
@@ -1745,7 +1755,7 @@ async def test_forward_marker_starts_a_forwarded_span(
                     gmail_runtime._label_filter, exclude_labels=frozenset({"CATEGORY_PROMOTIONS"})
                 )
             await gmail_runtime._ingest_single_message("msg123")
-        stored = gmail_runtime._filtered_event_buffer._rows[-1][9]
+        stored = stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)[-1][9]
         assert stored["sender"]["identity"] == "sender@example.com"
         assert stored["payload"]["untrusted_spans"] == [
             {"kind": "forwarded", "start": 0, "end": len("[no text]")}
@@ -1838,7 +1848,7 @@ async def test_html_citation_metadata_tier_and_replay_keep_provider_quote(gmail_
         for action in ("metadata_only", "pass_through"):
             broken = _make_message(subject=subject)
             broken["payload"]["body"]["data"] = "a"
-            gmail_runtime._filtered_event_buffer._rows.clear()
+            clear_stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)
             submitted = AsyncMock()
             with (
                 patch.object(gmail_runtime, "_fetch_message", AsyncMock(return_value=broken)),
@@ -1869,7 +1879,7 @@ async def test_html_citation_metadata_tier_and_replay_keep_provider_quote(gmail_
                 parse_ingest_envelope(delivered)
             else:
                 submitted.assert_not_awaited()
-                row = gmail_runtime._filtered_event_buffer._rows[-1]
+                row = stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)[-1]
                 assert row[8] == "error"
                 delivered = row[9]
                 _sanitize_replay_payload(delivered)
@@ -1909,7 +1919,7 @@ async def test_html_citation_metadata_tier_and_replay_keep_provider_quote(gmail_
     assert "ordinary owner text" in plain["payload"]["normalized_text"]
     assert "untrusted_spans" not in plain["payload"]
     for stage in ("connector", "global", "submission"):
-        gmail_runtime._filtered_event_buffer._rows.clear()
+        clear_stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)
         with (
             patch.object(gmail_runtime, "_fetch_message", AsyncMock(return_value=message)),
             patch.object(
@@ -1935,7 +1945,7 @@ async def test_html_citation_metadata_tier_and_replay_keep_provider_quote(gmail_
             ),
         ):
             await gmail_runtime._ingest_single_message("msg123")
-        stored = gmail_runtime._filtered_event_buffer._rows[-1][9]
+        stored = stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)[-1][9]
         _sanitize_replay_payload(stored)
         assert stored["payload"]["untrusted_spans"] == [
             {"kind": "quoted", "start": 0, "end": len("[no text]")}
@@ -2166,8 +2176,10 @@ async def test_backfill_progress_reports_scoped_deltas_with_a_replay_token(
     runtime._fetch_message = AsyncMock(side_effect=RuntimeError("gone"))  # type: ignore[method-assign]
     runtime._mcp_client = MagicMock()
     runtime._mcp_client.call_tool = AsyncMock(return_value={"status": "active"})
-    # Park each message on its first failure instead of holding (bu-dhloi1.149).
+    # Park each message on its first failure instead of holding (bu-dhloi1.149); the
+    # park is written durably, so it needs a pool to write to (bu-dhloi1.250).
     runtime._backfill_ingest_retry = IngestRetryBudget(1)
+    runtime._db_pool = FilteredEventsPool()
 
     await runtime._execute_backfill_job(
         BackfillJob(job_id="job-1", date_from="2020-01-01", date_to="2020-12-31")
