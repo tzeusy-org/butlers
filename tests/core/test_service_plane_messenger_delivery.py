@@ -13,9 +13,12 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from butlers.capability_broker.contracts import BrokerRefused
 from butlers.capability_broker.verification import DomainVerifier
 from butlers.core.runtime_probe_control.keys import VerifierKey, VerifierKeyring
+from butlers.core.service_plane import messenger_delivery
 from butlers.core.service_plane.messenger_delivery import (
+    AUTH_UNAVAILABLE,
     REFUSED,
     authenticate_caller,
+    delivery_refusal_error,
     messenger_delivery_headers,
     messenger_delivery_refusal,
     service_plane_auth_enabled,
@@ -25,6 +28,8 @@ from butlers.core.service_plane.workload_identity import (
     DELIVERY_AUDIENCE,
     RELAY_AUDIENCE,
     TOKEN_HEADER,
+    ApiServerJwks,
+    VerifierUnavailable,
 )
 from tests.core.test_service_plane_workload_identity import _claims, _token, _verifier
 
@@ -102,8 +107,40 @@ async def test_a_caller_names_no_one_without_a_presented_daemon() -> None:
     )
 
 
-async def test_no_verifier_refuses_when_the_switch_is_on() -> None:
-    assert await messenger_delivery_refusal("messenger", _headers(), enabled=True, verifier=None)
+class _UnavailableVerifier:
+    async def verify(self, token: str) -> str | None:
+        raise VerifierUnavailable("jwks unavailable")
+
+
+@pytest.mark.parametrize(
+    "verifier", [None, _UnavailableVerifier()], ids=["no-verifier", "key-set-unavailable"]
+)
+async def test_a_delivery_that_cannot_be_verified_now_is_unavailable_not_refused(
+    verifier,
+) -> None:
+    refusal = await messenger_delivery_refusal(
+        "messenger", _headers(), enabled=True, verifier=verifier
+    )
+
+    assert refusal == AUTH_UNAVAILABLE
+    assert delivery_refusal_error(refusal) == ("target_unavailable", True)
+
+
+def test_a_built_verifier_refreshes_its_own_key_set_on_an_unknown_kid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    namespace = tmp_path / "namespace"
+    namespace.write_text("butlers-dev\n")
+    monkeypatch.setattr(messenger_delivery, "_NAMESPACE_FILE", namespace)
+
+    verifier = messenger_delivery.build_verifier(DELIVERY_AUDIENCE, {})
+
+    assert isinstance(verifier._fetch, ApiServerJwks)
+    assert verifier._refresh == verifier._fetch.refresh
+
+
+def test_a_refused_delivery_caller_is_a_permanent_validation_error() -> None:
+    assert delivery_refusal_error(REFUSED) == ("validation_error", False)
 
 
 def test_a_delivery_token_is_never_a_broker_call_assertion() -> None:

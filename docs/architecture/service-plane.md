@@ -65,6 +65,10 @@ Switchboard's switch is off, `unknown_relay` from a Switchboard that predates
 the relay during a rolling deploy) and a `400` are treated like any other
 failure: retryable unavailability. QA reports these as `qa_unavailable`, the
 domain-event fan-out as a retryable dispatch, Travel as `health_unavailable`.
+So is a `503 auth_unavailable`: Switchboard could not verify the caller right
+now (no verifier outside a pod, or the issuer key set unreachable, see "Key
+set" below). The caller is not admitted, and a JWKS outage never turns a
+delivery into a permanent failure.
 
 | Relay | Target | Allowed callers | Notes |
 | --- | --- | --- | --- |
@@ -130,7 +134,15 @@ ServiceAccount by default; on the dev k3s cluster, an unprivileged
 ServiceAccount read the discovery document (issuer
 `https://kubernetes.default.svc.cluster.local`) and a one-key RS256 JWKS. The set
 is cached for 5 minutes; a failed refresh serves the last set for up to an hour,
-then every verification refuses. TokenReview is not used: it needs a
+after which the key set is unavailable. A token whose `kid` is not in the cached
+set (the issuer may have rotated its key) forces one refresh, at most once per
+30 s, before it is judged. The verifier keeps two outcomes apart: a token that
+does not verify (including a `kid` still unknown after a fresh set) is refused
+for good, while a key set that cannot be read right now is retryable, never an
+admission. The relay route answers the latter `503 auth_unavailable`; Messenger
+answers a delivery with a retryable `target_unavailable` route error
+(`messenger_delivery_auth_unavailable`, transport `not_attempted`), which
+Switchboard's `deliver()` reports as retryable rather than failed for good. TokenReview is not used: it needs a
 cluster-scoped `create` grant and a round trip per call, and offline
 verification needs neither.
 

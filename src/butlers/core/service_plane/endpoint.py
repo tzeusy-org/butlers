@@ -7,8 +7,11 @@ reaches it, and the control plane's session listener never serves it.
 
 Every refusal happens before any target is contacted: switch off (``404``),
 unknown relay (``404``), malformed body (``400``), and an unauthenticated or
-unlisted caller, an LLM-presentable target or bad arguments (``403``). The
-response names the refusal code and nothing about the target.
+unlisted caller, an LLM-presentable target or bad arguments (``403``). A
+caller that cannot be verified right now (no verifier outside a pod, or the
+issuer key set unavailable) is ``503 auth_unavailable``: retryable, never
+admitted. Only ``403`` is permanent for a client. The response names the
+refusal code and nothing about the target.
 """
 
 from __future__ import annotations
@@ -22,7 +25,10 @@ from starlette.routing import Route
 
 from butlers.core.service_plane.messenger_delivery import authenticate_caller
 from butlers.core.service_plane.relays import Dispatch, RelayEndpoint, RelayRefused, relay_call
-from butlers.core.service_plane.workload_identity import WorkloadTokenVerifier
+from butlers.core.service_plane.workload_identity import (
+    VerifierUnavailable,
+    WorkloadTokenVerifier,
+)
 
 RELAY_PATH = "/internal/service-plane/relay/{name}"
 
@@ -55,7 +61,12 @@ def build_relay_route(
         ):
             return _refused("args_invalid", 400)
         current = verifier()
-        caller = await authenticate_caller(request.headers, current) if current else None
+        if current is None:
+            return _refused("auth_unavailable", 503)
+        try:
+            caller = await authenticate_caller(request.headers, current)
+        except VerifierUnavailable:
+            return _refused("auth_unavailable", 503)
         try:
             result = await relay_call(endpoint, caller, body["args"], dispatch_for(endpoint))
         except RelayRefused as refused:

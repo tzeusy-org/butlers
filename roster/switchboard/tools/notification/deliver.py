@@ -24,6 +24,9 @@ from butlers.core.approved_delivery import (
     ApprovedNotifyAttestation,
     notify_request_digest,
 )
+from butlers.core.service_plane.messenger_delivery import (
+    AUTH_UNAVAILABLE as DELIVERY_AUTH_UNAVAILABLE,
+)
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.telegram_api import terminal_telegram_metadata
 from butlers.tools.switchboard.contracts import (
@@ -47,6 +50,7 @@ from butlers.tools.switchboard.routing.contracts import (
 from butlers.tools.switchboard.routing.route import route
 from butlers.tools.switchboard.transport import (
     PROVIDER_REJECTED,
+    RECIPIENT_UNAVAILABLE,
     TRANSPORT_CONNECTION_LOST,
     TransportResult,
     transport_result_from_envelope,
@@ -456,15 +460,25 @@ async def _deliver_via_notify_request(
             and isinstance(route_response.get("error"), dict)
             and error_class in {"validation_error", "delivery_error", "policy_denied"}
         )
-        failure_transport = nested_transport or (
-            PROVIDER_REJECTED if explicit_application_rejection else TRANSPORT_CONNECTION_LOST
+        # Messenger could not verify Switchboard's workload token right now
+        # (RFC 0038 D7): refused before acceptance, so the send is retryable.
+        auth_unavailable = (
+            isinstance(route_error, dict)
+            and route_error.get("message") == DELIVERY_AUTH_UNAVAILABLE
+            and route_error.get("retryable") is True
         )
+        if auth_unavailable:
+            failure_transport = RECIPIENT_UNAVAILABLE
+        else:
+            failure_transport = nested_transport or (
+                PROVIDER_REJECTED if explicit_application_rejection else TRANSPORT_CONNECTION_LOST
+            )
         return {
             "notification_id": notification_id,
             "status": "failed",
             "error": error_msg,
             "error_class": error_class,
-            "retryable": False,
+            "retryable": auth_unavailable,
             **terminal_telegram_metadata(route_result),
             **_transport_fragment(failure_transport),
         }

@@ -44,6 +44,7 @@ from butlers.core.service_plane.relays import (
 from butlers.core.service_plane.workload_identity import (
     DELIVERY_AUDIENCE,
     RELAY_AUDIENCE,
+    VerifierUnavailable,
 )
 from tests.core.test_service_plane_workload_identity import _claims, _token, _verifier
 
@@ -70,9 +71,23 @@ def _up_token(audience: str = RELAY_AUDIENCE) -> str:
     return _token(claims)
 
 
+_DEFAULT = object()
+
+
+class _UnavailableVerifier:
+    """The key set cannot be read right now (API-server blip, stale cache)."""
+
+    async def verify(self, token: str) -> str | None:
+        raise VerifierUnavailable("jwks unavailable")
+
+
 class _Harness:
     def __init__(
-        self, *, enabled: bool = True, relays: Mapping[str, RelayEndpoint] = _RELAYS
+        self,
+        *,
+        enabled: bool = True,
+        relays: Mapping[str, RelayEndpoint] = _RELAYS,
+        verifier: Any = _DEFAULT,
     ) -> None:
         self.calls: list[tuple[str, str, dict[str, Any], bool]] = []
         self.enabled = enabled
@@ -87,7 +102,9 @@ class _Harness:
         route = build_relay_route(
             enabled=lambda: self.enabled,
             relays=lambda: relays,
-            verifier=lambda: _verifier(RELAY_AUDIENCE),
+            verifier=(lambda: _verifier(RELAY_AUDIENCE))
+            if verifier is _DEFAULT
+            else (lambda: verifier),
             dispatch_for=dispatch_for,
         )
         self.transport = httpx.ASGITransport(app=Starlette(routes=[route]))
@@ -193,6 +210,7 @@ async def test_the_switch_off_serves_no_relay(tmp_path: Path) -> None:
         (404, "not_found", False),
         (404, "unknown_relay", False),
         (400, "args_invalid", False),
+        (503, "auth_unavailable", False),
     ],
 )
 async def test_only_a_403_refusal_is_permanent(
@@ -214,6 +232,36 @@ async def test_only_a_403_refusal_is_permanent(
 
     assert (refused.value.code, refused.value.status) == (code, status)
     assert refusal_is_permanent(refused.value) is permanent
+
+
+@pytest.mark.parametrize(
+    "verifier", [None, _UnavailableVerifier()], ids=["no-verifier", "key-set-unavailable"]
+)
+async def test_a_caller_that_cannot_be_verified_now_is_503_and_retryable(
+    tmp_path: Path, verifier: Any
+) -> None:
+    harness = _Harness(verifier=verifier)
+
+    with pytest.raises(RelayRefused) as refused:
+        await harness.call(
+            QA_REPORT_FINDING, _FINDING, tmp_path, daemon="travel", token=_up_token()
+        )
+
+    assert (refused.value.code, refused.value.status) == ("auth_unavailable", 503)
+    assert not refusal_is_permanent(refused.value)
+    assert harness.calls == []
+
+
+async def test_an_invalid_token_is_still_a_permanent_403(tmp_path: Path) -> None:
+    harness = _Harness()
+
+    with pytest.raises(RelayRefused) as refused:
+        await harness.call(
+            QA_REPORT_FINDING, _FINDING, tmp_path, daemon="travel", token=_up_token("other.aud")
+        )
+
+    assert (refused.value.code, refused.value.status) == ("caller_unauthenticated", 403)
+    assert refusal_is_permanent(refused.value)
 
 
 def test_unavailability_and_other_errors_are_never_permanent() -> None:

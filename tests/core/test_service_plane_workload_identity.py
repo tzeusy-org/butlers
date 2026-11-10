@@ -20,6 +20,8 @@ from butlers.core.service_plane.workload_identity import (
     RELAY_AUDIENCE,
     ApiServerJwks,
     JwksKeys,
+    JwksUnavailable,
+    VerifierUnavailable,
     WorkloadTokenPolicy,
     WorkloadTokenVerifier,
     parse_jwks,
@@ -196,19 +198,128 @@ async def test_a_delivery_token_is_not_a_relay_token_or_the_reverse() -> None:
     assert await _verifier(RELAY_AUDIENCE).verify(relay) == "butlers-control"
 
 
-async def test_an_unreachable_key_set_refuses_rather_than_trusting() -> None:
+_POLICY = WorkloadTokenPolicy(
+    issuer=_ISSUER,
+    audience=DELIVERY_AUDIENCE,
+    namespace=_NAMESPACE,
+    workloads={"butlers-control": "butlers-control"},
+)
+
+
+async def test_an_unreachable_key_set_is_unavailable_never_trusted_or_refused() -> None:
+    """A JWKS outage is "cannot verify right now", not "this token is invalid"."""
+
     async def fetch() -> JwksKeys:
         raise OSError("api server unreachable")
 
-    policy = WorkloadTokenPolicy(
-        issuer=_ISSUER,
-        audience=DELIVERY_AUDIENCE,
-        namespace=_NAMESPACE,
-        workloads={"butlers-control": "butlers-control"},
-    )
-    verifier = WorkloadTokenVerifier(policy, fetch, clock=lambda: _NOW)
+    verifier = WorkloadTokenVerifier(_POLICY, fetch, clock=lambda: _NOW)
+
+    with pytest.raises(VerifierUnavailable):
+        await verifier.verify(_token(_claims()))
+    # A token that is malformed on its face is still simply invalid.
+    assert await verifier.verify("not-a-jwt") is None
+
+
+def _key_sets(*sets: JwksKeys):
+    calls: list[str] = []
+
+    async def fetch() -> JwksKeys:
+        calls.append("fetch")
+        return sets[0]
+
+    async def refresh() -> JwksKeys:
+        calls.append("refresh")
+        if len(sets) < 2:
+            raise OSError("api server unreachable")
+        return sets[1]
+
+    return fetch, refresh, calls
+
+
+async def test_an_unknown_kid_forces_one_refresh_and_verifies_a_rotated_key() -> None:
+    old = parse_jwks({"keys": [_jwk(_OTHER_KEY, "k0")]})
+    rotated = parse_jwks({"keys": [_jwk(_OTHER_KEY, "k0"), _jwk(_KEY, "k1")]})
+    fetch, refresh, calls = _key_sets(old, rotated)
+    verifier = WorkloadTokenVerifier(_POLICY, fetch, refresh_jwks=refresh, clock=lambda: _NOW)
+
+    assert await verifier.verify(_token(_claims())) == "butlers-control"
+    assert calls == ["fetch", "refresh"]
+
+
+async def test_a_kid_still_unknown_after_the_refresh_is_refused() -> None:
+    old = parse_jwks({"keys": [_jwk(_OTHER_KEY, "k0")]})
+    fetch, refresh, calls = _key_sets(old, old)
+    verifier = WorkloadTokenVerifier(_POLICY, fetch, refresh_jwks=refresh, clock=lambda: _NOW)
 
     assert await verifier.verify(_token(_claims())) is None
+    assert calls == ["fetch", "refresh"]
+
+
+async def test_an_unknown_kid_whose_refresh_fails_is_unavailable() -> None:
+    old = parse_jwks({"keys": [_jwk(_OTHER_KEY, "k0")]})
+    fetch, refresh, _ = _key_sets(old)
+    verifier = WorkloadTokenVerifier(_POLICY, fetch, refresh_jwks=refresh, clock=lambda: _NOW)
+
+    with pytest.raises(VerifierUnavailable):
+        await verifier.verify(_token(_claims()))
+
+
+async def test_a_known_kid_never_forces_a_refresh() -> None:
+    keys = parse_jwks({"keys": [_jwk(_KEY, "k1")]})
+    fetch, refresh, calls = _key_sets(keys)
+    verifier = WorkloadTokenVerifier(_POLICY, fetch, refresh_jwks=refresh, clock=lambda: _NOW)
+
+    assert await verifier.verify(_token(_claims(), key=_OTHER_KEY)) is None
+    assert calls == ["fetch"]
+
+
+async def test_a_forced_refresh_is_rate_limited(tmp_path) -> None:
+    import httpx
+
+    (tmp_path / "token").write_text("pod-token\n")
+    fetches: list[float] = []
+    healthy = [True]
+    now = [0.0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        fetches.append(now[0])
+        if not healthy[0]:
+            return httpx.Response(503)
+        return httpx.Response(200, json={"keys": [_jwk(_KEY, "k1")]})
+
+    jwks = ApiServerJwks(
+        account_dir=tmp_path,
+        refresh_after=300,
+        stale_after=3600,
+        min_forced_interval=30,
+        clock=lambda: now[0],
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert set(await jwks()) == {"k1"}
+    # Just fetched: a forced refresh reuses the fresh set (the kid really is unknown).
+    now[0] = 10
+    assert set(await jwks.refresh()) == {"k1"}
+    assert fetches == [0.0]
+    # Older than the interval: one real fetch.
+    now[0] = 100
+    assert set(await jwks.refresh()) == {"k1"}
+    assert fetches == [0.0, 100]
+    # A failed forced refresh raises, and the next one inside the interval does
+    # not hit the API server again; it is still unavailable, not "kid unknown".
+    healthy[0] = False
+    now[0] = 200
+    with pytest.raises(httpx.HTTPStatusError):
+        await jwks.refresh()
+    now[0] = 210
+    with pytest.raises(JwksUnavailable):
+        await jwks.refresh()
+    assert fetches == [0.0, 100, 200]
+    # Past the interval it tries again.
+    healthy[0] = True
+    now[0] = 231
+    assert set(await jwks.refresh()) == {"k1"}
+    assert fetches == [0.0, 100, 200, 231]
 
 
 async def test_the_api_server_key_set_is_cached_and_served_stale_only_for_a_bounded_time(

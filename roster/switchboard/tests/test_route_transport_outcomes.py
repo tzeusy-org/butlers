@@ -1141,6 +1141,69 @@ class TestDeliverPostSendBookkeeping:
         assert result["transport"]["outcome"] == "rejected"
         assert result["transport"]["retryable"] is False
 
+    @staticmethod
+    async def _deliver_route_error(error: dict[str, Any]) -> dict[str, Any]:
+        route_result = {
+            "result": {
+                "schema_version": "route_response.v1",
+                "status": "error",
+                "error": error,
+            },
+            "transport": {"outcome": "confirmed", "retryable": False},
+        }
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route",
+                new=AsyncMock(return_value=route_result),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.log_notification",
+                new=AsyncMock(return_value="notif-1"),
+            ),
+        ):
+            return await deliver(
+                _mock_pool(), notify_request=_notify_envelope(), source_butler="health"
+            )
+
+    async def test_messenger_auth_unavailable_is_not_attempted_and_retryable(self) -> None:
+        """Messenger could not verify the delivery token now (RFC 0038 D7)."""
+        result = await self._deliver_route_error(
+            {
+                "class": "target_unavailable",
+                "message": "messenger_delivery_auth_unavailable",
+                "retryable": True,
+            }
+        )
+
+        assert result["status"] == "failed"
+        assert result["retryable"] is True
+        assert result["transport"]["outcome"] == "not_attempted"
+        assert result["transport"]["retryable"] is True
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            {
+                "class": "validation_error",
+                "message": "messenger_delivery_caller_refused",
+                "retryable": False,
+            },
+            {
+                "class": "target_unavailable",
+                "message": "messenger_delivery_auth_unavailable",
+                "retryable": False,
+            },
+            {"class": "target_unavailable", "message": "other", "retryable": True},
+        ],
+        ids=["caller-refused", "auth-unavailable-not-retryable", "other-retryable-route-error"],
+    )
+    async def test_other_messenger_route_errors_stay_terminal(self, error: dict[str, Any]) -> None:
+        result = await self._deliver_route_error(error)
+
+        assert result["status"] == "failed"
+        assert result["retryable"] is False
+        assert result["transport"]["outcome"] != "not_attempted"
+
 
 class TestCallButlerToolExceptionTypes:
     """The MCP hop must raise types the classifier can tell apart."""
