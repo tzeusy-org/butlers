@@ -69,6 +69,12 @@ The credential PVC is `<release>-session-host-credentials`. It carries no databa
 domain or connector credential. Egress is not restricted yet (`trackerEgress` allows
 all destinations and policies union); that is the dev reachability work.
 `tests/scripts/test_session_host_env_guard.py` pins its environment composition.
+`sessionHost.seccompLocalhostProfile` (default empty) runs the container under
+`deploy/seccomp/session-host-sandbox.json` as a `Localhost` seccomp profile; set it only
+after installing the file under the node's kubelet seccomp root, since a missing profile
+stops the pod. Seccomp alone does not make Bubblewrap work in the pod: its `--proc` mount
+also needs an unmasked `/proc`, which `procMount: Unmasked` gives only with
+`hostUsers: false` (see `deploy/seccomp/README.md`).
 NetworkPolicy enforcement and the owner Telegram smoke still require actual dev
 verification; a successful render proves neither. See [stage operation and rollback](../../../docs/architecture/key-absent-control.md).
 

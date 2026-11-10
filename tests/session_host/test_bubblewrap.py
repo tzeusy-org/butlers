@@ -538,6 +538,46 @@ async def test_native_resistant_detached_descendant_dies_before_material_removed
     assert not list(native_stage.iterdir())
 
 
+async def test_native_launch_hung_before_its_receipt_ends_at_the_timeout(
+    native_image, native_stage, monkeypatch
+):
+    """A real bwrap launch stuck before the runtime starts cannot outlive the owner's bound.
+
+    bwrap is running and its namespace child waits on the block fd, but the receipt
+    never arrives, so the runtime never starts. run() ends after timeout_s plus at
+    most the cleanup cap. Without a receipt the namespace cannot be observed, so the
+    outcome is unproven containment, never a success.
+    """
+    domain = BubblewrapDomain(image=native_image, command=("/runtime/program", "resist"))
+    owner = InvocationOwner(native_stage, cleanup_timeout_s=5)
+    spawned = asyncio.Event()
+
+    async def receipt_never_arrives(_descriptor):
+        spawned.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(domain, "_info", receipt_never_arrives)
+    req = replace(request(), timeout_s=0.5)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        async with asyncio.timeout(20):
+            with pytest.raises(Refused, match="domain_cleanup_unproven"):
+                await owner.run(req, lambda: domain)
+        elapsed = loop.time() - started
+        assert spawned.is_set() and domain._process is not None and not domain._released
+        assert req.timeout_s <= elapsed < req.timeout_s + 5
+        assert not owner.healthy and list(native_stage.iterdir())
+    finally:
+        # Test teardown only: the gates are closed by now, so the stuck child exits;
+        # drain its pipe so the transport closes inside this loop.
+        if domain._process is not None:
+            async with asyncio.timeout(10):
+                await domain._process.communicate()
+        for material in owner._quarantined:
+            material.discard()
+
+
 async def test_native_output_flood_is_bounded_and_namespace_settled(native_image, native_stage):
     domain = BubblewrapDomain(image=native_image, command=("/runtime/program", "flood"))
     owner = InvocationOwner(native_stage)

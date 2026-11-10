@@ -157,6 +157,11 @@ sessionHost:
   brokerOrigin: https://broker.invalid
   stagingSize: 256Mi
   credentialsSize: 16Mi
+  # deploy/seccomp/session-host-sandbox.json, once installed on the node under the
+  # kubelet seccomp root (/var/lib/kubelet/seccomp), named relative to it, e.g.
+  # butlers/session-host-sandbox.json. Empty leaves the pod's seccomp unchanged: a
+  # Localhost profile the node lacks stops the pod from starting.
+  seccompLocalhostProfile: ""
   resources:
     requests: {cpu: 100m, memory: 128Mi}
     limits: {memory: 512Mi}

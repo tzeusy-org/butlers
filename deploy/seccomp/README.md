@@ -1,4 +1,6 @@
-# Dashboard runtime CLI sandbox seccomp policy
+# Runtime sandbox seccomp policies
+
+## Dashboard runtime CLI sandbox
 
 `dashboard-runtime-cli-sandbox.json` is a pinned copy of Moby v25.0.0's
 default seccomp profile, whose upstream SHA-256 is
@@ -24,9 +26,48 @@ or restore-drill services.
 
 Upstream source: <https://raw.githubusercontent.com/moby/moby/v25.0.0/profiles/seccomp/default.json>.
 
-## Kubernetes
+## Session host sandbox
 
-The Helm chart does not use this profile: it runs `dashboard-api` `privileged` because the
+`session-host-sandbox.json` is the dashboard profile above with exactly two
+deltas (bu-kiuh8v.9), pinned by `tests/config/test_session_host_seccomp_profile.py`:
+
+- The namespace `clone` rule adds `CLONE_NEWNET`:
+  `clone(CLONE_NEWNS|CLONE_NEWUTS|CLONE_NEWIPC|CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET|SIGCHLD)`,
+  compared for equality. The session host's Bubblewrap plan passes
+  `--unshare-net`, and the test derives the mask from that plan's
+  `--unshare-*` flags, so a new namespace flag fails it.
+- `setns` is allowed when its `nstype` argument is exactly `CLONE_NEWUSER` or
+  exactly `CLONE_NEWNET`. Joining a user namespace still needs
+  `CAP_SYS_ADMIN` in it, so a process can enter only namespaces its own uid
+  created. The exact-image proof uses this to put its fake listeners inside the
+  domain's network namespace; the launch itself does not call `setns`.
+
+Everything else is unchanged:
+
+- `unshare` is limited to `CLONE_NEWUSER`, for the nested namespace behind
+  `--disable-userns`.
+- `mount`, `pivot_root` and `umount2` are allowed, for `--tmpfs`, `--proc`,
+  `--dev` and the binds inside the new user namespace.
+- There is still no broad `unshare` or `setns`, no `clone3` (it answers
+  `ENOSYS`, so libc falls back to the filtered `clone`), no `chroot`, and no
+  `CAP_SYS_ADMIN`.
+- The static init shim needs only syscalls the Moby baseline already allows
+  (`close_range`, `openat`, `getdents64`, `read`, `write`, `execve`).
+
+Seccomp is one of three container settings Bubblewrap needs. The other two are
+an unmasked `/proc`, because `--proc` cannot mount over masked paths
+(`--security-opt systempaths=unconfined` in Docker), and AppArmor that allows
+the user namespace (`apparmor=unconfined` in the proof). This profile replaces
+only `seccomp=unconfined`.
+
+Compose applies it to `session-host`. The Helm chart applies it as a
+`Localhost` profile when `sessionHost.seccompLocalhostProfile` names its
+installed path under the kubelet seccomp root; the default leaves the pod
+unchanged.
+
+## Dashboard on Kubernetes
+
+The Helm chart does not use the dashboard profile: it runs `dashboard-api` `privileged` because the
 user-namespace alternative (`hostUsers: false`, `procMount: Unmasked`, seccomp `Localhost` pointing
 at this file installed under the kubelet seccomp root) failed on the current k3s node, where the
 overlayfs snapshotter lacks idmapped-mount support (kernel 5.15). See "Security posture

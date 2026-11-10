@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 
-from butlers.session_host.contracts import BrokerBinding, LaunchRequest, Refused
+from butlers.session_host.contracts import BrokerBinding, LaunchRequest, Refused, RuntimeTimeout
 from butlers.session_host.lifecycle import InvocationOwner
 from butlers.session_host.material import InvocationMaterial
 
@@ -244,6 +244,59 @@ async def test_cleanup_timeout_is_unhealthy_and_never_resets_deadline(stage_root
         for _ in range(5):
             await asyncio.sleep(0)
     assert owner.pending_count == 0
+
+
+async def _launch_that_never_starts(domain, *, swallow_cancel):
+    """A launch that hangs before any runtime starts, as a stuck bwrap setup would.
+
+    Only ``domain.release`` (test teardown) ends a hang that swallows cancellation.
+    """
+
+    async def hung(material):
+        domain.material = material
+        domain.executed.set()
+        while not domain.release.is_set():
+            try:
+                await domain.release.wait()
+            except asyncio.CancelledError:
+                if not swallow_cancel:
+                    raise
+
+    domain.execute = hung
+
+
+@pytest.mark.parametrize("swallow_cancel", [False, True])
+async def test_the_launch_timeout_bounds_a_launch_that_hangs(stage_root, swallow_cancel):
+    """timeout_s plus the cleanup cap bounds run(), whatever the launch does.
+
+    A hang that honours cancellation ends at timeout_s as a timeout. One that swallows
+    it ends at timeout_s plus the cleanup cap, unproven and quarantined, never later.
+    """
+    owner = InvocationOwner(stage_root, cleanup_timeout_s=0.2)
+    domain = DomainDouble()
+    await _launch_that_never_starts(domain, swallow_cancel=swallow_cancel)
+    req = replace(request(), timeout_s=0.1)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+
+    try:
+        async with asyncio.timeout(5):
+            with pytest.raises(Refused) as refused:
+                await owner.run(req, lambda: domain)
+        elapsed = loop.time() - started
+    finally:
+        domain.release.set()  # test teardown only: lets a swallowing hang end
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    assert req.timeout_s <= elapsed < req.timeout_s + 0.2 + 0.5
+    if swallow_cancel:
+        assert str(refused.value) == "domain_cleanup_unproven"
+        assert not owner.healthy and domain.material.directory.exists()
+    else:
+        assert type(refused.value) is RuntimeTimeout and str(refused.value) == "runtime_failed"
+        assert domain.settling.is_set() and owner.healthy
+        assert not list(stage_root.iterdir())
 
 
 async def test_broken_backend_cannot_escape_cleanup_or_leak_error(stage_root):

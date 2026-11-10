@@ -6,6 +6,12 @@ runs it with the image's own Python, bwrap and Codex binary:
 
     python exact_image_codex_proof.py <codex binary> <image shim> <output.json>
 
+The container runs under the session host's seccomp profile, mounted from the repo:
+``--security-opt seccomp=deploy/seccomp/session-host-sandbox.json``, never
+``seccomp=unconfined``. It still needs ``apparmor=unconfined`` and
+``systempaths=unconfined``, because Bubblewrap's ``--proc`` cannot mount over masked
+paths (``deploy/seccomp/README.md``).
+
 The shim is the image's own ``/usr/local/libexec/butlers/runtime-cli-sandbox-init``,
 statically linked by ``Dockerfile.base``; a dynamic shim cannot exec in the domain's
 empty root, so the run refuses one rather than substitute a build from outside the image.
