@@ -4,7 +4,11 @@ Not a pytest module: the app image has no dev dependencies. The owner's
 user-run payload mounts this directory read-only into the rebuilt image and
 runs it with the image's own Python, bwrap and Codex binary:
 
-    python exact_image_codex_proof.py <codex binary> <static shim> <output.json>
+    python exact_image_codex_proof.py <codex binary> <image shim> <output.json>
+
+The shim is the image's own ``/usr/local/libexec/butlers/runtime-cli-sandbox-init``,
+statically linked by ``Dockerfile.base``; a dynamic shim cannot exec in the domain's
+empty root, so the run refuses one rather than substitute a build from outside the image.
 
 It runs the clean launch on both transports and every row of
 ``codex_proof.MUTATIONS``, and exits 0 only when the clean runs pass every
@@ -26,6 +30,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import codex_proof  # noqa: E402
 
 
+def shim_is_static(path: Path) -> bool:
+    """True only for a well-formed x86-64 ELF executable with no interpreter or dynamic section.
+
+    Anything malformed, truncated or of another shape is False and never raises, so the check
+    cannot pass a file it could not read.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return False
+    if len(data) < 64 or data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
+        return False  # ELF64, little endian
+    u16 = lambda at: int.from_bytes(data[at : at + 2], "little")  # noqa: E731
+    phoff = int.from_bytes(data[32:40], "little")
+    entry, count = u16(54), u16(56)
+    if u16(16) != 2 or u16(18) != 62 or entry != 56 or count < 1:
+        return False  # ET_EXEC, EM_X86_64, 56-byte program headers, at least one
+    if phoff + count * entry > len(data):
+        return False
+    kinds = {
+        int.from_bytes(data[phoff + i * entry : phoff + i * entry + 4], "little")
+        for i in range(count)
+    }
+    return not kinds & {2, 3}  # PT_DYNAMIC, PT_INTERP
+
+
 def _summary(observation: dict) -> dict:
     failures = codex_proof.evaluate(observation)
     return {
@@ -40,6 +70,9 @@ def _summary(observation: dict) -> dict:
 
 
 def main(codex: Path, shim: Path, output: Path) -> int:
+    if not shim_is_static(shim):
+        print(f"RESULT shim={shim} static=false", flush=True)
+        return 2
     digest = hashlib.sha256(codex.read_bytes()).hexdigest()
     if digest != codex_proof.PINNED_CODEX_SHA256:
         print(f"RESULT codex_sha256={digest} pinned=false", flush=True)
