@@ -11,7 +11,7 @@ reserved and are recorded then; they stay fully immutable.
 
 This revision replaces only the ``effects`` branch of ``switchboard.goal_ledger_immutable()``.
 ``delivery_ref``, ``prompt_accepts_input`` and ``prompt_expires_at`` may change from NULL (false)
-to a value exactly once, and only in the UPDATE that moves the effect from ``requested`` or
+to a value exactly once, written only by the UPDATE that moves the effect from ``requested`` or
 ``dispatched`` to ``committed``. A value never changes; no other transition may write them,
 including ``requested`` to ``dispatched``; nothing changes after the commit.
 ``ck_effect_prompt_binding`` still holds. Lineage (goal, invocation, capability, argument

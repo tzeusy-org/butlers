@@ -1,9 +1,11 @@
-"""sw_066: an effect's delivery binding is set once, while the effect is still in flight.
+"""sw_066: an effect's delivery binding is written once, by the UPDATE that commits it.
 
-Real PostgreSQL. Before the revision no binding can be added to an inserted effect; after it
-``delivery_ref``, ``recipient_channel`` and a prompt's flag and expiry may be set from NULL while
-the effect is ``dispatched``, never changed afterwards, never added once it has committed, and
-lineage stays immutable. The downgrade restores the old guard.
+Real PostgreSQL. Before the revision no binding can be added to an inserted effect. After it
+``delivery_ref`` and a prompt's flag and expiry go from NULL (false) to a value only in the UPDATE
+that moves the effect from ``requested`` or ``dispatched`` to ``committed``: never in another
+transition, never changed once recorded (including by that commit), never after the commit.
+``recipient_entity``, ``recipient_channel`` and the lineage stay immutable (the broker records the
+recipient and channel at reserve). The downgrade restores the strict guard.
 """
 
 import asyncio
@@ -41,13 +43,23 @@ def _ledger(container, revision):
     )
 
 
-async def _effect(url, status):
-    """An in-flight owner delivery: recipient and channel recorded as reserve() does."""
+async def _effect(url, status, *, bound=False):
+    """An owner delivery: recipient and channel recorded as reserve() does.
+
+    ``bound`` inserts it already holding a delivery ref and an accepting prompt with an expiry.
+    """
     async with pools(url) as (owner, runtime):
         await configure(owner, limits())
         goal = await admit(runtime, Evidence("message", "owner", owner=True))
+        extra = {}
+        if bound:
+            extra = dict(
+                delivery=f"tg:held:{uuid4()}",
+                accepts=True,
+                expiry=await owner.fetchval("SELECT now() + interval '1 hour'"),
+            )
         _, effect_id = await effect(
-            owner, goal.goal_id, status=status, entity=uuid4(), channel="telegram"
+            owner, goal.goal_id, status=status, entity=uuid4(), channel="telegram", **extra
         )
         return effect_id
 
@@ -97,6 +109,24 @@ def test_the_binding_is_set_once_and_only_by_the_commit(postgres_container):
         "prompt_expires_at = now() + interval '1 hour' WHERE id = $1"
     )
     assert asyncio.run(_try(url, no_ref, bare)) is False
+
+    # Each recorded field is refused on its own inside the commit transition itself, so the
+    # not-a-commit-transition branch cannot be what refuses them.
+    for rewrite in (
+        "UPDATE switchboard.effects SET status = 'committed', delivery_ref = 'tg:other' "
+        "WHERE id = $1",
+        "UPDATE switchboard.effects SET status = 'committed', prompt_accepts_input = false, "
+        "prompt_expires_at = NULL WHERE id = $1",
+        "UPDATE switchboard.effects SET status = 'committed', "
+        "prompt_expires_at = prompt_expires_at + interval '1 minute' WHERE id = $1",
+    ):
+        held = asyncio.run(_effect(url, "dispatched", bound=True))
+        assert asyncio.run(_try(url, rewrite, held)) is False, rewrite
+    # The same row commits when nothing recorded changes.
+    held = asyncio.run(_effect(url, "dispatched", bound=True))
+    assert asyncio.run(
+        _try(url, "UPDATE switchboard.effects SET status = 'committed' WHERE id = $1", held)
+    )
 
     command.downgrade(config, "switchboard@sw_065")  # pinned-revision: sw_066 fence
     after = asyncio.run(_effect(url, "dispatched"))
