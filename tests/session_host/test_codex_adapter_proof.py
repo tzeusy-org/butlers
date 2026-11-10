@@ -625,6 +625,68 @@ def test_a_planned_writable_data_mount_must_be_writable():
     assert codex_proof.unplanned_mounts(planned_view(), planned, _HOST, _HOST_DEV) != []
 
 
+# OAuth mode binds one host file on purpose: the staged auth.json, by descriptor.
+_AUTH = "/tmp/home/.codex/auth.json"
+_STAGED_ROOT = "/stage/inv-1/auth.json"
+_OAUTH_PLAN = [*_PLAN[: _PLAN.index("--")], "--bind-fd", "7", _AUTH, *_PLAN[_PLAN.index("--") :]]
+
+
+def staged_view(**change):
+    view = planned_view() + [mount(_AUTH, _STAGED_ROOT, "ext4", device=_HOST_DISK)]
+    return swap(_AUTH, **change)(view) if change else view
+
+
+def test_the_descriptor_binds_are_planned_mounts():
+    assert codex_proof.planned_mounts(_OAUTH_PLAN)[_AUTH] == "fd-rw"
+    plan = [p.replace("--bind-fd", "--ro-bind-fd") for p in _OAUTH_PLAN]
+    assert codex_proof.planned_mounts(plan)[_AUTH] == "fd-ro"
+
+
+def test_the_planned_staged_file_bind_passes_only_as_that_file():
+    planned = codex_proof.planned_mounts(_OAUTH_PLAN)
+    staged = {_AUTH: (_HOST_DISK, _STAGED_ROOT)}
+    assert codex_proof.unplanned_mounts(staged_view(), planned, _HOST, _HOST_DEV, staged) == []
+    for view, told, finding in [
+        # Not told which file was staged: a host bind like any other.
+        (staged_view(), None, f"{_AUTH} (ext4 {_STAGED_ROOT} rw)"),
+        # Another host file, the right device: wrong root.
+        (
+            staged_view(root="/home/orca/.codex/auth.json"),
+            staged,
+            f"{_AUTH} (ext4 /home/orca/.codex/auth.json rw)",
+        ),
+        # The staged path, but another filesystem.
+        (
+            staged_view(device=_HOST_SHM, fstype="tmpfs"),
+            staged,
+            f"{_AUTH} (tmpfs {_STAGED_ROOT} rw)",
+        ),
+        # Planned writable, mounted read-only.
+        (staged_view(options="ro,nosuid"), staged, f"{_AUTH} (ext4 {_STAGED_ROOT} ro)"),
+        (planned_view(), staged, f"{_AUTH} missing"),
+    ]:
+        found = codex_proof.unplanned_mounts(view, planned, _HOST, _HOST_DEV, told)
+        assert finding in found, (finding, found)
+
+
+def test_the_staged_file_is_named_by_the_host_mount_that_holds_it(tmp_path):
+    staged = tmp_path / "inv" / "auth.json"
+    staged.parent.mkdir()
+    staged.write_text("{}")
+    path = str(staged.resolve())
+    holder = str(tmp_path.resolve())
+    host = [
+        mount("/", "/", "ext4", device="8:1"),
+        mount(holder, "/srv/held", "ext4", device="8:2"),
+        mount(holder, "/srv/top", "ext4", device="8:3"),  # on top of the one before
+        mount(holder + "x", "/no", "ext4", device="8:4"),  # a prefix by string, not by path
+    ]
+    assert codex_proof.host_file_mount(staged, host) == ("8:3", "/srv/top/inv/auth.json")
+    assert codex_proof.host_file_mount(staged, host[:1]) == ("8:1", path)
+    with pytest.raises(ValueError, match="no host mount"):
+        codex_proof.host_file_mount(staged, [mount("/elsewhere", device="8:5")])
+
+
 def test_replace_mount_swaps_the_planned_mount_and_its_perms():
     argv = list(_PLAN)
     codex_proof.replace_mount(argv, "/invocation/prompt", ["--bind-data", "$FD", "/x"])

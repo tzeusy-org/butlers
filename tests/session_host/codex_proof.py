@@ -28,7 +28,15 @@ from pathlib import Path
 from typing import Any
 
 from butlers.session_host.bubblewrap import BubblewrapDomain, ImageFile
-from butlers.session_host.codex import API_KEY, CATALOG_NAME, CONFIG_NAME, OAUTH, CodexSettings
+from butlers.session_host.codex import (
+    API_KEY,
+    AUTH_NAME,
+    AUTH_PATH,
+    CATALOG_NAME,
+    CONFIG_NAME,
+    OAUTH,
+    CodexSettings,
+)
 from butlers.session_host.codex_oauth import CodexOAuthVolume
 from butlers.session_host.contracts import BrokerBinding, LaunchRequest
 from butlers.session_host.credential_volume import CredentialVolume
@@ -975,6 +983,8 @@ _BWRAP_ARITY = {
             "--bind",
             "--ro-bind",
             "--dev-bind",
+            "--bind-fd",
+            "--ro-bind-fd",
             "--symlink",
             "--file",
         ),
@@ -990,6 +1000,9 @@ _MOUNT_KINDS = {
     "--bind": "bind",
     "--ro-bind": "bind",
     "--dev-bind": "bind",
+    # OAuth mode's one host bind: the staged auth.json, by its checked descriptor.
+    "--bind-fd": "fd-rw",
+    "--ro-bind-fd": "fd-ro",
 }
 # What bwrap's --dev puts under the new /dev.
 _DEV_NODES = frozenset({"null", "zero", "full", "random", "urandom", "tty"})
@@ -1053,8 +1066,14 @@ def unplanned_mounts(
     planned: dict[str, str],
     host_devices: frozenset[str],
     node_device: str | None,
+    staged: dict[str, tuple[str, str]] | None = None,
 ) -> list[str]:
     """Every mount that is not exactly the plan's, and every planned mount missing.
+
+    ``staged`` maps each planned descriptor bind (``--bind-fd``, OAuth mode's
+    auth.json) to the ``(major:minor, root)`` of the one host file it must be:
+    the staged file. It is the only host bind a plan may hold, so it passes
+    only on that device, at that root, in the planned access mode.
 
     Shape alone cannot tell a fresh tmpfs from a host one: ``--bind /dev/shm
     /tmp`` is tmpfs rooted at ``/`` just like ``--tmpfs /tmp``, and a host
@@ -1087,6 +1106,16 @@ def unplanned_mounts(
             )
         elif kind == "bind":
             ok = False  # the closed plan binds nothing from the host
+        elif kind in ("fd-rw", "fd-ro"):
+            expected = (staged or {}).get(point)
+            if (
+                expected is not None
+                and (mount["device"], root) == expected
+                and access == ("rw" if kind == "fd-rw" else "ro")
+            ):
+                continue  # exactly the staged file: on a host device by design
+            findings.append(f"{point} ({fstype} {root} {access})")
+            continue
         else:
             parent = next((d for d in devs if point.startswith(d + "/")), None)
             name = point[len(parent) + 1 :] if parent else ""
@@ -1134,8 +1163,32 @@ def read_mounts(pid: int) -> list[dict[str, str]]:
     return mounts
 
 
+def host_file_mount(path: Path, host: list[dict[str, str]]) -> tuple[str, str]:
+    """``(major:minor, root)`` a bind of host ``path`` shows in a domain's mountinfo.
+
+    Read from the observer's own mount table, never ``st_dev``, which differs
+    from mountinfo's device on some filesystems: the topmost mount whose point
+    is the longest prefix of the resolved path, and the path below it.
+    """
+    resolved = str(path.resolve(strict=True))
+    best: dict[str, str] | None = None
+    for mount in host:  # later lines are on top, so >= keeps the last
+        point = mount["mountpoint"]
+        if resolved == point or resolved.startswith(point.rstrip("/") + "/"):
+            if best is None or len(point) >= len(best["mountpoint"]):
+                best = mount
+    if best is None:
+        raise ValueError("no host mount holds the staged file")
+    below = resolved[len(best["mountpoint"].rstrip("/")) :]
+    return best["device"], best["root"].rstrip("/") + below
+
+
 def observe_isolation(
-    pid: int, peer: Path, peer_process: int, planned: dict[str, str]
+    pid: int,
+    peer: Path,
+    peer_process: int,
+    planned: dict[str, str],
+    staged: dict[str, Path] | None = None,
 ) -> dict[str, Any]:
     """Read the live domain's filesystem and process view from outside.
 
@@ -1149,7 +1202,9 @@ def observe_isolation(
     The walk alone cannot judge ``/tmp``, which is the runtime's own scratch:
     a host directory bound under it looks like scratch. ``planned`` is the
     unmutated plan's mounts, and every mount in the domain must be exactly one
-    of them, so a bind anywhere, ``/tmp`` included, is a finding.
+    of them, so a bind anywhere, ``/tmp`` included, is a finding. ``staged``
+    names the host file behind each planned descriptor bind (OAuth mode's
+    staged auth.json), the one host bind a plan may hold.
     """
     root = Path(f"/proc/{pid}/root")
     visible: list[str] = []
@@ -1199,10 +1254,13 @@ def observe_isolation(
     # bwrap's --dev binds its nodes from the /dev it was started under. The
     # last mount listed at a point is the one on top.
     node_device = next((m["device"] for m in reversed(host) if m["mountpoint"] == "/dev"), None)
+    files = {point: host_file_mount(path, host) for point, path in (staged or {}).items()}
     return {
         "measured": True,
         "mount_count": len(mounts),
-        "unplanned_mounts": unplanned_mounts(mounts, planned, host_devices, node_device)[:32],
+        "unplanned_mounts": unplanned_mounts(mounts, planned, host_devices, node_device, files)[
+            :32
+        ],
         "missing_paths": sorted(_REQUIRED_PATHS - set(visible)),
         "unexpected_paths": unexpected[:32],
         "canary_seen": canary_seen[:32],
@@ -1266,7 +1324,11 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
             # listening before the runtime can start.
             pid = await super()._info(descriptor)
             server.observe = lambda: observe_isolation(  # type: ignore[attr-defined]
-                pid, peer["material"].directory, peer["process"].pid, peer["planned"]
+                pid,
+                peer["material"].directory,
+                peer["process"].pid,
+                peer["planned"],
+                peer.get("staged"),
             )
             server.socket = _listener_inside(pid)
             threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -1299,6 +1361,9 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
             assert "--unshare-net" in argv
             # Judged against the production plan, never the mutated one.
             peer["planned"] = planned_mounts(argv)
+            if oauth:
+                # The one planned host bind: this invocation's own staged auth.json.
+                peer["staged"] = {AUTH_PATH: material.directory / AUTH_NAME}
             # The command itself is the tail of argv, after the shim's "--".
             tail = len(argv) - len(settings.command)
             assert argv[tail:] == list(settings.command)
