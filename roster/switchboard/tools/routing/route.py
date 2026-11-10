@@ -591,6 +591,18 @@ async def route(
                         if tool_name == "route.execute"
                         else {}
                     )
+                    # RFC 0038 D7: empty unless BUTLERS_SERVICE_PLANE_AUTH is on.
+                    from butlers.core.service_plane.messenger_delivery import (
+                        messenger_delivery_headers,
+                        service_plane_auth_enabled,
+                    )
+
+                    headers = {
+                        **headers,
+                        **messenger_delivery_headers(
+                            target_butler, tool_name, enabled=service_plane_auth_enabled()
+                        ),
+                    }
                     if headers:
                         # A capability is request-specific: never share the
                         # endpoint-cached MCP session with unrelated reports.

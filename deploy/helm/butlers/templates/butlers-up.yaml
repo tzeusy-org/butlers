@@ -17,6 +17,9 @@ spec:
       labels:
         {{- include "butlers.selector" (dict "root" . "component" "butlers-up") | nindent 8 }}
     spec:
+      {{- if and .Values.servicePlaneAuth.enabled .Values.butlersControl.enabled }}
+      serviceAccountName: butlers-up
+      {{- end }}
       terminationGracePeriodSeconds: {{ add .Values.shutdown.budgetSeconds .Values.shutdown.graceMarginSeconds }}
       securityContext:
         sysctls:
@@ -43,6 +46,7 @@ spec:
             - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
             - {name: BUTLERS_MAX_GLOBAL_SESSIONS, value: "{{ include "butlers.domainSessionCapacity" . }}"}
             - {name: BUTLERS_SHUTDOWN_BUDGET_S, value: "{{ .Values.shutdown.budgetSeconds }}"}
+            {{- include "butlers.servicePlaneEnv" . | nindent 12 }}
             {{- with (include "butlers.egressProxyEnv" (dict "root" . "component" "butlers-up") | trim) }}{{ . | nindent 12 }}{{- end }}
           readinessProbe:
             httpGet: {path: /health, port: daemon}

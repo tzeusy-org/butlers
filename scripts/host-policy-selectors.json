@@ -1046,12 +1046,12 @@
   },
   "current_public": "773d1d81b8112a951776db56241eaf6988717263",
   "counts": {
-    "direct": 86,
-    "direct_files": 39,
-    "container": 108,
+    "direct": 89,
+    "direct_files": 40,
+    "container": 111,
     "supplementary": 44,
     "all_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 59,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 62,
       "NON_NAME_ENUM_OR_MODULE": 29,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 35,
@@ -1059,7 +1059,7 @@
       "SCHEMA_OWNERSHIP": 14
     },
     "direct_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 41,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 44,
       "NON_NAME_ENUM_OR_MODULE": 5,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 3,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 21,
@@ -4861,6 +4861,84 @@
       ],
       "baseline_ids": [],
       "public_source_commit": "60401d269b1c9c4f32e71abe93d9ad6197f7b358"
+    },
+    {
+      "id": "bd8936b29a0cd33564cb4f51590fe1928ac40fab965d186989fe89f80ce5e433",
+      "path": "src/butlers/core/service_plane/messenger_delivery.py",
+      "symbol": "admit_delivery_request",
+      "kind": "compare",
+      "expression": "butler_name != 'messenger'",
+      "occurrence": 1,
+      "line": 71,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Apply the notify.v1 delivery caller check only on canonical Messenger, the one daemon that accepts route.execute deliveries; it narrows admission and grants nothing.",
+      "reason": "bu-2c1g7v RFC 0038 D7 dark service-plane caller authentication (BUTLERS_SERVICE_PLANE_AUTH, default off). Same canonical Messenger fence as _routing.py _route_execute_inner; no caller-shaped name is trusted, and no host policy is introduced.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        },
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "7ccb07b0f0d0cf39f509d1c0b5454cf3b11a1ae0"
+    },
+    {
+      "id": "6754cf17a86540e8374e938cc089d1d4cb451b55d15ed535cbac18338dae57e5",
+      "path": "src/butlers/core/service_plane/messenger_delivery.py",
+      "symbol": "messenger_delivery_refusal",
+      "kind": "compare",
+      "expression": "butler_name != 'messenger'",
+      "occurrence": 1,
+      "line": 102,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "The pure delivery verdict applies only on canonical Messenger; elsewhere it admits nothing new and leaves the existing route.execute gates in charge.",
+      "reason": "bu-2c1g7v RFC 0038 D7 dark service-plane caller authentication (BUTLERS_SERVICE_PLANE_AUTH, default off). Same canonical Messenger fence as _routing.py _route_execute_inner; no host policy is introduced.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        },
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "7ccb07b0f0d0cf39f509d1c0b5454cf3b11a1ae0"
+    },
+    {
+      "id": "cce6732151cf318e796377e3abc13239f48a79ffee0d3b99f0a6092959f8d4d3",
+      "path": "src/butlers/core/service_plane/messenger_delivery.py",
+      "symbol": "messenger_delivery_headers",
+      "kind": "compare",
+      "expression": "target_butler != 'messenger'",
+      "occurrence": 1,
+      "line": 118,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Switchboard attaches its delivery-audience workload token only to deliveries addressed to canonical Messenger, so the credential is never sent to another butler.",
+      "reason": "bu-2c1g7v RFC 0038 D7 dark service-plane caller authentication (BUTLERS_SERVICE_PLANE_AUTH, default off). Token scoping to the one verifying daemon; no host policy is introduced.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        },
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "7ccb07b0f0d0cf39f509d1c0b5454cf3b11a1ae0"
     }
   ],
   "retired": [

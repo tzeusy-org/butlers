@@ -1,0 +1,14 @@
+{{- if and .Values.servicePlaneAuth.enabled .Values.butlersControl.enabled }}
+{{- /* RFC 0038 D7: one ServiceAccount per workload, so a projected token names its pod's
+workload. The API token stays mounted: each verifier reads the issuer JWKS with it
+through the default system:service-account-issuer-discovery binding. */}}
+{{- range list "butlers-control" "butlers-up" }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ . }}
+  labels:
+    {{- include "butlers.labels" $ | nindent 4 }}
+{{- end }}
+{{- end }}

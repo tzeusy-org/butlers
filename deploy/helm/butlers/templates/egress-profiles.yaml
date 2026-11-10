@@ -22,6 +22,9 @@ profile can name it: site CIDRs are single /32s that may not be a tracker addres
 {{- end }}
 {{- $profiles := $doc.workloads }}
 {{- $sites := .Values.egressProfiles.sites | default dict }}
+{{- if and .Values.servicePlaneAuth.enabled (not (hasKey $sites "kube-apiserver")) }}
+{{- fail "servicePlaneAuth.enabled verifies workload tokens against the API server's JWKS: set egressProfiles.sites.kube-apiserver, or every service-plane caller is refused" }}
+{{- end }}
 {{- $denied := .Values.trackerEgress.deniedCidrs | default list }}
 {{- if not $denied }}
 {{- fail "egressProfiles.enabled needs trackerEgress.deniedCidrs (scripts/k8s/site-helm-args.sh resolves it), so no site /32 can name the tracker" }}

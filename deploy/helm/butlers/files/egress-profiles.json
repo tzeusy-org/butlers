@@ -288,6 +288,12 @@
           "port": 8123,
           "protocol": "TCP",
           "site": "home-assistant"
+        },
+        {
+          "optional": true,
+          "port": 6443,
+          "protocol": "TCP",
+          "site": "kube-apiserver"
         }
       ],
       "summary": "Domain butler daemons, their modules and the LLM CLIs they spawn"
