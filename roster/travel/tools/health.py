@@ -44,11 +44,12 @@ async def request_health_medication_snapshot(
         )
 
     if switchboard_client is None:
-        return _failure(
-            code="switchboard_unavailable",
-            message="Switchboard is unavailable for the Health medication request.",
-            retryable=True,
-        )
+        return _switchboard_unavailable()
+
+    from butlers.core.service_plane.messenger_delivery import service_plane_auth_enabled
+
+    if service_plane_auth_enabled():
+        return await _request_via_relay(switchboard_client, timeout_s=timeout_s)
 
     route_args = {
         "target_butler": "health",
@@ -80,7 +81,59 @@ async def request_health_medication_snapshot(
             retryable=True,
         )
 
-    data = getattr(result, "data", result)
+    return _settle(getattr(result, "data", result))
+
+
+def _switchboard_unavailable() -> dict[str, Any]:
+    return _failure(
+        code="switchboard_unavailable",
+        message="Switchboard is unavailable for the Health medication request.",
+        retryable=True,
+    )
+
+
+async def _request_via_relay(switchboard_client: Any, *, timeout_s: float) -> dict[str, Any]:
+    """The ``medication.travel_snapshot`` named relay (RFC 0038 D7, bu-2c1g7v).
+
+    Switchboard authenticates this workload, admits only Travel, and reads
+    Health's service-only twin. A refusal means Travel is not allowed, so it is
+    permanent; anything else is retryable unavailability. The reply is Switchboard's
+    route envelope, settled exactly as the legacy route reply.
+    """
+    from butlers.core.service_plane import client as relay_client
+    from butlers.core.service_plane.registry import MEDICATION_TRAVEL_SNAPSHOT
+    from butlers.core.service_plane.relays import RelayRefused
+
+    switchboard_url = relay_client.configured_switchboard_url(switchboard_client)
+    if switchboard_url is None:
+        return _switchboard_unavailable()
+    try:
+        data = await relay_client.call_relay(
+            MEDICATION_TRAVEL_SNAPSHOT,
+            {},
+            daemon="travel",
+            switchboard_url=switchboard_url,
+            request_timeout_s=timeout_s,
+        )
+    except RelayRefused as refused:
+        logger.warning("Switchboard refused the medication relay: %s", refused.code)
+        return _failure(
+            code="permission_denied",
+            message="Travel is not permitted to request Health medication data.",
+            retryable=False,
+        )
+    except Exception:
+        logger.warning("Travel could not reach the medication relay", exc_info=True)
+        return _failure(
+            code="health_unavailable",
+            message="Health medication data is temporarily unavailable.",
+            retryable=True,
+        )
+    return _settle(data)
+
+
+def _settle(data: Any) -> dict[str, Any]:
+    """Validate Switchboard's route envelope around Health's snapshot."""
     if isinstance(data, dict) and data.get("error"):
         logger.warning("Switchboard could not route the Health medication request")
         return _failure(
