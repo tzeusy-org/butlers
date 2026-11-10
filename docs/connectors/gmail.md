@@ -302,6 +302,11 @@ curl -s "http://localhost:9090/api/v1/query?query=butlers_connector_gmail_priori
 
 ## Implementation Notes
 
+- Live history batches retain their cursor on HTTP status failures other than the deliberate
+  deleted-message 404 skip, HTTPX request failures, and delivery connection/deadline failures.
+  The batch settles every sibling first; replay uses the same idempotency keys, including when
+  delivery failed after acceptance. Malformed-message error rows and deliberate policy skips
+  retain their existing handling. A source or authentication failure is never acceptance.
 - `run_gmail_connector` discovers accounts from `public.google_accounts` and resolves each account's
   Google OAuth credentials through `GmailAccountSource._resolve_credentials_for_account` and
   `load_google_credentials`. App credentials come from `butler_secrets` through `CredentialStore`;

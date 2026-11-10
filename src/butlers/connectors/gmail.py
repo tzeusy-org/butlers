@@ -2126,30 +2126,29 @@ class GmailConnectorRuntime:
 
         return list(message_ids)
 
-    # Exception types that indicate a transient connectivity failure.
-    # When these are raised during message delivery, the batch cursor must NOT be
-    # advanced so the message will be retried on the next poll cycle.
+    # Request failures leave fetch/delivery incomplete or acceptance uncertain.
+    # Keep the batch cursor so the next cycle retries with the same idempotency
+    # keys. Authentication/status failures also need this safety until repaired;
+    # only the explicit deleted-message 404 below is a deliberate HTTP skip.
     _TRANSIENT_DELIVERY_ERRORS: tuple[type[Exception], ...] = (
         ConnectionError,
-        httpx.ConnectError,
-        httpx.ConnectTimeout,
-        httpx.RemoteProtocolError,
+        TimeoutError,
+        httpx.HTTPError,
     )
 
     async def _ingest_messages(self, message_ids: list[str]) -> None:
         """Fetch and ingest messages concurrently with bounded parallelism.
 
-        If any message fails with a transient connectivity error
-        (ConnectionError, httpx.ConnectError, etc.), that error is re-raised
-        after all tasks complete so the caller knows NOT to advance the batch
-        cursor.  Per-message errors that are not transient (e.g. a malformed
-        message) are logged and swallowed so they do not block other messages.
+        Request, status and delivery-timeout errors are re-raised after all tasks
+        complete so the caller does not advance the batch cursor without
+        acceptance. Permanent per-message errors (e.g. malformed content) are
+        recorded for replay without blocking other messages.
         """
         tasks = [self._ingest_single_message(msg_id) for msg_id in message_ids]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Re-raise the first transient connectivity error so the polling loop
-        # skips cursor advancement and retries the batch on the next cycle.
+        # Settle siblings before holding the cursor; accepted siblings replay
+        # harmlessly through their unchanged idempotency keys.
         for result in results:
             if isinstance(result, self._TRANSIENT_DELIVERY_ERRORS):
                 raise result
@@ -2170,9 +2169,8 @@ class GmailConnectorRuntime:
         Filtered and errored events are recorded into the FilteredEventBuffer
         for batch persistence after the poll cycle completes.
 
-        Transient connectivity errors (ConnectionError, httpx.ConnectError,
-        etc.) are re-raised so that _ingest_messages can propagate them to the
-        batch loop, preventing cursor advancement.
+        Request and delivery failures are re-raised so that _ingest_messages
+        can propagate them to the batch loop, preventing cursor advancement.
         Per-message non-transient errors are logged and swallowed.
         """
         async with self._semaphore:
@@ -2395,13 +2393,14 @@ class GmailConnectorRuntime:
                         message_id,
                     )
                     return
-                # Other HTTP errors fall through to general handler
+                # All other statuses hold the batch cursor until fetch/delivery
+                # succeeds; they must not become a swallowed per-message error.
                 raise
             except self._TRANSIENT_DELIVERY_ERRORS as exc:
-                # Re-raise transient connectivity errors so the batch loop
-                # can skip cursor advancement and retry.
+                # Preserve the checkpoint even when delivery timed out after
+                # acceptance. The retry carries the original idempotency key.
                 logger.error(
-                    "Transient connectivity failure for message %s (%s); cursor will not advance",
+                    "Request/delivery failure for message %s (%s); cursor will not advance",
                     message_id,
                     type(exc).__name__,
                     exc_info=True,
