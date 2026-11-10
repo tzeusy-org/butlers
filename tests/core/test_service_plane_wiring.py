@@ -41,6 +41,8 @@ async def _post(
     routed: list[dict[str, Any]] = []
 
     async def fake_route(pool: Any, butler: str, tool: str, args: dict[str, Any], **kw: Any):
+        # Every relay call uses the relay's own tool call (tests/core/test_service_plane_relay_call_fn.py).
+        assert kw.pop("call_fn").__qualname__ == "relay_call_fn.<locals>.call"
         routed.append({"pool": pool, "butler": butler, "tool": tool, "args": args, **kw})
         return {"result": {"accepted": True}}
 

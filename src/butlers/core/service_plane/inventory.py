@@ -64,7 +64,7 @@ ROUTE_CALLERS: tuple[RouteCaller, ...] = (
     ),
     RouteCaller(
         "src/butlers/core/service_plane/wiring.py",
-        "build_switchboard_relay_route.dispatch_for.dispatch",
+        "relay_dispatch.dispatch",
         "named_relay",
         "The relays' own dispatch: Switchboard's in-process route(), after the relay's checks.",
     ),

@@ -55,6 +55,11 @@ Switchboard serves `POST /internal/service-plane/relay/{name}` (body
 session listener does not serve it. It dispatches through Switchboard's own
 `route()`, so registry, staleness, quarantine and routing-log behaviour are
 unchanged; the relay decides only who may reach which target with what.
+The relay's tool call (`relay_call_fn`) differs from `route()`'s default in two
+ways: it drops the `trace_context` carrier `route()` adds while a span is
+active, because relay targets are strict service twins that refuse an
+unexpected keyword; and a target error result is a refused, non-retryable call,
+never a delivered one.
 Callers use `service_plane/client.py`, presenting their workload's
 relay-audience token and their daemon name. While the switch is off the route
 answers 404 to everything and callers keep the legacy route path.
