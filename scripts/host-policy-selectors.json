@@ -1046,12 +1046,12 @@
   },
   "current_public": "773d1d81b8112a951776db56241eaf6988717263",
   "counts": {
-    "direct": 92,
+    "direct": 93,
     "direct_files": 41,
-    "container": 114,
+    "container": 115,
     "supplementary": 44,
     "all_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 63,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 64,
       "NON_NAME_ENUM_OR_MODULE": 29,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 37,
@@ -1059,7 +1059,7 @@
       "SCHEMA_OWNERSHIP": 14
     },
     "direct_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 45,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 46,
       "NON_NAME_ENUM_OR_MODULE": 5,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 3,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 23,
@@ -5013,6 +5013,32 @@
       ],
       "baseline_ids": [],
       "public_source_commit": "5003c289cc"
+    },
+    {
+      "id": "be6567eefe7eda008b5511eee4898d2460aaae662dd50828869a2ef9618dd998",
+      "path": "src/butlers/core/service_plane/registry.py",
+      "symbol": "build_relays",
+      "kind": "compare",
+      "expression": "c.daemon == 'travel'",
+      "occurrence": 1,
+      "line": 126,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "The medication.travel_snapshot relay admits only the (butlers-up, travel) pair: the canonical Travel daemon is the one consumer of Health's privacy-minimized medication fields.",
+      "reason": "bu-2c1g7v RFC 0038 D7 dark named relay (BUTLERS_SERVICE_PLANE_AUTH, default off). The daemon name only narrows an allowlist under an authenticated workload; the target is Health's non-presentable twin. No host policy is introduced.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-health/spec.md",
+          "requirement": "Travel Medication Snapshot MCP Provider"
+        },
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "19b7974260"
     }
   ],
   "retired": [

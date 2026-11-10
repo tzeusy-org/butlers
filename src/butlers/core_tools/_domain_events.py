@@ -190,12 +190,16 @@ async def _dispatch_receive_via_relay(
     Switchboard client is built from ``config.switchboard_url``, which already
     resolves the colocated default across containers.
     """
-    from butlers.core.service_plane.client import RelayUnavailable, call_relay
+    from butlers.core.service_plane.client import (
+        RelayUnavailable,
+        call_relay,
+        configured_switchboard_url,
+    )
     from butlers.core.service_plane.registry import DOMAIN_EVENT_RECEIVE
     from butlers.core.service_plane.relays import RelayRefused
 
-    switchboard_url = getattr(getattr(client, "transport", None), "url", None)
-    if not isinstance(switchboard_url, str) or not switchboard_url:
+    switchboard_url = configured_switchboard_url(client)
+    if switchboard_url is None:
         return None, "relay_unavailable: no configured Switchboard", True
     try:
         raw = await call_relay(

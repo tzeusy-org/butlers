@@ -7222,6 +7222,26 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         categories=ALL_CATEGORIES,
     ),
+    # RFC 0038 D7 (bu-2c1g7v): the service-only twin the medication.travel_snapshot
+    # named relay reaches. A relay refuses any LLM-presentable target.
+    *_declare(
+        "health",
+        "medications",
+        "medication_travel_snapshot_service",
+        effect_class="read",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=(),
+        selection_bound={},
+        safety_args=(),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=("facts",),
+        write_stores=(),
+        recipient_params=RecipientParameters(),
+        presentable=False,
+        categories=ALL_CATEGORIES,
+    ),
     *_declare(
         "health",
         "conditions",

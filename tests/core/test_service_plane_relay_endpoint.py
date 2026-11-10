@@ -18,11 +18,17 @@ from butlers.core.service_plane.client import RelayUnavailable, call_relay, rela
 from butlers.core.service_plane.endpoint import build_relay_route
 from butlers.core.service_plane.registry import (
     DOMAIN_EVENT_RECEIVE,
+    MEDICATION_TRAVEL_SNAPSHOT,
     QA_REPORT_FINDING,
     build_relays,
     roster_daemons,
 )
-from butlers.core.service_plane.relays import RelayEndpoint, RelayRefused, ServiceCaller
+from butlers.core.service_plane.relays import (
+    RelayEndpoint,
+    RelayRefused,
+    ServiceCaller,
+    target_is_llm_presentable,
+)
 from butlers.core.service_plane.workload_identity import (
     DELIVERY_AUDIENCE,
     RELAY_AUDIENCE,
@@ -297,6 +303,53 @@ async def test_a_reply_outside_the_contract_is_unavailable_not_refused(
             token_dir=tmp_path,
             transport=transport,
         )
+
+
+async def test_travel_reads_the_medication_snapshot_through_healths_service_only_twin(
+    tmp_path: Path,
+) -> None:
+    harness = _Harness()
+
+    result = await harness.call(
+        MEDICATION_TRAVEL_SNAPSHOT, {}, tmp_path, daemon="travel", token=_up_token()
+    )
+
+    assert result == {"accepted": True}
+    assert harness.calls == [("health", "medication_travel_snapshot_service", {}, False)]
+
+
+@pytest.mark.parametrize(
+    ("args", "daemon", "code"),
+    [
+        ({}, "finance", "caller_not_allowed"),
+        ({}, "health", "caller_not_allowed"),
+        ({"source_butler": "travel"}, "travel", "args_invalid"),
+        ({"include_notes": True}, "travel", "args_invalid"),
+    ],
+    ids=["another-daemon", "health-itself", "source_butler-in-body", "extra-field"],
+)
+async def test_only_travel_reads_the_medication_snapshot_and_with_no_arguments(
+    tmp_path: Path, args: dict[str, Any], daemon: str, code: str
+) -> None:
+    harness = _Harness()
+
+    with pytest.raises(RelayRefused) as refused:
+        await harness.call(
+            MEDICATION_TRAVEL_SNAPSHOT, args, tmp_path, daemon=daemon, token=_up_token()
+        )
+
+    assert refused.value.code == code
+    assert harness.calls == []
+
+
+def test_the_medication_relay_targets_a_non_presentable_twin_only_from_travel() -> None:
+    endpoint = _RELAYS[MEDICATION_TRAVEL_SNAPSHOT]
+
+    assert endpoint.allowed_callers == frozenset({ServiceCaller("butlers-up", "travel")})
+    assert endpoint.target_butlers == frozenset({"health"})
+    assert not target_is_llm_presentable(endpoint.target_tool)
+    # The LLM-facing tool stays presentable; only its service twin is relay-reachable.
+    assert target_is_llm_presentable("medication_travel_snapshot")
 
 
 def test_the_relay_url_is_on_the_switchboard_service_listener() -> None:

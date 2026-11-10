@@ -156,6 +156,18 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         return await _meds.medication_travel_snapshot(module._get_pool())
 
     @_tool("medications")
+    async def medication_travel_snapshot_service(
+        trace_context: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Service-only twin of medication_travel_snapshot for the named relay.
+
+        Never presented to an LLM session (RFC 0038 D7): only Switchboard's
+        ``medication.travel_snapshot`` relay reaches it, on Travel's behalf.
+        """
+        del trace_context
+        return await _meds.medication_travel_snapshot(module._get_pool())
+
+    @_tool("medications")
     async def medication_log_dose(
         medication_id: str,
         taken_at: datetime | None = None,

@@ -252,3 +252,123 @@ async def test_travel_module_wires_and_registers_parameterless_consumer() -> Non
     consumer = registered["health_medication_snapshot"]
     result = await consumer()  # type: ignore[operator]
     assert result == _health_snapshot()
+
+
+# RFC 0038 D7 (bu-2c1g7v): with BUTLERS_SERVICE_PLANE_AUTH on, Travel reads the
+# snapshot through the medication.travel_snapshot named relay, never route().
+
+
+class _Relay:
+    def __init__(self, reply: object = None, error: Exception | None = None) -> None:
+        self.calls: list[tuple[str, dict, str, str]] = []
+        self.reply = reply
+        self.error = error
+
+    async def __call__(self, name: str, args: dict, *, daemon: str, switchboard_url: str, **_):
+        self.calls.append((name, args, daemon, switchboard_url))
+        if self.error is not None:
+            raise self.error
+        return self.reply
+
+
+async def _request(pool: object, client: object) -> dict:
+    from butlers.roster_imports import roster_module
+
+    health = roster_module("travel", "tools/health")
+    return await health.request_health_medication_snapshot(pool, client)
+
+
+def _configured_client() -> AsyncMock:
+    client = AsyncMock()
+    client.transport = SimpleNamespace(url="http://butlers-control:41100/mcp")
+    return client
+
+
+@pytest.fixture
+def relay_on(monkeypatch: pytest.MonkeyPatch):
+    import butlers.core.service_plane.client as relay_client
+
+    monkeypatch.setenv("BUTLERS_SERVICE_PLANE_AUTH", "1")
+
+    def install(relay: _Relay) -> _Relay:
+        monkeypatch.setattr(relay_client, "call_relay", relay)
+        return relay
+
+    return install
+
+
+async def test_switch_on_reads_the_snapshot_through_the_named_relay(relay_on) -> None:
+    relay = relay_on(_Relay(reply=_routed_health_result(_health_snapshot())))
+    pool = AsyncMock()
+    pool.fetchrow.return_value = None
+    client = _configured_client()
+
+    result = await _request(pool, client)
+
+    assert result == _health_snapshot()
+    client.call_tool.assert_not_awaited()
+    assert relay.calls == [
+        ("medication.travel_snapshot", {}, "travel", "http://butlers-control:41100/mcp")
+    ]
+
+
+async def test_switch_on_a_relay_refusal_is_permanent_and_unavailability_retryable(
+    relay_on,
+) -> None:
+    from butlers.core.service_plane.client import RelayUnavailable
+    from butlers.core.service_plane.relays import RelayRefused
+
+    pool = AsyncMock()
+    pool.fetchrow.return_value = None
+
+    relay_on(_Relay(error=RelayRefused("caller_not_allowed")))
+    refused = await _request(pool, _configured_client())
+    relay_on(_Relay(error=RelayUnavailable("no reply")))
+    unavailable = await _request(pool, _configured_client())
+
+    assert refused["error"] == {
+        "code": "permission_denied",
+        "message": "Travel is not permitted to request Health medication data.",
+        "retryable": False,
+    }
+    assert unavailable["error"] == {
+        "code": "health_unavailable",
+        "message": "Health medication data is temporarily unavailable.",
+        "retryable": True,
+    }
+
+
+async def test_switch_on_the_relay_reply_is_validated_like_the_route_reply(relay_on) -> None:
+    leaky = _health_snapshot(
+        medications=[
+            {
+                "name": "Metformin",
+                "dosage": "500 mg",
+                "frequency": "daily",
+                "schedule": ["08:00"],
+                "notes": "must not cross the boundary",
+            }
+        ]
+    )
+    relay_on(_Relay(reply=_routed_health_result(leaky)))
+    pool = AsyncMock()
+    pool.fetchrow.return_value = None
+
+    result = await _request(pool, _configured_client())
+
+    assert result["error"]["code"] == "invalid_health_response"
+    assert "notes" not in str(result)
+
+
+async def test_switch_on_without_a_configured_switchboard_never_routes(relay_on) -> None:
+    relay = relay_on(_Relay())
+    pool = AsyncMock()
+    pool.fetchrow.return_value = None
+    client = AsyncMock()
+    client.transport = None
+
+    result = await _request(pool, client)
+
+    assert result["error"]["code"] == "switchboard_unavailable"
+    assert relay.calls == []
+    client.call_tool.assert_not_awaited()

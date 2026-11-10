@@ -27,6 +27,16 @@ class RelayUnavailable(Exception):
     """The relay could not be reached or answered outside its contract."""
 
 
+def configured_switchboard_url(switchboard_client: Any) -> str | None:
+    """The Switchboard URL a daemon's Switchboard client was built from, or None.
+
+    That client is built from ``config.switchboard_url`` (resolved across
+    containers), so a relay goes to the same Switchboard the daemon already uses.
+    """
+    url = getattr(getattr(switchboard_client, "transport", None), "url", None)
+    return url if isinstance(url, str) and url else None
+
+
 def relay_url(switchboard_url: str, name: str) -> str:
     """The relay URL on the service listener named by Switchboard's MCP URL."""
     parts = urlsplit(switchboard_url)

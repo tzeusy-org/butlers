@@ -63,10 +63,17 @@ answers 404 to everything and callers keep the legacy route path.
 | --- | --- | --- | --- |
 | `qa.report_finding` | QA `report_finding` | every roster daemon on `butlers-up` except Switchboard | `source_butler` is set from the caller; stale QA still receives (`allow_stale`). |
 | `domain_event.receive` | a subscriber's `receive_domain_event` | publishers of a domain-event contract on `butlers-up` | The caller must publish the event type's contract and the target must be one of its `permitted_subscribers`; `source_butler` is set from the caller. |
+| `medication.travel_snapshot` | Health `medication_travel_snapshot_service` | `(butlers-up, travel)` only | No arguments. The target is a service-only twin (`presentable=False`) of the LLM-facing `medication_travel_snapshot`; a refusal reaches Travel as `permission_denied`, anything else as retryable `health_unavailable`. |
 
-Still to come (they need a service-only, non-presentable target first):
-Travel's read of Health's medication snapshot, fleet-case writes, the memory
-catalog fetch, the calendar response fence and the contacts owner lookup.
+A relay target must be declared `presentable=False`, so a target that LLM
+sessions also use gets a service-only twin on its owning butler; the
+LLM-facing tool is never relay-reachable.
+
+Still to come (each needs a service-only twin first): the contacts owner
+lookup, fleet-case writes and the memory catalog fetch. The calendar response
+fence gets no relay: bu-qozovd.1 slice 3 deletes it before the switch (the
+owner made Relationship the sole invite-response owner), and the switch
+depends on that slice.
 
 ## How callers are authenticated
 

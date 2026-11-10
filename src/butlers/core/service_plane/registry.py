@@ -24,10 +24,15 @@ from butlers.core.service_plane.relays import RelayEndpoint, RelayRefused, Servi
 DOMAIN_WORKLOAD = "butlers-up"
 QA_REPORT_FINDING = "qa.report_finding"
 DOMAIN_EVENT_RECEIVE = "domain_event.receive"
+MEDICATION_TRAVEL_SNAPSHOT = "medication.travel_snapshot"
 
 
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class NoArgs(_Strict):
+    """A fixed-purpose read: the caller chooses nothing."""
 
 
 class QaFindingArgs(_Strict):
@@ -109,5 +114,15 @@ def build_relays(
             args_model=DomainEventArgs,
             allowed_callers=frozenset(c for c in callers if c.daemon in publishers),
             prepare=_domain_event_prepare(contracts),
+        ),
+        # Travel's pre-trip read of Health's privacy-minimized medication fields
+        # (REQ-butler-switchboard-008's worked example). The target is Health's
+        # service-only twin; the LLM-facing tool is never relay-reachable.
+        MEDICATION_TRAVEL_SNAPSHOT: RelayEndpoint(
+            name=MEDICATION_TRAVEL_SNAPSHOT,
+            target_butlers=frozenset({"health"}),
+            target_tool="medication_travel_snapshot_service",
+            args_model=NoArgs,
+            allowed_callers=frozenset(c for c in callers if c.daemon == "travel"),
         ),
     }

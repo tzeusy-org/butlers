@@ -108,7 +108,8 @@ ROUTE_CALLERS: tuple[RouteCaller, ...] = (
         "roster/travel/tools/health.py",
         "request_health_medication_snapshot",
         "named_relay",
-        "health.medication_travel_snapshot: Travel reads Health's medication snapshot.",
+        "medication.travel_snapshot relay (served): Travel reads Health's service-only twin "
+        "medication_travel_snapshot_service; the route call is the switch-off path.",
     ),
     RouteCaller(
         "src/butlers/core/qa/relay.py",
@@ -162,8 +163,10 @@ ROUTE_CALLERS: tuple[RouteCaller, ...] = (
     RouteCaller(
         "src/butlers/modules/calendar_response_fence.py",
         "CalendarResponseFence.check_peers",
-        "named_relay",
-        "calendar.response_fence_status: module runtime wiring between fence owners.",
+        "removed",
+        "Deleted before the switch: bu-qozovd.1 slice 3 (owner decision 2026-10-24) makes "
+        "Relationship the sole invite-response owner and deletes the fence, its tools and this "
+        "call. No relay or twin; the switch depends on that slice.",
     ),
     RouteCaller(
         "src/butlers/modules/contacts/owner.py",
