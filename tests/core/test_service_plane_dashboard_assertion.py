@@ -177,19 +177,22 @@ class _Routing:
         return type("R", (), {"content": [], "structured_content": None, "is_error": False})()
 
 
-async def _dispatch(routing: _Routing, **kwargs: Any) -> None:
+def _built_dispatch(**kwargs: Any) -> Any:
     captured: dict[str, Any] = {}
 
     def build(**route_kwargs: Any):
         captured.update(route_kwargs)
         return object()
 
-    with (
-        patch.object(dr.importlib, "import_module", return_value=routing),
-        patch.object(dr, "build_dashboard_call_route", side_effect=build),
-    ):
+    with patch.object(dr, "build_dashboard_call_route", side_effect=build):
         dr.build_switchboard_dashboard_call_route(object(), **kwargs)
-        await captured["dispatch"]("relationship", "relationship_note", dict(_ARGS))
+    return captured["dispatch"]
+
+
+async def _dispatch(routing: _Routing, **kwargs: Any) -> None:
+    dispatch = _built_dispatch(**kwargs)
+    with patch.object(dr.importlib, "import_module", return_value=routing):
+        await dispatch("relationship", "relationship_note", dict(_ARGS))
 
 
 async def test_with_a_signer_switchboard_forwards_with_one_assertion(signer) -> None:
@@ -200,8 +203,22 @@ async def test_with_a_signer_switchboard_forwards_with_one_assertion(signer) -> 
     assert list(headers) == [ASSERTION_HEADER]
 
 
-async def test_without_a_signer_switchboard_forwards_as_itself() -> None:
+async def test_a_signer_signs_even_with_the_unsigned_opt_in(signer) -> None:
     routing = _Routing()
-    await _dispatch(routing)
+    await _dispatch(routing, assertion_signer=signer, unsigned_until_broker_cutover=True)
+
+    (headers,) = routing.headers
+    assert list(headers) == [ASSERTION_HEADER]
+
+
+async def test_the_unsigned_opt_in_forwards_as_switchboard_without_resend() -> None:
+    """The _Routing fake asserts resend_after_send is False."""
+    routing = _Routing()
+    await _dispatch(routing, unsigned_until_broker_cutover=True)
 
     assert routing.headers == [{}]
+
+
+def test_without_a_signer_or_the_opt_in_there_is_no_forwarding_path() -> None:
+    assert _built_dispatch() is None
+    assert dr.switchboard_dashboard_dispatch(object()) is None

@@ -269,8 +269,12 @@ too.
   Given the broker's assertion signer, Switchboard forwards each call with a
   dashboard assertion (principal `dashboard`, origin `owner`, goal null). No
   deployment provides that signer: it is provisioned with the broker at
-  cutover. Until then Switchboard forwards the call through `route()` as
-  itself, and a domain that verifies assertions refuses it.
+  cutover. Until then the daemon passes the explicit
+  `unsigned_until_broker_cutover=True` opt-in, so Switchboard forwards the
+  call through `route()` as itself, and a domain that verifies assertions
+  refuses it. With neither a signer nor the opt-in, the route refuses every
+  call `503 auth_unavailable` (retryable) before consuming its nonce, and
+  nothing reaches a target. The opt-in is removed at cutover (bu-jnhxc5).
 - **The dashboard still holds a direct connection.** `get_client` opens the
   butler's MCP session as before, and service-only tools use it. A routed call
   does not send anything over it.

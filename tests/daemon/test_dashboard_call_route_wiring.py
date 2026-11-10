@@ -32,6 +32,22 @@ def test_only_switchboard_with_a_pool_builds_the_route() -> None:
     assert route is not None and route.path == SERVICE_CALL_PATH
 
 
+def test_the_daemon_opts_in_to_unsigned_forwarding_until_broker_cutover(monkeypatch) -> None:
+    """Remove this opt-in at cutover (bu-jnhxc5), when the broker's signer is wired."""
+    from butlers.core.service_plane import dashboard_route
+
+    seen: dict = {}
+
+    def build(pool, **kwargs):
+        seen.update(kwargs)
+        return "ROUTE"
+
+    monkeypatch.setattr(dashboard_route, "build_switchboard_dashboard_call_route", build)
+
+    assert _daemon("switchboard", object())._build_dashboard_call_route() == "ROUTE"
+    assert seen == {"unsigned_until_broker_cutover": True}
+
+
 def test_the_route_is_attached_for_switchboard_and_dark_by_default(monkeypatch) -> None:
     monkeypatch.delenv("BUTLERS_SERVICE_PLANE_AUTH", raising=False)
     route = _daemon("switchboard", object())._build_dashboard_call_route()
