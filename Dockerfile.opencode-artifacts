@@ -12,7 +12,6 @@ RUN --network=none --mount=from=codex-compiler-artifacts,source=debs,target=/inp
     python3 -I -B /recipe/scripts/runtime_clis/install_system_artifacts.py \
       --manifest /recipe/deploy/runtime-clis/codex/compiler-inputs.json \
       --artifacts /inputs/compiler --profile compiler
-COPY --from=toolchain-artifacts /components/node/ /opt/node/
 COPY --from=default-plugin-artifacts / /inputs/default-plugin/
 COPY scripts/runtime_clis/produce_opencode_component.py scripts/runtime_clis/produce_default_plugin_artifact.py scripts/runtime_clis/produce_codex_artifacts.py scripts/runtime_clis/produce_native_packages.py scripts/runtime_clis/prepare_vendor.py scripts/runtime_clis/runtime_artifacts.py /recipe/scripts/runtime_clis/
 COPY Dockerfile.default-plugin-artifacts Dockerfile.opencode-artifacts /recipe/
@@ -22,12 +21,14 @@ WORKDIR /opt/opencode-build
 # The full ordinary Bun install and stock --single build include every normal
 # lifecycle, platform installer and embedded UI. Preparation is visibly NONFINAL.
 RUN --network=default --mount=type=tmpfs,target=/root \
+    --mount=from=toolchain-artifacts,source=components/node,target=/opt/node,readonly \
     python3 -I -B /recipe/scripts/runtime_clis/produce_opencode_component.py --phase public-seed
 
 # Fresh source and ordinary full install/build from the complete declared
 # installed dependency artifact and public caches; no compiled UI/CLI reuse.
 # Bun has no --offline install flag: the actual layer has no external route.
 RUN --network=none --mount=type=tmpfs,target=/root \
+    --mount=from=toolchain-artifacts,source=components/node,target=/opt/node,readonly \
     python3 -I -B /recipe/scripts/runtime_clis/produce_opencode_component.py --phase build
 
 FROM scratch AS artifacts

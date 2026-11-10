@@ -6,6 +6,11 @@ context exports its seed directly at its root. Compiler inputs include the
 original pinned patch utility. No operator credentials or runtime egress mode
 are supplied to the build.
 
+Both producer phases mount the complete declared Node component read-only at
+`/opt/node`. Ordinary dependency lifecycles write their outputs in the build
+workspace; they cannot mutate the pinned toolchain input. The complete Node
+identity check remains unchanged.
+
 The public-seed phase verifies the original source/eleven-patch series, complete
 published wrapper and Linux/x64 package archives, official Bun ZIP, full model
 catalogue and every provider logo. It runs ordinary `bun install
