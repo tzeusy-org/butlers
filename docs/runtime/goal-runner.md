@@ -353,8 +353,13 @@ brief text, arguments or results.
 ## Not yet delivered
 
 - The per-domain `ContextSource` adapters (a domain's memory and facts).
-- The lead policy's text: `roster/switchboard/goal-policy/LEAD.md` is owner-authored doctrine
-  and does not exist yet, so `lead:LEAD.md` serves nothing until the owner writes it.
+- The lead policy's adoption. `roster/switchboard/goal-policy/LEAD.md` is drafted by an
+  agent, and `lead:LEAD.md` serves it through `guidance.load`. Carrying it in the starting
+  packet is the packet item below.
+  - Authorship (owner decision, 2026-11-10): an agent may draft it and open a PR. Text that
+    conforms to the RFC and specs is adopted by independent conformance review.
+  - Reply style, voice and any non-conforming text merge only with the owner's explicit
+    approval on that PR.
 - The deployed session host (`bu-kiuh8v`), and a usage relay between tool calls; today the
   runner charges only the counts a settled run reports.
 - Constructing the runtime in the control plane: a live `Broker` needs the signing key and the
