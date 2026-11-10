@@ -44,7 +44,7 @@ from tests.session_host.test_core import request
 
 pytestmark = pytest.mark.unit
 
-PROVEN_DEVICE_SETTINGS_SHA256 = "70594c79a82fe5ba58d99d7121a8922bd13e895372c7532429e352c9e895f892"
+PROVEN_DEVICE_SETTINGS_SHA256 = "4f89ab269cadb39996f25dab1dbea1a66b6c005c648a2bd80cd873df792edc64"
 DOCUMENT = codex_proof.oauth_document()
 
 
