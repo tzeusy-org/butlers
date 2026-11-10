@@ -145,6 +145,7 @@ def _notify_signature() -> inspect.Signature | None:
         "_why",
         "_evidence",
         "_blast_radius",
+        "awaits_reply_seconds",
         "_reversibility",
     }
     if set(signature.parameters) != supported or any(
