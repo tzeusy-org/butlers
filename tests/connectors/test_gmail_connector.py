@@ -29,6 +29,7 @@ from butlers.connectors.gmail import (
     _classify_source_api_error,
 )
 from butlers.connectors.ingest_retry import IngestRetryBudget
+from tests.connectors.filtered_event_fakes import FilteredEventsPool
 
 
 @pytest.fixture
@@ -2166,8 +2167,10 @@ async def test_backfill_progress_reports_scoped_deltas_with_a_replay_token(
     runtime._fetch_message = AsyncMock(side_effect=RuntimeError("gone"))  # type: ignore[method-assign]
     runtime._mcp_client = MagicMock()
     runtime._mcp_client.call_tool = AsyncMock(return_value={"status": "active"})
-    # Park each message on its first failure instead of holding (bu-dhloi1.149).
+    # Park each message on its first failure instead of holding (bu-dhloi1.149); the
+    # park is written durably, so it needs a pool to write to (bu-dhloi1.250).
     runtime._backfill_ingest_retry = IngestRetryBudget(1)
+    runtime._db_pool = FilteredEventsPool()
 
     await runtime._execute_backfill_job(
         BackfillJob(job_id="job-1", date_from="2020-01-01", date_to="2020-12-31")

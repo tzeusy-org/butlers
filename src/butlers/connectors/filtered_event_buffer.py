@@ -6,8 +6,13 @@ during each poll cycle.  When the cycle completes the buffer is flushed to
 occurs until ``flush()`` is called.
 
 If the process crashes before ``flush()`` is called the buffered events are
-lost; this is intentional — filtered events are operational visibility data,
-not an audit trail.
+lost. That is acceptable only for visibility rows whose source still holds the
+item. A failed submission whose source is about to be released (a cursor
+committed, a checkpoint saved, a page token advanced) is the only copy of that
+item, so it never goes through the buffer: ``park()`` writes it at once, raises
+:class:`ParkNotDurableError` unless it was committed, and the caller holds the
+source until it returns. Gmail backfill, Calendar, ActivityWatch and Drive park
+this way.
 
 Typical usage inside a connector::
 

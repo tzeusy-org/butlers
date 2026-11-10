@@ -32,6 +32,7 @@ from butlers.connectors.google_calendar import (
 )
 from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.ingestion_policy import PolicyDecision
+from tests.connectors.filtered_event_fakes import FilteredEventsPool
 
 _ENDPOINT = "google_calendar:user:test@example.com"
 _OBSERVED = "2026-06-01T10:00:00+00:00"
@@ -425,6 +426,7 @@ async def test_submission_error_preserves_resolved_organizer_identity(
     """
     runtime = CalendarConnectorRuntime(account_config)
     runtime._ingest_retry = IngestRetryBudget(1)  # park on the first failure (bu-dhloi1.149)
+    runtime._db_pool = pool = FilteredEventsPool()  # the park is written durably (.250)
     event = {
         "id": "evt-submit-err",
         "status": "confirmed",
@@ -447,8 +449,8 @@ async def test_submission_error_preserves_resolved_organizer_identity(
         ingested = await runtime._process_event(event)
 
     assert ingested is False
-    assert len(runtime._filtered_event_buffer) == 1
-    row = runtime._filtered_event_buffer._rows[0]
+    assert len(runtime._filtered_event_buffer) == 0
+    (row,) = pool.written
     # row[5] = sender_identity, row[8] = status, row[9] = full_payload dict
     assert row[5] == "org@example.com"
     assert row[8] == "error"
@@ -469,6 +471,7 @@ async def test_submission_error_without_organizer_matches_policy_filter_conventi
     """
     runtime = CalendarConnectorRuntime(account_config)
     runtime._ingest_retry = IngestRetryBudget(1)  # park on the first failure (bu-dhloi1.149)
+    runtime._db_pool = pool = FilteredEventsPool()  # the park is written durably (.250)
     event = {
         "id": "evt-submit-err-noorg",
         "status": "confirmed",
@@ -491,8 +494,8 @@ async def test_submission_error_without_organizer_matches_policy_filter_conventi
         ingested = await runtime._process_event(event)
 
     assert ingested is False
-    assert len(runtime._filtered_event_buffer) == 1
-    row = runtime._filtered_event_buffer._rows[0]
+    assert len(runtime._filtered_event_buffer) == 0
+    (row,) = pool.written
     assert row[5] == "unknown"
     assert row[9]["sender"]["identity"] == "unknown"
 
@@ -609,6 +612,7 @@ async def test_submission_error_retains_raw_payload(
     for diagnosis and replay."""
     runtime = CalendarConnectorRuntime(account_config)
     runtime._ingest_retry = IngestRetryBudget(1)  # park on the first failure (bu-dhloi1.149)
+    runtime._db_pool = pool = FilteredEventsPool()  # the park is written durably (.250)
     event = {
         "id": "evt-err-priv",
         "status": "confirmed",
@@ -631,8 +635,8 @@ async def test_submission_error_retains_raw_payload(
         ingested = await runtime._process_event(event)
 
     assert ingested is False
-    assert len(runtime._filtered_event_buffer) == 1
-    row = runtime._filtered_event_buffer._rows[0]
+    assert len(runtime._filtered_event_buffer) == 0
+    (row,) = pool.written
     assert row[8] == "error"
     # The error path preserves the raw payload built into the envelope.
     assert row[9]["payload"]["raw"] == event
