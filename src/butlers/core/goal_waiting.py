@@ -314,6 +314,8 @@ class WaitLedger:
             goal_id,
             version,
         )
+        if plan is None:
+            return None
         predicate = {"kind": "settle"}
         return await self.open_envelope(
             EnvelopeSpec(
