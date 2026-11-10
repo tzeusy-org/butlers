@@ -59,6 +59,11 @@ spec:
             - {name: credentials, mountPath: /var/lib/session-host/credentials}
           resources:
             {{- toYaml .Values.sessionHost.resources | nindent 12 }}
+          {{- with .Values.sessionHost.seccompLocalhostProfile }}
+          # deploy/seccomp/session-host-sandbox.json: Moby's default plus the Bubblewrap launch.
+          securityContext:
+            seccompProfile: {type: Localhost, localhostProfile: {{ . | quote }}}
+          {{- end }}
       volumes:
         - name: pki
           secret:

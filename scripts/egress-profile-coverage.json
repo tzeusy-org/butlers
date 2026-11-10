@@ -5670,7 +5670,7 @@
       "sha256": "4eab683f218d7637593762785b6943c0487f297b4c69aa24f1dd9af517689610"
     },
     "deploy/helm/butlers/templates/session-host.yaml": {
-      "sha256": "96c602953decccf4a99b00429146ca5c2a0d2c342111458f08890bfc633f4ed6"
+      "sha256": "531f84a19f883f63b083ad88e8f0af350c5f42c6a6e1c3c74d970c15d4a475ba"
     },
     "deploy/helm/butlers/templates/tracker-egress.yaml": {
       "sha256": "da5c9d1b5636373dc93e8259fa73c8b1955f23971c02a322a61a0c3fca16366c"

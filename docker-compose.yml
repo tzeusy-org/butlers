@@ -1047,6 +1047,9 @@ services:
       - session_host_credentials:/var/lib/session-host/credentials
     tmpfs:
       - /var/lib/session-host/staging:mode=0700
+    # Moby's default plus exactly the Bubblewrap launch (deploy/seccomp/README.md).
+    security_opt:
+      - seccomp:./deploy/seccomp/session-host-sandbox.json
     networks: [control-session]
     restart: on-failure:3
 

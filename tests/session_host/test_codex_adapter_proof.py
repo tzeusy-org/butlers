@@ -1122,3 +1122,27 @@ def test_native_unreachable_broker_fails_the_launch(proof_root, tmp_path):
     # The control: without the setting the same outage leaves a live session.
     optional = {"broker_down": True, "drop_config_lines": ["required = true"]}
     assert launch(proof_root, optional, tmp_path / "optional")["exit"] == "completed"
+
+
+@pytest.mark.parametrize("served", [False, True])
+def test_stopping_the_fakes_never_waits_on_a_server_that_never_served(served):
+    """A launch refused before its receipt never starts the fakes; teardown must still end.
+
+    ``shutdown()`` blocks until ``serve_forever`` returns, so calling it on a server that
+    never served deadlocks. That, not the launch, is what kept a refused run from finishing.
+    """
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), codex_proof._Fakes)
+    serving = threading.Thread(target=server.serve_forever, daemon=True) if served else None
+    if serving is not None:
+        serving.start()
+    stopper = threading.Thread(target=codex_proof.stop_fakes, args=(server, serving), daemon=True)
+    stopper.start()
+    stopper.join(timeout=5)
+    assert not stopper.is_alive(), "teardown deadlocked"
+    assert server.socket.fileno() == -1
+    if serving is not None:
+        serving.join(timeout=5)
+        assert not serving.is_alive()

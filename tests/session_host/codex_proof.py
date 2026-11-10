@@ -289,8 +289,10 @@ MUTATIONS = {
         {"replace_mount": {"/invocation/prompt": ["--bind-data", "$FD", "/invocation/prompt"]}},
         "filesystem_isolation",
     ),
-    # Both go: with --as-pid-1 kept and --unshare-pid dropped, the run did not
-    # finish within 300s here, which proves nothing either way.
+    # Both go: bwrap refuses --as-pid-1 without --unshare-pid before creating any
+    # namespace, so dropping only --unshare-pid tests nothing. That launch is
+    # refused at once; the run that once never finished was this harness's
+    # teardown waiting on fakes that never started (see stop_fakes).
     "pid-namespace-shared": (
         {"drop_bwrap": ["--unshare-pid", "--as-pid-1"]},
         "process_isolation",
@@ -1272,6 +1274,19 @@ def observe_isolation(
     }
 
 
+def stop_fakes(server: ThreadingHTTPServer, serving: threading.Thread | None) -> None:
+    """Stop the fakes, if they ever started, and close their socket.
+
+    ``shutdown()`` blocks until ``serve_forever`` returns, so it deadlocks on a server
+    that never served. The fakes start only once the launch's namespace receipt
+    arrives; a launch refused before then (bwrap rejecting its arguments, say) never
+    starts them.
+    """
+    if serving is not None:
+        server.shutdown()
+    server.server_close()
+
+
 def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
     """One real launch through the production domain; returns what was observed."""
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Fakes, bind_and_activate=False)
@@ -1294,6 +1309,7 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
     server.observe = None  # type: ignore[attr-defined]
     origin = f"http://127.0.0.1:{PROOF_PORT}"
     peer: dict[str, Any] = {}
+    serving: list[threading.Thread] = []
     oauth = bool(scenario.get("oauth"))
     settings = CodexSettings(MODEL, auth=OAUTH if oauth else API_KEY)
     lease: CodexOAuthVolume | None = None
@@ -1331,7 +1347,8 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
                 peer.get("staged"),
             )
             server.socket = _listener_inside(pid)
-            threading.Thread(target=server.serve_forever, daemon=True).start()
+            serving.append(threading.Thread(target=server.serve_forever, daemon=True))
+            serving[0].start()
             return pid
 
         def _prepare_native(self, material: InvocationMaterial) -> None:
@@ -1478,8 +1495,7 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
         outcome["exit"] = "completed"
     finally:
         asyncio.create_subprocess_exec = real_spawn  # type: ignore[assignment]
-        server.shutdown()
-        server.server_close()
+        stop_fakes(server, serving[0] if serving else None)
         peer["process"].kill()
         peer["process"].wait()
         peer["material"].discard()

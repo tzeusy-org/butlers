@@ -611,6 +611,25 @@ runs it. The shim there is the image's own `/usr/local/libexec/butlers/runtime-c
 profile and fails the build if it names an interpreter or a needed library, because a
 dynamic one cannot run inside the empty domain root; the run refuses a dynamic shim.
 
+The pod profile is `deploy/seccomp/session-host-sandbox.json`: the dashboard sandbox
+profile plus `CLONE_NEWNET` in the one namespace `clone` mask, and no `setns`. Compose
+runs `session-host` under it; the chart applies it as a `Localhost` profile through
+`sessionHost.seccompLocalhostProfile`. The proof container runs under
+`deploy/seccomp/session-host-proof.json` (`--security-opt seccomp=<that file>`), not
+`seccomp=unconfined`. That is the pod profile plus exactly two `setns` rules, limited
+to user and network namespaces, which only the proof's listener helper needs; no
+deployment uses it (see `deploy/seccomp/README.md`). The run still passes
+`apparmor=unconfined` and `systempaths=unconfined`: Bubblewrap's `--proc` needs an
+unmasked `/proc`, and seccomp does not provide that.
+
+A launch that hangs before its runtime starts cannot outlive the invocation owner:
+`run()` ends by `timeout_s` plus the cleanup cap, whatever the launch does. A launch
+with no namespace receipt cannot be observed, so it ends as unproven containment and
+quarantines the owner, never as a success. The exact-image `pid-namespace-shared`
+row once seemed to hang. The cause was the proof's own teardown: it waited on fake
+listeners that never started, because bwrap refuses `--as-pid-1` without
+`--unshare-pid` before creating any namespace.
+
 ### Measured checks
 
 Five of the eleven measured checks show absence, not enforcement:
