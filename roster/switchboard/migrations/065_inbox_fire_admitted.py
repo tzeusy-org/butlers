@@ -10,7 +10,11 @@ This revision adds the missing check: the bound intent must carry a successor ep
 ``not_admitted`` or ``cancelled``. The wake admission writer is the only one that inserts such a
 row, and it inserts the admitted intent first; the trigger makes that a database fact.
 
-The downgrade drops the trigger and function only.
+It also admits ``admit_error`` as a ``not_admitted`` reason: a fire whose admission keeps raising
+is closed with a terminal receipt rather than retried forever.
+
+The downgrade drops the trigger and function and restores the reason list; it refuses while an
+``admit_error`` receipt exists.
 """
 
 from alembic import op
@@ -39,11 +43,21 @@ def upgrade() -> None:
         END $$;
         CREATE TRIGGER goal_inbox_fire_admitted AFTER INSERT ON switchboard.goal_inbox
             FOR EACH ROW EXECUTE FUNCTION switchboard.goal_inbox_fire_admitted();
+        ALTER TABLE switchboard.wake_intents
+            DROP CONSTRAINT IF EXISTS wake_intents_not_admitted_reason_check;
+        ALTER TABLE switchboard.wake_intents ADD CONSTRAINT wake_intents_not_admitted_reason_check
+            CHECK (not_admitted_reason IN ('stopped','expired','cap_reached','goal_not_waiting',
+                'envelope_not_open','stale_generation','admit_error'));
     """)
 
 
 def downgrade() -> None:
     op.execute("""
+        ALTER TABLE switchboard.wake_intents
+            DROP CONSTRAINT IF EXISTS wake_intents_not_admitted_reason_check;
+        ALTER TABLE switchboard.wake_intents ADD CONSTRAINT wake_intents_not_admitted_reason_check
+            CHECK (not_admitted_reason IN ('stopped','expired','cap_reached','goal_not_waiting',
+                'envelope_not_open','stale_generation'));
         DROP TRIGGER IF EXISTS goal_inbox_fire_admitted ON switchboard.goal_inbox;
         DROP FUNCTION IF EXISTS switchboard.goal_inbox_fire_admitted();
     """)

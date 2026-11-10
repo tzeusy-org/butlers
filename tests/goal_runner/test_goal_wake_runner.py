@@ -8,6 +8,7 @@ same intent; Stop cancels it; and a goal waiting for its wake is never ended as 
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
@@ -43,7 +44,7 @@ def fire_for(instance: str = "c0") -> FireIntent:
     )
 
 
-async def waiting_on_conditions(h, goal: UUID, lead) -> UUID:
+async def waiting_on_conditions(h, goal: UUID, lead, *, lifetime=timedelta(hours=1)) -> UUID:
     """The lead's session ended and the goal waits on one conditions envelope (instance c0)."""
     owner_label = Label.owner()
     async with h.w.owner.acquire() as conn, conn.transaction():
@@ -66,7 +67,7 @@ async def waiting_on_conditions(h, goal: UUID, lead) -> UUID:
                 grant_snapshot=[],
                 grant_digest=DIGEST,
                 label=owner_label,
-                deadline=datetime.now(UTC) + timedelta(hours=1),
+                deadline=datetime.now(UTC) + lifetime,
                 max_wakes=2,
                 condition_instance_ids=["c0"],
             )
@@ -234,3 +235,78 @@ async def test_the_sweep_admits_a_fire_the_evaluator_committed_and_nobody_admitt
 
         wake = await wake_row(h, goal)
         assert (wake["fire_key"], wake["state"]) == (fire.fire_key, "launched")
+
+
+async def test_a_poisoned_fire_does_not_stop_the_other_stages_of_the_sweep(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEARCH))
+        old = await h.lead(goal)
+        await h.w.owner.execute(
+            "UPDATE switchboard.invocations SET lease_expires_at = now() - interval '1 second' "
+            "WHERE id = $1",
+            old.invocation_id,
+        )
+
+        async def poisoned(self, grace, limit=50):
+            return [fire_for("nobody")]
+
+        async def raises(self, fire):
+            raise RuntimeError("poisoned fire")
+
+        with (
+            patch.object(WakeAdmission, "unadmitted", poisoned),
+            patch.object(WakeAdmission, "admit", raises),
+        ):
+            await h.runner.supervise_once()
+        # The lapsed lease was still handled in the same sweep: a successor lead launched.
+        await h.launched(2)
+        assert await h.goal_status(goal) == "running"
+
+
+async def test_a_fire_that_keeps_failing_is_closed_with_an_admit_error_receipt(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEARCH))
+        lead = await h.lead(goal)
+        await waiting_on_conditions(h, goal, lead)
+        fire = fire_for()
+
+        async def missed(self, grace, limit=50):
+            row = await self.connection.fetchval(
+                "SELECT count(*) FROM switchboard.wake_intents WHERE fire_key = $1", fire.fire_key
+            )
+            return [] if row else [fire]
+
+        async def raises(self, fire):
+            raise RuntimeError("poisoned fire")
+
+        with patch.object(WakeAdmission, "unadmitted", missed):
+            with patch.object(WakeAdmission, "admit", raises):
+                for _ in range(3):
+                    await h.runner.supervise_once()
+            assert await h.goal_status(goal) == "waiting"
+            wake = await wake_row(h, goal)
+            assert (wake["state"], wake["not_admitted_reason"]) == ("not_admitted", "admit_error")
+            # Nothing is retried once the receipt exists, and the goal stays waiting.
+            await h.runner.supervise_once()
+        assert await h.goal_status(goal) == "waiting" and len(h.host.launches) == 1
+
+
+async def test_a_lapsed_claim_past_the_envelope_deadline_is_cancelled(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEARCH))
+        lead = await h.lead(goal)
+        await waiting_on_conditions(h, goal, lead, lifetime=timedelta(seconds=2))
+        await h.runner.admit_wake(fire_for())
+        wake = await wake_row(h, goal)
+        async with h.runner._txn() as ledger:
+            assert await ledger.claim_wake(goal, wake["id"], "dead-runner", 120) is not None
+        await h.w.owner.execute(
+            "UPDATE switchboard.wake_intents SET claim_expires_at = now() - interval '1 second'"
+        )
+        await asyncio.sleep(2.2)
+
+        async with h.runner._txn() as ledger:
+            assert await ledger.lapse_wakes() == 1
+
+        after = await wake_row(h, goal)
+        assert (after["state"], after["cancelled_reason"]) == ("cancelled", "expired")

@@ -400,19 +400,24 @@ A condition fire becomes one successor epoch in two committed steps, bridged by 
    `open -> fired` CAS and wake count, the `condition_joined` decision, the `condition_fire` inbox
    row, the `wake` epoch record and the `pending` wake intent commit together, and the waiting goal
    becomes `admitted`) or records a terminal `not_admitted` receipt with its reason (`stopped`,
-   `goal_not_waiting`, `stale_generation`, `envelope_not_open`, `expired`, `cap_reached`) and
+   `goal_not_waiting`, `stale_generation`, `envelope_not_open`, `expired`, `cap_reached`,
+   `admit_error`) and
    changes nothing else. A condition instance id names its envelope generation (ids are
    generation-owned); the evaluator's own instance generation is a different counter.
 
 The sweep (`supervise_once`) admits any fire intent of a goal's wait that has no wake intent after
 `wake_grace_seconds`, so a crash between the two steps is completed, and replaying a settled fire
 returns the stored outcome and writes nothing. A refused fire has a wake intent row, so it is never
-retried.
+retried; a fire whose event already settled the generation under another fire key is not swept
+either. The wake stage runs last in the sweep and each fire or intent is guarded on its own: a
+fire that raises is logged and counted, and after three failed sweeps it is closed with an
+`admit_error` receipt, so it can never block lease lapse, budget fencing or settle resolution.
 
 The sweep then launches due wake intents: `claim_wake` takes one under the goal lock, `open_lead`
 opens the lead at the minted epoch and marks the claimed intent `launched` in the same transaction,
 and a launch that opens nothing marks it `failed` so the next sweep claims the same intent again
-(a lapsed claim returns to `pending` first). Stop cancels envelopes and unlaunched intents; an
+(a lapsed claim returns to `pending` first; a lapsed claim past the envelope deadline is cancelled
+`expired`). Stop cancels envelopes and unlaunched intents; an
 intent whose envelope deadline passed is cancelled `expired`. A goal with a pending, claimed or
 failed wake intent is not resumed as leaderless: its lead is the wake's to launch. The lead reads
 what woke it through `goal__inbox` as `kind: condition_fire` with the envelope and event ids and no

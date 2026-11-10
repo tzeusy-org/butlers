@@ -48,6 +48,7 @@ from .ledger import Leaderless, RunnerLedger, Started, WakeClaim
 from .models import ModelLadders, next_tier
 from .packet import PacketComposer
 
+_ADMIT_ATTEMPTS = 3  # sweeps a fire may fail admission before it is closed as admit_error
 logger = logging.getLogger(__name__)
 _tracer = trace.get_tracer(__name__)
 
@@ -138,6 +139,7 @@ class GoalRunner:
         self.config = config or RunnerConfig()
         self.kernel = kernel
         self._tasks: set[asyncio.Task] = set()
+        self._admit_failures: dict[UUID, int] = {}
 
     # -- plumbing -------------------------------------------------------------
 
@@ -578,10 +580,14 @@ class GoalRunner:
             await ledger.lapse_wakes()
             due = await ledger.wakes_due()
         for goal_id, intent_id in due:
-            async with self._txn() as ledger:
-                claim = await ledger.claim_wake(
-                    goal_id, intent_id, "goal-runner", self.config.wake_claim_seconds
-                )
+            try:
+                async with self._txn() as ledger:
+                    claim = await ledger.claim_wake(
+                        goal_id, intent_id, "goal-runner", self.config.wake_claim_seconds
+                    )
+            except Exception:
+                logger.exception("goal runner wake claim failed intent=%s", intent_id)
+                continue
             if claim is not None:
                 self._spawn(
                     _Plan(goal_id, "lead", self.ladders.first("lead"), 0, summary=True, wake=claim)
@@ -589,13 +595,6 @@ class GoalRunner:
 
     async def supervise_once(self) -> None:
         """One sweep: unlaunched admissions, lapsed leases, deadlines, ended and settling goals."""
-        async with self._txn() as ledger:
-            fires = await WakeAdmission(ledger.connection).unadmitted(
-                self.config.wake_grace_seconds
-            )
-        for fire in fires:
-            await self.admit_wake(fire)
-        await self._launch_wakes()
         async with self._txn() as ledger:
             unlaunched = await ledger.unlaunched(self.config.resume_grace_seconds)
         for goal_id in unlaunched:
@@ -650,6 +649,40 @@ class GoalRunner:
                 logger.warning("goal runner parked sync unavailable goal=%s", goal_id)
             async with self._txn() as ledger:
                 await ledger.resolve(goal_id)
+        # Wakes last: a fire that keeps failing must never starve the stages above.
+        await self._admit_fires()
+        await self._launch_wakes()
+
+    async def _admit_fires(self) -> None:
+        """Admit the fires the evaluator committed that no wake intent answers yet.
+
+        One fire's failure is logged and counted, never raised: a fire that fails
+        ``_ADMIT_ATTEMPTS`` sweeps in a row is closed with a terminal ``admit_error`` receipt.
+        """
+        async with self._txn() as ledger:
+            fires = await WakeAdmission(ledger.connection).unadmitted(
+                self.config.wake_grace_seconds
+            )
+        for fire in fires:
+            await self._admit_guarded(fire)
+
+    async def _admit_guarded(self, fire: FireIntent) -> WakeResult | None:
+        try:
+            result = await self.admit_wake(fire)
+        except Exception:
+            failures = self._admit_failures.get(fire.fire_key, 0) + 1
+            self._admit_failures[fire.fire_key] = failures
+            logger.exception("goal runner wake admission failed fire=%s", fire.fire_key)
+            if failures >= _ADMIT_ATTEMPTS:
+                try:
+                    async with self._txn() as ledger:
+                        await WakeAdmission(ledger.connection).abandon(fire)
+                    del self._admit_failures[fire.fire_key]
+                except Exception:
+                    logger.exception("goal runner could not close fire=%s", fire.fire_key)
+            return None
+        self._admit_failures.pop(fire.fire_key, None)
+        return result
 
     async def _resume(self, item: Leaderless) -> None:
         """Finish what a runner that died between ending a lead and its successor began (D14).

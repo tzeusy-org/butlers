@@ -307,3 +307,41 @@ async def test_an_inbox_row_cannot_bind_a_refused_fire(ledger):
             fire.event_id,
             env,
         )
+
+
+async def test_one_event_fired_by_two_instances_is_not_swept_forever(ledger):
+    owner, runtime = ledger
+    goal_id, _, _ = await waiting_goal(owner, runtime, instances=["c0", "c1"])
+    evaluator = ConditionEvaluator(PostgresConditionStore(runtime))
+    await register(evaluator, DECISION, instance_id="c0")
+    await register(evaluator, DECISION, instance_id="c1")
+    # The wait registered two conditions in its generation; one event fires both.
+    first = await evaluator.evaluate("c0", [decision_ev()], now=CONDITION_NOW)
+    second = await evaluator.evaluate("c1", [decision_ev()], now=CONDITION_NOW)
+    assert first.intent is not None and second.intent is not None
+    assert first.intent.event_id == second.intent.event_id
+    assert (await admit_fire(runtime, first.intent)).state == "admitted"
+    # The second fire is the same event under another key: refused without a receipt of its own.
+    await admit_fire(runtime, second.intent)
+
+    async with runtime.acquire() as conn, conn.transaction():
+        assert await WakeAdmission(conn).unadmitted(0) == []
+    assert (await counts(owner, goal_id))["wakes"] == 1
+
+
+async def test_a_fire_that_keeps_failing_is_closed_as_admit_error(ledger):
+    owner, runtime = ledger
+    goal_id, _, _ = await waiting_goal(owner, runtime)
+    evaluator = ConditionEvaluator(PostgresConditionStore(runtime))
+    await register(evaluator, DECISION, instance_id="c0")
+    fired = await evaluator.evaluate("c0", [decision_ev()], now=CONDITION_NOW)
+    assert fired.intent is not None
+
+    async with runtime.acquire() as conn, conn.transaction():
+        result = await WakeAdmission(conn).abandon(fired.intent)
+
+    assert (result.state, result.reason) == ("not_admitted", "admit_error")
+    async with runtime.acquire() as conn, conn.transaction():
+        assert await WakeAdmission(conn).unadmitted(0) == []
+    assert (await counts(owner, goal_id))["wakes"] == 1  # the receipt; no successor epoch
+    assert (await counts(owner, goal_id))["epochs"] == 1  # the lead's own epoch only

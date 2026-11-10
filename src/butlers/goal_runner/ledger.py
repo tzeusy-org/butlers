@@ -908,13 +908,18 @@ class RunnerLedger:
         )
 
     async def lapse_wakes(self) -> int:
-        """Cancel undelivered wake intents whose envelope deadline passed (S2.2 expiry)."""
+        """Cancel undelivered wake intents whose envelope deadline passed (S2.2 expiry).
+
+        A claim whose lease lapsed is undelivered too: its runner died, and a goal must not sit
+        admitted behind an intent nobody can launch.
+        """
         rows = await self.connection.fetch(
             "UPDATE switchboard.wake_intents w SET state = 'cancelled', "
             "cancelled_reason = 'expired', claimed_by = NULL, claim_expires_at = NULL, "
             "updated_at = now() FROM switchboard.wait_envelopes e "
             "WHERE (e.goal_id, e.id) = (w.goal_id, w.envelope_id) AND e.deadline <= now() "
-            "AND w.state IN ('pending', 'failed') RETURNING w.id"
+            "AND (w.state IN ('pending', 'failed') OR "
+            "(w.state = 'claimed' AND w.claim_expires_at <= clock_timestamp())) RETURNING w.id"
         )
         return len(rows)
 

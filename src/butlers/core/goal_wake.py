@@ -41,6 +41,7 @@ _REFUSAL_REASONS = (
     "goal_not_waiting",
     "envelope_not_open",
     "stale_generation",
+    "admit_error",
 )
 _LAUNCHING_KINDS = ("conditions", "owner_answer", "approval")
 
@@ -80,6 +81,12 @@ class WakeAdmission:
             "WHERE fi.fired_at <= clock_timestamp() - make_interval(secs => $1::float8) "
             "AND NOT EXISTS (SELECT 1 FROM switchboard.wake_intents w "
             "WHERE w.fire_key = fi.fire_key) "
+            # The same event settled this generation under another key (a replayed fire).
+            "AND NOT EXISTS (SELECT 1 FROM switchboard.wake_intents w "
+            "JOIN switchboard.wait_generations g ON (g.goal_id, g.envelope_id, g.generation) = "
+            "(w.goal_id, w.envelope_id, w.generation) "
+            "WHERE w.fire_event_id = fi.event_id "
+            "AND fi.instance_id = ANY(g.condition_instance_ids)) "
             "AND EXISTS (SELECT 1 FROM switchboard.wait_generations wg "
             "WHERE fi.instance_id = ANY(wg.condition_instance_ids)) "
             "ORDER BY fi.fired_at, fi.fire_key LIMIT $2",
@@ -103,6 +110,25 @@ class WakeAdmission:
             row["id"],
             row["epoch"],
             replayed=True,
+        )
+
+    async def abandon(self, fire: FireIntent) -> WakeResult:
+        """Close a fire whose admission keeps raising with a terminal ``admit_error`` receipt."""
+        if (stored := await self._stored(fire.fire_key)) is not None:
+            return stored
+        generation = await self.connection.fetchrow(
+            "SELECT goal_id, envelope_id, generation FROM switchboard.wait_generations "
+            "WHERE $1 = ANY(condition_instance_ids) ORDER BY created_at DESC LIMIT 1",
+            fire.instance_id,
+        )
+        if generation is None:
+            return WakeResult("unmapped")
+        return await self._refuse(
+            fire,
+            generation["goal_id"],
+            generation["envelope_id"],
+            generation["generation"],
+            "admit_error",
         )
 
     async def admit(self, fire: FireIntent) -> WakeResult:
