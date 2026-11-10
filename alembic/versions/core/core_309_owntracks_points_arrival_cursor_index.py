@@ -24,6 +24,10 @@ advisory lock first, polled with ``pg_try_advisory_lock`` in autocommit: a block
 cycle, one step removed), and each failed poll ends its own transaction before the next sleep.
 The loser then finds the index built and ``IF NOT EXISTS`` makes its build a no-op. This is the
 pattern core_231, core_242 and core_245 use.
+
+Autocommit makes a completed build durable if interrupted, and an interrupted concurrent build
+leaves an INVALID index that ``IF NOT EXISTS`` would silently keep. A retry therefore drops an
+invalid index of this name, under the same lock, before it builds.
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ branch_labels = None
 depends_on = None
 
 
+_INDEX = "idx_owntracks_points_recorded_at_id"
 _LOCK = 309_20261103
 # A build on a large evidence table can run for minutes; a peer waits for it rather than failing.
 _LOCK_WAIT_SECONDS = 1800
@@ -57,6 +62,15 @@ def upgrade() -> None:
         connection = op.get_bind()
         _acquire_lock(connection)
         try:
+            valid = connection.exec_driver_sql(
+                "SELECT idx.indisvalid FROM pg_index idx "
+                "JOIN pg_class index_table ON index_table.oid = idx.indexrelid "
+                "JOIN pg_namespace ns ON ns.oid = index_table.relnamespace "
+                "WHERE ns.nspname = 'connectors' AND index_table.relname = %s",
+                (_INDEX,),
+            ).scalar()
+            if valid is False:
+                op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS connectors.{_INDEX}")
             op.execute(
                 """
                 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_owntracks_points_recorded_at_id

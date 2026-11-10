@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import DBAPIError
 
 from alembic import command
 from butlers.migrations import _build_alembic_config
@@ -65,5 +66,35 @@ def test_a_waiting_upgrade_holds_no_transaction_and_builds_once_the_lock_frees(
                 assert check.exec_driver_sql(FIND_INDEX).scalar_one() is True
                 # The upgrade released the lock it took.
                 assert check.exec_driver_sql(f"SELECT pg_try_advisory_lock({LOCK})").scalar_one()
+    finally:
+        engine.dispose()
+
+
+def test_an_invalid_index_left_by_an_interrupted_build_is_repaired(postgres_container):
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    config = _build_alembic_config(db_url, chains=["core"])
+    command.upgrade(config, "core@core_308")
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        # What an interrupted CREATE INDEX CONCURRENTLY leaves: the name exists, invalid. A build
+        # that times out waiting for an older open transaction does exactly that.
+        with engine.connect() as older, engine.connect() as connection:
+            older.exec_driver_sql("BEGIN")
+            older.exec_driver_sql("LOCK TABLE connectors.owntracks_points IN ROW EXCLUSIVE MODE")
+            connection.exec_driver_sql("SET statement_timeout = '700ms'")
+            with pytest.raises(DBAPIError):
+                connection.exec_driver_sql(
+                    f"CREATE INDEX CONCURRENTLY {INDEX} "
+                    "ON connectors.owntracks_points (recorded_at ASC, id ASC)"
+                )
+            older.exec_driver_sql("ROLLBACK")
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql(FIND_INDEX).scalar_one() is False
+
+        command.upgrade(config, "core@core_309")
+
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql(FIND_INDEX).scalar_one() is True
+            assert connection.exec_driver_sql(f"SELECT pg_try_advisory_lock({LOCK})").scalar_one()
     finally:
         engine.dispose()
