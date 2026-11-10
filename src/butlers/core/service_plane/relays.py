@@ -30,17 +30,6 @@ class ServiceCaller:
     daemon: str
 
 
-@dataclass(frozen=True, slots=True)
-class RelayEndpoint:
-    """One named relay and the only target it may reach."""
-
-    name: str
-    target_butler: str
-    target_tool: str
-    args_model: type[BaseModel]
-    allowed_callers: frozenset[ServiceCaller]
-
-
 class RelayRefused(Exception):
     """A relay refused the call before contacting its target."""
 
@@ -50,6 +39,38 @@ class RelayRefused(Exception):
 
 
 Dispatch = Callable[[str, str, dict[str, Any]], Awaitable[Any]]
+#: Builds the (target butler, target args) pair from the authenticated caller
+#: and the validated request, or raises ``RelayRefused``.
+Prepare = Callable[[ServiceCaller, BaseModel], tuple[str, dict[str, Any]]]
+
+
+def _single_target(endpoint: RelayEndpoint) -> Prepare:
+    def prepare(caller: ServiceCaller, validated: BaseModel) -> tuple[str, dict[str, Any]]:
+        (butler,) = endpoint.target_butlers
+        return butler, validated.model_dump(mode="json")
+
+    return prepare
+
+
+@dataclass(frozen=True, slots=True)
+class RelayEndpoint:
+    """One named relay, its one target tool and the butlers that tool may live on.
+
+    Most relays have exactly one target butler. A relay with several (domain
+    events: the contract's permitted subscribers) must supply ``prepare``,
+    which picks one of them from the request; the pick is checked against
+    ``target_butlers`` again before dispatch.
+    """
+
+    name: str
+    target_butlers: frozenset[str]
+    target_tool: str
+    args_model: type[BaseModel]
+    allowed_callers: frozenset[ServiceCaller]
+    prepare: Prepare | None = None
+    #: Deliver to a target whose registry heartbeat is stale (the QA relay's
+    #: existing behaviour: error reports must still reach a lagging QA).
+    allow_stale: bool = False
 
 
 def target_is_llm_presentable(tool: str) -> bool:
@@ -79,6 +100,10 @@ async def relay_call(
         validated = endpoint.args_model.model_validate(dict(args))
     except ValidationError:
         raise RelayRefused("args_invalid") from None
-    return await dispatch(
-        endpoint.target_butler, endpoint.target_tool, validated.model_dump(mode="json")
-    )
+    if endpoint.prepare is None and len(endpoint.target_butlers) != 1:
+        raise RelayRefused("target_not_allowed")
+    prepare = endpoint.prepare or _single_target(endpoint)
+    target_butler, target_args = prepare(caller, validated)
+    if target_butler not in endpoint.target_butlers:
+        raise RelayRefused("target_not_allowed")
+    return await dispatch(target_butler, endpoint.target_tool, target_args)

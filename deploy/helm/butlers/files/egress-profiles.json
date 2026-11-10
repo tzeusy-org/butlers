@@ -111,6 +111,12 @@
           "port": 4318,
           "protocol": "TCP",
           "site": "otlp"
+        },
+        {
+          "optional": true,
+          "port": 6443,
+          "protocol": "TCP",
+          "site": "kube-apiserver"
         }
       ],
       "summary": "Key-absent control plane: Switchboard and the session listener"

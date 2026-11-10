@@ -63,6 +63,12 @@ ROUTE_CALLERS: tuple[RouteCaller, ...] = (
         "Passes route() to read_system_answer; dies with the dashboard answer lane.",
     ),
     RouteCaller(
+        "src/butlers/core/service_plane/wiring.py",
+        "build_switchboard_relay_route.dispatch_for.dispatch",
+        "named_relay",
+        "The relays' own dispatch: Switchboard's in-process route(), after the relay's checks.",
+    ),
+    RouteCaller(
         "roster/switchboard/modules/tools.py",
         "register_tools.route",
         "removed",

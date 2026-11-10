@@ -31,10 +31,17 @@ _QA_REPORT_FINDING_TOOL = "report_finding"
 class QaRelay:
     """One daemon's trusted relay, with availability cached for its actual client."""
 
-    def __init__(self, butler_name: str, pool: Any, switchboard_client_getter: Callable[[], Any]):
+    def __init__(
+        self,
+        butler_name: str,
+        pool: Any,
+        switchboard_client_getter: Callable[[], Any],
+        switchboard_url: str | None = None,
+    ):
         self._butler_name = butler_name
         self._pool = pool
         self._switchboard_client_getter = switchboard_client_getter
+        self._switchboard_url = switchboard_url
         self._qa_available_cache: tuple[bool, float] | None = None
         self._qa_cache_client: Any = None
 
@@ -159,6 +166,18 @@ class QaRelay:
         context: str | None,
     ) -> dict:
         """Use Switchboard MCP; target acceptance alone confirms reception."""
+        from butlers.core.service_plane.messenger_delivery import service_plane_auth_enabled
+
+        finding = {
+            "fingerprint": fingerprint,
+            "exception_type": exception_type,
+            "call_site": call_site,
+            "severity": severity,
+            "event_summary": event_summary,
+            **({"context": context} if context is not None else {}),
+        }
+        if service_plane_auth_enabled():
+            return await self._try_named_relay(fingerprint, finding)
         client = self._switchboard_client_getter()
         if client is None or not await self._is_qa_available(client):
             return self._refused(fingerprint, "qa_unavailable")
@@ -169,21 +188,35 @@ class QaRelay:
                     "target_butler": _QA_BUTLER_NAME,
                     "tool_name": _QA_REPORT_FINDING_TOOL,
                     "allow_stale": True,
-                    "args": {
-                        "fingerprint": fingerprint,
-                        "exception_type": exception_type,
-                        "call_site": call_site,
-                        "severity": severity,
-                        "event_summary": event_summary,
-                        "source_butler": self._butler_name,
-                        **({"context": context} if context is not None else {}),
-                    },
+                    "args": {**finding, "source_butler": self._butler_name},
                 },
             )
         except TimeoutError:
             raise
         except Exception:
             return self._refused(fingerprint, "relay_failed")
+        return self._settle(fingerprint, raw)
+
+    async def _try_named_relay(self, fingerprint: str, finding: dict[str, Any]) -> dict:
+        """RFC 0038 D7: the qa.report_finding relay; QA attributes from the caller."""
+        from butlers.core.service_plane.client import RelayUnavailable, call_relay
+        from butlers.core.service_plane.registry import QA_REPORT_FINDING
+        from butlers.core.service_plane.relays import RelayRefused
+
+        if not self._switchboard_url:
+            return self._refused(fingerprint, "qa_unavailable")
+        try:
+            raw = await call_relay(
+                QA_REPORT_FINDING,
+                finding,
+                daemon=self._butler_name,
+                switchboard_url=self._switchboard_url,
+            )
+        except (RelayRefused, RelayUnavailable, OSError):
+            return self._refused(fingerprint, "relay_failed")
+        return self._settle(fingerprint, raw)
+
+    def _settle(self, fingerprint: str, raw: Any) -> dict:
         result = _mcp_payload(raw)
         if isinstance(result, dict) and "result" in result:
             result = _mcp_payload(result["result"])

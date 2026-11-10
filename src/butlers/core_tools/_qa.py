@@ -10,5 +10,10 @@ from butlers.core_tools._base import ToolContext
 
 def register_qa_tools(ctx: ToolContext, mcp: Any) -> None:
     """Bind trusted daemon context; neither module nor core-group opt-in is required."""
-    relay = QaRelay(ctx.butler_name, ctx.pool, ctx.daemon._qa_switchboard_client)
+    relay = QaRelay(
+        ctx.butler_name,
+        ctx.pool,
+        ctx.daemon._qa_switchboard_client,
+        switchboard_url=getattr(getattr(ctx.daemon, "config", None), "switchboard_url", None),
+    )
     relay.register_tools(mcp)

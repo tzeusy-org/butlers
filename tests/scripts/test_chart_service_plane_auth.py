@@ -62,7 +62,7 @@ def test_off_by_default_renders_no_accounts_switch_or_token() -> None:
         assert all(v["name"] != "workload-token" for v in pod["volumes"])
 
 
-def test_on_gives_each_workload_its_account_and_control_a_bound_delivery_token() -> None:
+def test_on_gives_each_workload_its_account_and_its_one_bound_token() -> None:
     docs = _render("servicePlaneAuth.enabled=true")
 
     accounts = {d["metadata"]["name"] for d in docs if d["kind"] == "ServiceAccount"}
@@ -73,13 +73,16 @@ def test_on_gives_each_workload_its_account_and_control_a_bound_delivery_token()
     assert _env(control)["BUTLERS_SERVICE_PLANE_AUTH"] == "1"
     assert _env(up)["BUTLERS_SERVICE_PLANE_AUTH"] == "1"
 
-    (volume,) = [v for v in control["volumes"] if v["name"] == "workload-token"]
-    (source,) = volume["projected"]["sources"]
-    token = source["serviceAccountToken"]
-    assert token["audience"] == token["path"] == "butlers.messenger-delivery.v1"
-    assert token["expirationSeconds"] <= 3600
-    # Only the control plane presents a delivery token.
-    assert all(v["name"] != "workload-token" for v in up["volumes"])
+    def audiences(pod: dict) -> set[str]:
+        (volume,) = [v for v in pod["volumes"] if v["name"] == "workload-token"]
+        tokens = [source["serviceAccountToken"] for source in volume["projected"]["sources"]]
+        assert all(t["audience"] == t["path"] and t["expirationSeconds"] <= 3600 for t in tokens)
+        return {t["audience"] for t in tokens}
+
+    # Each workload holds only the audience it presents: control delivers to
+    # Messenger; the domain daemons call the relays.
+    assert audiences(control) == {"butlers.messenger-delivery.v1"}
+    assert audiences(up) == {"butlers.service-relay.v1"}
 
 
 _PROFILED = (
@@ -115,10 +118,12 @@ def test_under_egress_profiles_the_switch_requires_the_api_server_site() -> None
     assert "egressProfiles.sites.kube-apiserver" in result.stderr
 
 
-def test_the_api_server_site_admits_only_the_jwks_port_from_butlers_up() -> None:
+def test_the_api_server_site_admits_only_the_jwks_port_from_both_verifiers() -> None:
     site = "egressProfiles.sites.kube-apiserver.cidr=198.51.100.20/32"
     docs = _render("servicePlaneAuth.enabled=true", *_PROFILED, site)
 
-    assert _egress_to(docs, "butlers-up", "198.51.100.20/32") == [{"port": 6443, "protocol": "TCP"}]
+    # Messenger (butlers-up) verifies delivery tokens; Switchboard (control) verifies relays.
+    for workload in ("butlers-up", "butlers-control"):
+        assert _egress_to(docs, workload, "198.51.100.20/32") == [{"port": 6443, "protocol": "TCP"}]
     # Without the switch the optional site stays unadmitted unless located.
     assert _helm(*_PROFILED).returncode == 0

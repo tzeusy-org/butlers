@@ -617,6 +617,7 @@ class ButlerDaemon:
             fact_source_registry=getattr(self, "_fact_source_registry", None),
             fact_receiver_registry=self._fact_receiver_registry,
             finance_warning_control_owner=self._finance_warning_control_owner,
+            service_relay_route=self._build_service_relay_route(),
         )
         config = uvicorn.Config(
             app,
@@ -742,6 +743,18 @@ class ButlerDaemon:
 
         return RoutePreflight(self.db.pool, list_butlers(self.config_dir.parent))
 
+    def _build_service_relay_route(self) -> Any | None:
+        """RFC 0038 D7 named relays, on Switchboard's service listener only."""
+        config, config_dir, db = self.config, self.config_dir, self.db
+        if config is None or config.name != "switchboard" or config_dir is None:
+            return None
+        if db is None or db.pool is None:
+            return None
+
+        from butlers.core.service_plane.wiring import build_switchboard_relay_route
+
+        return build_switchboard_relay_route(db.pool, config_dir.parent)
+
     @classmethod
     def _build_mcp_http_app(
         cls,
@@ -755,6 +768,7 @@ class ButlerDaemon:
         fact_source_registry: Any | None = None,
         fact_receiver_registry: Any | None = None,
         finance_warning_control_owner: Any | None = None,
+        service_relay_route: Any | None = None,
     ) -> Any:
         """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
         apply_streamable_http_disconnect_patch()
@@ -845,6 +859,12 @@ class ButlerDaemon:
             receiver_route = fact_receiver_registry.route()
             if not cls._attach_route_via_public_api(streamable_app, receiver_route):
                 streamable_app.routes.append(receiver_route)
+
+        # RFC 0038 D7 named relays: service listener only, never an MCP tool.
+        # The route refuses everything (404) until BUTLERS_SERVICE_PLANE_AUTH is on.
+        if butler_name == "switchboard" and service_relay_route is not None:
+            if not cls._attach_route_via_public_api(streamable_app, service_relay_route):
+                streamable_app.routes.append(service_relay_route)
 
         if butler_name == "switchboard" and finance_warning_control_owner is not None:
             control_route = finance_warning_control_owner.route()

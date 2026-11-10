@@ -89,6 +89,9 @@ internal = [
 sites = [
   { site = "database", port = 5432 },
   { site = "otlp", port = 4318 },
+  # Switchboard verifies relay callers' workload tokens against the issuer JWKS
+  # (service plane, bu-2c1g7v). Required when servicePlaneAuth.enabled.
+  { site = "kube-apiserver", port = 6443, optional = true },
 ]
 external = [
   "pypi.org:443",

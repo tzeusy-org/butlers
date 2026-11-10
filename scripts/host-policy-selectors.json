@@ -1046,23 +1046,23 @@
   },
   "current_public": "773d1d81b8112a951776db56241eaf6988717263",
   "counts": {
-    "direct": 89,
-    "direct_files": 40,
-    "container": 111,
+    "direct": 92,
+    "direct_files": 41,
+    "container": 114,
     "supplementary": 44,
     "all_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 62,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 63,
       "NON_NAME_ENUM_OR_MODULE": 29,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
-      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 35,
+      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 37,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 9,
       "SCHEMA_OWNERSHIP": 14
     },
     "direct_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 44,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 45,
       "NON_NAME_ENUM_OR_MODULE": 5,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 3,
-      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 21,
+      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 23,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 8,
       "SCHEMA_OWNERSHIP": 8
     }
@@ -4939,6 +4939,80 @@
       ],
       "baseline_ids": [],
       "public_source_commit": "7ccb07b0f0d0cf39f509d1c0b5454cf3b11a1ae0"
+    },
+    {
+      "id": "b1d35de7f9768584704cf2a975c5d87a3c4e4908d3da52851984918b31e33535",
+      "path": "src/butlers/core/service_plane/registry.py",
+      "symbol": "_domain_callers",
+      "kind": "compare",
+      "expression": "daemon != 'switchboard'",
+      "occurrence": 1,
+      "line": 57,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Relay allowlists name (butlers-up, daemon) pairs for the domain daemons only; canonical Switchboard is the relay host and never a domain caller of its own relays.",
+      "reason": "bu-2c1g7v RFC 0038 D7 dark named relays (BUTLERS_SERVICE_PLANE_AUTH, default off). The daemon name only narrows an allowlist under an authenticated workload; it grants nothing on its own. No host policy is introduced.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "5003c289cc"
+    },
+    {
+      "id": "23359d5249ff04ba23984964666888c57cf925e0a039b622e6f4977f1dd93558",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._build_service_relay_route",
+      "kind": "compare",
+      "expression": "config.name != 'switchboard'",
+      "occurrence": 1,
+      "line": 749,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Retain canonical daemon identity for _build_service_relay_route: only Switchboard serves the named relays; group flags do not grant identity/transport/ownership authority.",
+      "reason": "bu-2c1g7v RFC 0038 D7 dark named relays; same canonical Switchboard selector as the daemon's other service-listener routes.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "5003c289cc"
+    },
+    {
+      "id": "8a3151f107b9437ea56d5fa2ad419edb63ecbd68325803a6940b31e04c6f649f",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._build_mcp_http_app",
+      "kind": "compare",
+      "expression": "butler_name == 'switchboard'",
+      "occurrence": 3,
+      "line": 869,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Retain canonical daemon identity for _build_mcp_http_app; group flags do not grant identity/transport/ownership authority.",
+      "reason": "bu-2c1g7v: the relay route attach (service listener only) adds a third canonical Switchboard check in _build_mcp_http_app, ahead of the Finance warning control route, so that route's check is now occurrence 3. Same category and purpose as occurrences 1 and 2.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "5003c289cc"
     }
   ],
   "retired": [

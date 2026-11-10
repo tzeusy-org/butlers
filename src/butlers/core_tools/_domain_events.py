@@ -156,7 +156,19 @@ async def _dispatch_receive_via_switchboard(
     Returns ``(data, error_text, retryable)``. ``error_text`` is ``None`` on
     a successful dispatch, and ``data`` is the *unwrapped* target-tool
     payload in that case.
+
+    With ``BUTLERS_SERVICE_PLANE_AUTH`` on, the call goes through the
+    ``domain_event.receive`` named relay instead (RFC 0038 D7): Switchboard
+    checks that this daemon publishes the contract and that the target is a
+    permitted subscriber, and sets ``source_butler`` from the caller. The
+    reconciliation sweep's in-process client stays on Switchboard's own
+    ``route()``: it already runs inside Switchboard, so there is no hop to
+    authenticate (``control_plane_internal`` in the service-plane inventory).
     """
+    from butlers.core.service_plane.messenger_delivery import service_plane_auth_enabled
+
+    if service_plane_auth_enabled() and not isinstance(client, _SwitchboardInProcessRouteClient):
+        return await _dispatch_receive_via_relay(client, butler_name, target_butler, args)
     return await dispatch_via_switchboard_route(
         client,
         pool,
@@ -167,6 +179,41 @@ async def _dispatch_receive_via_switchboard(
         classify=_unwrap_route_result,
         route_purpose="fan-out dispatch",
     )
+
+
+async def _dispatch_receive_via_relay(
+    client: Any, butler_name: str, target_butler: str, args: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str | None, bool]:
+    """The ``domain_event.receive`` relay; a refusal is permanent, no reply retryable.
+
+    The relay goes to the Switchboard this daemon is configured for: its
+    Switchboard client is built from ``config.switchboard_url``, which already
+    resolves the colocated default across containers.
+    """
+    from butlers.core.service_plane.client import RelayUnavailable, call_relay
+    from butlers.core.service_plane.registry import DOMAIN_EVENT_RECEIVE
+    from butlers.core.service_plane.relays import RelayRefused
+
+    switchboard_url = getattr(getattr(client, "transport", None), "url", None)
+    if not isinstance(switchboard_url, str) or not switchboard_url:
+        return None, "relay_unavailable: no configured Switchboard", True
+    try:
+        raw = await call_relay(
+            DOMAIN_EVENT_RECEIVE,
+            {
+                "subscriber": target_butler,
+                "event_id": args["event_id"],
+                "event_type": args["event_type"],
+                "payload": args["payload"],
+            },
+            daemon=butler_name,
+            switchboard_url=switchboard_url,
+        )
+    except RelayRefused as refused:
+        return None, f"relay_refused: {refused.code}", False
+    except (RelayUnavailable, OSError) as exc:
+        return None, f"relay_unavailable: {type(exc).__name__}", True
+    return _unwrap_route_result(raw)
 
 
 def _unwrap_route_result(raw: Any) -> tuple[dict[str, Any] | None, str | None, bool]:

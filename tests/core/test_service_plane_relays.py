@@ -28,7 +28,7 @@ def _endpoint(tool: str = "report_finding") -> RelayEndpoint:
     # report_finding is declared presentable=False in the presentation inventory.
     return RelayEndpoint(
         name="qa.report_finding",
-        target_butler="qa",
+        target_butlers=frozenset({"qa"}),
         target_tool=tool,
         args_model=_SnapshotArgs,
         allowed_callers=frozenset({_TRAVEL}),
@@ -51,6 +51,45 @@ async def test_an_allowed_caller_reaches_the_one_fixed_target_with_validated_arg
 
     assert result == {"ok": True}
     assert target.calls == [("qa", "report_finding", {"trip_id": "t1"})]
+
+
+async def test_a_multi_target_relay_dispatches_only_to_a_listed_butler_its_prepare_picks() -> None:
+    def prepare(caller: ServiceCaller, validated: BaseModel) -> tuple[str, dict[str, Any]]:
+        return validated.model_dump()["trip_id"], {"from": caller.daemon}
+
+    endpoint = RelayEndpoint(
+        name="multi",
+        target_butlers=frozenset({"health", "finance"}),
+        target_tool="report_finding",
+        args_model=_SnapshotArgs,
+        allowed_callers=frozenset({_TRAVEL}),
+        prepare=prepare,
+    )
+    target = _Target()
+
+    await relay_call(endpoint, _TRAVEL, {"trip_id": "health"}, target)
+    with pytest.raises(RelayRefused) as refused:
+        await relay_call(endpoint, _TRAVEL, {"trip_id": "qa"}, target)
+
+    assert refused.value.code == "target_not_allowed"
+    assert target.calls == [("health", "report_finding", {"from": "travel"})]
+
+
+async def test_a_multi_target_relay_without_prepare_refuses_rather_than_guessing() -> None:
+    endpoint = RelayEndpoint(
+        name="multi",
+        target_butlers=frozenset({"health", "finance"}),
+        target_tool="report_finding",
+        args_model=_SnapshotArgs,
+        allowed_callers=frozenset({_TRAVEL}),
+    )
+    target = _Target()
+
+    with pytest.raises(RelayRefused) as refused:
+        await relay_call(endpoint, _TRAVEL, {"trip_id": "t1"}, target)
+
+    assert refused.value.code == "target_not_allowed"
+    assert target.calls == []
 
 
 @pytest.mark.parametrize(

@@ -68,6 +68,9 @@ spec:
             - {name: runtime-home, mountPath: /root/.{{ . }}, subPath: {{ . }}}
             {{- end }}
             {{- include "butlers.verifiersMount" . | nindent 12 }}
+            {{- if and .Values.servicePlaneAuth.enabled .Values.butlersControl.enabled }}
+            - {name: workload-token, mountPath: /var/run/secrets/butlers/workload, readOnly: true}
+            {{- end }}
       volumes:
         {{- include "butlers.logsVolume" . | nindent 8 }}
         - name: wa-bridge
@@ -75,6 +78,16 @@ spec:
         - name: runtime-home
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-runtime-home}
         {{- include "butlers.verifiersVolume" . | nindent 8 }}
+        {{- if and .Values.servicePlaneAuth.enabled .Values.butlersControl.enabled }}
+        # Domain daemons present this to the control plane's named relays (one audience, pod-bound).
+        - name: workload-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: butlers.service-relay.v1
+                  path: butlers.service-relay.v1
+                  expirationSeconds: {{ .Values.servicePlaneAuth.tokenExpirationSeconds }}
+        {{- end }}
 ---
 # Every butler daemon listens on 41100-41112 inside the pod; dashboard-api
 # (BUTLERS_HOST=butlers-up) and connectors address them by this name.
