@@ -310,6 +310,7 @@ async def test_a_child_never_lists_or_calls_a_lead_tool_or_administer(broker_db_
             "goal__await",
             "goal__stop_child",
             "goal__complete",
+            "goal__wait_approval",
             "goal__inbox",
             "goal__escalate",
         ]
@@ -323,6 +324,7 @@ async def test_a_child_never_lists_or_calls_a_lead_tool_or_administer(broker_db_
             "goal__delegate",
             "goal__stop_child",
             "goal__complete",
+            "goal__wait_approval",
             "goal__inbox",
             "goal__escalate",
         ):
@@ -330,6 +332,7 @@ async def test_a_child_never_lists_or_calls_a_lead_tool_or_administer(broker_db_
                 "goal__delegate": delegation(SEARCH.identity),
                 "goal__stop_child": {"child_id": str(child)},
                 "goal__complete": {"outcome": "completed"},
+                "goal__wait_approval": {"effect_id": str(uuid4())},
                 "goal__inbox": {},
                 "goal__escalate": {},
             }[name]

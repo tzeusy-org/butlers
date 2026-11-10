@@ -310,3 +310,22 @@ async def test_a_lapsed_claim_past_the_envelope_deadline_is_cancelled(broker_db_
 
         after = await wake_row(h, goal)
         assert (after["state"], after["cancelled_reason"]) == ("cancelled", "expired")
+
+
+async def test_a_wait_that_expires_without_firing_ends_the_goal(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEARCH))
+        lead = await h.lead(goal)
+        await waiting_on_conditions(h, goal, lead, lifetime=timedelta(seconds=1))
+        await h.runner.supervise_once()
+        assert await h.goal_status(goal) == "waiting"  # not yet expired
+        await asyncio.sleep(1.2)
+
+        await h.runner.supervise_once()
+
+        assert await h.goal_status(goal) == "failed"
+        state = await h.w.owner.fetchval(
+            "SELECT state FROM switchboard.wait_envelopes WHERE goal_id = $1", goal
+        )
+        assert state == "expired"
+        assert len(h.host.launches) == 1

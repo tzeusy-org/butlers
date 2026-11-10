@@ -19,15 +19,17 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
+from uuid import NAMESPACE_OID, UUID, uuid5
 
 from opentelemetry import trace
 
 from butlers.capability_broker.contracts import BrokerRefused, Reason
 from butlers.capability_broker.service import Broker
 from butlers.conditions import FireIntent
+from butlers.core.goal_labels import Label
 from butlers.core.goal_wake import WakeAdmission, WakeResult
 from butlers.core.model_call import AttemptOutcome, AttemptSink, CallSpec, Candidate, call_model
 
@@ -575,6 +577,95 @@ class GoalRunner:
         async with self._txn() as ledger:
             return await WakeAdmission(ledger.connection).admit(fire)
 
+    async def wait_approval(self, goal_id: UUID, token: str, effect_id: Any) -> str:
+        """``goal.wait_approval`` (bu-dhloi1.204): the lead ends; the goal waits on one approval."""
+        effect = _uuid(effect_id)
+        with _tracer.start_as_current_span(
+            "goal.wait_approval", record_exception=False, set_status_on_exception=False
+        ) as span:
+            span.set_attribute("goal_id", str(goal_id))
+            async with self.broker._transaction() as broker_ledger:
+                principal = await broker_ledger.authenticate(goal_id, token)
+                span.set_attribute("invocation_id", str(principal.invocation_id))
+                ledger = RunnerLedger(broker_ledger.connection)
+                children = await ledger.wait_approval(principal, effect)
+                status = "" if isinstance(children, BrokerRefused) else "waiting"
+            if isinstance(children, BrokerRefused):
+                raise children
+        await self._terminate_all(children)
+        self._terminate_later(principal.invocation_id)
+        return status
+
+    async def _expire_waits(self) -> None:
+        """End each waiting goal whose envelope expired without firing; none waits forever."""
+        async with self._txn() as ledger:
+            expired = await ledger.expired_waits()
+        for goal_id in expired:
+            try:
+                async with self._txn() as ledger:
+                    await ledger.expire_wait(goal_id)
+            except Exception:
+                logger.exception("goal runner wait expiry failed goal=%s", goal_id)
+
+    async def _resolve_approvals(self) -> None:
+        """Continue or end each goal whose waited-on effect has settled (RFC 0038 S2.2).
+
+        An approved effect that ran wakes one successor summary lead through the same wake
+        admission a condition fire uses; one the owner or domain ended (rejected, expired,
+        cancelled) ends the goal ``partial`` and launches nothing. A wake that cannot be
+        admitted (refused for any reason but Stop, or mapped to no envelope generation) ends
+        the goal ``failed``: nothing may loop silently until the deadline.
+        """
+        async with self._txn() as ledger:
+            goals = await ledger.approval_waits()
+        for goal_id in goals:
+            try:
+                await self._resolve_approval(goal_id)
+            except Exception:
+                logger.exception("goal runner approval resolution failed goal=%s", goal_id)
+
+    async def _resolve_approval(self, goal_id: UUID) -> None:
+        try:
+            await self.broker.sync_parked(goal_id)
+        except BrokerRefused:
+            logger.warning("goal runner parked sync unavailable goal=%s", goal_id)
+        async with self._txn() as ledger:
+            decided = await ledger.decided_approvals(goal_id)
+        if decided is None:
+            return
+        envelope_id, effect_id, status, instance_id = decided
+        if status in ("rejected", "expired", "cancelled"):
+            async with self._txn() as ledger:
+                await ledger.end_approval_wait(goal_id, envelope_id, "partial")
+            return
+        key = f"approval:{envelope_id}:{effect_id}:{status}"
+        fire = FireIntent(
+            fire_key=uuid5(NAMESPACE_OID, key),
+            instance_id=instance_id or f"approval:{effect_id}",
+            generation=1,
+            event_id=uuid5(NAMESPACE_OID, f"event:{key}"),
+            reason=f"approval:{status}",
+            fired_at=datetime.now(UTC),
+            snapshot_generation=0,
+            cursors={},
+            label=Label.owner(),
+        )
+        result = await self.admit_wake(fire)
+        if result.state == "unmapped":
+            # The envelope's generation names no instance this fire maps to: nothing can ever
+            # wake it, so it ends rather than waiting for its deadline.
+            logger.error(
+                "goal runner approval wake unmapped goal=%s envelope=%s instance=%s",
+                goal_id,
+                envelope_id,
+                fire.instance_id,
+            )
+        if result.state == "unmapped" or (
+            result.state == "not_admitted" and result.reason != "stopped"
+        ):
+            async with self._txn() as ledger:
+                await ledger.end_approval_wait(goal_id, envelope_id, "failed")
+
     async def _launch_wakes(self) -> None:
         async with self._txn() as ledger:
             await ledger.lapse_wakes()
@@ -649,7 +740,9 @@ class GoalRunner:
                 logger.warning("goal runner parked sync unavailable goal=%s", goal_id)
             async with self._txn() as ledger:
                 await ledger.resolve(goal_id)
+        await self._expire_waits()
         # Wakes last: a fire that keeps failing must never starve the stages above.
+        await self._resolve_approvals()
         await self._admit_fires()
         await self._launch_wakes()
 

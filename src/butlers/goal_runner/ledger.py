@@ -619,6 +619,142 @@ class RunnerLedger:
         await self.resolve(principal.goal_id)
         return children
 
+    async def wait_approval(
+        self, principal: Principal, effect_id: UUID
+    ) -> list[UUID] | BrokerRefused:
+        """``goal.wait_approval``: the lead ends and the goal waits on one parked effect.
+
+        The effect must be parked for this goal with an approval to wait on. Live children are
+        stopped with the lead (returned for termination). The goal enters ``waiting`` on an
+        ``approval`` envelope bound to the exact effect; ``approval_waits`` finds it settled.
+        """
+        goal = await self.lock(principal.goal_id)
+        if goal is None or goal["status"] != "running":
+            raise BrokerRefused(Reason.GOAL)
+        if principal.depth != 0:
+            raise BrokerRefused(Reason.CAPABILITY)
+        digest = await self.connection.fetchval(
+            "SELECT args_digest FROM switchboard.effects WHERE goal_id = $1 AND id = $2 "
+            "AND status = 'parked' AND approval_ref IS NOT NULL",
+            principal.goal_id,
+            effect_id,
+        )
+        if digest is None:
+            raise BrokerRefused(Reason.RESOURCE)
+        exhausted = await self.broker.charge_call(principal)
+        if exhausted is not None:
+            return exhausted
+        children = await self._end_live(principal.goal_id, "stopped", "goal_ended", depth=1)
+        await self.end(principal.goal_id, principal.invocation_id, "returned", "completed")
+        epoch = await self.connection.fetchval(
+            "SELECT lead_epoch FROM switchboard.invocations WHERE goal_id = $1 AND id = $2",
+            principal.goal_id,
+            principal.invocation_id,
+        )
+        waits = WaitLedger(self.connection)
+        if await waits.open_approval(principal.goal_id, epoch, effect_id, digest) is None:
+            raise BrokerRefused(Reason.UNAVAILABLE)
+        await self.connection.execute(
+            "UPDATE switchboard.goals SET status = 'waiting', updated_at = now() WHERE id = $1",
+            principal.goal_id,
+        )
+        return children
+
+    async def approval_waits(self) -> list[UUID]:
+        """Waiting goals whose open approval envelope is bound to a parked effect (to sync)."""
+        rows = await self.connection.fetch(
+            "SELECT g.id FROM switchboard.goals g WHERE g.status = 'waiting' AND EXISTS "
+            "(SELECT 1 FROM switchboard.wait_envelopes e WHERE e.goal_id = g.id "
+            "AND e.kind = 'approval' AND e.state = 'open') ORDER BY g.id"
+        )
+        return [row["id"] for row in rows]
+
+    async def decided_approvals(self, goal_id: UUID) -> tuple[UUID, UUID, str, str | None] | None:
+        """``(envelope_id, effect_id, status, instance_id)`` once the waited-on effect settled.
+
+        Settled means past ``requested``, ``parked``, ``approved`` and ``dispatched``: the
+        approval ran to a terminal effect state, or the domain ended it. ``instance_id`` is the
+        envelope's current-generation condition instance id, the one name its wake is keyed on:
+        ``approval:<effect>`` for a wait opened by ``goal.wait_approval`` and
+        ``legacy:awaiting_approval:<goal>`` for one ``sw_064`` converted.
+        """
+        row = await self.connection.fetchrow(
+            "SELECT e.id AS envelope_id, f.id AS effect_id, f.status, "
+            "g.condition_instance_ids[1] AS instance_id FROM "
+            "switchboard.wait_envelopes e JOIN switchboard.effects f "
+            "ON (f.goal_id, f.id) = (e.goal_id, e.approval_effect_id) "
+            "LEFT JOIN switchboard.wait_generations g ON (g.goal_id, g.envelope_id, g.generation) "
+            "= (e.goal_id, e.id, e.generation) "
+            "WHERE e.goal_id = $1 AND e.kind = 'approval' AND e.state = 'open' "
+            "AND f.status <> ALL($2::text[])",
+            goal_id,
+            list(_UNSETTLED),
+        )
+        if row is None:
+            return None
+        return row["envelope_id"], row["effect_id"], row["status"], row["instance_id"]
+
+    async def expired_waits(self) -> list[UUID]:
+        """Waiting goals whose open envelope passed its deadline without firing (S2.2)."""
+        rows = await self.connection.fetch(
+            "SELECT g.id FROM switchboard.goals g WHERE g.status = 'waiting' AND EXISTS "
+            "(SELECT 1 FROM switchboard.wait_envelopes e WHERE e.goal_id = g.id "
+            "AND e.state = 'open' AND e.deadline <= now()) ORDER BY g.id"
+        )
+        return [row["id"] for row in rows]
+
+    async def expire_wait(self, goal_id: UUID) -> str | None:
+        """End a waiting goal whose envelope expired: ``failed``, or ``partial`` after an outcome.
+
+        The envelope closes ``expired`` and its undelivered wake intents cancel ``expired``. A
+        settle wait expiring leaves its recorded outcome resolved ``partial``; every other kind
+        (conditions, owner answer, approval, a held legacy approval) never produced one, so the
+        goal ``failed``. Returns the final status, or None when nothing had expired.
+        """
+        goal = await self.lock(goal_id)
+        if goal is None or goal["status"] != "waiting":
+            return None
+        expired = await self.connection.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM switchboard.wait_envelopes WHERE goal_id = $1 "
+            "AND state = 'open' AND deadline <= now())",
+            goal_id,
+        )
+        if not expired:
+            return None
+        await WaitLedger(self.connection).cancel_waits(goal_id, "expired")
+        resolved = await self.connection.fetchval(
+            "UPDATE switchboard.goal_outcomes SET final_status = 'partial', "
+            "resolved_at = clock_timestamp() WHERE goal_id = $1 AND final_status IS NULL "
+            "RETURNING true",
+            goal_id,
+        )
+        final = "partial" if resolved else "failed"
+        await self.connection.execute(
+            "UPDATE switchboard.goals SET status = $2, updated_at = now() WHERE id = $1",
+            goal_id,
+            final,
+        )
+        return final
+
+    async def end_approval_wait(self, goal_id: UUID, envelope_id: UUID, final: str) -> bool:
+        """Close a wait that will launch nothing and end the goal ``partial`` or ``failed``.
+
+        A decline, a domain expiry or a cancel ends ``partial``; a wake refused because the
+        envelope's deadline passed ends ``failed``. An envelope already closed stays as it is.
+        """
+        if final not in ("partial", "failed"):
+            raise ValueError("an approval wait ends partial or failed")
+        goal = await self.lock(goal_id)
+        if goal is None or goal["status"] != "waiting":
+            return False
+        await WaitLedger(self.connection).close_envelope(goal_id, envelope_id, "cancelled")
+        await self.connection.execute(
+            "UPDATE switchboard.goals SET status = $2, updated_at = now() WHERE id = $1",
+            goal_id,
+            final,
+        )
+        return True
+
     async def _owner_delivery(self, goal_id: UUID, effect_id: UUID) -> bool:
         """The effect is the goal's communication to the live owner (D11).
 

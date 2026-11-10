@@ -296,6 +296,27 @@ class WaitLedger:
         grants (nothing is ever launched from a settle wait). The goal's plan is the latest
         version, or an empty v1 when the lead never planned.
         """
+        return await self._open_own_wait(goal_id, epoch, "settle", None, None)
+
+    async def open_approval(
+        self, goal_id: UUID, epoch: int, effect_id: UUID, args_digest: str
+    ) -> UUID | None:
+        """Wait on the owner's decision about one parked effect (RFC 0038 S2.2, bu-dhloi1.204).
+
+        Same bounds as a settle wait, bound to the exact effect and its argument digest. Its one
+        wake launches a successor summary lead once the approved effect has settled.
+        """
+        digest = hashlib.sha256(args_digest.encode()).hexdigest()
+        return await self._open_own_wait(goal_id, epoch, "approval", effect_id, digest)
+
+    async def _open_own_wait(
+        self,
+        goal_id: UUID,
+        epoch: int,
+        kind: str,
+        effect_id: UUID | None,
+        approval_digest: str | None,
+    ) -> UUID | None:
         goal = await self.connection.fetchrow(
             "SELECT plan_version, label_version, label_instr, label_data, label_sens "
             "FROM switchboard.goals WHERE id = $1",
@@ -316,10 +337,11 @@ class WaitLedger:
         )
         if plan is None:
             return None
-        predicate = {"kind": "settle"}
+        predicate: dict[str, Any] = {"kind": kind}
+        instance = f"settle:{goal_id}" if effect_id is None else f"approval:{effect_id}"
         return await self.open_envelope(
             EnvelopeSpec(
-                kind="settle",
+                kind=kind,
                 goal_id=goal_id,
                 original_epoch=epoch,
                 plan_version=version,
@@ -340,7 +362,9 @@ class WaitLedger:
                 ),
                 deadline=deadline,
                 max_wakes=1,
-                condition_instance_ids=[f"settle:{goal_id}"],
+                condition_instance_ids=[instance],
+                approval_effect_id=effect_id,
+                approval_digest=approval_digest,
             )
         )
 
