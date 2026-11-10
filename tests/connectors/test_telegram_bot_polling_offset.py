@@ -14,8 +14,10 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from butlers.connectors.filtered_event_buffer import ParkNotDurableError
 from butlers.connectors.telegram_bot import TelegramBotConnector, TelegramBotConnectorConfig
 from butlers.ingestion_policy import PolicyDecision
+from tests.connectors.filtered_event_fakes import FilteredEventsPool
 
 _ENDPOINT = "telegram:bot:123456789"
 
@@ -137,6 +139,7 @@ async def test_heartbeat_checkpoint_never_runs_ahead_of_handled_updates() -> Non
 async def test_poison_update_is_recorded_and_skipped_not_retried_forever() -> None:
     telegram = _FakeTelegram([_update(10), _update(11), _update(12)])
     connector = _connector(telegram)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
     delivered: list[str] = []
     connector._submit_to_ingest = _failing_on(  # type: ignore[method-assign]
         11, RuntimeError("bad update"), delivered
@@ -147,7 +150,7 @@ async def test_poison_update_is_recorded_and_skipped_not_retried_forever() -> No
 
     assert delivered == ["hello 10", "hello 11", "hello 12"]
     assert telegram.offsets == [None, 13]
-    rows = connector._filtered_event_buffer._rows
+    rows = pool.written
     assert [row[8] for row in rows] == ["error"]
 
 
@@ -160,3 +163,25 @@ async def test_clean_batch_advances_offset_past_the_whole_batch() -> None:
     await connector._poll_once()
 
     assert telegram.offsets == [None, 12]
+
+
+async def test_unparkable_poison_update_holds_the_offset_until_it_is_parked() -> None:
+    """The offset passes a failed update only once its error row is committed (.274)."""
+    telegram = _FakeTelegram([_update(10), _update(11), _update(12)])
+    connector = _connector(telegram)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+    pool.fail_writes = True
+    delivered: list[str] = []
+    connector._submit_to_ingest = _failing_on(  # type: ignore[method-assign]
+        11, RuntimeError("bad update"), delivered
+    )
+
+    with pytest.raises(ParkNotDurableError):
+        await connector._poll_once()
+    assert connector._last_update_id == 10
+    assert pool.written == []
+
+    pool.fail_writes = False
+    await connector._poll_once()
+    assert connector._last_update_id == 12
+    assert [row[8] for row in pool.written] == ["error"]

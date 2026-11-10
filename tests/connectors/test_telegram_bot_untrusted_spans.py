@@ -14,6 +14,11 @@ import pytest
 
 from butlers.connectors.telegram_bot import TelegramBotConnector, TelegramBotConnectorConfig
 from butlers.tools.switchboard.contracts import parse_ingest_envelope
+from tests.connectors.filtered_event_fakes import (
+    FilteredEventsPool,
+    clear_stored_rows,
+    stored_rows,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -92,8 +97,9 @@ async def test_forwarded_text_is_one_forwarded_span_and_owner_stays_sender(conne
             "reply_to_message": {"message_id": 5},
         },
     }
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
     for stage in ("connector", "global", "submission"):
-        connector._filtered_event_buffer._rows.clear()
+        clear_stored_rows(connector._filtered_event_buffer, pool)
         blocked = SimpleNamespace(
             allowed=False, action="skip", matched_rule_type="chat_id", reason="synthetic rule"
         )
@@ -114,7 +120,7 @@ async def test_forwarded_text_is_one_forwarded_span_and_owner_stays_sender(conne
             ),
         ):
             await connector._process_update(update)
-        row = connector._filtered_event_buffer._rows[-1]
+        row = stored_rows(connector._filtered_event_buffer, pool)[-1]
         stored = row[9]
         assert stored["sender"]["identity"] == str(_OWNER)
         assert stored["event"]["in_reply_to_ref"] == "100:5"

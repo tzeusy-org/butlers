@@ -42,3 +42,13 @@ class FilteredEventsPool:
             raise OSError("connectors database unreachable")
         if "filtered_events" in sql:
             self.written.extend(rows)
+
+
+def stored_rows(buffer: Any, pool: FilteredEventsPool) -> list[tuple[Any, ...]]:
+    """Every filtered_events row a connector produced: parked (committed) then buffered."""
+    return [*pool.written, *buffer._rows]
+
+
+def clear_stored_rows(buffer: Any, pool: FilteredEventsPool) -> None:
+    pool.written.clear()
+    buffer._rows.clear()

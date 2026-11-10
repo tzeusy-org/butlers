@@ -1530,6 +1530,8 @@ async def test_replay_of_marked_drop_submits_clean_envelope(buffer_pool: asyncpg
             telegram_token="synthetic-token",
         ),
         cursor_pool=MagicMock(),
+        # A failed submission is parked durably before the offset moves (bu-dhloi1.274).
+        db_pool=buffer_pool,
     )
     endpoint = connector._config.endpoint_identity
     connector_type = connector._config.provider

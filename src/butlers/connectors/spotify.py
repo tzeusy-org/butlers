@@ -2896,16 +2896,17 @@ class SpotifyConnector:
                 self._metrics.record_ingest_submission("error", latency)
                 self._metrics.record_error("ingest_error", "submit")
                 logger.warning("SpotifyConnector: ingest submission failed: %s", exc)
-                # Buffer for replay with status="error" so it's distinguishable from policy-filtered
+                # The poll moves past this item, so the error row is its only copy: commit
+                # it before returning. A park that is not written raises, which keeps the
+                # recently-played cursor where it is (bu-dhloi1.274).
                 if self._filtered_event_buffer is not None:
-                    self._filtered_event_buffer.record(
+                    await self._filtered_event_buffer.park(
+                        self._db_pool,
                         external_message_id=event.get("external_event_id", ""),
                         source_channel=source.get("channel", ""),
                         sender_identity=sender.get("identity", ""),
                         subject_or_preview=payload.get("normalized_text", "")[:100],
-                        filter_reason=FilteredEventBuffer.reason_submission_error(),
                         full_payload=envelope,
-                        status="error",
                         error_detail=str(exc),
                     )
 
