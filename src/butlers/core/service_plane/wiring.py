@@ -25,11 +25,19 @@ def build_switchboard_relay_route(pool: Any, roster_dir: Path) -> Any:
     The route answers 404 for every relay while the switch is off.
     """
     from butlers.core.domain_event_contracts import get_contract_registry
-    from butlers.core.service_plane.registry import build_relays, roster_daemons
+    from butlers.core.service_plane.registry import (
+        build_relays,
+        roster_daemons,
+        roster_module_daemons,
+    )
 
     @functools.cache
     def relays() -> Mapping[str, RelayEndpoint]:
-        return build_relays(roster_daemons(roster_dir), get_contract_registry())
+        return build_relays(
+            roster_daemons(roster_dir),
+            get_contract_registry(),
+            contacts_daemons=roster_module_daemons("contacts", roster_dir),
+        )
 
     def dispatch_for(endpoint: RelayEndpoint) -> Dispatch:
         async def dispatch(butler: str, tool: str, args: dict[str, Any]) -> Any:

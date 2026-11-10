@@ -11,9 +11,11 @@ forbids extra fields, so a body cannot carry its own ``source_butler``.
 
 from __future__ import annotations
 
+import tomllib
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -25,6 +27,8 @@ DOMAIN_WORKLOAD = "butlers-up"
 QA_REPORT_FINDING = "qa.report_finding"
 DOMAIN_EVENT_RECEIVE = "domain_event.receive"
 MEDICATION_TRAVEL_SNAPSHOT = "medication.travel_snapshot"
+CONTACTS_RESOLVE_CHANNEL = "contacts.resolve_channel"
+CONTACTS_REPORT_CHANNEL = "contacts.report_channel"
 
 
 class _Strict(BaseModel):
@@ -51,10 +55,40 @@ class DomainEventArgs(_Strict):
     payload: dict[str, Any]
 
 
+class ContactsResolveArgs(_Strict):
+    channel_type: str
+    channel_value: str
+    request_id: UUID
+
+
+class ContactsReportArgs(_Strict):
+    subject: UUID
+    channel_type: str
+    channel_value: str
+    primary: bool = False
+
+
+def _roster_root(roster_dir: Path | None) -> Path:
+    return roster_dir or Path(__file__).resolve().parents[4] / "roster"
+
+
 def roster_daemons(roster_dir: Path | None = None) -> frozenset[str]:
     """Every roster butler, by directory with a ``butler.toml``."""
-    root = roster_dir or Path(__file__).resolve().parents[4] / "roster"
+    root = _roster_root(roster_dir)
     return frozenset(entry.name for entry in root.iterdir() if (entry / "butler.toml").is_file())
+
+
+def roster_module_daemons(module: str, roster_dir: Path | None = None) -> frozenset[str]:
+    """Every roster butler whose ``butler.toml`` declares ``[modules.<module>]``."""
+    root = _roster_root(roster_dir)
+    return frozenset(
+        daemon
+        for daemon in roster_daemons(root)
+        if module
+        in tomllib.loads((root / daemon / "butler.toml").read_text(encoding="utf-8")).get(
+            "modules", {}
+        )
+    )
 
 
 def _domain_callers(daemons: Iterable[str]) -> frozenset[ServiceCaller]:
@@ -87,10 +121,19 @@ def _domain_event_prepare(contracts: DomainEventContractRegistry):
 
 
 def build_relays(
-    daemons: Iterable[str], contracts: DomainEventContractRegistry
+    daemons: Iterable[str],
+    contracts: DomainEventContractRegistry,
+    *,
+    contacts_daemons: Iterable[str] = (),
 ) -> Mapping[str, RelayEndpoint]:
-    """The relay registry for a roster and its domain-event contracts."""
+    """The relay registry for a roster and its domain-event contracts.
+
+    ``contacts_daemons`` are the butlers hosting the Contacts module; only they
+    may reach Relationship's Contacts ingress.
+    """
     callers = _domain_callers(daemons)
+    contacts = frozenset(contacts_daemons)
+    contacts_callers = frozenset(c for c in callers if c.daemon in contacts)
     publishers = {contract.publisher for contract in contracts.contracts()}
     subscribers = frozenset(
         subscriber
@@ -124,5 +167,22 @@ def build_relays(
             target_tool="medication_travel_snapshot_service",
             args_model=NoArgs,
             allowed_callers=frozenset(c for c in callers if c.daemon == "travel"),
+        ),
+        # The Contacts module's owner boundary: lookup and third-party report of
+        # one channel. Both targets are already service-only, so no twin; neither
+        # takes a caller identity, and the schemas forbid any authority field.
+        CONTACTS_RESOLVE_CHANNEL: RelayEndpoint(
+            name=CONTACTS_RESOLVE_CHANNEL,
+            target_butlers=frozenset({"relationship"}),
+            target_tool="contacts_resolve_channel",
+            args_model=ContactsResolveArgs,
+            allowed_callers=contacts_callers,
+        ),
+        CONTACTS_REPORT_CHANNEL: RelayEndpoint(
+            name=CONTACTS_REPORT_CHANNEL,
+            target_butlers=frozenset({"relationship"}),
+            target_tool="contacts_report_channel",
+            args_model=ContactsReportArgs,
+            allowed_callers=contacts_callers,
         ),
     }

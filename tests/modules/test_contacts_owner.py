@@ -347,6 +347,11 @@ async def test_transport_refusal_correlations_and_late_wiring():
         client.call_tool.return_value = SimpleNamespace(is_error=False, data=raw)
         with pytest.raises(ContactsOwnerUnavailable):
             await owner.lookup("email", "a")
+    # An MCP error result fails even when its data looks complete.
+    complete = {"outcome": "inserted", "fact_id": str(uuid.uuid4()), "action_id": None}
+    client.call_tool.return_value = SimpleNamespace(is_error=True, data={"result": complete})
+    with pytest.raises(ContactsOwnerUnavailable):
+        await owner.report(uuid.uuid4(), "email", "a", False)
     for failure in [TimeoutError("possible committed private"), PermissionError("private")]:
         client.call_tool.reset_mock()
         client.call_tool.side_effect = failure
@@ -498,6 +503,106 @@ async def test_actual_switchboard_route_and_mcp_argument_admission(monkeypatch):
                 raise_on_error=False,
             )
             assert result.is_error and writer.await_count == before
+
+
+class _RelayedSwitchboard:
+    """A daemon's Switchboard client; with the switch on only its URL is used."""
+
+    def __init__(self, url="http://butlers-control:41100/mcp"):
+        self.transport = SimpleNamespace(url=url)
+        self.call_tool = AsyncMock(side_effect=AssertionError("generic route used"))
+
+
+@pytest.fixture
+def relay_on(monkeypatch):
+    """Switch on; record call_relay and answer with Switchboard's route envelope."""
+    relay_client = importlib.import_module("butlers.core.service_plane.client")
+    monkeypatch.setenv("BUTLERS_SERVICE_PLANE_AUTH", "1")
+    relay = SimpleNamespace(calls=[], reply=None, failure=None, envelope=None)
+
+    async def call_relay(name, args, *, daemon, switchboard_url, **kwargs):
+        relay.calls.append((name, args, daemon, switchboard_url))
+        if relay.failure is not None:
+            raise relay.failure
+        if relay.envelope is not None:
+            return relay.envelope
+        result = relay.reply(args) if callable(relay.reply) else relay.reply
+        return {"result": result, "transport": "mcp"}
+
+    monkeypatch.setattr(relay_client, "call_relay", call_relay)
+    return relay
+
+
+async def test_switch_on_lookup_and_report_use_the_contacts_relays(relay_on):
+    from butlers.core.service_plane.registry import (
+        CONTACTS_REPORT_CHANNEL,
+        CONTACTS_RESOLVE_CHANNEL,
+    )
+
+    client = _RelayedSwitchboard()
+    owner = ContactsOwner(lambda: client, lambda: "health")
+    person = uuid.uuid4()
+    relay_on.reply = lambda args: {
+        "outcome": "unique",
+        "entity_id": str(person),
+        "request_id": args["request_id"],
+    }
+
+    assert await owner.lookup("email", "a@test") == person
+
+    name, args, daemon, url = relay_on.calls[-1]
+    assert (name, daemon, url) == (
+        CONTACTS_RESOLVE_CHANNEL,
+        "health",
+        "http://butlers-control:41100/mcp",
+    )
+    assert set(args) == {"channel_type", "channel_value", "request_id"}
+    assert (args["channel_type"], args["channel_value"]) == ("email", "a@test")
+
+    fact = uuid.uuid4()
+    relay_on.reply = {"outcome": "inserted", "fact_id": str(fact), "action_id": None}
+    assert (await owner.report(person, "phone", "123", True))["fact_id"] == str(fact)
+    assert relay_on.calls[-1] == (
+        CONTACTS_REPORT_CHANNEL,
+        {"subject": str(person), "channel_type": "phone", "channel_value": "123", "primary": True},
+        "health",
+        "http://butlers-control:41100/mcp",
+    )
+    client.call_tool.assert_not_awaited()
+
+
+async def test_switch_on_every_relay_failure_is_contacts_owner_unavailable(relay_on):
+    from butlers.core.service_plane.client import RelayUnavailable
+    from butlers.core.service_plane.relays import RelayRefused
+
+    owner = ContactsOwner(lambda: _RelayedSwitchboard(), "general")
+    for failure in [
+        RelayRefused("caller_not_allowed"),
+        RelayUnavailable("http_502"),
+        TimeoutError("possible committed private"),
+    ]:
+        relay_on.failure = failure
+        with pytest.raises(ContactsOwnerUnavailable, match="^contacts owner unavailable$"):
+            await owner.report(uuid.uuid4(), "email", "a", False)
+    relay_on.failure = None
+    for reply in [None, {"error": "private"}, "not-a-dict"]:
+        relay_on.reply = reply
+        with pytest.raises(ContactsOwnerUnavailable):
+            await owner.report(uuid.uuid4(), "email", "a", False)
+    # A route-level error fails even beside a complete-looking result.
+    complete = {"outcome": "inserted", "fact_id": str(uuid.uuid4()), "action_id": None}
+    for envelope in [{"error": "target unavailable", "result": complete}, ["not", "a", "dict"]]:
+        relay_on.envelope = envelope
+        with pytest.raises(ContactsOwnerUnavailable):
+            await owner.report(uuid.uuid4(), "email", "a", False)
+    relay_on.envelope = None
+    calls = len(relay_on.calls)
+
+    # Without a configured Switchboard URL nothing is sent.
+    unconfigured = ContactsOwner(lambda: _RelayedSwitchboard(url=None), "general")
+    with pytest.raises(ContactsOwnerUnavailable):
+        await unconfigured.lookup("email", "a")
+    assert len(relay_on.calls) == calls
 
 
 async def test_warning_all_channels_omits_operands_and_keeps_progress(caplog):
