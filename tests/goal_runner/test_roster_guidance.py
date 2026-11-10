@@ -284,6 +284,18 @@ async def test_every_real_butler_serves_its_guidance_without_session_notes():
             assert valid_name(item.name), (butler, item.name)  # the broker's closed slug
 
 
+async def test_the_real_lead_policy_is_served_whole_as_owner_text():
+    source = LeadPolicyGuidance(REPO_ROSTER)
+    policy = await source.load("LEAD.md", READER)
+    assert policy is not None, "roster/switchboard/goal-policy/LEAD.md is not served"
+    raw = (REPO_ROSTER / "switchboard" / "goal-policy" / "LEAD.md").read_text(encoding="utf-8")
+    assert policy.text == raw.strip() + "\n"  # no include, nothing cut or dropped
+    assert inlined(policy) and len(policy.text.encode()) <= 64 * 1024
+    assert "# Notes to self" not in policy.text  # session notes have no place in the policy
+    # A term from the conforming body, not the owner-approval reply-style section.
+    assert [hit.name for hit in await source.search("escalate", 5, READER)] == ["LEAD.md"]
+
+
 async def test_every_fixture_document_name_is_a_closed_slug(roster):
     for source in [*roster_guidance_sources(roster).values(), LeadPolicyGuidance(roster)]:
         assert all(valid_name(name) for name in source.documents())
