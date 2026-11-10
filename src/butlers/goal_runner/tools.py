@@ -120,6 +120,19 @@ _TOOLS = (
         },
     ),
     GoalTool(
+        "goal__wait_owner",
+        (0,),
+        "End your turn and wait for the owner's answer to a prompt you delivered (a committed "
+        "owner message that accepts input and has not expired). The owner's reply to that "
+        "prompt starts your successor; no other message wakes the goal.",
+        {
+            "type": "object",
+            "properties": {"effect_id": _UUID},
+            "required": ["effect_id"],
+            "additionalProperties": False,
+        },
+    ),
+    GoalTool(
         "goal__inbox",
         (0,),
         "Take the owner's replies to this goal's prompts that arrived since your last call. "
@@ -229,6 +242,7 @@ class GoalTools:
             "goal__stop_child": self._stop_child,
             "goal__complete": self._complete,
             "goal__wait_approval": self._wait_approval,
+            "goal__wait_owner": self._wait_owner,
             "goal__escalate": self._escalate,
             "goal__inbox": self._inbox,
             "goal__return": self._return,
@@ -278,6 +292,10 @@ class GoalTools:
     async def _wait_approval(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
         args = _closed(arguments, {"effect_id"}, {"effect_id"})
         return {"status": await self.runner.wait_approval(goal_id, token, args["effect_id"])}
+
+    async def _wait_owner(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
+        args = _closed(arguments, {"effect_id"}, {"effect_id"})
+        return {"status": await self.runner.wait_owner(goal_id, token, args["effect_id"])}
 
     async def _escalate(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
         _closed(arguments, set(), set())

@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from typing import Any, Literal
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_OID, UUID, uuid4, uuid5
 
 import asyncpg
 from asyncpg.pool import PoolConnectionProxy
@@ -111,6 +111,91 @@ class WakeAdmission:
             row["epoch"],
             replayed=True,
         )
+
+    async def answer_envelope(self, goal_id: UUID, prompt_effect_id: UUID) -> Any:
+        """The goal's open owner-answer wait on exactly this prompt, locked, if it can still wake.
+
+        None unless the goal is waiting and the envelope is an open ``owner_answer`` bound to the
+        prompt that is inside its deadline and wake cap. Takes the goal and envelope rows
+        ``FOR UPDATE``; the caller holds the goal lock already (admission locks it first).
+        """
+        return await self.connection.fetchrow(
+            "SELECT e.* FROM switchboard.wait_envelopes e JOIN switchboard.goals g "
+            "ON g.id = e.goal_id WHERE e.goal_id = $1 AND g.status = 'waiting' "
+            "AND e.kind = 'owner_answer' AND e.state = 'open' AND e.deadline > now() "
+            "AND e.consumed_wakes < e.max_wakes "
+            "AND e.predicate->>'prompt_effect_id' = $2 FOR UPDATE OF e",
+            goal_id,
+            str(prompt_effect_id),
+        )
+
+    async def admit_answer(self, envelope: Any, decision_id: UUID, inbox_id: UUID) -> WakeResult:
+        """The joined reply is the wait's one wake: its successor epoch and pending intent.
+
+        Admission already committed (in this transaction) the ``reply_joined`` decision and the
+        ``owner_reply`` inbox row; this adds the envelope's ``open -> fired`` CAS, the ``wake``
+        epoch record naming that inbox row, the pending wake intent and the goal's return to
+        ``admitted``. The fire key and event id derive from the decision, so a replayed
+        admission (which returns the stored decision) never reaches here twice.
+        """
+        goal_id, envelope_id, generation = (
+            envelope["goal_id"],
+            envelope["id"],
+            envelope["generation"],
+        )
+        predecessor = await self.connection.fetchval(
+            "SELECT id FROM switchboard.invocations WHERE goal_id = $1 AND depth = 0 "
+            "ORDER BY lead_epoch DESC, created_at DESC LIMIT 1",
+            goal_id,
+        )
+        fired = await self.connection.fetchval(
+            "UPDATE switchboard.wait_envelopes SET state = 'fired', "
+            "consumed_wakes = consumed_wakes + 1, updated_at = now() "
+            "WHERE goal_id = $1 AND id = $2 AND state = 'open' AND generation = $3 "
+            "AND consumed_wakes < max_wakes RETURNING id",
+            goal_id,
+            envelope_id,
+            generation,
+        )
+        if predecessor is None or fired is None:
+            raise RuntimeError("an open owner-answer wait could not be fired")
+        epoch = await self.connection.fetchval(
+            "SELECT COALESCE(max(epoch) + 1, 0) FROM switchboard.goal_epochs WHERE goal_id = $1",
+            goal_id,
+        )
+        await self.connection.execute(
+            "INSERT INTO switchboard.goal_epochs (goal_id, epoch, predecessor_invocation_id, "
+            "reason, input_refs, label_version, label_instr, label_data, label_sens, "
+            "grant_digest, state) VALUES ($1, $2, $3, 'wake', $4::text::jsonb, $5, $6, $7, $8, "
+            "$9, 'pending')",
+            goal_id,
+            epoch,
+            predecessor,
+            json.dumps([f"inbox:{inbox_id}"]),
+            envelope["label_version"],
+            envelope["label_instr"],
+            envelope["label_data"],
+            envelope["label_sens"],
+            envelope["grant_digest"],
+        )
+        intent_id = uuid4()
+        await self.connection.execute(
+            "INSERT INTO switchboard.wake_intents (id, goal_id, envelope_id, generation, "
+            "fire_key, fire_event_id, fire_cursors, epoch, state) "
+            "VALUES ($1, $2, $3, $4, $5, $6, '{}'::jsonb, $7, 'pending')",
+            intent_id,
+            goal_id,
+            envelope_id,
+            generation,
+            uuid5(NAMESPACE_OID, f"answer:{decision_id}"),
+            uuid5(NAMESPACE_OID, f"answer-event:{inbox_id}"),
+            epoch,
+        )
+        await self.connection.execute(
+            "UPDATE switchboard.goals SET status = 'admitted', updated_at = now() WHERE id = $1",
+            goal_id,
+        )
+        return WakeResult("admitted", None, goal_id, intent_id, epoch)
 
     async def abandon(self, fire: FireIntent) -> WakeResult:
         """Close a fire whose admission keeps raising with a terminal ``admit_error`` receipt."""

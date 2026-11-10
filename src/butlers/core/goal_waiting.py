@@ -296,7 +296,9 @@ class WaitLedger:
         grants (nothing is ever launched from a settle wait). The goal's plan is the latest
         version, or an empty v1 when the lead never planned.
         """
-        return await self._open_own_wait(goal_id, epoch, "settle", None, None)
+        return await self._open_own_wait(
+            goal_id, epoch, "settle", {"kind": "settle"}, f"settle:{goal_id}"
+        )
 
     async def open_approval(
         self, goal_id: UUID, epoch: int, effect_id: UUID, args_digest: str
@@ -307,15 +309,47 @@ class WaitLedger:
         wake launches a successor summary lead once the approved effect has settled.
         """
         digest = hashlib.sha256(args_digest.encode()).hexdigest()
-        return await self._open_own_wait(goal_id, epoch, "approval", effect_id, digest)
+        return await self._open_own_wait(
+            goal_id,
+            epoch,
+            "approval",
+            {"kind": "approval"},
+            f"approval:{effect_id}",
+            effect_id=effect_id,
+            approval_digest=digest,
+        )
+
+    async def open_owner_answer(
+        self, goal_id: UUID, epoch: int, prompt_effect_id: UUID, expires_at: Any
+    ) -> UUID | None:
+        """Wait only for the owner's answer to one delivered prompt (RFC 0038 S2.1, S2.2).
+
+        The wait needs no approval: the answer is authenticated by admission's exact reply
+        binding and cannot approve an unrelated effect. The envelope ends with the prompt, at the
+        goal's budget deadline if that is sooner. Its one wake is the joined reply.
+        """
+        return await self._open_own_wait(
+            goal_id,
+            epoch,
+            "owner_answer",
+            {"kind": "owner_answer", "prompt_effect_id": str(prompt_effect_id)},
+            f"owner_answer:{prompt_effect_id}",
+            source="goal.inbox",
+            latest=expires_at,
+        )
 
     async def _open_own_wait(
         self,
         goal_id: UUID,
         epoch: int,
         kind: str,
-        effect_id: UUID | None,
-        approval_digest: str | None,
+        predicate: dict[str, Any],
+        instance: str,
+        *,
+        effect_id: UUID | None = None,
+        approval_digest: str | None = None,
+        source: str = "effects",
+        latest: Any = None,
     ) -> UUID | None:
         goal = await self.connection.fetchrow(
             "SELECT plan_version, label_version, label_instr, label_data, label_sens "
@@ -327,6 +361,8 @@ class WaitLedger:
         )
         if goal is None or deadline is None:
             return None
+        if latest is not None and latest < deadline:
+            deadline = latest
         version = goal["plan_version"] or await self.append_plan(goal_id, epoch, [], [], [])
         if version is None:
             return None
@@ -337,8 +373,6 @@ class WaitLedger:
         )
         if plan is None:
             return None
-        predicate: dict[str, Any] = {"kind": kind}
-        instance = f"settle:{goal_id}" if effect_id is None else f"approval:{effect_id}"
         return await self.open_envelope(
             EnvelopeSpec(
                 kind=kind,
@@ -350,8 +384,8 @@ class WaitLedger:
                 predicate_digest=hashlib.sha256(
                     json.dumps(predicate, sort_keys=True, separators=(",", ":")).encode()
                 ).hexdigest(),
-                source_set=["effects"],
-                permitted_sources=["effects"],
+                source_set=[source],
+                permitted_sources=[source],
                 grant_snapshot=[],
                 grant_digest=hashlib.sha256(b"[]").hexdigest(),
                 label=Label.from_row(

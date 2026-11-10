@@ -628,18 +628,45 @@ class RunnerLedger:
         stopped with the lead (returned for termination). The goal enters ``waiting`` on an
         ``approval`` envelope bound to the exact effect; ``approval_waits`` finds it settled.
         """
+        return await self._wait(principal, effect_id, approval=True)
+
+    async def wait_owner(self, principal: Principal, effect_id: UUID) -> list[UUID] | BrokerRefused:
+        """``goal.wait_owner``: the lead ends and the goal waits for the owner's answer.
+
+        The effect must be this goal's committed owner delivery that accepts input and has not
+        expired. The goal enters ``waiting`` on an ``owner_answer`` envelope bound to that prompt;
+        the exact reply, admitted by the owner thread binding, is the wait's one wake.
+        """
+        return await self._wait(principal, effect_id, approval=False)
+
+    async def _wait(
+        self, principal: Principal, effect_id: UUID, *, approval: bool
+    ) -> list[UUID] | BrokerRefused:
         goal = await self.lock(principal.goal_id)
         if goal is None or goal["status"] != "running":
             raise BrokerRefused(Reason.GOAL)
         if principal.depth != 0:
             raise BrokerRefused(Reason.CAPABILITY)
-        digest = await self.connection.fetchval(
-            "SELECT args_digest FROM switchboard.effects WHERE goal_id = $1 AND id = $2 "
-            "AND status = 'parked' AND approval_ref IS NOT NULL",
-            principal.goal_id,
-            effect_id,
-        )
-        if digest is None:
+        if approval:
+            digest = await self.connection.fetchval(
+                "SELECT args_digest FROM switchboard.effects WHERE goal_id = $1 AND id = $2 "
+                "AND status = 'parked' AND approval_ref IS NOT NULL",
+                principal.goal_id,
+                effect_id,
+            )
+            expires = None
+        else:
+            digest = None
+            expires = await self.connection.fetchval(
+                "SELECT prompt_expires_at FROM switchboard.effects WHERE goal_id = $1 AND id = $2 "
+                "AND status = 'committed' AND prompt_accepts_input "
+                "AND prompt_expires_at > now()",
+                principal.goal_id,
+                effect_id,
+            )
+            if expires is not None and not await self._owner_delivery(principal.goal_id, effect_id):
+                expires = None
+        if digest is None and expires is None:
             raise BrokerRefused(Reason.RESOURCE)
         exhausted = await self.broker.charge_call(principal)
         if exhausted is not None:
@@ -652,7 +679,11 @@ class RunnerLedger:
             principal.invocation_id,
         )
         waits = WaitLedger(self.connection)
-        if await waits.open_approval(principal.goal_id, epoch, effect_id, digest) is None:
+        if digest is not None:
+            opened = await waits.open_approval(principal.goal_id, epoch, effect_id, digest)
+        else:
+            opened = await waits.open_owner_answer(principal.goal_id, epoch, effect_id, expires)
+        if opened is None:
             raise BrokerRefused(Reason.UNAVAILABLE)
         await self.connection.execute(
             "UPDATE switchboard.goals SET status = 'waiting', updated_at = now() WHERE id = $1",
