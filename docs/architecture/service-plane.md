@@ -58,8 +58,10 @@ daemons share the `butlers-up` process (RFC 0038, "Switchboard moves out of the
 shared `butlers-up` process"), so no credential inside it can tell one daemon
 from another. A projected token names the pod's ServiceAccount; the daemon name
 travels beside it in `x-butlers-workload-daemon` and only narrows an allowlist
-of `(workload, daemon)` pairs. `REQ-butler-switchboard-008` is amended to say
-so (pending owner approval, because it narrows the spec text).
+of `(workload, daemon)` pairs. `REQ-butler-switchboard-008` still says "the
+calling daemon's service identity". The code implements the workload reading,
+dark, pending owner approval of the matching amendment in PR #5713 (it narrows
+the spec text, so it does not adopt by conformance review).
 
 A token verifies only when all of these hold:
 
