@@ -51,6 +51,15 @@ if [[ -z "$PYTHON_ARTIFACTS_CONTEXT" || ! -d "$PYTHON_ARTIFACTS_CONTEXT" \
   exit 1
 fi
 PYTHON_ARTIFACTS_CONTEXT=$(cd -- "$PYTHON_ARTIFACTS_CONTEXT" && pwd -P)
+# The Dockerfile mounts the closed Go module closure too (its `go-artifacts` stage).
+GO_ARTIFACTS_CONTEXT="${BUTLERS_GO_ARTIFACTS:-}"
+if [[ -z "$GO_ARTIFACTS_CONTEXT" || ! -d "$GO_ARTIFACTS_CONTEXT" \
+  || -L "$GO_ARTIFACTS_CONTEXT" || ! -f "$GO_ARTIFACTS_CONTEXT/provenance.json" \
+  || -L "$GO_ARTIFACTS_CONTEXT/provenance.json" ]]; then
+  echo "ERROR: Supply a real closed Go artifacts directory with provenance.json." >&2
+  exit 1
+fi
+GO_ARTIFACTS_CONTEXT=$(cd -- "$GO_ARTIFACTS_CONTEXT" && pwd -P)
 
 # ── App image ─────────────────────────────────────────────────────────
 APP_IMAGE="${REGISTRY}/butlers-app:${TAG}"
@@ -58,6 +67,7 @@ echo "Building ${APP_IMAGE}..." >&2
 docker build --build-arg "GIT_SHA=$(git rev-parse HEAD)" \
   --build-arg "BUTLERS_BASE_IMAGE=${BUTLERS_BASE_IMAGE}" \
   --build-context "python-artifacts=${PYTHON_ARTIFACTS_CONTEXT}" \
+  --build-context "go-artifacts=${GO_ARTIFACTS_CONTEXT}" \
   --target production -t "$APP_IMAGE" . >&2
 docker push "$APP_IMAGE" >&2
 

@@ -618,7 +618,9 @@ kube-dns stayed reachable through the `namespaceSelector: {}` rule.
 Python artifact input as the application Dockerfile. Set `BUTLERS_BASE_IMAGE` to
 the coordinated full `registry/repository@sha256` reference and
 `BUTLERS_PYTHON_ARTIFACTS` to its verified context directory containing
-`provenance.json`. Missing inputs refuse before image build or publication. Both
+`provenance.json`, and `BUTLERS_GO_ARTIFACTS` to the closed Go module context
+(also with `provenance.json`). `scripts/runtime_clis/produce_image_contexts.py`
+produces both as `python/default` and `go` under its output. Missing inputs refuse before image build or publication. Both
 Kubernetes environments retain the shared application's production dependency
 profile; Compose hotreload selects the separate development profile. Building the
 base is a separate source/artifact operation described in

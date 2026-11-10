@@ -41,18 +41,22 @@ def launcher(tmp_path):
     context = tmp_path / "closed"
     context.mkdir()
     (context / "provenance.json").write_text("{}\n")
+    go_context = tmp_path / "go-closed"
+    go_context.mkdir()
+    (go_context / "provenance.json").write_text("{}\n")
     environment = {
         "PATH": f"{commands}:/usr/bin:/bin",
         "BUTLERS_IMAGE_REGISTRY": "registry.test/team",
         "BUTLERS_BASE_IMAGE": "registry.test/team/base@sha256:" + "b" * 64,
         "BUTLERS_PYTHON_ARTIFACTS": str(context),
+        "BUTLERS_GO_ARTIFACTS": str(go_context),
     }
-    return root, log, context, environment
+    return root, log, context, go_context, environment
 
 
 @pytest.mark.parametrize("mode", ["dev", "prod"])
 def test_actual_app_build_consumes_closed_inputs_and_preserves_frontend_publication(launcher, mode):
-    root, log, context, environment = launcher
+    root, log, context, go_context, environment = launcher
     result = subprocess.run(
         ["bash", "scripts/k8s/build-push.sh", mode],
         cwd=root,
@@ -72,6 +76,8 @@ def test_actual_app_build_consumes_closed_inputs_and_preserves_frontend_publicat
         "BUTLERS_BASE_IMAGE=" + environment["BUTLERS_BASE_IMAGE"],
         "--build-context",
         f"python-artifacts={context}",
+        "--build-context",
+        f"go-artifacts={go_context}",
         "--target",
         "production",
         "-t",
@@ -85,15 +91,24 @@ def test_actual_app_build_consumes_closed_inputs_and_preserves_frontend_publicat
     assert result.stdout.rstrip().splitlines()[-1] == "aaaaaaaaaaaa"
 
 
-@pytest.mark.parametrize("failure", ["missing-base", "mutable-base", "missing-context", "symlink"])
+@pytest.mark.parametrize(
+    "failure",
+    ["missing-base", "mutable-base", "missing-context", "symlink", "missing-go", "symlink-go"],
+)
 def test_bad_closed_inputs_refuse_before_any_docker_boundary(launcher, failure):
-    root, log, context, environment = launcher
+    root, log, context, go_context, environment = launcher
     if failure == "missing-base":
         environment.pop("BUTLERS_BASE_IMAGE")
     elif failure == "mutable-base":
         environment["BUTLERS_BASE_IMAGE"] = "registry.test/team/base:latest"
     elif failure == "missing-context":
         environment.pop("BUTLERS_PYTHON_ARTIFACTS")
+    elif failure == "missing-go":
+        environment.pop("BUTLERS_GO_ARTIFACTS")
+    elif failure == "symlink-go":
+        alias = go_context.with_name("go-alias")
+        alias.symlink_to(go_context, target_is_directory=True)
+        environment["BUTLERS_GO_ARTIFACTS"] = str(alias)
     else:
         alias = context.with_name("alias")
         alias.symlink_to(context, target_is_directory=True)
