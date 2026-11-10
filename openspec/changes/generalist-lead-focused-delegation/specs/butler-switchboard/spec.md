@@ -227,9 +227,10 @@ Scope: v1-mandatory
 - **AND** the caller SHALL receive a typed refusal, because a model-reachable call requires a broker assertion (`REQ-capability-authorization-007`)
 
 #### Scenario: An unlisted or unauthenticated caller is refused
-- **WHEN** a request reaches the medication-snapshot endpoint from a daemon other than Travel, or from a caller whose service identity does not authenticate
+- **WHEN** a request reaches the medication-snapshot endpoint from a caller whose workload does not authenticate, or whose authenticated workload and presented daemon name are not the endpoint's allowed pair (the workload that hosts Travel, presenting `travel`)
 - **THEN** Switchboard SHALL refuse it without contacting Health
 - **AND** a `source_butler` field in the payload SHALL NOT change the decision
+- **AND** while daemons share a workload, this does not refuse another daemon in Travel's workload that presents the name `travel`; separating them requires separate workloads
 
 #### Scenario: A daemon name from another workload is refused
 - **WHEN** a request presents the daemon name `travel` but authenticates as a workload other than the one that hosts Travel
