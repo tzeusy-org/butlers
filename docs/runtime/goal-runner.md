@@ -94,6 +94,7 @@ capability and never lists one. The runner serves these tools on the same per-go
 | `goal__await` | lead | Read a child's status, closed `end_reason` (`launch_failed`: it never ran) and validated result |
 | `goal__stop_child` | lead | End one child (`child_stopped`) |
 | `goal__complete` | lead | Record the outcome; the goal settles |
+| `goal__wait_approval` | lead | End the lead and wait on one effect parked for approval (see below) |
 | `goal__inbox` | lead | Take the owner replies joined to this goal since the last call |
 | `goal__escalate` | lead | Hand the goal to a fresh lead on the next ladder tier |
 | `goal__return` | child | Return a result validated against the brief's `result_schema` |
@@ -423,6 +424,37 @@ failed wake intent is not resumed as leaderless: its lead is the wake's to launc
 what woke it through `goal__inbox` as `kind: condition_fire` with the envelope and event ids and no
 reply effect. `sw_065` makes a `condition_fire` inbox row bindable only to an admitted wake intent.
 
+### Waiting on an approval (bu-dhloi1.204)
+
+`goal__wait_approval {effect_id}` is for a lead that has parked an effect and has nothing else to
+do until the owner decides. The effect must be parked for this goal with an approval; the lead
+and its live children end, and the goal enters `waiting` on an `approval` envelope bound to that
+effect and its argument digest (one wake, the goal's label and budget deadline, no grants). The
+sweep syncs the domain's decisions onto the effect and then reads the effect once it has left
+`requested`, `parked`, `approved` and `dispatched`:
+
+- An approved effect that ran (`committed`, `failed`) is the envelope's one wake: the runner
+  admits a synthetic fire (keyed on envelope, effect and status, so a replay mints nothing new)
+  through the same wake admission as a condition fire, and the wake path launches a successor
+  summary lead at the next epoch.
+- A `rejected`, `expired` or `cancelled` effect closes the envelope and ends the goal `partial`;
+  no lead is launched and no wake is counted.
+- A wake that cannot be admitted ends the goal `failed`: refused for any reason but Stop (such as
+  the envelope's deadline passing), or mapped to no envelope generation. The fire is keyed on the
+  envelope's current-generation condition instance id, so an approval wait `sw_064` converted
+  (instance `legacy:awaiting_approval:<goal>`) continues like one `goal__wait_approval` opened.
+- A wait whose deadline passes with the effect still parked is expired by the expiry sweep below.
+- Stop cancels the parked effect and the envelope through the existing Stop path.
+
+### Expiry of a wait
+
+No wait lasts forever. The sweep ends every `waiting` goal whose open envelope passed its deadline
+without firing, whatever its kind: the envelope closes `expired`, its undelivered wake intents are
+cancelled `expired`, and the goal ends `failed`, or `partial` for a settle wait whose recorded
+outcome is resolved `partial`. This includes a legacy approval wait that `sw_064` held on an
+`evidence_unavailable` envelope. A parked effect left behind is refused later because its goal has
+ended.
+
 ## Not yet delivered
 
 - The per-domain `ContextSource` adapters (a domain's memory and facts).
@@ -441,6 +473,4 @@ reply effect. `sw_065` makes a `condition_fire` inbox row bindable only to an ad
   (the D19 dashboard change, or a control-plane service route).
 - Waking a `waiting` goal on a joined reply or condition (`bu-dhloi1.7`, next PRs); the records
   exist (see above). The reply text itself: `goal__inbox` returns references only.
-- The approval-kind wait and its successor summary lead (`bu-dhloi1.204`); the state remap itself
-  is done.
 - The lead's goal input, owner profile, lead policy and domain index in the packet (M6).

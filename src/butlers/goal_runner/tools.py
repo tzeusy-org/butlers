@@ -108,6 +108,18 @@ _TOOLS = (
         },
     ),
     GoalTool(
+        "goal__wait_approval",
+        (0,),
+        "End your turn and wait for the owner's decision on one effect parked for approval. "
+        "A successor continues the goal once the approved effect has run; a decline ends it.",
+        {
+            "type": "object",
+            "properties": {"effect_id": _UUID},
+            "required": ["effect_id"],
+            "additionalProperties": False,
+        },
+    ),
+    GoalTool(
         "goal__inbox",
         (0,),
         "Take the owner's replies to this goal's prompts that arrived since your last call. "
@@ -216,6 +228,7 @@ class GoalTools:
             "goal__await": self._await,
             "goal__stop_child": self._stop_child,
             "goal__complete": self._complete,
+            "goal__wait_approval": self._wait_approval,
             "goal__escalate": self._escalate,
             "goal__inbox": self._inbox,
             "goal__return": self._return,
@@ -261,6 +274,10 @@ class GoalTools:
             args.get("reply_effect_id"),
         )
         return {"status": status}
+
+    async def _wait_approval(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
+        args = _closed(arguments, {"effect_id"}, {"effect_id"})
+        return {"status": await self.runner.wait_approval(goal_id, token, args["effect_id"])}
 
     async def _escalate(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
         _closed(arguments, set(), set())
