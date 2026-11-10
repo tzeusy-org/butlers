@@ -311,44 +311,45 @@ async def test_stop_cancels_an_unlaunched_wake_and_it_cannot_be_claimed(ledger, 
     env = await envelope(owner, goal_id)
     await wake_epoch(owner, goal_id, lead, 1)
     wake = await intent(owner, goal_id, env)
-    claim = (
-        "UPDATE switchboard.wake_intents SET state = 'claimed', claimed_by = 'w', "
-        "claim_expires_at = now() + interval '1 minute', attempts = attempts + 1 WHERE id = $1"
-    )
-    if from_state != "pending":
-        await owner.execute(claim, wake)
-    if from_state == "failed":
-        await owner.execute(
-            "UPDATE switchboard.wake_intents SET state = 'failed', claimed_by = NULL, "
+    async with owner.acquire() as conn:
+        claim = (
+            "UPDATE switchboard.wake_intents SET state = 'claimed', claimed_by = 'w', "
+            "claim_expires_at = now() + interval '1 minute', attempts = attempts + 1 WHERE id = $1"
+        )
+        if from_state != "pending":
+            await conn.execute(claim, wake)
+        if from_state == "failed":
+            await conn.execute(
+                "UPDATE switchboard.wake_intents SET state = 'failed', claimed_by = NULL, "
+                "claim_expires_at = NULL WHERE id = $1",
+                wake,
+            )
+        cancel = (
+            "UPDATE switchboard.wake_intents SET state = 'cancelled', cancelled_reason = 'stopped', "
+            "claimed_by = NULL, claim_expires_at = NULL WHERE id = $1"
+        )
+        # A cancellation names its reason, and only a cancellation carries one.
+        await refused(
+            conn,
+            "UPDATE switchboard.wake_intents SET state = 'cancelled', claimed_by = NULL, "
             "claim_expires_at = NULL WHERE id = $1",
             wake,
         )
-    cancel = (
-        "UPDATE switchboard.wake_intents SET state = 'cancelled', cancelled_reason = 'stopped', "
-        "claimed_by = NULL, claim_expires_at = NULL WHERE id = $1"
-    )
-    # A cancellation names its reason, and only a cancellation carries one.
-    await refused(
-        owner,
-        "UPDATE switchboard.wake_intents SET state = 'cancelled', claimed_by = NULL, "
-        "claim_expires_at = NULL WHERE id = $1",
-        wake,
-    )
-    await owner.execute(cancel, wake)
-    await refused(owner, claim, wake)
-    await refused(
-        owner, "UPDATE switchboard.wake_intents SET state = 'pending' WHERE id = $1", wake
-    )
-    # Out of the open index, yet still the generation's one successor.
-    still_open = await owner.fetchval(
-        "SELECT count(*) FROM switchboard.wake_intents WHERE id = $1 "
-        "AND state IN ('pending','claimed','failed')",
-        wake,
-    )
-    assert still_open == 0
-    await wake_epoch(owner, goal_id, lead, 2)
-    with pytest.raises(asyncpg.UniqueViolationError):
-        await intent(owner, goal_id, env, epoch=2)
+        await conn.execute(cancel, wake)
+        await refused(conn, claim, wake)
+        await refused(
+            conn, "UPDATE switchboard.wake_intents SET state = 'pending' WHERE id = $1", wake
+        )
+        # Out of the open index, yet still the generation's one successor.
+        still_open = await owner.fetchval(
+            "SELECT count(*) FROM switchboard.wake_intents WHERE id = $1 "
+            "AND state IN ('pending','claimed','failed')",
+            wake,
+        )
+        assert still_open == 0
+        await wake_epoch(owner, goal_id, lead, 2)
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await intent(owner, goal_id, env, epoch=2)
 
 
 async def test_a_launched_wake_cannot_be_cancelled(ledger):
@@ -358,12 +359,13 @@ async def test_a_launched_wake_cannot_be_cancelled(ledger):
     env = await envelope(owner, goal_id)
     await wake_epoch(owner, goal_id, lead, 1)
     wake = await intent(owner, goal_id, env, state="launched")
-    await refused(
-        owner,
-        "UPDATE switchboard.wake_intents SET state = 'cancelled', cancelled_reason = 'stopped' "
-        "WHERE id = $1",
-        wake,
-    )
+    async with owner.acquire() as conn:
+        await refused(
+            conn,
+            "UPDATE switchboard.wake_intents SET state = 'cancelled', cancelled_reason = 'stopped' "
+            "WHERE id = $1",
+            wake,
+        )
 
 
 async def test_inbox_kinds_are_discriminated_and_consumed_once(ledger):
