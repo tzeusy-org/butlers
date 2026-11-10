@@ -376,6 +376,26 @@ def dashboard(host: str, port: int) -> None:
     ),
 )
 @click.option(
+    "--base-image",
+    envvar="BUTLERS_BASE_IMAGE",
+    default=None,
+    help="Immutable runtime base as registry/repository@sha256 (or BUTLERS_BASE_IMAGE)",
+)
+@click.option(
+    "--python-artifacts",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="BUTLERS_PYTHON_ARTIFACTS",
+    default=None,
+    help="Closed Python build context directory (or BUTLERS_PYTHON_ARTIFACTS)",
+)
+@click.option(
+    "--go-artifacts",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="BUTLERS_GO_ARTIFACTS",
+    default=None,
+    help="Closed Go module build context directory (or BUTLERS_GO_ARTIFACTS)",
+)
+@click.option(
     "--allow-dirty-root",
     "allow_dirty_root",
     is_flag=True,
@@ -396,6 +416,9 @@ def deploy(
     env_file: str | None,
     health_url: str | None,
     profiles: tuple[str, ...],
+    base_image: str | None,
+    python_artifacts: Path | None,
+    go_artifacts: Path | None,
     allow_dirty_root: bool,
 ) -> None:
     """Idempotent production deploy: build, migrate, recreate, verify, record.
@@ -421,7 +444,14 @@ def deploy(
     is gated behind the ``dev`` profile, so it must be requested explicitly or
     ``--remove-orphans`` would tear it down).
     """
-    from butlers.core.deploy import DeployConfig, DeployError, run_deploy
+    from butlers.core.deploy import (
+        DEFAULT_ENV_FILE,
+        DEFAULT_HEALTH_URL,
+        DEFAULT_PROJECT_NAME,
+        DeployConfig,
+        DeployError,
+        run_deploy,
+    )
 
     try:
         readiness = _sustained_readiness_target(
@@ -433,21 +463,20 @@ def deploy(
         click.echo(f"Invalid deploy configuration: {exc}", err=True)
         sys.exit(1)
 
-    config_kwargs: dict[str, object] = {
-        "repo_root": repo_root.resolve(),
-        "health_timeout_s": health_timeout_s,
-        "profiles": tuple(profiles),
-        "allow_dirty_root": allow_dirty_root,
-    }
-    if project_name is not None:
-        config_kwargs["project_name"] = project_name
-    if env_file is not None:
-        config_kwargs["env_file"] = env_file
-    if health_url is not None:
-        config_kwargs["health_url"] = health_url
-
     try:
-        config = DeployConfig(**config_kwargs, readiness=readiness)
+        config = DeployConfig(
+            repo_root=repo_root.resolve(),
+            health_timeout_s=health_timeout_s,
+            profiles=tuple(profiles),
+            allow_dirty_root=allow_dirty_root,
+            project_name=project_name if project_name is not None else DEFAULT_PROJECT_NAME,
+            env_file=env_file if env_file is not None else DEFAULT_ENV_FILE,
+            health_url=health_url if health_url is not None else DEFAULT_HEALTH_URL,
+            readiness=readiness,
+            base_image=base_image,
+            python_artifacts=python_artifacts.absolute() if python_artifacts is not None else None,
+            go_artifacts=go_artifacts.absolute() if go_artifacts is not None else None,
+        )
     except ValueError as exc:
         click.echo(f"Invalid deploy configuration: {exc}", err=True)
         sys.exit(1)

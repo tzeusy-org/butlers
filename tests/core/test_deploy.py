@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import socket
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -443,7 +444,21 @@ class TestRestoreDrillDeployBoundary:
 
 
 class TestBuildImage:
-    def test_success_builds_with_git_sha_arg(self, monkeypatch):
+    @staticmethod
+    def _build_config(tmp_path):
+        artifacts = tmp_path / "python-artifacts"
+        artifacts.mkdir()
+        (artifacts / "provenance.json").write_text("{}")
+        go_artifacts = tmp_path / "go-artifacts"
+        go_artifacts.mkdir()
+        (go_artifacts / "provenance.json").write_text("{}")
+        return _config(
+            base_image="registry.example.test/butlers/base@sha256:" + "a" * 64,
+            python_artifacts=artifacts,
+            go_artifacts=go_artifacts,
+        )
+
+    def test_success_builds_with_git_sha_arg(self, monkeypatch, tmp_path):
         captured = {}
 
         def fake_run(cmd, cwd, env, capture_output, text):
@@ -452,22 +467,71 @@ class TestBuildImage:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
-        build_image(_config(), "abc1234")
+        config = self._build_config(tmp_path)
+        build_image(config, "abc1234")
         cmd = captured["cmd"]
         assert cmd[:2] == ["docker", "build"]
         assert "--build-arg" in cmd
         assert "GIT_SHA=abc1234" in cmd
         assert "butlers-app:latest" in cmd
+        assert cmd[cmd.index("--target") + 1] == "production"
+        assert f"BUTLERS_BASE_IMAGE={config.base_image}" in cmd
+        assert f"python-artifacts={config.python_artifacts}" in cmd
+        assert f"go-artifacts={config.go_artifacts}" in cmd
 
-    def test_failure_raises_deploy_error_with_build_phase(self, monkeypatch):
+    def test_failure_raises_deploy_error_with_build_phase(self, monkeypatch, tmp_path):
         def fake_run(cmd, cwd, env, capture_output, text):
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no space left on device")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         with pytest.raises(DeployError) as exc_info:
-            build_image(_config(), "abc1234")
+            build_image(self._build_config(tmp_path), "abc1234")
         assert exc_info.value.phase == "build"
         assert "no space left on device" in str(exc_info.value)
+
+    @pytest.mark.parametrize("base_image", [None, "butlers-base:latest", "sha256:" + "a" * 64])
+    def test_missing_or_floating_base_refused_before_docker(self, monkeypatch, base_image):
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("docker was reached"))
+        with pytest.raises(DeployError, match="registry/repository@sha256"):
+            build_image(_config(base_image=base_image), "abc1234")
+
+    @pytest.mark.parametrize("kind", ["missing", "directory", "provenance", "symlink"])
+    def test_missing_or_invalid_context_refused_before_docker(self, monkeypatch, tmp_path, kind):
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("docker was reached"))
+        path = tmp_path / "context"
+        if kind in {"provenance", "symlink"}:
+            path.mkdir()
+        if kind == "symlink":
+            (path / "provenance.json").write_text("{}")
+            link = tmp_path / "link"
+            link.symlink_to(path)
+            path = link
+        config = _config(
+            base_image="registry.example.test/butlers/base@sha256:" + "a" * 64,
+            python_artifacts=None if kind == "missing" else path,
+        )
+        with pytest.raises(DeployError, match="[Pp]ython artifact"):
+            build_image(config, "abc1234")
+
+    @pytest.mark.parametrize(
+        "kind", ["missing", "directory", "provenance", "symlink", "provenance-link"]
+    )
+    def test_missing_or_invalid_go_context_refused_before_docker(self, monkeypatch, tmp_path, kind):
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("docker was reached"))
+        config = self._build_config(tmp_path)
+        path = tmp_path / "invalid-go"
+        if kind in {"provenance", "symlink", "provenance-link"}:
+            path.mkdir()
+        if kind == "symlink":
+            (path / "provenance.json").write_text("{}")
+            link = tmp_path / "go-link"
+            link.symlink_to(path)
+            path = link
+        if kind == "provenance-link":
+            (path / "provenance.json").symlink_to(config.go_artifacts / "provenance.json")
+        config = replace(config, go_artifacts=None if kind == "missing" else path)
+        with pytest.raises(DeployError, match="Go artifact"):
+            build_image(config, "abc1234")
 
 
 class TestRunMigrations:

@@ -5,12 +5,19 @@ on:
     # Run daily at 2am UTC
     - cron: '0 2 * * *'
   workflow_dispatch:
+    inputs:
+      exact_image_only:
+        description: Run only the complete exact-image conformance job
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
 
 jobs:
   nightly:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.exact_image_only }}
     timeout-minutes: 25
     runs-on: ubuntu-latest
 
@@ -55,6 +62,7 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: "true"
 
   faketime-matrix:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.exact_image_only }}
     # bu-10fgt.4: catches wall-clock time-bomb tests -- fixtures/business logic
     # that freeze one clock reading (e.g. a fixture-computed "_NOW") while
     # comparing it against a fresh datetime.now()/date.today() call elsewhere,
@@ -244,7 +252,8 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: "true"
 
   exact-image-sandbox:
-    timeout-minutes: 30
+    # Provisional cold source-build envelope; Codex alone measured 85 minutes.
+    timeout-minutes: 330
     permissions:
       contents: read
       actions: read
@@ -303,29 +312,23 @@ jobs:
           sudo apt-get clean -q
           docker image prune -f --filter "until=1h" || true
 
-      - name: Build butlers-base image
-        # Labels mirror scripts/compose.sh's freshness receipt so this stays
-        # provably the same base-image build contract production uses.
+      - name: Produce complete closed image contexts
         run: |
-          # shellcheck source=scripts/base-image-input-fingerprint.sh
-          source scripts/base-image-input-fingerprint.sh
-          BASE_DOCKERFILE_SHA=$(sha256sum < Dockerfile.base | awk '{print $1}')
-          BASE_INPUT_SHA=$(butlers_base_image_input_fingerprint \
-            Dockerfile.base \
-            scripts/runtime_cli_sandbox_init.c \
-            scripts/generate_runtime_cli_sandbox_manifest.py)
-          docker build \
-            --label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}" \
-            --label "butlers.base.input_sha=${BASE_INPUT_SHA}" \
-            -f Dockerfile.base \
-            -t butlers-base:latest .
+          python3 -I -B scripts/runtime_clis/produce_image_contexts.py \
+            --project "${GITHUB_WORKSPACE}" \
+            --work "${RUNNER_TEMP}/image-context-work-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output "${RUNNER_TEMP}/image-contexts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
       - name: Build butlers-app exact image
         env:
           GIT_SHA: ${{ github.sha }}
         run: |
-          DOCKER_BUILDKIT=1 docker build --build-arg GIT_SHA="${GIT_SHA}" \
-            -t "butlers-app:${GIT_SHA}" .
+          python3 -I -B scripts/runtime_clis/build_image_chain.py \
+            --project "${GITHUB_WORKSPACE}" \
+            --contexts "${RUNNER_TEMP}/image-contexts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --work "${RUNNER_TEMP}/image-chain-work-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output "${RUNNER_TEMP}/image-chain-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --revision "${GIT_SHA}"
 
       - name: Export installed runtime image files
         timeout-minutes: 4
@@ -416,6 +419,7 @@ jobs:
                 or test_exact_image_bubblewrap_sandbox_denies_signer_and_protected_environment"
 
   quarantined:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.exact_image_only }}
     timeout-minutes: 30
     # bu-w4c1iw: tests listed in tests/quarantine.json flake for a known cause
     # owned by a bead, so every default pytest run (PR and merge-queue shards
@@ -449,6 +453,7 @@ jobs:
   # covered one. It uploads the combined report as an artifact and refreshes the
   # main badge; it is not a required check.
   coverage-shards:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.exact_image_only }}
     runs-on: ubuntu-latest
     env:
       UV_PYTHON: 3.12.15
@@ -573,7 +578,7 @@ jobs:
     timeout-minutes: 27
     needs:
       - coverage-shards
-    if: always()
+    if: ${{ always() && (github.event_name != 'workflow_dispatch' || !inputs.exact_image_only) }}
     steps:
       - name: Require every coverage prerequisite
         env:
@@ -698,7 +703,7 @@ jobs:
     needs:
       - coverage-shards
       - coverage-preflight
-    if: always()
+    if: ${{ always() && (github.event_name != 'workflow_dispatch' || !inputs.exact_image_only) }}
     steps:
       - name: Require every coverage prerequisite
         env:
@@ -839,6 +844,7 @@ jobs:
           message: ${{ steps.coverage.outputs.percentage }}%
           color: ${{ steps.coverage.outputs.color }}
   durations-refresh:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.exact_image_only }}
     # Merges the measured durations of every lane group of the latest successful
     # merge-group CI run into the committed .test_durations that pytest-split
     # balances the CI lane groups with. Those groups run untraced, exactly as the

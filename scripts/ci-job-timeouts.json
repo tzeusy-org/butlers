@@ -205,17 +205,24 @@
       "p95_s": null,
       "candidate_timeout_minutes": 30,
       "retry_extra_s": 0,
-      "state": "provisional; no healthy p95 proof",
+      "state": "provisional cold source-owned producer and four-image chain; no hosted healthy timing or p95 calibration",
       "sample_source": "other-workflow-timing-metadata.json",
       "retained_original_candidate_minutes": 30,
       "review_uv_nominal_envelope_s": 640,
       "review_browser_hard_retry_interval_s": 0,
       "review_conservative_before_only_candidate_minutes": null,
-      "review_setup_placement": "retain existing setup sequence; gate-only check loses UV in M2",
+      "review_setup_placement": "complete public/closed producer contexts, immutable base and four app variants precede unchanged installed export and real-kernel sandbox tests",
       "review_policy": "candidate only; remeasure changed cold setup; observed baseline retained plus full reserve avoids undocumented first-attempt subtraction; unknown healthy remains provisional; rare existing30min provisional remains subject to healthy validation",
       "reviewed_job_name": "exact-image-sandbox",
       "additional_provisional_cold_dependency_allowance_s": 0,
-      "installed_timeout_minutes": 30
+      "installed_timeout_minutes": 330,
+      "source_build_envelope": {
+        "codex_actual_seconds": 5111.299,
+        "remaining_serial_producers_and_images_allowance_seconds": 12000,
+        "sandbox_setup_export_and_evidence_reserve_seconds": 2688.701,
+        "bound_seconds": 19800,
+        "qualification": "One host Codex observation is not hosted whole-job calibration; all previous provenance retained."
+      }
     },
     {
       "workflow": ".github/workflows/nightly.yml",

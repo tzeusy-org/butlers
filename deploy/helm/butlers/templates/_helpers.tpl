@@ -68,7 +68,7 @@ https://{{ .Values.publicUrl.host }}
 - name: oauth-gate
   image: {{ include "butlers.image" . }}
   imagePullPolicy: {{ .Values.image.pullPolicy }}
-  command: ["uv", "run", "--frozen", "--no-dev", "python", "scripts/oauth_gate.py"]
+  command: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "python", "scripts/oauth_gate.py"]
   env:
     {{- include "butlers.postgresEnv" . | nindent 4 }}
     - name: OAUTH_GATE_TIMEOUT

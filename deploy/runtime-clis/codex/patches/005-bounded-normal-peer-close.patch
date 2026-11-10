@@ -1,0 +1,149 @@
+--- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
++++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+@@ -48,0 +49,3 @@
++// Bound only normal peer-close reply flushing; terminal errors and cancellation remain immediate.
++const PEER_CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
++
+@@ -97,0 +101,19 @@
++                            Ok(Message::Close(frame)) => {
++                                // Tungstenite queues the matching reply in read(). Flush it before
++                                // publishing Close: its consumer can immediately drop this pump.
++                                let result = match tokio::time::timeout(
++                                    PEER_CLOSE_FLUSH_TIMEOUT,
++                                    inner.flush(),
++                                )
++                                .await
++                                {
++                                    Ok(Ok(())) => Ok(Message::Close(frame)),
++                                    Ok(Err(err)) => Err(err),
++                                    Err(_) => Err(WsError::Io(std::io::Error::new(
++                                        std::io::ErrorKind::TimedOut,
++                                        "timed out flushing websocket close reply",
++                                    ))),
++                                };
++                                let _ = tx_message.send(result);
++                                break;
++                            }
+@@ -100 +121,0 @@
+-                            | Message::Close(_)
+@@ -102 +122,0 @@
+-                                let is_close = matches!(message, Message::Close(_));
+@@ -104,3 +123,0 @@
+-                                    break;
+-                                }
+-                                if is_close {
+@@ -941,0 +959,114 @@
++
++    // Real production WsStream/connector and pinned Tungstenite over owned loopback sockets.
++    // These tests are intentionally runnable unchanged against the old production definition.
++    async fn pump_test_pair() -> (
++        WsStream,
++        tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
++    ) {
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
++            .await
++            .expect("bind owned loopback listener");
++        let address = listener.local_addr().expect("owned listener address");
++        let factory = HttpClientFactory::new(codex_http_client::OutboundProxyPolicy::ReqwestDefault);
++        let connector = WebSocketConnector::new_with_tls_mode(
++            &factory,
++            codex_websocket_client::WebSocketTlsMode::TungsteniteDefault,
++        )
++        .expect("create production connector");
++        let request = format!("ws://{address}/responses")
++            .into_client_request()
++            .expect("loopback request");
++        let accept = async {
++            let (socket, _) = listener.accept().await.expect("accept owned socket");
++            tokio_tungstenite::accept_async(socket)
++                .await
++                .expect("real server handshake")
++        };
++        let (server, client) = tokio::time::timeout(Duration::from_secs(3), async {
++            tokio::join!(
++                accept,
++                connector.connect_loopback_direct(request, WebSocketConfig::default()),
++            )
++        })
++        .await
++        .expect("bounded real handshake");
++        (WsStream::new(client.expect("real client handshake").0), server)
++    }
++
++    #[tokio::test]
++    async fn pump_peer_close_flushes_reply_before_delivering_close() {
++        tokio::time::timeout(Duration::from_secs(5), async {
++            let (mut client, mut server) = pump_test_pair().await;
++            let frame = CloseFrame {
++                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
++                reason: "".into(),
++            };
++            server
++                .feed(Message::Text("response.completed".into()))
++                .await
++                .expect("queue final event");
++            server
++                .feed(Message::Close(Some(frame.clone())))
++                .await
++                .expect("queue normal peer close");
++            server.flush().await.expect("flush final event and close");
++            assert_eq!(
++                client.next().await.expect("final event").expect("valid event"),
++                Message::Text("response.completed".into()),
++            );
++            assert_eq!(
++                client.next().await.expect("normal close").expect("valid close"),
++                Message::Close(Some(frame.clone())),
++            );
++            // Position the consumer-drop race after the actual delivered Close.
++            drop(client);
++            assert_eq!(
++                server.next().await.expect("matching peer reply").expect("valid reply"),
++                Message::Close(Some(frame)),
++            );
++        })
++        .await
++        .expect("bounded matching close exchange");
++    }
++
++    #[tokio::test]
++    async fn pump_stays_open_for_reuse_and_answers_ping() {
++        tokio::time::timeout(Duration::from_secs(5), async {
++            let (mut client, mut server) = pump_test_pair().await;
++            server.send(Message::Ping(vec![1, 2, 3].into())).await.expect("ping");
++            assert_eq!(
++                server.next().await.expect("pong").expect("valid pong"),
++                Message::Pong(vec![1, 2, 3].into()),
++            );
++            for text in ["first turn", "second turn"] {
++                client.send(Message::Text(text.into())).await.expect("send request");
++                assert_eq!(
++                    server.next().await.expect("request").expect("valid request"),
++                    Message::Text(text.into()),
++                );
++                server.send(Message::Text(text.into())).await.expect("send response");
++                assert_eq!(
++                    client.next().await.expect("response").expect("valid response"),
++                    Message::Text(text.into()),
++                );
++            }
++            drop(client);
++            assert!(server.next().await.is_none_or(|result| result.is_err()));
++        })
++        .await
++        .expect("bounded reuse and cancellation");
++    }
++
++    #[tokio::test]
++    async fn pump_abrupt_eof_propagates_error_without_graceful_wait() {
++        tokio::time::timeout(Duration::from_secs(5), async {
++            let (mut client, server) = pump_test_pair().await;
++            drop(server);
++            assert!(client.next().await.expect("terminal error").is_err());
++            // Join the real pump, rather than crediting only its error message.
++            (&mut client.pump_task).await.expect("pump joined after terminal error");
++        })
++        .await
++        .expect("bounded terminal error");
++    }
++

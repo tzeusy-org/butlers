@@ -1,0 +1,10 @@
+--- a/bun.lock
++++ b/bun.lock
+@@ -59 +59 @@
+-        "ghostty-web": "github:anomalyco/ghostty-web#main",
++        "ghostty-web": "github:anomalyco/ghostty-web#20bd3613f59dfc0f088a9aec498db2fa1a08b768",
+--- a/packages/app/package.json
++++ b/packages/app/package.json
+@@ -70 +70 @@
+-    "ghostty-web": "github:anomalyco/ghostty-web#main",
++    "ghostty-web": "github:anomalyco/ghostty-web#20bd3613f59dfc0f088a9aec498db2fa1a08b768",

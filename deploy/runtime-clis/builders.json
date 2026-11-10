@@ -1,0 +1,145 @@
+{
+  "schema": "butlers.runtime-cli-builders/v1",
+  "platform": "linux/amd64",
+  "qualification": "Resolved public immutable OCI inputs only; no builder execution, artifact equivalence or final image success asserted.",
+  "builders": {
+    "python": {
+      "image": "docker.io/library/python@sha256:c2d8472b831337ab296a8ce652e1ba786e9e3034fc445dc58b50a7f5251f0003",
+      "index_digest": "sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9",
+      "requested_reference": "sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9",
+      "config_digest": "sha256:2931a495646803fbd78108564c5d73260b6b75539aa7adc8283d038fb22cc66b",
+      "manifest_url": "https://registry-1.docker.io/v2/library/python/manifests/sha256:c2d8472b831337ab296a8ce652e1ba786e9e3034fc445dc58b50a7f5251f0003",
+      "layers": [
+        {
+          "digest": "sha256:72c03230f1363a3fb61d2f98504cf168bad3fe22f511ad2005dc021515d7ce97",
+          "size": 29785415,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/library/python/blobs/sha256:72c03230f1363a3fb61d2f98504cf168bad3fe22f511ad2005dc021515d7ce97"
+        },
+        {
+          "digest": "sha256:6ec7f4e699d76dee8107525bf275ad5506fc96ae25aeaf21fbd1633853ed49a2",
+          "size": 1293270,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/library/python/blobs/sha256:6ec7f4e699d76dee8107525bf275ad5506fc96ae25aeaf21fbd1633853ed49a2"
+        },
+        {
+          "digest": "sha256:4b6b2afbcb1ea17577af7be93b9dfd8431a3e3a1dc834ede13df40147db94d77",
+          "size": 12112860,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/library/python/blobs/sha256:4b6b2afbcb1ea17577af7be93b9dfd8431a3e3a1dc834ede13df40147db94d77"
+        },
+        {
+          "digest": "sha256:6dc8148c4b61cf7dd8cff2c6146ffb5855f3d0cc2770312e6795a8fd68072e02",
+          "size": 249,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/library/python/blobs/sha256:6dc8148c4b61cf7dd8cff2c6146ffb5855f3d0cc2770312e6795a8fd68072e02"
+        }
+      ]
+    },
+    "rust": {
+      "image": "docker.io/library/rust@sha256:28846ec5a6bcfcddb93f403ba7071bd579787852b2f2ac3839965620e8bd9456",
+      "index_digest": "sha256:e14e87345b4d5964ddcc3491d27ee046a0f23820f340c3c1e24da6880141f7c0",
+      "requested_reference": "1.95.0-slim-trixie",
+      "config_digest": "sha256:d02c49aa12bacc2cb79ca068d3ac4af21af3e68f6ba1e99d6f5a85ccd0684c59",
+      "manifest_url": "https://registry-1.docker.io/v2/library/rust/manifests/sha256:28846ec5a6bcfcddb93f403ba7071bd579787852b2f2ac3839965620e8bd9456",
+      "layers": [
+        {
+          "digest": "sha256:5b4d6ff92fc4e14e911b7753c954fac965d48c40fe1075758d284148ccace970",
+          "size": 29779926,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/library/rust/blobs/sha256:5b4d6ff92fc4e14e911b7753c954fac965d48c40fe1075758d284148ccace970"
+        },
+        {
+          "digest": "sha256:9dcffdd7c0123756f30c8e5178af47ac000051139eeaf1ff7ba647a6e466d050",
+          "size": 290640930,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/library/rust/blobs/sha256:9dcffdd7c0123756f30c8e5178af47ac000051139eeaf1ff7ba647a6e466d050"
+        }
+      ]
+    },
+    "node": {
+      "image": "docker.io/library/node@sha256:aaa4b5baf1ecff3b283486bb1f90405cdda225a3e6f79660d2c559fa510a7292",
+      "index_digest": "sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d",
+      "requested_reference": "22.23.4-bookworm-slim",
+      "config_digest": "sha256:8700da48cc6592503feabf399d242414f932197c3b44f43970d2cbc5671e06b0",
+      "manifest_url": "https://registry-1.docker.io/v2/library/node/manifests/sha256:aaa4b5baf1ecff3b283486bb1f90405cdda225a3e6f79660d2c559fa510a7292",
+      "layers": [
+        {
+          "digest": "sha256:dd051e1b8c92ff101fa3071ab97ea4924885942f15644e01c3dc095764e863e3",
+          "size": 28247982,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/library/node/blobs/sha256:dd051e1b8c92ff101fa3071ab97ea4924885942f15644e01c3dc095764e863e3"
+        },
+        {
+          "digest": "sha256:3c5f479ca65a7b3147df7d9724ac331de960e91ea4034826b7a5c3f9eed57934",
+          "size": 3310,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/library/node/blobs/sha256:3c5f479ca65a7b3147df7d9724ac331de960e91ea4034826b7a5c3f9eed57934"
+        },
+        {
+          "digest": "sha256:5d0c6c5710f1cdc2a30a47c236d5a75ab16d2785fc0aed022b46273ffafd13c6",
+          "size": 49885577,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/library/node/blobs/sha256:5d0c6c5710f1cdc2a30a47c236d5a75ab16d2785fc0aed022b46273ffafd13c6"
+        },
+        {
+          "digest": "sha256:1b7992cf5ea802ac4b2bcb787738f6040d742e27f6d10e1395bee16b0a3c6d03",
+          "size": 1713048,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/library/node/blobs/sha256:1b7992cf5ea802ac4b2bcb787738f6040d742e27f6d10e1395bee16b0a3c6d03"
+        },
+        {
+          "digest": "sha256:ff2c4258f9cf850b921ff6d790c9a52585dca4811afdb2b78f92be33696d8b5d",
+          "size": 448,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/library/node/blobs/sha256:ff2c4258f9cf850b921ff6d790c9a52585dca4811afdb2b78f92be33696d8b5d"
+        }
+      ]
+    },
+    "bun": {
+      "image": "docker.io/oven/bun@sha256:431b37ce1acfed987e4f5b6c86a9f210ff63285a912fc5f21e18aeac0cb067ef",
+      "index_digest": "sha256:9dba1a1b43ce28c9d7931bfc4eb00feb63b0114720a0277a8f939ae4dfc9db6f",
+      "requested_reference": "1.3.14-debian",
+      "config_digest": "sha256:74e01c1a49b4acccdf64af2330cba651146c4648bd7115b82dd8abe1d37897ac",
+      "manifest_url": "https://registry-1.docker.io/v2/oven/bun/manifests/sha256:431b37ce1acfed987e4f5b6c86a9f210ff63285a912fc5f21e18aeac0cb067ef",
+      "layers": [
+        {
+          "digest": "sha256:307f8152a55ef1e9eeb1acbbee7bc81232615329eaeb00d8dd93b46be297f34c",
+          "size": 49302320,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/oven/bun/blobs/sha256:307f8152a55ef1e9eeb1acbbee7bc81232615329eaeb00d8dd93b46be297f34c"
+        },
+        {
+          "digest": "sha256:75d61e13b31724925cec7d1b638b0571a028390f47ec5905a3cbefb438505a60",
+          "size": 296,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/oven/bun/blobs/sha256:75d61e13b31724925cec7d1b638b0571a028390f47ec5905a3cbefb438505a60"
+        },
+        {
+          "digest": "sha256:f3a1a568f0db57547b98288d0f5594a1139be350ebbf76776cf6364d3f77eed9",
+          "size": 36606378,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/oven/bun/blobs/sha256:f3a1a568f0db57547b98288d0f5594a1139be350ebbf76776cf6364d3f77eed9"
+        },
+        {
+          "digest": "sha256:50b29919ecc30a6f5a28c1da972d3c2d4ff9e0f7917eb3a9618aa785eb868a8c",
+          "size": 185,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/oven/bun/blobs/sha256:50b29919ecc30a6f5a28c1da972d3c2d4ff9e0f7917eb3a9618aa785eb868a8c"
+        },
+        {
+          "digest": "sha256:287c8f879cc663fc91d257b22f6ba9527e3a8596b5148360e73d4c033c421deb",
+          "size": 3396,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/oven/bun/blobs/sha256:287c8f879cc663fc91d257b22f6ba9527e3a8596b5148360e73d4c033c421deb"
+        },
+        {
+          "digest": "sha256:22edebef950f8dee5a3efcc95c64e8d235f8468e49a6ad4b3fb79905ffaa9e14",
+          "size": 139,
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "url": "https://registry-1.docker.io/v2/oven/bun/blobs/sha256:22edebef950f8dee5a3efcc95c64e8d235f8468e49a6ad4b3fb79905ffaa9e14"
+        }
+      ]
+    }
+  }
+}

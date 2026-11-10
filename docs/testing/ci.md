@@ -111,7 +111,9 @@ is separate from the five unit/six integration groups and coverage publication.
 The job uses the existing builder's Go1.25.11, a commit-pinned setup-go action,
 and a cache keyed by `whatsapp-bridge/go.sum`. It runs all packages with
 `-mod=readonly -count=1 -timeout=5m` and refuses tracked go.mod/go.sum changes.
-It starts no authenticated bridge, pairing, live session or real database.
+It also runs the stdlib offline Go artifact-contract tests used by the pinned
+producer and application build. It starts no authenticated bridge, pairing, live
+session or real database.
 
 Its 15-minute cap is provisional and source-derived: a 600-second command bound,
 30-second KILL allowance and 270-second checkout/toolchain/cache/finalization

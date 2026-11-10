@@ -267,7 +267,10 @@ dev `deploy-*` first passes the read-only topology guard, then runs `bootstrap-d
 Helm in `record-deploy.sh`, including direct wrapper calls. Its exact Helm render determines the
 desired topology; live Deployment commands/selectors, observed generations/counters and all
 release runtime pods determine the current topology. Unknown or inconsistent state refuses even
-a same-topology rollout. Split/cohost changes require both roles at desired/observed zero and no
+a same-topology rollout. Admission recognizes the exact installed-only role commands and the
+previous live images' exact `uv sync --dev && exec uv run butlers ...` commands so an image
+upgrade can retain its topology. Extra command arguments and mixed roles still refuse.
+Split/cohost changes require both roles at desired/observed zero and no
 old or terminating pods. A stopped leftover control object does not block a same-cohost release.
 The host needs `uv sync --dev` in this checkout; the guard never installs dependencies, scales
 roles, deletes pods or writes the DB. Hold competing automation throughout: API reads are not an
@@ -601,3 +604,16 @@ enforces egress policy. With the chart policy, a node-hosted private address was
 blocked, DNS resolved and a public host was reachable; allowlisting that address made
 it reachable. A Service in another namespace (`postgres-dev-rw.postgres-dev:5432`) and
 kube-dns stayed reachable through the `namespaceSelector: {}` rule.
+
+### Closed application build inputs
+
+`scripts/k8s/build-push.sh` consumes the same explicit immutable base and closed
+Python artifact input as the application Dockerfile. Set `BUTLERS_BASE_IMAGE` to
+the coordinated full `registry/repository@sha256` reference and
+`BUTLERS_PYTHON_ARTIFACTS` to its verified context directory containing
+`provenance.json`. Missing inputs refuse before image build or publication. Both
+Kubernetes environments retain the shared application's production dependency
+profile; Compose hotreload selects the separate development profile. Building the
+base is a separate source/artifact operation described in
+[the runtime input contract](../../deploy/runtime-clis/README.md). This input
+contract does not authorize deployment or enable egress enforcement.

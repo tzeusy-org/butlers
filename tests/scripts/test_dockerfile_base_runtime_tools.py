@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import ast
+import json
 import os
-import re
 import shlex
 import subprocess
 import tomllib
@@ -59,10 +60,15 @@ def _base_input_fingerprint(inputs: tuple[str, ...], *, cwd: Path, env: dict[str
 
 def test_base_image_installs_uv_git_and_gh_for_qa_runtime() -> None:
     text = _dockerfile_base_text()
-    assert "git" in text
-    assert "python -m pip install --no-cache-dir uv" in text
+    system = json.loads(Path("deploy/runtime-clis/debian-system-inputs.json").read_text())
+    assert {"git", "gh"} <= set(system["profiles"]["runtime"]["requested"])
+    assert "--profile runtime" in text
+    runtime = json.loads(Path("deploy/runtime-clis/runtime-inputs.json").read_text())
+    assert runtime["versions"]["uv"] == "0.12.22"
+    assert "--mount=from=runtime-artifacts" in text
+    assert "--root /" in text
+    assert "pip install" not in text
     assert "uv --version" in text
-    assert "gh" in text
 
     # REQ-testing-048: project/lock packaging choice; these structural and
     # installed witnesses do not claim either application image was built.
@@ -91,26 +97,28 @@ def test_base_image_installs_uv_git_and_gh_for_qa_runtime() -> None:
 def test_compose_base_freshness_uses_pinned_dockerfile_not_live_npm_latest() -> None:
     dockerfile_text = _dockerfile_base_text()
     compose_text = _compose_script_text()
-    runtime_cli_packages = [
-        "@anthropic-ai/claude-code",
-        "@google/gemini-cli",
-        "@openai/codex",
-        "opencode-ai",
-    ]
-
-    for package in runtime_cli_packages:
-        assert re.search(rf"{re.escape(package)}@\d+\.\d+\.\d+", dockerfile_text)
+    runtime = json.loads(Path("deploy/runtime-clis/runtime-inputs.json").read_text())
+    assert runtime["versions"] == {
+        "node": "v22.23.4",
+        "npm": "10.9.9",
+        "uv": "0.12.22",
+        "claude": "2.1.309",
+        "gemini": "0.66.0",
+        "codex": "0.159.2",
+        "opencode": "1.17.7",
+    }
+    assert set(runtime["components"]) == {"node", "uv", "claude", "gemini", "codex", "opencode"}
+    assert "--network=none --mount=from=runtime-artifacts" in dockerfile_text
+    assert "npm install" not in dockerfile_text
+    assert "nodesource.com" not in dockerfile_text
 
     assert "registry.npmjs.org/${pkg}/latest" not in compose_text
     assert "CLI_PKGS=" not in compose_text
 
 
 def test_codex_cli_pin_supports_gpt_6_sol_and_luna() -> None:
-    text = _dockerfile_base_text()
-    match = re.search(r"@openai/codex@(\d+)\.(\d+)\.(\d+)\s+\\", text)
-
-    assert match is not None
-    assert tuple(map(int, match.groups())) >= (0, 159, 2), (
+    runtime = json.loads(Path("deploy/runtime-clis/runtime-inputs.json").read_text())
+    assert tuple(map(int, runtime["versions"]["codex"].split("."))) >= (0, 159, 2), (
         "gpt-6-sol and gpt-6-luna require Codex CLI 0.159.2 or newer"
     )
 
@@ -119,7 +127,11 @@ def test_base_image_ships_the_pinned_dashboard_cli_sandbox_toolchain() -> None:
     """REQ-core-credentials-002: the image, not the host, owns the sandbox contract."""
     text = _dockerfile_base_text()
 
-    assert re.search(r"\bbubblewrap=0\.12\.0-1~deb13u1\b", text)
+    system = json.loads(Path("deploy/runtime-clis/debian-system-inputs.json").read_text())
+    assert "bubblewrap=0.12.0-1~deb13u1" in system["profiles"]["runtime"]["requested"]
+    assert "--profile runtime" in text and "--profile compiler" in text
+    assert text.count("RUN --network=none --mount=from=system-artifacts") == 2
+    assert "apt-get update" not in text
     assert "dpkg-query" in text
     assert "bubblewrap" in text
     assert "runtime_cli_sandbox_init.c" in text
@@ -131,7 +143,7 @@ def test_sandbox_init_builder_creates_its_declared_output_directory() -> None:
     """The exact-image toolchain cannot rely on an implicit compiler output path."""
     text = _dockerfile_base_text()
 
-    assert text.index("RUN mkdir -p /out") < text.index(
+    assert text.index("RUN --network=none mkdir -p /out") < text.index(
         "gcc -O2 -Wall -Wextra -Werror -o /out/runtime-cli-sandbox-init"
     )
 
@@ -167,10 +179,37 @@ def test_base_image_freshness_fingerprints_each_local_copy_input_without_dotenv(
     docker_sources = _non_stage_copy_sources()
     expected_inputs = (
         "Dockerfile.base",
+        "scripts/runtime_clis/install_system_artifacts.py",
+        "deploy/runtime-clis/debian-system-inputs.json",
         "scripts/runtime_cli_sandbox_init.c",
+        "scripts/runtime_clis/runtime_artifacts.py",
+        "deploy/runtime-clis/runtime-inputs.json",
         "scripts/generate_runtime_cli_sandbox_manifest.py",
     )
     assert ("Dockerfile.base", *docker_sources) == expected_inputs
+    cli_tree = ast.parse(Path("tests/cli/test_runtime_cli_sandbox.py").read_text())
+    cli_inputs = next(
+        node.value
+        for node in cli_tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_BASE_IMAGE_BUILD_INPUTS"
+            for target in node.targets
+        )
+    )
+    assert ast.literal_eval(cli_inputs) == expected_inputs
+    nightly = Path(".github/workflows/nightly.yml").read_text()
+    assert "scripts/runtime_clis/build_image_chain.py" in nightly
+    chain_tree = ast.parse(Path("scripts/runtime_clis/build_image_chain.py").read_text())
+    chain_inputs = next(
+        node.value
+        for node in chain_tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "BASE_INPUTS" for target in node.targets
+        )
+    )
+    assert ast.literal_eval(chain_inputs) == expected_inputs
 
     for relative_path in expected_inputs:
         source = Path(relative_path)
@@ -198,24 +237,15 @@ def test_base_image_freshness_fingerprints_each_local_copy_input_without_dotenv(
         target.write_bytes(original)
 
 
-def test_compose_base_freshness_uses_the_input_receipt_and_rebuilds_legacy_images() -> None:
-    """The canonical launcher reads and writes the separate path-bound input label."""
+def test_compose_base_input_requires_an_explicit_immutable_reference() -> None:
+    """Launching consumes the coordinated base by digest instead of rebuilding a tag."""
     text = _compose_script_text()
 
-    inputs_match = re.search(
-        r"BASE_IMAGE_BUILD_INPUTS=\(\n(?P<inputs>(?:\s+[^\n]+\n)+)\)",
-        text,
-    )
-    assert inputs_match is not None
-    configured_inputs = tuple(
-        line.strip() for line in inputs_match.group("inputs").splitlines() if line.strip()
-    )
-    assert configured_inputs == ("Dockerfile.base", *_non_stage_copy_sources())
-    assert 'source "${SCRIPT_DIR}/base-image-input-fingerprint.sh"' in text
-    assert '"${BASE_IMAGE_BUILD_INPUTS[@]}"' in text
-    assert '"butlers.base.dockerfile_sha"' in text
-    assert '"butlers.base.input_sha"' in text
-    assert '--label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}"' in text
-    assert '--label "butlers.base.input_sha=${BASE_INPUT_SHA}"' in text
-    assert '[ -z "$BASE_IMAGE_DOCKERFILE_SHA" ] || [ -z "$BASE_IMAGE_INPUT_SHA" ]' in text
-    assert '[ "$BASE_IMAGE_INPUT_SHA" != "$BASE_INPUT_SHA" ]' in text
+    assert "BUTLERS_BASE_IMAGE must be a full registry/repository@sha256 reference" in text
+    assert '--build-arg "BUTLERS_BASE_IMAGE=${BUTLERS_BASE_IMAGE}"' in text
+    assert '--build-context "python-artifacts=${PYTHON_ARTIFACTS_CONTEXT}"' in text
+    assert '--build-context "python-artifacts=${AUDIO_PYTHON_ARTIFACTS_CONTEXT}"' in text
+    assert "APP_BUILD_TARGET=production" in text
+    assert "APP_BUILD_TARGET=development" in text
+    assert "docker image inspect butlers-base:latest" not in text
+    assert "-f Dockerfile.base" not in text

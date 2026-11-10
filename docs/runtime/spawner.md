@@ -80,6 +80,13 @@ A session row is inserted into the `sessions` table with the prompt, trigger sou
 
 The spawner generates a config declaring a single MCP server --- this butler's FastMCP instance. The URL includes a `runtime_session_id` query parameter for tool call correlation. Only declared credentials are included in the environment; undeclared env vars do not leak.
 
+The paired nonsecret workload egress controls are a separate deployment input.
+The spawner validates `BUTLERS_EGRESS_MODE` and `BUTLERS_EGRESS_GATEWAY` and carries
+that selection into ordinary, QA sandbox override and healing children. Credential
+store entries and override dictionaries cannot replace those controls. All other
+QA sandbox environment values retain their existing boundary; healing still
+receives no butler credentials. An invalid deployment transport refuses invocation.
+
 ### 5. System Prompt Composition
 
 The system prompt is composed in `spawner_context._compose_system_prompt()` from these layers, in stable order for token-cache efficiency (each appended as a suffix, separated by one blank line, only when non-empty):

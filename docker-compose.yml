@@ -125,8 +125,8 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >-
-        uv run --frozen --no-dev butlers db prepare-chronicler-memory --dir /app/roster
-        && exec uv run --frozen --no-dev butlers db migrate --dir /app/roster
+        /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db prepare-chronicler-memory --dir /app/roster
+        && exec /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db migrate --dir /app/roster
     environment:
       <<: *postgres-env
     volumes:
@@ -336,7 +336,7 @@ services:
 
   connector-telegram-bot:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_bot", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.telegram_bot"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_bot", "python", "-m", "butlers.connectors.telegram_bot"]
     command: []
     environment:
       <<: *connector-env
@@ -361,7 +361,7 @@ services:
 
   connector-telegram-user:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_user", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.telegram_user_client"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_user", "python", "-m", "butlers.connectors.telegram_user_client"]
     command: []
     environment:
       <<: *connector-env
@@ -379,7 +379,7 @@ services:
 
   connector-whatsapp-user:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/whatsapp_user", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.whatsapp_user_client"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/whatsapp_user", "python", "-m", "butlers.connectors.whatsapp_user_client"]
     command: []
     environment:
       <<: *connector-env
@@ -400,7 +400,7 @@ services:
 
   connector-google-calendar:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google_calendar", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.google_calendar"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google_calendar", "python", "-m", "butlers.connectors.google_calendar"]
     command: []
     environment:
       <<: *connector-env
@@ -422,7 +422,7 @@ services:
 
   connector-spotify:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/spotify", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.spotify"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/spotify", "python", "-m", "butlers.connectors.spotify"]
     command: []
     environment:
       <<: *connector-env
@@ -443,7 +443,7 @@ services:
 
   connector-steam:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/steam", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.steam"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/steam", "python", "-m", "butlers.connectors.steam"]
     command: []
     environment:
       <<: *connector-env
@@ -471,7 +471,7 @@ services:
         GIT_SHA: ${GIT_SHA:-unknown}
     image: butlers-app-audio:${BUTLERS_APP_TAG:-latest}
     profiles: [audio]
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/live_listener", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.live_listener"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/live_listener", "python", "-m", "butlers.connectors.live_listener"]
     command: []
     environment:
       <<: *connector-env
@@ -493,7 +493,7 @@ services:
 
   connector-owntracks:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/owntracks", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.owntracks"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/owntracks", "python", "-m", "butlers.connectors.owntracks"]
     command: []
     environment:
       <<: *connector-env
@@ -520,7 +520,7 @@ services:
   # not templated here (see bu-whhll.6 follow-ups).
   connector-activitywatch:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/activitywatch", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.activitywatch"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/activitywatch", "python", "-m", "butlers.connectors.activitywatch"]
     command: []
     environment:
       <<: *connector-env
@@ -543,7 +543,7 @@ services:
 
   connector-home-assistant:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/home_assistant", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.home_assistant"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/home_assistant", "python", "-m", "butlers.connectors.home_assistant"]
     command: []
     environment:
       <<: *connector-env
@@ -585,7 +585,7 @@ services:
 
   oauth-gate:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["uv", "run", "--frozen", "--no-dev", "python", "scripts/oauth_gate.py"]
+    entrypoint: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "python", "scripts/oauth_gate.py"]
     command: []
     environment:
       <<: *postgres-env
@@ -606,7 +606,7 @@ services:
   butlers-control:
     profiles: [control-stage]
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/control", "sh", "-c", "uv sync --dev && exec uv run butlers control --profile KEY_ABSENT_STAGE --config roster/switchboard --session-host butlers-control-session"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/control", "butlers", "control", "--profile", "KEY_ABSENT_STAGE", "--config", "roster/switchboard", "--session-host", "butlers-control-session"]
     command: []
     ports:
       - "127.0.0.1:${SWITCHBOARD_HOST_PORT:-41100}:41100"
@@ -671,7 +671,7 @@ services:
 
   butlers-up:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "sh", "-c", "uv sync --dev && exec uv run butlers up"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "butlers", "up"]
     command: []
     ports:
       - "127.0.0.1:${SWITCHBOARD_HOST_PORT:-41100}:41100"
@@ -736,7 +736,7 @@ services:
 
   connector-gmail:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/gmail", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.gmail"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/gmail", "python", "-m", "butlers.connectors.gmail"]
     command: []
     environment:
       <<: *connector-env
@@ -759,7 +759,7 @@ services:
 
   connector-google-drive:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google_drive", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.google_drive"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google_drive", "python", "-m", "butlers.connectors.google_drive"]
     command: []
     environment:
       <<: *connector-env
@@ -790,7 +790,7 @@ services:
 
   connector-google-health:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google-health", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.google_health"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google-health", "python", "-m", "butlers.connectors.google_health"]
     command: []
     environment:
       <<: *connector-env
@@ -822,7 +822,7 @@ services:
   butlers-control-hotreload:
     profiles: [control-stage-hotreload]
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers control --profile KEY_ABSENT_STAGE --config roster/switchboard --session-host butlers-control-session"]
+    entrypoint: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "butlers", "control", "--profile", "KEY_ABSENT_STAGE", "--config", "roster/switchboard", "--session-host", "butlers-control-session"]
     command: []
     # Keep the same MCP port reservation as the baked daemon service above.
     sysctls:
@@ -842,8 +842,8 @@ services:
       - ./src:/app/src
       - ./roster:/app/roster:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./uv.lock:/app/uv.lock:ro
       - ./logs:/app/logs
-      - uv_cache:/root/.cache/uv
       - runtime_claude:/root/.claude
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
@@ -881,7 +881,7 @@ services:
   butlers-up-hotreload:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
     profiles: [hotreload]
-    entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers up"]
+    entrypoint: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "butlers", "up"]
     command: []
     # Keep the same MCP port reservation as the baked daemon service above.
     sysctls:
@@ -899,8 +899,8 @@ services:
       - ./src:/app/src
       - ./roster:/app/roster:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./uv.lock:/app/uv.lock:ro
       - ./logs:/app/logs
-      - uv_cache:/root/.cache/uv
       - runtime_claude:/root/.claude
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
@@ -929,7 +929,7 @@ services:
   dashboard-api-hotreload:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
     profiles: [hotreload]
-    entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers dashboard --host 0.0.0.0 --port 41200"]
+    entrypoint: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "butlers", "dashboard", "--host", "0.0.0.0", "--port", "41200"]
     command: []
     ports:
       - "127.0.0.1:${DASHBOARD_HOST_PORT:-41200}:41200"
@@ -966,8 +966,8 @@ services:
       - ./src:/app/src
       - ./roster:/app/roster:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./uv.lock:/app/uv.lock:ro
       - ./logs:/app/logs
-      - uv_cache:/root/.cache/uv
       - wa_bridge_socket:/tmp/wa-bridge
       - butlers_backups:/backups:ro
     # bu-0uqgo.11 (REQ-core-credentials-002): Dashboard is the only signing
@@ -1032,7 +1032,7 @@ services:
   session-host:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
     profiles: [session-host]
-    entrypoint: ["uv", "run", "--frozen", "--no-dev", "butlers", "session-host"]
+    entrypoint: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "butlers", "session-host"]
     command:
       - --pki-dir=/run/session-host/pki
       - --staging-root=/var/lib/session-host/staging
@@ -1077,7 +1077,6 @@ configs:
 volumes:
   minio_data:
   frontend_node_modules:
-  uv_cache:
   runtime_claude:
   runtime_codex:
   # The session host's Codex credential volume (dark; bu-kiuh8v.15).

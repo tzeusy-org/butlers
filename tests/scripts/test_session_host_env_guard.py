@@ -272,6 +272,23 @@ def test_helm_session_host_is_dark_by_default_and_clean_when_enabled() -> None:
     ], "only the host, its control Service, credential volume and ingress policy"
     assert pod_violations(deployments[0] if deployments else None) == []
     assert exposure_violations(docs) == []
+    container = deployments[0]["spec"]["template"]["spec"]["containers"][0]
+    assert container["command"] == [
+        "/usr/local/bin/python",
+        "-I",
+        "/app/scripts/runtime_clis/python_entrypoint.py",
+        "butlers",
+    ]
+    values = yaml.safe_load((_CHART / "values.yaml").read_text())["sessionHost"]
+    assert container["args"] == [
+        "session-host",
+        "--pki-dir=/run/session-host/pki",
+        "--staging-root=/var/lib/session-host/staging",
+        "--credentials-root=/var/lib/session-host/credentials/codex",
+        f"--broker-origin={values['brokerOrigin']}",
+        "--bind-host=0.0.0.0",
+        f"--port={values['port']}",
+    ]
 
 
 @needs_helm

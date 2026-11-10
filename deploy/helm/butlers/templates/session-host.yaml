@@ -39,7 +39,7 @@ spec:
         - name: session-host
           image: {{ include "butlers.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["uv", "run", "--frozen", "--no-dev", "butlers"]
+          command: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "butlers"]
           args:
             - session-host
             - --pki-dir=/run/session-host/pki

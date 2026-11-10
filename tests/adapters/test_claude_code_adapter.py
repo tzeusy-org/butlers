@@ -30,6 +30,122 @@ pytestmark = pytest.mark.unit
 _EXEC = "butlers.core.runtimes.claude_code.asyncio.create_subprocess_exec"
 
 
+@pytest.mark.parametrize("custom", [False, True])
+async def test_selected_api_base_preserves_native_auth_and_invocation(custom):
+    origin = "https://api.example.test:8443/prefix/" if custom else "https://api.anthropic.com"
+    authority = "api.example.test:8443" if custom else "api.anthropic.com"
+    environment = {
+        "BUTLERS_EGRESS_MODE": "request-v1",
+        "BUTLERS_EGRESS_GATEWAY": "http://egress-gateway:3115",
+        "ANTHROPIC_API_KEY": "synthetic-key",
+        "ANTHROPIC_CUSTOM_HEADERS": f"Authorization: Bearer synthetic-token\nHost: {authority}\nConnection: keep-alive",
+        "HTTPS_PROXY": "http://foreign-proxy.test",
+        "http_proxy": "http://foreign-proxy.test",
+        "DASHBOARD_API_KEY": "synthetic-owner",
+    }
+    if custom:
+        environment["ANTHROPIC_BASE_URL"] = origin
+    unchanged = dict(environment)
+    captured = {}
+    process = AsyncMock(returncode=0, pid=1)
+    process.communicate = AsyncMock(return_value=(b'{"type":"result","result":"ok"}', b""))
+
+    async def launch(*argv, **kwargs):
+        captured.update(argv=argv, environment=kwargs["env"])
+        path = Path(argv[argv.index("--mcp-config") + 1])
+        captured["mcp"] = json.loads(await asyncio.to_thread(path.read_text))
+        return process
+
+    with patch(_EXEC, side_effect=launch):
+        result, _, _ = await ClaudeCodeAdapter(claude_binary="/usr/bin/claude").invoke(
+            prompt="fixture",
+            system_prompt="fixture system",
+            mcp_servers={"fixture": {"url": "http://internal.fixture:9100/mcp"}},
+            env=environment,
+            model="fixture-model",
+            resume_session_id="fixture-resume",
+            runtime_args=["--effort", "low"],
+        )
+    assert result == "ok" and environment == unchanged
+    child = captured["environment"]
+    expected = (
+        "http://egress-gateway:3115/_butlers/egress/v1/https/api.example.test/8443/prefix"
+        if custom
+        else "http://egress-gateway:3115/_butlers/egress/v1/https/api.anthropic.com/443"
+    )
+    assert child.get("ANTHROPIC_BASE_URL") == expected
+    assert child["ANTHROPIC_API_KEY"] == "synthetic-key"
+    assert (
+        child["ANTHROPIC_CUSTOM_HEADERS"]
+        == "Authorization: Bearer synthetic-token\nConnection: close"
+    )
+    assert not {"HTTPS_PROXY", "http_proxy", "DASHBOARD_API_KEY"} & child.keys()
+    assert captured["mcp"]["mcpServers"]["fixture"] == {
+        "type": "http",
+        "url": "http://internal.fixture:9100/mcp",
+    }
+    argv = captured["argv"]
+    for flag in ("--bare", "--strict-mcp-config", "--no-session-persistence"):
+        assert flag in argv
+    for flag, value in (
+        ("--model", "fixture-model"),
+        ("--resume", "fixture-resume"),
+        ("--effort", "low"),
+    ):
+        assert argv[argv.index(flag) + 1] == value
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"BUTLERS_EGRESS_GATEWAY": "http://foreign:3115"},
+        {"ANTHROPIC_BASE_URL": "http://api.anthropic.com"},
+        {"ANTHROPIC_BASE_URL": "https://api.anthropic.com:0"},
+        {"ANTHROPIC_BASE_URL": "https://user:synthetic@api.anthropic.com"},
+        {"ANTHROPIC_BASE_URL": "https://api.anthropic.com/?query=fixture"},
+        {"ANTHROPIC_BASE_URL": "https://api.anthropic.com/#fragment"},
+        {"ANTHROPIC_BASE_URL": "https://api.anthropic.com/\nfixture"},
+        {"ANTHROPIC_CUSTOM_HEADERS": "Host: other.fixture.test"},
+        {"ANTHROPIC_CUSTOM_HEADERS": "X-Fixture: synthetic\r"},
+        {"ANTHROPIC_CUSTOM_HEADERS": "X-Fixture"},
+        {"ANTHROPIC_CUSTOM_HEADERS": "Proxy-Authorization: synthetic"},
+        {"ANTHROPIC_CUSTOM_HEADERS": "X-Butlers-Workload: forged"},
+    ],
+)
+async def test_invalid_selected_native_transport_refuses_before_child(extra):
+    env = {
+        "BUTLERS_EGRESS_MODE": "request-v1",
+        "BUTLERS_EGRESS_GATEWAY": "http://egress-gateway:3115",
+        "ANTHROPIC_API_KEY": "synthetic-key",
+        **extra,
+    }
+    with patch(_EXEC) as launch:
+        with pytest.raises(ValueError):
+            await ClaudeCodeAdapter(claude_binary="/usr/bin/claude").invoke(
+                prompt="fixture", system_prompt="", mcp_servers={}, env=env
+            )
+    launch.assert_not_called()
+
+
+async def test_native_transport_off_mode_keeps_supported_environment():
+    env = {
+        "ANTHROPIC_API_KEY": "synthetic-key",
+        "ANTHROPIC_BASE_URL": "https://custom.fixture.test/prefix",
+        "ANTHROPIC_CUSTOM_HEADERS": "X-Fixture: retained",
+        "HTTPS_PROXY": "http://off-mode.fixture.test",
+    }
+    process = AsyncMock(returncode=0, pid=1)
+    process.communicate = AsyncMock(return_value=(b"", b""))
+    with (
+        patch(_EXEC, return_value=process) as launch,
+        patch("butlers.core.runtimes.claude_code.os.geteuid", return_value=1000),
+    ):
+        await ClaudeCodeAdapter(claude_binary="/usr/bin/claude").invoke(
+            prompt="fixture", system_prompt="", mcp_servers={}, env=env
+        )
+    assert launch.call_args.kwargs["env"] == env
+
+
 def test_binary_and_create_worker(tmp_path: Path):
     """Binary discovery raises FileNotFoundError with npm hint; create_worker preserves args."""
     with patch("butlers.core.runtimes.claude_code.shutil.which", return_value="/usr/bin/claude"):

@@ -120,7 +120,15 @@ def prepare_identity() -> dict:
     require(checkout == os.environ.get("GITHUB_SHA"), "checkout_binding")
     # Exact build fingerprint algorithm; the generator and its v3 contract stay unchanged.
     fingerprint = hashlib.sha256()
-    for name in ("Dockerfile.base", "scripts/runtime_cli_sandbox_init.c", GENERATOR):
+    for name in (
+        "Dockerfile.base",
+        "scripts/runtime_clis/install_system_artifacts.py",
+        "deploy/runtime-clis/debian-system-inputs.json",
+        "scripts/runtime_cli_sandbox_init.c",
+        "scripts/runtime_clis/runtime_artifacts.py",
+        "deploy/runtime-clis/runtime-inputs.json",
+        GENERATOR,
+    ):
         fingerprint.update(
             name.encode()
             + b"\0"

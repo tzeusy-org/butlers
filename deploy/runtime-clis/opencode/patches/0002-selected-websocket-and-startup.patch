@@ -1,0 +1,455 @@
+--- a/bun.lock
++++ b/bun.lock
+@@ -484,0 +485 @@
++        "butlers-egress-ws": "npm:ws@8.21.0",
+@@ -485,0 +487 @@
++        "ws": "8.21.0",
+@@ -488,0 +491 @@
++        "@types/ws": "8.18.1",
+@@ -995,0 +999 @@
++    "butlers-egress-ws": ["ws@8.21.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g=="],
+--- a/packages/core/src/models-dev.ts
++++ b/packages/core/src/models-dev.ts
+@@ -3 +3,2 @@
+-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
++import { HttpClient, HttpClientRequest } from "effect/unstable/http"
++import { gatewayHttpLayer } from "@opencode-ai/llm/route"
+@@ -247 +248 @@
+-  Layer.provide(FetchHttpClient.layer),
++  Layer.provide(gatewayHttpLayer),
+--- a/packages/llm/package.json
++++ b/packages/llm/package.json
+@@ -35 +35,2 @@
+-    "./protocols/openai-responses": "./src/protocols/openai-responses.ts"
++    "./protocols/openai-responses": "./src/protocols/openai-responses.ts",
++    "./route/gateway-websocket": "./src/route/gateway-websocket.ts"
+@@ -43 +44,2 @@
+-    "@typescript/native-preview": "catalog:"
++    "@typescript/native-preview": "catalog:",
++    "@types/ws": "8.18.1"
+@@ -50 +52,3 @@
+-    "butlers-egress-undici": "npm:undici@7.24.5"
++    "butlers-egress-undici": "npm:undici@7.24.5",
++    "ws": "8.21.0",
++    "butlers-egress-ws": "npm:ws@8.21.0"
+--- /dev/null
++++ b/packages/llm/src/route/gateway-websocket.ts
+@@ -0,0 +1,170 @@
++/// <reference path="../ws-private.d.ts" />
++/// <reference path="../undici-private.d.ts" />
++import WebSocket from "butlers-egress-ws"
++import type { LookupFunction } from "node:net"
++import { PassThrough } from "node:stream"
++import type { ClientRequest, IncomingMessage } from "node:http"
++import Agent from "butlers-egress-undici/lib/dispatcher/agent.js"
++import { gatewayWebSocket } from "../butlers-egress"
++
++const logicalURLs = new WeakMap<WebSocket, string>()
++const failures = new WeakMap<WebSocket, GatewayHandshakeError>()
++const MAX_ERROR_BYTES = 64 * 1024
++
++/** Selected handshake failures keep provider retry/auth metadata at the logical origin. */
++export class GatewayHandshakeError extends Error {
++  constructor(
++    readonly url: string,
++    readonly status: number,
++    readonly headers: Record<string, string>,
++    readonly body: string,
++    readonly truncated = false,
++  ) {
++    super(`WebSocket handshake refused (${status})`)
++    this.name = "GatewayHandshakeError"
++  }
++}
++
++export const logicalWebSocketURL = (socket: WebSocket) => logicalURLs.get(socket) ?? socket.url
++export const gatewayHandshakeError = (socket: WebSocket) => failures.get(socket)
++
++/** No global constructor/dispatcher mutation. The optional lookup is for isolated loopback controls. */
++export function createGatewayWebSocket(dependencies: { lookup?: LookupFunction } = {}) {
++  return (url: string, headers: Record<string, string>, timeout = 15_000): WebSocket | undefined => {
++    const selected = gatewayWebSocket(url, headers)
++    if (!selected) return undefined
++    if (!Number.isFinite(timeout) || timeout <= 0 || timeout > 60_000)
++      throw new TypeError("Invalid selected WebSocket timeout")
++    const dispatcher = new Agent({
++      connections: 1, pipelining: 0, allowH2: false, maxHeaderSize: 65536,
++      connect: { timeout, ...(dependencies.lookup && { lookup: dependencies.lookup }) },
++    })
++    const socket = new WebSocket(selected.url, {
++      headers: selected.headers,
++      followRedirects: false,
++      handshakeTimeout: timeout,
++      // ws retains its complete handshake validation and RFC6455 frame engine.
++      // Its public finishRequest hook bypasses Bun's fetch-backed node:http
++      // upgrade facade, without replacing any global constructor or dispatcher.
++      createConnection: () => new PassThrough(),
++      finishRequest: (request: ClientRequest, framed: WebSocket) => {
++        const target = new URL(selected.url)
++        let abort: ((error?: Error) => void) | undefined
++        let response: PassThrough | undefined
++        let resume: (() => void) | undefined
++        const originalDestroy = request.destroy.bind(request)
++        const originalAbort = request.abort.bind(request)
++        framed.once("close", () => originalDestroy())
++        request.setTimeout(0)
++        const wireHeaders = Object.entries(request.getHeaders()).flatMap(([name, value]) => {
++          // Undici supplies the connection/upgrade pair; retain all other ws
++          // handshake/auth header values in its documented flat wire format.
++          if (name === "connection" || name === "upgrade" || value === undefined) return []
++          return (Array.isArray(value) ? value : [value]).flatMap((entry) => [name, String(entry)])
++        })
++        request.destroy = (error?: Error) => {
++          abort?.(error ?? new Error("Selected WebSocket handshake cancelled"))
++          return originalDestroy(error)
++        }
++        request.abort = () => {
++          abort?.(new Error("Selected WebSocket handshake cancelled"))
++          originalAbort()
++        }
++        const deadline = setTimeout(() => request.destroy(new Error("Opening handshake has timed out")), timeout)
++        deadline.unref()
++        framed.once("close", () => clearTimeout(deadline))
++        const parseHeaders = (values: Buffer[] | string[] | null) => {
++          const result: Record<string, string> = {}
++          for (let index = 0; values && index < values.length; index += 2) {
++            const name = values[index].toString().toLowerCase()
++            const value = values[index + 1].toString()
++            result[name] = result[name] === undefined ? value : `${result[name]}, ${value}`
++          }
++          return result
++        }
++        dispatcher.dispatch({
++          origin: `http://${target.host}`, path: target.pathname + target.search,
++          method: "GET", upgrade: "websocket", headers: wireHeaders,
++          headersTimeout: timeout, bodyTimeout: Math.min(timeout, 10_000),
++        }, {
++          onConnect(value) { abort = value },
++          onHeaders(statusCode, headers, continueReading) {
++            clearTimeout(deadline)
++            resume = continueReading
++            response = Object.assign(new PassThrough({ highWaterMark: 16384 }), {
++              statusCode, headers: parseHeaders(headers),
++            })
++            response.on("drain", () => resume?.())
++            request.emit("response", response as unknown as IncomingMessage)
++            return true
++          },
++          onData(chunk) { return response?.write(chunk) ?? false },
++          onComplete() { response?.end() },
++          onUpgrade(statusCode, headers, stream) {
++            clearTimeout(deadline)
++            request.emit("upgrade", { statusCode, headers: parseHeaders(headers) }, stream, Buffer.alloc(0))
++            stream.resume()
++          },
++          onError(error) {
++            clearTimeout(deadline)
++            if (response) response.destroy(error)
++            else { originalDestroy(); request.emit("error", error) }
++          },
++        })
++      },
++    })
++    socket.once("close", () => { void dispatcher.destroy() })
++    logicalURLs.set(socket, url)
++    // A rejected upgrade never becomes a tunnel or a second origin. Read at most
++    // the bounded provider error body; redirects/refusal receipts expose no entity.
++    socket.on("unexpected-response", (_request, response) => {
++      const status = response.statusCode ?? 502
++      const refused = (status >= 300 && status <= 399) || response.headers["x-egress-refusal"] !== undefined
++      const headers: Record<string, string> = {}
++      if (!refused) {
++        for (const [key, value] of Object.entries(response.headers)) {
++          if (value !== undefined && !/^(?:x-egress-|x-butlers-|location$)/i.test(key))
++            headers[key] = Array.isArray(value) ? value.join(", ") : value
++        }
++      }
++      const chunks: Buffer[] = []
++      let size = 0
++      let done = false
++      const finish = (truncated = false) => {
++        if (done) return
++        done = true
++        clearTimeout(timer)
++        response.removeAllListeners("data")
++        response.removeAllListeners("end")
++        response.removeAllListeners("error")
++        response.on("error", () => {})
++        response.destroy()
++        const error = new GatewayHandshakeError(url, refused ? 403 : status, headers,
++          refused ? "Selected egress request refused" : Buffer.concat(chunks).toString("utf8"), truncated)
++        failures.set(socket, error)
++        // Consumers install their usual error/close handlers synchronously after construction.
++        socket.emit("error", error)
++        socket.terminate()
++      }
++      const timer = setTimeout(() => finish(true), Math.min(timeout, 10_000))
++      timer.unref()
++      socket.once("close", () => { clearTimeout(timer); response.destroy() })
++      socket.once("error", () => { clearTimeout(timer); response.destroy() })
++      if (refused) return finish()
++      response.on("data", (chunk: Buffer) => {
++        const remaining = MAX_ERROR_BYTES - size
++        chunks.push(chunk.subarray(0, remaining))
++        size += Math.min(chunk.length, remaining)
++        if (chunk.length > remaining) finish(true)
++      })
++      response.once("end", () => finish())
++      response.once("error", () => finish(true))
++      response.once("aborted", () => finish(true))
++    })
++    // Termination after a response refusal may produce a secondary implementation error.
++    socket.on("error", () => {})
++    return socket
++  }
++}
++
++export const gatewaySocket = createGatewayWebSocket()
+--- a/packages/llm/src/route/transport/websocket.ts
++++ b/packages/llm/src/route/transport/websocket.ts
+@@ -1 +1 @@
+-import { gatewayWebSocket } from "../../butlers-egress"
++import { gatewaySocket, gatewayHandshakeError } from "../gateway-websocket"
+@@ -81,5 +81,13 @@
+-      resume(
+-        Effect.fail(
+-          transportError("open", `Failed to open WebSocket: ${eventMessage(event)}`, { url: input.url, kind: "open" }),
+-        ),
+-      )
++      const failure = gatewayHandshakeError(ws as unknown as import("ws").default)
++      resume(Effect.fail(new LLMError({
++        module: "WebSocketExecutor", method: "open",
++        reason: new TransportReason({
++          message: failure?.message ?? `Failed to open WebSocket: ${eventMessage(event)}`,
++          url: input.url, kind: "open",
++          ...(failure && { http: {
++            request: { method: "GET", url: input.url, headers: input.headers },
++            response: { status: failure.status, headers: failure.headers },
++            body: failure.body, bodyTruncated: failure.truncated,
++          } }),
++        }),
++      })))
+@@ -129,3 +137,4 @@
+-      const selected = gatewayWebSocket(input.url, input.headers)
+-      return new (globalThis.WebSocket as unknown as WebSocketConstructorWithHeaders)(selected?.url ?? input.url, {
+-        headers: selected?.headers ?? input.headers,
++      const selected = gatewaySocket(input.url, input.headers)
++      if (selected) return selected as unknown as globalThis.WebSocket
++      return new (globalThis.WebSocket as unknown as WebSocketConstructorWithHeaders)(input.url, {
++        headers: input.headers,
+--- /dev/null
++++ b/packages/llm/src/ws-private.d.ts
+@@ -0,0 +1,5 @@
++declare module "butlers-egress-ws" {
++  import WebSocket from "ws"
++  export { WebSocketServer } from "ws"
++  export default WebSocket
++}
+--- /dev/null
++++ b/packages/llm/test/gateway-egress.test.ts
+@@ -0,0 +1,36 @@
++import { expect, test } from "bun:test"
++import { Effect } from "effect"
++import { HttpClient } from "effect/unstable/http"
++import { gatewayHttpLayer } from "../src/route/egress"
++
++test("Effect Fetch reference preserves native off-mode and fails selected config before native fetch", async () => {
++  const native = globalThis.fetch
++  const mode = process.env.BUTLERS_EGRESS_MODE
++  const address = process.env.BUTLERS_EGRESS_GATEWAY
++  const calls: string[] = []
++  globalThis.fetch = (async (input: RequestInfo | URL) => {
++    calls.push(input instanceof Request ? input.url : String(input))
++    return new Response("retained-native", { status: 200 })
++  }) as typeof fetch
++  try {
++    delete process.env.BUTLERS_EGRESS_MODE
++    delete process.env.BUTLERS_EGRESS_GATEWAY
++    const response = await Effect.runPromise(HttpClient.get("https://api.openai.com/native").pipe(
++      Effect.provide(gatewayHttpLayer),
++    ))
++    expect(await Effect.runPromise(response.text)).toBe("retained-native")
++    expect(calls).toEqual(["https://api.openai.com/native"])
++    process.env.BUTLERS_EGRESS_MODE = "request-v1"
++    process.env.BUTLERS_EGRESS_GATEWAY = "http://foreign:18080"
++    await expect(Effect.runPromise(HttpClient.get("https://api.openai.com/refused").pipe(
++      Effect.provide(gatewayHttpLayer),
++    ))).rejects.toThrow()
++    expect(calls).toEqual(["https://api.openai.com/native"])
++  } finally {
++    globalThis.fetch = native
++    if (mode === undefined) delete process.env.BUTLERS_EGRESS_MODE
++    else process.env.BUTLERS_EGRESS_MODE = mode
++    if (address === undefined) delete process.env.BUTLERS_EGRESS_GATEWAY
++    else process.env.BUTLERS_EGRESS_GATEWAY = address
++  }
++})
+--- /dev/null
++++ b/packages/llm/test/gateway-websocket.test.ts
+@@ -0,0 +1,138 @@
++import { afterEach, expect, test } from "bun:test"
++import { createServer } from "node:net"
++import { once } from "node:events"
++import WebSocket, { WebSocketServer } from "butlers-egress-ws"
++import { createGatewayWebSocket, gatewayHandshakeError, logicalWebSocketURL } from "../src/route/gateway-websocket"
++
++const lookup = (_host: string, options: any, callback: any) => {
++  if (options?.all) callback(null, [{ address: "127.0.0.1", family: 4 }])
++  else callback(null, "127.0.0.1", 4)
++}
++const logical = "wss://api.openai.com/v1/responses?model=synthetic"
++const cleanup: Array<() => Promise<void>> = []
++afterEach(async () => {
++  delete process.env.BUTLERS_EGRESS_MODE
++  delete process.env.BUTLERS_EGRESS_GATEWAY
++  for (const close of cleanup.splice(0).reverse()) await close()
++})
++async function server() {
++  // Raw loopback HTTP/1 avoids Bun's own HTTP-server upgrade adapter, so
++  // controls exercise the actual client transport and pinned ws frame engine.
++  const sockets = new Set<import("node:net").Socket>()
++  const http = createServer((socket) => {
++    sockets.add(socket)
++    socket.once("close", () => sockets.delete(socket))
++    let pending = Buffer.alloc(0)
++    const read = (chunk: Buffer) => {
++      pending = Buffer.concat([pending, chunk])
++      const end = pending.indexOf("\r\n\r\n")
++      if (end < 0) return
++      socket.off("data", read)
++      const lines = pending.subarray(0, end).toString().split("\r\n")
++      const [method, url] = lines.shift()!.split(" ")
++      const headers = Object.fromEntries(lines.map((line) => {
++        const colon = line.indexOf(":")
++        return [line.slice(0, colon).toLowerCase(), line.slice(colon + 1).trim()]
++      }))
++      http.emit("upgrade", { method, url, headers, socket }, socket, pending.subarray(end + 4))
++    }
++    socket.on("data", read)
++  })
++  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve))
++  const address = http.address() as { port: number }
++  process.env.BUTLERS_EGRESS_MODE = "request-v1"
++  process.env.BUTLERS_EGRESS_GATEWAY = `http://egress-gateway:${address.port}`
++  cleanup.push(async () => { for (const socket of sockets) socket.destroy(); await new Promise<void>((resolve) => http.close(() => resolve())) })
++  return http
++}
++for (const status of [401, 429, 302, 307]) {
++  test(`selected real handshake preserves/refuses status ${status} without a second origin`, async () => {
++    const http = await server()
++    let requests = 0
++    http.on("upgrade", (request, socket) => {
++      requests++
++      expect(request.url).toBe("/_butlers/egress/v1/wss/api.openai.com/443/v1/responses?model=synthetic")
++      expect(request.headers.authorization).toBe("Bearer synthetic")
++      const body = (status < 300 || status > 399) ? '{"error":"synthetic"}' : "never-expose-redirect"
++      socket.end(`HTTP/1.1 ${status} Synthetic\r\nContent-Length: ${body.length}\r\nRetry-After: 3\r\nLocation: ws://127.0.0.1/forbidden\r\nConnection: close\r\n\r\n${body}`)
++    })
++    const ws = createGatewayWebSocket({ lookup })(logical, { authorization: "Bearer synthetic" }, 500)!
++    const closed = new Promise<void>((resolve) => ws.once("close", () => resolve()))
++    const error = await new Promise<Error>((resolve) => ws.once("error", resolve))
++    await closed
++    const receipt = gatewayHandshakeError(ws)!
++    expect(error).toBe(receipt)
++    expect(logicalWebSocketURL(ws)).toBe(logical)
++    expect(requests).toBe(1)
++    expect(receipt.status).toBe((status >= 300 && status <= 399) ? 403 : status)
++    expect(receipt.headers["retry-after"]).toBe((status >= 300 && status <= 399) ? undefined : "3")
++    expect(receipt.headers.location).toBeUndefined()
++    expect(receipt.body).toBe((status >= 300 && status <= 399) ? "Selected egress request refused" : '{"error":"synthetic"}')
++    expect(ws.readyState).toBe(WebSocket.CLOSED)
++  })
++}
++test("selected healthy socket preserves real frames/protocol identity and off-mode stays absent", async () => {
++  const http = await server()
++  const wss = new WebSocketServer({ server: http })
++  cleanup.push(async () => { for (const client of wss.clients) client.terminate(); await new Promise<void>((resolve) => wss.close(() => resolve())) })
++  wss.on("connection", (ws, request) => {
++    expect(request.headers["openai-beta"]).toBe("synthetic-protocol")
++    ws.on("message", (message) => ws.send(message.toString()))
++  })
++  const ws = createGatewayWebSocket({ lookup })(logical, { "openai-beta": "synthetic-protocol" })!
++  await once(ws, "open")
++  const received = once(ws, "message")
++  ws.send("retained-frame")
++  expect((await received)[0].toString()).toBe("retained-frame")
++  expect(logicalWebSocketURL(ws)).toBe(logical)
++  const closed = once(ws, "close"); ws.close(1000, "done"); await closed
++  delete process.env.BUTLERS_EGRESS_MODE; delete process.env.BUTLERS_EGRESS_GATEWAY
++  expect(createGatewayWebSocket({ lookup })(logical, {})).toBeUndefined()
++})
++test("selected unfinished/oversized error body is bounded and cancellation closes pending handshake", async () => {
++  const http = await server()
++  const sockets = new Set<import("node:net").Socket>()
++  http.on("connection", (socket) => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)) })
++  cleanup.push(async () => { for (const socket of sockets) socket.destroy() })
++  http.on("upgrade", (_request, socket) => socket.write("HTTP/1.1 429 Slow\r\nTransfer-Encoding: chunked\r\n\r\n10001\r\n" + "x".repeat(65537) + "\r\n"))
++  const ws = createGatewayWebSocket({ lookup })(logical, {}, 80)!
++  const close = new Promise<void>((resolve) => ws.once("close", () => resolve()))
++  await new Promise<void>((resolve) => ws.once("error", () => resolve())); await close
++  expect(gatewayHandshakeError(ws)?.truncated).toBe(true)
++  expect(Buffer.byteLength(gatewayHandshakeError(ws)!.body)).toBeLessThanOrEqual(65536)
++  const pending = createGatewayWebSocket({ lookup })(logical, {}, 100)!
++  const stopped = new Promise<void>((resolve) => pending.once("close", () => resolve()))
++  pending.terminate(); await stopped
++  expect(pending.readyState).toBe(WebSocket.CLOSED)
++})
++
++for (const accept of ["wrong-accept", "duplicate"]) {
++  test(`selected upgrade retains ws handshake validation: ${accept}`, async () => {
++    const http = await server()
++    http.on("upgrade", (_request, socket) => socket.end(
++      "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
++      "Sec-WebSocket-Accept: invalid\r\n" +
++      (accept === "duplicate" ? "Sec-WebSocket-Accept: invalid-again\r\n" : "") + "\r\n",
++    ))
++    const ws = createGatewayWebSocket({ lookup })(logical, {}, 500)!
++    const closed = new Promise<void>((resolve) => ws.once("close", () => resolve()))
++    const error = await new Promise<Error>((resolve) => ws.once("error", resolve))
++    await closed
++    expect(error.message).toContain("Invalid Sec-WebSocket-Accept")
++    expect(ws.readyState).toBe(WebSocket.CLOSED)
++    expect(gatewayHandshakeError(ws)).toBeUndefined()
++  })
++}
++
++test("selected unresponsive handshake retains a bounded absolute opening timeout", async () => {
++  const http = await server()
++  http.on("upgrade", () => {})
++  const ws = createGatewayWebSocket({ lookup })(logical, {}, 50)!
++  const closed = new Promise<void>((resolve) => ws.once("close", () => resolve()))
++  const started = performance.now()
++  const error = await new Promise<Error>((resolve) => ws.once("error", resolve))
++  await closed
++  expect(error).toBeInstanceOf(Error)
++  expect(performance.now() - started).toBeLessThan(1000)
++  expect(ws.readyState).toBe(WebSocket.CLOSED)
++})
+--- a/packages/opencode/src/plugin/openai/ws-pool.ts
++++ b/packages/opencode/src/plugin/openai/ws-pool.ts
+@@ -0,0 +1 @@
++import { APICallError } from "ai"
+@@ -152,0 +154,7 @@
++      if (APICallError.isInstance(error)) {
++        invalidate(entry)
++        return new Response(error.responseBody ?? "", {
++          status: error.statusCode ?? 502,
++          headers: error.responseHeaders,
++        })
++      }
+--- a/packages/opencode/src/plugin/openai/ws.ts
++++ b/packages/opencode/src/plugin/openai/ws.ts
+@@ -0,0 +1 @@
++import { gatewaySocket, GatewayHandshakeError, logicalWebSocketURL } from "@opencode-ai/llm/route/gateway-websocket"
+@@ -92 +93 @@
+-    const socket = new WebSocket(selected?.url ?? options.url, connect)
++    const socket = gatewaySocket(options.url, headers, options.timeout) ?? new WebSocket(options.url, connect)
+@@ -118 +119,4 @@
+-      reject(error instanceof Error ? error : new Error(errorMessage(error), { cause: error }))
++      reject(error instanceof GatewayHandshakeError ? new APICallError({
++        message: error.message, url: error.url, requestBodyValues: undefined,
++        statusCode: error.status, responseHeaders: error.headers, responseBody: error.body,
++      }) : error instanceof Error ? error : new Error(errorMessage(error), { cause: error }))
+@@ -232 +236 @@
+-          url: socket.url,
++          url: logicalWebSocketURL(socket),

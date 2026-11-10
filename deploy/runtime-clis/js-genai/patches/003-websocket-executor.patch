@@ -1,0 +1,12 @@
+--- a/src/node/_node_websocket.ts
++++ b/src/node/_node_websocket.ts
+@@ -5,0 +6,2 @@
++
++import {gatewayWebSocket} from './butlers_egress.js';
+@@ -35 +37,5 @@
+-    this.ws = new NodeWs.WebSocket(this.url, {headers: this.headers});
++    const selected = gatewayWebSocket(this.url, this.headers);
++    this.ws = new NodeWs.WebSocket(selected?.url ?? this.url, {
++      headers: selected?.headers ?? this.headers,
++      ...(selected && {followRedirects: false}),
++    });

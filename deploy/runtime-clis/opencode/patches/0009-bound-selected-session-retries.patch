@@ -1,0 +1,210 @@
+--- a/packages/opencode/src/session/retry.ts
++++ b/packages/opencode/src/session/retry.ts
+@@ -0,0 +1 @@
++import { ButlersEgress } from "@opencode-ai/llm/route"
+@@ -24,0 +26,5 @@
++
++// Selected sessions must return a terminal diagnostic during a gateway outage.
++// The native off-mode schedule and provider retry metadata remain unchanged.
++export const GATEWAY_MAX_RETRIES = 3
++export const GATEWAY_MAX_RETRY_DELAY = 30_000
+@@ -180,0 +187 @@
++  const selected = ButlersEgress.gatewayConfig() !== undefined
+@@ -185 +192 @@
+-      if (!retry) return Cause.done(meta.attempt)
++      if (!retry || (selected && meta.attempt > GATEWAY_MAX_RETRIES)) return Cause.done(meta.attempt)
+@@ -187 +194,2 @@
+-        const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
++        const originalDelay = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
++        const wait = selected ? Math.max(0, Math.min(originalDelay, GATEWAY_MAX_RETRY_DELAY)) : originalDelay
+--- /dev/null
++++ b/packages/opencode/test/session/gateway-retry.test.ts
+@@ -0,0 +1,188 @@
++import { afterEach, expect, test } from "bun:test"
++import { APICallError } from "ai"
++import { ProviderV2 } from "@opencode-ai/core/provider"
++import { ProviderError } from "../../src/provider/error"
++import { SessionV1 } from "@opencode-ai/core/v1/session"
++import { Cause, Duration, Effect, Exit, Option, Schedule, Schema } from "effect"
++import { SessionRetry } from "../../src/session/retry"
++
++// Inspect the real schedule step directly: no wall-clock deadline or timer kill can make these bounds pass.
++const originalMode = process.env.BUTLERS_EGRESS_MODE
++const originalGateway = process.env.BUTLERS_EGRESS_GATEWAY
++afterEach(() => {
++  for (const [key, value] of Object.entries({ BUTLERS_EGRESS_MODE: originalMode, BUTLERS_EGRESS_GATEWAY: originalGateway })) {
++    if (value === undefined) delete process.env[key]
++    else process.env[key] = value
++  }
++})
++
++function select(enabled: boolean) {
++  if (!enabled) {
++    delete process.env.BUTLERS_EGRESS_MODE
++    delete process.env.BUTLERS_EGRESS_GATEWAY
++    return
++  }
++  process.env.BUTLERS_EGRESS_MODE = "request-v1"
++  process.env.BUTLERS_EGRESS_GATEWAY = "http://egress-gateway:3115"
++}
++
++function apiError(headers?: Record<string, string>, retryable = true) {
++  return Schema.decodeUnknownSync(SessionV1.APIError.Schema)(new SessionV1.APIError({
++    message: "synthetic selected hop unavailable",
++    isRetryable: retryable,
++    statusCode: retryable ? undefined : 401,
++    responseHeaders: headers,
++  }).toObject())
++}
++
++function schedule(updates: { attempt: number; message: string; next: number }[]) {
++  return SessionRetry.policy({
++    provider: "openai",
++    parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
++    set: (info) => Effect.sync(() => { updates.push(info) }),
++  })
++}
++
++test("selected outage terminates after three retries with original diagnostic and finite delays", async () => {
++  select(true)
++  const updates: { attempt: number; message: string; next: number }[] = []
++  const error = apiError()
++  await Effect.runPromise(Effect.gen(function* () {
++    const step = yield* Schedule.toStep(schedule(updates))
++    const waits: number[] = []
++    for (let attempt = 1; attempt <= 3; attempt++) {
++      const next = yield* step(0, error)
++      expect(next[0]).toBe(attempt)
++      waits.push(Duration.toMillis(next[1]))
++    }
++    expect(waits).toEqual([2000, 4000, 8000])
++    const terminal = yield* Effect.exit(step(0, error))
++    expect(Exit.isFailure(terminal)).toBe(true)
++    const failure = Exit.findErrorOption(terminal)
++    expect(Option.isSome(failure) && Cause.isDone(failure.value)).toBe(true)
++  }))
++  expect(updates.map((item) => item.attempt)).toEqual([1, 2, 3])
++  expect(updates.every((item) => item.message === error.data.message && Number.isFinite(item.next))).toBe(true)
++  expect(error.data.message).toBe("synthetic selected hop unavailable")
++})
++
++for (const [name, headers, expected] of [
++  ["huge milliseconds", { "retry-after-ms": "999999999999" }, 30000],
++  ["huge seconds", { "retry-after": "999999999999" }, 30000],
++  ["far-future date", { "retry-after": "Tue, 01 Jan 2080 00:00:00 GMT" }, 30000],
++  ["infinite milliseconds", { "retry-after-ms": "Infinity" }, 30000],
++  ["negative milliseconds", { "retry-after-ms": "-700000" }, 0],
++  ["negative infinity", { "retry-after-ms": "-Infinity" }, 0],
++  ["malformed milliseconds and date", { "retry-after-ms": "NaN", "retry-after": "Invalid Date" }, 2000],
++  ["short milliseconds", { "retry-after-ms": "1500" }, 1500],
++  ["short seconds", { "retry-after": "1.5" }, 1500],
++] as const) {
++  test(`selected delay bounds ${name} without modifying provider metadata`, async () => {
++    select(true)
++    const error = apiError(headers)
++    const before = JSON.stringify(error)
++    const updates: { attempt: number; message: string; next: number }[] = []
++    const next = await Effect.runPromise(Effect.gen(function* () {
++      const step = yield* Schedule.toStep(schedule(updates))
++      return yield* step(0, error)
++    }))
++    expect(Duration.toMillis(next[1])).toBe(expected)
++    expect(updates).toHaveLength(1)
++    expect(JSON.stringify(error)).toBe(before)
++  })
++}
++
++test("off mode retains native unlimited retry schedule beyond selected cap", async () => {
++  select(false)
++  const updates: { attempt: number; message: string; next: number }[] = []
++  const waits = await Effect.runPromise(Effect.gen(function* () {
++    const step = yield* Schedule.toStep(schedule(updates))
++    const waits: number[] = []
++    for (let attempt = 1; attempt <= 7; attempt++) waits.push(Duration.toMillis((yield* step(0, apiError()))[1]))
++    return waits
++  }))
++  expect(waits).toEqual([2000, 4000, 8000, 16000, 30000, 30000, 30000])
++  expect(updates).toHaveLength(7)
++})
++
++test("off mode retains large native provider delay hints", async () => {
++  select(false)
++  const next = await Effect.runPromise(Effect.gen(function* () {
++    const step = yield* Schedule.toStep(schedule([]))
++    return yield* step(0, apiError({ "retry-after-ms": "700000" }))
++  }))
++  expect(Duration.toMillis(next[1])).toBe(700000)
++})
++
++for (const selected of [false, true]) {
++  test(`${selected ? "selected" : "off"} nonretryable authorization error is terminal without status mutation`, async () => {
++    select(selected)
++    const updates: { attempt: number; message: string; next: number }[] = []
++    const terminal = await Effect.runPromise(Effect.gen(function* () {
++      const step = yield* Schedule.toStep(schedule(updates))
++      return yield* Effect.exit(step(0, apiError(undefined, false)))
++    }))
++    const failure = Exit.findErrorOption(terminal)
++    expect(Option.isSome(failure) && Cause.isDone(failure.value)).toBe(true)
++    expect(updates).toHaveLength(0)
++  })
++}
++
++test("selected transient recovery succeeds before exhausting the retry budget", async () => {
++  select(true)
++  const updates: { attempt: number; message: string; next: number }[] = []
++  let calls = 0
++  const result = await Effect.runPromise(Effect.retry(
++    Effect.suspend(() => ++calls === 1 ? Effect.fail(apiError({ "retry-after-ms": "0" })) : Effect.succeed("recovered")),
++    schedule(updates),
++  ))
++  expect(result).toBe("recovered")
++  expect(calls).toBe(2)
++  expect(updates).toHaveLength(1)
++})
++
++test("invalid selection still fails closed before scheduling", () => {
++  select(true)
++  process.env.BUTLERS_EGRESS_GATEWAY = "http://127.0.0.1:3115"
++  expect(() => schedule([])).toThrow()
++})
++
++
++test("selected Effect retry returns the original final error after four failed operations", async () => {
++  select(true)
++  const error = apiError({ "retry-after-ms": "0" })
++  let calls = 0
++  const updates: { attempt: number; message: string; next: number }[] = []
++  const terminal = await Effect.runPromise(Effect.exit(Effect.retry(
++    // A fifth-call nonretryable sentinel makes the unfixed control terminate without a timer kill.
++    Effect.suspend(() => { calls++; return Effect.fail(calls > 4 ? apiError(undefined, false) : error) }),
++    schedule(updates),
++  )))
++  const failure = Exit.findErrorOption(terminal)
++  expect(Option.isSome(failure) && failure.value === error).toBe(true)
++  expect(calls).toBe(4)
++  expect(updates.map((item) => item.attempt)).toEqual([1, 2, 3])
++})
++
++test("native SDK connection failure remains retryable but is bounded by selected session policy", async () => {
++  select(true)
++  const native = new APICallError({
++    message: "Cannot connect to API: connect ECONNREFUSED 127.0.0.1:3115",
++    url: "https://api.openai.com/v1/responses",
++    requestBodyValues: {},
++    isRetryable: true,
++    cause: new Error("synthetic refused gateway"),
++  })
++  const parsed = ProviderError.parseAPICallError({ providerID: ProviderV2.ID.make("openai"), error: native })
++  expect(parsed.type).toBe("api_error")
++  if (parsed.type !== "api_error") throw new Error("expected native API error")
++  const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(new SessionV1.APIError(parsed).toObject())
++  expect(SessionRetry.retryable(error, "openai")?.message).toBe(native.message)
++  await Effect.runPromise(Effect.gen(function* () {
++    const step = yield* Schedule.toStep(schedule([]))
++    for (let attempt = 1; attempt <= 3; attempt++) yield* step(0, error)
++    const terminal = yield* Effect.exit(step(0, error))
++    const failure = Exit.findErrorOption(terminal)
++    expect(Option.isSome(failure) && Cause.isDone(failure.value)).toBe(true)
++  }))
++})

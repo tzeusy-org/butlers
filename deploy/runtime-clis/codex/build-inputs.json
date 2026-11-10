@@ -1,0 +1,22 @@
+{
+  "schema": "butlers.codex-build-inputs/v1",
+  "source": {
+    "url": "https://codeload.github.com/openai/codex/tar.gz/ff6aec96948b70d94983af2641a6b67c94faeff5",
+    "sha256": "8cfd92ccc784603d0ef94165f5a70bb99fd3de6e8b4bccda58580fc3f5f4961d",
+    "maximum_bytes": 268435456
+  },
+  "cmake": {
+    "url": "https://files.pythonhosted.org/packages/f4/2e/cefc60143950ca1a8dda26d4c8484e6fc406db16e7ca098ebae549de35f9/cmake-3.31.10-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "sha256": "2f766bb46367e5e0559fa33184653754bce044583a06014dcaebf8e6dff8a1f1",
+    "size": 27808794,
+    "maximum_bytes": 27808794
+  },
+  "identity": {
+    "source_date_epoch": "0",
+    "zero_ar_date": "1",
+    "rustflags": "--remap-path-prefix=/opt/build=/butlers-build --remap-path-prefix=/opt/rust=/butlers-rust",
+    "cflags": "-ffile-prefix-map=/opt/build=/butlers-build",
+    "cxxflags": "-ffile-prefix-map=/opt/build=/butlers-build"
+  },
+  "qualification": "Public source and complete compiler-tool payloads; original Cargo graph, features and release/debug settings unchanged. Reproduced artifact hashes must be established separately."
+}

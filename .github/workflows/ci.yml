@@ -44,6 +44,8 @@ jobs:
           cache-dependency-path: whatsapp-bridge/go.sum
       - name: Test the Go bridge
         run: timeout --signal=TERM --kill-after=30s 10m go test -mod=readonly -count=1 -timeout=5m ./...
+      - name: Test the offline Go artifact contract
+        run: go test -count=1 ../scripts/runtime_clis/go_artifacts.go ../scripts/runtime_clis/go_artifacts_test.go
       - name: Verify Go lockfiles are unchanged
         run: git diff --exit-code -- go.mod go.sum
 
@@ -252,6 +254,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check_host_policy_selectors.py
 
+      # Source accounting only; neither route admission nor network conformance.
+      - name: Check egress profile source coverage
+        id: egress_profile_coverage
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_egress_profile_coverage.py
+
       - name: Fail if any guard failed
         if: ${{ !cancelled() }}
         env:
@@ -268,6 +276,7 @@ jobs:
             requirement_citations=${{ steps.requirement_citations.outcome }}
             duplicate_names=${{ steps.duplicate_names.outcome }}
             host_policy_selectors=${{ steps.host_policy_selectors.outcome }}
+            egress_profile_coverage=${{ steps.egress_profile_coverage.outcome }}
         run: |
           failed=0
           while IFS= read -r line; do

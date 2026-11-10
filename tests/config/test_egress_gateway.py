@@ -593,8 +593,22 @@ class CloseBarrierWriter:
             raise RuntimeError("synthetic-close-failure")
 
 
-@pytest.mark.parametrize("ending", ["complete", "failed-close", "cancelled", "timeout"])
+@pytest.mark.parametrize(
+    "ending",
+    [
+        "complete",
+        "failed-close",
+        "cancelled",
+        "timeout",
+        "wss-complete",
+        "wss-failed-close",
+        "wss-cancelled",
+        "wss-timeout",
+    ],
+)
 async def test_capacity_owns_teardown_until_both_writers_settle(monkeypatch, ending):
+    is_websocket = ending.startswith("wss-")
+    ending = ending.removeprefix("wss-")
     if ending == "timeout":
         monkeypatch.setattr(gateway, "_CONNECT_TIMEOUT_S", 0.05)
     slots, global_slots = asyncio.Semaphore(1), asyncio.Semaphore(1)
@@ -608,7 +622,11 @@ async def test_capacity_owns_teardown_until_both_writers_settle(monkeypatch, end
 
     async def dial(_address, _port, _host, _context):
         reader = asyncio.StreamReader()
-        reader.feed_data(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+        reader.feed_data(
+            b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n\x88\x02\x03\xe8"
+            if is_websocket
+            else b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+        )
         reader.feed_eof()
         writer = CloseBarrierWriter(
             release if not upstreams else ready, failed=not upstreams and ending == "failed-close"
@@ -619,7 +637,9 @@ async def test_capacity_owns_teardown_until_both_writers_settle(monkeypatch, end
 
     async def run():
         reader = asyncio.StreamReader()
-        reader.feed_data(wire())
+        reader.feed_data(
+            ws_wire() + b"\x88\x82\x00\x00\x00\x00\x03\xe8" if is_websocket else wire()
+        )
         reader.feed_eof()
         writer = CloseBarrierWriter(ready)
         clients.append(writer)
@@ -660,8 +680,384 @@ async def test_capacity_owns_teardown_until_both_writers_settle(monkeypatch, end
             assert upstreams[0].aborted
         assert slots._value == global_slots._value == 1
         third = await asyncio.wait_for(run(), 1)
-        assert b"200" in third.data and len(upstreams) == 2
+        assert (b"101" if is_websocket else b"200") in third.data and len(upstreams) == 2
         assert slots._value == global_slots._value == 1
     finally:
         release.set()
         await asyncio.gather(first, return_exceptions=True)
+
+
+async def test_websocket_handshake_keeps_origin_identity_and_streams_frames(tls_contexts):
+    import base64
+    import hashlib
+
+    from websockets.frames import Frame, Opcode
+
+    class WebSocketOrigin(Origin):
+        async def respond(self, reader, writer):
+            task = asyncio.current_task()
+            self.tasks.add(task)
+            try:
+                head = await reader.readuntil(b"\r\n\r\n")
+                self.requests.append(head)
+                headers = dict(line.split(b": ", 1) for line in head.split(b"\r\n")[1:] if line)
+                key = headers[b"sec-websocket-key"]
+                accept = base64.b64encode(
+                    hashlib.sha1(key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest()
+                )
+                writer.write(
+                    b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: "
+                    + accept
+                    + b"\r\nSec-WebSocket-Protocol: responses\r\n\r\n"
+                )
+                await writer.drain()
+                # Masked client frame is preserved, including its arbitrary mask.
+                expected = Frame(Opcode.TEXT, b"request").serialize(mask=True)
+                size = 2 + 4 + len(b"request")
+                data = await reader.readexactly(size)
+                assert data[:2] == expected[:2]
+                mask, body = data[2:6], data[6:]
+                assert bytes(value ^ mask[i % 4] for i, value in enumerate(body)) == b"request"
+                writer.write(Frame(Opcode.TEXT, b"response").serialize(mask=False))
+                writer.write(Frame(Opcode.CLOSE, b"\x03\xe8").serialize(mask=False))
+                await writer.drain()
+                await reader.readexactly(8)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+                self.tasks.discard(task)
+
+    origin = WebSocketOrigin()
+    async with running_gateway(tls_contexts, origin) as (port, observed):
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            writer.write(ws_wire())
+            await writer.drain()
+            head = await reader.readuntil(b"\r\n\r\n")
+            assert head.startswith(b"HTTP/1.1 101")
+            assert b"sec-websocket-protocol: responses" in head.lower()
+            writer.write(Frame(Opcode.TEXT, b"request").serialize(mask=True))
+            await writer.drain()
+            assert await reader.readexactly(10) == Frame(Opcode.TEXT, b"response").serialize(
+                mask=False
+            )
+            assert await reader.readexactly(4) == Frame(Opcode.CLOSE, b"\x03\xe8").serialize(
+                mask=False
+            )
+            writer.write(Frame(Opcode.CLOSE, b"\x03\xe8").serialize(mask=True))
+            await writer.drain()
+            assert await reader.read() == b""
+        finally:
+            writer.close()
+            await writer.wait_closed()
+        assert observed.sni == [HOST]
+        assert observed.dials == [(PUBLIC, 443, HOST)]
+        request = observed.requests[0].lower()
+        assert request.startswith(b"get /responses?logical=1 http/1.1")
+        assert b"host: " + HOST.encode() in request
+        assert b"egress-gateway" not in request
+        assert b"sec-websocket-extensions" not in request
+
+
+def ws_wire(*, headers=(), target=b"/responses?logical=1"):
+    return (
+        b"GET /_butlers/egress/v1/wss/"
+        + HOST.encode()
+        + b"/443"
+        + target
+        + b" HTTP/1.1\r\nHost: egress-gateway:3115\r\nConnection: Upgrade\r\n"
+        b"Upgrade: websocket\r\nSec-WebSocket-Key: "
+        b"dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        b"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: responses\r\n"
+        b"Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n"
+        + b"".join(k + b": " + v + b"\r\n" for k, v in headers)
+        + b"\r\n"
+    )
+
+
+@pytest.mark.parametrize("status", [300, 302, 304, 307, 399])
+async def test_websocket_redirect_refuses_before_upgrade_without_sensitive_response(
+    tls_contexts, status, caplog
+):
+    caplog.set_level("INFO", logger=AUDIT_LOGGER)
+    origin = Origin(
+        raw=(
+            f"HTTP/1.1 {status} Redirect\r\nLocation: https://private.invalid/SECRET\r\nContent-Length: 6\r\n\r\nSECRET"
+        ).encode(),
+        early=True,
+    )
+    async with running_gateway(tls_contexts, origin) as (port, observed):
+        response = await exchange(port, ws_wire())
+        assert b"403" in response.split(b"\r\n")[0]
+        assert b"X-Egress-Refusal: redirect_refused" in response
+        assert b"SECRET" not in response + caplog.text.encode()
+        assert len(observed.dials) == 1
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        (b"Upgrade: websocket", b"Upgrade: h2c"),
+        (b"Connection: Upgrade", b"Connection: Upgrade, x-secret"),
+        (b"Sec-WebSocket-Version: 13", b"Sec-WebSocket-Version: 12"),
+        (
+            b"Sec-WebSocket-Key: "
+            # Public RFC6455 sample nonce; separate its spelling from the header label.
+            b"dGhlIHNhbXBsZSBub25jZQ==",
+            b"Sec-WebSocket-Key: invalid",
+        ),
+        (b"Sec-WebSocket-Protocol: responses", b"Sec-WebSocket-Protocol: responses, responses"),
+        (b"Sec-WebSocket-Protocol: responses", b"Sec-WebSocket-Protocol: "),
+        (b"GET /", b"POST /"),
+        (b"\r\n\r\n", b"\r\nContent-Length: 1\r\n\r\nx"),
+    ],
+)
+async def test_websocket_invalid_client_handshake_refuses_before_origin_dial(
+    tls_contexts, replacement
+):
+    async with running_gateway(tls_contexts) as (port, origin):
+        response = await exchange(port, ws_wire().replace(*replacement))
+        expected = b"403" if replacement[0] == b"Connection: Upgrade" else b"400"
+        assert expected in response.split(b"\r\n")[0]
+        assert not origin.dials
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        b"Sec-WebSocket-Accept: wrong\r\n",
+        b"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nSec-WebSocket-Protocol: \r\n",
+        b"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nSec-WebSocket-Protocol: undeclared\r\n",
+        b"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nSec-WebSocket-Extensions: permessage-deflate\r\n",
+        b"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nUpgrade: websocket\r\n",
+    ],
+)
+async def test_websocket_invalid_origin_handshake_refuses_before_101_exposure(
+    tls_contexts, headers
+):
+    origin = Origin(
+        raw=b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+        + headers
+        + b"\r\nSECRET",
+        early=True,
+    )
+    async with running_gateway(tls_contexts, origin) as (port, observed):
+        response = await exchange(port, ws_wire())
+        assert b"502" in response.split(b"\r\n")[0]
+        assert b"101" not in response
+        assert b"SECRET" not in response
+        assert len(observed.dials) == 1
+
+
+@pytest.mark.parametrize("selected", [None, b"responses"])
+@pytest.mark.parametrize("connection", [b"Upgrade", b"keep-alive, UpGrAdE, x-origin-hop"])
+async def test_websocket_origin_connection_tokens_and_optional_protocol(
+    tls_contexts, selected, connection
+):
+    from websockets.frames import Frame, Opcode
+
+    protocol = b"" if selected is None else b"Sec-WebSocket-Protocol: " + selected + b"\r\n"
+    origin = Origin(
+        raw=b"HTTP/1.1 101 Switching Protocols\r\nConnection: "
+        + connection
+        + b"\r\nUpgrade: websocket\r\n"
+        b"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"
+        b"x-origin-hop: hidden\r\n"
+        + protocol
+        + b"\r\n"
+        + Frame(Opcode.CLOSE, b"\x03\xe8").serialize(mask=False),
+        early=True,
+    )
+    async with running_gateway(tls_contexts, origin) as (port, observed):
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            request = ws_wire()
+            if selected is None:
+                request = request.replace(b"Sec-WebSocket-Protocol: responses\r\n", b"")
+            writer.write(request)
+            await writer.drain()
+            head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 1)
+            assert head.startswith(b"HTTP/1.1 101")
+            assert (b"sec-websocket-protocol:" in head.lower()) == (selected is not None)
+            assert b"connection: Upgrade\r\n" in head
+            if b"x-origin-hop" in connection:
+                assert b"x-origin-hop:" not in head.lower()
+            assert await reader.readexactly(4) == b"\x88\x02\x03\xe8"
+            writer.write(Frame(Opcode.CLOSE, b"\x03\xe8").serialize(mask=True))
+            await writer.drain()
+            assert await asyncio.wait_for(reader.read(), 1) == b""
+        finally:
+            writer.close()
+            await writer.wait_closed()
+        assert len(observed.dials) == 1
+
+
+class FrameOrigin(Origin):
+    def __init__(self, frames=b""):
+        super().__init__()
+        self.frames = frames
+        self.received = bytearray()
+
+    async def respond(self, reader, writer):
+        task = asyncio.current_task()
+        self.tasks.add(task)
+        try:
+            self.requests.append(await reader.readuntil(b"\r\n\r\n"))
+            writer.write(
+                b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+                b"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n" + self.frames
+            )
+            await writer.drain()
+            while chunk := await reader.read(16384):
+                self.received.extend(chunk)
+        except (ConnectionError, asyncio.IncompleteReadError):
+            pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+            self.tasks.discard(task)
+
+
+@pytest.mark.parametrize(
+    ("side", "frame", "reason"),
+    [
+        ("client", b"\x81\x01a", "malformed_websocket_frame"),  # missing mask
+        ("client", b"\xc1\x80abcd", "malformed_websocket_frame"),  # RSV
+        ("client", b"\x83\x80abcd", "malformed_websocket_frame"),  # opcode
+        ("client", b"\x09\x80abcd", "malformed_websocket_frame"),  # fragmented ping
+        ("client", b"\x80\x80abcd", "malformed_websocket_frame"),  # stray continuation
+        ("client", b"\x82\xfe\x00\x01abcdx", "malformed_websocket_frame"),  # overlong length
+        ("client", b"\x82\xff" + (64 * 1024 * 1024 + 1).to_bytes(8), "websocket_message_limit"),
+        ("origin", b"\x81\x80abcd", "malformed_websocket_frame"),  # origin mask
+        ("origin", b"\x81\x01\xff", "malformed_websocket_frame"),  # UTF8
+        ("origin", b"\x88\x01x", "malformed_websocket_frame"),  # malformed close
+        ("origin", b"\x88\x02\x03\xee", "malformed_websocket_frame"),  # reserved close code
+    ],
+)
+async def test_websocket_frame_validation_closes_and_settles_admission(
+    tls_contexts, side, frame, reason, caplog
+):
+    caplog.set_level("INFO", logger=AUDIT_LOGGER)
+    slots, global_slots = asyncio.Semaphore(1), asyncio.Semaphore(1)
+    origin = FrameOrigin(frame if side == "origin" else b"")
+    async with running_gateway(tls_contexts, origin, slots=slots, global_slots=global_slots) as (
+        port,
+        _,
+    ):
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            writer.write(ws_wire())
+            await writer.drain()
+            assert (await reader.readuntil(b"\r\n\r\n")).startswith(b"HTTP/1.1 101")
+            if side == "client":
+                writer.write(frame)
+                await writer.drain()
+            received = await asyncio.wait_for(reader.read(), 2)
+            assert b"HTTP/1.1" not in received  # Never write an HTTP error after upgrade.
+        finally:
+            writer.close()
+            await writer.wait_closed()
+        await asyncio.wait_for(asyncio.gather(*list(origin.gateway_tasks)), 1)
+        assert not slots.locked() and not global_slots.locked()
+    events = [
+        json.loads(record.message) for record in caplog.records if record.name == AUDIT_LOGGER
+    ]
+    assert events[-1]["reason"] == reason
+    assert events[-1]["verdict"] == "refused"
+
+
+async def test_websocket_fragment_control_bytes_and_activity_survive_until_joined_close(
+    tls_contexts, monkeypatch
+):
+    from websockets.frames import Frame, Opcode
+
+    monkeypatch.setattr(gateway, "_IDLE_TIMEOUT_S", 0.15)
+    source = b"".join(
+        [
+            Frame(Opcode.TEXT, b"hello ", fin=False).serialize(mask=False),
+            Frame(Opcode.PING, b"probe").serialize(mask=False),
+            Frame(Opcode.CONT, "world \u20ac".encode()).serialize(mask=False),
+        ]
+    )
+    origin = FrameOrigin(source)
+    async with running_gateway(tls_contexts, origin) as (port, _):
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(ws_wire())
+        await writer.drain()
+        assert b"101" in await reader.readuntil(b"\r\n\r\n")
+        assert await reader.readexactly(len(source)) == source
+        sent = bytearray()
+        for _ in range(4):
+            # One direction progresses for longer than the idle bound; a quiet
+            # opposite reader must not cancel that healthy session.
+            frame = Frame(Opcode.PONG, b"probe").serialize(mask=True)
+            sent.extend(frame)
+            writer.write(frame)
+            await writer.drain()
+            await asyncio.sleep(0.055)
+        closing = Frame(Opcode.CLOSE, b"\x03\xe8").serialize(mask=True)
+        writer.write(closing)
+        await writer.drain()
+        # This origin deliberately never replies to close: the close budget,
+        # independently bounded from the shared inactivity budget, terminates it.
+        monkeypatch.setattr(gateway, "_CONNECT_TIMEOUT_S", 0.05)
+        assert await asyncio.wait_for(reader.read(), 1) == b""
+        writer.close()
+        await writer.wait_closed()
+    assert origin.received == bytes(sent) + closing
+
+
+@pytest.mark.parametrize("limit", ["upload", "download", "idle", "total"])
+async def test_websocket_independent_resource_limits_deny_and_settle(
+    tls_contexts, monkeypatch, caplog, limit
+):
+    from websockets.frames import Frame, Opcode
+
+    caplog.set_level("INFO", logger=AUDIT_LOGGER)
+    monkeypatch.setattr(gateway, "_UPLOAD_LIMIT", 1 if limit == "upload" else 1024)
+    monkeypatch.setattr(gateway, "_DOWNLOAD_LIMIT", 1 if limit == "download" else 1024)
+    monkeypatch.setattr(gateway, "_IDLE_TIMEOUT_S", 0.05 if limit == "idle" else 2)
+    monkeypatch.setattr(gateway, "_EXCHANGE_TIMEOUT_S", 0.05 if limit == "total" else 2)
+    frame = Frame(Opcode.BINARY, b"ab")
+    origin = FrameOrigin(frame.serialize(mask=False) if limit == "download" else b"")
+    async with running_gateway(tls_contexts, origin) as (port, _):
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(ws_wire())
+        await writer.drain()
+        assert b"101" in await reader.readuntil(b"\r\n\r\n")
+        if limit == "upload":
+            writer.write(frame.serialize(mask=True))
+            await writer.drain()
+        assert b"HTTP/1.1" not in await asyncio.wait_for(reader.read(), 1)
+        writer.close()
+        await writer.wait_closed()
+        await asyncio.wait_for(asyncio.gather(*list(origin.gateway_tasks)), 1)
+    events = [
+        json.loads(record.message) for record in caplog.records if record.name == AUDIT_LOGGER
+    ]
+    assert events[-1]["reason"] == (
+        f"{limit}_limit" if limit in {"upload", "download"} else "timeout"
+    )
+    assert events[-1]["verdict"] == "refused"
+
+
+@pytest.mark.parametrize("status", [200, 401, 429, 500])
+async def test_websocket_nonupgrade_provider_errors_preserve_status_headers_and_stream(
+    tls_contexts, status
+):
+    origin = Origin(
+        status=status,
+        chunks=(b"provider detail",),
+        headers=[(b"retry-after", b"7"), (b"x-request-id", b"synthetic-provider-id")],
+        early=True,
+    )
+    async with running_gateway(tls_contexts, origin) as (port, _):
+        response = await exchange(port, ws_wire())
+        assert response.startswith(f"HTTP/1.1 {status} ".encode())
+        assert b"retry-after: 7" in response.lower()
+        assert b"x-request-id: synthetic-provider-id" in response.lower()
+        assert b"provider detail" in response
+        assert b"101" not in response.split(b"\r\n")[0]

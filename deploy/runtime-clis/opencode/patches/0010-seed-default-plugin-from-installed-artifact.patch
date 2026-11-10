@@ -1,0 +1,715 @@
+--- /dev/null
++++ b/packages/core/src/default-plugin-seed.ts
+@@ -0,0 +1,291 @@
++/** Offline default dependency for the fixed installed request-v1 layout only. */
++import fs from "node:fs/promises"
++import { constants } from "node:fs"
++import path from "node:path"
++import { createHash } from "node:crypto"
++import { ButlersEgress } from "@opencode-ai/llm/route"
++
++type Request = { add: { name: string; version?: string }[] } | undefined
++type Entry =
++  | { path: string; type: "directory"; mode: number }
++  | { path: string; type: "file"; mode: number; sha256: string }
++  | { path: string; type: "link"; target: string }
++const hash = (data: Uint8Array) => createHash("sha256").update(data).digest("hex")
++function fail(): never {
++  throw new Error("Invalid installed default-plugin seed or destination")
++}
++const object = (value: unknown): value is Record<string, any> =>
++  !!value && typeof value === "object" && !Array.isArray(value)
++const exact = (value: unknown, keys: string[]) =>
++  object(value) && Object.keys(value).sort().join("\0") === keys.sort().join("\0")
++const safe = (name: string) =>
++  name.length > 0 &&
++  !name.includes("\\") &&
++  !/[\x00-\x1f\x7f]/.test(name) &&
++  name.split("/").every((part) => part !== "" && part !== "." && part !== "..")
++const exists = async (file: string) => {
++  try {
++    await fs.lstat(file)
++    return true
++  } catch (error) {
++    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
++    throw error
++  }
++}
++async function regular(file: string, mode?: number) {
++  const stream = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
++  try {
++    const stat = await stream.stat()
++    if (!stat.isFile() || (mode !== undefined && (stat.mode & 0o7777) !== mode)) fail()
++    return await stream.readFile()
++  } finally {
++    await stream.close()
++  }
++}
++async function directory(file: string) {
++  const stat = await fs.lstat(file)
++  if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o7777) !== 0o755) fail()
++}
++async function realParents(file: string) {
++  for (let item = path.resolve(file); ; item = path.dirname(item)) {
++    const stat = await fs.lstat(item)
++    if (!stat.isDirectory() || stat.isSymbolicLink()) fail()
++    if (item === path.dirname(item)) break
++  }
++}
++const roots = {
++  "@opencode-ai/plugin": "1.17.7",
++  "@opentui/core": "0.3.4",
++  "@opentui/keymap": "0.3.4",
++  "@opentui/solid": "0.3.4",
++}
++function dependencies(pkg: Record<string, any>) {
++  if (!exact(pkg.dependencies, Object.keys(roots))) fail()
++  for (const [name, version] of Object.entries(roots)) if (pkg.dependencies[name] !== version) fail()
++  for (const key of ["devDependencies", "peerDependencies", "optionalDependencies"])
++    if (pkg[key] !== undefined && (!object(pkg[key]) || Object.keys(pkg[key]).length)) fail()
++  if (pkg.workspaces !== undefined) fail()
++}
++
++/** The optional executable is an explicit source-fixture seam, never an environment override. */
++export async function seedDefaultPlugin(dir: string, input: Request, executable = process.execPath) {
++  if (path.basename(executable) !== "opencode.exe" || path.basename(path.dirname(executable)) !== "bin") return false
++  if (input?.add.length !== 1 || input.add[0]?.name !== "@opencode-ai/plugin" || input.add[0]?.version !== "1.17.7")
++    return false
++  const destination = path.resolve(dir)
++  for (const name of ["package.json", "package-lock.json", "node_modules"])
++    if (await exists(path.join(destination, name))) return false
++  if (!ButlersEgress.gatewayConfig()) return false
++  await realParents(destination)
++  const root = path.resolve(path.dirname(executable), "..", "default-plugin")
++  await directory(root)
++  const metadata = await regular(path.join(root, "seed.json"), 0o644)
++  const seed = JSON.parse(metadata.toString())
++  if (
++    !exact(seed, ["schema", "package", "version", "node", "npm", "package_lock_sha256", "entries", "provenance"]) ||
++    seed.schema !== "butlers.opencode-default-plugin/v1" ||
++    seed.package !== "@opencode-ai/plugin" ||
++    seed.version !== "1.17.7" ||
++    seed.node !== "v22.23.4" ||
++    seed.npm !== "10.9.9" ||
++    !/^[0-9a-f]{64}$/.test(seed.package_lock_sha256) ||
++    !Array.isArray(seed.entries) ||
++    !object(seed.provenance) ||
++    Object.keys(seed.provenance).length === 0
++  )
++    fail()
++  const expected = new Map<string, Entry>()
++  let previous = ""
++  for (const entry of seed.entries) {
++    if (
++      !object(entry) ||
++      typeof entry.path !== "string" ||
++      !safe(entry.path) ||
++      entry.path <= previous ||
++      entry.path === "seed.json"
++    )
++      fail()
++    previous = entry.path
++    if (entry.type === "directory") {
++      if (!exact(entry, ["path", "type", "mode"]) || entry.mode !== 0o755) fail()
++    } else if (entry.type === "file") {
++      if (
++        !exact(entry, ["path", "type", "mode", "sha256"]) ||
++        ![0o644, 0o755].includes(entry.mode) ||
++        !/^[0-9a-f]{64}$/.test(entry.sha256)
++      )
++        fail()
++    } else if (entry.type === "link") {
++      if (
++        !exact(entry, ["path", "type", "target"]) ||
++        typeof entry.target !== "string" ||
++        !entry.target ||
++        path.isAbsolute(entry.target) ||
++        /[\\\x00-\x1f\x7f]/.test(entry.target)
++      )
++        fail()
++    } else fail()
++    // This is a fixed npm seed, not a general-purpose file overlay.
++    if (!["package.json", "package-lock.json", "node_modules"].includes(entry.path.split("/")[0])) fail()
++    expected.set(entry.path, entry as Entry)
++  }
++  const bytes = new Map<string, Buffer>()
++  const observed = new Set<string>()
++  async function walk(relative = "") {
++    for (const name of (await fs.readdir(path.join(root, relative))).sort()) {
++      const rel = relative ? relative + "/" + name : name
++      if (rel === "seed.json") continue
++      const entry = expected.get(rel)
++      if (!safe(rel) || !entry) fail()
++      const file = path.join(root, rel)
++      const stat = await fs.lstat(file)
++      if (entry.type === "directory") {
++        await directory(file)
++        await walk(rel)
++      } else if (entry.type === "file") {
++        if (!stat.isFile() || stat.isSymbolicLink()) fail()
++        const data = await regular(file, entry.mode)
++        if (hash(data) !== entry.sha256) fail()
++        bytes.set(rel, data)
++      } else {
++        if (!stat.isSymbolicLink() || (await fs.readlink(file)) !== entry.target) fail()
++        const target = await fs.realpath(file) // dangling/cyclic links refuse here
++        if (target !== root && !target.startsWith(root + path.sep)) fail()
++      }
++      observed.add(rel)
++    }
++  }
++  await walk()
++  if (observed.size !== expected.size) fail()
++  const pkgBytes = bytes.get("package.json"),
++    lockBytes = bytes.get("package-lock.json")
++  if (
++    !pkgBytes ||
++    !lockBytes ||
++    hash(lockBytes) !== seed.package_lock_sha256 ||
++    expected.get("node_modules")?.type !== "directory"
++  )
++    fail()
++  const pkg = JSON.parse(pkgBytes.toString()),
++    lock = JSON.parse(lockBytes.toString())
++  if (
++    !object(pkg) ||
++    !object(lock) ||
++    ![2, 3].includes(lock.lockfileVersion) ||
++    !object(lock.packages) ||
++    !object(lock.packages[""])
++  )
++    fail()
++  dependencies(pkg)
++  dependencies(lock.packages[""])
++  for (const [rel, value] of Object.entries(lock.packages)) {
++    if (rel === "") continue
++    if (
++      !safe(rel) ||
++      !rel.startsWith("node_modules/") ||
++      !object(value) ||
++      value.link ||
++      typeof value.version !== "string"
++    )
++      fail()
++    const data = bytes.get(rel + "/package.json")
++    if (!data || JSON.parse(data.toString()).version !== value.version) fail()
++  }
++  for (const [name, version] of Object.entries(roots))
++    if (lock.packages["node_modules/" + name]?.version !== version) fail()
++  if (lock.packages["node_modules/@opencode-ai/sdk"]?.version !== "1.17.7") fail()
++  // Every installed package root must be represented by the real lock, including transitives.
++  for (const rel of bytes.keys()) {
++    if (!rel.endsWith("/package.json")) continue
++    const parent = rel.slice(0, -"/package.json".length)
++    if (/(?:^|\/)node_modules\/(?:@[^/]+\/)?[^/]+$/.test(parent) && !object(lock.packages[parent])) fail()
++  }
++  for (const [name, version, exports] of [
++    ["@opencode-ai/plugin", "1.17.7", [".", "./tool", "./tui"]],
++    [
++      "@opencode-ai/sdk",
++      "1.17.7",
++      [".", "./v2", "./client", "./server", "./v2/client", "./v2/server", "./v2/gen/client"],
++    ],
++  ] as const) {
++    const base = "node_modules/" + name
++    const data = bytes.get(base + "/package.json")
++    if (!data) fail()
++    const installed = JSON.parse(data.toString())
++    if (installed.name !== name || installed.version !== version || !exact(installed.exports, [...exports])) fail()
++    for (const conditions of Object.values(installed.exports) as unknown[]) {
++      if (!exact(conditions, ["types", "import"])) fail()
++      for (const target of Object.values(conditions as Record<string, unknown>)) {
++        if (
++          typeof target !== "string" ||
++          !target.startsWith("./") ||
++          !safe(target.slice(2)) ||
++          !bytes.has(base + "/" + target.slice(2))
++        )
++          fail()
++      }
++    }
++  }
++  // Follow every required package dependency using Node's nearest-node_modules layout.
++  // Optional/peer edges retain normal npm handling; no additional package is fetched here.
++  for (const rel of Object.keys(lock.packages).filter(Boolean)) {
++    const installed = JSON.parse(bytes.get(rel + "/package.json")!.toString())
++    if (!object(installed.dependencies ?? {})) fail()
++    for (const name of Object.keys(installed.dependencies ?? {})) {
++      if (!/^(?:@[^/]+\/)?[^/]+$/.test(name) || /[\\\x00-\x1f]/.test(name) || name === "." || name === "..") fail()
++      let parent = rel
++      let found = false
++      while (true) {
++        if (bytes.has(parent + "/node_modules/" + name + "/package.json")) {
++          found = true
++          break
++        }
++        if (parent === "") break
++        parent = path.posix.dirname(parent)
++        if (parent === ".") parent = ""
++      }
++      if (!found && !bytes.has("node_modules/" + name + "/package.json")) fail()
++    }
++  }
++  // Plan the entire destination before the first mutation; parents are existing real directories
++  // or declared directories. Exclusive creation also refuses a concurrent conflicting writer.
++  for (const entry of expected.values()) {
++    if (await exists(path.join(destination, entry.path))) fail()
++    const parent = path.posix.dirname(entry.path)
++    if (parent !== "." && expected.get(parent)?.type !== "directory") fail()
++  }
++  // Validate seed identity again before writes; data bytes are the validated snapshots above.
++  if (!(await regular(path.join(root, "seed.json"), 0o644)).equals(metadata)) fail()
++  const created: string[] = []
++  try {
++    for (const entry of expected.values()) {
++      const file = path.join(destination, entry.path)
++      if (entry.type === "directory") {
++        await fs.mkdir(file, { mode: 0o755 })
++        created.push(file)
++        await fs.chmod(file, 0o755)
++        continue
++      } else if (entry.type === "file") {
++        const stream = await fs.open(file, "wx", entry.mode)
++        created.push(file)
++        try {
++          await stream.chmod(entry.mode)
++          await stream.writeFile(bytes.get(entry.path)!)
++        } finally {
++          await stream.close()
++        }
++        continue
++      } else await fs.symlink(entry.target, file)
++      created.push(file)
++    }
++  } catch (error) {
++    // Only remove paths this attempt actually created. No recursive deletion of a shared tree.
++    for (const file of created.reverse()) {
++      const stat = await fs.lstat(file).catch(() => undefined)
++      if (stat?.isDirectory()) await fs.rmdir(file).catch(() => {})
++      else await fs.unlink(file).catch(() => {})
++    }
++    throw error
++  }
++  return true
++}
+--- a/packages/core/src/npm.ts
++++ b/packages/core/src/npm.ts
+@@ -13,0 +14,3 @@
++import { seedDefaultPlugin } from "./default-plugin-seed"
++
++class SeedExecutable extends Context.Service<SeedExecutable, { readonly path: string }>()("NpmSeedExecutable") {}
+@@ -78,0 +82 @@
++    const fixture = yield* Effect.serviceOption(SeedExecutable)
+@@ -80 +84 @@
+-    const reify = (input: { dir: string; add?: string[] }) =>
++    const reify = (input: { dir: string; add?: string[]; locked?: boolean }) =>
+@@ -82 +86 @@
+-        yield* flock.acquire(`npm-install:${input.dir}`)
++        if (!input.locked) yield* flock.acquire(`npm-install:${input.dir}`)
+@@ -145,0 +150,7 @@
++      // Serialize seed selection with ordinary npm operations; refusal never reaches reify.
++      yield* flock.acquire(`npm-install:${dir}`)
++      yield* Effect.tryPromise({
++        try: () => seedDefaultPlugin(dir, input, Option.getOrUndefined(fixture)?.path ?? process.execPath),
++        catch: () => new InstallFailedError({ dir, cause: "Installed default-plugin seed refused" }),
++      })
++
+@@ -151 +162 @@
+-            yield* reify({ add, dir })
++            yield* reify({ add, dir, locked: true })
+@@ -183 +194 @@
+-            yield* reify({ dir, add })
++            yield* reify({ dir, add, locked: true })
+@@ -248,0 +260,4 @@
++/** Explicit source-fixture path injection; production uses the original process.execPath. */
++export const layerWith = (executable: string) =>
++  layer.pipe(Layer.provide(Layer.succeed(SeedExecutable, { path: executable })))
++
+--- /dev/null
++++ b/packages/core/test/default-plugin-seed.test.ts
+@@ -0,0 +1,385 @@
++import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
++import fs from "node:fs/promises"
++import path from "node:path"
++import { createHash } from "node:crypto"
++import { Effect, Layer } from "effect"
++import { NodeFileSystem } from "@effect/platform-node"
++import { Npm } from "../src/npm"
++import { FSUtil } from "../src/fs-util"
++import { Global } from "../src/global"
++import { EffectFlock } from "../src/util/effect-flock"
++
++const add = { add: [{ name: "@opencode-ai/plugin", version: "1.17.7" }] }
++const roots = {
++  "@opencode-ai/plugin": "1.17.7",
++  "@opentui/core": "0.3.4",
++  "@opentui/keymap": "0.3.4",
++  "@opentui/solid": "0.3.4",
++}
++const hash = (data: Uint8Array) => createHash("sha256").update(data).digest("hex")
++let root: string, seed: string, dest: string, exe: string, calls: number, trap: ReturnType<typeof spyOn>
++const saved = { mode: process.env.BUTLERS_EGRESS_MODE, address: process.env.BUTLERS_EGRESS_GATEWAY }
++async function write(relative: string, data: string, mode = 0o644) {
++  const file = path.join(seed, relative)
++  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o755 })
++  await fs.writeFile(file, data, { mode })
++  await fs.chmod(file, mode)
++}
++async function inventory() {
++  const entries: any[] = []
++  async function walk(dir = "") {
++    for (const name of (await fs.readdir(path.join(seed, dir))).sort()) {
++      const rel = dir ? dir + "/" + name : name
++      if (rel === "seed.json") continue
++      const file = path.join(seed, rel),
++        stat = await fs.lstat(file)
++      if (stat.isSymbolicLink()) entries.push({ path: rel, type: "link", target: await fs.readlink(file) })
++      else if (stat.isDirectory()) {
++        entries.push({ path: rel, type: "directory", mode: stat.mode & 0o7777 })
++        await walk(rel)
++      } else entries.push({ path: rel, type: "file", mode: stat.mode & 0o7777, sha256: hash(await fs.readFile(file)) })
++    }
++  }
++  await walk()
++  return entries.sort((a, b) => (a.path < b.path ? -1 : 1))
++}
++async function seal(mutate?: (value: any) => void) {
++  const value = {
++    schema: "butlers.opencode-default-plugin/v1",
++    package: "@opencode-ai/plugin",
++    version: "1.17.7",
++    node: "v22.23.4",
++    npm: "10.9.9",
++    package_lock_sha256: hash(await fs.readFile(path.join(seed, "package-lock.json"))),
++    entries: await inventory(),
++    provenance: { fixture: "synthetic-complete-shaped graph; not public package certification" },
++  }
++  mutate?.(value)
++  await write("seed.json", JSON.stringify(value))
++}
++async function fixture() {
++  await write("package.json", JSON.stringify({ private: true, dependencies: roots }))
++  const packages: any = { "": { dependencies: roots } }
++  for (const [name, version, keys, dependencies] of [
++    [
++      "@opencode-ai/plugin",
++      "1.17.7",
++      [".", "./tool", "./tui"],
++      { "@opencode-ai/sdk": "1.17.7", effect: "4.0.0-beta.74", zod: "4.1.8" },
++    ],
++    [
++      "@opencode-ai/sdk",
++      "1.17.7",
++      [".", "./v2", "./client", "./server", "./v2/client", "./v2/server", "./v2/gen/client"],
++      { "cross-spawn": "7.0.6" },
++    ],
++    ["effect", "4.0.0-beta.74", [], {}],
++    ["zod", "4.1.8", [], {}],
++    ["cross-spawn", "7.0.6", [], {}],
++    ["@opentui/core", "0.3.4", [], {}],
++    ["@opentui/keymap", "0.3.4", [], {}],
++    ["@opentui/solid", "0.3.4", [], {}],
++  ] as const) {
++    const base = "node_modules/" + name,
++      exports: Record<string, any> = {}
++    for (const key of keys) {
++      const stem = key === "." ? "index" : key.slice(2) + "/index"
++      exports[key] = { types: "./dist/" + stem + ".d.ts", import: "./dist/" + stem + ".js" }
++      await write(base + "/dist/" + stem + ".d.ts", "export declare const fixture: string\n")
++      await write(base + "/dist/" + stem + ".js", 'export const fixture = "owned-' + name + '"\n')
++    }
++    await write(base + "/package.json", JSON.stringify({ name, version, type: "module", exports, dependencies }))
++    packages[base] = { version, dependencies }
++  }
++  await write("node_modules/cross-spawn/bin.js", "#!/usr/bin/env node\n", 0o755)
++  await fs.mkdir(path.join(seed, "node_modules/.bin"), { mode: 0o755 })
++  await fs.symlink("../cross-spawn/bin.js", path.join(seed, "node_modules/.bin/owned"))
++  await write("package-lock.json", JSON.stringify({ lockfileVersion: 3, packages }))
++  async function modes(dir: string) {
++    await fs.chmod(dir, 0o755)
++    for (const ent of await fs.readdir(dir, { withFileTypes: true }))
++      if (ent.isDirectory()) await modes(path.join(dir, ent.name))
++  }
++  await modes(seed)
++  await seal()
++}
++async function install(request: any = add, executable = exe) {
++  // The fallback deliberately lets the same semantic regression execute on the old Npm implementation.
++  const factory = (Npm as { layerWith?: typeof Npm.layerWith }).layerWith
++  const implementation = factory?.(executable) ?? Npm.layer
++  const layer = implementation.pipe(
++    Layer.provide(EffectFlock.layer),
++    Layer.provide(FSUtil.layer),
++    Layer.provide(Global.layerWith({ cache: path.join(root, "cache"), state: path.join(root, "state") })),
++    Layer.provide(NodeFileSystem.layer),
++  )
++  return Effect.gen(function* () {
++    const npm = yield* Npm.Service
++    yield* npm.install(dest, request)
++  }).pipe(Effect.provide(layer), Effect.runPromise)
++}
++async function unchangedFailure() {
++  const before = (await fs.readdir(dest)).sort()
++  await expect(install()).rejects.toThrow()
++  expect((await fs.readdir(dest)).sort()).toEqual(before)
++  expect(calls).toBe(0)
++}
++beforeEach(async () => {
++  root = await fs.mkdtemp("/tmp/default-plugin-")
++  seed = path.join(root, "component/default-plugin")
++  dest = path.join(root, "config")
++  exe = path.join(root, "component/bin/opencode.exe")
++  await fs.mkdir(seed, { recursive: true, mode: 0o755 })
++  await fs.mkdir(dest, { mode: 0o755 })
++  await fs.chmod(seed, 0o755)
++  await fs.writeFile(path.join(dest, "opencode.json"), "{}\n")
++  await fs.writeFile(path.join(dest, ".gitignore"), "node_modules\n")
++  await fixture()
++  calls = 0
++  const { Arborist } = await import("@npmcli/arborist")
++  trap = spyOn(Arborist.prototype, "reify").mockImplementation(async () => {
++    calls++
++    throw new Error("OWNED REGISTRY TRAP")
++  })
++  process.env.BUTLERS_EGRESS_MODE = "request-v1"
++  process.env.BUTLERS_EGRESS_GATEWAY = "http://egress-gateway:3115"
++})
++afterEach(async () => {
++  trap.mockRestore()
++  if (saved.mode === undefined) delete process.env.BUTLERS_EGRESS_MODE
++  else process.env.BUTLERS_EGRESS_MODE = saved.mode
++  if (saved.address === undefined) delete process.env.BUTLERS_EGRESS_GATEWAY
++  else process.env.BUTLERS_EGRESS_GATEWAY = saved.address
++  await fs.rm(root, { recursive: true, force: true })
++})
++test("fresh selected default uses complete installed graph through Npm.install without reify", async () => {
++  const outcome = await install().then(
++    () => true,
++    () => false,
++  )
++  expect(calls).toBe(0)
++  expect(outcome).toBe(true)
++  expect(await fs.readFile(path.join(dest, "opencode.json"), "utf8")).toBe("{}\n")
++  expect(await fs.readFile(path.join(dest, ".gitignore"), "utf8")).toBe("node_modules\n")
++  for (const entry of await inventory()) {
++    const target = path.join(dest, entry.path)
++    if (entry.type === "file") {
++      expect(hash(await fs.readFile(target))).toBe(entry.sha256)
++      expect((await fs.lstat(target)).mode & 0o7777).toBe(entry.mode)
++    } else if (entry.type === "link") expect(await fs.readlink(target)).toBe(entry.target)
++    else expect((await fs.lstat(target)).mode & 0o7777).toBe(0o755)
++  }
++  for (const name of ["index", "tool/index", "tui/index"]) {
++    const module = await import(path.join(dest, "node_modules/@opencode-ai/plugin/dist", name + ".js"))
++    expect(module.fixture).toBe("owned-@opencode-ai/plugin")
++  }
++  await fs.writeFile(path.join(dest, "node_modules/cross-spawn/bin.js"), "changed destination")
++  expect(await fs.readFile(path.join(seed, "node_modules/cross-spawn/bin.js"), "utf8")).toBe("#!/usr/bin/env node\n")
++})
++for (const mutation of [
++  "missing",
++  "bad-json",
++  "unknown-field",
++  "wrong-version",
++  "wrong-node",
++  "wrong-npm",
++  "no-provenance",
++  "lock-hash",
++  "omitted",
++  "duplicate",
++  "unsorted",
++  "unsafe-path",
++  "wrong-file-mode",
++  "wrong-root-mode",
++  "changed-byte",
++  "extra-file",
++  "missing-package",
++  "missing-export",
++  "missing-transitive",
++  "dangling",
++  "escape",
++  "cycle",
++  "absolute-link",
++  "metadata-link",
++  "destination-symlink",
++] as const) {
++  test("refuses " + mutation + " before writes or reify", async () => {
++    const bin = path.join(seed, "node_modules/cross-spawn/bin.js")
++    if (mutation === "missing") await fs.rm(seed, { recursive: true })
++    else if (mutation === "bad-json") await write("seed.json", "{")
++    else if (mutation === "wrong-file-mode") {
++      await fs.chmod(bin, 0o600)
++      await seal()
++    } else if (mutation === "wrong-root-mode") await fs.chmod(seed, 0o775)
++    else if (mutation === "changed-byte") await fs.writeFile(bin, "drift")
++    else if (mutation === "extra-file") await write("node_modules/undeclared", "drift")
++    else if (mutation === "missing-package") {
++      await fs.rm(path.join(seed, "node_modules/@opencode-ai/sdk"), { recursive: true })
++      await seal()
++    } else if (mutation === "missing-export") {
++      await fs.rm(path.join(seed, "node_modules/@opencode-ai/plugin/dist/tool/index.js"))
++      await seal()
++    } else if (mutation === "missing-transitive") {
++      await fs.rm(path.join(seed, "node_modules/cross-spawn"), { recursive: true })
++      await seal()
++    } else if (["dangling", "escape", "cycle", "absolute-link"].includes(mutation)) {
++      const link = path.join(seed, "node_modules/.bin/owned")
++      await fs.unlink(link)
++      await fs.symlink(
++        mutation === "dangling"
++          ? "../absent"
++          : mutation === "escape"
++            ? "../../../outside"
++            : mutation === "cycle"
++              ? "owned"
++              : "/tmp",
++        link,
++      )
++      await seal()
++    } else if (mutation === "metadata-link") {
++      await fs.rename(path.join(seed, "seed.json"), path.join(root, "metadata"))
++      await fs.symlink(path.join(root, "metadata"), path.join(seed, "seed.json"))
++    } else if (mutation === "destination-symlink") {
++      await fs.rename(dest, dest + "-real")
++      await fs.symlink(dest + "-real", dest)
++    } else
++      await seal((value) => {
++        if (mutation === "unknown-field") value.extra = true
++        else if (mutation === "wrong-version") value.version = "1.17.8"
++        else if (mutation === "wrong-node") value.node = "v22.0.0"
++        else if (mutation === "wrong-npm") value.npm = "10.0.0"
++        else if (mutation === "no-provenance") value.provenance = {}
++        else if (mutation === "lock-hash") value.package_lock_sha256 = "0".repeat(64)
++        else if (mutation === "omitted") value.entries.pop()
++        else if (mutation === "duplicate") value.entries.push(value.entries.at(-1))
++        else if (mutation === "unsorted") value.entries.reverse()
++        else if (mutation === "unsafe-path") value.entries[0].path = "../escape"
++      })
++    await unchangedFailure()
++  })
++}
++for (const mode of [
++  "off",
++  "platform-binary",
++  "arbitrary",
++  "wrong-default-version",
++  "multiple-request",
++  "existing-package",
++  "existing-lock",
++] as const) {
++  test("preserves original registry-capable path for " + mode, async () => {
++    let request: any = add,
++      executable = exe
++    if (mode === "off") {
++      delete process.env.BUTLERS_EGRESS_MODE
++      delete process.env.BUTLERS_EGRESS_GATEWAY
++    }
++    if (mode === "platform-binary") executable = path.join(root, "opencode")
++    if (mode === "arbitrary") request = { add: [{ name: "other-plugin", version: "1.17.7" }] }
++    if (mode === "wrong-default-version") request = { add: [{ name: "@opencode-ai/plugin", version: "1.17.8" }] }
++    if (mode === "multiple-request") request = { add: [...add.add, { name: "other", version: "1" }] }
++    if (mode === "existing-package")
++      await fs.writeFile(path.join(dest, "package.json"), JSON.stringify({ dependencies: { custom: "1" } }))
++    if (mode === "existing-lock") await fs.writeFile(path.join(dest, "package-lock.json"), "{}")
++    await expect(install(request, executable)).rejects.toThrow()
++    expect(calls).toBe(1)
++  })
++}
++test("existing complete default graph preserves original completeness no-op", async () => {
++  await install()
++  await fs.rm(seed, { recursive: true })
++  await install()
++  expect(calls).toBe(0)
++})
++test("invalid selected config refuses fresh installed layout without registry fallback", async () => {
++  process.env.BUTLERS_EGRESS_GATEWAY = "http://other:3115"
++  await unchangedFailure()
++})
++
++test("metadata safe-root package cannot smuggle an additional dependency", async () => {
++  const file = path.join(seed, "package.json")
++  const pkg = JSON.parse(await fs.readFile(file, "utf8"))
++  pkg.dependencies.other = "1"
++  await fs.writeFile(file, JSON.stringify(pkg))
++  await seal()
++  await unchangedFailure()
++})
++test("missing package with a correspondingly shortened lock still refuses its live dependency", async () => {
++  await fs.rm(path.join(seed, "node_modules/cross-spawn"), { recursive: true })
++  await fs.unlink(path.join(seed, "node_modules/.bin/owned"))
++  const file = path.join(seed, "package-lock.json")
++  const lock = JSON.parse(await fs.readFile(file, "utf8"))
++  delete lock.packages["node_modules/cross-spawn"]
++  await fs.writeFile(file, JSON.stringify(lock))
++  await seal()
++  await unchangedFailure()
++})
++test("destination parent modes and other normal config bytes survive", async () => {
++  await fs.chmod(dest, 0o750)
++  await install()
++  expect((await fs.stat(dest)).mode & 0o7777).toBe(0o750)
++  expect(await fs.readFile(path.join(dest, "opencode.json"), "utf8")).toBe("{}\n")
++})
++test("no ambient seed path override can replace a missing fixed installed seed", async () => {
++  const original = process.env.BUTLERS_DEFAULT_PLUGIN_SEED
++  process.env.BUTLERS_DEFAULT_PLUGIN_SEED = seed
++  try {
++    await fs.rename(seed, seed + "-other")
++    await unchangedFailure()
++  } finally {
++    if (original === undefined) delete process.env.BUTLERS_DEFAULT_PLUGIN_SEED
++    else process.env.BUTLERS_DEFAULT_PLUGIN_SEED = original
++  }
++})
++
++test("FIFO metadata refuses without blocking or writing", async () => {
++  await fs.unlink(path.join(seed, "seed.json"))
++  expect(Bun.spawnSync(["/usr/bin/mkfifo", path.join(seed, "seed.json")]).exitCode).toBe(0)
++  await unchangedFailure()
++})
++
++test("concurrent default requests retain npm flock and one complete graph", async () => {
++  await Promise.all([install(), install()])
++  expect(calls).toBe(0)
++  expect(await fs.readFile(path.join(dest, "package-lock.json"), "utf8")).toBe(
++    await fs.readFile(path.join(seed, "package-lock.json"), "utf8"),
++  )
++})
++test("partial write failure cleans only this attempt and never falls back to reify", async () => {
++  const open = fs.open.bind(fs)
++  const io = spyOn(fs, "open").mockImplementation((...args: any[]) => {
++    if (typeof args[0] === "string" && args[0].startsWith(dest + "/") && args[1] === "wx")
++      return Promise.reject(Object.assign(new Error("OWNED WRITE FAILURE"), { code: "EIO" }))
++    return (open as any)(...args)
++  })
++  try {
++    await unchangedFailure()
++    expect(await fs.readFile(path.join(dest, "opencode.json"), "utf8")).toBe("{}\n")
++  } finally {
++    io.mockRestore()
++  }
++})
++
++for (const problem of [
++  "missing-peer",
++  "ranged-peer",
++  "changed-peer",
++  "lock-extra-root",
++  "lock-wrong-peer-node",
++] as const) {
++  test("closed four-root population refuses " + problem, async () => {
++    const p = path.join(seed, "package.json"),
++      l = path.join(seed, "package-lock.json")
++    const pkg = JSON.parse(await fs.readFile(p, "utf8")),
++      lock = JSON.parse(await fs.readFile(l, "utf8"))
++    if (problem === "missing-peer") delete pkg.dependencies["@opentui/core"]
++    if (problem === "ranged-peer") pkg.dependencies["@opentui/core"] = "^0.3.4"
++    if (problem === "changed-peer") pkg.dependencies["@opentui/core"] = "0.3.5"
++    if (problem === "lock-extra-root") lock.packages[""].dependencies.other = "1.0.0"
++    if (problem === "lock-wrong-peer-node") lock.packages["node_modules/@opentui/core"].version = "0.3.5"
++    await fs.writeFile(p, JSON.stringify(pkg))
++    await fs.writeFile(l, JSON.stringify(lock))
++    await seal()
++    await unchangedFailure()
++  })
++}

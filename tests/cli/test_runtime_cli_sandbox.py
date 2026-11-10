@@ -47,7 +47,11 @@ _SYNTHETIC_SIGNER_FIXTURE = (
 )
 _BASE_IMAGE_BUILD_INPUTS = (
     "Dockerfile.base",
+    "scripts/runtime_clis/install_system_artifacts.py",
+    "deploy/runtime-clis/debian-system-inputs.json",
     "scripts/runtime_cli_sandbox_init.c",
+    "scripts/runtime_clis/runtime_artifacts.py",
+    "deploy/runtime-clis/runtime-inputs.json",
     "scripts/generate_runtime_cli_sandbox_manifest.py",
 )
 

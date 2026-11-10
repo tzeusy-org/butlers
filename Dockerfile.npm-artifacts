@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1.7
+
+FROM node:22.23.4-bookworm-slim@sha256:aaa4b5baf1ecff3b283486bb1f90405cdda225a3e6f79660d2c559fa510a7292 AS node-toolchain
+
+FROM python:3.12.13-slim-trixie@sha256:c2d8472b831337ab296a8ce652e1ba786e9e3034fc445dc58b50a7f5251f0003 AS producer
+ARG VENDOR=google-auth-library
+COPY scripts/runtime_clis/install_system_artifacts.py /recipe/scripts/runtime_clis/install_system_artifacts.py
+COPY deploy/runtime-clis/debian-system-inputs.json /recipe/deploy/runtime-clis/debian-system-inputs.json
+COPY deploy/runtime-clis/codex/compiler-inputs.json /recipe/deploy/runtime-clis/codex/compiler-inputs.json
+RUN --network=none --mount=from=system-artifacts,source=debs,target=/inputs/system,readonly \
+    python3 -I -B /recipe/scripts/runtime_clis/install_system_artifacts.py \
+      --manifest /recipe/deploy/runtime-clis/debian-system-inputs.json \
+      --artifacts /inputs/system --profile compiler
+RUN --network=none --mount=from=codex-compiler-artifacts,source=debs,target=/inputs/compiler,readonly \
+    python3 -I -B /recipe/scripts/runtime_clis/install_system_artifacts.py \
+      --manifest /recipe/deploy/runtime-clis/codex/compiler-inputs.json \
+      --artifacts /inputs/compiler --profile compiler \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
+
+# Keep the complete official Node/npm toolchain. The source entrypoint checks
+# the same Node binary SHA and bundled npm version as toolchains.json.
+COPY --from=node-toolchain /usr/local/ /opt/node/
+COPY scripts/runtime_clis/prepare_vendor.py scripts/runtime_clis/produce_codex_artifacts.py scripts/runtime_clis/produce_npm_artifact.py /recipe/scripts/runtime_clis/
+COPY deploy/runtime-clis/ /recipe/deploy/runtime-clis/
+COPY Dockerfile.npm-artifacts /recipe/Dockerfile.npm-artifacts
+WORKDIR /opt/js-build
+
+# Ordinary npm ci retains original dependency declarations, every lifecycle
+# hook, all development/build packages and the real browser asset cache.
+# This layer is preparation only and produces no accepted SDK archive.
+RUN --network=default --mount=type=tmpfs,target=/root \
+    test "$HOME" = /root \
+    && python3 -I -B /recipe/scripts/runtime_clis/produce_npm_artifact.py \
+      --vendor "$VENDOR" --phase public-seed
+
+# A pristine second preparation repeats ci/prepare and pack with no route.
+# It publishes only an exact match for the existing Gemini artifact input.
+RUN --network=none --mount=type=tmpfs,target=/root \
+    test "$HOME" = /root \
+    && python3 -I -B /recipe/scripts/runtime_clis/produce_npm_artifact.py \
+      --vendor "$VENDOR" --phase build
+
+FROM scratch AS artifacts
+COPY --from=producer /artifacts/ /

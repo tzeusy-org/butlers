@@ -6,6 +6,10 @@ item, so the next cycle reads it again. Each item gets a bounded number of
 attempts (``IngestRetryBudget``). When they are spent, the item is parked as a
 replayable ``filtered_events`` error row carrying the exact envelope it tried,
 idempotency key included, and only then does the connector move on.
+
+Gmail live polling holds the whole history batch on request or delivery failure;
+accepted siblings replay with unchanged idempotency keys. Deliberate deleted or
+malformed message outcomes keep their existing skip/error handling.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
@@ -134,6 +139,134 @@ def _job(cursor: dict | None = None) -> Any:
     from butlers.connectors.gmail import BackfillJob
 
     return BackfillJob(job_id="job-1", date_from="2020-01-01", date_to="2020-12-31", cursor=cursor)
+
+
+def _gmail_live_runtime(submit: AsyncMock) -> Any:
+    from butlers.connectors.gmail import GmailCursor
+
+    runtime = _gmail_runtime(submit)
+    runtime._refresh_policy_tier_assigner = AsyncMock()
+    runtime._load_cursor = AsyncMock(
+        return_value=GmailCursor(history_id="100", last_updated_at="2026-01-01T00:00:00Z")
+    )
+    runtime._fetch_history_changes = AsyncMock(
+        return_value=[
+            {"id": "101", "messagesAdded": [{"message": {"id": mid}} for mid in ("m1", "m2")]}
+        ]
+    )
+    runtime._save_cursor = AsyncMock()
+    runtime._flush_and_drain = AsyncMock()
+    return runtime
+
+
+async def _gmail_poll_once(runtime: Any) -> list[int]:
+    delays = []
+
+    async def stop_after_poll(delay: int) -> None:
+        delays.append(delay)
+        runtime._running = False
+
+    runtime._running = True
+    with (
+        patch("butlers.connectors.gmail.asyncio.sleep", side_effect=stop_after_poll),
+        patch(
+            "butlers.connectors.gmail.evaluate_message_policy",
+            return_value=SimpleNamespace(
+                should_ingest=True, filter_reason=None, ingestion_tier=1, policy_tier="default"
+            ),
+        ),
+    ):
+        await runtime._run_polling_ingestion_loop()
+    return delays
+
+
+@pytest.mark.parametrize(
+    ("stage", "failure"),
+    [
+        pytest.param("fetch", 503, id="fetch-http-503"),
+        pytest.param("fetch", 401, id="fetch-http-401"),
+        pytest.param("fetch", httpx.ReadTimeout, id="fetch-read-timeout"),
+        pytest.param("submit", ConnectionError, id="submit-connection-error"),
+        pytest.param("submit", TimeoutError, id="submit-timeout"),
+        pytest.param("submit", httpx.ReadTimeout, id="submit-read-timeout"),
+        pytest.param("submit", 503, id="submit-http-503"),
+    ],
+)
+async def test_gmail_live_poll_holds_cursor_until_failed_message_is_accepted(
+    stage: str, failure: int | type[Exception]
+) -> None:
+    request = httpx.Request("GET", "https://gmail.googleapis.com/gmail/v1/users/me/messages/m1")
+    error = (
+        httpx.HTTPStatusError(
+            "source unavailable", request=request, response=httpx.Response(failure, request=request)
+        )
+        if isinstance(failure, int)
+        else failure("delivery unavailable")
+    )
+    effects: set[str] = set()
+    receipts: list[tuple[str, bool]] = []
+    fail_once = True
+
+    def maybe_fail(mid: str, at: str) -> None:
+        nonlocal fail_once
+        if mid == "m1" and stage == at and fail_once:
+            fail_once = False
+            raise error
+
+    async def fetch(mid: str) -> dict:
+        maybe_fail(mid, "fetch")
+        return {"id": mid}
+
+    async def submit(envelope: dict) -> None:
+        mid = envelope["event"]["external_event_id"]
+        key = envelope["control"]["idempotency_key"]
+        receipts.append((key, key in effects))
+        effects.add(key)
+        # Delivery can fail after acceptance; retry must use the same key.
+        maybe_fail(mid, "submit")
+
+    runtime = _gmail_live_runtime(AsyncMock(side_effect=submit))
+    runtime._fetch_message = AsyncMock(side_effect=fetch)
+
+    delays = await _gmail_poll_once(runtime)
+    runtime._save_cursor.assert_not_awaited()
+    assert delays == [10, 5]
+    assert runtime._load_cursor.return_value.history_id == "100"
+    assert "gmail:m2" in effects  # gather settles the healthy sibling before raising
+    assert len(runtime._filtered_event_buffer) == 0
+
+    assert await _gmail_poll_once(runtime) == [5]
+    assert runtime._save_cursor.await_count == 1
+    assert runtime._save_cursor.await_args.args[0].history_id == "101"
+    assert runtime._fetch_history_changes.await_args_list[0].args == ("100",)
+    assert runtime._fetch_history_changes.await_args_list[1].args == ("100",)
+    assert effects == {"gmail:m1", "gmail:m2"}
+    assert ("gmail:m2", True) in receipts
+    assert ("gmail:m1", stage == "submit") in receipts
+    assert len(runtime._filtered_event_buffer) == 0
+
+
+@pytest.mark.parametrize("outcome", ["deleted", "malformed"])
+async def test_gmail_live_permanent_message_outcome_allows_checkpoint(outcome: str) -> None:
+    request = httpx.Request("GET", "https://gmail.googleapis.com/gmail/v1/users/me/messages/m1")
+
+    async def fetch(mid: str) -> dict:
+        if mid == "m1":
+            if outcome == "deleted":
+                raise httpx.HTTPStatusError(
+                    "deleted", request=request, response=httpx.Response(404, request=request)
+                )
+            raise ValueError("malformed message")
+        return {"id": mid}
+
+    submit = AsyncMock()
+    runtime = _gmail_live_runtime(submit)
+    runtime._fetch_message = AsyncMock(side_effect=fetch)
+
+    assert await _gmail_poll_once(runtime) == [5]
+    assert runtime._save_cursor.await_args.args[0].history_id == "101"
+    assert [call.args[0]["event"]["external_event_id"] for call in submit.await_args_list] == ["m2"]
+    assert len(runtime._filtered_event_buffer) == (1 if outcome == "malformed" else 0)
 
 
 async def test_gmail_backfill_holds_its_page_on_a_failed_ingest(evaluated) -> None:

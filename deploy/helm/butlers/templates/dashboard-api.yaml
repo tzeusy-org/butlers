@@ -25,20 +25,20 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - >-
-              uv run --frozen --no-dev butlers db prepare-chronicler-memory --dir /app/roster
-              && uv run --frozen --no-dev butlers db migrate --dir /app/roster
+              /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db prepare-chronicler-memory --dir /app/roster
+              && /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db migrate --dir /app/roster
               {{- if .Values.database.applyGrants }}
-              && uv run --frozen --no-dev butlers db apply-grants --database {{ .Values.database.name }} --execute
+              && /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db apply-grants --database {{ .Values.database.name }} --execute
               {{- else }}
-              && (uv run --frozen --no-dev butlers db apply-grants --database {{ .Values.database.name }} || true)
+              && (/usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db apply-grants --database {{ .Values.database.name }} || true)
               {{- end }}
               {{- if .Values.publicMcp.reconcile }}
-              && top="$(uv run --frozen --no-dev butlers --help)"
+              && top="$(/usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers --help)"
               && group=""
               && if printf '%s\n' "$top" | grep -Eq '^ +public-mcp( |$)';
-              then group="$(uv run --frozen --no-dev butlers public-mcp --help)"; fi
+              then group="$(/usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers public-mcp --help)"; fi
               && if printf '%s\n' "$group" | grep -Eq '^ +reconcile( |$)';
-              then exec uv run --frozen --no-dev butlers public-mcp reconcile --database {{ .Values.database.name }};
+              then exec /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers public-mcp reconcile --database {{ .Values.database.name }};
               else echo 'public-mcp reconcile: not in this image (a rollback); skipped' >&2; fi
               {{- end }}
           env:

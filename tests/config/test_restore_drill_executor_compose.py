@@ -145,6 +145,12 @@ def _run_compose_launcher_harness(
         environment_text,
         encoding="utf-8",
     )
+    artifacts = tmp_path / "python-artifacts"
+    artifacts.mkdir()
+    (artifacts / "provenance.json").write_text("{}")
+    go_artifacts = tmp_path / "go-artifacts"
+    go_artifacts.mkdir()
+    (go_artifacts / "provenance.json").write_text("{}")
 
     calls = tmp_path / "launcher-calls"
     fake_bin = tmp_path / "bin"
@@ -198,6 +204,9 @@ def _run_compose_launcher_harness(
     environment = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "BUTLERS_BASE_IMAGE": "registry.example.test/butlers/base@sha256:" + "a" * 64,
+        "BUTLERS_PYTHON_ARTIFACTS": str(artifacts),
+        "BUTLERS_GO_ARTIFACTS": str(go_artifacts),
     }
     for key in tuple(environment):
         if key.startswith("RESTORE_DRILL_"):
@@ -255,6 +264,11 @@ def test_dev_launcher_uses_only_base_compose_without_explicit_restore_drill_opt_
     assert all("restore-drill-postgres-proxy" not in call for call in calls)
     assert all(_FIREWALL_WRAPPER not in call for call in calls)
     assert all(not call.startswith("getent ") for call in calls)
+    assert any(
+        call.startswith("docker build ")
+        and f"--build-context go-artifacts={tmp_path / 'go-artifacts'}" in call
+        for call in calls
+    )
 
 
 def test_dev_launcher_does_not_infer_restore_drill_opt_in_from_fully_provisioned_config(

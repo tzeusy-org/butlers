@@ -30,6 +30,7 @@ def _run_launcher(
     override: bool = False,
     complete_launch: bool = False,
     grafana_anonymous: str | None = None,
+    build_inputs: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     repo = tmp_path / "repo"
     (repo / "scripts").mkdir(parents=True)
@@ -38,6 +39,15 @@ def _run_launcher(
         (repo / f".env.{mode}").write_text(
             "POSTGRES_HOST=db.invalid\nPOSTGRES_PASSWORD=x\n", encoding="utf-8"
         )
+    artifacts = tmp_path / "python-artifacts"
+    artifacts.mkdir()
+    (artifacts / "provenance.json").write_text("{}")
+    go_artifacts = tmp_path / "go-artifacts"
+    go_artifacts.mkdir()
+    (go_artifacts / "provenance.json").write_text("{}")
+    audio_artifacts = tmp_path / "audio-python-artifacts"
+    audio_artifacts.mkdir()
+    (audio_artifacts / "provenance.json").write_text("{}")
     if complete_launch:
         shutil.copy2(_REPO_ROOT / "scripts/base-image-input-fingerprint.sh", repo / "scripts")
         for relative in (
@@ -125,7 +135,7 @@ def _run_launcher(
     environment = {
         # Never inherit deployment configuration or credentials into the copy.
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "HOME": str(tmp_path),
+        "HOME": os.environ["HOME"],
         "LC_ALL": "C",
         "ALLOWED_TAILNET_HOSTS": "10.23.4.5",
         "TEST_CALLS": str(calls),
@@ -136,6 +146,13 @@ def _run_launcher(
         "TEST_PROBE_FAILURE": probe_failure[1] if probe_failure else "",
         "TEST_CLUSTER_CONTEXT": cluster_context,
     }
+    if build_inputs:
+        environment.update(
+            BUTLERS_BASE_IMAGE="registry.example.test/butlers/base@sha256:" + "a" * 64,
+            BUTLERS_PYTHON_ARTIFACTS=str(artifacts),
+            BUTLERS_GO_ARTIFACTS=str(go_artifacts),
+            BUTLERS_AUDIO_PYTHON_ARTIFACTS=str(audio_artifacts),
+        )
     if grafana_anonymous is not None:
         environment["GF_AUTH_ANONYMOUS_ENABLED"] = grafana_anonymous
     if cluster_context == "not-installed":
@@ -159,6 +176,37 @@ def _run_launcher(
         check=False,
     )
     return result, calls.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("args,target", [((), "development"), (("--prod",), "production")])
+def test_app_builds_forward_closed_inputs_and_actual_target(tmp_path, args, target):
+    result, _ = _run_launcher(tmp_path, args=(*args, "--audio"), replicas="0", complete_launch=True)
+    assert result.returncode == 0, result.stderr
+    calls = [
+        json.loads(line)["argv"]
+        for line in (tmp_path / "docker-argv.jsonl").read_text().splitlines()
+    ]
+    builds = [argv for argv in calls if argv[:1] == ["build"]]
+    assert len(builds) == 2
+    for argv in builds:
+        assert argv[argv.index("--target") + 1] == target
+        assert "BUTLERS_BASE_IMAGE=registry.example.test/butlers/base@sha256:" + "a" * 64 in argv
+        assert "-f" not in argv  # no floating base rebuild during launch
+        assert "go-artifacts=" + str(tmp_path / "go-artifacts") in argv
+    assert "python-artifacts=" + str(tmp_path / "python-artifacts") in builds[0]
+    assert "EXTRAS=live-listener" not in builds[0]
+    assert "python-artifacts=" + str(tmp_path / "audio-python-artifacts") in builds[1]
+    assert "EXTRAS=live-listener" in builds[1]
+
+
+def test_missing_build_inputs_refused_before_lifecycle(tmp_path):
+    result, calls = _run_launcher(
+        tmp_path, args=(), replicas="0", complete_launch=True, build_inputs=False
+    )
+    assert result.returncode == 1
+    assert "BUTLERS_BASE_IMAGE" in result.stderr
+    assert "docker" not in calls
+    assert "sudo" not in calls
 
 
 @pytest.mark.parametrize(
@@ -350,16 +398,16 @@ def test_observability_command_and_offline_service_model(tmp_path, args, observa
         control = services["butlers-control-hotreload" if hotreload else "butlers-control"]
         control_capacity = int(control["environment"]["BUTLERS_MAX_GLOBAL_SESSIONS"])
         assert capacity == 4 and control_capacity == 1 and capacity + control_capacity == 5
-        assert "--exclude switchboard" in domains["entrypoint"][-1]
+        assert domains["entrypoint"][-2:] == ["--exclude", "switchboard"]
         assert domains["environment"]["SWITCHBOARD_MCP_URL"] == "http://butlers-control:41100/sse"
         assert services["dashboard-api"]["environment"]["SWITCHBOARD_MCP_URL"] == (
             "http://butlers-control:41100/sse"
         )
-        assert "KEY_ABSENT_STAGE" in control["entrypoint"][-1]
+        assert "KEY_ABSENT_STAGE" in control["entrypoint"]
     else:
         assert capacity == 5
         assert "butlers-control" not in services and "butlers-control-hotreload" not in services
-        assert "--exclude switchboard" not in domains["entrypoint"][-1]
+        assert "--exclude" not in domains["entrypoint"]
         assert services["dashboard-api"]["environment"]["SWITCHBOARD_MCP_URL"] == (
             "http://butlers-up:41100/sse"
         )

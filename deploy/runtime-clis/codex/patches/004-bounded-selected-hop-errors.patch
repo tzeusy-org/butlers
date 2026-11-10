@@ -1,0 +1,265 @@
+--- a/codex-rs/http-client/src/gateway.rs
++++ b/codex-rs/http-client/src/gateway.rs
+@@ -136,5 +136,10 @@
+-        let response = self
+-            .client
+-            .execute(request)
+-            .await
+-            .map_err(|error| crate::HttpError::Request(error.with_url(logical.clone())))?;
++        let response = self.client.execute(request).await.map_err(|error| {
++            let error = error.with_url(logical.clone());
++            // Connector deadlines also carry is_timeout; keep every selected hop
++            // connect failure out of native unbounded ConnectionFailed retries.
++            if error.is_connect() {
++                crate::HttpError::GatewayUnavailable(error)
++            } else {
++                crate::HttpError::Request(error)
++            }
++        })?;
+@@ -393,5 +398,8 @@
+-        assert!(error.is_connect());
+-        let crate::HttpError::Request(error) = error else {
+-            panic!("native connect category lost");
+-        };
+-        assert_eq!(error.url(), Some(&logical));
++        assert!(
++            !error.is_connect(),
++            "selected hop failures must not enter unbounded native network retries"
++        );
++        assert!(!error.is_timeout());
++        assert_eq!(error.to_string(), "selected egress gateway unavailable");
++        let mut error = error;
++        assert_eq!(error.url_mut().map(|url| url.clone()), Some(logical));
+@@ -402,0 +411,68 @@
++    }
++
++    #[tokio::test]
++    async fn selected_connect_timeout_uses_bounded_category_but_request_timeout_does_not() {
++        struct StalledDns;
++        impl reqwest::dns::Resolve for StalledDns {
++            fn resolve(&self, _: reqwest::dns::Name) -> reqwest::dns::Resolving {
++                Box::pin(std::future::pending())
++            }
++        }
++        let client = reqwest::Client::builder()
++            .no_proxy()
++            .connect_timeout(Duration::from_millis(20))
++            .dns_resolver(Arc::new(StalledDns))
++            .build()
++            .unwrap();
++        // Exercise the actual connector: reqwest wraps a DNS deadline in both predicates.
++        let raw = client
++            .get("http://egress-gateway:3110/control")
++            .send()
++            .await
++            .unwrap_err();
++        assert!(raw.is_connect());
++        assert!(raw.is_timeout());
++        let logical =
++            reqwest::Url::parse("https://origin.invalid/responses?token=private").unwrap();
++        let gateway = GatewayClient {
++            config: GatewayConfig { port: 3110 },
++            client,
++        };
++        let error = gateway
++            .execute(
++                reqwest::Request::new(http::Method::GET, logical.clone()),
++                None,
++            )
++            .await
++            .unwrap_err();
++        assert!(
++            !error.is_connect(),
++            "selected connector timeout must not enter unbounded ConnectionFailed retries"
++        );
++        assert_eq!(error.to_string(), "selected egress gateway unavailable");
++        let mut error = error;
++        assert_eq!(error.url_mut().cloned(), Some(logical));
++
++        // An accepted hop that does not send response headers is a request timeout.
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let address = listener.local_addr().unwrap();
++        let server = tokio::spawn(async move {
++            use tokio::io::AsyncReadExt;
++            let (mut socket, _) = listener.accept().await.unwrap();
++            let mut bytes = Vec::new();
++            socket.read_to_end(&mut bytes).await.unwrap();
++            assert!(!bytes.is_empty());
++        });
++        let mut request = reqwest::Request::new(
++            http::Method::GET,
++            reqwest::Url::parse("https://origin.invalid/request-timeout").unwrap(),
++        );
++        *request.timeout_mut() = Some(Duration::from_millis(30));
++        let error = synthetic_client(address)
++            .execute(request, None)
++            .await
++            .unwrap_err();
++        assert!(matches!(error, crate::HttpError::Request(_)));
++        assert!(error.is_timeout());
++        assert!(!error.is_connect());
++        server.await.unwrap();
+--- a/codex-rs/http-client/src/route_aware_client_pool.rs
++++ b/codex-rs/http-client/src/route_aware_client_pool.rs
+@@ -91,0 +92,3 @@
++    // A selected hop is a routing service, not an indefinitely recoverable client network.
++    #[error("selected egress gateway unavailable")]
++    GatewayUnavailable(#[source] reqwest::Error),
+@@ -145,0 +149 @@
++            | Self::GatewayUnavailable(_)
+@@ -157,0 +162 @@
++            | Self::GatewayUnavailable(_)
+@@ -188 +193 @@
+-            Self::Request(error) => error.url_mut(),
++            Self::Request(error) | Self::GatewayUnavailable(error) => error.url_mut(),
+@@ -198,0 +204 @@
++            Self::GatewayUnavailable(error) => Self::GatewayUnavailable(error.without_url()),
+--- a/codex-rs/http-client/src/transport.rs
++++ b/codex-rs/http-client/src/transport.rs
+@@ -140 +140,2 @@
+-            error @ (RouteAwareRequestError::UnsupportedRedirectScheme(_)
++            error @ (RouteAwareRequestError::GatewayUnavailable(_)
++            | RouteAwareRequestError::UnsupportedRedirectScheme(_)
+--- a/codex-rs/http-client/src/transport_tests.rs
++++ b/codex-rs/http-client/src/transport_tests.rs
+@@ -128,0 +129,132 @@
++
++#[tokio::test]
++async fn selected_gateway_connect_failures_use_bounded_stream_retry_category() {
++    let unavailable = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
++    let address = unavailable.local_addr().unwrap();
++    drop(unavailable);
++    for routed in [false, true] {
++        let error = test_reqwest_client()
++            .get(format!("http://{address}/responses?token=url-secret"))
++            .send()
++            .await
++            .unwrap_err();
++        let selected = crate::HttpError::GatewayUnavailable(error);
++        let mapped = if routed {
++            ReqwestTransport::map_route_aware_error(selected)
++        } else {
++            ReqwestTransport::map_error(selected)
++        };
++        let TransportError::Network(message) = mapped else {
++            panic!(
++                "selected gateway failure must not enter native unbounded ConnectionFailed retries"
++            );
++        };
++        assert_eq!(message, "selected egress gateway unavailable");
++        assert!(!message.contains("url-secret"));
++    }
++}
++
++#[tokio::test]
++async fn connector_and_request_timeouts_preserve_selected_and_off_retry_categories() {
++    struct StalledDns;
++    impl reqwest::dns::Resolve for StalledDns {
++        fn resolve(&self, _: reqwest::dns::Name) -> reqwest::dns::Resolving {
++            Box::pin(std::future::pending())
++        }
++    }
++    for routed in [false, true] {
++        for selected in [false, true] {
++            let error = reqwest::Client::builder()
++                .no_proxy()
++                .dns_resolver(Arc::new(StalledDns))
++                .connect_timeout(Duration::from_millis(20))
++                .build()
++                .unwrap()
++                .get("http://egress-gateway:3110/responses?token=url-secret")
++                .send()
++                .await
++                .unwrap_err();
++            assert!(error.is_connect() && error.is_timeout());
++            let error = if selected {
++                crate::HttpError::GatewayUnavailable(error)
++            } else {
++                crate::HttpError::Request(error)
++            };
++            let mapped = if routed {
++                ReqwestTransport::map_route_aware_error(error)
++            } else {
++                ReqwestTransport::map_error(error)
++            };
++            if selected {
++                assert!(
++                    matches!(mapped, TransportError::Network(ref message) if message == "selected egress gateway unavailable")
++                );
++            } else {
++                assert!(
++                    matches!(mapped, TransportError::Connection(_)),
++                    "off-mode connect timeout keeps upstream category"
++                );
++            }
++        }
++    }
++    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++    let address = listener.local_addr().unwrap();
++    let server = tokio::spawn(async move {
++        use tokio::io::AsyncReadExt;
++        let (mut socket, _) = listener.accept().await.unwrap();
++        let mut bytes = Vec::new();
++        socket.read_to_end(&mut bytes).await.unwrap();
++        assert!(!bytes.is_empty());
++    });
++    let error = test_reqwest_client()
++        .get(format!("http://{address}/request"))
++        .timeout(Duration::from_millis(30))
++        .send()
++        .await
++        .unwrap_err();
++    assert!(error.is_timeout() && !error.is_connect());
++    assert!(matches!(
++        ReqwestTransport::map_error(error.into()),
++        TransportError::Timeout
++    ));
++    server.await.unwrap();
++}
++
++#[tokio::test]
++async fn off_mode_tls_connect_error_retains_upstream_connection_category() {
++    for routed in [false, true] {
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let address = listener.local_addr().unwrap();
++        let server = tokio::spawn(async move {
++            use tokio::io::{AsyncReadExt, AsyncWriteExt};
++            let (mut socket, _) = listener.accept().await.unwrap();
++            let mut hello = [0u8; 1024];
++            assert!(socket.read(&mut hello).await.unwrap() > 0);
++            socket
++                .write_all(b"HTTP/1.1 400 Not TLS\r\nContent-Length: 0\r\n\r\n")
++                .await
++                .unwrap();
++        });
++        let error = reqwest::Client::builder()
++            .no_proxy()
++            .use_rustls_tls()
++            .build()
++            .unwrap()
++            .get(format!("https://{address}/responses?token=url-secret"))
++            .send()
++            .await
++            .unwrap_err();
++        assert!(error.is_connect());
++        assert!(!error.is_timeout());
++        let mapped = if routed {
++            ReqwestTransport::map_route_aware_error(error.into())
++        } else {
++            ReqwestTransport::map_error(error.into())
++        };
++        let TransportError::Connection(error) = mapped else {
++            panic!("off-mode TLS error must retain native connection category")
++        };
++        assert!(!error.to_string().contains("url-secret"));
++        server.await.unwrap();
++    }
++}
+--- a/codex-rs/backend-client/src/client.rs
++++ b/codex-rs/backend-client/src/client.rs
+@@ -119,0 +120 @@
++            | codex_http_client::HttpError::GatewayUnavailable(_)
+--- a/codex-rs/exec-server/src/client/connection_failure.rs
++++ b/codex-rs/exec-server/src/client/connection_failure.rs
+@@ -52,0 +53 @@
++                | RouteAwareRequestError::GatewayUnavailable(_)

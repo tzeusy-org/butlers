@@ -117,6 +117,21 @@ change).
   absolute public IPv4 answer set, rejects the entire set if any address is forbidden,
   then dials a validated numeric address without resolving again. Duplicate authority,
   ambiguous framing, forwarding/identity headers and unsupported upgrades refuse.
+- **WebSockets:** the distinct `/_butlers/egress/v1/wss/<host>/<port>/<path>?<query>`
+  route accepts only an HTTP/1.1 GET with a valid version13 WebSocket handshake,
+  no HTTP body, and the same exact hop Host and destination binding. It forwards
+  the original key and offered subprotocols through gateway-owned verified TLS.
+  Before exposing101 it validates origin Upgrade, Connection, Accept and selected
+  subprotocol. Every300..399 refuses exactly as on the HTTPS route. Compression
+  extensions are deliberately not negotiated: compliant clients use ordinary
+  frames. Both directions validate masking, RSV/opcodes, canonical lengths,
+  fragmentation, incremental text UTF-8 and close controls. Valid frame bytes,
+  including masks, ping/pong and close reasons, pass unchanged. This is a framed
+  WebSocket execution route, with no generic upgraded byte-stream route.
+  A valid non101, nonredirect provider response retains its status, application
+  headers (including retry metadata) and bounded streaming body through the same
+  HTTP response path. An authentication error or rate limit therefore remains
+  distinguishable from a gateway refusal and never becomes an upgrade.
 - **Response boundary:** h11 parses complete bounded origin headers before exposure.
   Every300..399 (including304 and same-origin redirects) returns a fixed empty403
   `X-Egress-Refusal: redirect_refused`, with no Location or redirect-target dial.
@@ -132,6 +147,12 @@ change).
   against the256MiB pod limit. Known Gmail25MiB/base64, voice20MiB and notification
   document50MiB limits fit; larger configurable/model/dependency transfers require
   separate compatibility closure. Busy gives503; DNS/dial failures502. No fallback.
+  WSS shares those admission, total-time, byte and cleanup limits, with a64MiB
+  message bound and16KiB payload reads rather than whole-frame buffering. Activity
+  in either direction keeps an otherwise quiet reader alive. A close is relayed
+  with at most10s for the opposite close; EOF, malformed frames, cancellation and
+  idle/total expiry stop and join both directions before releasing admission.
+  After101, failures close the connection and never inject an HTTP error into it.
 - **Privacy:** the gateway transiently receives approved request headers/query/body.
   It is a credential-bearing execution boundary when activated. Audit contains only
   validated origin/workload, closed verdict/reason, body byte counts and duration;
@@ -144,15 +165,118 @@ construction selects the request transport; incomplete configuration refuses.
 Internal/site-local clients remain separate. Off-mode preserves existing caller
 proxy behavior. No ambient proxy variable forwards into selected mode.
 
+The spawner forwards only this validated deployment pair into native CLI children,
+including QA override and healing paths. Declared credential variables or child
+override dictionaries cannot replace it. This does not forward other daemon
+environment values. Patched Codex, Gemini and OpenCode factories consume the pair
+at their terminal transport seams; their complete artifact/native coverage remains
+separately required.
+
+For unmodified native Claude, the adapter maps the supported
+`ANTHROPIC_BASE_URL` to the request prefix using the original HTTPS host, port and
+base path. It preserves API-key lookup, custom auth headers, model/resume arguments,
+strict MCP configuration and the native tool surface. A custom Host must match
+the logical API authority; the internal request uses the gateway Host and a
+controlled `Connection: close`. Selected children receive no conventional proxy
+environment override. Off-mode retains the existing native environment.
+This supported API-base setting is a partial transport interface. Native API-key
+inference and the fixture's actual bare-mode Bash/Edit/Read operations have owned
+synthetic evidence; the separate native `/api/hello` check is refused for its
+internal header shape. Whole native auth/MCP/other configured operation coverage
+and actual network policy enforcement remain unearned. No tool is removed or
+replaced to obtain the inference result.
+
+## Structural source coverage
+
+`make check-egress-profile-coverage` is a required local/default and hosted guard.
+It reads `scripts/egress-profile-coverage.json`, the workload profiles and production
+source without importing application modules or using DNS, credentials or a cluster.
+Its positive result is `SOURCE_ACCOUNTING_ONLY`, never runtime conformance.
+
+Discovery inventories non-docstring Python URL literals, URL/URI/HOST/ENDPOINT
+configuration names and `base_url` factory expressions under `src/butlers` and
+`roster`; URL-valued roster TOML; and URL-bearing noncomment deployment scalar
+lines, including Helm templates and Compose. Tests/testing helpers are outside this
+production boundary. Each discovered declaration needs an explicit disposition,
+real workload reachability and owning explanation. New, removed, duplicated or
+changed declarations refuse. Internal peers, site locations, browser callbacks,
+OAuth scope identifiers, help references and build inputs are distinguished from
+terminal external bases. Conservative candidates do not grant destinations.
+
+Dynamic Python declarations additionally name their actual owning function/class
+and bind its AST plus the exact configuration identity to `profile.dynamic.source`.
+The reviewed upstream inventory names 21 finite resolver families across Codex,
+Gemini, GoogleAuth, GenAI and OpenCode: provider/model configuration, separate
+auth/ADC/STS/AWS/impersonation endpoints, CodeAssist, upload-returned URLs, HTTP/WS,
+model-catalogue refresh and plugin/MCP configuration. Each names an actual source
+file/symbol, configuration keys, workload and resolution policy. CLI `dynamic`
+metadata grants no origin. Three additional local Claude records bind the supported
+`ANTHROPIC_BASE_URL` mapping at `src/butlers/egress/claude.py:child_environment`,
+`ClaudeCodeAdapter.invoke` auth/invocation and `build_config_file` MCP configuration.
+Their explicit unresolved native-auth/tools status grants no destination; opaque
+native tool/network behavior remains unproven rather than inferred from inference-base
+coverage.
+
+Vendor locator bytes were reviewed in the exact pinned public archives/replayed
+patches. CI binds archive/commit/tree identities and terminal patched-file hashes;
+it does not fetch or parse the full upstream source archive. Every tracked vendor,
+shared executor, toolchain and model/plugin build input is digest-bound so a change
+requires a fresh named resolver review. The complete OpenCode catalogue identity
+includes all 235 providers and 8939 models; their configured API values are dynamic,
+not a list of granted hosts. Build catalogue/logo downloads are build inputs, not
+runtime route declarations. Workload/module topology changes also invalidate the
+reviewed reachability map. Keep the canonical parser's rendered JSON synchronized.
+The Dashboard readiness canary is an actual internal outbound resolver, bound to
+`FleetReadiness._route_canary` and its roster-selected Switchboard target. Its
+metadata records the Dashboard workload and existing control peer; it grants no
+additional route.
+
+The dark session-host broker defaults in Helm and Compose are blocked
+`broker.invalid` placeholders, not admitted destinations. Its mTLS control listener,
+PKI/staging/credential-volume layout and off-by-default enablement do not grant
+broker egress. The Codex OAuth document parser's `https://api.openai.com/auth` string
+is an offline JWT claim-map key, not a network request or issuer verification.
+Session-host startup uses the same installed-only sealed Python dispatcher as
+other application roles; it never resolves or installs dependencies at startup.
+
+Inventory schema `butlers.egress-profile-coverage/v2` stores bundle and topology
+identities as explicit `{"sha256": "<digest>"}` records. These readable public
+content hashes remain exact source checks, distinct from credential assignments;
+unknown fields, wrong algorithms, types or digest bytes fail the same comparison.
+Secret scanning and its real-shaped credential detection remain unchanged.
+
+There is deliberately no automatic inventory refresh or classification command.
+
+The guard reports compatibility gaps separately from structural completeness:
+OneMap search/token and Nominatim defaults currently have no route, as do the named
+site-configured transcription/S3/Prometheus/SimpleFIN/deadman declarations without
+an adequate peer/destination. Several upstream defaults (for example CodeAssist,
+Vertex, STS/impersonation and catalogue refresh) are also absent from some workload
+profiles. Their required functionality remains incomplete and cannot be enabled
+merely by accepting this inventory. Arbitrary provider/model/plugin/credential-file
+results, held workloads and the absent analysis host remain denied. Review any
+necessary route change independently; do not widen profiles to make this guard pass.
+
+For a source/config change, review the discovered declaration and actual caller
+before editing its inventory row. For an upstream revision/patch, inspect the
+named resolver and any newly introduced destination families before updating its
+archive/locator/bundle pins. Preserve the documented denied/held behavior and run
+the owning checker/profile controls. A new resolver family requires an explicit
+family entry; a file hash alone is not an explanation. These finite discovery
+boundaries are not a universal parser for computed endpoints, dynamically loaded
+code or opaque binaries; actual supported callers and configured/native tool
+behavior still require their separate runtime/network evidence.
+
 ## Current limits
 
 - **Vendor/runtime compatibility is incomplete.** The Python request transport does
-  not prove the four pinned CLI/auth adapters, native WS, image dependency/plugin/model
+  not prove the four pinned CLI/auth adapters, native WS parity, image dependency/plugin/model
   closure, or actual per-workload CNI/principal/outage/cursor behavior. Those are required
   subsequent stages; no opaque TLS success or permanently held required caller replaces
   them. No real rollout/credential activation is authorized by source controls.
-- **The external host lists are a seed inventory.** Static/dynamic source coverage and
-  connector outage behavior still require their named runtime evidence.
+- **The external host lists retain known compatibility gaps.** Structural source
+  accounting above does not establish caller compatibility or connector outage behavior;
+  those still require their named runtime evidence.
 - **IPv4 only.** The gateway resolves and dials IPv4; a declared host with no IPv4
   address is unreachable.
 - **Internal peers are reachability only.** RFC 0038 S7 also requires both endpoints to
@@ -164,7 +288,7 @@ proxy behavior. No ambient proxy variable forwards into selected mode.
 
 Not authorized by this source change. Each step needs its own authorization:
 
-1. Prove connector outage behaviour and land the static base-URL coverage check.
+1. Prove connector outage behaviour and preserve the structural base-URL coverage guard.
 2. Run per-workload conformance in the disposable `butlers-rehearsal` namespace: each
    workload reaches a declared service, and is refused an undeclared public host,
    private/link-local/metadata destinations, another workload's gateway port and an
@@ -217,3 +341,12 @@ actual drainage, stopped admission or an executed rollout/rollback.
 Under profiles a held workload cannot be enabled (the render fails); disabled optional
 workloads render no pods, and `suspend` scales rendered workloads down. Any pod no profile
 names keeps default-deny. None is silently admitted.
+
+The source inventory also pins the compiler, backend and runtime artifact manifests.
+These build inputs account for immutable public dependencies; they grant no runtime
+destination. OpenCode's installed default-plugin seed reads the complete local graph
+only for a fresh, selected request for the exact default plugin, and settles that
+copy before releasing the install lock. Custom plugins and off-mode retain their
+existing resolution paths and profile restrictions. Updating the bundle identity
+requires checking the named upstream resolver files as well as the changed build
+inputs. Source accounting does not establish native operation, image or CNI parity.

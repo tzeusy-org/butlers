@@ -455,8 +455,9 @@ def _migrations(*values: str, sets: tuple[str, ...] = ()) -> str:
     return init["args"][0]
 
 
-_UV_IN_IMAGE = r"""#!/bin/sh
-echo "uv $*" >> "$CALL_LOG"
+_INSTALLED = "/usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py"
+_ENTRYPOINT_IN_IMAGE = r"""#!/bin/sh
+echo "python-entrypoint $*" >> "$CALL_LOG"
 case "$*" in
   *"db migrate"*) exit "${MIGRATE_RC:-0}" ;;
   *"db apply-grants"*) exit "${APPLY_RC:-0}" ;;
@@ -491,20 +492,22 @@ _NO_GROUP = "Commands:\n  db        Database commands.\n  up        Start butler
 def test_dev_migrations_reconcile_last_and_skip_only_an_image_without_it(
     tmp_path: Path, env: dict[str, str], reconciled: bool, status: int, stderr: str
 ) -> None:
-    """The rendered initContainer command, run with a stubbed image `uv`."""
+    """Keep the actual grant/reconciliation chain, projecting only its fixed launcher."""
     args = _migrations("values.dev.yaml")
     assert args.startswith(
-        "uv run --frozen --no-dev butlers db prepare-chronicler-memory --dir /app/roster"
-        " && uv run --frozen --no-dev butlers db migrate --dir /app/roster && "
+        f"{_INSTALLED} butlers db prepare-chronicler-memory --dir /app/roster"
+        f" && {_INSTALLED} butlers db migrate --dir /app/roster && "
     )
+    assert "uv run" not in args
+    assert args.count(_INSTALLED) == 6
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (bin_dir / "uv").write_text(_UV_IN_IMAGE, encoding="utf-8")
-    (bin_dir / "uv").chmod(0o755)
+    (bin_dir / "python-entrypoint").write_text(_ENTRYPOINT_IN_IMAGE, encoding="utf-8")
+    (bin_dir / "python-entrypoint").chmod(0o755)
     log = tmp_path / "calls.log"
     log.write_text("", encoding="utf-8")
     result = subprocess.run(
-        ["/bin/sh", "-c", args],
+        ["/bin/sh", "-c", args.replace(_INSTALLED, "python-entrypoint")],
         capture_output=True, text=True, timeout=60,
         env={
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -516,7 +519,7 @@ def test_dev_migrations_reconcile_last_and_skip_only_an_image_without_it(
     )  # fmt: skip
     calls = log.read_text(encoding="utf-8").splitlines()
     assert result.returncode == status, result.stderr
-    reconcile = "uv run --frozen --no-dev butlers public-mcp reconcile --database butlers"
+    reconcile = "python-entrypoint butlers public-mcp reconcile --database butlers"
     assert (calls[-1] == reconcile) is reconciled
     assert stderr in result.stderr
     if status:
@@ -529,11 +532,12 @@ def test_dev_migrations_reconcile_last_and_skip_only_an_image_without_it(
 def test_other_environments_do_not_reconcile(values: tuple[str, ...]) -> None:
     args = _migrations(*values)
     assert "public-mcp" not in args
+    assert "uv run" not in args
     # No reconcile, and the grant step is only the non-fatal dry run (never `--execute`).
     assert "--execute" not in args
     assert args.rstrip().endswith(
-        "&& uv run --frozen --no-dev butlers db migrate --dir /app/roster"
-        " && (uv run --frozen --no-dev butlers db apply-grants --database butlers || true)"
+        f"&& {_INSTALLED} butlers db migrate --dir /app/roster"
+        f" && ({_INSTALLED} butlers db apply-grants --database butlers || true)"
     )
 
 
@@ -542,12 +546,12 @@ def _run_chain(
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True)
-    (bin_dir / "uv").write_text(_UV_IN_IMAGE, encoding="utf-8")
-    (bin_dir / "uv").chmod(0o755)
+    (bin_dir / "python-entrypoint").write_text(_ENTRYPOINT_IN_IMAGE, encoding="utf-8")
+    (bin_dir / "python-entrypoint").chmod(0o755)
     log = tmp_path / "calls.log"
     log.write_text("", encoding="utf-8")
     result = subprocess.run(
-        ["/bin/sh", "-c", args],
+        ["/bin/sh", "-c", args.replace(_INSTALLED, "python-entrypoint")],
         capture_output=True, text=True, timeout=60,
         env={
             "PATH": f"{bin_dir}:{os.environ['PATH']}",

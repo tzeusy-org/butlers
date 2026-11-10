@@ -1,0 +1,338 @@
+--- a/packages/llm/src/route/executor.ts
++++ b/packages/llm/src/route/executor.ts
+@@ -3,7 +3 @@
+-import {
+-  Headers,
+-  HttpClient,
+-  HttpClientError,
+-  HttpClientRequest,
+-  HttpClientResponse,
+-} from "effect/unstable/http"
++import { Headers, HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
+@@ -166 +160,4 @@
+-const secretValues = (request: HttpClientRequest.HttpClientRequest) => {
++const secretValues = (
++  request: HttpClientRequest.HttpClientRequest,
++  redactedNames: ReadonlyArray<string | RegExp> = [],
++) => {
+@@ -175 +172,9 @@
+-    if (!isSensitiveHeaderName(name)) return
++    if (
++      !isSensitiveHeaderName(name) &&
++      !redactedNames.some((pattern) =>
++        typeof pattern === "string"
++          ? pattern.toLowerCase() === name.toLowerCase()
++          : new RegExp(pattern.source, pattern.flags).test(name),
++      )
++    )
++      return
+@@ -191,2 +196,6 @@
+-const redactBody = (body: string, request: HttpClientRequest.HttpClientRequest) =>
+-  Array.from(secretValues(request)).reduce(
++const redactBody = (
++  body: string,
++  request: HttpClientRequest.HttpClientRequest,
++  redactedNames: ReadonlyArray<string | RegExp> = [],
++) =>
++  Array.from(secretValues(request, redactedNames)).reduce(
+@@ -195,0 +205,34 @@
++
++/** Reuse HTTP redaction before a second authenticated transport constructs typed diagnostics. */
++export const transportFailureDetails = (
++  input: { readonly url: string; readonly headers: Headers.Headers },
++  response: {
++    readonly status: number
++    readonly headers: Record<string, string>
++    readonly body: string
++    readonly truncated: boolean
++  },
++  redactedNames: ReadonlyArray<string | RegExp>,
++) => {
++  const request = HttpClientRequest.get(input.url).pipe(HttpClientRequest.setHeaders(input.headers))
++  const redact = (value: string) => redactBody(value, request, redactedNames)
++  const headers = (value: Headers.Headers) =>
++    Object.fromEntries(
++      Object.entries(redactHeaders(value, redactedNames)).map(([name, value]) => [name, redact(value)]),
++    )
++  const url = redact(redactUrl(input.url))
++  return {
++    url,
++    http: new HttpContext({
++      request: new HttpRequestDetails({ method: "GET", url, headers: headers(input.headers) }),
++      response: new HttpResponseDetails({
++        status: response.status,
++        headers: headers(Headers.fromInput(response.headers)),
++      }),
++      // The connector has already enforced its 64KiB/10s body bound. Preserve
++      // that truncation signal while sanitizing, rather than buffering again.
++      body: redact(response.body),
++      bodyTruncated: response.truncated,
++    }),
++  }
++}
+--- a/packages/llm/src/route/transport/websocket.ts
++++ b/packages/llm/src/route/transport/websocket.ts
+@@ -5,0 +6 @@
++import { transportFailureDetails } from "../executor"
+@@ -53 +54 @@
+-const waitOpen = (ws: globalThis.WebSocket, input: WebSocketRequest) => {
++const waitOpen = (ws: globalThis.WebSocket, input: WebSocketRequest, redactedNames: ReadonlyArray<string | RegExp>) => {
+@@ -82,12 +83,13 @@
+-      resume(Effect.fail(new LLMError({
+-        module: "WebSocketExecutor", method: "open",
+-        reason: new TransportReason({
+-          message: failure?.message ?? `Failed to open WebSocket: ${eventMessage(event)}`,
+-          url: input.url, kind: "open",
+-          ...(failure && { http: {
+-            request: { method: "GET", url: input.url, headers: input.headers },
+-            response: { status: failure.status, headers: failure.headers },
+-            body: failure.body, bodyTruncated: failure.truncated,
+-          } }),
+-        }),
+-      })))
++      resume(
++        Effect.fail(
++          new LLMError({
++            module: "WebSocketExecutor",
++            method: "open",
++            reason: new TransportReason({
++              message: failure?.message ?? `Failed to open WebSocket: ${eventMessage(event)}`,
++              kind: "open",
++              ...(failure ? transportFailureDetails(input, failure, redactedNames) : { url: input.url }),
++            }),
++          }),
++        ),
++      )
+@@ -157 +159,2 @@
+-    yield* waitOpen(ws, input)
++    const redactedNames = yield* Headers.CurrentRedactedNames
++    yield* waitOpen(ws, input, redactedNames)
+--- /dev/null
++++ b/packages/llm/test/gateway-websocket-errors.test.ts
+@@ -0,0 +1,226 @@
++import { afterEach, expect, test } from "bun:test"
++import { createServer } from "node:net"
++import { readFileSync, readlinkSync } from "node:fs"
++import { Effect, Stream, Option } from "effect"
++import { Headers, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
++import * as RequestExecutor from "../src/route/executor"
++import { Auth } from "../src/route/auth"
++import { LLMError } from "../src/schema/errors"
++import { createGatewayWebSocket } from "../src/route/gateway-websocket"
++import { fromWebSocket, open } from "../src/route/transport/websocket"
++import { WebSocketServer } from "butlers-egress-ws"
++
++test("fixture has a separate network namespace without an external route", () => {
++  expect(readlinkSync("/proc/self/ns/net")).not.toBe(process.env.HOST_NETWORK_NAMESPACE)
++  const routes = readFileSync("/proc/net/route", "utf8").trim().split("\n").slice(1)
++  expect(routes.every((line) => line.split(/\s+/)[0] === "lo")).toBe(true)
++})
++const cleanup: Array<() => Promise<void>> = []
++afterEach(async () => {
++  delete process.env.BUTLERS_EGRESS_MODE
++  delete process.env.BUTLERS_EGRESS_GATEWAY
++  for (const close of cleanup.splice(0).reverse()) await close()
++})
++const lookup = (host: string, options: any, callback: any) => {
++  if (host !== "egress-gateway") return callback(new Error("Fixture refuses every other host"))
++  if (options?.all) callback(null, [{ address: "127.0.0.1", family: 4 }])
++  else callback(null, "127.0.0.1", 4)
++}
++async function server() {
++  const sockets = new Set<import("node:net").Socket>()
++  const http = createServer((socket) => {
++    sockets.add(socket)
++    socket.once("close", () => sockets.delete(socket))
++    let pending = Buffer.alloc(0)
++    const read = (chunk: Buffer) => {
++      pending = Buffer.concat([pending, chunk])
++      const end = pending.indexOf("\r\n\r\n")
++      if (end < 0) return
++      socket.off("data", read)
++      const lines = pending.subarray(0, end).toString().split("\r\n")
++      const [method, url] = lines.shift()!.split(" ")
++      const headers = Object.fromEntries(
++        lines.map((line) => {
++          const colon = line.indexOf(":")
++          return [line.slice(0, colon).toLowerCase(), line.slice(colon + 1).trim()]
++        }),
++      )
++      http.emit("upgrade", { method, url, headers, socket }, socket, pending.subarray(end + 4))
++    }
++    socket.on("data", read)
++  })
++  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve))
++  const port = (http.address() as { port: number }).port
++  cleanup.push(async () => {
++    for (const socket of sockets) socket.destroy()
++    await new Promise<void>((resolve) => http.close(() => resolve()))
++  })
++  return { http, port }
++}
++const markers = {
++  bearer: "synthetic-bearer-secret-20261109",
++  api: "synthetic-" + "api-secret-" + "20261109",
++  query: "synthetic-query-secret-20261109",
++  body: "synthetic-body-secret-20261109",
++  response: "synthetic-response-secret-20261109",
++  custom: "synthetic-custom-secret-20261109",
++}
++async function failure(status: number, body: string, extra: Record<string, string> = {}) {
++  const { http, port } = await server()
++  process.env.BUTLERS_EGRESS_MODE = "request-v1"
++  process.env.BUTLERS_EGRESS_GATEWAY = `http://egress-gateway:${port}`
++  const input = {
++    url: `wss://api.openai.com/v1/responses?api_key=${markers.query}&model=retained-model`,
++    headers: await Effect.runPromise(
++      Auth.toEffect(Auth.bearer(markers.bearer).andThen(Auth.header("x-api-key", markers.api)))({
++        request: {} as any,
++        method: "GET",
++        url: "https://api.openai.com/v1/responses",
++        body: "",
++        headers: Headers.fromInput({ "x-safe": "visible", "x-private-custom": markers.custom }),
++      }),
++    ),
++  }
++  let requests = 0
++  http.on("upgrade", (request, socket) => {
++    requests++
++    expect(request.headers.authorization).toBe(`Bearer ${markers.bearer}`)
++    expect(request.headers["x-api-key"]).toBe(markers.api)
++    const headers = {
++      "Content-Length": String(Buffer.byteLength(body)),
++      "Retry-After": "3",
++      "X-Request-Id": "visible-id",
++      "X-API-Key": markers.response,
++      "X-Echo": markers.bearer,
++      ...extra,
++    }
++    socket.end(
++      `HTTP/1.1 ${status} Synthetic\r\n${Object.entries(headers)
++        .map(([k, v]) => `${k}: ${v}`)
++        .join("\r\n")}\r\nConnection: close\r\n\r\n${body}`,
++    )
++  })
++  const socket = createGatewayWebSocket({ lookup })(input.url, input.headers, 500)!
++  const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()))
++  const error = await Effect.runPromise(
++    fromWebSocket(socket as any, input).pipe(
++      Effect.flip,
++      Effect.provideService(Headers.CurrentRedactedNames, [
++        "authorization",
++        "cookie",
++        "set-cookie",
++        "x-private-custom",
++      ]),
++    ),
++  )
++  await closed
++  expect(error).toBeInstanceOf(LLMError)
++  expect(error.reason._tag).toBe("Transport")
++  expect(error.cause).toBe(error.reason)
++  expect(error.retryable).toBe(false)
++  expect(requests).toBe(1)
++  return error
++}
++test("actual Effect WS failure redacts auth/query/structured fields/echoes and retains benign diagnostics", async () => {
++  const error = await failure(
++    429,
++    JSON.stringify({
++      message: "visible-body",
++      access_token: markers.body,
++      echoed: `${markers.bearer} ${markers.api} ${markers.query} ${markers.custom}`,
++    }),
++  )
++  const serialized = JSON.stringify({ error, cause: error.cause, message: error.message })
++  for (const marker of Object.values(markers)) expect(serialized.includes(marker)).toBe(false)
++  const reason = error.reason as any
++  expect(reason.kind).toBe("open")
++  expect(reason.message).toBe("WebSocket handshake refused (429)")
++  expect(reason.url).toContain("wss://api.openai.com/v1/responses?")
++  expect(new URL(reason.url).searchParams.get("model")).toBe("retained-model")
++  expect(new URL(reason.url).searchParams.get("api_key")).toBe("<redacted>")
++  expect(reason.http.request.headers["x-safe"]).toBe("visible")
++  expect(reason.http.response.status).toBe(429)
++  expect(reason.http.response.headers["retry-after"]).toBe("3")
++  expect(reason.http.response.headers["x-request-id"]).toBe("visible-id")
++  expect(reason.http.body).toContain("visible-body")
++  expect(reason.http.body).toContain("<redacted>")
++  expect(reason.http.bodyTruncated).toBe(false)
++})
++test("actual typed failure keeps bounded body and truncation after sanitizing", async () => {
++  const error = await failure(401, `${markers.bearer} visible-prefix ` + "x".repeat(70000))
++  const reason = error.reason as any
++  expect(JSON.stringify(error).includes(markers.bearer)).toBe(false)
++  expect(reason.http.response.status).toBe(401)
++  expect(reason.http.body).toContain("visible-prefix")
++  expect(Buffer.byteLength(reason.http.body)).toBeLessThanOrEqual(65536)
++  expect(reason.http.bodyTruncated).toBe(true)
++})
++for (const status of [302, 307])
++  test(`typed selected redirect ${status} suppresses entity and location`, async () => {
++    const error = await failure(status, markers.response, { Location: "https://foreign.invalid/" + markers.query })
++    const reason = error.reason as any
++    expect(reason.http.response.status).toBe(403)
++    expect(reason.http.response.headers).toEqual({})
++    expect(reason.http.body).toBe("Selected egress request refused")
++    expect(JSON.stringify(error).includes(markers.query)).toBe(false)
++    expect(JSON.stringify(error).includes("foreign.invalid")).toBe(false)
++  })
++test("actual off-mode Effect constructor retains native socket and frame behavior", async () => {
++  const native = globalThis.WebSocket
++  const { http, port } = await server()
++  const wss = new WebSocketServer({ server: http })
++  cleanup.push(async () => {
++    for (const client of wss.clients) client.terminate()
++    await new Promise<void>((resolve) => wss.close(() => resolve()))
++  })
++  wss.on("connection", (socket) => socket.on("message", (value) => socket.send(value.toString())))
++  const connection = await Effect.runPromise(open({ url: `ws://127.0.0.1:${port}/native`, headers: Headers.empty }))
++  try {
++    await Effect.runPromise(connection.sendText("retained-native-frame"))
++    const received = await Effect.runPromise(Stream.runHead(connection.messages))
++    expect(Option.getOrThrow(received)).toBe("retained-native-frame")
++    expect(globalThis.WebSocket).toBe(native)
++  } finally {
++    await Effect.runPromise(connection.close)
++  }
++})
++
++test("existing HTTP executor retains named and echoed-secret redaction with benign companions", async () => {
++  const request = HttpClientRequest.get(`https://provider.invalid/v1/retained?api_key=${markers.query}&debug=1`).pipe(
++    HttpClientRequest.setHeaders({ authorization: `Bearer ${markers.bearer}`, "x-safe": "visible" }),
++  )
++  const error = await Effect.runPromise(
++    Effect.gen(function* () {
++      const executor = yield* RequestExecutor.Service
++      return yield* executor.execute(request).pipe(Effect.flip)
++    }).pipe(
++      Effect.provide(RequestExecutor.layer),
++      Effect.provideService(
++        HttpClient.HttpClient,
++        HttpClient.make((input) =>
++          Effect.succeed(
++            HttpClientResponse.fromWeb(
++              input,
++              new Response(
++                JSON.stringify({ message: "retained-http-body", access_token: markers.body, echo: markers.bearer }),
++                {
++                  status: 401,
++                  headers: { "Retry-After": "4", "X-API-Key": markers.response, "X-Safe": "retained-header" },
++                },
++              ),
++            ),
++          ),
++        ),
++      ),
++    ),
++  )
++  const serialized = JSON.stringify({ error, cause: error.cause, message: error.message })
++  for (const marker of [markers.bearer, markers.query, markers.body, markers.response])
++    expect(serialized.includes(marker)).toBe(false)
++  const reason = error.reason as any
++  expect(reason.http.response.status).toBe(401)
++  expect(reason.http.response.headers["retry-after"]).toBe("4")
++  expect(reason.http.response.headers["x-safe"]).toBe("retained-header")
++  expect(reason.http.body).toContain("retained-http-body")
++  expect(new URL(reason.http.request.url).searchParams.get("debug")).toBe("1")
++})

@@ -1,0 +1,717 @@
+--- /dev/null
++++ b/codex-rs/http-client/src/gateway.rs
+@@ -0,0 +1,518 @@
++//! Explicit selected Butlers request-v1 executor. Logical URLs remain auth and policy identities.
++use reqwest::cookie::CookieStore;
++use std::io;
++use std::net::IpAddr;
++use std::sync::Arc;
++use std::time::Duration;
++
++use http::HeaderMap;
++use reqwest::ResponseBuilderExt;
++
++#[derive(Clone, Debug)]
++pub struct GatewayConfig {
++    pub port: u16,
++}
++
++fn invalid() -> io::Error {
++    io::Error::new(
++        io::ErrorKind::InvalidInput,
++        "invalid selected egress configuration or origin",
++    )
++}
++
++impl GatewayConfig {
++    pub fn from_environment() -> io::Result<Option<Self>> {
++        let mode = std::env::var_os("BUTLERS_EGRESS_MODE");
++        let address = std::env::var_os("BUTLERS_EGRESS_GATEWAY");
++        Self::parse(
++            mode.as_ref().and_then(|v| v.to_str()),
++            address.as_ref().and_then(|v| v.to_str()),
++            mode.is_none() && address.is_none(),
++        )
++    }
++
++    fn parse(mode: Option<&str>, address: Option<&str>, absent: bool) -> io::Result<Option<Self>> {
++        if absent {
++            return Ok(None);
++        }
++        let address = address.ok_or_else(invalid)?;
++        let port = address
++            .strip_prefix("http://egress-gateway:")
++            .ok_or_else(invalid)?;
++        if mode != Some("request-v1")
++            || port.starts_with('0')
++            || !port.bytes().all(|v| v.is_ascii_digit())
++        {
++            return Err(invalid());
++        }
++        let port: u16 = port.parse().map_err(|_| invalid())?;
++        if port < 1024 {
++            return Err(invalid());
++        }
++        Ok(Some(Self { port }))
++    }
++
++    pub fn wire_url(&self, logical: &reqwest::Url, websocket: bool) -> io::Result<reqwest::Url> {
++        let host = logical.host_str().ok_or_else(invalid)?;
++        if logical.scheme() != if websocket { "wss" } else { "https" }
++            || !logical.username().is_empty()
++            || logical.password().is_some()
++            || logical.fragment().is_some()
++            || host.parse::<IpAddr>().is_ok()
++            || host.starts_with('[')
++            || !host.is_ascii()
++            || host.ends_with('.')
++            || host.contains('\\')
++        {
++            return Err(invalid());
++        }
++        let port = logical.port_or_known_default().ok_or_else(invalid)?;
++        let query = logical.query().map(|v| format!("?{v}")).unwrap_or_default();
++        let kind = if websocket { "wss" } else { "https" };
++        let scheme = if websocket { "ws" } else { "http" };
++        reqwest::Url::parse(&format!(
++            "{scheme}://egress-gateway:{}/_butlers/egress/v1/{kind}/{host}/{port}{}{query}",
++            self.port,
++            logical.path()
++        ))
++        .map_err(|_| invalid())
++    }
++}
++
++#[derive(Clone)]
++pub(crate) struct GatewayClient {
++    config: GatewayConfig,
++    client: reqwest::Client,
++}
++
++impl GatewayClient {
++    pub(crate) fn from_environment(
++        connect_timeout: Option<Duration>,
++    ) -> Result<Option<Self>, String> {
++        GatewayConfig::from_environment()
++            .map_err(|e| e.to_string())?
++            .map(|config| {
++                let client = reqwest::Client::builder()
++                    .no_proxy()
++                    .http1_only()
++                    .redirect(reqwest::redirect::Policy::none())
++                    .connect_timeout(
++                        connect_timeout
++                            .unwrap_or(Duration::from_secs(10))
++                            .min(Duration::from_secs(10)),
++                    )
++                    .timeout(Duration::from_secs(3600))
++                    .build()
++                    .map_err(|_| "selected egress client construction failed".to_string())?;
++                Ok(Self { config, client })
++            })
++            .transpose()
++    }
++
++    pub(crate) async fn execute(
++        &self,
++        mut request: reqwest::Request,
++        cookies: Option<&Arc<dyn CookieStore>>,
++    ) -> Result<reqwest::Response, crate::HttpError> {
++        let logical = request.url().clone();
++        let wire = self
++            .config
++            .wire_url(&logical, false)
++            .map_err(|e| crate::HttpError::Build(e.to_string()))?;
++        validate_headers(request.headers(), &logical, false)?;
++        if !request.headers().contains_key(http::header::COOKIE) {
++            if let Some(value) = cookies.and_then(|store| store.cookies(&logical)) {
++                request.headers_mut().insert(http::header::COOKIE, value);
++            }
++        }
++        request.headers_mut().remove(http::header::HOST);
++        request.headers_mut().remove(http::header::CONNECTION);
++        request.headers_mut().insert(
++            http::header::CONNECTION,
++            http::HeaderValue::from_static("close"),
++        );
++        *request.version_mut() = http::Version::HTTP_11;
++        *request.url_mut() = wire;
++        let response = self
++            .client
++            .execute(request)
++            .await
++            .map_err(|error| crate::HttpError::Request(error.with_url(logical.clone())))?;
++        if response.status().is_redirection() {
++            return Err(crate::HttpError::Build(
++                "selected egress redirect refused".to_string(),
++            ));
++        }
++        if let Some(store) = cookies {
++            store.set_cookies(
++                &mut response.headers().get_all(http::header::SET_COOKIE).iter(),
++                &logical,
++            );
++        }
++        // Public reqwest conversion retains the streaming body and its cancellation.
++        // Its response URL extension restores the logical identity without buffering.
++        let mut response: http::Response<reqwest::Body> = response.into();
++        let identity = http::Response::builder()
++            .url(logical)
++            .body(())
++            .expect("valid response identity");
++        response
++            .extensions_mut()
++            .extend(identity.into_parts().0.extensions);
++        Ok(response.into())
++    }
++}
++
++pub fn validate_headers(
++    headers: &HeaderMap,
++    logical: &reqwest::Url,
++    websocket: bool,
++) -> Result<(), crate::HttpError> {
++    if headers.get_all(http::header::HOST).iter().count() > 1 {
++        return Err(crate::HttpError::Build(
++            "selected egress duplicate authority".to_string(),
++        ));
++    }
++    if let Some(value) = headers.get(http::header::HOST) {
++        let host = logical.host_str().unwrap_or_default();
++        let authority = format!("{host}:{}", logical.port_or_known_default().unwrap_or(443));
++        if value.as_bytes() != authority.as_bytes()
++            && !(logical.port_or_known_default() == Some(443)
++                && value.as_bytes() == host.as_bytes())
++        {
++            return Err(crate::HttpError::Build(
++                "selected egress origin authority mismatch".to_string(),
++            ));
++        }
++    }
++    for name in headers.keys() {
++        let name = name.as_str();
++        if name == "forwarded"
++            || name.starts_with("x-forwarded-")
++            || name.starts_with("x-egress-")
++            || name.starts_with("x-butlers-")
++            || matches!(
++                name,
++                "proxy-authorization" | "proxy-connection" | "trailer" | "expect"
++            )
++            || (name == "upgrade" && !websocket)
++        {
++            return Err(crate::HttpError::Build(
++                "selected egress header refused".to_string(),
++            ));
++        }
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn configuration_and_logical_wire_mapping_are_closed() {
++        assert!(GatewayConfig::parse(None, None, true).unwrap().is_none());
++        for (mode, address) in [
++            (None, Some("http://egress-gateway:3110")),
++            (Some("request-v1"), None),
++            (Some("request-v1"), Some("http://localhost:3110")),
++            (Some("request-v1"), Some("http://egress-gateway:03110")),
++        ] {
++            assert!(GatewayConfig::parse(mode, address, false).is_err());
++        }
++        let config = GatewayConfig::parse(
++            Some("request-v1"),
++            Some("http://egress-gateway:3110"),
++            false,
++        )
++        .unwrap()
++        .unwrap();
++        for logical in [
++            "https://127.0.0.1/x",
++            "https://[::1]/x",
++            "http://api.openai.com/x",
++            "https://user@api.openai.com/x",
++            "https://api.openai.com/x#fragment",
++        ] {
++            assert!(
++                config
++                    .wire_url(&reqwest::Url::parse(logical).unwrap(), false)
++                    .is_err()
++            );
++        }
++        let logical = reqwest::Url::parse("https://api.openai.com/v1/responses?raw=a%2Fb").unwrap();
++        assert_eq!(
++            config.wire_url(&logical, false).unwrap().as_str(),
++            "http://egress-gateway:3110/_butlers/egress/v1/https/api.openai.com/443/v1/responses?raw=a%2Fb"
++        );
++        assert_eq!(
++            logical.as_str(),
++            "https://api.openai.com/v1/responses?raw=a%2Fb"
++        );
++    }
++    fn synthetic_client(address: std::net::SocketAddr) -> GatewayClient {
++        let client = reqwest::Client::builder()
++            .no_proxy()
++            .http1_only()
++            .redirect(reqwest::redirect::Policy::none())
++            .resolve("egress-gateway", address)
++            .resolve("origin.invalid", address)
++            .build()
++            .unwrap();
++        GatewayClient {
++            config: GatewayConfig {
++                port: address.port(),
++            },
++            client,
++        }
++    }
++
++    #[tokio::test]
++    async fn native_request_executor_preserves_logical_stream_and_cookie_identity() {
++        use tokio::io::{AsyncReadExt, AsyncWriteExt};
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let address = listener.local_addr().unwrap();
++        let (continue_tx, continue_rx) = tokio::sync::oneshot::channel();
++        let server = tokio::spawn(async move {
++            let (mut socket, _) = listener.accept().await.unwrap();
++            let mut head = Vec::new();
++            while !head.ends_with(b"\r\n\r\n") {
++                head.push(socket.read_u8().await.unwrap());
++            }
++            let head = String::from_utf8(head).unwrap();
++            assert!(head.starts_with(&format!(
++                "POST /_butlers/egress/v1/https/origin.invalid/{}/responses?raw=a%2Fb HTTP/1.1",
++                address.port()
++            )));
++            assert!(head.contains(&format!("host: egress-gateway:{}", address.port())));
++            assert!(head.contains("authorization: Bearer synthetic-sentinel"));
++            assert!(head.contains("cookie: fixture=before"));
++            let mut body = [0; 7];
++            socket.read_exact(&mut body).await.unwrap();
++            assert_eq!(&body, b"request");
++            socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Type: text/event-stream\r\nRetry-After: 7\r\nSet-Cookie: fixture=after; Path=/; Secure\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nfirst\r\n").await.unwrap();
++            continue_rx.await.unwrap();
++            socket.write_all(b"6\r\nsecond\r\n0\r\n\r\n").await.unwrap();
++        });
++        let logical = reqwest::Url::parse(&format!(
++            "https://origin.invalid:{}/responses?raw=a%2Fb",
++            address.port()
++        ))
++        .unwrap();
++        let jar: Arc<dyn CookieStore> = Arc::new(reqwest::cookie::Jar::default());
++        let cookie = http::HeaderValue::from_static("fixture=before; Path=/; Secure");
++        jar.set_cookies(&mut std::iter::once(&cookie), &logical);
++        let mut request = reqwest::Request::new(http::Method::POST, logical.clone());
++        request.headers_mut().insert(
++            "authorization",
++            http::HeaderValue::from_static("Bearer synthetic-sentinel"),
++        );
++        *request.body_mut() = Some(reqwest::Body::from("request"));
++        let mut response = synthetic_client(address)
++            .execute(request, Some(&jar))
++            .await
++            .unwrap();
++        assert_eq!(response.url(), &logical);
++        assert_eq!(response.status(), 429);
++        assert_eq!(response.headers()["retry-after"], "7");
++        assert_eq!(response.chunk().await.unwrap().unwrap().as_ref(), b"first");
++        continue_tx.send(()).unwrap();
++        assert_eq!(response.bytes().await.unwrap().as_ref(), b"second");
++        assert_eq!(jar.cookies(&logical).unwrap(), "fixture=after");
++        server.await.unwrap();
++    }
++
++    #[tokio::test]
++    async fn native_request_executor_refuses_hop_redirect_without_following_it() {
++        use tokio::io::{AsyncReadExt, AsyncWriteExt};
++        for status in [300, 302, 304, 399] {
++            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++            let address = listener.local_addr().unwrap();
++            let server = tokio::spawn(async move {
++                let (mut socket, _) = listener.accept().await.unwrap();
++                let mut head = Vec::new();
++                while !head.ends_with(b"\r\n\r\n") {
++                    head.push(socket.read_u8().await.unwrap());
++                }
++                socket.write_all(format!("HTTP/1.1 {status} Refused\r\nLocation: http://egress-gateway:{}/SECRET\r\nContent-Length: 6\r\nConnection: close\r\n\r\nSECRET", address.port()).as_bytes()).await.unwrap();
++                assert!(
++                    tokio::time::timeout(Duration::from_millis(100), listener.accept())
++                        .await
++                        .is_err()
++                );
++            });
++            let logical = reqwest::Url::parse(&format!(
++                "https://origin.invalid:{}/responses",
++                address.port()
++            ))
++            .unwrap();
++            let request = reqwest::Request::new(http::Method::GET, logical);
++            let error = synthetic_client(address)
++                .execute(request, None)
++                .await
++                .unwrap_err();
++            assert_eq!(
++                error.to_string(),
++                "failed to build route-aware request: selected egress redirect refused"
++            );
++            server.await.unwrap();
++        }
++    }
++    #[tokio::test]
++    async fn native_outage_preserves_logical_error_without_direct_fallback() {
++        let origin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let origin_address = origin.local_addr().unwrap();
++        let hop = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let hop_address = hop.local_addr().unwrap();
++        drop(hop);
++        let logical = reqwest::Url::parse(&format!(
++            "https://origin.invalid:{}/responses?synthetic=private",
++            origin_address.port()
++        ))
++        .unwrap();
++        let client = reqwest::Client::builder()
++            .no_proxy()
++            .redirect(reqwest::redirect::Policy::none())
++            .resolve("egress-gateway", hop_address)
++            .resolve("origin.invalid", origin_address)
++            .build()
++            .unwrap();
++        let gateway = GatewayClient {
++            config: GatewayConfig {
++                port: hop_address.port(),
++            },
++            client,
++        };
++        let error = gateway
++            .execute(
++                reqwest::Request::new(http::Method::GET, logical.clone()),
++                None,
++            )
++            .await
++            .unwrap_err();
++        assert!(error.is_connect());
++        let crate::HttpError::Request(error) = error else {
++            panic!("native connect category lost");
++        };
++        assert_eq!(error.url(), Some(&logical));
++        assert!(
++            tokio::time::timeout(Duration::from_millis(100), origin.accept())
++                .await
++                .is_err()
++        );
++    }
++
++    #[tokio::test]
++    async fn native_stream_cancellation_releases_the_owned_hop() {
++        use tokio::io::{AsyncReadExt, AsyncWriteExt};
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let address = listener.local_addr().unwrap();
++        let server = tokio::spawn(async move {
++            let (mut socket, _) = listener.accept().await.unwrap();
++            let mut head = Vec::new();
++            while !head.ends_with(b"\r\n\r\n") {
++                head.push(socket.read_u8().await.unwrap());
++            }
++            socket
++                .write_all(
++                    b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 100\r\n\r\nfirst",
++                )
++                .await
++                .unwrap();
++            let mut byte = [0];
++            let eof = tokio::time::timeout(Duration::from_secs(1), socket.read(&mut byte))
++                .await
++                .expect("cancelled body must close owned socket");
++            assert!(matches!(eof, Ok(0)) || eof.is_err());
++        });
++        let logical = reqwest::Url::parse(&format!(
++            "https://origin.invalid:{}/responses",
++            address.port()
++        ))
++        .unwrap();
++        let mut response = synthetic_client(address)
++            .execute(reqwest::Request::new(http::Method::GET, logical), None)
++            .await
++            .unwrap();
++        assert_eq!(response.chunk().await.unwrap().unwrap().as_ref(), b"first");
++        drop(response);
++        server.await.unwrap();
++    }
++
++    #[tokio::test]
++    async fn native_early_auth_error_stops_an_unfinished_upload() {
++        use std::sync::atomic::{AtomicBool, Ordering};
++        use tokio::io::{AsyncReadExt, AsyncWriteExt};
++        struct Upload {
++            sent: bool,
++            dropped: Arc<AtomicBool>,
++        }
++        impl futures::Stream for Upload {
++            type Item = Result<bytes::Bytes, io::Error>;
++            fn poll_next(
++                mut self: std::pin::Pin<&mut Self>,
++                _: &mut std::task::Context<'_>,
++            ) -> std::task::Poll<Option<Self::Item>> {
++                if self.sent {
++                    return std::task::Poll::Pending;
++                }
++                self.sent = true;
++                std::task::Poll::Ready(Some(Ok(bytes::Bytes::from_static(b"first"))))
++            }
++        }
++        impl Drop for Upload {
++            fn drop(&mut self) {
++                self.dropped.store(true, Ordering::SeqCst);
++            }
++        }
++        let dropped = Arc::new(AtomicBool::new(false));
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let address = listener.local_addr().unwrap();
++        let server = tokio::spawn(async move {
++            let (mut socket, _) = listener.accept().await.unwrap();
++            let mut head = Vec::new();
++            while !head.ends_with(b"\r\n\r\n") {
++                head.push(socket.read_u8().await.unwrap());
++            }
++            socket
++                .write_all(
++                    b"HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
++                )
++                .await
++                .unwrap();
++        });
++        let logical = reqwest::Url::parse(&format!(
++            "https://origin.invalid:{}/responses",
++            address.port()
++        ))
++        .unwrap();
++        let mut request = reqwest::Request::new(http::Method::POST, logical);
++        *request.body_mut() = Some(reqwest::Body::wrap_stream(Upload {
++            sent: false,
++            dropped: dropped.clone(),
++        }));
++        let response = tokio::time::timeout(
++            Duration::from_secs(1),
++            synthetic_client(address).execute(request, None),
++        )
++        .await
++        .expect("early401 must not wait for upload completion")
++        .unwrap();
++        assert_eq!(response.status(), 401);
++        drop(response);
++        server.await.unwrap();
++        tokio::time::timeout(Duration::from_secs(1), async {
++            while !dropped.load(Ordering::SeqCst) {
++                tokio::task::yield_now().await;
++            }
++        })
++        .await
++        .expect("upload cancellation must release the body");
++    }
++}
++
++/// Selection disables diagnostics before URL, header or body formatting occurs.
++pub(crate) fn selected() -> bool {
++    std::env::var_os("BUTLERS_EGRESS_MODE").is_some()
++        || std::env::var_os("BUTLERS_EGRESS_GATEWAY").is_some()
++}
+--- a/codex-rs/http-client/src/lib.rs
++++ b/codex-rs/http-client/src/lib.rs
+@@ -7,0 +8 @@
++pub mod gateway;
+--- a/codex-rs/http-client/src/client.rs
++++ b/codex-rs/http-client/src/client.rs
+@@ -39,0 +40,2 @@
++    gateway: Result<Option<crate::gateway::GatewayClient>, String>,
++    gateway_cookies: Option<Arc<dyn reqwest::cookie::CookieStore>>,
+@@ -85,0 +88,12 @@
++    pub(crate) fn with_gateway_configuration(
++        mut self,
++        cookies: Option<Arc<dyn reqwest::cookie::CookieStore>>,
++        timeout: Option<std::time::Duration>,
++    ) -> Self {
++        if let HttpClientBackend::Direct(client) = self.backend {
++            self.backend =
++                HttpClientBackend::Direct(client.with_gateway_configuration(cookies, timeout));
++        }
++        self
++    }
++
+@@ -111,0 +126,3 @@
++        if crate::gateway::selected() {
++            return false;
++        }
+@@ -141 +158,13 @@
+-        }
++            gateway: crate::gateway::GatewayClient::from_environment(None),
++            gateway_cookies: None,
++        }
++    }
++
++    pub(crate) fn with_gateway_configuration(
++        mut self,
++        cookies: Option<Arc<dyn reqwest::cookie::CookieStore>>,
++        timeout: Option<std::time::Duration>,
++    ) -> Self {
++        self.gateway_cookies = cookies;
++        self.gateway = crate::gateway::GatewayClient::from_environment(timeout);
++        self
+@@ -147 +176 @@
+-    ) -> Result<reqwest::Response, reqwest::Error> {
++    ) -> Result<reqwest::Response, HttpError> {
+@@ -166 +195 @@
+-    ) -> Result<reqwest::Response, reqwest::Error> {
++    ) -> Result<reqwest::Response, HttpError> {
+@@ -169 +198,7 @@
+-        self.inner.execute(request).await
++        match &self.gateway {
++            Ok(Some(client)) => client.execute(request, self.gateway_cookies.as_ref()).await,
++            Ok(None) => Ok(self.inner.execute(request).await?),
++            Err(_) => Err(HttpError::Build(
++                "invalid selected egress configuration".to_string(),
++            )),
++        }
+@@ -173 +208 @@
+-        if self.request_logging == RequestLogging::Enabled {
++        if !crate::gateway::selected() && self.request_logging == RequestLogging::Enabled {
+@@ -185,2 +220,2 @@
+-    pub(crate) fn log_error(&self, method: &Method, url: &str, error: &reqwest::Error) {
+-        if self.request_logging == RequestLogging::Enabled {
++    pub(crate) fn log_error(&self, method: &Method, url: &str, error: &HttpError) {
++        if !crate::gateway::selected() && self.request_logging == RequestLogging::Enabled {
+@@ -197 +232 @@
+-        if self.request_logging == RequestLogging::Enabled {
++        if !crate::gateway::selected() && self.request_logging == RequestLogging::Enabled {
+--- a/codex-rs/http-client/src/client_builder.rs
++++ b/codex-rs/http-client/src/client_builder.rs
+@@ -43 +43 @@
+-    chatgpt_cookie_store: Option<Arc<ChatGptCookieStore>>,
++    pub(crate) chatgpt_cookie_store: Option<Arc<ChatGptCookieStore>>,
+@@ -185,0 +186,2 @@
++        let gateway_cookies = self.gateway_cookie_store();
++        let gateway_timeout = self.connect_timeout;
+@@ -188,5 +190,4 @@
+-        Ok(HttpClient::from_parts(
+-            inner,
+-            request_logging,
+-            default_headers,
+-        ))
++        Ok(
++            HttpClient::from_parts(inner, request_logging, default_headers)
++                .with_gateway_configuration(gateway_cookies, gateway_timeout),
++        )
+@@ -203,0 +205,2 @@
++        let gateway_cookies = self.gateway_cookie_store();
++        let gateway_timeout = self.connect_timeout;
+@@ -217,5 +220,4 @@
+-        Ok(TransportClient::new(
+-            inner,
+-            request_logging,
+-            default_headers,
+-        ))
++        Ok(
++            TransportClient::new(inner, request_logging, default_headers)
++                .with_gateway_configuration(gateway_cookies, gateway_timeout),
++        )
+@@ -291,0 +294,2 @@
++        let gateway_cookies = self.gateway_cookie_store();
++        let gateway_timeout = self.connect_timeout;
+@@ -294,2 +298,4 @@
+-        build_reqwest_client_with_custom_ca(self.reqwest_builder(proxy_routing))
+-            .map(|inner| HttpClient::from_parts(inner, request_logging, default_headers))
++        build_reqwest_client_with_custom_ca(self.reqwest_builder(proxy_routing)).map(|inner| {
++            HttpClient::from_parts(inner, request_logging, default_headers)
++                .with_gateway_configuration(gateway_cookies, gateway_timeout)
++        })
+@@ -312,0 +319,2 @@
++        let gateway_cookies = self.gateway_cookie_store();
++        let gateway_timeout = self.connect_timeout;
+@@ -336,0 +345,25 @@
++            .with_gateway_configuration(gateway_cookies, gateway_timeout)
++    }
++
++    fn gateway_cookie_store(&self) -> Option<Arc<dyn reqwest::cookie::CookieStore>> {
++        self.chatgpt_cloudflare_cookie_store.then(|| {
++            crate::chatgpt_cloudflare_cookies::gateway_cookie_store(
++                self.chatgpt_cookie_store.clone(),
++            )
++        })
++    }
++
++    pub(crate) fn build_gateway_transport(mut self) -> Result<TransportClient, crate::HttpError> {
++        let cookies = self.gateway_cookie_store();
++        let timeout = self.connect_timeout;
++        let defaults = self.default_headers.take().unwrap_or_default();
++        // Only used for logical request construction. No system/PAC/proxy/CA
++        // factory is consulted; the selected executor owns the sole wire hop.
++        let inner = reqwest::Client::builder()
++            .no_proxy()
++            .redirect(reqwest::redirect::Policy::none())
++            .build()?;
++        Ok(
++            TransportClient::new(inner, RequestLogging::Disabled, defaults)
++                .with_gateway_configuration(cookies, timeout),
++        )
+--- a/codex-rs/http-client/src/chatgpt_cloudflare_cookies.rs
++++ b/codex-rs/http-client/src/chatgpt_cloudflare_cookies.rs
+@@ -491,0 +492,10 @@
++
++/// The selected executor asks this same store with the original logical URL.
++pub(crate) fn gateway_cookie_store(
++    configured: Option<Arc<ChatGptCookieStore>>,
++) -> Arc<dyn CookieStore> {
++    match configured {
++        Some(store) => store,
++        None => SHARED_CHATGPT_CLOUDFLARE_COOKIE_STORE.clone(),
++    }
++}
+--- a/codex-rs/http-client/src/outbound_proxy.rs
++++ b/codex-rs/http-client/src/outbound_proxy.rs
+@@ -490,0 +491,5 @@
++    if crate::gateway::selected() {
++        return Ok(builder
++            .no_proxy()
++            .redirect(reqwest::redirect::Policy::none()));
++    }
+--- a/codex-rs/http-client/src/route_aware_client_pool.rs
++++ b/codex-rs/http-client/src/route_aware_client_pool.rs
+@@ -206 +206 @@
+-        self.client_builder.request_logging_enabled()
++        !crate::gateway::selected() && self.client_builder.request_logging_enabled()
+--- a/codex-rs/http-client/src/route_aware_client_pool/execution.rs
++++ b/codex-rs/http-client/src/route_aware_client_pool/execution.rs
+@@ -61,0 +62,14 @@
++        if crate::gateway::GatewayConfig::from_environment()
++            .map_err(|_| {
++                RouteAwareRequestError::Build("invalid selected egress configuration".to_string())
++            })?
++            .is_some()
++        {
++            let mut builder = self.client_builder.clone();
++            builder.chatgpt_cookie_store = self.http_client_factory.chatgpt_cookie_store();
++            let client = builder.build_gateway_transport()?;
++            let mut request = request.build(&client)?;
++            apply_default_headers(request.headers_mut(), &self.default_headers);
++            let response = permit.run(client.execute(request)).await??;
++            return Ok(HttpResponse::new(response, permit));
++        }
+@@ -209 +223 @@
+-        error: reqwest::Error,
++        error: RouteAwareRequestError,
+@@ -211,0 +226,12 @@
++        let error = match error {
++            RouteAwareRequestError::Request(error) => error,
++            other => return Err(other),
++        };
++        if crate::gateway::GatewayConfig::from_environment()
++            .map_err(|_| {
++                RouteAwareRequestError::Build("invalid selected egress configuration".to_string())
++            })?
++            .is_some()
++        {
++            return Err(error.into());
++        }

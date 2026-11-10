@@ -252,7 +252,9 @@ The Spawner SHALL build an explicit environment dict for each engineering execut
 
 Until the RFC 0038 goal-runtime cutover, ordinary legacy sessions retain the following isolation contract; it grants no additional credentials to goal invocations or engineering executors:
 
-The spawner SHALL build an explicit environment dict containing only `PATH` (for shebang resolution), declared `[butler.env]` required/optional variables, distributed-tracing variables, and the selected runtime's authentication material. Runtime authentication uses CLI-level OAuth tokens (device-code flow) or the selected provider's configured API key, depending on its `auth_mode`. Declared variables SHALL be resolved through `CredentialStore.resolve()` when a store is present, without implicit environment fallback; the no-store path MAY resolve them from the process environment. Owner-auth and administrative database variables SHALL always be withheld, even if declared.
+The spawner SHALL build an explicit environment dict containing only `PATH` (for shebang resolution), declared `[butler.env]` required/optional variables, distributed-tracing variables, the selected runtime's authentication material, and the validated deployment transport controls described below. Runtime authentication uses CLI-level OAuth tokens (device-code flow) or the selected provider's configured API key, depending on its `auth_mode`. Declared credential variables SHALL be resolved through `CredentialStore.resolve()` when a store is present, without implicit environment fallback; the no-store path MAY resolve them from the process environment. Owner-auth and administrative database variables SHALL always be withheld, even if declared.
+
+For these legacy sessions, the non-secret `BUTLERS_EGRESS_MODE` and `BUTLERS_EGRESS_GATEWAY` pair SHALL come only from validated daemon deployment configuration. These two transport controls SHALL be exempt from credential-store and declared-variable resolution. A selected `request-v1` route SHALL use the canonical `http://egress-gateway:<workload-port>` address, preserving the listener-derived workload identity. The spawner SHALL replace any child-supplied transport controls after normal environment construction, QA `env_override` selection, or healing environment selection. Missing deployment controls SHALL leave both keys absent; incomplete or invalid deployment controls SHALL refuse invocation. This exception SHALL NOT admit other ambient variables or change the QA credential/PATH boundary, owner-auth exclusions, runtime authentication, or tool authority.
 
 Module channel credentials SHALL NOT be added merely because a module declares or resolves them. Module credential validation and daemon-side resolution SHALL remain available to the modules. An operator MAY explicitly declare a channel variable in `[butler.env]`; that declaration remains subject to the owner-auth and administrative-variable exclusions. Undeclared host variables SHALL NOT leak through, and an explicit empty environment SHALL NOT become ambient environment inheritance at the runtime adapter.
 
@@ -264,9 +266,24 @@ ID: REQ-core-spawner-010
 #### Scenario: Only declared credentials are passed
 - **GIVEN** a legacy session before the RFC 0038 goal-runtime cutover
 - **WHEN** the spawner builds a normal runtime environment
-- **THEN** only `PATH`, declared `[butler.env]` variables, tracing, and selected runtime authentication are included
+- **THEN** only `PATH`, declared `[butler.env]` variables, tracing, selected runtime authentication, and the validated deployment transport pair are included
 - **AND** undeclared module channel credentials and other host environment variables are excluded
 - **AND** daemon-side module validation and credential resolution remain unchanged
+
+#### Scenario: Deployment transport applies to every environment selection
+- **GIVEN** a legacy session before the RFC 0038 goal-runtime cutover
+- **AND** a valid deployment `request-v1` mode and workload gateway listener
+- **WHEN** the spawner selects a normal, QA override, or healing environment
+- **THEN** the selected child receives that canonical deployment transport pair
+- **AND** child environment values and credential-store records cannot replace either transport control
+- **AND** existing credential, PATH, owner-auth and tool authority boundaries are preserved
+
+#### Scenario: Missing or invalid deployment transport
+- **GIVEN** a legacy session before the RFC 0038 goal-runtime cutover
+- **WHEN** the deployment transport pair is absent
+- **THEN** neither transport key is inherited from declared credentials or child overrides
+- **WHEN** either deployment transport setting is incomplete or invalid
+- **THEN** invocation is refused before a runtime child starts
 
 #### Scenario: Explicitly declared channel variable
 - **GIVEN** a legacy session before the RFC 0038 goal-runtime cutover
