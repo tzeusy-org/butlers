@@ -3826,7 +3826,7 @@
       "sites": [],
       "workloads": []
     },
-    "src/butlers/connectors/telegram_bot.py::resolve_telegram_endpoint_identity::url::2d3578068927cda4725b5286254f92a494d64d35f2e26d553db86c5e35f34c18": {
+    "src/butlers/core/telegram_identity.py::resolve_telegram_endpoint_identity::url::2d3578068927cda4725b5286254f92a494d64d35f2e26d553db86c5e35f34c18": {
       "class": "external",
       "observed": {
         "authorities": [
@@ -3835,7 +3835,7 @@
         "config": null,
         "count": 1,
         "kind": "url",
-        "path": "src/butlers/connectors/telegram_bot.py",
+        "path": "src/butlers/core/telegram_identity.py",
         "scope": "resolve_telegram_endpoint_identity",
         "sha256": "2d3578068927cda4725b5286254f92a494d64d35f2e26d553db86c5e35f34c18"
       },
