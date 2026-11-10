@@ -46,6 +46,28 @@ that workload but is never authority on its own. A body field such as
 `source_butler` is never read as the caller. A refusal never falls back to the
 generic proxy.
 
+### Served relays
+
+Switchboard serves `POST /internal/service-plane/relay/{name}` (body
+`{"args": {...}}`) beside `/health` on its service listener
+(`src/butlers/core/service_plane/endpoint.py`, wired in
+`service_plane/wiring.py`). It is not an MCP tool, and the control plane's
+session listener does not serve it. It dispatches through Switchboard's own
+`route()`, so registry, staleness, quarantine and routing-log behaviour are
+unchanged; the relay decides only who may reach which target with what.
+Callers use `service_plane/client.py`, presenting their workload's
+relay-audience token and their daemon name. While the switch is off the route
+answers 404 to everything and callers keep the legacy route path.
+
+| Relay | Target | Allowed callers | Notes |
+| --- | --- | --- | --- |
+| `qa.report_finding` | QA `report_finding` | every roster daemon on `butlers-up` except Switchboard | `source_butler` is set from the caller; stale QA still receives (`allow_stale`). |
+| `domain_event.receive` | a subscriber's `receive_domain_event` | publishers of a domain-event contract on `butlers-up` | The caller must publish the event type's contract and the target must be one of its `permitted_subscribers`; `source_butler` is set from the caller. |
+
+Still to come (they need a service-only, non-presentable target first):
+Travel's read of Health's medication snapshot, fleet-case writes, the memory
+catalog fetch, the calendar response fence and the contacts owner lookup.
+
 ## How callers are authenticated
 
 Decision (bu-2c1g7v, RFC 0038 "Details settled during the dark build"): two
@@ -104,8 +126,9 @@ the request body. With the switch on, Messenger admits a delivery only from
 
 **Deployment.** `servicePlaneAuth.enabled` in the Helm chart (default `false`,
 requires `butlersControl.enabled`) gives `butlers-control` and `butlers-up`
-their own ServiceAccounts, sets `BUTLERS_SERVICE_PLANE_AUTH=1`, and mounts the
-delivery token into `butlers-control` only. Butlers holds no private key for
+their own ServiceAccounts, sets `BUTLERS_SERVICE_PLANE_AUTH=1`, and mounts one
+token per workload: the delivery token into `butlers-control`, the relay token
+into `butlers-up`. Each workload holds only the audience it presents. Butlers holds no private key for
 this: the API server signs and the kubelet rotates.
 
 **Reachability.** This adds one network edge and no new chart-peer edge:
