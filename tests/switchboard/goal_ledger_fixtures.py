@@ -75,7 +75,12 @@ async def reset_ledger(owner):
             "SELECT c.relname, t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid "
             "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'switchboard' "
             "AND t.tgname = ANY($1::text[])",
-            ["immutable_broker_refusal", "durable_goal_lineage", "owner_policy_durable"],
+            [
+                "immutable_broker_refusal",
+                "durable_goal_lineage",
+                "owner_policy_durable",
+                "goal_waiting_durable",
+            ],
         )
         for guard in guards:
             await connection.execute(

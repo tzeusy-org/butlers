@@ -350,6 +350,38 @@ Spans (`goal.context_search`, `goal.delegate`, `goal.complete`, `goal.escalate`,
 per-launch span) carry identifiers only: goal id, invocation id, depth, lead epoch and tier. No
 brief text, arguments or results.
 
+## Waiting records (S2, sw_063, dark)
+
+Migration `sw_063` (`roster/switchboard/migrations/063_goal_waiting.py`) adds the records a goal
+needs to wait without holding a session slot and to resume through one fenced successor epoch.
+Nothing consumes them yet: the runner and admission are unchanged, and the legacy
+`settling`, `awaiting_approval` and `recovering` states still exist beside the new `waiting`.
+
+| Record | What it holds |
+| --- | --- |
+| `owner_threads` | The one owner thread registry; `goals.thread_id` is a foreign key to it (legacy ids are backfilled as `legacy` rows) |
+| `goal_plans` | Append-only plan versions: premise, evidence and step references, the epoch that wrote them; `goals.plan_version` and each envelope bind `(goal_id, version)` |
+| `goal_epochs` | `(goal_id, epoch)` with reason (`initial`, `wake`, `recovery`, `escalation`), label snapshot, grant digest and a forward-only state. A trigger derives a lead's epoch from its invocation until the runner records epochs itself |
+| `wait_envelopes` | Immutable bounds (predicate and digest, source set, grant, label, deadline, `max_wakes`, plan binding, approval effect and digest) plus the only mutable parts: `state`, the cumulative `consumed_wakes` and `generation`. One live envelope per goal |
+| `wait_generations` | One registration row per generation: condition instance ids, the predecessor epoch and fire event, the registration cursor |
+| `wake_intents` | The launch outbox, unique per `fire_key`, per `(envelope, generation)` successor and per fire event. A fire the ledger refused ends as a terminal `not_admitted` row with its reason. Stop, expiry or a superseding rearm ends an admitted, unlaunched wake as a terminal `cancelled` row (reason `stopped`, `expired` or `superseded`), out of the open index but still the generation's one successor |
+
+An envelope's `kind` decides what a wake does. `conditions`, `owner_answer` and `approval` launch a
+successor epoch; `settle` only runs the deterministic `resolve()` and launches nothing.
+
+`goal_inbox` is one discriminated queue: `input_kind` is `owner_reply`, `owner_non_reply` or
+`condition_fire`, matched to a joined admission decision of the same kind (`reply_joined`,
+`input_joined`, `condition_joined`). A condition fire has no delivery or reply effect and is bound
+to its envelope generation and fire event. Consumption is the one-time
+`(consumed_at, consumed_epoch)` tuple; rows consumed before `sw_063` are `legacy_consumed` with no
+invented epoch, and the broker's inbox read now records the reader's lead epoch.
+
+`WaitLedger` (`src/butlers/core/goal_waiting.py`) holds the lifecycle operations: the thread
+registry, plan versions, opening an envelope (superseding a fired predecessor) and `rearm`, which
+opens the next generation only when the goal is live, no lead is running, the fired generation's
+successor launched, the cumulative cap and the original deadline hold. Wake admission, the
+evaluator bridge and the runner integration follow in later changes.
+
 ## Not yet delivered
 
 - The per-domain `ContextSource` adapters (a domain's memory and facts).
@@ -366,7 +398,8 @@ brief text, arguments or results.
   isolated `butlers-control` process (`bu-jnhxc5`).
 - Calling `GoalRuntime.admit` from ingress, confirms and obligations, and an owner Stop surface
   (the D19 dashboard change, or a control-plane service route).
-- Waking a `waiting` goal on a joined reply or condition (RFC 0038 S2; there is no `waiting`
-  state yet), and the reply text itself: `goal__inbox` returns references only.
-- `awaiting_approval` and parked-wait continuation (`bu-dhloi1.7`).
+- Waking a `waiting` goal on a joined reply or condition, and the status remap that retires
+  `settling`, `awaiting_approval` and `recovering` (`bu-dhloi1.7`, next PRs); the records exist
+  (see above). The reply text itself: `goal__inbox` returns references only.
+- `awaiting_approval` and parked-wait continuation (`bu-dhloi1.204`).
 - The lead's goal input, owner profile, lead policy and domain index in the packet (M6).

@@ -181,11 +181,14 @@ class BrokerLedger:
         if goal is None or goal["status"] != "running":
             raise BrokerRefused(Reason.GOAL)
         row = await self.connection.fetchrow(
-            "UPDATE switchboard.goal_inbox SET consumed_at = clock_timestamp() "
+            "UPDATE switchboard.goal_inbox SET consumed_at = clock_timestamp(), "
+            "consumed_epoch = (SELECT lead_epoch FROM switchboard.invocations "
+            "WHERE goal_id = $1 AND id = $3) "
             "WHERE goal_id = $1 AND id = $2 AND consumed_at IS NULL "
             "RETURNING label_version, label_instr, label_data, label_sens",
             goal_id,
             inbox_id,
+            invocation_id,
         )
         if row is None:
             return False
