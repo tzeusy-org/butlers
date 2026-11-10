@@ -116,7 +116,11 @@ async def test_a_wait_keeps_its_version_and_each_successor_starts_from_the_lates
         assert f"plan_premise: effect:{first}" in woken.prompt
 
         # The successor's changed premise is version 2; the wait it woke from keeps version 1.
-        second = await owner_prompt(h, goal, woken)
+        # A second prompt: its own arguments (one effect per digest) and message locator (a
+        # delivery ref is unique).
+        second = await owner_prompt(
+            h, goal, woken, locator="100:79", message="Shall I book 8pm instead?"
+        )
         result = await h.call(
             goal,
             woken.token,

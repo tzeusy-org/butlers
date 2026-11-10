@@ -343,8 +343,12 @@ PROMPT_SCOPE = dict(
 )
 
 
-async def owner_prompt(h, goal, lead, locator="100:77"):
-    """A real owner prompt through the broker: notify with a window, Messenger's report back."""
+async def owner_prompt(h, goal, lead, locator="100:77", message="Shall I book it?"):
+    """A real owner prompt through the broker: notify with a window, Messenger's report back.
+
+    The broker records one effect per goal, capability and arguments, so a second prompt on the
+    same goal needs a different ``message``.
+    """
     h.w.forwarder.receipt = DomainReceipt(
         "committed",
         "receipt-prompt",
@@ -357,7 +361,7 @@ async def owner_prompt(h, goal, lead, locator="100:77"):
     )
     args = {
         "entity_id": str(OWNER),
-        "message": "Shall I book it?",
+        "message": message,
         "channel": "telegram",
         "awaits_reply_seconds": 1800,
     }
