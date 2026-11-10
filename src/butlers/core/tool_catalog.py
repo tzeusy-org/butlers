@@ -11,6 +11,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
+from butlers.core.capability_dependencies import dependency_problem
 from butlers.core.goal_labels import CATEGORIES
 
 LoadPosture = Literal["eager", "deferred"]
@@ -33,6 +34,7 @@ AUTHORIZATION_FIELDS = (
     "recipient_params",
     "alias_free_params",
     "categories",
+    "depends_on",
     "alias_resolvers",
 )
 
@@ -127,6 +129,9 @@ class ToolMetadata(Protocol):
     # RFC 0038 S1 sensitivity categories the output may carry: a sorted subset
     # of the six. Required: undeclared (None) is ungrantable.
     categories: tuple[str, ...] | None = None
+    # RFC 0038 S6 declared dependency IDs (capability_dependencies): a sorted
+    # set of providers this tool needs. Empty means none; never grants a tool.
+    depends_on: tuple[str, ...] | None = ()
     # Aliasable resource_params the domain resolves for the broker, by closed
     # kind (ALIAS_KINDS): the broker matches on the canonical id,
     # so these can narrow an owner term too.
@@ -204,6 +209,9 @@ class ToolPresentation:
     # RFC 0038 S1 sensitivity categories the output may carry: a sorted subset
     # of the six. Required: undeclared (None) is ungrantable.
     categories: tuple[str, ...] | None = None
+    # RFC 0038 S6 declared dependency IDs (capability_dependencies): a sorted
+    # set of providers this tool needs. Empty means none; never grants a tool.
+    depends_on: tuple[str, ...] | None = ()
     # Aliasable resource_params the domain resolves for the broker, by closed
     # kind (ALIAS_KINDS): the broker matches on the canonical id,
     # so these can narrow an owner term too.
@@ -288,6 +296,9 @@ class ToolDescriptor:
     # RFC 0038 S1 sensitivity categories the output may carry: a sorted subset
     # of the six. Required: undeclared (None) is ungrantable.
     categories: tuple[str, ...] | None = None
+    # RFC 0038 S6 declared dependency IDs (capability_dependencies): a sorted
+    # set of providers this tool needs. Empty means none; never grants a tool.
+    depends_on: tuple[str, ...] | None = ()
     # Aliasable resource_params the domain resolves for the broker, by closed
     # kind (ALIAS_KINDS): the broker matches on the canonical id,
     # so these can narrow an owner term too.
@@ -488,6 +499,8 @@ def _authorization_problems(descriptor: ToolDescriptor) -> list[str]:
         or list(categories) != sorted(set(categories))
     ):
         problems.append("categories")
+    if dependency_problem(descriptor.depends_on):
+        problems.append("depends_on")
     resolvers = descriptor.alias_resolvers
     if (
         not isinstance(resolvers, Mapping)
@@ -679,13 +692,15 @@ async def build_tool_catalog(
                         else getattr(declared, field_name, None)
                     )
                     for field_name in AUTHORIZATION_FIELDS
-                    if field_name not in {"alias_free_params", "categories", "alias_resolvers"}
+                    if field_name
+                    not in {"alias_free_params", "categories", "depends_on", "alias_resolvers"}
                 },
                 # Undeclared means no identifier is alias-free or resolved:
                 # nothing can narrow an owner term on this tool.
                 alias_free_params=tuple(getattr(declared, "alias_free_params", None) or ()),
                 # Carried as declared: undeclared stays None, which is ungrantable.
                 categories=getattr(declared, "categories", None),
+                depends_on=tuple(getattr(declared, "depends_on", None) or ()),
                 alias_resolvers=MappingProxyType(
                     dict(getattr(declared, "alias_resolvers", None) or {})
                 ),

@@ -57,6 +57,7 @@ def _declare(
             authorization["write_stores"] = (*authorization.get("write_stores", ()), boundary)
     # Undeclared: no identifier is alias-free, so nothing narrows an owner term.
     alias_free = cast(tuple[str, ...], authorization.pop("alias_free_params", ()))
+    depends_on = cast(tuple[str, ...], authorization.pop("depends_on", ()))
     resolvers = MappingProxyType(
         dict(cast(Mapping[str, str], authorization.pop("alias_resolvers", {})))
     )
@@ -71,6 +72,7 @@ def _declare(
             approval_policy={"mode": approval_mode},
             alias_free_params=alias_free,
             categories=tuple(sorted(categories)),
+            depends_on=depends_on,
             alias_resolvers=resolvers,
             **authorization,
         )
