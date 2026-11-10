@@ -42,6 +42,23 @@ class Delivery:
 
 
 @dataclass(frozen=True, slots=True)
+class DeliveryReport:
+    """What a domain says about where a committed message landed (a claim, never an identity).
+
+    The broker turns a report into a ``Delivery`` itself at settle: the reply ref is derived from
+    this scope and the owner entity and channel the broker recorded at reserve, so a domain cannot
+    steer which identity a reply binds to. ``prompt_expires_at`` is a ceiling the broker clamps to
+    the call's own ``awaits_reply_seconds``.
+    """
+
+    transport: str
+    endpoint: str
+    conversation: str
+    locator: str
+    prompt_expires_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DomainReceipt:
     # ``not_received`` needs affirmative transport evidence; a timeout is unknown.
     status: Literal["committed", "failed", "unknown", "not_received"]
@@ -56,6 +73,8 @@ class DomainReceipt:
     stamped_writers: tuple[tuple[Any, Any], ...] = ()
     # A communication's delivery binding (owner deliveries only are recorded as a reply target).
     delivery: Delivery | None = None
+    # A domain's untrusted account of the delivery; the broker resolves it to a ``Delivery``.
+    report: DeliveryReport | None = None
 
 
 @dataclass(frozen=True, slots=True)

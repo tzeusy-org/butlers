@@ -1174,7 +1174,12 @@ within D1 to D19 and never by weakening the two owner rules of D4:
 - the admission budget for high-volume feeds, so a burst of third-party mail
   cannot exhaust goal budgets;
 - how an owner's reply to an outbound prompt (a quiz, a confirmation) joins
-  the goal that sent it rather than starting an unrelated owner goal;
+  the goal that sent it rather than starting an unrelated owner goal. For a
+  Telegram prompt this is settled: the lead marks it with
+  `notify(awaits_reply_seconds)` (30-86400), the broker records the reply ref
+  and a window no longer than that, and a reply to that exact message joins
+  the goal waiting on it (`docs/runtime/goal-runner.md`, owner-answer wait).
+  Other channels, and a reply that does not quote the prompt, remain open;
 - which approvals statuses and dashboard filters gain `cancelled` and goal
   lineage;
 - a taint field on every store D6 lists that lacks one today.

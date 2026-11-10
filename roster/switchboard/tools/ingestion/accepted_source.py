@@ -15,17 +15,14 @@ from uuid import UUID
 from butlers.audio_authorship import usable_key
 from butlers.core.fact_authority import FactWriteContext, dashboard_origin_digest
 from butlers.core.goal_admission import Evidence, EvidenceRefused, SourceRef, digest
+from butlers.core.reply_scope import scoped_reply_ref
 from butlers.identity import resolve_owner_channel_via_definer
 from butlers.tools.switchboard.connector.heartbeat import (
     VALID_CONNECTOR_TYPES,
     registered_channel_kind,
 )
 from butlers.tools.switchboard.ingestion.feed_admission import DeterministicFeeds
-from butlers.tools.switchboard.ingestion.goal_input import (
-    GoalInput,
-    prepare_goal_input,
-    scoped_reply_ref,
-)
+from butlers.tools.switchboard.ingestion.goal_input import GoalInput, prepare_goal_input
 
 from .audio_admission import owner_speech_verified, speech_derived
 

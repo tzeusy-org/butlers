@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from butlers.core.goal_admission import decode_grants, digest, encode_grants
+from butlers.core.goal_admission import EvidenceRefused, decode_grants, digest, encode_grants
 from butlers.core.goal_labels import EXPOSURE_CAUSES, Label
 from butlers.core.goal_ledger import GoalLedger
 from butlers.core.owner_policy import (
@@ -23,6 +24,11 @@ from butlers.core.owner_policy import (
     PolicyUnavailable,
     hold_for,
     read_policy,
+)
+from butlers.core.reply_scope import (
+    MAX_AWAITS_REPLY_SECONDS,
+    MIN_AWAITS_REPLY_SECONDS,
+    scoped_reply_ref,
 )
 
 from .contracts import (
@@ -40,7 +46,7 @@ from .contracts import (
 from .recipients import live_owner
 
 if TYPE_CHECKING:
-    from .domains import Delivery
+    from .domains import Delivery, DeliveryReport
 
 # Effects a repeated call must not duplicate (D12): committed or unknown, plus
 # anything still in flight that could become either.
@@ -473,6 +479,8 @@ class BrokerLedger:
         output: Label | None = None,
         writers: tuple[tuple[Any, Any], ...] = (),
         delivery: Delivery | None = None,
+        report: DeliveryReport | None = None,
+        awaits_reply_seconds: object = None,
     ) -> None:
         """Record a domain receipt (D11) and join the label its output carries (D6, S1).
 
@@ -495,6 +503,8 @@ class BrokerLedger:
             return
         # The delivery binding is set once, with the commit (sw_066). Only an owner delivery,
         # whose recipient and channel the broker recorded at reserve, can accept input.
+        if status == "committed" and delivery is None and report is not None:
+            delivery = await self._bind_report(reservation, report, awaits_reply_seconds)
         bound = delivery if status == "committed" else None
         prompt = bound.prompt_expires_at if bound is not None else None
         row = await self.connection.fetchrow(
@@ -515,6 +525,51 @@ class BrokerLedger:
         )
         if row is None:
             raise BrokerRefused(Reason.UNAVAILABLE)
+
+    async def _bind_report(
+        self, reservation: Reservation, report: DeliveryReport, awaits_reply_seconds: object
+    ) -> Delivery | None:
+        """Resolve a domain's delivery report against the effect's own recorded recipient.
+
+        The owner entity and channel come from the effect row written at reserve, never from the
+        report. An effect with no recorded owner recipient binds nothing. A prompt expires at the
+        report's time or ``awaits_reply_seconds`` after now, whichever is sooner, and only when
+        the call itself asked for an answer.
+        """
+        from .domains import Delivery  # Imported here: domains reaches the approvals module.
+
+        row = await self.connection.fetchrow(
+            "SELECT recipient_entity, recipient_channel FROM switchboard.effects "
+            "WHERE goal_id = $1 AND id = $2",
+            reservation.principal.goal_id,
+            reservation.effect_id,
+        )
+        if row is None or row["recipient_entity"] is None or row["recipient_channel"] is None:
+            return None
+        try:
+            ref = scoped_reply_ref(
+                transport=report.transport,
+                endpoint=report.endpoint,
+                conversation=report.conversation,
+                recipient_entity=row["recipient_entity"],
+                recipient_channel=row["recipient_channel"],
+                locator=report.locator,
+            )
+        except EvidenceRefused:
+            return None
+        expires = None
+        asked = awaits_reply_seconds
+        if (
+            type(asked) is int
+            and MIN_AWAITS_REPLY_SECONDS <= asked <= MAX_AWAITS_REPLY_SECONDS
+            and report.prompt_expires_at is not None
+            and report.prompt_expires_at.tzinfo is not None
+        ):
+            now = datetime.now(UTC)
+            expires = min(report.prompt_expires_at, now + timedelta(seconds=asked))
+            if expires <= now:
+                expires = None
+        return Delivery(ref, expires)
 
     async def writer_label(self, pointer: Any) -> Label:
         """The persisted label of a stored record's writer invocation (D6, S1).

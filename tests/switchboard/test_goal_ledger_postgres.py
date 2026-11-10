@@ -17,7 +17,7 @@ from butlers.core.goal_admission import (
     Obligation,
     SourceRef,
 )
-from butlers.tools.switchboard.ingestion.goal_input import scoped_reply_ref
+from butlers.core.reply_scope import scoped_reply_ref
 from tests.polling import poll_until
 from tests.switchboard.accepted_source_fixtures import (
     ObservedSource,

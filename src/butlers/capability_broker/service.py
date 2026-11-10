@@ -443,7 +443,7 @@ class Broker:
         writers = receipt.stamped_writers if capability.output_trust == "stamped" else ()
         handle = None
         if output is not None and self.quarantine_reads:
-            handle = await self._settle_holding(reserved, status, receipt, output, writers)
+            handle = await self._settle_holding(reserved, status, receipt, output, writers, args)
         else:
             await self._settle(
                 reserved,
@@ -452,6 +452,8 @@ class Broker:
                 output=output,
                 writers=writers,
                 delivery=receipt.delivery,
+                report=receipt.report,
+                awaits_reply_seconds=args.get("awaits_reply_seconds"),
             )
         if approval_ref is not None:
             await self._write_back(reserved, approval_ref, status, receipt.receipt_ref)
@@ -471,6 +473,7 @@ class Broker:
         receipt: DomainReceipt,
         output: Label,
         writers: tuple[tuple[Any, Any], ...],
+        args: dict[str, Any],
     ) -> UUID | None:
         """Settle a committed result, quarantining it if it would expose its reader.
 
@@ -495,10 +498,17 @@ class Broker:
                     receipt_ref=receipt.receipt_ref,
                     output=label,
                     delivery=receipt.delivery,
+                    report=receipt.report,
+                    awaits_reply_seconds=args.get("awaits_reply_seconds"),
                 )
                 return None
             await ledger.settle(
-                reserved, status, receipt_ref=receipt.receipt_ref, delivery=receipt.delivery
+                reserved,
+                status,
+                receipt_ref=receipt.receipt_ref,
+                delivery=receipt.delivery,
+                report=receipt.report,
+                awaits_reply_seconds=args.get("awaits_reply_seconds"),
             )
             return await BoundaryLedger(ledger).quarantine(
                 reserved.principal, reserved.effect_id, label, raw

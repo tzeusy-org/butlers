@@ -36,6 +36,7 @@ from butlers.core.notify_attachments import (
     validate_attachment_specs,
 )
 from butlers.core.permissions import NOTIFY_PERMISSION, PermissionUnavailable, require_permission
+from butlers.core.telegram_identity import resolve_telegram_endpoint_identity
 from butlers.modules.base import Module
 from butlers.telegram_api import (
     TelegramPartialDeliveryError,
@@ -234,6 +235,23 @@ class TelegramModule(Module):
                 f"configure {token_env} via butler_secrets"
             )
         return token
+
+    async def bot_endpoint_identity(self) -> str | None:
+        """The bot's ``telegram:bot:@<username>`` identity, as its inbound connector stamps it.
+
+        Resolved once through ``getMe`` and cached. ``None`` when it cannot be resolved right now;
+        a failure is never cached, and never turns a delivered message into an error.
+        """
+        cached = getattr(self, "_endpoint_identity", None)
+        if cached:
+            return cached
+        try:
+            identity = await resolve_telegram_endpoint_identity(self._get_bot_token())
+        except Exception:
+            logger.warning("Telegram bot endpoint identity could not be resolved", exc_info=True)
+            return None
+        self._endpoint_identity = identity
+        return identity
 
     def _base_url(self) -> str:
         """Build the Telegram API base URL using the bot token."""
