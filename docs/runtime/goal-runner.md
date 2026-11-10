@@ -504,3 +504,14 @@ ended.
   and `/new` (`bu-dhloi1.7`); it needs a conversation key from verified ingress. The reply text
   itself: `goal__inbox` returns references only.
 - The lead's goal input, owner profile, lead policy and domain index in the packet (M6).
+
+## Descriptor `depends_on`
+
+A tool descriptor declares the providers it needs in `depends_on` (RFC 0038 S6), next to
+`categories`. The value is a sorted, duplicate-free tuple of IDs from the closed set in
+`butlers.core.capability_dependencies.DEPENDENCY_IDS`; empty means the tool needs none. An unknown,
+empty, non-string, duplicate or unsorted entry makes the descriptor fail authorization validation
+(`depends_on`), and a descriptor with `depends_on` set to `None` is ungrantable like any other missing
+authorization field. The field is part of the published authorization digest. It only records the
+declaration: nothing reads it yet, and it never grants a tool. The capability-health reducer
+(`bu-dhloi1.14`, next package) reads it to turn a dependency's health into a typed unavailable result.
