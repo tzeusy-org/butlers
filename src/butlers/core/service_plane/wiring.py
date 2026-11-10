@@ -30,6 +30,7 @@ def build_switchboard_relay_route(pool: Any, roster_dir: Path) -> Any:
         roster_daemons,
         roster_module_daemons,
     )
+    from butlers.core_tools._memory_catalog import catalog_pointer_reader
 
     @functools.cache
     def relays() -> Mapping[str, RelayEndpoint]:
@@ -37,6 +38,8 @@ def build_switchboard_relay_route(pool: Any, roster_dir: Path) -> Any:
             roster_daemons(roster_dir),
             get_contract_registry(),
             contacts_daemons=roster_module_daemons("contacts", roster_dir),
+            memory_daemons=roster_module_daemons("memory", roster_dir),
+            catalog_pointer=catalog_pointer_reader(pool),
         )
 
     def dispatch_for(endpoint: RelayEndpoint) -> Dispatch:

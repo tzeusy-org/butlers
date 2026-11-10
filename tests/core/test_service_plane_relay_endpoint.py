@@ -30,6 +30,7 @@ from butlers.core.service_plane.registry import (
     FLEET_CASE_PROPOSE_POSTURE,
     FLEET_CASE_RECORD_LINK,
     MEDICATION_TRAVEL_SNAPSHOT,
+    MEMORY_CATALOG_FETCH,
     QA_REPORT_FINDING,
     build_relays,
     roster_daemons,
@@ -611,6 +612,119 @@ def test_fleet_case_relays_admit_every_domain_daemon_to_non_presentable_twins() 
         assert not target_is_llm_presentable(tool)
         # The LLM-facing tool stays presentable; only its twin is relay-reachable.
         assert target_is_llm_presentable(tool.removesuffix("_service"))
+
+
+_FACT = "22222222-2222-2222-2222-222222222222"
+_POINTER = {"source_schema": "health", "source_table": "facts", "source_id": _FACT}
+
+
+class _Catalog:
+    """``public.memory_catalog`` as Switchboard reads it: pointer -> owner row."""
+
+    def __init__(self, rows: Mapping[tuple[str, str, str], dict[str, Any]]) -> None:
+        self.rows = rows
+        self.lookups: list[tuple[str, str, str]] = []
+
+    async def __call__(self, schema: str, table: str, source_id: Any) -> dict[str, Any] | None:
+        key = (schema, table, str(source_id))
+        self.lookups.append(key)
+        return self.rows.get(key)
+
+
+def _memory_relays(catalog: _Catalog, memory_daemons=("health", "finance")):
+    return build_relays(
+        roster_daemons(),
+        _CONTRACTS,
+        memory_daemons=memory_daemons,
+        catalog_pointer=catalog,
+    )
+
+
+@pytest.mark.parametrize(
+    ("table", "owner", "memory_type"),
+    [("facts", "health", "fact"), ("rules", "finance", "rule")],
+)
+async def test_a_catalog_fetch_reaches_the_owner_its_catalog_row_names(
+    tmp_path: Path, table: str, owner: str, memory_type: str
+) -> None:
+    catalog = _Catalog(
+        {("health", table, _FACT): {"source_butler": owner, "memory_type": memory_type}}
+    )
+    harness = _Harness(relays=_memory_relays(catalog))
+
+    result = await harness.call(
+        MEMORY_CATALOG_FETCH,
+        {**_POINTER, "source_table": table},
+        tmp_path,
+        daemon="travel",
+        token=_up_token(),
+    )
+
+    assert result == {"accepted": True}
+    assert catalog.lookups == [("health", table, _FACT)]
+    assert harness.calls == [
+        (owner, "memory_get_service", {"memory_type": memory_type, "memory_id": _FACT}, False)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("rows", "body", "daemon", "code"),
+    [
+        ({}, _POINTER, "finance", "catalog_pointer_not_found"),
+        # The catalog names an owner that hosts no memory module.
+        (
+            {("health", "facts", _FACT): {"source_butler": "qa", "memory_type": "fact"}},
+            _POINTER,
+            "finance",
+            "target_not_allowed",
+        ),
+        ({}, {**_POINTER, "source_table": "episodes"}, "finance", "args_invalid"),
+        ({}, {**_POINTER, "source_id": "not-a-uuid"}, "finance", "args_invalid"),
+        ({}, {**_POINTER, "target_butler": "health"}, "finance", "args_invalid"),
+        ({}, {**_POINTER, "memory_type": "rule"}, "finance", "args_invalid"),
+        ({}, _POINTER, "switchboard", "caller_not_allowed"),
+    ],
+    ids=[
+        "pointer-not-in-catalog",
+        "owner-without-memory",
+        "table-outside-facts-rules",
+        "id-not-a-uuid",
+        "caller-chosen-target",
+        "caller-chosen-type",
+        "switchboard-name-from-butlers-up",
+    ],
+)
+async def test_a_catalog_fetch_never_reaches_a_target_the_catalog_does_not_name(
+    tmp_path: Path, rows: dict, body: dict[str, Any], daemon: str, code: str
+) -> None:
+    harness = _Harness(relays=_memory_relays(_Catalog(rows)))
+
+    with pytest.raises(RelayRefused) as refused:
+        await harness.call(MEMORY_CATALOG_FETCH, body, tmp_path, daemon=daemon, token=_up_token())
+
+    assert refused.value.code == code
+    assert refusal_is_permanent(refused.value)
+    assert harness.calls == []
+
+
+def test_the_catalog_fetch_relay_targets_memory_daemons_non_presentable_twin() -> None:
+    relays = _memory_relays(_Catalog({}), memory_daemons=roster_module_daemons("memory"))
+    endpoint = relays[MEMORY_CATALOG_FETCH]
+
+    assert endpoint.target_butlers == roster_module_daemons("memory")
+    assert "qa" not in endpoint.target_butlers
+    assert endpoint.allowed_callers == frozenset(
+        ServiceCaller("butlers-up", d) for d in roster_daemons() if d != "switchboard"
+    )
+    assert endpoint.target_tool == "memory_get_service"
+    assert not target_is_llm_presentable("memory_get_service")
+    assert target_is_llm_presentable("memory_get")
+
+
+def test_without_a_catalog_reader_no_catalog_fetch_relay_is_served() -> None:
+    assert MEMORY_CATALOG_FETCH not in build_relays(
+        roster_daemons(), _CONTRACTS, memory_daemons={"health"}
+    )
 
 
 def test_the_relay_url_is_on_the_switchboard_service_listener() -> None:

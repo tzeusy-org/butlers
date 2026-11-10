@@ -585,6 +585,8 @@ EXPECTED_TOOL_NAMES = {
     "memory_search",
     "memory_recall",
     "memory_get",
+    # Service-only twin, the memory.catalog_fetch relay target (RFC 0038 D7).
+    "memory_get_service",
     "memory_confirm",
     "memory_mark_helpful",
     "memory_mark_harmful",
@@ -1247,13 +1249,15 @@ class TestToolDelegation:
         mod._catalog_read_policy.assert_awaited_once_with()
         private_memory_pool.fetchval.assert_not_awaited()
 
-    async def test_memory_get_delegates_with_module_held_policy(self):
+    @pytest.mark.parametrize("tool_name", ["memory_get", "memory_get_service"])
+    async def test_memory_get_delegates_with_module_held_policy(self, tool_name):
+        """The relay twin reads exactly as memory_get, under this butler's own ceiling."""
         mod, tools, pool, _, reading, *_ = await self._setup_and_register()
         held_policy = object()
         mod._catalog_read_policy = AsyncMock(return_value=held_policy)
         reading.memory_get = AsyncMock(return_value=None)
 
-        result = await tools["memory_get"](
+        result = await tools[tool_name](
             memory_type="fact",
             memory_id="550e8400-e29b-41d4-a716-446655440000",
         )
@@ -1471,14 +1475,16 @@ class TestToolGroups:
         assert len(tools) == len(EXPECTED_TOOL_NAMES)
 
     async def test_core_only(self):
-        """groups=['core'] registers only the 9 core tools."""
+        """groups=['core'] registers only the 10 core tools."""
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig(groups=["core"])
         await mod.register_tools(mcp, config, MagicMock(), "test-butler")
         tools = await mcp.list_tools()
         tool_names = {t.name for t in tools}
-        assert len(tools) == 9
+        assert len(tools) == 10
+        # The relay twin travels with memory_get, so a catalog fetch always lands.
+        assert "memory_get_service" in tool_names
         assert "memory_search" in tool_names
         assert "memory_store_fact" in tool_names
         assert "memory_context" in tool_names
@@ -1487,14 +1493,14 @@ class TestToolGroups:
         assert "memory_stats" not in tool_names
 
     async def test_core_plus_entity(self):
-        """groups=['core', 'entity'] registers 16 tools."""
+        """groups=['core', 'entity'] registers 17 tools."""
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig(groups=["core", "entity"])
         await mod.register_tools(mcp, config, MagicMock(), "test-butler")
         tools = await mcp.list_tools()
         tool_names = {t.name for t in tools}
-        assert len(tools) == 16  # 9 core + 7 entity
+        assert len(tools) == 17  # 10 core + 7 entity
         assert "memory_entity_create" in tool_names
         assert "memory_catalog_search" in tool_names
         assert "memory_stats" not in tool_names  # admin
