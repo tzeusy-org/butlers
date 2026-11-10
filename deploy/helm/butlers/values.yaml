@@ -98,6 +98,12 @@ serviceClusterIPs:
   frontend: ""
   dashboardApi: ""
 
+# nodeSelector for the pods host `tailscale serve` proxies to (frontend,
+# dashboard-api, connector-owntracks). On a multi-node cluster they must run on
+# the serve host's node; set it in the gitignored values.local.yaml, e.g.
+#   hostServedNodeSelector: {kubernetes.io/hostname: <serve-host-node>}
+hostServedNodeSelector: {}
+
 nodePorts:
   frontend: 0
   dashboard: 0

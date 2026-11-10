@@ -672,3 +672,31 @@ def test_service_cluster_ips_are_unset_by_default_and_fixed_when_configured():
         "frontend": "192.0.2.10",
         "dashboard-api": "192.0.2.11",
     }
+
+
+_HOST_SERVED_PODS = {"frontend", "dashboard-api", "connector-owntracks"}
+_NODE_SELECTOR = "hostServedNodeSelector.kubernetes\\.io/hostname=node-a.invalid"
+
+
+def _node_selectors(docs: list[dict]) -> dict[str, dict | None]:
+    return {
+        name: template["spec"].get("nodeSelector")
+        for name, template in _pods(docs).items()
+        if name in _HOST_SERVED_PODS
+    }
+
+
+def test_host_served_pods_have_no_node_selector_by_default():
+    selectors = _node_selectors(_docs("dev"))
+    assert set(selectors) == _HOST_SERVED_PODS
+    assert set(selectors.values()) == {None}
+
+
+def test_host_served_node_selector_pins_exactly_the_pods_behind_host_tailscale_serve():
+    docs = _docs("dev", _NODE_SELECTOR)
+    pinned = {"kubernetes.io/hostname": "node-a.invalid"}
+    assert _node_selectors(docs) == {name: pinned for name in _HOST_SERVED_PODS}
+    elsewhere = {
+        name for name, template in _pods(docs).items() if template["spec"].get("nodeSelector")
+    }
+    assert elsewhere == _HOST_SERVED_PODS

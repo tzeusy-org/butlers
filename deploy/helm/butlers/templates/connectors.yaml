@@ -34,6 +34,9 @@ spec:
         prometheus.io/path: /metrics
       {{- end }}
     spec:
+      {{- if eq $name "owntracks" }}
+      {{- include "butlers.hostServedNodeSelector" $ | nindent 6 }}
+      {{- end }}
       initContainers:
         {{- if $c.oauth }}
         {{- include "butlers.oauthGate" $ | nindent 8 }}
