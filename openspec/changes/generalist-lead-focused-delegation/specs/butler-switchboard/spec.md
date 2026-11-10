@@ -210,7 +210,7 @@ Scope: v1-mandatory
 
 Switchboard SHALL provide a service-plane relay on its service listener through which a registered daemon's deterministic code calls another agent's non-LLM-presentable service-plane tool, replacing the deleted generic `route` tool for that traffic. The relay SHALL NOT be LLM-presentable or reachable from the session listener, SHALL refuse any target tool that is LLM-presentable, SHALL admit no goal and start no reasoning session, and SHALL NOT treat a caller-supplied source identity as authority.
 
-The relay SHALL be a set of named endpoints, not a generic target-and-payload forwarder: each endpoint SHALL fix its payload schema, its one target service-plane tool and an allowlist of calling daemons (for example domain-event fan-out, the QA error relay, module runtime wiring, and Travel's read of Health's medication snapshot). Switchboard SHALL authenticate the calling daemon's service identity on every request and SHALL refuse, without contacting any target, an unauthenticated caller, a caller not on that endpoint's allowlist, a payload that fails the endpoint's schema, or a request for an endpoint that does not exist.
+The relay SHALL be a set of named endpoints, not a generic target-and-payload forwarder: each endpoint SHALL fix its payload schema, its one target service-plane tool and an allowlist of calling daemons (for example domain-event fan-out, the QA error relay, module runtime wiring, and Travel's read of Health's medication snapshot). Switchboard SHALL authenticate the calling workload, the deployment process that sent the request, on every request. Co-hosted daemons share one process, so the daemon name a workload presents SHALL only narrow the endpoint's allowlist, as a (workload, daemon) pair, and SHALL NOT be authority on its own. Switchboard SHALL refuse, without contacting any target, an unauthenticated caller, a caller not on that endpoint's allowlist, a payload that fails the endpoint's schema, or a request for an endpoint that does not exist.
 
 ID: REQ-butler-switchboard-008
 Source: RFC 0038 D1 and D7
@@ -230,3 +230,7 @@ Scope: v1-mandatory
 - **WHEN** a request reaches the medication-snapshot endpoint from a daemon other than Travel, or from a caller whose service identity does not authenticate
 - **THEN** Switchboard SHALL refuse it without contacting Health
 - **AND** a `source_butler` field in the payload SHALL NOT change the decision
+
+#### Scenario: A daemon name from another workload is refused
+- **WHEN** a request presents the daemon name `travel` but authenticates as a workload other than the one that hosts Travel
+- **THEN** Switchboard SHALL refuse it without contacting the target

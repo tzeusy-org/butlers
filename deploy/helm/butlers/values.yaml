@@ -161,6 +161,16 @@ sessionHost:
     requests: {cpu: 100m, memory: 128Mi}
     limits: {memory: 512Mi}
 
+# RFC 0038 D7 service-plane caller authentication: dark. When enabled (requires
+# butlersControl.enabled), butlers-control and butlers-up run under their own
+# ServiceAccounts and BUTLERS_SERVICE_PLANE_AUTH=1. butlers-control mounts a projected,
+# pod-bound token for Messenger's delivery audience; Messenger verifies it against the
+# cluster issuer's JWKS. No private key is provisioned: the API server signs.
+servicePlaneAuth:
+  enabled: false
+  issuer: https://kubernetes.default.svc.cluster.local
+  tokenExpirationSeconds: 600
+
 butlersUp:
   resources:
     requests: {cpu: 500m, memory: 2Gi}

@@ -95,6 +95,14 @@ https://{{ .Values.publicUrl.host }}
     claimName: {{ .Release.Name }}-logs
 {{- end -}}
 
+{{- /* RFC 0038 D7 service-plane caller authentication switch (dark by default). */}}
+{{- define "butlers.servicePlaneEnv" -}}
+{{- if and .Values.servicePlaneAuth.enabled .Values.butlersControl.enabled -}}
+- {name: BUTLERS_SERVICE_PLANE_AUTH, value: "1"}
+- {name: BUTLERS_SERVICE_PLANE_ISSUER, value: {{ .Values.servicePlaneAuth.issuer | quote }}}
+{{- end -}}
+{{- end -}}
+
 {{- define "butlers.verifiersVolume" -}}
 - name: runtime-probe-verifiers
   secret:

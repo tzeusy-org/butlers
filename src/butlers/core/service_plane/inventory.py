@@ -1,0 +1,145 @@
+"""Inventory of today's generic ``route`` callers and what each becomes (RFC 0038 D7).
+
+RFC 0038 D7 allows no generic route proxy to survive the switch. Every production
+call site that reaches another butler through ``route`` is listed here with
+exactly one disposition:
+
+``named_relay``
+    The call moves to a named service-plane relay on the control plane's service
+    listener: fixed schema, one target, a per-endpoint caller allowlist.
+``messenger_delivery``
+    Switchboard ``deliver()`` sending to Messenger. Messenger's delivery endpoint
+    authenticates Switchboard as the caller.
+``dashboard_call``
+    An owner action from the dashboard. It goes through the control plane's
+    service listener, authenticated by the signed dashboard control client.
+``removed``
+    The call dies at the switch, with the module or lane that owns it.
+
+``tests/contracts/test_service_plane_inventory.py`` scans production code and
+fails when a route call site is missing from this table or the table names a
+site that no longer exists. A new caller must be classified here first.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal
+
+Disposition = Literal["named_relay", "messenger_delivery", "dashboard_call", "removed"]
+
+
+@dataclass(frozen=True, slots=True)
+class RouteCaller:
+    """One production call site that reaches another butler through ``route``."""
+
+    path: str
+    function: str
+    disposition: Disposition
+    becomes: str
+
+
+ROUTE_CALLERS: tuple[RouteCaller, ...] = (
+    RouteCaller(
+        "roster/switchboard/modules/tools.py",
+        "register_tools.route",
+        "removed",
+        "The generic route MCP tool. Its daemon callers move to the named relays below.",
+    ),
+    RouteCaller(
+        "roster/switchboard/tools/extraction/audit_log.py",
+        "extraction_log_undo",
+        "removed",
+        "Undo of a signal-extraction write; dies with classify-and-route extraction.",
+    ),
+    RouteCaller(
+        "roster/switchboard/tools/notification/deliver.py",
+        "_deliver_via_notify_request",
+        "messenger_delivery",
+        "notify.v1 delivery to Messenger route.execute.",
+    ),
+    RouteCaller(
+        "roster/switchboard/tools/notification/deliver.py",
+        "_deliver_recovery_via_notify_request",
+        "messenger_delivery",
+        "Approval-recovery notify.v1 delivery to Messenger route.execute.",
+    ),
+    RouteCaller(
+        "roster/switchboard/tools/notification/deliver.py",
+        "deliver",
+        "messenger_delivery",
+        "Channel delivery through the Messenger candidate.",
+    ),
+    RouteCaller(
+        "roster/switchboard/tools/notification/deliver.py",
+        "amend_delivery",
+        "messenger_delivery",
+        "Edit of a delivered message through Messenger.",
+    ),
+    RouteCaller(
+        "roster/travel/tools/health.py",
+        "request_health_medication_snapshot",
+        "named_relay",
+        "health.medication_travel_snapshot: Travel reads Health's medication snapshot.",
+    ),
+    RouteCaller(
+        "src/butlers/core/qa/relay.py",
+        "QaRelay._try_qa_relay",
+        "named_relay",
+        "qa.report_finding: the QA error relay.",
+    ),
+    RouteCaller(
+        "src/butlers/core_tools/_dashboard_system_answer.py",
+        "read_system_answer",
+        "removed",
+        "Dashboard answer lane; dies with route_to_butler and the dashboard lane.",
+    ),
+    RouteCaller(
+        "src/butlers/core_tools/_domain_events.py",
+        "_dispatch_receive_via_switchboard",
+        "named_relay",
+        "domain_event.receive: domain-event fan-out to one subscriber.",
+    ),
+    RouteCaller(
+        "src/butlers/core_tools/_domain_events.py",
+        "_SwitchboardInProcessRouteClient.call_tool",
+        "named_relay",
+        "domain_event.receive: Switchboard's reconciliation sweep redelivering to a subscriber.",
+    ),
+    RouteCaller(
+        "src/butlers/core_tools/_fleet_cases.py",
+        "_dispatch_fleet_case_write",
+        "named_relay",
+        "fleet_case.write: module runtime wiring into Switchboard's fleet-case store.",
+    ),
+    RouteCaller(
+        "src/butlers/core_tools/_memory_catalog.py",
+        "register_memory_catalog_tools.memory_catalog_fetch",
+        "named_relay",
+        "memory.catalog_fetch: module runtime wiring for a cross-butler memory read.",
+    ),
+    RouteCaller(
+        "src/butlers/core_tools/_switchboard.py",
+        "register_switchboard_tools._dispatch_dashboard_target",
+        "removed",
+        "Dies with route_to_butler and the dashboard lane.",
+    ),
+    RouteCaller(
+        "src/butlers/core_tools/_switchboard.py",
+        "register_switchboard_tools.file_bug_report",
+        "dashboard_call",
+        "Owner bug report: the dashboard calls qa.report_finding through the service listener.",
+    ),
+    RouteCaller(
+        "src/butlers/modules/calendar_response_fence.py",
+        "CalendarResponseFence.check_peers",
+        "named_relay",
+        "calendar.response_fence_status: module runtime wiring between fence owners.",
+    ),
+    RouteCaller(
+        "src/butlers/modules/contacts/owner.py",
+        "ContactsOwner._call",
+        "named_relay",
+        "relationship.contact_owner: module runtime wiring for contact lookup and report.",
+    ),
+)
