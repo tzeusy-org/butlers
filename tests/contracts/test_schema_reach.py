@@ -1004,6 +1004,7 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
             "goal ledger; qualified SQL allocated to core/goal_waiting.py (bu-dhloi1.7)"
         )
         for relation in (
+            "budgets",
             "goal_plans",
             "goals",
             "invocations",
