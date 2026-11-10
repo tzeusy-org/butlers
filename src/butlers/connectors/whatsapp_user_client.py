@@ -1464,7 +1464,7 @@ class WhatsAppUserClientConnector:
         f. Advance checkpoint to latest event ID.
         g. Record filtered events for policy/discretion rejections.
 
-        A failed batch goes back to the front of its chat buffer and is tried again on a
+        A failed batch is held (membership frozen) and is tried again on a
         later flush, up to the ``IngestRetryBudget``. Once the attempts are spent (or at
         once when *final*: nothing flushes again) each message is parked as its own
         replayable error row, committed before the batch is released; if that cannot be
@@ -1476,6 +1476,11 @@ class WhatsAppUserClientConnector:
 
         async with buf.lock:
             if not buf.messages:
+                return
+            # A held batch is retried by its own timer; until it clears, new arrivals wait
+            # in the buffer (bounded by the ceiling) instead of forming more held batches,
+            # each of which would refetch history on every retry tick.
+            if not final and self._held_batches.get(chat_jid):
                 return
             buffered_events = buf.messages
             buf.messages = []

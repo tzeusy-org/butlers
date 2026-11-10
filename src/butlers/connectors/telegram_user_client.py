@@ -1016,7 +1016,7 @@ class TelegramUserClientConnector:
         h. Advance checkpoint to max message ID among buffered messages.
         i. Record filtered events for policy/discretion rejections.
 
-        A failed batch goes back to the front of its chat buffer, with the checkpoint held
+        A failed batch is held (membership frozen), with the checkpoint held
         below it, and is tried again on a later flush up to the ``IngestRetryBudget``. Once
         the attempts are spent (or at once when *final*) each message is parked as its own
         replayable error row, committed before the checkpoint moves past it; if that cannot
@@ -1028,6 +1028,11 @@ class TelegramUserClientConnector:
 
         async with buf.lock:
             if not buf.messages:
+                return
+            # A held batch is retried by its own timer; until it clears, new arrivals wait
+            # in the buffer (bounded by the ceiling) instead of forming more held batches,
+            # each of which would refetch history on every retry tick.
+            if not final and self._held_batches.get(chat_id):
                 return
             # a. Atomically swap: take the accumulated messages and reset the list.
             buffered_messages = buf.messages

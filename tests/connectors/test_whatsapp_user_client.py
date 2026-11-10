@@ -2213,8 +2213,8 @@ async def test_same_chat_release_keeps_another_batchs_hold(
     connector._db_pool = FilteredEventsPool()  # type: ignore[assignment]
     connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", [_wa_event("m1")])
     await _flush_failing_wa(connector, "g1@g.us")
-    connector._chat_buffers["g1@g.us"].messages = [_wa_event("m2")]
-    await _flush_failing_wa(connector, "g1@g.us")
+    # A second hold, as when two flushes of the chat were in flight together.
+    connector._hold_batch("g1@g.us", None, "batch:g1@g.us:m2-m2", [_wa_event("m2")])
     first, second = connector._held_batches["g1@g.us"]
     assert first.key != second.key
 
@@ -2237,3 +2237,21 @@ async def test_held_chat_is_not_force_flushed_and_sheds_past_ceiling(
 
     connector._flush_chat_buffer.assert_not_awaited()
     assert len(connector._chat_buffers["g1@g.us"].messages) == cap * 4
+
+
+async def test_both_stores_down_holds_one_batch_per_chat(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+    pool.fail_writes = True
+    connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", [_wa_event("m0")])
+    await _flush_failing_wa(connector, "g1@g.us")
+
+    ticks = 30
+    for i in range(ticks):
+        connector._chat_buffers["g1@g.us"].messages.append(_wa_event(f"n{i}"))
+        await _flush_failing_wa(connector, "g1@g.us")  # the scanner's buffer flush: waits
+        await _flush_failing_wa(connector, "g1@g.us", retry=True)  # the retry timer
+
+    assert len(connector._held_batches["g1@g.us"]) == 1
+    assert len(connector._chat_buffers["g1@g.us"].messages) == ticks

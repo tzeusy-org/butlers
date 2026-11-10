@@ -1789,8 +1789,8 @@ async def test_releasing_one_held_batch_keeps_another_chat_batch_held(connector)
     connector._resolve_reply_tos = AsyncMock(return_value=first)  # type: ignore[method-assign]
     connector._chat_buffers["300"] = ChatBuffer(messages=list(first))
     await _flush_failing(connector, "300")
-    connector._chat_buffers["300"].messages = list(second)
-    await _flush_failing(connector, "300")
+    # A second hold, as when two flushes of the chat were in flight together.
+    connector._hold_batch("300", None, "batch:300:20-20", list(second), None)
     assert [h.key for h in connector._held_batches["300"]] == ["batch:300:10-10", "batch:300:20-20"]
 
     # The first batch succeeds on its retry; the second's hold is untouched.
@@ -1829,3 +1829,29 @@ async def test_a_held_chat_is_not_force_flushed_and_sheds_past_its_ceiling(conne
     with patch.object(connector, "_save_checkpoint", AsyncMock()):
         await connector._advance_checkpoint(500)
     assert held and connector._last_message_id == 39  # catch-up re-reads 40 and 41
+
+
+async def test_both_stores_down_holds_one_batch_per_chat_and_fetches_once_per_tick(
+    connector,
+) -> None:
+    from butlers.connectors.telegram_user_client import ChatBuffer
+
+    batch = [_held_msg(10)]
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+    pool.fail_writes = True
+    connector._last_message_id = 5
+    fetch = AsyncMock(return_value=batch)
+    connector._fetch_conversation_history = fetch  # type: ignore[method-assign]
+    connector._resolve_reply_tos = AsyncMock(return_value=batch)  # type: ignore[method-assign]
+    connector._chat_buffers["300"] = ChatBuffer(messages=list(batch))
+    await _flush_failing(connector, "300")
+
+    ticks = 30
+    for i in range(ticks):
+        connector._chat_buffers["300"].messages.append(_held_msg(11 + i))
+        await _flush_failing(connector, "300")  # the scanner's buffer flush: waits
+        await _flush_failing(connector, "300", retry=True)  # the retry timer
+
+    assert len(connector._held_batches["300"]) == 1
+    assert fetch.await_count <= 1 + ticks
+    assert len(connector._chat_buffers["300"].messages) == ticks
