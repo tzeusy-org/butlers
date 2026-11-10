@@ -543,6 +543,24 @@
         "dashboard-api"
       ]
     },
+    "deploy/helm/butlers/values.yaml::<deployment-scalar>::deployment::28028a1a3aa051dbf3ce3e43bfcdc2b43fc6bed5e89f0256032d8f08e9df51ed": {
+      "class": "reference",
+      "observed": {
+        "authorities": [
+          "kubernetes.default.svc.cluster.local:443"
+        ],
+        "config": null,
+        "count": 1,
+        "kind": "deployment",
+        "path": "deploy/helm/butlers/values.yaml",
+        "scope": "<deployment-scalar>",
+        "sha256": "28028a1a3aa051dbf3ce3e43bfcdc2b43fc6bed5e89f0256032d8f08e9df51ed"
+      },
+      "reason": "servicePlaneAuth.issuer is the expected `iss` claim that workload tokens are compared against; nothing dials it. The JWKS fetch is reviewed separately at workload_identity.py JWKS_URL.",
+      "resolver": null,
+      "sites": [],
+      "workloads": []
+    },
     "deploy/helm/butlers/values.yaml::<deployment-scalar>::deployment::31276e1f29a03c1dbbdcd11739cbbf49f159d8493b3c6362e417d9e065e0d6a6": {
       "class": "blocked",
       "observed": {
@@ -4559,6 +4577,46 @@
       "sites": [],
       "workloads": []
     },
+    "src/butlers/core/service_plane/messenger_delivery.py::<module>::url::4f3059dd6868496cafa41de01175a4fb9b46fc72419750b5b1544d56af9c250e": {
+      "class": "reference",
+      "observed": {
+        "authorities": [
+          "kubernetes.default.svc.cluster.local:443"
+        ],
+        "config": null,
+        "count": 1,
+        "kind": "url",
+        "path": "src/butlers/core/service_plane/messenger_delivery.py",
+        "scope": "<module>",
+        "sha256": "4f3059dd6868496cafa41de01175a4fb9b46fc72419750b5b1544d56af9c250e"
+      },
+      "reason": "DEFAULT_ISSUER is the expected `iss` claim of a projected ServiceAccount token, compared as a string; it is never dialed.",
+      "resolver": null,
+      "sites": [],
+      "workloads": []
+    },
+    "src/butlers/core/service_plane/workload_identity.py::<module>::url::14c174c904d338fd24306ebd18a3cd6695c774014ae2a453204ba84be9768fa2": {
+      "class": "site",
+      "observed": {
+        "authorities": [
+          "kubernetes.default.svc:443"
+        ],
+        "config": null,
+        "count": 1,
+        "kind": "url",
+        "path": "src/butlers/core/service_plane/workload_identity.py",
+        "scope": "<module>",
+        "sha256": "14c174c904d338fd24306ebd18a3cd6695c774014ae2a453204ba84be9768fa2"
+      },
+      "reason": "Service-plane token verification (bu-2c1g7v, dark behind BUTLERS_SERVICE_PLANE_AUTH) fetches the cluster issuer JWKS from the in-cluster API server with the pod's own token. Messenger in butlers-up verifies Switchboard's delivery token. The API server is not a chart peer, so the deployment locates it as the kube-apiserver site; the chart refuses servicePlaneAuth.enabled under egress profiles without that site.",
+      "resolver": null,
+      "sites": [
+        "kube-apiserver"
+      ],
+      "workloads": [
+        "butlers-up"
+      ]
+    },
     "src/butlers/core/spawner_env.py::_with_workload_egress::url::4d41a87dd494406a1240ae080cd092bc22548366e987e701a99f6c94348e5841": {
       "class": "internal",
       "observed": {
@@ -5566,13 +5624,13 @@
   "schema": "butlers.egress-profile-coverage/v2",
   "topology": {
     "deploy/helm/butlers/templates/_helpers.tpl": {
-      "sha256": "6a02c3fa500a05facf84aa9a615076377d404d8f435d71aedf6270c6ee357188"
+      "sha256": "145366fc1f2432c25e94fbf171eb1e22a86fd18218bbc5d079203ab945b1f5cd"
     },
     "deploy/helm/butlers/templates/butlers-control.yaml": {
-      "sha256": "dd9ed7085f268328756c936f7b4b0d804e34207b530aa19e42aac331cb1cea92"
+      "sha256": "dc093bc68e3f600d419af5950fa85d07f15c69a4441b7a8877184e2a194dd752"
     },
     "deploy/helm/butlers/templates/butlers-up.yaml": {
-      "sha256": "6abc4f118a7ec0c099c2827e10155e555e34c62d507fb3e911c477e6c1aa2aa7"
+      "sha256": "6c21180c953f9761a4ab89f63a530bd2bd231561459f4ed4295153fb51a5d25f"
     },
     "deploy/helm/butlers/templates/connector-podmonitor.yaml": {
       "sha256": "d910cfcf8a4ae5b79dc712e8f050fde764ef37f10d462dd63a2041d391d5c03a"
@@ -5590,7 +5648,7 @@
       "sha256": "46726ddc9aa6cb92b69054cca56e5772923848af373dc68022d239cf8f4544bd"
     },
     "deploy/helm/butlers/templates/egress-profiles.yaml": {
-      "sha256": "aaf002d7b4559805319cee1324d5a283fd596455672bf10cdd8d9e70d8e627f1"
+      "sha256": "2830a68984f9d54a652a31f0d72f221fa28c94924c7104ac29be9a6e41aca948"
     },
     "deploy/helm/butlers/templates/externalsecret-local.yaml": {
       "sha256": "e79d9c637b30444fa5583290494a0543638466541bc8462563e5038bd6c9df94"
@@ -5606,6 +5664,9 @@
     },
     "deploy/helm/butlers/templates/pvc.yaml": {
       "sha256": "1f1d1883011f76f59a4175544361ce6af8874399081857c36929196f712459f3"
+    },
+    "deploy/helm/butlers/templates/service-plane-accounts.yaml": {
+      "sha256": "4eab683f218d7637593762785b6943c0487f297b4c69aa24f1dd9af517689610"
     },
     "deploy/helm/butlers/templates/session-host.yaml": {
       "sha256": "96c602953decccf4a99b00429146ca5c2a0d2c342111458f08890bfc633f4ed6"

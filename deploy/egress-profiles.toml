@@ -35,6 +35,9 @@ sites = [
   { site = "database", port = 5432 },
   { site = "otlp", port = 4318 },
   { site = "home-assistant", port = 8123, optional = true },
+  # Messenger verifies Switchboard's delivery token against the issuer JWKS
+  # (service plane, bu-2c1g7v). Required when servicePlaneAuth.enabled.
+  { site = "kube-apiserver", port = 6443, optional = true },
 ]
 external = [
   # Startup `uv sync --dev` (butlers-up.yaml).

@@ -100,6 +100,10 @@ egressProfiles:
 A namespace location may add `podLabels` to narrow it. A required site with no entry
 fails the render; an `optional` one is simply not admitted.
 
+`kube-apiserver` (port 6443, optional) lets service-plane token verifiers fetch the
+cluster issuer's JWKS. With `servicePlaneAuth.enabled` the chart requires it; see
+[Service plane](../architecture/service-plane.md).
+
 ## The shared gateway
 
 `src/butlers/egress/gateway.py`, rendered by `templates/egress-gateway.yaml` only with

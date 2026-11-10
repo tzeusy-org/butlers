@@ -108,12 +108,30 @@ their own ServiceAccounts, sets `BUTLERS_SERVICE_PLANE_AUTH=1`, and mounts the
 delivery token into `butlers-control` only. Butlers holds no private key for
 this: the API server signs and the kubelet rotates.
 
+**Reachability.** This adds one network edge and no new chart-peer edge:
+
+| Hop | Under egress profiles |
+| --- | --- |
+| `butlers-control` to Messenger in `butlers-up` (delivery, token in a header) | Unchanged: the existing `butlers-control` → `butlers-up` 41101-41112 peer. |
+| `butlers-up` (Messenger) to the API server, for the JWKS | New `kube-apiserver` site on the `butlers-up` profile, port 6443, optional. The API server is not a chart peer (on k3s it listens on the node), so the deployment locates it with `egressProfiles.sites.kube-apiserver` (a /32). NetworkPolicy matches the endpoint after the `kubernetes.default` Service is translated, hence 6443, not 443. The chart refuses `servicePlaneAuth.enabled` under egress profiles without that site, because every verification would refuse. |
+
+The issuer string (`servicePlaneAuth.issuer`, `DEFAULT_ISSUER`) is compared
+against the token's `iss`; it is never dialed. Both are reviewed as references
+in `scripts/egress-profile-coverage.json`.
+
 ## Limits
 
 - **No per-daemon separation inside `butlers-up`.** Any daemon in that process
   can present any daemon name. A relay allowlist narrows by name, but only the
   workload is authenticated, until domain daemons are split into separate
   processes.
+- **Domain LLM sessions in `butlers-up` can act as any domain daemon.** The
+  domain daemons spawn their LLM CLIs inside the `butlers-up` container. Once
+  that container mounts the relay token, a session that can read files or run
+  commands can read it and call any relay as any daemon name in the
+  allowlist. That is still narrower than today: the service listener (41100)
+  now accepts any caller that can reach it, with no authentication at all.
+  The owner question in #5713 weighs this.
 - **Switchboard's own LLM sessions can read the delivery token.** Today they
   run inside `butlers-control`, in the same container that mounts it. Until
   sessions move to the session host (`bu-kiuh8v`), a Switchboard session that

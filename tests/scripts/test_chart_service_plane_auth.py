@@ -18,6 +18,12 @@ _CHART = Path(__file__).resolve().parents[2] / "deploy" / "helm" / "butlers"
 
 
 def _render(*settings: str) -> list[dict]:
+    result = _helm(*settings)
+    assert result.returncode == 0, result.stderr
+    return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+
+
+def _helm(*settings: str) -> subprocess.CompletedProcess[str]:
     command = ["helm", "template", "butlers", str(_CHART)]
     command += ["-f", str(_CHART / "values.yaml"), "-f", str(_CHART / "values.dev.yaml")]
     for setting in (
@@ -30,9 +36,7 @@ def _render(*settings: str) -> list[dict]:
         *settings,
     ):
         command += ["--set", setting]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
-    assert result.returncode == 0, result.stderr
-    return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+    return subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
 
 
 def _pod(docs: list[dict], name: str) -> dict:
@@ -76,3 +80,45 @@ def test_on_gives_each_workload_its_account_and_control_a_bound_delivery_token()
     assert token["expirationSeconds"] <= 3600
     # Only the control plane presents a delivery token.
     assert all(v["name"] != "workload-token" for v in up["volumes"])
+
+
+_PROFILED = (
+    "egressProfiles.enabled=true",
+    "egressPolicy.enabled=false",
+    "connectors.telegram-user.enabled=false",
+    "egressProfiles.sites.database.namespace=postgres-site",
+    "egressProfiles.sites.otlp.cidr=198.51.100.9/32",
+    "egressProfiles.sites.home-assistant.cidr=198.51.100.10/32",
+)
+
+
+def _egress_to(docs: list[dict], workload: str, cidr: str) -> list[dict]:
+    policy = next(
+        d
+        for d in docs
+        if d["kind"] == "NetworkPolicy"
+        and d["spec"]["podSelector"].get("matchLabels", {}).get("app.kubernetes.io/component")
+        == workload
+    )
+    return [
+        port
+        for rule in policy["spec"]["egress"]
+        if any(peer.get("ipBlock", {}).get("cidr") == cidr for peer in rule.get("to", []))
+        for port in rule.get("ports", [])
+    ]
+
+
+def test_under_egress_profiles_the_switch_requires_the_api_server_site() -> None:
+    result = _helm("servicePlaneAuth.enabled=true", *_PROFILED)
+
+    assert result.returncode != 0
+    assert "egressProfiles.sites.kube-apiserver" in result.stderr
+
+
+def test_the_api_server_site_admits_only_the_jwks_port_from_butlers_up() -> None:
+    site = "egressProfiles.sites.kube-apiserver.cidr=198.51.100.20/32"
+    docs = _render("servicePlaneAuth.enabled=true", *_PROFILED, site)
+
+    assert _egress_to(docs, "butlers-up", "198.51.100.20/32") == [{"port": 6443, "protocol": "TCP"}]
+    # Without the switch the optional site stays unadmitted unless located.
+    assert _helm(*_PROFILED).returncode == 0
