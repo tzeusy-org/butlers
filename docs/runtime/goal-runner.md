@@ -364,7 +364,7 @@ Nothing consumes them yet: the runner and admission are unchanged, and the legac
 | `goal_epochs` | `(goal_id, epoch)` with reason (`initial`, `wake`, `recovery`, `escalation`), label snapshot, grant digest and a forward-only state. A trigger derives a lead's epoch from its invocation until the runner records epochs itself |
 | `wait_envelopes` | Immutable bounds (predicate and digest, source set, grant, label, deadline, `max_wakes`, plan binding, approval effect and digest) plus the only mutable parts: `state`, the cumulative `consumed_wakes` and `generation`. One live envelope per goal |
 | `wait_generations` | One registration row per generation: condition instance ids, the predecessor epoch and fire event, the registration cursor |
-| `wake_intents` | The launch outbox, unique per `fire_key`, per `(envelope, generation)` successor and per fire event. A fire the ledger refused ends as a terminal `not_admitted` row with its reason |
+| `wake_intents` | The launch outbox, unique per `fire_key`, per `(envelope, generation)` successor and per fire event. A fire the ledger refused ends as a terminal `not_admitted` row with its reason. Stop, expiry or a superseding rearm ends an admitted, unlaunched wake as a terminal `cancelled` row (reason `stopped`, `expired` or `superseded`), out of the open index but still the generation's one successor |
 
 An envelope's `kind` decides what a wake does. `conditions`, `owner_answer` and `approval` launch a
 successor epoch; `settle` only runs the deterministic `resolve()` and launches nothing.

@@ -337,10 +337,11 @@ _TABLES_SQL = f"""
             CHECK (jsonb_typeof(fire_cursors) = 'object'),
         epoch BIGINT,
         state TEXT NOT NULL CHECK (state IN
-            ('pending','claimed','launched','failed','not_admitted')),
+            ('pending','claimed','launched','failed','not_admitted','cancelled')),
         not_admitted_reason TEXT CHECK (not_admitted_reason IN (
             'stopped','expired','cap_reached','goal_not_waiting','envelope_not_open',
             'stale_generation')),
+        cancelled_reason TEXT CHECK (cancelled_reason IN ('stopped','expired','superseded')),
         claimed_by TEXT,
         claim_expires_at TIMESTAMPTZ,
         attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
@@ -351,6 +352,7 @@ _TABLES_SQL = f"""
         CONSTRAINT ck_wake_outcome CHECK (
             (state = 'not_admitted' AND epoch IS NULL AND not_admitted_reason IS NOT NULL)
             OR (state <> 'not_admitted' AND epoch IS NOT NULL AND not_admitted_reason IS NULL)),
+        CONSTRAINT ck_wake_cancelled CHECK ((state = 'cancelled') = (cancelled_reason IS NOT NULL)),
         CONSTRAINT ck_wake_claim CHECK (
             (state = 'claimed') = (claimed_by IS NOT NULL AND claim_expires_at IS NOT NULL)),
         CONSTRAINT fk_wake_generation FOREIGN KEY (goal_id, envelope_id, generation)
@@ -691,15 +693,18 @@ _WAITING_GUARD = """
                 RAISE EXCEPTION 'An envelope counts one wake per fire and one generation per rearm';
             END IF;
         ELSIF TG_TABLE_NAME = 'wake_intents' THEN
-            IF (to_jsonb(NEW) - ARRAY['state','claimed_by','claim_expires_at','attempts',
-                    'updated_at'])
-               IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['state','claimed_by','claim_expires_at',
-                    'attempts','updated_at']) THEN
+            IF (to_jsonb(NEW) - ARRAY['state','cancelled_reason','claimed_by',
+                    'claim_expires_at','attempts','updated_at'])
+               IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['state','cancelled_reason','claimed_by',
+                    'claim_expires_at','attempts','updated_at']) THEN
                 RAISE EXCEPTION 'A wake intent is immutable except for its launch state';
             END IF;
             IF NEW.state IS DISTINCT FROM OLD.state AND NOT (
                 (OLD.state IN ('pending','failed') AND NEW.state = 'claimed')
-                OR (OLD.state = 'claimed' AND NEW.state IN ('launched','failed','pending'))) THEN
+                OR (OLD.state = 'claimed' AND NEW.state IN ('launched','failed','pending'))
+                -- Stop, expiry or a superseding rearm cancels an admitted wake that has not
+                -- launched; cancelled is terminal and stays counted in uq_wake_successor.
+                OR (OLD.state IN ('pending','failed','claimed') AND NEW.state = 'cancelled')) THEN
                 RAISE EXCEPTION 'Illegal wake intent transition % -> %', OLD.state, NEW.state;
             END IF;
             IF NEW.attempts < OLD.attempts THEN
