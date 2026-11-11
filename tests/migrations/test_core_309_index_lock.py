@@ -29,6 +29,26 @@ FIND_INDEX = (
 )
 
 
+def wait_until_at_the_lock(probe, holder_pid: int, upgrade) -> None:
+    """Return once the upgrade's session has asked for the build lock, however it asks.
+
+    Before that, Alembic's own revision transaction is open: it reads ``alembic_version`` and then
+    imports every migration script to plan the upgrade, which on a busy runner takes longer than
+    the sampling threshold. core_309's autocommit block commits that transaction before it takes
+    the lock, so it is not part of the wait (bu-dhloi1.311). The match is on the lock key, not on
+    the polling call, so a blocking ``pg_advisory_lock`` would be sampled too.
+    """
+    deadline = time.monotonic() + 60
+    while not probe.exec_driver_sql(
+        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+        "AND pid NOT IN (pg_backend_pid(), %s) AND query LIKE %s",
+        (holder_pid, f"%advisory_lock({LOCK})%"),
+    ).scalar_one():
+        assert not upgrade.done(), "the upgrade ended before it asked for the build lock"
+        assert time.monotonic() < deadline, "the upgrade never asked for the build lock"
+        time.sleep(0.05)
+
+
 def test_a_waiting_upgrade_holds_no_transaction_and_builds_once_the_lock_frees(
     postgres_container,
 ):
@@ -42,25 +62,30 @@ def test_a_waiting_upgrade_holds_no_transaction_and_builds_once_the_lock_frees(
             holder_pid = holder.exec_driver_sql("SELECT pg_backend_pid()").scalar_one()
             with ThreadPoolExecutor(max_workers=1) as pool:
                 upgrade = pool.submit(command.upgrade, config, "core@core_309")
-                with engine.connect() as probe:
-                    stale = []
-                    deadline = time.monotonic() + 2.0
-                    while time.monotonic() < deadline:
-                        stale.append(
-                            probe.exec_driver_sql(
-                                "SELECT count(*) FROM pg_stat_activity "
-                                "WHERE datname = current_database() "
-                                "AND pid NOT IN (pg_backend_pid(), %s) "
-                                "AND xact_start < now() - interval '0.5 seconds'",
-                                (holder_pid,),
-                            ).scalar_one()
-                        )
-                        time.sleep(0.05)
-                    assert not upgrade.done(), "the upgrade ran past a held build lock"
-                    assert probe.exec_driver_sql(FIND_INDEX).first() is None
-                    # While it waited it kept no snapshot a running build would wait for.
-                    assert max(stale) == 0, stale
-                holder.exec_driver_sql(f"SELECT pg_advisory_unlock({LOCK})")
+                try:
+                    with engine.connect() as probe:
+                        wait_until_at_the_lock(probe, holder_pid, upgrade)
+                        stale = []
+                        deadline = time.monotonic() + 2.0
+                        while time.monotonic() < deadline:
+                            stale.append(
+                                probe.exec_driver_sql(
+                                    "SELECT count(*) FROM pg_stat_activity "
+                                    "WHERE datname = current_database() "
+                                    "AND pid NOT IN (pg_backend_pid(), %s) "
+                                    "AND xact_start < now() - interval '0.5 seconds'",
+                                    (holder_pid,),
+                                ).scalar_one()
+                            )
+                            time.sleep(0.05)
+                        assert not upgrade.done(), "the upgrade ran past a held build lock"
+                        assert probe.exec_driver_sql(FIND_INDEX).first() is None
+                        # While it waited it kept no snapshot a running build would wait for.
+                        assert max(stale) == 0, stale
+                finally:
+                    # Free the build even when an assertion failed, or the pool's exit would
+                    # wait on an upgrade still polling (the 300 s timeout bu-dhloi1.311 saw).
+                    holder.exec_driver_sql(f"SELECT pg_advisory_unlock({LOCK})")
                 upgrade.result(timeout=60)
             with engine.connect() as check:
                 assert check.exec_driver_sql(FIND_INDEX).scalar_one() is True
