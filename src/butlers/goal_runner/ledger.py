@@ -1201,11 +1201,14 @@ class RunnerLedger:
         # An owner edit is marked by its own write (BrokerLedger.begin_approved): the stored call
         # becomes ``rejected`` and the edited call is a second effect of this goal under the same
         # approval reference. Nothing else shares an approval reference, so the pair is the mark.
+        # The stored call's reference is its own id (the broker parks it so); requiring that
+        # keeps a foreign reference a domain returns from turning a real refusal into an edit.
         return await self.connection.fetch(
             "SELECT e.id::text AS id, e.status, e.approval_ref IS NOT NULL AS approval, "
             "e.updated_at, COALESCE(e.status = 'committed' AND e.prompt_accepts_input "
             "AND e.prompt_expires_at > now() AND e.recipient_entity = $2, false) AS prompt, "
-            "(e.status = 'rejected' AND EXISTS (SELECT 1 FROM switchboard.effects s "
+            "(e.status = 'rejected' AND e.approval_ref = e.id::text "
+            "AND EXISTS (SELECT 1 FROM switchboard.effects s "
             "WHERE s.goal_id = e.goal_id AND s.approval_ref = e.approval_ref "
             "AND s.id <> e.id)) AS edited "
             "FROM switchboard.effects e WHERE e.goal_id = $1",

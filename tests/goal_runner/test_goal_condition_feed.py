@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from butlers.conditions import ConditionEvaluator
+from tests.capability_broker.test_broker_ledger import NOTIFY
 from tests.goal_runner.test_goal_runner import SEARCH, _grant, harness
 from tests.goal_runner.test_goal_wait_until import (
     decision,
@@ -107,6 +108,42 @@ async def test_a_wait_whose_events_do_not_hold_stays_waiting(broker_db_url):
 
         assert await h.goal_status(goal) == "waiting"
         assert (await envelope(h, goal))["state"] == "open"
+
+
+async def own(h, goal: UUID, effect: UUID):
+    async with h.runner._txn() as ledger:
+        effects = await ledger.own_effects(goal)
+    (found,) = [e for e, _ in effects if e.id == str(effect)]
+    return found
+
+
+async def test_a_rejection_under_a_foreign_reference_is_never_read_as_an_edit(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal, lead, refused_call = await parked(h)
+        args = {"entity_id": str(uuid4()), "message": "Another call", "channel": "telegram"}
+        sibling = await h.w.broker.call(goal, lead.token, NOTIFY.identity, args)
+        assert sibling.status == "parked"
+        # A domain hands back a reference that is not the effect's own id, shared by a sibling.
+        for effect in (refused_call, sibling.effect_id):
+            await h.w.owner.execute(
+                "UPDATE switchboard.effects SET approval_ref = 'domain:ref-1' WHERE id = $1",
+                effect,
+            )
+        await set_status(h, refused_call, "rejected")
+
+        found = await own(h, goal, refused_call)
+
+        assert (found.edited, found.decision) == (False, "rejected")
+
+
+async def test_a_real_owner_edit_is_read_as_an_edit(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal, _, effect = await parked(h)
+        await owner_edits(h, goal, effect)
+
+        found = await own(h, goal, effect)
+
+        assert (found.edited, found.decision) == (True, "edited")
 
 
 async def owner_edits(h, goal: UUID, effect: UUID) -> None:
