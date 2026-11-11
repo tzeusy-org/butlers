@@ -21,7 +21,7 @@ from butlers.capability_broker.contracts import BrokerRefused, Catalog, Principa
 from butlers.capability_broker.ledger import BrokerLedger
 from butlers.capability_broker.recipients import live_owner
 from butlers.capability_broker.typed import TypedSchema, parse_schema
-from butlers.core.goal_admission import Grant, decode_grants, digest, encode_grants
+from butlers.core.goal_admission import Grant, decode_grants, digest, encode_grants, intersect
 from butlers.core.goal_waiting import WaitLedger
 
 from .contracts import (
@@ -83,6 +83,16 @@ def plan_refs(value: Any) -> tuple[str, ...]:
             raise BrokerRefused(Reason.POLICY)
         refs.append(item)
     return tuple(refs)
+
+
+def published(grants: tuple[Grant, ...], catalog: Catalog) -> tuple[Grant, ...]:
+    """The grants current policy still allows: published, and not transact (admission's set)."""
+    return tuple(
+        grant
+        for grant in grants
+        if (capability := catalog.get(grant.capability)) is not None
+        and capability.effect_class != "transact"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +266,32 @@ class RunnerLedger:
             row["exposed"],
         )
 
+    async def _lead_grants(
+        self, goal, wake: WakeClaim | None, catalog: Catalog | None
+    ) -> tuple[Grant, ...]:
+        """The new lead's grant: the ceiling narrowed by its wake or its predecessor (S2.2)."""
+        ceiling = decode_grants(goal["ceiling"])
+        if wake is not None:
+            assert catalog is not None
+            snapshot = await self.connection.fetchval(
+                "SELECT e.grant_snapshot FROM switchboard.wake_intents w "
+                "JOIN switchboard.wait_envelopes e ON e.goal_id = w.goal_id "
+                "AND e.id = w.envelope_id WHERE w.goal_id = $1 AND w.id = $2",
+                goal["id"],
+                wake.intent_id,
+            )
+            if snapshot is None:
+                raise GoalEnded("wake_envelope_missing")
+            return published(intersect(ceiling, decode_grants(snapshot)), catalog)
+        latest = await self.connection.fetchval(
+            "SELECT grant_snapshot FROM switchboard.invocations WHERE goal_id = $1 "
+            "AND depth = 0 ORDER BY lead_epoch DESC, created_at DESC LIMIT 1",
+            goal["id"],
+        )
+        if latest is None:
+            return ceiling
+        return intersect(ceiling, decode_grants(latest))
+
     async def open_lead(
         self,
         goal_id: UUID,
@@ -268,6 +304,7 @@ class RunnerLedger:
         lease_seconds: float,
         relaunch_of: UUID | None = None,
         wake: WakeClaim | None = None,
+        catalog: Catalog | None = None,
     ) -> Started:
         """Launch a lead: on admission, wake, recovery, relaunch or escalation (D8, D14, D16).
 
@@ -276,9 +313,18 @@ class RunnerLedger:
         sweep retries the same intent) or the lead recorded (recovery owns it): never two.
 
         The epoch is one past every earlier lead of the goal, so the new lead's
-        insert is what revokes any predecessor's token (D14). The goal ceiling
-        is the lead's grant; exposure and labels come from the ledger triggers.
+        insert is what revokes any predecessor's token (D14). Exposure and labels come from
+        the ledger triggers. The grant only ever narrows (RFC 0038 S2.2, bu-dhloi1.305):
+
+        - the goal's first lead takes the goal ceiling;
+        - a wake lead takes the ceiling ∩ the fired envelope's grant snapshot ∩ current policy
+          (``catalog``, the live published catalog: what is still published and not transact,
+          admission's eligible set), so a policy change while the goal waited narrows the wake;
+        - any other successor (relaunch, recovery, escalation) takes the ceiling ∩ the latest
+          lead's grant, so a failed narrowed lead's replacement stays narrowed.
         """
+        if wake is not None and catalog is None:
+            raise ValueError("a wake lead is narrowed by the live catalog")
         goal = await self._goal(goal_id, ("admitted", "running"))
         if await self.connection.fetchval(
             "SELECT EXISTS (SELECT 1 FROM switchboard.invocations WHERE goal_id = $1 "
@@ -312,6 +358,7 @@ class RunnerLedger:
             wake.intent_id,
         ):
             raise GoalEnded("wake_not_claimed")
+        grants = await self._lead_grants(goal, wake, catalog)
         await self.connection.execute(
             "UPDATE switchboard.goals SET status = 'running', updated_at = now() "
             "WHERE id = $1 AND status <> 'running'",
@@ -322,7 +369,7 @@ class RunnerLedger:
             depth=0,
             parent=None,
             epoch=epoch,
-            grants=decode_grants(goal["ceiling"]),
+            grants=grants,
             max_turns=max_turns,
             max_tokens=max_tokens,
             role=role,

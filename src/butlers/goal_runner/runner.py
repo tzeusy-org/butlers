@@ -207,6 +207,7 @@ class GoalRunner:
                 return await ledger.relaunch_child(
                     plan.goal_id, attempts[-1], candidate.model_id, lease
                 )
+            wake = None if attempts else plan.wake
             return await ledger.open_lead(
                 plan.goal_id,
                 role=plan.role,
@@ -216,7 +217,13 @@ class GoalRunner:
                 max_tokens=self.config.lead_max_tokens,
                 lease_seconds=lease,
                 relaunch_of=attempts[-1] if attempts else plan.relaunch_of,
-                wake=None if attempts else plan.wake,
+                wake=wake,
+                # A wake is narrowed by current policy, read in the launch's transaction.
+                catalog=(
+                    None
+                    if wake is None
+                    else await self.broker._live_catalog.load(ledger.connection)
+                ),
             )
 
     async def _wanted(self, plan: _Plan) -> bool:
