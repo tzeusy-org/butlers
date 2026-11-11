@@ -86,6 +86,9 @@ spec:
             - name: DASHBOARD_AUTH_DB_USER
               valueFrom:
                 secretKeyRef: {name: {{ .Values.localSecrets.envSecretName }}, key: DASHBOARD_AUTH_DB_USER, optional: true}
+            - name: BUTLERS_HEALTH_WRITER_DSN
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.localSecrets.envSecretName }}, key: BUTLERS_HEALTH_WRITER_DSN, optional: true}
             - name: DASHBOARD_API_KEY
               valueFrom:
                 secretKeyRef: {name: {{ .Values.localSecrets.envSecretName }}, key: DASHBOARD_API_KEY, optional: true}

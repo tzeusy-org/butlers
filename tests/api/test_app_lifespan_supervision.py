@@ -61,6 +61,7 @@ _MODULE_LEVEL_LOOP_FUNCS = [
     "run_backup_facts_snapshot_loop",
     "run_external_deadman_loop",
     "run_readiness_sampler_loop",
+    "run_capability_health_loop",
 ]
 
 
@@ -156,6 +157,7 @@ async def test_all_dashboard_loops_wired_through_supervisor_exactly_once(
     monkeypatch, caplog, bridge_start_failure
 ):
     monkeypatch.delenv(api_app.EXTERNAL_DEADMAN_URL_ENV, raising=False)
+    monkeypatch.delenv("BUTLERS_HEALTH_WRITER_DSN", raising=False)
     call_counts: dict[str, int] = {}
     _install_common_mocks(monkeypatch, call_counts=call_counts)
     calls = _spy_on_supervisor(monkeypatch)
@@ -270,3 +272,22 @@ async def test_shutdown_cancels_all_dashboard_loops_including_calendar_deadman(m
         f"a loop restarted during/after shutdown: {call_counts}"
     )
     assert "restarting in" not in caplog.text
+
+
+async def test_capability_health_wired_only_with_its_own_writer_dsn(monkeypatch):
+    monkeypatch.delenv(api_app.EXTERNAL_DEADMAN_URL_ENV, raising=False)
+    monkeypatch.setenv("BUTLERS_HEALTH_WRITER_DSN", "postgresql://perception_health_writer@h/db")
+    _install_common_mocks(monkeypatch, call_counts={})
+    calls = _spy_on_supervisor(monkeypatch)
+    async with api_app.lifespan(FastAPI()):
+        assert {name for name, _ in calls} == _ALWAYS_ON_LOOP_NAMES | {"capability_health"}
+
+
+async def test_capability_health_never_borrows_the_dashboard_login(monkeypatch):
+    monkeypatch.delenv(api_app.EXTERNAL_DEADMAN_URL_ENV, raising=False)
+    monkeypatch.delenv("BUTLERS_HEALTH_WRITER_DSN", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://dashboard@h/db")
+    _install_common_mocks(monkeypatch, call_counts={})
+    calls = _spy_on_supervisor(monkeypatch)
+    async with api_app.lifespan(FastAPI()):
+        assert "capability_health" not in {name for name, _ in calls}

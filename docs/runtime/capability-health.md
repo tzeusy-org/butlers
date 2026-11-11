@@ -65,9 +65,33 @@ closed words and counts only: `code`, `dependency`, `state`, `cause`, `since`, `
 Health can only refuse or annotate; it never authorizes. Unknown never relaxes a check: normal
 authorization and the underlying call checks stay in force, and advisory surfaces say `unknown`.
 
-## Conditions
+## Collection
 
-The conditions service reports its own store as `system.dep.conditions` with a free-text reason.
-`ReportCollector` keeps the latest report per dependency for five minutes, maps the reason to a closed
-cause (network exception classes to `domain_unreachable`, anything else to `unknown`) and drops the
-text. Silence after expiry is no claim, never "healthy".
+The dashboard-api runs one zero-LLM job (`butlers.jobs.capability_health`, every 60s). Each tick gathers
+observations, reduces one verdict per declared dependency, and publishes those that changed or are due
+for the 300s heartbeat.
+
+- Credential states from the secrets inventory feed `google`, `steam`, `home_assistant`, `owntracks`,
+  `spotify` and `telegram`: `ok`/`expiring` is available, `never_set` is unconfigured
+  (`credential_missing`), `expired` is down (`oauth_revoked`), `failing` is down (`unknown`). `warn` and
+  anything unrecognised is unmeasured. A dependency no credential feeds stays unmeasured, which readers
+  see as `unknown`.
+- `conditions` is probed directly (a one-row read of the conditions store, 2s deadline), stamped at
+  probe time. A timeout or connection failure is down (`domain_unreachable`); any other failure is
+  unmeasured, never available. The service's own `DependencyReporter` seam has no in-process consumer.
+
+### Writer login and rollout
+
+The job publishes as `perception_health_writer` over its own small pool (at most two connections) from
+`BUTLERS_HEALTH_WRITER_DSN` (optional `secretKeyRef` in the chart, from the local env Secret). Service
+roles stay `NOINHERIT` with no memberships (perception.md), so the dashboard login cannot act as the
+writer and the job never falls back to it. Without the variable the job does not start, logs once, and
+readers see `unknown`.
+
+Bootstrap and `finalize_interface()` refuse `LOGIN` only on `perception_owner`; the writer role is
+created `NOLOGIN` once and a rerun does not reset it. Enabling it is a host-provisioning step, dev
+only, content-blind (the owner or lead runs it, the password never enters a repo or a transcript):
+
+1. `ALTER ROLE perception_health_writer LOGIN PASSWORD '<generated>'`.
+2. Add `BUTLERS_HEALTH_WRITER_DSN` (that role and password) to the `butlers-local-env` Secret.
+3. Restart dashboard-api; check `/api/system/background-jobs` for `capability_health`.

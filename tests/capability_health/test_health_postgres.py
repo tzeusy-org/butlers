@@ -108,3 +108,30 @@ async def test_an_unmeasurable_publication_reads_as_unknown_not_healthy(dsn) -> 
         reader = await as_role(connection, "perception_owner_reader")
         health = await read_health(reader, "google", NOW)
         assert health.availability is Availability.UNKNOWN and health.state is None
+
+
+async def test_the_writer_role_may_log_in_and_publish_directly_across_a_finalize(dsn) -> None:
+    """Provisioning LOGIN on the writer role (and only it) survives the finalizer's re-run."""
+    async with transaction(dsn) as connection:
+        await connection.execute("ALTER ROLE perception_health_writer LOGIN PASSWORD 'x'")
+        await connection.execute("SELECT perception_admin.finalize_interface()")
+        attributes = await connection.fetchrow(
+            "SELECT rolcanlogin, rolinherit, rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, "
+            "rolreplication FROM pg_roles WHERE rolname='perception_health_writer'"
+        )
+        assert list(attributes.values()) == [True, False, False, False, False, False, False]
+        assert not await connection.fetchval(
+            "SELECT count(*) FROM pg_auth_members m JOIN pg_roles r "
+            "ON r.oid IN (m.roleid, m.member) WHERE r.rolname='perception_health_writer'"
+        )
+        # A direct login has no SET ROLE: the writer is identified by its session user.
+        await connection.execute("SET SESSION AUTHORIZATION perception_health_writer")
+        writer = HealthPublisher(PerceptionStore(connection))
+        assert (await writer.publish(reduction("available", None), NOW)).published
+
+
+async def test_login_on_the_perception_owner_is_still_refused(dsn) -> None:
+    async with transaction(dsn) as connection:
+        await connection.execute("ALTER ROLE perception_owner LOGIN")
+        with pytest.raises(asyncpg.PostgresError):
+            await connection.execute("SELECT perception_admin.finalize_interface()")

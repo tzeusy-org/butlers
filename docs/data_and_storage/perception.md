@@ -47,6 +47,9 @@ host provisioning may enable direct service login without changing this API;
 bootstrap continues to reject memberships and ordinary-runtime inheritance.
 This change provisions no credentials/memberships and turns no domain daemon
 into a trusted reducer. Actual service authentication/provisioning is a separate activation.
+The first such activation is `perception_health_writer` (capability health): host provisioning gives
+that one role `LOGIN` and the dashboard-api job connects as it from `BUTLERS_HEALTH_WRITER_DSN`
+(see `docs/runtime/capability-health.md`). Bootstrap still refuses `LOGIN` on `perception_owner`.
 
 The privileged `perception_private.sources` profile binds the fixed source,
 writer and kind, permitted subject identities, evidence source set and a finite

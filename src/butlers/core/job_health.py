@@ -74,6 +74,7 @@ JOB_SPECS = {
         JobSpec("backup_facts_snapshot", "periodic", 600),
         JobSpec("external_deadman", "periodic", 600),
         JobSpec("fleet_readiness", "periodic", 30),
+        JobSpec("capability_health", "periodic", 60),
     )
 }
 
