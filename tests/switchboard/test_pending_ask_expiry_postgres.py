@@ -172,3 +172,16 @@ async def test_the_original_ask_can_exist_only_while_the_ask_is_open(world):  # 
             await owner.execute(
                 "UPDATE switchboard.pending_asks SET state = $2 WHERE id = $1", row["id"], state
             )
+
+
+async def test_a_line_that_can_never_be_sent_is_given_up_after_a_few_sweeps(world):  # noqa: F811
+    from butlers.goal_runner.owner_failure import MAX_LINE_ATTEMPTS
+
+    owner, runtime, _ = world
+    await owner_goal(runtime, owner)
+    sender = Sender("failed")
+    for _ in range(MAX_LINE_ATTEMPTS + 3):
+        await reporter(runtime, sender).sweep()
+    assert len(sender.lines) == MAX_LINE_ATTEMPTS
+    (row,) = await asks(owner)
+    assert row["state"] == "open" and row["line_attempts"] == MAX_LINE_ATTEMPTS

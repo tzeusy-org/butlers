@@ -625,6 +625,9 @@ in its own lineage, would leave the owner with silence. The sweep's last step
   (`RETRYABLE_REFUSALS`: `quota_exhausted`, `limits_unavailable`), with the rollout on. Authorization and
   owner-law refusals, and any non-owner sender, never write one. A write failure is logged and never
   changes the refusal.
+- Retry cap: `line_attempts` counts presentations of the cause line; after `MAX_LINE_ATTEMPTS` (3) a
+  line that keeps failing before any provider call (for example no owner recipient) is no longer
+  presented, and the ask waits for its 24 hour expiry.
 - `original_ask` is a versioned reference `{v, source:{kind,id}, refusal}`, not message text: a refused
   admission can be re-admitted with a fresh attempt id, so the reference is enough to replay it. It
   exists only while the ask is open (CHECK `ck_pending_ask_original`).

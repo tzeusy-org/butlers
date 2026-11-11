@@ -10,6 +10,10 @@ versioned source reference and the closed refusal reason, not message text, and 
 while the ask is open: the CHECK forbids it on any other state, so every terminal transition
 (Run, Drop, ack, the stale expiry) must clear it in the same update.
 
+``line_attempts`` counts presentations of the cause line, so a persistently unsendable line (for
+example no owner recipient) stops being retried after a few sweeps instead of minting a presentation
+every tick; the ask itself still expires at 24 hours.
+
 Existing rows get ``created_at + 24h``. The downgrade refuses while any ``original_ask`` exists,
 because dropping the column would erase the only record of a refused owner request.
 """
@@ -26,6 +30,8 @@ def upgrade() -> None:
     op.execute("""
         ALTER TABLE switchboard.pending_asks ADD COLUMN IF NOT EXISTS original_ask JSONB;
         ALTER TABLE switchboard.pending_asks ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+        ALTER TABLE switchboard.pending_asks
+            ADD COLUMN IF NOT EXISTS line_attempts INTEGER NOT NULL DEFAULT 0;
         UPDATE switchboard.pending_asks
            SET expires_at = created_at + interval '24 hours' WHERE expires_at IS NULL;
         ALTER TABLE switchboard.pending_asks ALTER COLUMN expires_at SET NOT NULL;
@@ -52,4 +58,5 @@ def downgrade() -> None:
         ALTER TABLE switchboard.pending_asks DROP CONSTRAINT IF EXISTS ck_pending_ask_original;
         ALTER TABLE switchboard.pending_asks DROP COLUMN IF EXISTS original_ask;
         ALTER TABLE switchboard.pending_asks DROP COLUMN IF EXISTS expires_at;
+        ALTER TABLE switchboard.pending_asks DROP COLUMN IF EXISTS line_attempts;
     """)

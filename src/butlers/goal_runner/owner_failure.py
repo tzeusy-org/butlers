@@ -76,11 +76,15 @@ SELECT g.id, g.source_key, g.status, g.updated_at AS ended_at,
 
 # Pending asks with no presentation at the subject's current generation, or whose presentation
 # there was proven not sent ('failed'): ``present`` resets that one and it is sent once.
+# A line that cannot be sent is presented at most this many times; the ask then waits for expiry.
+MAX_LINE_ATTEMPTS = 3
+
 _UNPRESENTED = """
 SELECT p.id, p.cause, p.subject_id
   FROM switchboard.pending_asks p
   JOIN public.owner_delivery_subjects s ON s.id = p.subject_id
  WHERE p.state = 'open' AND p.expires_at > clock_timestamp() AND p.cause = ANY($3::text[])
+   AND p.line_attempts < $4
    AND NOT EXISTS (SELECT 1 FROM public.owner_delivery_presentations x
                     WHERE x.subject_id = s.id AND x.surface = $1 AND x.generation = s.generation
                       AND x.state <> 'failed')
@@ -218,7 +222,9 @@ class OwnerFailureReporter:
         """Send the cause line of each ask that has none, at most once each."""
         async with self.pool.acquire() as conn, conn.transaction():
             await conn.execute("SELECT set_config('search_path', 'switchboard,public', true)")
-            pending = await conn.fetch(_UNPRESENTED, SURFACE, self.batch, list(CAUSE_LINES))
+            pending = await conn.fetch(
+                _UNPRESENTED, SURFACE, self.batch, list(CAUSE_LINES), MAX_LINE_ATTEMPTS
+            )
         sent = 0
         for ask in pending:
             if await self.sender.suppressed():
@@ -247,6 +253,11 @@ class OwnerFailureReporter:
             # A presentation already handed to its provider is never sent again.
             if presentation.state != "pending" or not await od.begin_send(conn, presentation.id):
                 return False
+            await conn.execute(
+                "UPDATE switchboard.pending_asks SET line_attempts = line_attempts + 1 "
+                "WHERE id = $1",
+                ask["id"],
+            )
         try:
             outcome = await self.sender.send(line, dedup_key=f"pending_ask:{ask['id']}")
         except Exception:
