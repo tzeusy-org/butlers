@@ -63,20 +63,21 @@ async def read_health(store: HealthReader, dependency: str, now: datetime) -> He
             return unknown(dependency)
         value = row.get("value")
         validate_value("system.dep", value)
+        assert isinstance(value, dict)
         generation = row["generation"]
         observed_at = datetime.fromisoformat(value["observed_at"].replace("Z", "+00:00"))
         if type(generation) is not int:
             return unknown(dependency)
+        age = max(0, int((now.astimezone(UTC) - observed_at).total_seconds()))
+        return Health(
+            dependency,
+            value["state"],
+            value["cause"],
+            observed_at,
+            generation,
+            age,
+            _AVAILABILITY[value["state"]],
+        )
     except Exception:
         # Content-blind by design: no exception text reaches a session or a log line.
         return unknown(dependency)
-    age = max(0, int((now.astimezone(UTC) - observed_at).total_seconds()))
-    return Health(
-        dependency,
-        value["state"],
-        value["cause"],
-        observed_at,
-        generation,
-        age,
-        _AVAILABILITY[value["state"]],
-    )
