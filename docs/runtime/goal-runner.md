@@ -539,7 +539,11 @@ approval:
 
 - `decision {subject_id, outcome}`: the owner's decision on one of this goal's effects that parked
   for approval. Past `parked` the call was approved whatever its dispatch did since; `rejected`,
-  `expired` and `cancelled` are the decision itself.
+  `expired` and `cancelled` are the decision itself. An owner edit is neither: the broker records
+  the stored call `rejected` and dispatches the edit as a second effect under the same approval
+  reference, and that pair reads as the decision `edited`, which no S4 outcome matches. So an
+  edit fires neither an `approved` nor a `rejected` wait; the stored call still settles
+  `cancelled`.
 - `effect_settled {effect_id, status_set}`: one of this goal's effects settled as `succeeded`
   (`committed`), `failed`, `unknown` or `cancelled` (an effect that never ran).
 - `owner_input {goal_id, binding_ref}`: the owner replied to one of this goal's live prompts (a
@@ -581,7 +585,9 @@ nor invent a fire. A `decision` event names the effect id as its `subject_id`, t
 event is the same event; its position is the effect's last change in microseconds. An unread
 owner reply to one of the goal's prompts is an `owner_input` event `{goal_id, binding_ref}` on
 `goal.inbox`: one event per inbox row (its id derives from the row), positioned at the reply's
-arrival. Once a lead reads the row it is no longer fed.
+arrival. Once a lead reads the row it is no longer fed. The feed evaluates only an instance the
+goal itself registered (instance ids are global, as for Stop's cancel), and one goal's failure is
+logged and skipped so the rest are still fed.
 
 The feed is dark: `supervise_once` does not call it. A feed-triggered wake comes from evidence
 outside the waiting lead (the owner's or a domain's action), and its lead would hold the

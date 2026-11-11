@@ -110,7 +110,7 @@ def published(grants: tuple[Grant, ...], catalog: Catalog) -> tuple[Grant, ...]:
 
 
 def _own_effect(row: Any) -> OwnEffect:
-    return OwnEffect(row["id"], row["status"], row["approval"], row["prompt"])
+    return OwnEffect(row["id"], row["status"], row["approval"], row["prompt"], row["edited"])
 
 
 @dataclass(frozen=True, slots=True)
@@ -1187,11 +1187,17 @@ class RunnerLedger:
     async def _effect_rows(self, goal_id: UUID) -> list[Any]:
         # A prompt is a binding only while a reply to it can still join the goal: committed,
         # accepting input, unexpired, and delivered to the live owner (as goal.wait_owner).
+        # An owner edit is marked by its own write (BrokerLedger.begin_approved): the stored call
+        # becomes ``rejected`` and the edited call is a second effect of this goal under the same
+        # approval reference. Nothing else shares an approval reference, so the pair is the mark.
         return await self.connection.fetch(
-            "SELECT id::text AS id, status, approval_ref IS NOT NULL AS approval, updated_at, "
-            "COALESCE(status = 'committed' AND prompt_accepts_input "
-            "AND prompt_expires_at > now() AND recipient_entity = $2, false) AS prompt "
-            "FROM switchboard.effects WHERE goal_id = $1",
+            "SELECT e.id::text AS id, e.status, e.approval_ref IS NOT NULL AS approval, "
+            "e.updated_at, COALESCE(e.status = 'committed' AND e.prompt_accepts_input "
+            "AND e.prompt_expires_at > now() AND e.recipient_entity = $2, false) AS prompt, "
+            "(e.status = 'rejected' AND EXISTS (SELECT 1 FROM switchboard.effects s "
+            "WHERE s.goal_id = e.goal_id AND s.approval_ref = e.approval_ref "
+            "AND s.id <> e.id)) AS edited "
+            "FROM switchboard.effects e WHERE e.goal_id = $1",
             goal_id,
             await live_owner(self.connection),
         )

@@ -339,3 +339,52 @@ async def test_an_unread_reply_at_registration_fires_at_once():
         expires_at=datetime(2026, 11, 12, tzinfo=UTC),
     )
     assert registered.intent is not None
+
+
+# An owner edit records the stored call ``rejected`` and dispatches the edit as a new effect
+# under the same approval: the owner neither approved nor refused that call as asked.
+EDITED = OwnEffect(PARKED, "rejected", True, edited=True)
+
+
+def test_an_edited_approval_is_its_own_decision_and_settles_cancelled():
+    snapshot = snapshot_for(NOW, [EDITED])
+    assert snapshot.decisions == {PARKED: "edited"}
+    assert snapshot.effects == {PARKED: "cancelled"}
+    events = {e.tag: dict(e.data) for e in events_for([(EDITED, CHANGED)])}
+    assert events == {
+        "decision": {"subject_id": PARKED, "outcome": "edited"},
+        "effect_settled": {"effect_id": PARKED, "status": "cancelled"},
+    }
+
+
+async def evaluated(predicate: dict, effects: list[OwnEffect], fed: list[OwnEffect]):
+    """Register ``predicate`` over ``effects``, then feed ``fed``: (registered, evaluated)."""
+    goal = str(uuid4())
+    evaluator = ConditionEvaluator(InMemoryConditionStore())
+    registered = await evaluator.register(
+        instance_id="i0",
+        predicate=predicate,
+        grant=grant_for(goal, predicate, effects),
+        goal_id=goal,
+        label=Label.owner(),
+        snapshot=snapshot_for(NOW, effects),
+        expires_at=datetime(2026, 11, 12, tzinfo=UTC),
+    )
+    fed_events = events_for([(effect, CHANGED) for effect in fed])
+    return registered, await evaluator.evaluate("i0", fed_events, now=CHANGED)
+
+
+async def test_an_edited_approval_fires_neither_an_approved_nor_a_rejected_wait():
+    either = {"tag": "any", "children": [decision(PARKED), decision(PARKED, "rejected")]}
+    pending = [OwnEffect(PARKED, "parked", True)]
+    registered, fed = await evaluated(either, pending, [EDITED])
+    assert registered.intent is None and fed.intent is None
+    # Already edited when the lead waits: still neither.
+    registered, _ = await evaluated(either, [EDITED], [])
+    assert registered.intent is None
+
+
+async def test_an_edited_approval_still_settles_its_effect():
+    pending = [OwnEffect(PARKED, "parked", True)]
+    _, fed = await evaluated(settled(PARKED, "cancelled"), pending, [EDITED])
+    assert fed.intent is not None

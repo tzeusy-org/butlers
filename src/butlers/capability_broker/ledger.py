@@ -629,7 +629,10 @@ class BrokerLedger:
         The stored call keeps its effect row. An owner edit changes the digest,
         which the effect row cannot (sw_047 makes it immutable), so the
         original is recorded ``rejected`` and the edited call gets its own
-        effect row under the same approval reference.
+        effect row under the same approval reference. That shared reference is
+        the edit's mark: this is the only insert that names an approval, and
+        goal conditions read the pair as the decision ``edited``, never as a
+        refusal (``RunnerLedger._effect_rows``).
         """
         goal = await self._lock_goal(goal_id)
         if goal is None:

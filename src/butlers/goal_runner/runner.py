@@ -851,7 +851,8 @@ class GoalRunner:
         envelope, the domain's decisions are synced onto its parked effects first (as the
         approval wait does), then the goal's own events (``events_for``) are evaluated against
         the envelope's current instance, and a fire is admitted as the wait's wake at once (the
-        ``_admit_fires`` sweep completes any that fails here).
+        ``_admit_fires`` sweep completes any that fails here). Only an instance the goal itself
+        registered is fed, and one goal's failure is logged and skipped, never raised.
 
         Dark: ``supervise_once`` does not call this. A feed-triggered wake is third-party
         sourced, and its lead would hold the envelope's full waiting grant; under the
@@ -859,26 +860,43 @@ class GoalRunner:
         """
         async with self._txn() as ledger:
             waits = await ledger.condition_waits()
-        evaluator = ConditionEvaluator(PostgresConditionStore(self.broker.pool))
+        store = PostgresConditionStore(self.broker.pool)
+        evaluator = ConditionEvaluator(store)
         for goal_id, instance_id in waits:
             try:
-                await self.broker.sync_parked(goal_id)
-            except BrokerRefused:
-                logger.warning("goal runner parked sync unavailable goal=%s", goal_id)
-            async with self._txn() as ledger:
-                effects = await ledger.own_effects(goal_id)
-                replies = await ledger.own_replies(goal_id)
-            try:
-                outcome = await evaluator.evaluate(
-                    instance_id, events_for(effects, replies), now=datetime.now(UTC)
-                )
-            except KeyError:
-                continue  # a generation id the evaluator never registered
-            except ConditionsUnavailable:
-                logger.warning("goal runner conditions feed unavailable goal=%s", goal_id)
-                continue
-            if outcome.intent is not None:
-                await self._admit_guarded(outcome.intent)
+                await self._feed_one(store, evaluator, goal_id, instance_id)
+            except Exception:
+                # One goal's fault never stops the feed for the rest; the next sweep retries it.
+                logger.warning("goal runner conditions feed failed goal=%s", goal_id)
+
+    async def _feed_one(
+        self,
+        store: PostgresConditionStore,
+        evaluator: ConditionEvaluator,
+        goal_id: UUID,
+        instance_id: str,
+    ) -> None:
+        # Instance ids are global: feed only an instance this goal registered (as Stop cancels).
+        async with store.transaction() as tx:
+            stored = await tx.get_instance(instance_id)
+        if stored is None or stored.goal_id != str(goal_id):
+            return  # a generation id the evaluator never registered for this goal
+        try:
+            await self.broker.sync_parked(goal_id)
+        except BrokerRefused:
+            logger.warning("goal runner parked sync unavailable goal=%s", goal_id)
+        async with self._txn() as ledger:
+            effects = await ledger.own_effects(goal_id)
+            replies = await ledger.own_replies(goal_id)
+        try:
+            outcome = await evaluator.evaluate(
+                instance_id, events_for(effects, replies), now=datetime.now(UTC)
+            )
+        except ConditionsUnavailable:
+            logger.warning("goal runner conditions feed unavailable goal=%s", goal_id)
+            return
+        if outcome.intent is not None:
+            await self._admit_guarded(outcome.intent)
 
     async def _admit_fires(self) -> None:
         """Admit the fires the evaluator committed that no wake intent answers yet.

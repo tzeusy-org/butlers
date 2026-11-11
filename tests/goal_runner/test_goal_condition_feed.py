@@ -8,11 +8,13 @@ narrowed (PR5), so these tests call it directly.
 
 from __future__ import annotations
 
-from uuid import UUID
+from unittest.mock import patch
+from uuid import UUID, uuid4
 
 import pytest
 
-from tests.goal_runner.test_goal_runner import harness
+from butlers.conditions import ConditionEvaluator
+from tests.goal_runner.test_goal_runner import SEARCH, _grant, harness
 from tests.goal_runner.test_goal_wait_until import (
     decision,
     envelope,
@@ -21,6 +23,7 @@ from tests.goal_runner.test_goal_wait_until import (
     wait_args,
     wait_until,
 )
+from tests.goal_runner.test_goal_wake_runner import waiting_on_conditions
 
 pytestmark = pytest.mark.integration  # the harness module carries the shared marks
 pytest_plugins = ("tests.capability_broker.test_broker_ledger",)
@@ -104,3 +107,87 @@ async def test_a_wait_whose_events_do_not_hold_stays_waiting(broker_db_url):
 
         assert await h.goal_status(goal) == "waiting"
         assert (await envelope(h, goal))["state"] == "open"
+
+
+async def owner_edits(h, goal: UUID, effect: UUID) -> None:
+    """The owner approves the parked notify with a different message (D13 edit)."""
+    row = await h.w.effect(effect)
+    edited = {"entity_id": str(uuid4()), "message": "Owner's edit", "channel": "telegram"}
+    await h.w.broker.execute_approved(goal, effect, row["approval_ref"], edited)
+    assert (await h.w.effect(effect))["status"] == "rejected"
+
+
+async def test_an_owner_edit_fires_neither_an_approved_nor_a_rejected_wait(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal, lead, effect = await parked(h)
+        either = {"tag": "any", "children": [decision(effect), decision(effect, "rejected")]}
+        assert await wait_until(h, goal, lead.token, wait_args(either)) == {"status": "waiting"}
+
+        await owner_edits(h, goal, effect)
+        await h.runner.feed_conditions()
+
+        assert await h.goal_status(goal) == "waiting"
+        assert (await envelope(h, goal))["state"] == "open"
+
+
+async def test_an_owner_edit_still_settles_the_stored_call(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal, lead, effect = await parked(h)
+        predicate = settled(effect, "cancelled")
+        assert await wait_until(h, goal, lead.token, wait_args(predicate)) == {"status": "waiting"}
+
+        await owner_edits(h, goal, effect)
+        await h.runner.feed_conditions()
+
+        assert await h.goal_status(goal) == "admitted"
+
+
+async def test_one_goals_feed_fault_does_not_stop_the_others(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goals = []
+        for launch in (1, 2):
+            goal, lead, effect = await parked(h, launch)
+            assert await wait_until(h, goal, lead.token, wait_args(decision(effect))) == {
+                "status": "waiting"
+            }
+            await set_status(h, effect, "approved")
+            goals.append(goal)
+        real = ConditionEvaluator.evaluate
+        calls = []
+
+        async def first_fails(self, instance_id, events, *, now):
+            calls.append(instance_id)
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+            return await real(self, instance_id, events, now=now)
+
+        with patch.object(ConditionEvaluator, "evaluate", first_fails):
+            await h.runner.feed_conditions()
+
+        assert len(calls) == 2
+        assert sorted([await h.goal_status(g) for g in goals]) == ["admitted", "waiting"]
+
+
+async def test_a_generation_naming_another_goals_instance_is_not_fed(broker_db_url):
+    async with harness(broker_db_url) as h:
+        other, other_lead, other_effect = await parked(h)
+        assert await wait_until(h, other, other_lead.token, wait_args(decision(other_effect))) == {
+            "status": "waiting"
+        }
+        (theirs,) = (await envelope(h, other))["condition_instance_ids"]
+        # This goal's generation names the other goal's instance id: not its to feed.
+        goal = await h.goal(_grant(SEARCH))
+        lead = await h.lead(goal, 2)
+        await waiting_on_conditions(h, goal, lead, instance=theirs)
+        fed = []
+        real = ConditionEvaluator.evaluate
+
+        async def spy(self, instance_id, events, *, now):
+            fed.append(instance_id)
+            return await real(self, instance_id, events, now=now)
+
+        with patch.object(ConditionEvaluator, "evaluate", spy):
+            await h.runner.feed_conditions()
+
+        assert fed == [theirs]  # once, for the goal that owns it
+        assert await h.goal_status(goal) == "waiting"
