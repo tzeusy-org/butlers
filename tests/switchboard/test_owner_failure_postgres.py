@@ -305,5 +305,6 @@ async def test_every_closed_cause_has_exactly_one_line():
         "budget_exhausted",
         "capability_unavailable",
         "admission_refused",
+        "replies_unread",
     }
     assert len(set(CAUSE_LINES.values())) == len(CAUSE_LINES)

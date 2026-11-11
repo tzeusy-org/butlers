@@ -943,6 +943,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.goals",
     ): "sanctioned:RFC-0038 S6: the owner-retry evidence reader reads the failed goal's exposure label (bu-dhloi1.14 4b)",
     (
+        "src/butlers/goal_runner/owner_failure.py",
+        "switchboard.goal_inbox_releases",
+    ): "sanctioned:RFC-0038 S2.2/S6: content-blind count of owner replies a goal released unread (sw_070), read to state it on the owner cause line (bu-dhloi1.323)",
+    (
         "src/butlers/goal_runner/owner_recovery.py",
         "switchboard.pending_asks",
     ): "sanctioned:RFC-0038 S6: Run/Drop decisions over the Switchboard-owned pending_asks (bu-dhloi1.14 4b)",

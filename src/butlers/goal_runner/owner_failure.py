@@ -44,6 +44,7 @@ CAUSE_LINES: Final = {
     "capability_unavailable": (
         "A request you sent could not run because a service it needs was unavailable."
     ),
+    "replies_unread": "Replies you sent while a request was running were not read.",
 }
 
 #: A configuration fault is not "too busy": a refusal for unreadable limits gets its own sentence.
@@ -53,10 +54,24 @@ LIMITS_UNAVAILABLE_LINE: Final = (
 )
 
 
-def line_for(cause: str, refusal: str | None) -> str | None:
-    if cause == "admission_refused" and refusal == "limits_unavailable":
-        return LIMITS_UNAVAILABLE_LINE
-    return CAUSE_LINES.get(cause)
+def unread_sentence(released: int) -> str:
+    """Owner replies a goal's end released unread (sw_070): a count, never a reply."""
+    noun = "reply" if released == 1 else "replies"
+    verb = "was" if released == 1 else "were"
+    return f"{released} {noun} you sent while a request was running {verb} not read."
+
+
+def line_for(cause: str, refusal: str | None, released: int = 0) -> str | None:
+    if cause == "replies_unread":
+        return unread_sentence(released) if released > 0 else CAUSE_LINES[cause]
+    line = (
+        LIMITS_UNAVAILABLE_LINE
+        if (cause == "admission_refused" and refusal == "limits_unavailable")
+        else CAUSE_LINES.get(cause)
+    )
+    if line is not None and released > 0:
+        line = f"{line} {unread_sentence(released)}"
+    return line
 
 
 # A terminal owner-message goal with no possibly-delivered owner effect in its lineage and
@@ -93,13 +108,30 @@ SELECT g.id, k.ask_key AS source_key, g.status, g.updated_at AS ended_at,
  LIMIT $2
 """
 
+# An ended goal that released owner replies unread (sw_070) and has no pending ask of its own.
+# A failed owner request that gets a failure ask states the count on that line instead; if the
+# failure ask is still queued behind the batch limit this can briefly yield a second ask.
+_UNREAD = """
+SELECT g.id, g.source_key || '#unread' AS ask_key, g.updated_at AS ended_at
+  FROM switchboard.goals g
+ WHERE g.status IN ('completed', 'partial', 'failed', 'budget_exhausted')
+   AND g.updated_at > clock_timestamp() - interval '24 hours'
+   AND EXISTS (SELECT 1 FROM switchboard.goal_inbox_releases r WHERE r.goal_id = g.id)
+   AND NOT EXISTS (SELECT 1 FROM switchboard.pending_asks p
+                    WHERE p.goal_id = g.id OR p.source_key = g.source_key || '#unread')
+ ORDER BY g.updated_at, g.id
+ LIMIT $1
+"""
+
 # Pending asks with no presentation at the subject's current generation, or whose presentation
 # there was proven not sent ('failed'): ``present`` resets that one and it is sent once.
 # A line that cannot be sent is presented at most this many times; the ask then waits for expiry.
 MAX_LINE_ATTEMPTS = 3
 
 _UNPRESENTED = """
-SELECT p.id, p.cause, p.subject_id, p.original_ask ->> 'refusal' AS refusal, p.line_attempts
+SELECT p.id, p.cause, p.subject_id, p.original_ask ->> 'refusal' AS refusal, p.line_attempts,
+       (SELECT count(*) FROM switchboard.goal_inbox_releases r
+         WHERE r.goal_id = p.goal_id)::int AS released
   FROM switchboard.pending_asks p
   JOIN public.owner_delivery_subjects s ON s.id = p.subject_id
  WHERE p.state = 'open' AND p.expires_at > clock_timestamp() AND p.cause = ANY($3::text[])
@@ -175,6 +207,12 @@ class OwnerFailureReporter:
                         made += await self._record_one(conn, row, owner)
                 except Exception:
                     logger.warning("pending ask could not be recorded goal=%s", row["id"])
+            for row in await conn.fetch(_UNREAD, self.batch):
+                try:
+                    async with conn.transaction():
+                        made += await self._record_unread(conn, row, owner)
+                except Exception:
+                    logger.warning("unread-reply ask could not be recorded goal=%s", row["id"])
             orphans = await conn.fetch(_UNOPENED, self.batch)
             for orphan in orphans:
                 try:
@@ -242,6 +280,21 @@ class OwnerFailureReporter:
         await cls._open_subject(conn, ask["id"], row["source_key"], cause, owner)
         return 1
 
+    @classmethod
+    async def _record_unread(cls, conn: Any, row: Any, owner: Any) -> int:
+        ask = await conn.fetchrow(
+            "INSERT INTO switchboard.pending_asks (source_key, goal_id, cause, expires_at) "
+            "VALUES ($1, $2, 'replies_unread', $3) ON CONFLICT (source_key) DO NOTHING "
+            "RETURNING id",
+            row["ask_key"],
+            row["id"],
+            row["ended_at"] + ASK_LIFETIME,
+        )
+        if ask is None:
+            return 0
+        await cls._open_subject(conn, ask["id"], row["ask_key"], "replies_unread", owner)
+        return 1
+
     @staticmethod
     async def _open_subject(
         conn: Any, ask_id: Any, source_key: str, cause: str, owner: Any
@@ -279,7 +332,7 @@ class OwnerFailureReporter:
         return sent
 
     async def _deliver(self, ask: Any) -> bool:
-        line = line_for(ask["cause"], ask["refusal"])
+        line = line_for(ask["cause"], ask["refusal"], ask["released"])
         if line is None:
             return False
         async with self.pool.acquire() as conn, conn.transaction():
