@@ -648,6 +648,43 @@ in its own lineage, would leave the owner with silence. The sweep's last step
   Switchboard client that path binds, so it is wired where the runner is constructed; the runner is not
   constructed in production yet.
 
+### Run or Drop a refused ask (package 4b, dark)
+
+`goal_runner/owner_recovery.OwnerRecovery` is the service behind the Run/Drop card.
+
+- Cards: `cards()` presents each runnable ask (open, unexpired) on the dashboard surface with an
+  approve (Run) and a reject (Drop) token, and returns one batch with counts by cause. Runnable means
+  a refused admission that kept its reference, or a `failed` / `budget_exhausted` goal ask.
+  Capability-unavailable asks get no card until health can say the dependency is back. Empty while
+  the rollout is off. No "Run all".
+- Run: `decide(token, ask, "approve")` redeems the token on the `pending_ask` subject, then admits
+  the stored source reference again through the full current admission rules on the redemption's own
+  connection, with an attempt id derived from the ask. Evidence is loaded afresh, so Run is exactly
+  an owner re-send now and never pre-satisfies an authorization check. If admission refuses again
+  (`still_refused`) the whole decision rolls back and the card stays. A Run on an expired ask is refused `ask_expired` (Drop still works). A fault in admission becomes `admission_unavailable`. A second Run is a `duplicate`
+  and admits once.
+- Run on a failed or budget-exhausted goal cannot reuse the message's source key (the failed goal
+  owns it), so it admits a new owner goal from the source `("message", "owner_retry:<ask id>")`.
+  `OwnerRetryEvidence` answers that source with owner evidence and the failed goal's exposure label;
+  grants come from admission, never from the failed goal. It is not linked as `caused_by_goal`
+  (admission accepts that only with a causing effect and an obligation). A retry that fails is a new
+  owner goal and gets its own ask; a failed goal that ran from a refused ask is keyed `<source>#run`
+  because the refused ask holds the source key. The `owner_retry:` prefix is reserved: admission refuses (policy, `source_evidence_unavailable`) any
+  `message` source with that prefix unless it is the ask being redeemed for Run in the same context
+  (`RUN_REDEMPTION`), and `OwnerRetryEvidence` returns owner evidence only inside that redemption, so
+  a sender-chosen message id can neither get owner evidence nor claim the retry's attempt. A purged
+  source message refuses `source_unavailable` and admits no goal. The production evidence reader
+  must understand the prefix (cutover TODO).
+- Drop: reject ends the ask `dropped`.
+- Both clear `original_ask` in the same update as the state change.
+- `owner_delivery.redeem` takes approve/reject for `approval` and `pending_ask` subjects only
+  (`DECIDABLE_KINDS`), each through its own `decide` callback. The kind and source reference bound
+  into a token mean an approval token never redeems a pending ask and the reverse; the dashboard's
+  approval route still refuses a `pending_ask` token (`action_unsupported` at the route, and
+  `subject_mismatch` if it reached `redeem` as an approval).
+- Not wired: the HTTP route and Telegram buttons that carry a token to `decide`, and the production
+  evidence reader that `admit` needs, belong to the cutover with the runner.
+
 ## Not yet delivered
 
 - The per-domain `ContextSource` adapters (a domain's memory and facts).
