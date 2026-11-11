@@ -43,6 +43,16 @@ def _credentials() -> tuple[UUID, str]:
     return state.broker_goal, state.broker_token
 
 
+def refusal_data(refused: BrokerRefused) -> dict[str, Any]:
+    """What a session sees of a refusal: closed words, plus the typed S6 result when one applies."""
+    data: dict[str, Any] = {"status": "refused", "reason": refused.reason.value}
+    if refused.unavailable is not None:
+        data.update({k: v for k, v in refused.unavailable.as_result().items() if k != "code"})
+    if refused.effect_id is not None:
+        data["effect_id"] = str(refused.effect_id)
+    return data
+
+
 class _BrokerTool(Tool):
     _broker: Broker = PrivateAttr()
 
@@ -51,10 +61,7 @@ class _BrokerTool(Tool):
         try:
             result = await self._broker.call(goal, token, self.name, arguments)
         except BrokerRefused as refused:
-            data = {"status": "refused", "reason": refused.reason.value}
-            if refused.effect_id is not None:
-                data["effect_id"] = str(refused.effect_id)
-            return self.convert_result(data)
+            return self.convert_result(refusal_data(refused))
         except Exception:
             return self.convert_result({"status": "refused", "reason": Reason.UNAVAILABLE.value})
         data = asdict(result)

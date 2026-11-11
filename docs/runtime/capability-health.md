@@ -3,7 +3,8 @@
 RFC 0038 S6 defines one health value per declared dependency (`butlers.core.capability_dependencies`,
 the same IDs a tool descriptor names in `depends_on`). This page is the contract of
 `butlers.capability_health`. The reducer, publisher and reader exist; nothing runs them yet (the
-collectors and periodic job, then the broker/runner/admission consumers, follow).
+collectors and periodic job follow). The capability broker consumes health (below); the goal runner
+and admission follow.
 
 ## One value, one writer
 
@@ -141,3 +142,10 @@ Known gaps:
   unmeasured (unknown), never available.
 - Contention on the shared pool is not the store being down: waiting for a connection is bounded
   separately and reads unmeasured; only the query itself is timed against the store.
+
+## Consumers
+
+The capability broker takes an optional `HealthSource` (`current(dependencies) -> list[Health]`) and
+consults it only for the dependencies a capability declares. See
+[capability broker](../architecture/capability-broker.md) for the refusal, the `capability_unavailable`
+reason and what the session sees (`refusal_data`). No production `HealthSource` is wired yet.
