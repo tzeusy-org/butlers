@@ -110,7 +110,7 @@ def published(grants: tuple[Grant, ...], catalog: Catalog) -> tuple[Grant, ...]:
 
 
 def _own_effect(row: Any) -> OwnEffect:
-    return OwnEffect(row["id"], row["status"], row["approval"], row["prompt"])
+    return OwnEffect(row["id"], row["status"], row["approval"], row["prompt"], row["edited"])
 
 
 @dataclass(frozen=True, slots=True)
@@ -1181,17 +1181,37 @@ class RunnerLedger:
         )
         return [OwnReply(r["id"], str(goal_id), r["binding"], r["created_at"]) for r in rows]
 
+    async def released_replies(self, goal_id: UUID) -> int:
+        """How many owner replies the goal joined but never read before it ended (sw_070).
+
+        A count only: the reply itself is never read here. The goal's transition into a
+        terminal status records each such row, so an ended goal never swallows one silently.
+        The count is recorded; reporting it to the owner follows in bu-dhloi1.323.
+        """
+        return await self.connection.fetchval(
+            "SELECT count(*) FROM switchboard.goal_inbox_releases WHERE goal_id = $1", goal_id
+        )
+
     async def _own_effect_rows(self, goal_id: UUID) -> list[OwnEffect]:
         return [_own_effect(row) for row in await self._effect_rows(goal_id)]
 
     async def _effect_rows(self, goal_id: UUID) -> list[Any]:
         # A prompt is a binding only while a reply to it can still join the goal: committed,
         # accepting input, unexpired, and delivered to the live owner (as goal.wait_owner).
+        # An owner edit is marked by its own write (BrokerLedger.begin_approved): the stored call
+        # becomes ``rejected`` and the edited call is a second effect of this goal under the same
+        # approval reference. Nothing else shares an approval reference, so the pair is the mark.
+        # The stored call's reference is its own id (the broker parks it so); requiring that
+        # keeps a foreign reference a domain returns from turning a real refusal into an edit.
         return await self.connection.fetch(
-            "SELECT id::text AS id, status, approval_ref IS NOT NULL AS approval, updated_at, "
-            "COALESCE(status = 'committed' AND prompt_accepts_input "
-            "AND prompt_expires_at > now() AND recipient_entity = $2, false) AS prompt "
-            "FROM switchboard.effects WHERE goal_id = $1",
+            "SELECT e.id::text AS id, e.status, e.approval_ref IS NOT NULL AS approval, "
+            "e.updated_at, COALESCE(e.status = 'committed' AND e.prompt_accepts_input "
+            "AND e.prompt_expires_at > now() AND e.recipient_entity = $2, false) AS prompt, "
+            "(e.status = 'rejected' AND e.approval_ref = e.id::text "
+            "AND EXISTS (SELECT 1 FROM switchboard.effects s "
+            "WHERE s.goal_id = e.goal_id AND s.approval_ref = e.approval_ref "
+            "AND s.id <> e.id)) AS edited "
+            "FROM switchboard.effects e WHERE e.goal_id = $1",
             goal_id,
             await live_owner(self.connection),
         )

@@ -64,15 +64,30 @@ _SETTLED = {
 }
 
 
+#: The decision an owner edit records on the stored call. It is neither approval nor refusal of
+#: that call, so no S4 outcome matches it; the edited call is a new effect of its own.
+EDITED = "edited"
+
+
 @dataclass(frozen=True, slots=True)
 class OwnEffect:
-    """One of the goal's effect rows: canonical id, status, whether it parked for approval, and
-    whether it is a live owner prompt (committed, to the owner, still accepting input)."""
+    """One of the goal's effect rows: canonical id, status, whether it parked for approval,
+    whether it is a live owner prompt (committed, to the owner, still accepting input), and
+    whether the owner edited it (recorded ``rejected``, the edit dispatched as a new effect
+    under the same approval)."""
 
     id: str
     status: str
     approval: bool
     prompt: bool = False
+    edited: bool = False
+
+    @property
+    def decision(self) -> str | None:
+        """The owner's decision this approval effect shows, if any."""
+        if not self.approval:
+            return None
+        return EDITED if self.edited else _DECIDED.get(self.status)
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,7 +160,7 @@ def events_for(
     events: list[ConditionEvent] = []
     for effect, changed_at in effects:
         position = int(changed_at.timestamp() * 1_000_000)
-        if effect.approval and (outcome := _DECIDED.get(effect.status)) is not None:
+        if (outcome := effect.decision) is not None:
             events.append(
                 _event(ast.SOURCE_DECISION, "decision", effect.id, outcome, position, changed_at)
             )
@@ -193,7 +208,7 @@ def snapshot_for(
     decisions: dict[str, str] = {}
     settled: dict[str, str] = {}
     for effect in effects:
-        if effect.approval and (outcome := _DECIDED.get(effect.status)) is not None:
+        if (outcome := effect.decision) is not None:
             decisions[effect.id] = outcome
         if (status := _SETTLED.get(effect.status)) is not None:
             settled[effect.id] = status

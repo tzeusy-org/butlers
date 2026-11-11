@@ -1055,6 +1055,7 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
             "effects",
             "goal_child_results",
             "goal_inbox",
+            "goal_inbox_releases",
             "goal_outcomes",
             "goal_plans",
             "goals",

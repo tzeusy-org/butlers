@@ -539,7 +539,11 @@ approval:
 
 - `decision {subject_id, outcome}`: the owner's decision on one of this goal's effects that parked
   for approval. Past `parked` the call was approved whatever its dispatch did since; `rejected`,
-  `expired` and `cancelled` are the decision itself.
+  `expired` and `cancelled` are the decision itself. An owner edit is neither: the broker records
+  the stored call `rejected` and dispatches the edit as a second effect under the same approval
+  reference, and that pair reads as the decision `edited`, which no S4 outcome matches. So an
+  edit fires neither an `approved` nor a `rejected` wait; the stored call still settles
+  `cancelled`.
 - `effect_settled {effect_id, status_set}`: one of this goal's effects settled as `succeeded`
   (`committed`), `failed`, `unknown` or `cancelled` (an effect that never ran).
 - `owner_input {goal_id, binding_ref}`: the owner replied to one of this goal's live prompts (a
@@ -581,7 +585,9 @@ nor invent a fire. A `decision` event names the effect id as its `subject_id`, t
 event is the same event; its position is the effect's last change in microseconds. An unread
 owner reply to one of the goal's prompts is an `owner_input` event `{goal_id, binding_ref}` on
 `goal.inbox`: one event per inbox row (its id derives from the row), positioned at the reply's
-arrival. Once a lead reads the row it is no longer fed.
+arrival. Once a lead reads the row it is no longer fed. The feed evaluates only an instance the
+goal itself registered (instance ids are global, as for Stop's cancel), and one goal's failure is
+logged and skipped so the rest are still fed.
 
 The feed is dark: `supervise_once` does not call it. A feed-triggered wake comes from evidence
 outside the waiting lead (the owner's or a domain's action), and its lead would hold the
@@ -597,6 +603,20 @@ cancelled `expired`, and the goal ends `failed`, or `partial` for a settle wait 
 outcome is resolved `partial`. This includes a legacy approval wait that `sw_064` held on an
 `evidence_unavailable` envelope. A parked effect left behind is refused later because its goal has
 ended.
+
+### Unread replies of an ended goal
+
+A reply joined to a goal stays an unread inbox row until a lead takes it, and on a conditions wait
+it waits for the goal-event feed. A goal can end first: at its deadline, by Stop, by failure or by
+budget. Such a reply is never swallowed silently. The goal's own transition into a terminal status
+records each unconsumed `owner_reply` row once in `switchboard.goal_inbox_releases` (`sw_070`, one
+`SECURITY DEFINER` trigger on `goals`, so no end path can skip it), with the reason: the terminal
+status, or `deadline` for a failed or partial end with an expired wait. The record is content-blind
+(ids, reason, time) and durable; the runtime role may only read it. The row itself stays in the
+inbox, unread. `RunnerLedger.released_replies(goal)` returns the recorded count; reporting it to
+the owner, so the owner sees that an answer was not acted on, follows in bu-dhloi1.323. The
+release's foreign keys and its no-delete trigger pin the goal and inbox rows, which any future
+ledger retention has to handle.
 
 ## Owner failure cause line (S6, sw_068, dark)
 
