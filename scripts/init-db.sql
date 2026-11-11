@@ -8223,11 +8223,14 @@ BEGIN
     -- The capability-health reducer (RFC 0038 S6, bu-dhloi1.14) is the named
     -- producer owner of health.dependencies, so its profile is activated here:
     -- finite 900s freshness, one subject and one evidence reference per declared
-    -- dependency (butlers.core.capability_dependencies). Only while the profile is
-    -- still unconfigured, so an operator-configured profile is never overwritten.
-    IF EXISTS (SELECT 1 FROM perception_private.sources
-            WHERE source='health.dependencies' AND max_age_seconds IS NULL) THEN
-        FOREACH dep IN ARRAY ARRAY['google','home_assistant','owntracks','spotify','steam','telegram'] LOOP
+    -- dependency (butlers.core.capability_dependencies). The block runs while the
+    -- profile is unconfigured, or is already this installer's own (evidence source
+    -- capability_health), so a newly declared dependency is registered by re-running
+    -- the installer. A profile an operator configured otherwise is never touched,
+    -- and a configured freshness maximum is kept.
+    IF EXISTS (SELECT 1 FROM perception_private.sources WHERE source='health.dependencies'
+            AND (max_age_seconds IS NULL OR evidence_sources=ARRAY['capability_health'])) THEN
+        FOREACH dep IN ARRAY ARRAY['conditions','google','home_assistant','owntracks','spotify','steam','telegram'] LOOP
             INSERT INTO perception_private.source_refs(id,source,ref_type,read_alias) VALUES
                 (public.uuid_generate_v5('fbb3d862-d597-5afb-b727-949f3a0e8829','dependency:'||dep),
                     'health.dependencies','dependency',dep),
@@ -8235,11 +8238,12 @@ BEGIN
                     'health.dependencies','evidence',NULL)
             ON CONFLICT DO NOTHING;
         END LOOP;
-        UPDATE perception_private.sources SET max_age_seconds=900,
+        UPDATE perception_private.sources SET max_age_seconds=COALESCE(max_age_seconds,900),
             subjects=ARRAY(SELECT public.uuid_generate_v5('fbb3d862-d597-5afb-b727-949f3a0e8829','dependency:'||d)
-                FROM unnest(ARRAY['google','home_assistant','owntracks','spotify','steam','telegram']) d),
+                FROM unnest(ARRAY['conditions','google','home_assistant','owntracks','spotify','steam','telegram']) d),
             evidence_sources=ARRAY['capability_health']
-        WHERE source='health.dependencies' AND max_age_seconds IS NULL;
+        WHERE source='health.dependencies'
+            AND (max_age_seconds IS NULL OR evidence_sources=ARRAY['capability_health']);
     END IF;
     -- Every other profile and its subject/source references stay unconfigured/dark
     -- until its named producer owner has a verified finite profile.
