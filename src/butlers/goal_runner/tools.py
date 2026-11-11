@@ -1,8 +1,8 @@
 """The D8 goal tools, as the broker's goal endpoint serves them.
 
 They are not domain capabilities. The lead holds ``goal.delegate``,
-``goal.await``, ``goal.stop_child``, ``goal.complete``, ``goal.escalate`` and
-``goal.inbox``;
+``goal.await``, ``goal.stop_child``, ``goal.complete``, ``goal.wait_approval``,
+``goal.wait_owner``, ``goal.plan``, ``goal.escalate`` and ``goal.inbox``;
 a child holds only ``goal.return``. Each is listed by the calling invocation's
 depth, read from its ledger row under the goal lock, and each handler checks
 that depth again in its own transaction, so a child can neither list nor call
@@ -32,6 +32,7 @@ from .context_search import ContextSearch
 from .guidance import LOAD_TOOL as GUIDANCE_LOAD
 from .guidance import SEARCH_TOOL as GUIDANCE_SEARCH
 from .guidance import Guidance
+from .ledger import MAX_PLAN_REFS
 from .packet import PacketComposer
 from .runner import GoalRunner
 
@@ -129,6 +130,23 @@ _TOOLS = (
             "type": "object",
             "properties": {"effect_id": _UUID},
             "required": ["effect_id"],
+            "additionalProperties": False,
+        },
+    ),
+    GoalTool(
+        "goal__plan",
+        (0,),
+        "Record your plan as the goal's next version: the premise it rests on, the evidence and "
+        "the steps, each a reference to something of this goal (effect:<id>, inbox:<id>, "
+        "child:<id> or plan:<version>), never text. The same content keeps the current "
+        "version; a changed premise records a new one. A wait keeps the version it opened on.",
+        {
+            "type": "object",
+            "properties": {
+                name: {"type": "array", "items": {"type": "string"}, "maxItems": MAX_PLAN_REFS}
+                for name in ("premise_refs", "evidence_refs", "step_refs")
+            },
+            "required": ["premise_refs", "evidence_refs", "step_refs"],
             "additionalProperties": False,
         },
     ),
@@ -243,6 +261,7 @@ class GoalTools:
             "goal__complete": self._complete,
             "goal__wait_approval": self._wait_approval,
             "goal__wait_owner": self._wait_owner,
+            "goal__plan": self._plan,
             "goal__escalate": self._escalate,
             "goal__inbox": self._inbox,
             "goal__return": self._return,
@@ -296,6 +315,14 @@ class GoalTools:
     async def _wait_owner(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
         args = _closed(arguments, {"effect_id"}, {"effect_id"})
         return {"status": await self.runner.wait_owner(goal_id, token, args["effect_id"])}
+
+    async def _plan(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
+        keys = {"premise_refs", "evidence_refs", "step_refs"}
+        args = _closed(arguments, keys, keys)
+        version = await self.runner.plan(
+            goal_id, token, args["premise_refs"], args["evidence_refs"], args["step_refs"]
+        )
+        return {"status": "planned", "plan_version": version}
 
     async def _escalate(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
         _closed(arguments, set(), set())

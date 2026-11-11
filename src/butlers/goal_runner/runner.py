@@ -46,7 +46,7 @@ from .contracts import (
     SessionHost,
 )
 from .delegation import DelegationRequest, parse_delegation
-from .ledger import Leaderless, RunnerLedger, Started, WakeClaim
+from .ledger import Leaderless, RunnerLedger, Started, WakeClaim, plan_refs
 from .models import ModelLadders, next_tier
 from .packet import PacketComposer
 
@@ -584,6 +584,22 @@ class GoalRunner:
     async def wait_owner(self, goal_id: UUID, token: str, effect_id: Any) -> str:
         """``goal.wait_owner`` (S2.2): the lead ends; the goal waits for the owner's answer."""
         return await self._wait_on(goal_id, token, effect_id, "wait_owner")
+
+    async def plan(self, goal_id: UUID, token: str, premise: Any, evidence: Any, steps: Any) -> int:
+        """``goal.plan`` (RFC 0038 S2): record the lead's plan as the goal's next version."""
+        refs = (plan_refs(premise), plan_refs(evidence), plan_refs(steps))
+        with _tracer.start_as_current_span(
+            "goal.plan", record_exception=False, set_status_on_exception=False
+        ) as span:
+            span.set_attribute("goal_id", str(goal_id))
+            async with self.broker._transaction() as broker_ledger:
+                principal = await broker_ledger.authenticate(goal_id, token)
+                span.set_attribute("invocation_id", str(principal.invocation_id))
+                version = await RunnerLedger(broker_ledger.connection).plan(principal, *refs)
+            if isinstance(version, BrokerRefused):
+                raise version
+            span.set_attribute("plan_version", version)
+            return version
 
     async def _wait_on(self, goal_id: UUID, token: str, effect_id: Any, tool: str) -> str:
         effect = _uuid(effect_id)

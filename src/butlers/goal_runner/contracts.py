@@ -94,6 +94,20 @@ class Brief:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanSummary:
+    """The goal's latest plan version (RFC 0038 S2): goal-owned references, never text.
+
+    Each reference is the canonical ``<kind>:<id>`` the ledger validated when ``goal.plan``
+    recorded it (``effect:``, ``inbox:``, ``child:`` with a UUID; ``plan:`` with a version).
+    """
+
+    version: int
+    premise: tuple[str, ...] = ()
+    evidence: tuple[str, ...] = ()
+    steps: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class LedgerSummary:
     """What a replacement or escalated lead starts with (D14, D16): identifiers only."""
 
@@ -105,6 +119,8 @@ class LedgerSummary:
     """Ids of the goal's oldest unconsumed inbox replies (the ledger lists a bounded few)."""
     inbox_pending: int = 0
     """How many inbox replies are unconsumed; the lead reads them with ``goal.inbox``."""
+    plan: PlanSummary | None = None
+    """The goal's latest recorded plan version, if a lead recorded one with ``goal.plan``."""
 
 
 @dataclass(frozen=True, slots=True)
