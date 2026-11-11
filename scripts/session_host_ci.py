@@ -10,6 +10,8 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from io import BytesIO
 from pathlib import Path
@@ -25,6 +27,9 @@ PROFILE_MEMBER = "./usr/share/apparmor/extra-profiles/bwrap-userns-restrict"
 _SYSCTL = "kernel.apparmor_restrict_unprivileged_userns"
 _PROFILE_NAMES = {"bwrap", "unpriv_bwrap"}
 _LIMIT = 2 * 1024 * 1024
+_DOWNLOAD_ATTEMPTS = 3
+_DOWNLOAD_TIMEOUT = 20
+_DOWNLOAD_BACKOFF = (3, 6)
 _PAYLOAD = b"""#include <fcntl.h>
 #include <unistd.h>
 int main(void) {
@@ -34,6 +39,41 @@ int main(void) {
   close(fd); return 43;
 }
 """
+
+
+#: The closed set of refusal words this script may print. Each is a fixed, content-blind category;
+#: a test pins that every ``Refusal(...)`` literal is in it and none carries a URL, status or body.
+REFUSALS = frozenset(
+    {
+        "cleanup_load_identity_refused",
+        "cleanup_load_ownership_unproven",
+        "cleanup_owned_profiles_unobserved",
+        "cleanup_profile_identity_refused",
+        "command_output_limit",
+        "experiment_already_exists",
+        "generic_userns_not_denied",
+        "global_restriction_not_one",
+        "host_command_refused",
+        "hosted_runner_required",
+        "invalid_profile_member",
+        "local_profile_override_conflict",
+        "native_preflight_still_refused",
+        "package_archive_limit",
+        "package_digest_mismatch",
+        "package_download_failed",
+        "preflight_compile_failed",
+        "preloaded_profile_conflict",
+        "profile_cleanup_unobserved",
+        "profile_digest_mismatch",
+        "profile_header_mismatch",
+        "profile_load_failed",
+        "profile_load_unobserved",
+        "profile_load_unproven",
+        "runner_profile_digest_mismatch",
+        "unattributed_native_preflight",
+        "unsupported_runner_release",
+    }
+)
 
 
 class Refusal(Exception):
@@ -118,6 +158,32 @@ def generic_denied() -> None:
     result = run(["unshare", "--user", "--map-root-user", "/usr/bin/true"])
     if result.returncode != 1 or b"Operation not permitted" not in result.stderr:
         raise Refusal("generic_userns_not_denied")
+
+
+def _transient(error: Exception) -> bool:
+    """Only a fault that a repeat can cure: timeout, connection, URL error or HTTP 5xx."""
+    if isinstance(error, urllib.error.HTTPError):
+        return 500 <= error.code < 600  # a 4xx is a definite answer, never retried
+    return isinstance(error, TimeoutError | ConnectionError | urllib.error.URLError)
+
+
+def fetch_package() -> bytes:
+    """Download the pinned profile package, retrying a transient network fault.
+
+    Only the transfer is retried; the digest is checked by the caller afterwards, so a retry
+    can never accept a different byte. A fault that survives every attempt is the fixed
+    ``package_download_failed`` refusal (no URL, status or body), not the opaque catch-all.
+    """
+    for attempt in range(_DOWNLOAD_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(PACKAGE_URL, timeout=_DOWNLOAD_TIMEOUT) as response:
+                return response.read(_LIMIT + 1)
+        except Exception as error:
+            if not _transient(error):
+                raise Refusal("package_download_failed") from None
+            if attempt + 1 < _DOWNLOAD_ATTEMPTS:
+                time.sleep(_DOWNLOAD_BACKOFF[attempt])
+    raise Refusal("package_download_failed")
 
 
 def verified_profile(package: bytes, archive: bytes) -> bytes:
@@ -254,8 +320,7 @@ def prepare(root: Path) -> None:
     )
     if before.returncode != 1 or category == "unknown_preflight_failure":
         raise Refusal("unattributed_native_preflight")
-    with urllib.request.urlopen(PACKAGE_URL, timeout=30) as response:
-        package = response.read(_LIMIT + 1)
+    package = fetch_package()
     if len(package) > _LIMIT or hashlib.sha256(package).hexdigest() != PACKAGE_SHA256:
         raise Refusal("package_digest_mismatch")
     package_path = root / "profile.deb"
@@ -268,7 +333,10 @@ def prepare(root: Path) -> None:
     restricted()
     profile_absent()
     _write(root / "load-intent.json", load_receipt())
-    result = run(["sudo", "-n", "apparmor_parser", "-a", str(path)])
+    try:
+        result = run(["sudo", "-n", "apparmor_parser", "-a", str(path)])
+    except (OSError, subprocess.SubprocessError):
+        raise Refusal("profile_load_failed") from None
     if result.returncode:
         raise Refusal("profile_load_unproven")
     if not _PROFILE_NAMES.issubset(loaded()):
@@ -276,7 +344,10 @@ def prepare(root: Path) -> None:
     _write(root / "loaded.json", load_receipt())
     restricted()
     generic_denied()
-    after = repeat_preflight(root / "after")
+    try:
+        after = repeat_preflight(root / "after")
+    except (OSError, subprocess.SubprocessError):
+        raise Refusal("profile_load_failed") from None
     print(
         json.dumps(
             {
