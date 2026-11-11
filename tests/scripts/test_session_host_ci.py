@@ -418,3 +418,68 @@ def test_near_miss_loopback_refusal_never_loads_policy(host, stderr):
         ci.prepare(root)
     ci.cleanup(root)
     assert not any("apparmor_parser" in args for args in state["calls"])
+
+
+def _flaky_download(package, failures, error):
+    attempts = []
+
+    def urlopen(*args, **kwargs):
+        attempts.append(kwargs.get("timeout"))
+        if len(attempts) <= failures:
+            raise error
+        return io.BytesIO(package)
+
+    return urlopen, attempts
+
+
+@pytest.mark.parametrize("error", [TimeoutError("timed out"), OSError("reset")])
+def test_a_transient_download_fault_is_retried_and_the_digest_is_still_checked(
+    host, monkeypatch, error
+):
+    state, root, package, _ = host
+    urlopen, attempts = _flaky_download(package, 2, error)
+    sleeps = []
+    monkeypatch.setattr(ci.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(ci.time, "sleep", sleeps.append)
+    ci.prepare(root)
+    assert state["names"] == {"bwrap", "unpriv_bwrap"}
+    assert attempts == [20, 20, 20] and sleeps == [3, 6]
+
+
+def test_a_download_that_never_succeeds_is_a_named_refusal_after_three_attempts(
+    host, monkeypatch, capsys
+):
+    state, root, package, _ = host
+    urlopen, attempts = _flaky_download(package, 99, TimeoutError("secret detail"))
+    monkeypatch.setattr(ci.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(ci.time, "sleep", lambda seconds: None)
+    with pytest.raises(ci.Refusal, match="^package_download_failed$"):
+        ci.prepare(root)
+    assert len(attempts) == 3
+    assert not any("apparmor_parser" in args for args in state["calls"])
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("RUNNER_TEMP", str(root.parent))
+    monkeypatch.setattr("sys.argv", ["session_host_ci", "prepare"])
+    import shutil
+
+    shutil.rmtree(root, ignore_errors=True)
+    assert ci.main() == 1
+    output = capsys.readouterr().out
+    assert "package_download_failed" in output and "secret detail" not in output
+
+
+def test_a_wrong_download_is_never_retried_into_acceptance(host, monkeypatch):
+    state, root, package, _ = host
+    calls = []
+
+    def urlopen(*args, **kwargs):
+        calls.append(1)
+        return io.BytesIO(package + b"x")
+
+    monkeypatch.setattr(ci.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(ci.time, "sleep", lambda seconds: None)
+    with pytest.raises(ci.Refusal, match="package_digest_mismatch"):
+        ci.prepare(root)
+    assert len(calls) == 1
+    assert not any("apparmor_parser" in args for args in state["calls"])

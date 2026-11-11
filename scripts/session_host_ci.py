@@ -10,6 +10,8 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from io import BytesIO
 from pathlib import Path
@@ -25,6 +27,9 @@ PROFILE_MEMBER = "./usr/share/apparmor/extra-profiles/bwrap-userns-restrict"
 _SYSCTL = "kernel.apparmor_restrict_unprivileged_userns"
 _PROFILE_NAMES = {"bwrap", "unpriv_bwrap"}
 _LIMIT = 2 * 1024 * 1024
+_DOWNLOAD_ATTEMPTS = 3
+_DOWNLOAD_TIMEOUT = 20
+_DOWNLOAD_BACKOFF = (3, 6)
 _PAYLOAD = b"""#include <fcntl.h>
 #include <unistd.h>
 int main(void) {
@@ -118,6 +123,23 @@ def generic_denied() -> None:
     result = run(["unshare", "--user", "--map-root-user", "/usr/bin/true"])
     if result.returncode != 1 or b"Operation not permitted" not in result.stderr:
         raise Refusal("generic_userns_not_denied")
+
+
+def fetch_package() -> bytes:
+    """Download the pinned profile package, retrying a transient network fault.
+
+    Only the transfer is retried; the digest is checked by the caller afterwards, so a retry
+    can never accept a different byte. A fault that survives every attempt is the fixed
+    ``package_download_failed`` refusal (no URL, status or body), not the opaque catch-all.
+    """
+    for attempt in range(_DOWNLOAD_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(PACKAGE_URL, timeout=_DOWNLOAD_TIMEOUT) as response:
+                return response.read(_LIMIT + 1)
+        except (OSError, urllib.error.URLError):  # includes timeouts and connection resets
+            if attempt + 1 < _DOWNLOAD_ATTEMPTS:
+                time.sleep(_DOWNLOAD_BACKOFF[attempt])
+    raise Refusal("package_download_failed")
 
 
 def verified_profile(package: bytes, archive: bytes) -> bytes:
@@ -254,8 +276,7 @@ def prepare(root: Path) -> None:
     )
     if before.returncode != 1 or category == "unknown_preflight_failure":
         raise Refusal("unattributed_native_preflight")
-    with urllib.request.urlopen(PACKAGE_URL, timeout=30) as response:
-        package = response.read(_LIMIT + 1)
+    package = fetch_package()
     if len(package) > _LIMIT or hashlib.sha256(package).hexdigest() != PACKAGE_SHA256:
         raise Refusal("package_digest_mismatch")
     package_path = root / "profile.deb"

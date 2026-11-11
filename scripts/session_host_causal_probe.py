@@ -24,7 +24,7 @@ from pathlib import Path
 from scripts import session_host_ci as ci
 from scripts import session_host_probe_adapter as adapter
 
-HELPER_SHA256 = "3064a4e370337513f7070a86fe85ce168c1ebbcdd41ac77293883c126886efe3"
+HELPER_SHA256 = "187b9064d28d60cb9695254d7bdd09ed4dcc96ee0ea9bd9946deef4e0350418e"
 _NAMES = {"bwrap", "unpriv_bwrap"}
 _SOURCES = (
     "scripts/session_host_ci.py",
