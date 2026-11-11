@@ -87,6 +87,9 @@ def plan_refs(value: Any) -> tuple[str, ...]:
 
 def published(grants: tuple[Grant, ...], catalog: Catalog) -> tuple[Grant, ...]:
     """The grants current policy still allows: published, and not transact (admission's set)."""
+    # Kept equal to admission's eligible set (goal_admission ``c.presentable and not transact``):
+    # the broker catalog holds only ``item.grantable`` descriptors (BrokerCatalogReader.load in
+    # core/capability_catalog.py), the same flag admission reads as ``presentable``.
     return tuple(
         grant
         for grant in grants

@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from butlers.capability_broker.contracts import BrokerRefused, Reason
 from butlers.core.goal_admission import Grant, decode_grants
 from butlers.goal_runner.contracts import HostOutcome
 from tests.capability_broker.test_broker_ledger import CATALOG, StaticCatalog
@@ -102,6 +103,42 @@ async def test_a_policy_change_while_the_goal_waited_narrows_the_wake(broker_db_
         await h.runner.supervise_once()
         woken = await h.launched(2)
 
+        assert await held(h, woken.invocation_id) == {_grant(SEARCH)}
+
+
+class _Unreadable:
+    """A catalog source whose read fails, as PublishedCatalogSource reports any failure."""
+
+    async def load(self, connection):
+        raise BrokerRefused(Reason.UNAVAILABLE)
+
+
+async def test_an_unreadable_catalog_at_wake_keeps_the_goal_and_retries_the_intent(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal = await h.goal(_grant(SEARCH), _grant(SEND))
+        await woken_by_conditions(h, goal, _grant(SEARCH))
+        h.w.broker.catalog = _Unreadable()
+
+        await h.runner.supervise_once()
+        await h.runner.drain()
+
+        # Nothing opened and the goal is not failed: the intent waits for the next sweep.
+        assert len(h.host.launches) == 1
+        assert await h.goal_status(goal) == "admitted"
+        state = await h.w.owner.fetchval(
+            "SELECT state FROM switchboard.wake_intents WHERE goal_id = $1", goal
+        )
+        assert state == "failed"
+        invocations = await h.w.owner.fetchval(
+            "SELECT count(*) FROM switchboard.invocations WHERE goal_id = $1", goal
+        )
+        assert invocations == 1
+
+        # Once the catalog reads again, the same intent launches the narrowed wake lead.
+        h.w.broker.catalog = StaticCatalog()
+        await h.runner.supervise_once()
+        woken = await h.launched(2)
+        assert (await h.row(woken.invocation_id))["lead_epoch"] == 1
         assert await held(h, woken.invocation_id) == {_grant(SEARCH)}
 
 
