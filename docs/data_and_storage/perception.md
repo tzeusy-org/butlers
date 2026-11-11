@@ -62,6 +62,23 @@ subject. `expect.<registered-kind>[UUID]` requires the configured routine subjec
 and matching source enum. Conflicting, unknown, unregistered or mismatched
 subjects refuse; dynamic aliases are private-reader only. Static aliases retain
 the canonical exposed-reader restriction. None is accepted by the writer.
+`system.dep` is capability health (RFC 0038 S6): its value is `{state, cause,
+observed_at}`. `state` is one of `available`, `degraded`, `blind`, `down`, `held`,
+`unconfigured`; `cause` is `null` for `available` and otherwise one of the closed
+`oauth_revoked`, `credential_missing`, `provider_unavailable`, `domain_unreachable`,
+`signal_unmeasurable`, `policy_held`, `not_configured`, `unknown`; `observed_at` is
+when the underlying signal was last measured, so source age is `now - observed_at`
+while the slot's own `observed_at` is the publish time. A bare state string is
+refused by both the Python validator and SQL `valid_value`. `.14` owns the only
+producer, so the `health.dependencies` profile is the one exception to "starts
+unconfigured": the installer gives it a 900-second freshness maximum and one subject
+(`dependency_subject`) and one evidence reference per dependency declared in
+`butlers.core.capability_dependencies`, with `read_alias` equal to the dependency ID
+(`system.dep.google`). It does this only while the profile is unconfigured, so an
+operator-configured profile is never overwritten, and the installer refuses to run
+over any `system.dep` row still holding the old string. Adding a dependency ID needs
+its own migration to register its subject.
+
 Profiles start **unconfigured**; missing profiles/evidence refuse mutation.
 Producer owners must verify original source expiry and the existing context
 signal's maximum before configuring a profile. Conversion never renews an old

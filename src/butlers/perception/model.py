@@ -40,6 +40,21 @@ KINDS = frozenset(
         "owner.suppression",
     }
 )
+#: RFC 0038 S6 capability health: closed states and the closed causes a
+#: non-available state names. ``available`` carries no cause.
+HEALTH_STATES = frozenset({"available", "degraded", "blind", "down", "held", "unconfigured"})
+HEALTH_CAUSES = frozenset(
+    {
+        "oauth_revoked",
+        "credential_missing",
+        "provider_unavailable",
+        "domain_unreachable",
+        "signal_unmeasurable",
+        "policy_held",
+        "not_configured",
+        "unknown",
+    }
+)
 ALIASES = {
     **dict.fromkeys(ACTIVITIES, "owner.activity"),
     **dict.fromkeys(("at_home", "in_space", "away", "owner.presence"), "owner.place"),
@@ -132,8 +147,15 @@ def validate_value(kind: str, value: object) -> None:
             raise ValueError("invalid suppression reference")
         reference(v["record_ref"], nullable=True)
     elif kind == "system.dep":
-        if value not in ("available", "degraded", "blind", "down", "held", "unconfigured"):
+        v = _fields(value, {"state", "cause", "observed_at"})
+        if type(v["state"]) is not str or v["state"] not in HEALTH_STATES:
             raise ValueError("invalid dependency state")
+        if v["state"] == "available":
+            if v["cause"] is not None:
+                raise ValueError("an available dependency has no cause")
+        elif type(v["cause"]) is not str or v["cause"] not in HEALTH_CAUSES:
+            raise ValueError("invalid dependency cause")
+        instant(v["observed_at"])
     elif kind == "home.sensing":
         if value not in ("available", "degraded", "unavailable"):
             raise ValueError("invalid sensing state")

@@ -29,7 +29,7 @@ def request(*, key="first", kind="owner.place", generation=0, minute=0, value=No
         "owner.activity": ["focused"],
         "owner.mode": ["focus"],
         "owner.clock": {"zone": "UTC", "basis": "home", "evidence_ref": str(EVIDENCE)},
-        "system.dep": "available",
+        "system.dep": {"state": "available", "cause": None, "observed_at": wire_time(at)},
         "home.sensing": "available",
         "expect.window": {
             "start": wire_time(at),
