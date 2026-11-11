@@ -23,6 +23,7 @@ from sqlalchemy.exc import DBAPIError
 
 from alembic import command
 from butlers.bootstrap_prerequisite import BootstrapPrerequisiteError, check_bootstrap_connection
+from butlers.conditions.transitions import timeline_label, transition_event
 from butlers.db import register_jsonb_codec
 from butlers.migrations import _build_alembic_config, run_migrations
 from butlers.perception import EventRequest, PerceptionStore, event_id
@@ -387,6 +388,30 @@ def test_retraction_is_atomic_stable_and_visible_outside_query_page(db):
     live = timeline(db, until=AT + timedelta(minutes=12), live=True)
     assert len(live) == 1 and live[0]["id"] == result["event_id"]
     assert read(db, at=AT + timedelta(minutes=12))["generation"] == 3
+
+
+def test_timeline_rows_map_to_labelled_transition_events(db):
+    """bu-dhloi1.305 PR5c (dark): the real timeline rows, as the timeline function returns
+    them, are transition events carrying their stored label (never an unlabelled owner)."""
+    leave = seed_leave(db)
+    retraction = request(key="enter", generation=2, minute=11)
+    retraction["retracts_event_id"] = leave["event_id"]
+    write(db, retraction)
+    rows = timeline(db)
+    events = {str(r["id"]): transition_event(r) for r in rows}
+    transitions = [e for e in events.values() if e is not None]
+    assert transitions
+    assert {e.source for e in transitions} == {"perception:owner.place"}
+    assert all(e.data["subject"] == str(OWNER) for e in transitions)
+    for event in transitions:
+        assert event.label is not None and event.label.exposed
+        assert event.label.covers(
+            timeline_label(next(r for r in rows if r["id"] == event.id)["labels"])
+        )
+    assert events[str(leave["event_id"])].retracted is True
+    # The retraction itself is a record, not a transition.
+    retract = next(r for r in rows if r["operation"] == "retract")
+    assert events[str(retract["id"])] is None
 
 
 @pytest.mark.parametrize(

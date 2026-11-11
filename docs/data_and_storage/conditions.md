@@ -32,10 +32,13 @@ consumes `ConditionEvaluator.consume_fire`; it never evaluates predicates itself
 - Labels (RFC 0038 S1/S4): `register` takes the wait envelope's `Label` snapshot (required; a
   non-`Label` refuses). It is stored with the instance (`core_324`), is part of the immutable
   boundary. A fire joins labels (S4): the intent and its receipt carry the registered label
-  joined with the unknown label (`{world}` in I and D, all six categories in C) when the cause is
-  the registration snapshot or an event, because `ConditionEvent` carries no label until the
-  producers stamp them (`bu-dhloi1.9`) and S1 makes missing provenance unknown. A clock (`at`)
-  fire conveys no source data and carries the registered label alone. No fire is ever narrower.
+  joined with its evidence when the cause is the registration snapshot or an event
+  (bu-dhloi1.305 PR5a). An event fire's evidence is the labels of the batch's events that hold
+  each true non-clock leaf (`ConditionEvent.label`); a registration fire's is `Snapshot.label`.
+  A true leaf held by no event, or by an unlabelled one, and an unlabelled snapshot join the
+  unknown label (`{world}` in I and D, all six categories in C): S1 makes missing provenance
+  unknown, so an unlabelled producer's fire is labelled as before. A clock (`at`) fire conveys
+  no source data and carries the registered label alone. No fire is ever narrower.
   The runner joins the intent's label into the epoch and inbox row it creates. In PostgreSQL the
   label is CHECK-validated (`public.condition_label_valid`) and immutable once written, and a
   receipt or fire intent whose label does not cover its instance's is refused (23514, an
@@ -82,8 +85,29 @@ re-reads the winner's fired row; `insert_instance` is `ON CONFLICT DO NOTHING RE
   suite adds two-connection `FOR UPDATE`, crash/restart replay, the role fence and trigger
   guards.
 
+## Transition events from the perception timeline (`butlers.conditions.transitions`, dark)
+
+`transition_event(row)` maps one `public.perception_timeline` row (bu-dhloi1.9) to the
+`transition` event a leaf on its kind waits for (bu-dhloi1.305 PR5c). Nothing calls it yet:
+reading the timeline, feeding instances and lifting the `policy` refusal of `transition`
+leaves wait on bu-jv1moa.27.
+
+- Only a `class = 'transition'` row is an event; a record, occurrence or point is none. The
+  event id is the row id, its source `perception:<kind>`, its time the row's `at`, its position
+  the row's write time (`created_at`) in microseconds, and its data
+  `{kind, subject, from, to}` from `subject_entity`, `from_state` and `to_state`.
+- `late`, `retracted` and a retraction (`operation = 'retract'`) pass through as flags, which
+  the evaluator never lets set a leaf.
+- The event carries the row's stored label (`timeline_label`). Perception stores `world` or an
+  opaque resolved principal reference (a UUID) in I and D; a reference becomes the S1 principal
+  `external:<uuid>`. A row with no label, or a malformed or non-version-1 one, gives an
+  unlabelled event, whose fire joins `unknown`, never `owner`.
+- It accepts the timeline function's JSON (string times) and a driver row (datetimes, UUIDs,
+  jsonb as text) alike.
+
 ## Deferred
 
-- Producers feeding events (`.9` perception reader, goal ledger), the scheduler tick
-  delivery, and the next-generation rearm (S2.2) belong to their owners.
+- Feeding the perception reader's events through `transition_event`, and the scheduler tick
+  delivery, belong to their owners. The goal ledger feed and the rearm are
+  `GoalRunner.feed_conditions` and `goal__wait_again` (see `docs/runtime/goal-runner.md`).
 - Watches and advanced rules stay with `bu-4c7nvp.1.5`.
