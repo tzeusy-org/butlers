@@ -1,7 +1,7 @@
 """Collectors map closed local facts to observations; none can claim more than it measured."""
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -9,12 +9,17 @@ from butlers.capability_health.collectors import (
     credential_observations,
     probe_conditions,
 )
+from butlers.capability_health.model import reduce
 
 NOW = datetime(2026, 11, 11, 12, 0, tzinfo=UTC)
 
 
+FRESH = NOW - timedelta(minutes=2)
+
+
 def observed(pairs):
-    return {(o.dependency, o.state, o.cause) for o in credential_observations(pairs, NOW)}
+    triples = [(k, s, FRESH) for k, s in pairs]
+    return {(o.dependency, o.state, o.cause) for o in credential_observations(triples, NOW)}
 
 
 @pytest.mark.parametrize(
@@ -56,7 +61,7 @@ def test_credential_keys_name_their_dependency_and_unknown_keys_name_none() -> N
 
 
 def test_an_unmeasured_credential_carries_no_state_and_is_stamped_at_collection() -> None:
-    (obs,) = credential_observations([("u:google", "warn")], NOW)
+    (obs,) = credential_observations([("u:google", "warn", None)], NOW)
     assert obs.state is None and obs.cause is None and obs.observed_at == NOW
 
 
@@ -118,3 +123,33 @@ async def test_cancellation_is_not_swallowed() -> None:
 
     with pytest.raises(asyncio.CancelledError):
         await probe_conditions(Pool(cancelled), clock=lambda: NOW)
+
+
+def test_a_probe_backed_claim_is_observed_when_probed_not_when_read() -> None:
+    probed = NOW - timedelta(days=30)
+    (obs,) = credential_observations([("u:google", "ok", probed)], NOW)
+    assert (obs.state, obs.observed_at) == ("available", probed)
+    # The reducer then refuses to treat a month-old success as current.
+    reduction = reduce("google", [obs], NOW)
+    assert reduction.unmeasurable
+
+
+@pytest.mark.parametrize("state", ["ok", "expiring", "failing"])
+@pytest.mark.parametrize("probed_at", [None, datetime(2026, 11, 11, 11, 59)])
+def test_a_probe_backed_claim_without_a_usable_probe_time_is_unmeasured(state, probed_at) -> None:
+    (obs,) = credential_observations([("u:google", state, probed_at)], NOW)
+    assert obs.state is None and obs.cause is None and obs.observed_at == NOW
+    assert reduce("google", [obs], NOW).unmeasurable
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"), [("never_set", "unconfigured"), ("expired", "down")]
+)
+def test_row_facts_need_no_probe_and_are_observed_at_read(state, expected) -> None:
+    (obs,) = credential_observations([("u:google", state, None)], NOW)
+    assert (obs.state, obs.observed_at) == (expected, NOW)
+
+
+def test_a_failing_probe_that_is_old_does_not_stay_down_forever() -> None:
+    (obs,) = credential_observations([("u:google", "failing", NOW - timedelta(hours=2))], NOW)
+    assert reduce("google", [obs], NOW).unmeasurable

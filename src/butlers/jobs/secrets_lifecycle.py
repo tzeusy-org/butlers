@@ -206,6 +206,7 @@ class CredentialSnapshot:
     label: str
     state: str
     provider: str | None = None  # user family only — display provider slug
+    last_verified: datetime | None = None  # when the provider was last actually probed
 
 
 async def _collect_snapshots(
@@ -262,6 +263,7 @@ async def _collect_snapshots(
                     family="system",
                     label=row.key,
                     state=row.state,
+                    last_verified=row.last_verified,
                 )
             )
 
@@ -290,6 +292,7 @@ async def _collect_snapshots(
                 family="system",
                 label=row.key,
                 state=row.state,
+                last_verified=row.last_verified,
             )
         )
 
@@ -300,6 +303,7 @@ async def _collect_snapshots(
                 family="cli",
                 label=row.key,
                 state=row.state,
+                last_verified=row.last_verified,
             )
         )
 
@@ -316,6 +320,7 @@ async def _collect_snapshots(
                 label=provider_meta.label if provider_meta is not None else provider,
                 state=row.state,
                 provider=provider,
+                last_verified=row.last_verified,
             )
         )
 

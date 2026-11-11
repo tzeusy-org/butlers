@@ -104,6 +104,41 @@ async def test_collect_snapshots_aggregates_all_families_with_canonical_keys():
     assert keys["u:google"].state == "expiring"
 
 
+async def test_collect_snapshots_carry_the_last_probe_time_of_every_family():
+    probed = datetime(2026, 11, 11, 11, 0, tzinfo=UTC)
+    finance_pool = object()
+    shared_pool = object()
+    db = db_manager({"finance": finance_pool}, credential_pool=shared_pool)
+
+    async def fake_system(pool, butler_name, **kwargs):
+        key = "PER_BUTLER" if pool is finance_pool else "SHARED"
+        return [SystemSecret(key=key, state="ok", butler=butler_name, last_verified=probed)]
+
+    async def fake_cli(pool):
+        return [CliRuntime(key="claude", state="ok", last_verified=probed)]
+
+    async def fake_user(pool, *, identity):
+        return [
+            UserSecret(
+                id="u1",
+                entity_id="e1",
+                type="google_oauth_refresh",
+                state="ok",
+                last_verified=probed,
+            )
+        ]
+
+    with (
+        patch("butlers.jobs.secrets_lifecycle._fetch_system_secrets", side_effect=fake_system),
+        patch("butlers.jobs.secrets_lifecycle._fetch_cli_secrets", side_effect=fake_cli),
+        patch("butlers.jobs.secrets_lifecycle._fetch_user_secrets", side_effect=fake_user),
+    ):
+        snapshots = await _collect_snapshots(db)
+
+    assert {s.key for s in snapshots} == {"s:PER_BUTLER", "s:SHARED", "c:claude", "u:google"}
+    assert {s.last_verified for s in snapshots} == {probed}
+
+
 async def test_collect_snapshots_excludes_spotify_system_credentials():
     lifestyle_pool = object()
     shared_pool = object()

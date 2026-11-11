@@ -98,7 +98,9 @@ async def run_capability_health_loop(
         observations: list[Observation] = []
         try:
             snapshots = await _collect_snapshots(db)
-            observations += credential_observations([(s.key, s.state) for s in snapshots], now)
+            observations += credential_observations(
+                [(s.key, s.state, s.last_verified) for s in snapshots], now
+            )
         except Exception:
             logger.warning("capability health: credential collection failed")
         try:

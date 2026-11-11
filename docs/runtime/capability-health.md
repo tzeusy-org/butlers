@@ -76,6 +76,11 @@ for the 300s heartbeat.
   (`credential_missing`), `expired` is down (`oauth_revoked`), `failing` is down (`unknown`). `warn` and
   anything unrecognised is unmeasured. A dependency no credential feeds stays unmeasured, which readers
   see as `unknown`.
+- A probe-backed claim (`ok`, `expiring`, `failing`) is observed at the provider's last probe time
+  (`last_verified`), not when the inventory was read. A month-old success therefore ages past the
+  900s bound and reads as unmeasured, and a claim with no (or a timezone-naive) probe time is
+  unmeasured. `never_set` and `expired` are facts about the stored row and are observed at read time.
+  Health does not rely on the lifecycle job's stale-`ok` reclassification.
 - `conditions` is probed directly (a one-row read of the conditions store, 2s deadline), stamped at
   probe time. A timeout or connection failure is down (`domain_unreachable`); any other failure is
   unmeasured, never available. The service's own `DependencyReporter` seam has no in-process consumer.
@@ -95,3 +100,6 @@ only, content-blind (the owner or lead runs it, the password never enters a repo
 1. `ALTER ROLE perception_health_writer LOGIN PASSWORD '<generated>'`.
 2. Add `BUTLERS_HEALTH_WRITER_DSN` (that role and password) to the `butlers-local-env` Secret.
 3. Restart dashboard-api; check `/api/system/background-jobs` for `capability_health`.
+
+Known gap: the bws-mode ExternalSecret mapping for `BUTLERS_HEALTH_WRITER_DSN` is not added; the key is
+local-env only until a BWS secret exists.

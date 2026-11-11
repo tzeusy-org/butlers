@@ -38,17 +38,33 @@ _PROBE_SQL = "SELECT 1 FROM public.condition_instances LIMIT 1"
 _NETWORK = (TimeoutError, ConnectionError, OSError)
 
 
+#: States that rest on a probe: the claim is as old as the probe, and without a probe time it is
+#: no claim. ``never_set`` and ``expired`` are facts about the stored row, true as of the read.
+_PROBED = frozenset({"ok", "expiring", "failing"})
+
+
 def credential_observations(
-    credentials: Iterable[tuple[str, str]], now: datetime
+    credentials: Iterable[tuple[str, str, datetime | None]], now: datetime
 ) -> list[Observation]:
-    """Observations for the ``(credential key, state)`` pairs that feed a declared dependency."""
+    """Observations for ``(credential key, state, last probe time)`` that feed a dependency.
+
+    A probe-backed state is observed when the provider was last probed, not when the inventory
+    was read, so an old success ages out in the reducer instead of reading as current. A missing
+    or timezone-naive probe time makes it unmeasured.
+    """
     out = []
-    for key, state in credentials:
+    for key, state, probed_at in credentials:
         dependency = CREDENTIAL_DEPENDENCIES.get(key)
         if dependency is None:
             continue
         mapped, cause = _STATE_MAP.get(state, (None, None))
-        out.append(Observation(dependency, mapped, cause, now))
+        observed_at = now
+        if state in _PROBED:
+            if probed_at is None or probed_at.tzinfo is None:
+                mapped, cause = None, None
+            else:
+                observed_at = probed_at
+        out.append(Observation(dependency, mapped, cause, observed_at))
     return out
 
 
