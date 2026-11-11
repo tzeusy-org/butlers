@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Protocol
 from uuid import NAMESPACE_OID, UUID, uuid5
 
 from opentelemetry import trace
@@ -120,6 +120,12 @@ def _attach_calls(failure: BaseException, calls: list[dict[str, str]]) -> BaseEx
     return failure
 
 
+class OwnerFailures(Protocol):
+    """The sweep step that tells the owner about a request that failed unannounced."""
+
+    async def sweep(self) -> int: ...
+
+
 class GoalRunner:
     def __init__(
         self,
@@ -132,6 +138,7 @@ class GoalRunner:
         composer: PromptComposer | None = None,
         config: RunnerConfig | None = None,
         kernel: Kernel = call_model,
+        owner_failures: OwnerFailures | None = None,
     ):
         self.broker = broker
         self.host = host
@@ -141,6 +148,7 @@ class GoalRunner:
         self.composer = composer or PacketComposer()
         self.config = config or RunnerConfig()
         self.kernel = kernel
+        self.owner_failures = owner_failures
         self._tasks: set[asyncio.Task] = set()
         self._admit_failures: dict[UUID, int] = {}
 
@@ -818,6 +826,16 @@ class GoalRunner:
         await self._resolve_approvals()
         await self._admit_fires()
         await self._launch_wakes()
+        await self._report_owner_failures()
+
+    async def _report_owner_failures(self) -> None:
+        """Tell the owner about requests that failed without any delivery; never raises."""
+        if self.owner_failures is None:
+            return
+        try:
+            await self.owner_failures.sweep()
+        except Exception:
+            logger.exception("goal runner owner failure report failed")
 
     async def _admit_fires(self) -> None:
         """Admit the fires the evaluator committed that no wake intent answers yet.
