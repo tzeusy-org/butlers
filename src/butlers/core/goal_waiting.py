@@ -339,8 +339,38 @@ class WaitLedger:
             "owner_answer",
             {"kind": "owner_answer", "prompt_effect_id": str(prompt_effect_id)},
             f"owner_answer:{prompt_effect_id}",
-            source="goal.inbox",
+            sources=("goal.inbox",),
             latest=expires_at,
+        )
+
+    async def open_conditions(
+        self,
+        goal_id: UUID,
+        epoch: int,
+        predicate: dict[str, Any],
+        predicate_digest: str,
+        sources: Sequence[str],
+        deadline: Any,
+        max_wakes: int,
+        instance_id: str,
+    ) -> UUID | None:
+        """Wait on a closed predicate over the goal's own ledger (``goal.wait_until``, S2.2).
+
+        The caller validated the predicate and its bounds and registers ``instance_id`` with
+        the evaluator in this transaction. The envelope keeps the goal's label, ends at the
+        deadline (or the budget deadline if sooner), allows ``max_wakes`` wakes, and its
+        successor holds at most the waiting lead's grant ∩ the ceiling.
+        """
+        return await self._open_own_wait(
+            goal_id,
+            epoch,
+            "conditions",
+            predicate,
+            instance_id,
+            sources=sources,
+            latest=deadline,
+            max_wakes=max_wakes,
+            predicate_digest=predicate_digest,
         )
 
     async def _waiting_grants(self, goal_id: UUID, epoch: int) -> list[dict]:
@@ -375,8 +405,10 @@ class WaitLedger:
         *,
         effect_id: UUID | None = None,
         approval_digest: str | None = None,
-        source: str = "effects",
+        sources: Sequence[str] = ("effects",),
         latest: Any = None,
+        max_wakes: int = 1,
+        predicate_digest: str | None = None,
     ) -> UUID | None:
         goal = await self.connection.fetchrow(
             "SELECT plan_version, label_version, label_instr, label_data, label_sens "
@@ -409,11 +441,12 @@ class WaitLedger:
                 plan_version=version,
                 plan_digest=plan,
                 predicate=predicate,
-                predicate_digest=hashlib.sha256(
+                predicate_digest=predicate_digest
+                or hashlib.sha256(
                     json.dumps(predicate, sort_keys=True, separators=(",", ":")).encode()
                 ).hexdigest(),
-                source_set=[source],
-                permitted_sources=[source],
+                source_set=list(sources),
+                permitted_sources=list(sources),
                 grant_snapshot=snapshot,
                 grant_digest=grants_digest(snapshot),
                 label=Label.from_row(
@@ -423,7 +456,7 @@ class WaitLedger:
                     goal["label_sens"],
                 ),
                 deadline=deadline,
-                max_wakes=1,
+                max_wakes=max_wakes,
                 condition_instance_ids=[instance],
                 approval_effect_id=effect_id,
                 approval_digest=approval_digest,

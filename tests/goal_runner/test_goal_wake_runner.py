@@ -52,9 +52,15 @@ def fire_for(instance: str = "c0") -> FireIntent:
 
 
 async def waiting_on_conditions(
-    h, goal: UUID, lead, *, lifetime=timedelta(hours=1), grants: tuple[Grant, ...] = ()
+    h,
+    goal: UUID,
+    lead,
+    *,
+    lifetime=timedelta(hours=1),
+    grants: tuple[Grant, ...] = (),
+    instance: str = "c0",
 ) -> UUID:
-    """The lead's session ended and the goal waits on one conditions envelope (instance c0).
+    """The lead's session ended and the goal waits on one conditions envelope (``instance``).
 
     ``grants`` is the envelope's grant snapshot: the most its wake lead may hold.
     """
@@ -82,7 +88,7 @@ async def waiting_on_conditions(
                 label=owner_label,
                 deadline=datetime.now(UTC) + lifetime,
                 max_wakes=2,
-                condition_instance_ids=["c0"],
+                condition_instance_ids=[instance],
             )
         )
         assert envelope is not None

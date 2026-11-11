@@ -11,7 +11,9 @@ network I/O.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -21,8 +23,14 @@ from butlers.capability_broker.contracts import BrokerRefused, Catalog, Principa
 from butlers.capability_broker.ledger import BrokerLedger
 from butlers.capability_broker.recipients import live_owner
 from butlers.capability_broker.typed import TypedSchema, parse_schema
+from butlers.conditions import ConditionEvaluator, ConditionsUnavailable, RegistrationRefused
+from butlers.conditions.predicate import digest as predicate_digest
+from butlers.conditions.predicate import sources as predicate_sources
+from butlers.conditions.sql import ConnectionConditionStore
 from butlers.core.goal_admission import Grant, decode_grants, digest, encode_grants, intersect
+from butlers.core.goal_labels import Label
 from butlers.core.goal_waiting import WaitLedger
+from butlers.core.goal_wake import WakeAdmission
 
 from .contracts import (
     GoalBudgetView,
@@ -35,6 +43,9 @@ from .contracts import (
     Role,
 )
 from .delegation import DelegationRequest, child_grant
+from .own_conditions import HORIZON, OwnEffect, grant_for, named, snapshot_for
+
+logger = logging.getLogger(__name__)
 
 LIVE = ("launching", "running")
 # Goal states a Stop fences (RFC 0038 S2: a waiting goal is stoppable too).
@@ -726,6 +737,105 @@ class RunnerLedger:
         """
         return await self._wait(principal, effect_id, approval=False)
 
+    async def wait_until(
+        self, principal: Principal, predicate: dict, deadline: datetime, max_wakes: int
+    ) -> tuple[list[UUID], bool] | BrokerRefused:
+        """``goal.wait_until``: the lead ends and the goal waits on its own conditions (S2.2).
+
+        ``predicate`` is a canonical goal-own predicate (``own_predicate``). Every decision it
+        names must be one of this goal's approval effects and every effect one of its effects,
+        else RESOURCE; a deadline past ``HORIZON`` from admission or not in the future is POLICY.
+        Nothing is recorded on a refusal. Otherwise, in this transaction, live children stop,
+        the lead ends, a ``conditions`` envelope opens and its condition instance registers
+        against a snapshot read under the goal lock. A predicate that already holds fires at
+        registration and is admitted here as the wait's wake, exactly once. Returns the stopped
+        children and whether the goal was woken.
+        """
+        goal = await self.lock(principal.goal_id)
+        if goal is None or goal["status"] != "running":
+            raise BrokerRefused(Reason.GOAL)
+        if principal.depth != 0:
+            raise BrokerRefused(Reason.CAPABILITY)
+        rows = await self.connection.fetch(
+            "SELECT id::text AS id, status, approval_ref IS NOT NULL AS approval "
+            "FROM switchboard.effects WHERE goal_id = $1",
+            principal.goal_id,
+        )
+        effects = [OwnEffect(r["id"], r["status"], r["approval"]) for r in rows]
+        decisions, named_effects = named(predicate)
+        if not decisions <= {e.id for e in effects if e.approval} or not named_effects <= {
+            e.id for e in effects
+        }:
+            raise BrokerRefused(Reason.RESOURCE)
+        bounds = await self.connection.fetchrow(
+            "SELECT now() AS now, b.deadline AS budget, g.created_at + $2::interval AS horizon, "
+            "g.label_version, g.label_instr, g.label_data, g.label_sens "
+            "FROM switchboard.goals g JOIN switchboard.budgets b ON b.goal_id = g.id "
+            "WHERE g.id = $1",
+            principal.goal_id,
+            HORIZON,
+        )
+        if bounds is None:
+            raise BrokerRefused(Reason.UNAVAILABLE)
+        if deadline > bounds["horizon"]:
+            raise BrokerRefused(Reason.POLICY)
+        expires = min(deadline, bounds["budget"])
+        if expires <= bounds["now"]:
+            raise BrokerRefused(Reason.POLICY)
+        exhausted = await self.broker.charge_call(principal)
+        if exhausted is not None:
+            return exhausted
+        children = await self._end_live(principal.goal_id, "stopped", "goal_ended", depth=1)
+        await self.end(principal.goal_id, principal.invocation_id, "returned", "completed")
+        epoch = await self.connection.fetchval(
+            "SELECT lead_epoch FROM switchboard.invocations WHERE goal_id = $1 AND id = $2",
+            principal.goal_id,
+            principal.invocation_id,
+        )
+        # Generation-owned and not derived from the envelope id, which the ledger mints.
+        instance = f"goal:{principal.goal_id}:conditions:{uuid4()}"
+        opened = await WaitLedger(self.connection).open_conditions(
+            principal.goal_id,
+            epoch,
+            predicate,
+            predicate_digest(predicate),
+            sorted(predicate_sources(predicate)),
+            expires,
+            max_wakes,
+            instance,
+        )
+        if opened is None:
+            raise BrokerRefused(Reason.UNAVAILABLE)
+        await self.connection.execute(
+            "UPDATE switchboard.goals SET status = 'waiting', updated_at = now() WHERE id = $1",
+            principal.goal_id,
+        )
+        evaluator = ConditionEvaluator(ConnectionConditionStore(self.connection))
+        try:
+            registered = await evaluator.register(
+                instance_id=instance,
+                predicate=predicate,
+                grant=grant_for(str(principal.goal_id), predicate, effects),
+                goal_id=str(principal.goal_id),
+                label=Label.from_row(
+                    bounds["label_version"],
+                    bounds["label_instr"],
+                    bounds["label_data"],
+                    bounds["label_sens"],
+                ),
+                snapshot=snapshot_for(bounds["now"], effects),
+                expires_at=expires,
+            )
+        except RegistrationRefused:
+            raise BrokerRefused(Reason.RESOURCE) from None
+        except ConditionsUnavailable:
+            raise BrokerRefused(Reason.UNAVAILABLE) from None
+        woken = False
+        if registered.intent is not None:
+            wake = await WakeAdmission(self.connection).admit(registered.intent)
+            woken = wake.state == "admitted"
+        return children, woken
+
     async def _wait(
         self, principal: Principal, effect_id: UUID, *, approval: bool
     ) -> list[UUID] | BrokerRefused:
@@ -1030,6 +1140,7 @@ class RunnerLedger:
             "UPDATE switchboard.goals SET status = 'stopped', updated_at = now() WHERE id = $1",
             goal_id,
         )
+        await self._cancel_conditions(goal_id)
         await WaitLedger(self.connection).cancel_waits(goal_id, "stopped")
         live = await self._end_live(goal_id, "stopped", "stopped")
         await self.connection.execute(
@@ -1038,6 +1149,38 @@ class RunnerLedger:
             goal_id,
         )
         return True, live
+
+    async def _cancel_conditions(self, goal_id: UUID) -> None:
+        """Stop cancels the condition instances of the goal's live waits, in Stop's transaction.
+
+        Nothing is left for the evaluator to fire. A generation id with no stored instance of
+        this goal (one admitted without the evaluator) is skipped. If a cancel fails for any
+        reason, Stop still commits: a later fire is refused ``stopped`` by wake admission.
+        """
+        instances = await self.connection.fetch(
+            "SELECT unnest(g.condition_instance_ids) AS id FROM switchboard.wait_envelopes e "
+            "JOIN switchboard.wait_generations g "
+            "ON (g.goal_id, g.envelope_id, g.generation) = (e.goal_id, e.id, e.generation) "
+            "WHERE e.goal_id = $1 AND e.kind = 'conditions' AND e.state IN ('open', 'fired')",
+            goal_id,
+        )
+        if not instances:
+            return
+        now = await self.connection.fetchval("SELECT now()")
+        store = ConnectionConditionStore(self.connection)
+        evaluator = ConditionEvaluator(store)
+        for row in instances:
+            try:
+                async with store.transaction() as tx:
+                    stored = await tx.get_instance(row["id"])
+                # Instance ids are global; only this goal's own instance is its to cancel.
+                if stored is None or stored.goal_id != str(goal_id):
+                    continue
+                await evaluator.cancel(row["id"], now=now)
+            except Exception:
+                # Stop is the owner's kill switch and always commits; each store unit is its
+                # own savepoint, so a failed cancel leaves Stop's transaction usable.
+                logger.warning("goal stop could not cancel condition goal=%s", goal_id)
 
     async def end_goal(self, goal_id: UUID, status: str, reason: str) -> list[UUID]:
         """End an active goal ``failed`` or ``budget_exhausted`` and fence it."""

@@ -245,18 +245,42 @@ class _SqlTx:
         return intent if intent is not None and intent.claimed_by == consumer else None
 
 
+@asynccontextmanager
+async def _mapped() -> AsyncIterator[None]:
+    """The store's error mapping (module docstring), shared by both stores."""
+    try:
+        yield
+    except (asyncpg.SerializationError, asyncpg.DeadlockDetectedError) as exc:
+        raise StoreConflict(str(exc)) from exc
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError) as exc:
+        if isinstance(exc, ConnectionError):
+            raise
+        raise ConnectionError(f"conditions store unavailable: {type(exc).__name__}") from exc
+
+
 class PostgresConditionStore:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[_SqlTx]:
-        try:
-            async with self._pool.acquire() as connection, connection.transaction():
-                yield _SqlTx(connection)
-        except (asyncpg.SerializationError, asyncpg.DeadlockDetectedError) as exc:
-            raise StoreConflict(str(exc)) from exc
-        except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError) as exc:
-            if isinstance(exc, ConnectionError):
-                raise
-            raise ConnectionError(f"conditions store unavailable: {type(exc).__name__}") from exc
+        async with _mapped(), self._pool.acquire() as connection, connection.transaction():
+            yield _SqlTx(connection)
+
+
+class ConnectionConditionStore:
+    """The store on a caller's open transaction: each unit of work is a savepoint in it.
+
+    A goal's own wait registers its condition instance in the same transaction that opens the
+    envelope (``goal.wait_until``), so the instance, its receipt and an at-once fire intent
+    commit or roll back with the wait. A unit that fails rolls back to its savepoint, leaving
+    the caller's transaction usable; the caller decides whether the whole wait aborts.
+    """
+
+    def __init__(self, connection: asyncpg.Connection | PoolConnectionProxy) -> None:
+        self._connection = connection
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[_SqlTx]:
+        async with _mapped(), self._connection.transaction():
+            yield _SqlTx(self._connection)
