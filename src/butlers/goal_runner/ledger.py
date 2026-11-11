@@ -1182,11 +1182,11 @@ class RunnerLedger:
         return [OwnReply(r["id"], str(goal_id), r["binding"], r["created_at"]) for r in rows]
 
     async def released_replies(self, goal_id: UUID) -> int:
-        """How many owner replies the goal joined but never read before it ended (sw_067).
+        """How many owner replies the goal joined but never read before it ended (sw_070).
 
         A count only: the reply itself is never read here. The goal's transition into a
-        terminal status records each such row, so an ended goal never swallows one silently;
-        the owner-failure ask reports the count.
+        terminal status records each such row, so an ended goal never swallows one silently.
+        The count is recorded; reporting it to the owner follows in bu-dhloi1.323.
         """
         return await self.connection.fetchval(
             "SELECT count(*) FROM switchboard.goal_inbox_releases WHERE goal_id = $1", goal_id

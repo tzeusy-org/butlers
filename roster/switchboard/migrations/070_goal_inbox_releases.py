@@ -1,7 +1,7 @@
 """A goal that ends releases the owner replies it joined but never read.
 
-Revision ID: sw_067
-Revises: sw_066
+Revision ID: sw_070
+Revises: sw_069
 
 RFC 0038 S2.2 (bu-dhloi1.305, live-flip gate G1). A reply joins a goal as an unread
 ``owner_reply`` inbox row. When the goal waits on a conditions envelope that names the prompt
@@ -15,16 +15,24 @@ status, so every end path is covered and none can forget. The reason is the goal
 status, except that a failed or partial end with an expired wait is ``deadline``.
 
 The record is content-blind: ids, a fixed reason and a time, never the reply. The runtime role
-may read it and nothing else; only the trigger (``SECURITY DEFINER``, pinned search path)
-writes it, and nothing updates or deletes it. The owner-failure ask reads the count.
+may read it and nothing else; only the trigger (``SECURITY DEFINER``, search path pinned to
+``pg_catalog, pg_temp``) writes it, and nothing updates or deletes it. The count is recorded
+here; reporting it to the owner follows in bu-dhloi1.323.
+
+Retention: each release references its goal and its inbox row, and the no-delete trigger keeps
+the release forever, so these foreign keys pin the ``goals`` and ``goal_inbox`` rows too. Any
+future retention of the goal ledger has to handle this table first.
+
+It also adds ``ix_goal_inbox_goal`` on ``goal_inbox (goal_id, created_at)``: the release trigger
+and the inbox readers select by goal, and no index led on ``goal_id`` before.
 
 The downgrade refuses while any release exists.
 """
 
 from alembic import op
 
-revision = "sw_067"
-down_revision = "sw_066"
+revision = "sw_070"
+down_revision = "sw_069"
 branch_labels = None
 depends_on = None
 
@@ -43,6 +51,8 @@ def upgrade() -> None:
             released_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
         CREATE INDEX ix_goal_inbox_releases_goal ON switchboard.goal_inbox_releases(goal_id);
+        CREATE INDEX IF NOT EXISTS ix_goal_inbox_goal
+            ON switchboard.goal_inbox(goal_id, created_at);
     """)
     op.execute(f"""
         ALTER TABLE switchboard.goal_inbox_releases ENABLE ROW LEVEL SECURITY;
@@ -61,7 +71,8 @@ def upgrade() -> None:
             FOR EACH STATEMENT EXECUTE FUNCTION switchboard.goal_inbox_releases_durable();
 
         CREATE FUNCTION switchboard.goal_release_unread()
-        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+        SET search_path = pg_catalog, pg_temp AS $$
         DECLARE
             why TEXT := NEW.status;
         BEGIN
@@ -96,4 +107,5 @@ def downgrade() -> None:
         DROP FUNCTION IF EXISTS switchboard.goal_release_unread();
         DROP TABLE IF EXISTS switchboard.goal_inbox_releases;
         DROP FUNCTION IF EXISTS switchboard.goal_inbox_releases_durable();
+        DROP INDEX IF EXISTS switchboard.ix_goal_inbox_goal;
     """)

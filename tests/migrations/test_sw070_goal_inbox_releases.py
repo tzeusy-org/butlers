@@ -1,4 +1,4 @@
-"""sw_067: a goal that ends releases the owner replies it joined but never read.
+"""sw_070: a goal that ends releases the owner replies it joined but never read.
 
 Real PostgreSQL. The goal's transition into a terminal status records each unconsumed
 ``owner_reply`` inbox row once in ``goal_inbox_releases``, with the reason; a consumed row is not
@@ -30,7 +30,7 @@ def _ledger(container):
         migration_db_name(),
         ["core", "switchboard"],
         schemas={"core": "switchboard", "switchboard": "switchboard"},
-        revisions={"switchboard": "sw_067"},  # pinned-revision: owns the release record
+        revisions={"switchboard": "sw_070"},  # pinned-revision: owns the release record
     )
 
 
@@ -123,4 +123,4 @@ def test_an_ended_goal_releases_its_unread_replies_once(postgres_container):
 
     config = _build_alembic_config(url, ["switchboard"], target_schema="switchboard")
     with pytest.raises(Exception, match="released owner replies"):
-        command.downgrade(config, "switchboard@sw_066")  # pinned-revision: sw_067 fence
+        command.downgrade(config, "switchboard@sw_069")  # pinned-revision: sw_070 fence
