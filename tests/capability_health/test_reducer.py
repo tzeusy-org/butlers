@@ -6,6 +6,7 @@ import pytest
 
 from butlers.capability_health.model import (
     ALLOWED_CAUSES,
+    MAX_SOURCE_AGE,
     Observation,
     reduce,
 )
@@ -142,3 +143,33 @@ def test_the_reduction_value_is_a_valid_system_dep_payload() -> None:
 
     for items in ([obs("available")], [obs("down", "oauth_revoked")], [obs("held", "policy_held")]):
         validate_value("system.dep", reduce("google", items, NOW).value())
+
+
+def test_a_stale_available_alone_is_unmeasurable() -> None:
+    old = Observation("google", "available", None, NOW - timedelta(days=30))
+    assert reduce("google", [old], NOW).unmeasurable
+
+
+def test_a_stale_available_beside_a_fresh_one_is_blind_not_available() -> None:
+    old = Observation("google", "available", None, NOW - timedelta(days=30))
+    result = reduce("google", [old, obs("available")], NOW)
+    assert (result.state, result.cause) == ("blind", "signal_unmeasurable")
+
+
+def test_a_stale_bad_claim_is_also_only_an_unmeasured_claim() -> None:
+    # Old news is not a current verdict in either direction.
+    old = Observation("google", "down", "oauth_revoked", NOW - timedelta(days=30))
+    assert reduce("google", [old], NOW).unmeasurable
+    assert reduce("google", [old, obs("available")], NOW).state == "blind"
+
+
+def test_the_age_bound_is_inclusive_and_configurable() -> None:
+    edge = Observation("google", "available", None, NOW - MAX_SOURCE_AGE)
+    assert reduce("google", [edge], NOW).state == "available"
+    just_over = Observation(
+        "google", "available", None, NOW - MAX_SOURCE_AGE - timedelta(seconds=1)
+    )
+    assert reduce("google", [just_over], NOW).unmeasurable
+    assert (
+        reduce("google", [just_over], NOW, max_source_age=timedelta(hours=1)).state == "available"
+    )

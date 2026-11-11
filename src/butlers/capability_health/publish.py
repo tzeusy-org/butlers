@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
-from butlers.capability_health.model import Reduction
+from butlers.capability_health.model import MAX_SOURCE_AGE, Reduction
 from butlers.core.capability_dependencies import dependency_evidence_ref, dependency_subject
 from butlers.perception.model import EventRequest
 
@@ -24,7 +24,7 @@ EVIDENCE_SOURCE = "capability_health"
 #: The profile's freshness maximum is 900s; republishing every 300s keeps a healthy
 #: slot fresh through two missed ticks before it reads as stale (and so unknown).
 HEARTBEAT = timedelta(seconds=300)
-FRESHNESS = timedelta(seconds=900)
+FRESHNESS = MAX_SOURCE_AGE
 _LABELS = {"version": 1, "label_instr": ["world"], "label_data": ["world"], "label_sens": []}
 
 

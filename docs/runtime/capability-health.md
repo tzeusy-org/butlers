@@ -31,10 +31,18 @@ collector's `(state, cause, observed_at)` claim, or `state=None` for "could not 
 - An input that could not be measured is never read as healthy: beside measured inputs the dependency is
   at least `blind`/`signal_unmeasurable`; with nothing measured the result is *unmeasurable* and the slot
   is published `unmeasurable` with no value.
+- An observation older than 900 seconds (`MAX_SOURCE_AGE`, the profile's freshness maximum) is treated as
+  unmeasured whatever it claimed, so a stale `available` can never publish as fresh `available`: alone it
+  reduces to unmeasurable, beside measured inputs to `blind`. `read_health` applies the same bound.
 - `observed_at` is the winning observation's time, or the oldest input's for `available`; times after
   `now` are clamped. Source age is `now - observed_at`.
 
 ## Publishing
+
+The `health.dependencies` profile is *owned* by the installer when its evidence source is exactly
+`capability_health`; only then does re-running the installer register a newly declared dependency (the
+subjects are the code-declared set). A profile an operator configured with any other evidence source is
+never touched.
 
 `should_publish` writes on first contact, on a change of state or cause, and every 300 seconds. The
 profile's freshness maximum is 900 seconds, so two missed ticks still read fresh and a third reads

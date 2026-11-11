@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Any
 
@@ -33,6 +33,9 @@ ALLOWED_CAUSES = MappingProxyType(
         "unconfigured": frozenset({"not_configured", "credential_missing"}),
     }
 )
+#: How old a measurement may be and still count. Matches the profile's freshness
+#: maximum: past it, a claim is old news and is treated as unmeasured, never as a verdict.
+MAX_SOURCE_AGE = timedelta(seconds=900)
 # Worst first. The first entry that any observation matches decides the state.
 _STATE_ORDER = ("held", "unconfigured", "down", "blind", "degraded", "available")
 _CAUSE_ORDER = (
@@ -95,7 +98,13 @@ class Reduction:
         }
 
 
-def reduce(dependency: str, observations: Iterable[Observation], now: datetime) -> Reduction:
+def reduce(
+    dependency: str,
+    observations: Iterable[Observation],
+    now: datetime,
+    *,
+    max_source_age: timedelta = MAX_SOURCE_AGE,
+) -> Reduction:
     """Fold a dependency's observations into one verdict.
 
     Worst state wins; ties inside a state go to the earlier cause in a fixed order.
@@ -103,7 +112,9 @@ def reduce(dependency: str, observations: Iterable[Observation], now: datetime) 
     inputs it makes the dependency at least ``blind``, and with nothing measured the
     result is unmeasurable. The source time is the winning observation's, or the
     oldest input's for ``available`` so a stale input cannot hide behind a fresh one.
-    Times after ``now`` are clamped to it.
+    Times after ``now`` are clamped to it. An observation older than
+    ``max_source_age`` is treated as unmeasured whatever it claimed: old news is
+    neither a healthy nor an unhealthy verdict, and can never publish ``available``.
     """
     if dependency not in DEPENDENCY_IDS:
         raise ValueError(f"undeclared dependency: {dependency!r}")
@@ -111,16 +122,14 @@ def reduce(dependency: str, observations: Iterable[Observation], now: datetime) 
     items = list(observations)
     if any(item.dependency != dependency for item in items):
         raise ValueError("observation belongs to another dependency")
-    # An unmeasured input is an unmeasurable-signal claim of last resort.
-    claims = [
-        (
-            item.state or "blind",
-            item.cause if item.state is not None else "signal_unmeasurable",
-            min(item.observed_at, now),
-            item.state is None,
-        )
-        for item in items
-    ]
+    # An unmeasured or stale input is an unmeasurable-signal claim of last resort.
+    claims = []
+    for item in items:
+        observed = min(item.observed_at, now)
+        if item.state is None or now - item.observed_at > max_source_age:
+            claims.append(("blind", "signal_unmeasurable", observed, True))
+        else:
+            claims.append((item.state, item.cause, observed, False))
     if not claims or all(unmeasured for *_, unmeasured in claims):
         return Reduction(dependency, None, None, None)
     state = min((claim[0] for claim in claims), key=_STATE_ORDER.index)

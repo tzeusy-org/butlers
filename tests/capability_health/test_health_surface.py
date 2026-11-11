@@ -145,6 +145,19 @@ async def test_an_undeclared_dependency_is_refused_not_read() -> None:
         await read_health(FakeStore(row=known()), "nope", NOW)
 
 
+async def test_a_value_older_than_the_source_age_bound_is_unknown() -> None:
+    from butlers.capability_health.model import MAX_SOURCE_AGE
+
+    stale = known(observed=NOW - MAX_SOURCE_AGE - timedelta(seconds=1))
+    assert (
+        await read_health(FakeStore(row=stale), "google", NOW)
+    ).availability is Availability.UNKNOWN
+    edge = known(observed=NOW - MAX_SOURCE_AGE)
+    assert (
+        await read_health(FakeStore(row=edge), "google", NOW)
+    ).availability is Availability.UNAVAILABLE
+
+
 async def test_a_future_source_time_has_zero_age() -> None:
     row = known(observed=NOW + timedelta(minutes=5))
     assert (await read_health(FakeStore(row=row), "google", NOW)).source_age_seconds == 0

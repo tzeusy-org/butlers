@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol
 
+from butlers.capability_health.model import MAX_SOURCE_AGE
 from butlers.core.capability_dependencies import DEPENDENCY_IDS
 from butlers.perception.model import validate_value
 
@@ -69,6 +70,9 @@ async def read_health(store: HealthReader, dependency: str, now: datetime) -> He
         if type(generation) is not int:
             return unknown(dependency)
         age = max(0, int((now.astimezone(UTC) - observed_at).total_seconds()))
+        if age > MAX_SOURCE_AGE.total_seconds():
+            # Belt and braces: a measurement past the bound is never current health.
+            return unknown(dependency)
         return Health(
             dependency,
             value["state"],
