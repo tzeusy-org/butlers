@@ -656,13 +656,13 @@ in its own lineage, would leave the owner with silence. The sweep's last step
   changes the refusal.
 - Released unread replies (sw_070, sw_071, bu-dhloi1.323): when a goal ends with owner replies it
   joined but never read, the owner is told how many, as a count only (never a reply). A failed or
-  budget-exhausted owner request states it on its own failure line. Any other ended goal
-  (`completed`, `partial`, or a failure that has no ask of its own) with released replies gets one ask
-  with the closed cause `replies_unread`, keyed `<source key>#unread`, with the same dark gating,
-  24 hour expiry and retry cap; it has no Run or Drop card. A `stopped` goal needs nothing, since the
-  owner caused it. The count is `COUNT(*)` of `goal_inbox_releases` for the goal, the same value as
-  `RunnerLedger.released_replies`. If a failed owner request's own ask is still queued behind the batch
-  limit, the unread ask can briefly be a second ask for that goal.
+  budget-exhausted owner request states it on its own failure line, whenever that ask is recorded;
+  it never gets a second ask. A goal that ended `completed` or `partial` with released replies and no
+  ask gets one ask with the closed cause `replies_unread`, keyed `<source key>#unread`, with the same
+  dark gating, 24 hour expiry and retry cap; it has no Run or Drop card. A `stopped` goal needs
+  nothing, since the owner caused it. The count is `COUNT(*)` of `goal_inbox_releases` for the goal,
+  the same value as `RunnerLedger.released_replies`. Lines are not stored or length-checked, so the
+  added sentence has no length limit to meet.
 - Retry cap: `line_attempts` counts presentations of the cause line; after `MAX_LINE_ATTEMPTS` (3) a
   line that keeps failing before any provider call (for example no owner recipient) is no longer
   presented, and the ask waits for its 24 hour expiry.

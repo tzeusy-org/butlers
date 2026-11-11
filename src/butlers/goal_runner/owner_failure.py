@@ -108,13 +108,13 @@ SELECT g.id, k.ask_key AS source_key, g.status, g.updated_at AS ended_at,
  LIMIT $2
 """
 
-# An ended goal that released owner replies unread (sw_070) and has no pending ask of its own.
-# A failed owner request that gets a failure ask states the count on that line instead; if the
-# failure ask is still queued behind the batch limit this can briefly yield a second ask.
+# A completed or partial goal that released owner replies unread (sw_070) and has no pending ask.
+# Failed and budget-exhausted goals are never discovered here: their failure ask states the count
+# on its own line (even if it is recorded late), so a goal never gets two asks.
 _UNREAD = """
 SELECT g.id, g.source_key || '#unread' AS ask_key, g.updated_at AS ended_at
   FROM switchboard.goals g
- WHERE g.status IN ('completed', 'partial', 'failed', 'budget_exhausted')
+ WHERE g.status IN ('completed', 'partial')
    AND g.updated_at > clock_timestamp() - interval '24 hours'
    AND EXISTS (SELECT 1 FROM switchboard.goal_inbox_releases r WHERE r.goal_id = g.id)
    AND NOT EXISTS (SELECT 1 FROM switchboard.pending_asks p

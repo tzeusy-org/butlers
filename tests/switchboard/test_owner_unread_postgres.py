@@ -66,16 +66,27 @@ async def test_a_completed_or_partial_goal_with_unread_replies_gets_its_own_ask(
     assert await reporter(runtime, again).sweep() == 0 and again.lines == []
 
 
-async def test_a_failed_owner_request_states_the_count_on_its_failure_line(world):  # noqa: F811
+@pytest.mark.parametrize("deferred", [False, True])
+async def test_a_failed_goal_gets_one_ask_with_the_count_in_either_order(world, deferred):  # noqa: F811
+    from butlers.goal_runner.owner_failure import OwnerFailureReporter
+
     owner, runtime, _ = world
+    first = await admit(runtime, Evidence("message", str(uuid4()), owner=True))
+    await end(owner, first.goal_id, "failed")
     goal_id = await goal_with_replies(owner, runtime, replies=1)
     await end(owner, goal_id, "failed")
     sender = Sender()
-    await reporter(runtime, sender).sweep()
-    (row,) = await asks(owner)  # one ask, not two
-    assert row["cause"] == "failed"
-    assert sender.lines[0][0] == f"{CAUSE_LINES['failed']} {unread_sentence(1)}"
-    assert "1 reply" in sender.lines[0][0]
+    # With batch=1 the second failure's ask is recorded one sweep late (deferred); the unread
+    # pass never takes a failed goal, so it still ends with exactly one ask, with the suffix.
+    sweeper = OwnerFailureReporter(runtime, sender, batch=1 if deferred else 10)
+    for _ in range(3):
+        await sweeper.sweep()
+    mine = [r for r in await asks(owner) if r["goal_id"] == goal_id]
+    assert [r["cause"] for r in mine] == ["failed"]
+    assert all(r["cause"] != "replies_unread" for r in await asks(owner))
+    texts = [text for text, key in sender.lines if key == f"pending_ask:{mine[0]['id']}"]
+    assert texts == [f"{CAUSE_LINES['failed']} {unread_sentence(1)}"]
+    assert "1 reply" in texts[0]
 
 
 async def test_a_goal_with_no_released_reply_is_unchanged(world):  # noqa: F811
