@@ -145,9 +145,10 @@ _TOOLS = (
         (0,),
         "End your turn and wait until a condition over this goal's own effects holds: the "
         "owner's decision on an effect parked for approval ({tag: decision, subject_id, "
-        "outcome}) or an effect settling ({tag: effect_settled, effect_id, status_set}), "
-        "combined with all/any. The goal ends if the deadline passes first. Returns woken when "
-        "the condition already holds.",
+        "outcome}), an effect settling ({tag: effect_settled, effect_id, status_set}) or the "
+        "owner's reply to your prompt ({tag: owner_input, goal_id, binding_ref: the prompt's "
+        "effect id}), combined with all/any. The goal ends if the deadline passes first. "
+        "Returns woken when the condition already holds.",
         {
             "type": "object",
             "properties": {

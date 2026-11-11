@@ -826,7 +826,8 @@ class GoalRunner:
         await self._launch_wakes()
 
     async def feed_conditions(self) -> None:
-        """Feed each waiting goal's own decisions and settled effects to its condition instance.
+        """Feed each waiting goal's own decisions, settled effects and unread owner replies to its
+        condition instance.
 
         RFC 0038 S2.2 / S4 (bu-dhloi1.305 PR2). For every waiting goal with an open conditions
         envelope, the domain's decisions are synced onto its parked effects first (as the
@@ -848,9 +849,10 @@ class GoalRunner:
                 logger.warning("goal runner parked sync unavailable goal=%s", goal_id)
             async with self._txn() as ledger:
                 effects = await ledger.own_effects(goal_id)
+                replies = await ledger.own_replies(goal_id)
             try:
                 outcome = await evaluator.evaluate(
-                    instance_id, events_for(effects), now=datetime.now(UTC)
+                    instance_id, events_for(effects, replies), now=datetime.now(UTC)
                 )
             except KeyError:
                 continue  # a generation id the evaluator never registered

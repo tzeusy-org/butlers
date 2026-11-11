@@ -520,9 +520,12 @@ the prompt went to, joins the waiting goal as `reply_joined`; in the same transa
 epoch naming the `owner_reply` inbox row and a `pending` wake intent keyed on the decision, and
 returns the goal to `admitted`. The sweep then launches the successor through the wake path
 above, and the lead reads the reply from `goal__inbox` as `kind: owner_reply`. A reply to a
-waiting goal in any other case (another prompt, an expired wait, a settle, approval or conditions
-wait, a stopped goal) is new owner intent, as before. Same-chat non-reply joining of a running
-goal is not part of this change.
+waiting goal on a conditions wait whose predicate has an `owner_input` leaf on that prompt also
+joins (`reply_joined`, the `owner_reply` inbox row), but it is not a wake: the goal stays
+`waiting` and the goal-event feed (below) turns the unread row into the leaf's event. A reply to a
+waiting goal in any other case (another prompt, an expired wait, a settle or approval wait, a
+conditions wait that does not name the prompt, a stopped goal) is new owner intent, as before.
+Same-chat non-reply joining of a running goal is not part of this change.
 
 ### Waiting on the goal's own conditions (S2.2, S4)
 
@@ -539,14 +542,18 @@ approval:
   `expired` and `cancelled` are the decision itself.
 - `effect_settled {effect_id, status_set}`: one of this goal's effects settled as `succeeded`
   (`committed`), `failed`, `unknown` or `cancelled` (an effect that never ran).
+- `owner_input {goal_id, binding_ref}`: the owner replied to one of this goal's live prompts (a
+  committed prompt to the live owner, still accepting input, as `goal__wait_owner` requires). The
+  input is a reply no lead of the goal has read yet: an unread reply in the goal's inbox when the
+  lead waits makes the leaf true at once, and one a lead already took from `goal__inbox` does not
+  count. Unlike `goal__wait_owner`, it composes with the other leaves.
 
-`owner_input` is refused `policy`: admission joins a reply only to an `owner_answer` wait, so a
-conditions instance on it could not be fed; `goal__wait_owner` is the reply wait. `at` and
-`transition` (clock and perception, third-party evidence) are refused `policy` too. So are free
-text, a `deadline` that is not an ISO 8601 timestamp with an offset, one later than 45 days after
-the goal's admission or not in the future, and `max_wakes` outside 1-6. A decision or effect that is
-not this goal's (or a decision on an effect that never parked) is refused `resource`. Nothing is
-recorded on a refusal; a child is refused `capability`.
+`at` and `transition` (clock and perception, third-party evidence) are refused `policy`. So are
+free text, a `deadline` that is not an ISO 8601 timestamp with an offset, one later than 45 days
+after the goal's admission or not in the future, and `max_wakes` outside 1-6. A decision, effect or
+prompt that is not this goal's (or a decision on an effect that never parked, an input on an effect
+that is not a live owner prompt, an `owner_input` naming another goal) is refused `resource`.
+Nothing is recorded on a refusal; a child is refused `capability`.
 
 In one transaction, under the goal lock, the lead and its live children end, a `conditions`
 envelope opens (the predicate and its S4 digest, its sources, the goal's label, the deadline or the
@@ -571,14 +578,16 @@ Events come from current state, not a log. That is sound because the facts only 
 owner decides once and a settled effect stays settled), so feeding current state can neither lose
 nor invent a fire. A `decision` event names the effect id as its `subject_id`, the id a
 `decision` leaf binds. Each event's id derives from its source, effect and value, so a redelivered
-event is the same event; its position is the effect's last change in microseconds.
+event is the same event; its position is the effect's last change in microseconds. An unread
+owner reply to one of the goal's prompts is an `owner_input` event `{goal_id, binding_ref}` on
+`goal.inbox`: one event per inbox row (its id derives from the row), positioned at the reply's
+arrival. Once a lead reads the row it is no longer fed.
 
 The feed is dark: `supervise_once` does not call it. A feed-triggered wake comes from evidence
 outside the waiting lead (the owner's or a domain's action), and its lead would hold the
 envelope's full waiting grant. Under the bu-dhloi1.305 ruling, no live feed-triggered wake may
 hold that grant until the label narrowing of third-party-sourced wakes lands (PR5), so the feed
-is wired into the sweep, and `goal__wait_until` listed, only then. `owner_input` stays refused
-until admission joins an owner's reply to a conditions wait on that prompt.
+is wired into the sweep, and `goal__wait_until` listed, only then.
 
 ### Expiry of a wait
 

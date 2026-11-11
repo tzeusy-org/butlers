@@ -222,7 +222,6 @@ async def test_an_unbounded_or_foreign_shaped_wait_is_refused_as_policy(broker_d
         naive = (datetime.now() + timedelta(minutes=30)).isoformat()
         cases = [
             wait_args({"tag": "at", "instant": "2026-11-12T09:00:00Z", "zone": "UTC"}),
-            wait_args({"tag": "owner_input", "goal_id": str(goal), "binding_ref": str(effect)}),
             wait_args("when the owner approves"),
             wait_args(decision(effect), max_wakes=7),
             wait_args(decision(effect), max_wakes=0),
