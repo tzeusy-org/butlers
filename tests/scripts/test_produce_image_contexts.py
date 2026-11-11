@@ -7,6 +7,7 @@ import re
 import signal
 import subprocess
 import sys
+import tarfile
 import time
 from pathlib import Path
 
@@ -32,11 +33,23 @@ class SyntheticCommands:
         if argv[:2] == ["git", "ls-files"]:
             return subprocess.check_output(argv, cwd=cwd, text=True)
         if argv[:3] == ["docker", "buildx", "build"]:
-            destination = Path(argv[argv.index("--output") + 1].split("dest=", 1)[1])
-            if self.failure == destination.name:
+            output = argv[argv.index("--output") + 1]
+            assert output.startswith("type=tar,dest=")
+            tarball = Path(output.split("dest=", 1)[1])
+            assert not tarball.is_relative_to(cwd)
+            if self.failure == tarball.stem:
                 raise RuntimeError("positioned producer failure")
-            destination.mkdir()
-            (destination / "synthetic-output").write_text("not an installed graph")
+            if self.failure == "empty-" + tarball.stem:
+                with tarfile.open(tarball, "w"):
+                    pass
+                return ""
+            payload = tarball.parent / "synthetic-output"
+            payload.write_text("not an installed graph")
+            with tarfile.open(tarball, "w") as archive:
+                archive.add(payload, arcname="synthetic-output")
+            payload.unlink()
+        elif argv[0] == "tar":
+            return subprocess.check_output(argv, cwd=cwd, text=True)
         elif "close" in argv:
             destination = Path(argv[argv.index("--output") + 1])
             destination.mkdir()
@@ -129,7 +142,7 @@ def test_tracked_environment_file_refuses_before_read_or_copy(project, tmp_path)
     assert not (tmp_path / "source").exists()
 
 
-@pytest.mark.parametrize("failure", [None, "codex", "python", "closure"])
+@pytest.mark.parametrize("failure", [None, "codex", "python", "empty-python", "closure"])
 def test_whole_context_publication_waits_for_every_producer_and_exact_runtime_manifest(
     project, tmp_path, failure
 ):
@@ -138,7 +151,8 @@ def test_whole_context_publication_waits_for_every_producer_and_exact_runtime_ma
     commands = SyntheticCommands(failure=failure)
     if failure:
         with pytest.raises(
-            (RuntimeError, ValueError), match="producer failure|runtime did not close"
+            (RuntimeError, ValueError),
+            match="producer failure|runtime did not close|complete context",
         ):
             producer.produce(project, work, output, commands)
         assert not output.exists()
@@ -157,6 +171,13 @@ def test_whole_context_publication_waits_for_every_producer_and_exact_runtime_ma
         "VENDOR=js-genai",
     }
     assert json.loads((output / "source-inputs.json").read_text())
+    # Each producer exports one tarball that is extracted into its context, then removed.
+    for build in producer.builds():
+        assert (output / build.name / "synthetic-output").is_file()
+    assert not list(output.rglob("*.tar"))
+    extracts = [argv for argv, _cwd, _timeout in commands.calls if argv[0] == "tar"]
+    assert len(extracts) == 10
+    assert all("--no-same-owner" in argv for argv in extracts)
 
 
 @pytest.mark.parametrize("kind", ["overlap", "existing", "link"])
