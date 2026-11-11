@@ -1,10 +1,13 @@
 """Owner failure cause line and pending-ask identity over real migrated PostgreSQL."""
 
 import asyncio
+from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 
+from butlers.core import owner_delivery as od
 from butlers.core.goal_admission import Evidence, Grant, Obligation, SourceRef
 from butlers.goal_runner.owner_failure import CAUSE_LINES, OwnerFailureReporter
 from tests.switchboard.goal_ledger_fixtures import (  # noqa: F401
@@ -195,19 +198,71 @@ async def test_concurrent_sweeps_make_one_ask_and_send_one_line(world):
     assert len(await asks(owner)) == 1 and len(sender.lines) == 1
 
 
-async def test_a_failed_or_ambiguous_send_is_never_sent_again(world):
+async def test_a_proven_non_send_is_presented_again_and_sent_exactly_once(world):
     owner, runtime, _ = world
     await owner_goal(runtime, owner)
-    failing = Sender("failed")
-    assert await reporter(runtime, failing).sweep() == 0
+    refusing = Sender("failed")
+    assert await reporter(runtime, refusing).sweep() == 0
+    retry = Sender()
+    assert await reporter(runtime, retry).sweep() == 1
     again = Sender()
-    assert await reporter(runtime, again).sweep() == 0
-    assert again.lines == [] and len(failing.lines) == 1
+    assert await reporter(runtime, again).sweep() == 0 and again.lines == []
+    assert len(refusing.lines) == 1 and len(retry.lines) == 1
     states = await owner.fetch(
         "SELECT state FROM public.owner_delivery_presentations "
         "WHERE subject_id IN (SELECT subject_id FROM switchboard.pending_asks)"
     )
-    assert [row["state"] for row in states] == ["failed"]
+    assert [row["state"] for row in states] == ["sent"]
+
+
+async def test_an_ambiguous_send_is_never_sent_again(world):
+    owner, runtime, _ = world
+    await owner_goal(runtime, owner)
+    assert await reporter(runtime, Sender("unknown")).sweep() == 0
+    again = Sender()
+    assert await reporter(runtime, again).sweep() == 0 and again.lines == []
+    states = await owner.fetch(
+        "SELECT state FROM public.owner_delivery_presentations "
+        "WHERE subject_id IN (SELECT subject_id FROM switchboard.pending_asks)"
+    )
+    assert [row["state"] for row in states] == ["unknown"]
+
+
+async def test_an_awaits_reply_prompt_is_a_question_not_a_failure_report(world):
+    owner, runtime, owner_id = world
+    goal_id = await owner_goal(runtime, owner)
+    await effect(
+        owner,
+        goal_id,
+        entity=owner_id,
+        channel="telegram_bot",
+        status="committed",
+        delivery="chat:1",
+        accepts=True,
+        expiry=datetime.now(UTC) + timedelta(hours=1),
+    )
+    assert await reporter(runtime, Sender()).sweep() == 1
+    assert [row["goal_id"] for row in await asks(owner)] == [goal_id]
+
+
+async def test_one_asks_failure_does_not_stop_the_others(world):
+    owner, runtime, _ = world
+    first = await owner_goal(runtime, owner)
+    second = await owner_goal(runtime, owner)
+    real = od.present
+    calls = []
+
+    async def flaky(conn, subject_id, **kwargs):
+        calls.append(subject_id)
+        if len(calls) == 1:
+            raise RuntimeError("one ask breaks")
+        return await real(conn, subject_id, **kwargs)
+
+    sender = Sender()
+    with patch.object(od, "present", flaky):
+        assert await reporter(runtime, sender).sweep() == 1
+    assert len(await asks(owner)) == 2 and len(sender.lines) == 1
+    assert {first, second} == {row["goal_id"] for row in await asks(owner)}
 
 
 async def test_a_sender_that_raises_leaves_an_unknown_presentation_not_a_retry(world):

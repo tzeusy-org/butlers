@@ -4,6 +4,7 @@ import pytest
 
 from butlers.goal_runner.owner_failure import OwnerNotifySender, cause_for
 from butlers.goal_runner.runner import GoalRunner
+from butlers.jobs.owner_notify import OwnerNotifyResult
 
 
 class Reporter:
@@ -53,15 +54,24 @@ def test_the_cause_word_follows_the_goal_status_and_a_capability_refusal(
 
 
 @pytest.mark.parametrize(
-    ("outcome", "expected"),
-    [("delivered", "sent"), ("failed", "failed"), ("suppressed", "failed")],
+    ("outcome", "call_started", "expected"),
+    [
+        ("delivered", True, "sent"),
+        # Decided before any provider call: nothing was delivered, so it may be sent again.
+        ("suppressed", False, "failed"),
+        ("failed", False, "failed"),
+        # The call began: the provider may have delivered, so it is never sent again.
+        ("failed", True, "unknown"),
+    ],
 )
-async def test_the_owner_notify_sender_maps_outcomes_without_a_retry(outcome, expected) -> None:
+async def test_the_owner_notify_sender_separates_proven_non_sends_from_ambiguous_ones(
+    outcome, call_started, expected
+) -> None:
     seen = {}
 
     async def send(pool, **kwargs):
         seen.update(kwargs)
-        return outcome
+        return OwnerNotifyResult(outcome, call_started)
 
     async def quiet(pool, **kwargs):
         return "quiet_hours"
@@ -77,3 +87,44 @@ async def test_a_clear_owner_is_not_suppressed() -> None:
         return None
 
     assert await OwnerNotifySender(object(), suppression=clear).suppressed() is False
+
+
+async def test_owner_notify_reports_whether_the_provider_call_began(monkeypatch) -> None:
+    from butlers.jobs import owner_notify
+
+    async def allowed(pool, *, log_context):
+        return None
+
+    async def no_recipient(pool):
+        return None
+
+    async def recorded(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(owner_notify, "check_owner_notify_suppression", allowed)
+    monkeypatch.setattr(owner_notify, "record_attention_event", recorded)
+    monkeypatch.setattr(owner_notify, "resolve_owner_telegram_recipient", no_recipient)
+    result = await owner_notify.send_owner_telegram_checked(
+        object(), origin_butler="switchboard", message="m", log_context="t"
+    )
+    assert (result.outcome, result.call_started) == ("failed", False)
+
+    async def recipient(pool):
+        return "chat"
+
+    class Client:
+        async def call_tool(self, *args, **kwargs):
+            raise TimeoutError
+
+    monkeypatch.setattr(owner_notify, "resolve_owner_telegram_recipient", recipient)
+    monkeypatch.setattr(owner_notify, "get_current_switchboard_client", lambda: Client())
+    result = await owner_notify.send_owner_telegram_checked(
+        object(), origin_butler="switchboard", message="m", log_context="t"
+    )
+    assert (result.outcome, result.call_started) == ("failed", True)
+    assert (
+        await owner_notify.send_owner_telegram(
+            object(), origin_butler="switchboard", message="m", log_context="t"
+        )
+        == "failed"
+    )

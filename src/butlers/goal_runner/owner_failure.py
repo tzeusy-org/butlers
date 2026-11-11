@@ -62,19 +62,22 @@ SELECT g.id, g.source_key, g.status,
    AND NOT EXISTS (
        SELECT 1 FROM lineage l JOIN switchboard.effects e ON e.goal_id = l.goal_id
         WHERE l.root = g.id AND e.recipient_entity = $1
+          AND NOT e.prompt_accepts_input
           AND e.status IN ('committed', 'dispatched', 'unknown'))
  ORDER BY g.updated_at, g.id
  LIMIT $2
 """
 
-# Pending asks whose subject has no presentation yet at its current generation.
+# Pending asks with no presentation at the subject's current generation, or whose presentation
+# there was proven not sent ('failed'): ``present`` resets that one and it is sent once.
 _UNPRESENTED = """
 SELECT p.id, p.cause, p.subject_id
   FROM switchboard.pending_asks p
   JOIN public.owner_delivery_subjects s ON s.id = p.subject_id
  WHERE p.state = 'open'
    AND NOT EXISTS (SELECT 1 FROM public.owner_delivery_presentations x
-                    WHERE x.subject_id = s.id AND x.surface = $1 AND x.generation = s.generation)
+                    WHERE x.subject_id = s.id AND x.surface = $1 AND x.generation = s.generation
+                      AND x.state <> 'failed')
  ORDER BY p.created_at, p.id
  LIMIT $2
 """
@@ -129,31 +132,39 @@ class OwnerFailureReporter:
             rows = await conn.fetch(_UNREPORTED, owner, self.batch)
             made = 0
             for row in rows:
-                cause = cause_for(row["status"], row["unavailable"])
-                ask = await conn.fetchrow(
-                    "INSERT INTO switchboard.pending_asks (source_key, goal_id, cause) "
-                    "VALUES ($1, $2, $3) ON CONFLICT (source_key) DO NOTHING RETURNING id",
-                    row["source_key"],
-                    row["id"],
-                    cause,
-                )
-                if ask is None:
-                    continue
-                subject = await od.open_subject(
-                    conn,
-                    kind="pending_ask",
-                    source_ref=str(ask["id"]),
-                    owner_entity=owner,
-                    content_digest=od.digest_of({"cause": cause, "source_key": row["source_key"]}),
-                    action_digest=od.digest_of({"kind": "pending_ask", "ask": str(ask["id"])}),
-                )
-                await conn.execute(
-                    "UPDATE switchboard.pending_asks SET subject_id = $2 WHERE id = $1",
-                    ask["id"],
-                    subject.id,
-                )
-                made += 1
+                try:
+                    async with conn.transaction():  # a savepoint: one ask never aborts the rest
+                        made += await self._record_one(conn, row, owner)
+                except Exception:
+                    logger.warning("pending ask could not be recorded goal=%s", row["id"])
             return made
+
+    @staticmethod
+    async def _record_one(conn: Any, row: Any, owner: Any) -> int:
+        cause = cause_for(row["status"], row["unavailable"])
+        ask = await conn.fetchrow(
+            "INSERT INTO switchboard.pending_asks (source_key, goal_id, cause) "
+            "VALUES ($1, $2, $3) ON CONFLICT (source_key) DO NOTHING RETURNING id",
+            row["source_key"],
+            row["id"],
+            cause,
+        )
+        if ask is None:
+            return 0
+        subject = await od.open_subject(
+            conn,
+            kind="pending_ask",
+            source_ref=str(ask["id"]),
+            owner_entity=owner,
+            content_digest=od.digest_of({"cause": cause, "source_key": row["source_key"]}),
+            action_digest=od.digest_of({"kind": "pending_ask", "ask": str(ask["id"])}),
+        )
+        await conn.execute(
+            "UPDATE switchboard.pending_asks SET subject_id = $2 WHERE id = $1",
+            ask["id"],
+            subject.id,
+        )
+        return 1
 
     async def _present(self) -> int:
         """Send the cause line of each ask that has none, at most once each."""
@@ -164,8 +175,11 @@ class OwnerFailureReporter:
         for ask in pending:
             if await self.sender.suppressed():
                 break  # quiet hours or a context hold: look again on the next sweep
-            if await self._deliver(ask):
-                sent += 1
+            try:
+                if await self._deliver(ask):
+                    sent += 1
+            except Exception:
+                logger.warning("pending ask cause line failed ask=%s", ask["id"])
         return sent
 
     async def _deliver(self, ask: Any) -> bool:
@@ -197,33 +211,40 @@ class OwnerFailureReporter:
 
 
 class OwnerNotifySender:
-    """The existing owner notify path: suppression check, then ``notify.v1`` via ``deliver``."""
+    """The existing owner notify path: suppression check, then ``notify.v1`` via ``deliver``.
+
+    Only a result decided before any provider call is a proven non-send (``failed``, safe to
+    present again). Anything after the call began is ``unknown`` and is never sent again.
+    """
 
     def __init__(
         self,
         pool: Any,
         *,
-        send: Callable[..., Awaitable[str]] | None = None,
+        send: Callable[..., Awaitable[Any]] | None = None,
         suppression: Callable[..., Awaitable[str | None]] | None = None,
     ) -> None:
         from butlers.core.attention_ledger import check_owner_notify_suppression
-        from butlers.jobs.owner_notify import send_owner_telegram
+        from butlers.jobs.owner_notify import send_owner_telegram_checked
 
         self.pool = pool
-        self._send = send or send_owner_telegram
+        self._send = send or send_owner_telegram_checked
         self._suppression = suppression or check_owner_notify_suppression
 
     async def suppressed(self) -> bool:
         return await self._suppression(self.pool, log_context="pending_ask") is not None
 
     async def send(self, text: str, *, dedup_key: str) -> od.SendOutcome:
-        outcome = await self._send(
+        result = await self._send(
             self.pool,
             origin_butler="switchboard",
             message=text,
             log_context="pending_ask",
             dedup_key=dedup_key,
         )
-        # A suppression that began after the pre-check is a dropped line, not a retry:
-        # the handed-off presentation cannot be sent again.
-        return "sent" if outcome == "delivered" else "failed"
+        if result.outcome == "delivered":
+            return "sent"
+        # Suppressed (quiet hours began after the pre-check), no recipient or no client:
+        # nothing was handed to the provider, so the next unsuppressed sweep sends once.
+        # A failed call may still have delivered: ambiguous, never resent.
+        return "unknown" if result.call_started else "failed"
