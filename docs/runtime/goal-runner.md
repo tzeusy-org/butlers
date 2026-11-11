@@ -580,7 +580,8 @@ parked effects (as an approval wait does), derives the goal's own events from it
 against the envelope's current condition instance and admits a fire as the wait's one wake.
 Events come from current state, not a log. That is sound because the facts only accumulate (an
 owner decides once and a settled effect stays settled), so feeding current state can neither lose
-nor invent a fire. A `decision` event names the effect id as its `subject_id`, the id a
+nor invent a fire. There is one exception, an approval that becomes an edit (see [Waiting
+again](#waiting-again-dark) and race bu-dhloi1.325). A `decision` event names the effect id as its `subject_id`, the id a
 `decision` leaf binds. Each event's id derives from its source, effect and value, so a redelivered
 event is the same event; its position is the effect's last change in microseconds. An unread
 owner reply to one of the goal's prompts is an `owner_input` event `{goal_id, binding_ref}` on
@@ -608,15 +609,23 @@ Only a new fact wakes the next generation. The instance has no replay floor, bec
 position is its row's last `updated_at`, a transaction-start time that is not commit order: a
 floor on it could drop an event that committed late, or present an old one again when its row
 changes. Instead the snapshot and the feed's events are one derivation over the same rows (an
-owner decision, a settlement and a reply only accumulate), so an old fact fed again changes no
-leaf and cannot fire. A leaf can only flip on something new. An already-true leaf still counts
-toward an `all`, so `all(owner_input, decision)` wakes again on the owner's next reply.
+owner decision, a settlement and a reply only accumulate, with the one exception below), so an
+old fact fed again changes no leaf and cannot fire. A leaf can only flip on something new. An
+already-true leaf still counts toward an `all`, so `all(owner_input, decision)` wakes again on the
+owner's next reply.
 
-Facts only accumulate, with one exception: an approval can become an edit. The domain may record
-the owner's approval with an edit, the parked-effect sync writes the stored call `approved`, and
-only `execute_approved` later records it `rejected` with the edit as a second effect, so its
-decision reads `edited`. That flip is a real new fact and may fire. An `approved` wait that fired
-first stands, since the owner did approve (bu-dhloi1.325).
+The exception is an approval that becomes an edit, the one transition that does not only move
+forward. The domain may record the owner's approval with an edit; the parked-effect sync writes
+the stored call `approved`, and only when `begin_approved`'s edit branch runs is it recorded
+`rejected`, with the edit as a second effect, so its decision reads `edited`. Then:
+
+- `decision = approved` stops holding. A generation registered after the edit seeds that leaf
+  false, so an `all` that held on it no longer holds.
+- `effect_settled` with `cancelled` starts holding.
+
+That is a genuine new fact, so it may flip a leaf in the next generation and fire it. An
+`approved` wait that fired before the edit stands, since the owner did approve. The race itself
+is bu-dhloi1.325.
 
 Rearm takes the goal row `FOR UPDATE` and then the envelope, the order reply admission takes,
 before it reads the unread replies. A concurrent reply either commits first (it is unread, and
