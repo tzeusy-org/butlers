@@ -1,7 +1,9 @@
 """Publisher and reader against the activated health.dependencies profile on real PG."""
 
+import importlib.util
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import asyncpg
 import pytest
@@ -18,6 +20,14 @@ from butlers.testing.migration import (
     migration_bootstrap_db_url,
     migration_db_name,
 )
+
+_SPEC = importlib.util.spec_from_file_location(
+    "scram_verifier", Path(__file__).resolve().parents[2] / "scripts" / "scram_verifier.py"
+)
+assert _SPEC is not None and _SPEC.loader is not None
+_SCRAM = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_SCRAM)
+scram_verifier = _SCRAM.verifier
 
 pytestmark = [pytest.mark.integration, pytest.mark.db]
 
@@ -135,3 +145,91 @@ async def test_login_on_the_perception_owner_is_still_refused(dsn) -> None:
         await connection.execute("ALTER ROLE perception_owner LOGIN")
         with pytest.raises(asyncpg.PostgresError):
             await connection.execute("SELECT perception_admin.finalize_interface()")
+
+
+def snapshot(key, state, scope, probe_key):
+    from butlers.jobs.secrets_lifecycle import CredentialSnapshot
+
+    return CredentialSnapshot(
+        key=key, family="user", label=key, state=state, probe_scope=scope, probe_key=probe_key
+    )
+
+
+async def log_probe(connection, scope, key, ok, at):
+    await connection.execute(
+        "INSERT INTO public.secret_probe_log (credential_scope, credential_key, ok, recorded_at) "
+        "VALUES ($1, $2, $3, $4)",
+        scope,
+        key,
+        ok,
+        at,
+    )
+
+
+async def test_a_credential_that_just_failed_is_down_even_when_its_last_success_is_old(
+    dsn,
+) -> None:
+    from butlers.jobs.capability_health import credential_probe_observations
+
+    async with transaction(dsn) as connection:
+        await log_probe(connection, "user", "google_oauth_refresh", True, NOW - timedelta(days=30))
+        await log_probe(
+            connection, "user", "google_oauth_refresh", False, NOW - timedelta(minutes=1)
+        )
+        snapshots = [snapshot("u:google", "failing", "user", "google_oauth_refresh")]
+        (observation,) = await credential_probe_observations(connection, snapshots, NOW)
+        assert (observation.state, observation.cause) == ("down", "unknown")
+        assert observation.observed_at == NOW - timedelta(minutes=1)
+        assert reduce("google", [observation], NOW).state == "down"
+
+
+async def test_a_credential_with_no_logged_probe_attempt_is_unmeasured(dsn) -> None:
+    from butlers.jobs.capability_health import credential_probe_observations
+
+    async with transaction(dsn) as connection:
+        snapshots = [snapshot("u:google", "ok", "user", "google_oauth_refresh")]
+        (observation,) = await credential_probe_observations(connection, snapshots, NOW)
+        assert observation.state is None and reduce("google", [observation], NOW).unmeasurable
+
+
+async def test_the_latest_attempt_of_each_credential_is_used_and_old_oks_age_out(dsn) -> None:
+    from butlers.jobs.capability_health import credential_probe_observations
+
+    async with transaction(dsn) as connection:
+        await log_probe(connection, "user", "steam_api_key", True, NOW - timedelta(hours=24))
+        await log_probe(
+            connection, "system", "BUTLER_TELEGRAM_TOKEN", True, NOW - timedelta(minutes=2)
+        )
+        snapshots = [
+            snapshot("u:steam", "ok", "user", "steam_api_key"),
+            snapshot("s:BUTLER_TELEGRAM_TOKEN", "ok", "system", "BUTLER_TELEGRAM_TOKEN"),
+        ]
+        observations = await credential_probe_observations(connection, snapshots, NOW)
+        by = {o.dependency: reduce(o.dependency, [o], NOW) for o in observations}
+        assert by["steam"].unmeasurable and by["telegram"].state == "available"
+
+
+async def test_a_credential_that_feeds_no_dependency_costs_no_query() -> None:
+    from butlers.jobs.capability_health import credential_probe_observations
+
+    class Pool:
+        async def fetch(self, *args):
+            raise AssertionError("no query expected")
+
+    assert (
+        await credential_probe_observations(
+            Pool(), [snapshot("c:claude", "ok", "cli", "claude")], NOW
+        )
+        == []
+    )
+
+
+async def test_postgres_stores_the_helper_verifier_as_given(dsn) -> None:
+    """A malformed verifier would be hashed as if it were the password; a valid one is kept."""
+    given = scram_verifier("0123456789abcdef")
+    async with transaction(dsn) as connection:
+        await connection.execute(f"ALTER ROLE perception_health_writer LOGIN PASSWORD '{given}'")
+        stored = await connection.fetchval(
+            "SELECT rolpassword FROM pg_authid WHERE rolname = 'perception_health_writer'"
+        )
+        assert stored == given

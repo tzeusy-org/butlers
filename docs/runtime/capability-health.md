@@ -76,11 +76,13 @@ for the 300s heartbeat.
   (`credential_missing`), `expired` is down (`oauth_revoked`), `failing` is down (`unknown`). `warn` and
   anything unrecognised is unmeasured. A dependency no credential feeds stays unmeasured, which readers
   see as `unknown`.
-- A probe-backed claim (`ok`, `expiring`, `failing`) is observed at the provider's last probe time
-  (`last_verified`), not when the inventory was read. A month-old success therefore ages past the
-  900s bound and reads as unmeasured, and a claim with no (or a timezone-naive) probe time is
-  unmeasured. `never_set` and `expired` are facts about the stored row and are observed at read time.
-  Health does not rely on the lifecycle job's stale-`ok` reclassification.
+- A probe-backed claim (`ok`, `expiring`, `failing`) is observed at the credential's latest probe
+  attempt in `public.secret_probe_log` (one query per tick), not when the inventory was read and not
+  at its last success (`last_verified` moves only on success, so a credential that just failed would
+  otherwise read as old). A month-old success ages past the 900s bound and reads as unmeasured; a
+  failure a minute ago is down; a credential with no logged attempt is unmeasured. `never_set` and
+  `expired` are facts about the stored row and are observed at read time. Health does not rely on the
+  lifecycle job's stale-`ok` reclassification.
 - `conditions` is probed directly (acquire bounded separately, then a one-row read, 2s deadline), stamped at
   probe time. A timeout or connection failure is down (`domain_unreachable`); any other failure is
   unmeasured, never available. The service's own `DependencyReporter` seam has no in-process consumer.
@@ -102,15 +104,17 @@ DSN shape (placeholders only): `postgresql://perception_health_writer:<password>
 
 Provision (owner or lead), as one script so the value flows between processes:
 
-1. Generate the password in the script (for example `openssl rand -base64 32 | tr -d '\n'`) into a
-   variable, never to the terminal.
-2. Set it by feeding `\password perception_health_writer` and the value to psql on stdin, so it is in
-   no argv, history or server log (`\password` hashes client-side). Do not use
-   `ALTER ROLE ... PASSWORD '<literal>'`: the literal lands in server logs. Then
-   `ALTER ROLE perception_health_writer LOGIN`.
+1. Generate the password in the script into a variable (`pw=$(openssl rand -hex 32)`; hex keeps it
+   URL-safe for the DSN), never to the terminal.
+2. Compute the SCRAM-SHA-256 verifier with `scripts/scram_verifier.py` (password on stdin, verifier on
+   stdout) and send only the verifier to the server, with the statement itself on psql's stdin:
+   `printf "ALTER ROLE perception_health_writer LOGIN PASSWORD '%s';\n" "$(printf %s "$pw" | python3
+   scripts/scram_verifier.py)" | psql ...`. Do not use `\password`: psql reads the controlling
+   terminal first, so from a terminal it prompts the human. Do not send the plaintext in
+   `ALTER ROLE ... PASSWORD '<literal>'`: it lands in server logs and `pg_stat_activity`.
 3. From the same process build the DSN and write the `BUTLERS_HEALTH_WRITER_DSN` key of the
-   `butlers-local-env` Secret with `kubectl` (value from stdin or a mode 0600 file removed after), never
-   echoing it.
+   `butlers-local-env` Secret with `kubectl patch --patch-file /dev/stdin` (the JSON built on stdin, the
+   value base64-encoded in the process), never echoing it and never in argv.
 4. Restart dashboard-api; check `/api/system/background-jobs` for `capability_health` (it reads
    `disabled` when the key is absent).
 

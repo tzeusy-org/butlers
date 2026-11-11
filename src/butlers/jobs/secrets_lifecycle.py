@@ -206,7 +206,9 @@ class CredentialSnapshot:
     label: str
     state: str
     provider: str | None = None  # user family only — display provider slug
-    last_verified: datetime | None = None  # when the provider was last actually probed
+    # Where the probe log keeps this credential's attempts (``public.secret_probe_log``).
+    probe_scope: str | None = None
+    probe_key: str | None = None
 
 
 async def _collect_snapshots(
@@ -263,7 +265,8 @@ async def _collect_snapshots(
                     family="system",
                     label=row.key,
                     state=row.state,
-                    last_verified=row.last_verified,
+                    probe_scope="system",
+                    probe_key=row.key,
                 )
             )
 
@@ -292,7 +295,8 @@ async def _collect_snapshots(
                 family="system",
                 label=row.key,
                 state=row.state,
-                last_verified=row.last_verified,
+                probe_scope="system",
+                probe_key=row.key,
             )
         )
 
@@ -303,7 +307,8 @@ async def _collect_snapshots(
                 family="cli",
                 label=row.key,
                 state=row.state,
-                last_verified=row.last_verified,
+                probe_scope="cli",
+                probe_key=row.key,
             )
         )
 
@@ -320,7 +325,8 @@ async def _collect_snapshots(
                 label=provider_meta.label if provider_meta is not None else provider,
                 state=row.state,
                 provider=provider,
-                last_verified=row.last_verified,
+                probe_scope="user",
+                probe_key=row.type,
             )
         )
 

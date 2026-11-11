@@ -18,7 +18,11 @@ from typing import Any
 
 import asyncpg
 
-from butlers.capability_health.collectors import credential_observations, probe_conditions
+from butlers.capability_health.collectors import (
+    CREDENTIAL_DEPENDENCIES,
+    credential_observations,
+    probe_conditions,
+)
 from butlers.capability_health.model import Observation, reduce
 from butlers.capability_health.publish import HealthPublisher, PublishState, should_publish
 from butlers.core.capability_dependencies import DEPENDENCY_IDS
@@ -97,6 +101,41 @@ async def run_loop(tick: Callable[[], Awaitable[None]], *, interval_s: float) ->
         await asyncio.sleep(interval_s)
 
 
+_LATEST_ATTEMPTS = """
+SELECT DISTINCT ON (credential_scope, credential_key)
+       credential_scope, credential_key, recorded_at
+  FROM public.secret_probe_log
+ WHERE (credential_scope, credential_key) IN (SELECT * FROM unnest($1::text[], $2::text[]))
+ ORDER BY credential_scope, credential_key, recorded_at DESC
+"""
+
+
+async def credential_probe_observations(
+    pool: Any, snapshots: list[Any], now: datetime
+) -> list[Observation]:
+    """Credential observations stamped with each credential's latest probe attempt.
+
+    The probe log is written on every probe, success or failure, so a credential that failed
+    just now is observed now even when its last success is old. A credential with no logged
+    attempt has no probe time and so reads unmeasured. One query per tick covers every
+    credential that feeds a declared dependency.
+    """
+    feeding = [
+        s
+        for s in snapshots
+        if s.key in CREDENTIAL_DEPENDENCIES and s.probe_scope is not None and s.probe_key
+    ]
+    attempts: dict[tuple[str, str], datetime] = {}
+    if feeding:
+        rows = await pool.fetch(
+            _LATEST_ATTEMPTS, [s.probe_scope for s in feeding], [s.probe_key for s in feeding]
+        )
+        attempts = {(r["credential_scope"], r["credential_key"]): r["recorded_at"] for r in rows}
+    return credential_observations(
+        [(s.key, s.state, attempts.get((s.probe_scope, s.probe_key))) for s in snapshots], now
+    )
+
+
 async def run_capability_health_loop(
     db: Any, dsn: str, *, interval_s: float = DEFAULT_INTERVAL_S
 ) -> None:
@@ -107,8 +146,8 @@ async def run_capability_health_loop(
         observations: list[Observation] = []
         try:
             snapshots = await _collect_snapshots(db)
-            observations += credential_observations(
-                [(s.key, s.state, s.last_verified) for s in snapshots], now
+            observations += await credential_probe_observations(
+                db.credential_shared_pool(), snapshots, now
             )
         except Exception:
             mark_tick_incomplete()
