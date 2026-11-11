@@ -125,9 +125,12 @@ Known gaps:
 - Several credential rows (for example one per butler schema) can feed one dependency; the reducer takes
   the worst fresh state. A probe-less row is unmeasured, so most of these do not hold a dependency down,
   but a recently probed `failing` row still can.
-- `conditions` reads `public.condition_instances` through the dashboard's `switchboard` pool. The table
-  grants SELECT to `butler_switchboard_rw` only (RLS enabled, not forced), so the probe succeeds only if
-  the dashboard login is that role or the table owner. If it cannot read the table, the probe fails with
-  a permission error and `conditions` stays unmeasured (unknown), never available.
+- `conditions` reads `public.condition_instances` through the dashboard's `switchboard` pool. core_323
+  grants SELECT to `butler_switchboard_rw` only, with RLS enabled but not forced. Migration-created
+  public tables are owned by the migration role `butlers` (dev metadata), the same login dashboard-api
+  uses, and an owner is not subject to unforced RLS, so the probe can read it. This is inferred from
+  source and dev metadata, not proven against a live table. Until the environment has run core_323 the
+  table does not exist, the probe fails with a missing-relation error, and `conditions` reads
+  unmeasured (unknown), never available.
 - Contention on the shared pool is not the store being down: waiting for a connection is bounded
   separately and reads unmeasured; only the query itself is timed against the store.
