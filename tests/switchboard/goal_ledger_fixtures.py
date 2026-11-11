@@ -66,7 +66,9 @@ async def reset_ledger(owner):
     sw_056's trigger refuses TRUNCATE on ``broker_refusals``, which TRUNCATE ...
     CASCADE reaches through its goal foreign key, and sw_057's refuses it on
     ``invocations`` and ``effects``, and sw_059's on the owner-policy terms,
-    receipts and holds (which it also empties; the generation row stays). This
+    receipts and holds (which it also empties; the generation row stays), and
+    sw_070's on ``goal_inbox_releases``, which the CASCADE reaches through its
+    goal and inbox keys (a test that ends a goal leaves release rows). This
     test-only reset, run as the owner, lifts whichever of those guards the
     pinned revision has, for its own transaction alone.
     """
@@ -80,6 +82,7 @@ async def reset_ledger(owner):
                 "durable_goal_lineage",
                 "owner_policy_durable",
                 "goal_waiting_durable",
+                "goal_inbox_releases_durable",
             ],
         )
         for guard in guards:
