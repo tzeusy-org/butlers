@@ -19,7 +19,7 @@ import pytest
 from butlers.capability_broker.contracts import Reason
 from butlers.capability_broker.domains import DeliveryReport, DomainReceipt
 from butlers.conditions import FireIntent
-from butlers.core.goal_admission import Evidence, SourceRef
+from butlers.core.goal_admission import Evidence, Grant, SourceRef, digest, encode_grants
 from butlers.core.goal_labels import Label
 from butlers.core.goal_waiting import EnvelopeSpec, WaitLedger
 from butlers.core.goal_wake import WakeAdmission
@@ -51,9 +51,15 @@ def fire_for(instance: str = "c0") -> FireIntent:
     )
 
 
-async def waiting_on_conditions(h, goal: UUID, lead, *, lifetime=timedelta(hours=1)) -> UUID:
-    """The lead's session ended and the goal waits on one conditions envelope (instance c0)."""
+async def waiting_on_conditions(
+    h, goal: UUID, lead, *, lifetime=timedelta(hours=1), grants: tuple[Grant, ...] = ()
+) -> UUID:
+    """The lead's session ended and the goal waits on one conditions envelope (instance c0).
+
+    ``grants`` is the envelope's grant snapshot: the most its wake lead may hold.
+    """
     owner_label = Label.owner()
+    snapshot = encode_grants(grants)
     async with h.w.owner.acquire() as conn, conn.transaction():
         waits = WaitLedger(conn)
         version = await waits.append_plan(goal, 0, [], [], [])
@@ -71,8 +77,8 @@ async def waiting_on_conditions(h, goal: UUID, lead, *, lifetime=timedelta(hours
                 predicate_digest=DIGEST,
                 source_set=["goal.inbox"],
                 permitted_sources=["goal.inbox"],
-                grant_snapshot=[],
-                grant_digest=DIGEST,
+                grant_snapshot=snapshot,
+                grant_digest=digest(snapshot),
                 label=owner_label,
                 deadline=datetime.now(UTC) + lifetime,
                 max_wakes=2,

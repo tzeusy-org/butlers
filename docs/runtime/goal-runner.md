@@ -317,7 +317,8 @@ the original status of every converted row.
 - **Relaunch.** `call_model` owns failover and relaunch (`max_relaunches=1`). The runner attaches
   the capability calls the broker recorded for the failed attempt to the failure, which makes any
   attempt that already acted ineligible for relaunch. A lead whose relaunch is spent ends the goal
-  `failed`; a failed child is the lead's to handle.
+  `failed`; a failed child is the lead's to handle. A relaunched, recovered or escalated lead
+  holds the ceiling ∩ the latest lead's grant, never more (see [Wake grants](#wake-grants-s22)).
 - **Idempotent launches.** A launch whose goal is no longer runnable, or whose lead slot is already
   held, opens nothing and ends nothing. A duplicate `start_goal` (an at-least-once admission
   retry) leaves the running lead alone, and a recovery or escalation that loses a race is a no-op.
@@ -444,12 +445,32 @@ failed wake intent is not resumed as leaderless: its lead is the wake's to launc
 what woke it through `goal__inbox` as `kind: condition_fire` with the envelope and event ids and no
 reply effect. `sw_065` makes a `condition_fire` inbox row bindable only to an admitted wake intent.
 
+### Wake grants (S2.2)
+
+A lead's grant only ever narrows after the goal's first lead (`RunnerLedger.open_lead`,
+bu-dhloi1.305):
+
+| Lead | Grant |
+| --- | --- |
+| The goal's first lead | The goal ceiling |
+| A wake lead | Ceiling ∩ the fired envelope's `grant_snapshot` ∩ current policy |
+| Any other successor (relaunch, recovery, escalation) | Ceiling ∩ the latest lead's grant |
+
+Current policy is the broker's live published catalog, read in the launch's transaction: a grant
+survives only while its capability is still published and not `transact` (admission's eligible
+set), so a policy change while the goal waited narrows its wake. An `owner_answer` or `approval`
+envelope snapshots the waiting lead's grant ∩ the ceiling, so its wake is not narrowed beyond the
+lead that waited; a `settle` envelope snapshots no grant, since nothing is launched from it. A
+`conditions` envelope carries the snapshot its opener recorded. Because a relaunch, recovery or
+escalation takes the latest lead's grant, a failed narrowed wake lead's replacement stays narrowed.
+
 ### Waiting on an approval (bu-dhloi1.204)
 
 `goal__wait_approval {effect_id}` is for a lead that has parked an effect and has nothing else to
 do until the owner decides. The effect must be parked for this goal with an approval; the lead
 and its live children end, and the goal enters `waiting` on an `approval` envelope bound to that
-effect and its argument digest (one wake, the goal's label and budget deadline, no grants). The
+effect and its argument digest (one wake, the goal's label and budget deadline, and a grant
+snapshot of the waiting lead's grant ∩ the ceiling; see [Wake grants](#wake-grants-s22)). The
 sweep syncs the domain's decisions onto the effect and then reads the effect once it has left
 `requested`, `parked`, `approved` and `dispatched`:
 
@@ -471,8 +492,9 @@ sweep syncs the domain's decisions onto the effect and then reads the effect onc
 `goal__wait_owner {effect_id}` is for a lead that asked the owner a question and needs nothing
 else until the answer. The effect must be this goal's committed owner delivery that accepts input
 and has not expired. The lead and its live children end, and the goal enters `waiting` on an
-`owner_answer` envelope bound to that prompt (predicate `prompt_effect_id`; one wake; no grants;
-deadline is the prompt's expiry or the goal's budget deadline, whichever is sooner). The wait
+`owner_answer` envelope bound to that prompt (predicate `prompt_effect_id`; one wake; a grant
+snapshot of the waiting lead's grant ∩ the ceiling; deadline is the prompt's expiry or the goal's
+budget deadline, whichever is sooner). The wait
 needs no approval: the answer is authenticated by admission's exact reply binding and cannot
 approve an unrelated effect.
 

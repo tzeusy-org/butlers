@@ -19,6 +19,8 @@ from uuid import UUID, uuid4
 import asyncpg
 from asyncpg.pool import PoolConnectionProxy
 
+from butlers.core.goal_admission import decode_grants, encode_grants, intersect
+from butlers.core.goal_admission import digest as grants_digest
 from butlers.core.goal_labels import Label
 
 _TERMINAL = ("completed", "partial", "failed", "stopped", "budget_exhausted")
@@ -305,8 +307,10 @@ class WaitLedger:
     ) -> UUID | None:
         """Wait on the owner's decision about one parked effect (RFC 0038 S2.2, bu-dhloi1.204).
 
-        Same bounds as a settle wait, bound to the exact effect and its argument digest. Its one
-        wake launches a successor summary lead once the approved effect has settled.
+        Same label, deadline and wake bound as a settle wait, bound to the exact effect and its
+        argument digest; its grant snapshot is the waiting lead's grant ∩ the ceiling, the most its
+        successor holds. Its one wake launches a successor summary lead once the approved effect
+        has settled.
         """
         digest = hashlib.sha256(args_digest.encode()).hexdigest()
         return await self._open_own_wait(
@@ -326,7 +330,8 @@ class WaitLedger:
 
         The wait needs no approval: the answer is authenticated by admission's exact reply
         binding and cannot approve an unrelated effect. The envelope ends with the prompt, at the
-        goal's budget deadline if that is sooner. Its one wake is the joined reply.
+        goal's budget deadline if that is sooner. Its one wake is the joined reply, and the
+        successor holds at most the waiting lead's grant ∩ the ceiling (the envelope snapshot).
         """
         return await self._open_own_wait(
             goal_id,
@@ -336,6 +341,28 @@ class WaitLedger:
             f"owner_answer:{prompt_effect_id}",
             source="goal.inbox",
             latest=expires_at,
+        )
+
+    async def _waiting_grants(self, goal_id: UUID, epoch: int) -> list[dict]:
+        """The waiting lead's grant ∩ the goal ceiling, encoded: what its wake may hold at most.
+
+        A wake lead is narrowed to this snapshot (RFC 0038 S2.2, bu-dhloi1.305), so a wait never
+        hands its successor more than the lead that waited. No lead at the epoch is no grant.
+        """
+        row = await self.connection.fetchrow(
+            "SELECT g.ceiling::text AS ceiling, (SELECT i.grant_snapshot::text "
+            "FROM switchboard.invocations i WHERE i.goal_id = g.id AND i.depth = 0 "
+            "AND i.lead_epoch = $2 ORDER BY i.created_at DESC LIMIT 1) AS lead "
+            "FROM switchboard.goals g WHERE g.id = $1",
+            goal_id,
+            epoch,
+        )
+        if row is None or row["lead"] is None:
+            return []
+        return encode_grants(
+            intersect(
+                decode_grants(json.loads(row["lead"])), decode_grants(json.loads(row["ceiling"]))
+            )
         )
 
     async def _open_own_wait(
@@ -373,6 +400,7 @@ class WaitLedger:
         )
         if plan is None:
             return None
+        snapshot = [] if kind == "settle" else await self._waiting_grants(goal_id, epoch)
         return await self.open_envelope(
             EnvelopeSpec(
                 kind=kind,
@@ -386,8 +414,8 @@ class WaitLedger:
                 ).hexdigest(),
                 source_set=[source],
                 permitted_sources=[source],
-                grant_snapshot=[],
-                grant_digest=hashlib.sha256(b"[]").hexdigest(),
+                grant_snapshot=snapshot,
+                grant_digest=grants_digest(snapshot),
                 label=Label.from_row(
                     goal["label_version"],
                     goal["label_instr"],
