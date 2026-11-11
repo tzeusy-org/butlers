@@ -519,6 +519,15 @@ The constraint order is catalog/origin grant, then exposure/category/slot (step
   pending action), so on a `read` it refuses with its own reason,
   `owner_policy_ask_on_read`, which sw_059 adds to the `broker_refusals` reason
   set; the owner can tell it apart from `never`.
+- Capability health (RFC 0038 S6, `docs/runtime/capability-health.md`) can refuse a call
+  but never grants or hides one. After every authorization check and before anything is
+  reserved or parked, the broker asks its optional `health` source for the dependencies the
+  capability declares in `depends_on` (`health_timeout`, default 1s). A dependency that is
+  *known* down, unconfigured or held refuses with `capability_unavailable` (sw_067 adds the
+  reason to `broker_refusals`) and the typed result: `dependency`, `state`, `cause`, `since`,
+  `source_age_seconds`, `retryable`, `generation`. No budget is charged and no effect is
+  recorded. Degraded, blind, unknown, a missing source, a fault or a timeout all leave the
+  call to its normal checks. An ungranted capability is refused as such and health is not read.
 - Neither grants. An ungranted, out-of-scope, transact or otherwise refused call
   stays refused for its own reason, before the law is read.
 - A park the domain cannot hold (`approvals_enabled` false) refuses

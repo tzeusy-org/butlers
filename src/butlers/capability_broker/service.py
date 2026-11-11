@@ -15,6 +15,8 @@ from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
 
+from butlers.capability_health.source import HealthSource
+from butlers.capability_health.unavailable import CapabilityUnavailable, first_unavailable
 from butlers.core.capability_json import (
     InvalidArguments,
     arguments_digest,
@@ -110,8 +112,14 @@ class Broker:
         quarantine_reads: bool = False,
         aliases: AliasResolver | None = None,
         alias_timeout: float = 2,
+        health: HealthSource | None = None,
+        health_timeout: float = 1,
     ):
         self.pool, self.catalog, self.domains, self.signer = pool, catalog, domains, signer
+        # RFC 0038 S6: published capability health. It can only refuse a call whose
+        # declared dependency is known unavailable; absent, slow or failing, the
+        # call proceeds under its normal checks.
+        self.health, self.health_timeout = health, health_timeout
         self.actuation_risk = actuation_risk
         # M7 (bu-4c7nvp.1.2), dark: the quarantined extraction model, and whether
         # a committed result that would newly expose its reader is held behind a
@@ -319,6 +327,13 @@ class Broker:
             decision = PER_EVENT
         if decision.disposition is Disposition.PARK and not capability.approvals_enabled:
             raise self._refused(principal, name, Reason.UNAVAILABLE, hold)
+        # S6: after every authorization check and before anything is reserved or
+        # parked, so a known-down dependency charges no budget and records no effect.
+        unavailable = await self._known_unavailable(capability)
+        if unavailable is not None:
+            raise self._refused(
+                principal, name, Reason.CAPABILITY_UNAVAILABLE, hold, unavailable=unavailable
+            )
         reserved = await ledger.reserve(
             principal,
             capability,
@@ -333,9 +348,31 @@ class Broker:
             )
         return reserved, args
 
+    async def _known_unavailable(self, capability: Capability) -> CapabilityUnavailable | None:
+        """The typed result for a declared dependency known down, else ``None``.
+
+        Unknown is not unavailable: a missing source, a fault or a timeout all
+        return ``None`` and leave the call to its normal checks.
+        """
+        if self.health is None or not capability.depends_on:
+            return None
+        try:
+            current = await asyncio.wait_for(
+                self.health.current(capability.depends_on), self.health_timeout
+            )
+            return first_unavailable(current)
+        except Exception:
+            logger.info("broker health unreadable capability=%s", capability.identity)
+            return None
+
     @staticmethod
     def _refused(
-        principal: Principal, name: str, reason: Reason, hold: PolicyHold | None = None
+        principal: Principal,
+        name: str,
+        reason: Reason,
+        hold: PolicyHold | None = None,
+        *,
+        unavailable: CapabilityUnavailable | None = None,
     ) -> BrokerRefused:
         # Content-blind audit line: identities and the closed reason only.
         logger.info(
@@ -345,7 +382,7 @@ class Broker:
             name,
             reason.value,
         )
-        return BrokerRefused(reason, hold=hold)
+        return BrokerRefused(reason, hold=hold, unavailable=unavailable)
 
     def _assertion(self, reservation: Reservation, approval_ref: str | None) -> str:
         principal, capability = reservation.principal, reservation.capability

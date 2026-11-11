@@ -17,6 +17,7 @@ from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
 
+from butlers.capability_health.unavailable import CapabilityUnavailable
 from butlers.core.goal_admission import Grant
 from butlers.core.goal_labels import CATEGORIES, Label
 from butlers.core.owner_policy import PolicyHold
@@ -43,17 +44,27 @@ class Reason(StrEnum):
     BUDGET = "budget_exhausted"
     DUPLICATE = "effect_already_recorded"
     UNAVAILABLE = "broker_unavailable"
+    # RFC 0038 S6: a dependency the capability needs is known down, unconfigured
+    # or held. Only ever raised from published health; it never grants or hides.
+    CAPABILITY_UNAVAILABLE = "capability_unavailable"
 
 
 class BrokerRefused(RuntimeError):
     """A refusal; never carries a token, arguments or a downstream error."""
 
     def __init__(
-        self, reason: Reason, *, effect_id: UUID | None = None, hold: PolicyHold | None = None
+        self,
+        reason: Reason,
+        *,
+        effect_id: UUID | None = None,
+        hold: PolicyHold | None = None,
+        unavailable: CapabilityUnavailable | None = None,
     ):
         super().__init__(reason.value)
         self.reason = reason
         self.effect_id = effect_id
+        # The typed S6 result the session sees alongside the closed reason.
+        self.unavailable = unavailable
         # The owner-law terms that refused it (S1 typed receipt); never sent
         # to the session, which sees only the closed reason.
         self.hold = hold
@@ -142,6 +153,8 @@ class Capability:
     # S1 sensitivity categories its output may carry; a test double that
     # omits them is all six. Real descriptors must declare them.
     categories: frozenset[str] = CATEGORIES
+    # RFC 0038 S6 declared dependency IDs; health only ever refuses on these.
+    depends_on: tuple[str, ...] = ()
     description: str = ""
     input_schema: dict[str, Any] = field(default_factory=lambda: {"type": "object"}, repr=False)
 
@@ -178,6 +191,7 @@ class Capability:
             approval_gate=policy.get("enabled") is True and policy.get("configured_gate") is True,
             idempotency=descriptor.idempotency,
             categories=declared_categories(descriptor),
+            depends_on=tuple(getattr(descriptor, "depends_on", None) or ()),
             description=descriptor.description,
             input_schema=input_schema,
         )
