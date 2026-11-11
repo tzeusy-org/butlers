@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 
 from butlers.core import owner_delivery as od
-from butlers.core.goal_admission import Evidence, GoalAdmission
+from butlers.core.goal_admission import Evidence, GoalAdmission, SourceRef
 from butlers.goal_runner.owner_recovery import OwnerRecovery, OwnerRetryEvidence, bound
 from tests.switchboard.goal_admission_fixtures import Catalogs, Sources, limits
 from tests.switchboard.goal_ledger_fixtures import (  # noqa: F401
@@ -350,5 +350,88 @@ async def test_an_admission_fault_becomes_a_closed_refusal(world):  # noqa: F811
         card.tokens["approve"], row["id"], "approve"
     )
     assert (result.outcome, result.reason) == ("refused", "admission_unavailable")
+    (after,) = [r for r in await asks(owner) if r["id"] == row["id"]]
+    assert after["state"] == "open"
+
+
+async def test_a_connector_message_cannot_claim_the_reserved_retry_identity(world):  # noqa: F811
+    owner, runtime, _ = world
+    goal_id = await owner_goal(runtime, owner)
+    await reporter(runtime, Sender()).sweep()
+    (row,) = await asks(owner)
+    for message_id in (f"owner_retry:{row['id']}", "owner_retry:whatever"):
+        stranger = Evidence("message", "mail", owner=False)
+        refused = await admit(runtime, stranger, SourceRef("message", message_id))
+        assert (refused.result, refused.reason) == ("refused", "source_evidence_unavailable")
+    # Not even an owner-authenticated message may take it outside a Run redemption.
+    owned = await admit(
+        runtime,
+        Evidence("message", "x", owner=True),
+        SourceRef("message", f"owner_retry:{row['id']}"),
+    )
+    assert owned.result == "refused"
+    assert (
+        await owner.fetchval(
+            "SELECT count(*) FROM switchboard.goals WHERE source_ref LIKE 'owner_retry:%'"
+        )
+        == 0
+    )
+    # The squatter did not block the owner's Run.
+    card = await card_for(runtime, row["id"])
+    won = await recovery(runtime).decide(card.tokens["approve"], row["id"], "approve")
+    assert won.state == "run" and goal_id is not None
+
+
+async def test_retry_evidence_exists_only_inside_that_asks_run_redemption(world):  # noqa: F811
+    from butlers.core.goal_admission import RUN_REDEMPTION, EvidenceRefused
+
+    owner, runtime, _ = world
+    await owner_goal(runtime, owner)
+    await reporter(runtime, Sender()).sweep()
+    (row,) = await asks(owner)
+    reader = OwnerRetryEvidence(Sources())
+    source = SourceRef("message", f"owner_retry:{row['id']}")
+    async with runtime.acquire() as conn:
+        with pytest.raises(EvidenceRefused):
+            await reader.load(conn, source)
+        other = RUN_REDEMPTION.set(str(uuid4()))
+        try:
+            with pytest.raises(EvidenceRefused):
+                await reader.load(conn, source)
+        finally:
+            RUN_REDEMPTION.reset(other)
+        marker = RUN_REDEMPTION.set(str(row["id"]))
+        try:
+            facts = await reader.load(conn, source)
+        finally:
+            RUN_REDEMPTION.reset(marker)
+    assert facts.owner is True
+
+
+async def test_a_purged_source_refuses_cleanly_and_admits_nothing(world):  # noqa: F811
+    from butlers.core.goal_admission import EvidenceRefused
+
+    class Purged:
+        async def load(self, connection, source):
+            raise EvidenceRefused("source_evidence_unavailable")
+
+    owner, runtime, _ = world
+    source, row = await refused_ask(owner, runtime)
+    await configure(owner, limits(new_goals=5))
+    card = await card_for(runtime, row["id"])
+
+    async def admit_purged(conn, src, attempt):
+        return await GoalAdmission(bound(conn), Purged(), Catalogs()).admit_submission(src, attempt)
+
+    result = await OwnerRecovery(runtime, admit_purged).decide(
+        card.tokens["approve"], row["id"], "approve"
+    )
+    assert (result.outcome, result.reason) == ("refused", "source_unavailable")
+    assert (
+        await owner.fetchval(
+            "SELECT count(*) FROM switchboard.goals WHERE source_key=$1", source.key
+        )
+        == 0
+    )
     (after,) = [r for r in await asks(owner) if r["id"] == row["id"]]
     assert after["state"] == "open"

@@ -660,8 +660,12 @@ in its own lineage, would leave the owner with silence. The sweep's last step
   grants come from admission, never from the failed goal. It is not linked as `caused_by_goal`
   (admission accepts that only with a causing effect and an obligation). A retry that fails is a new
   owner goal and gets its own ask; a failed goal that ran from a refused ask is keyed `<source>#run`
-  because the refused ask holds the source key. The production evidence reader must understand the
-  `owner_retry:` prefix.
+  because the refused ask holds the source key. The `owner_retry:` prefix is reserved: admission refuses (policy, `source_evidence_unavailable`) any
+  `message` source with that prefix unless it is the ask being redeemed for Run in the same context
+  (`RUN_REDEMPTION`), and `OwnerRetryEvidence` returns owner evidence only inside that redemption, so
+  a sender-chosen message id can neither get owner evidence nor claim the retry's attempt. A purged
+  source message refuses `source_unavailable` and admits no goal. The production evidence reader
+  must understand the prefix (cutover TODO).
 - Drop: reject ends the ask `dropped`.
 - Both clear `original_ask` in the same update as the state change.
 - `owner_delivery.redeem` takes approve/reject for `approval` and `pending_ask` subjects only

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol
@@ -27,6 +28,18 @@ def digest(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+#: ``message`` source ids with this prefix are reserved for the owner's Run on a failed goal.
+#: Message ids are not always ours (an email Message-ID is chosen by its sender), so admission
+#: refuses the prefix unless the id's ask is the one being redeemed for Run in this context.
+OWNER_RETRY_PREFIX = "owner_retry:"
+#: Set (to the pending ask id) only by the Run redemption while it admits the retry.
+RUN_REDEMPTION: ContextVar[str | None] = ContextVar("run_redemption", default=None)
+
+
+def retry_source_allowed(source_id: str) -> bool:
+    return source_id == OWNER_RETRY_PREFIX + (RUN_REDEMPTION.get() or "-")
 
 
 class EvidenceRefused(ValueError):
@@ -408,6 +421,13 @@ class GoalAdmission:
                     return old
                 now = await connection.fetchval("SELECT clock_timestamp()")
                 try:
+                    if (
+                        source.kind == "message"
+                        and source.id.startswith(OWNER_RETRY_PREFIX)
+                        and not retry_source_allowed(source.id)
+                    ):
+                        # Policy, not a crash: a connector message may not claim this identity.
+                        raise EvidenceRefused("source_evidence_unavailable")
                     facts = await self.evidence.load(connection, source)
                     if (
                         (

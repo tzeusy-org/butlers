@@ -27,7 +27,14 @@ from typing import Any, Final, Literal
 from uuid import UUID, uuid5
 
 from butlers.core import owner_delivery as od
-from butlers.core.goal_admission import AdmissionResult, Evidence, EvidenceRefused, SourceRef
+from butlers.core.goal_admission import (
+    OWNER_RETRY_PREFIX,
+    RUN_REDEMPTION,
+    AdmissionResult,
+    Evidence,
+    EvidenceRefused,
+    SourceRef,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +79,7 @@ class AskDecision:
     state: str | None = None
 
 
-RETRY_PREFIX: Final = "owner_retry:"
+RETRY_PREFIX: Final = OWNER_RETRY_PREFIX
 RETRY_CAUSES: Final = ("failed", "budget_exhausted")
 
 _RUNNABLE = """
@@ -162,9 +169,21 @@ class OwnerRecovery:
                     source = SourceRef("message", RETRY_PREFIX + str(ask_id))
                 else:
                     raise AskDecisionRefused("cannot_run")
-                admitted = await self.admit(conn, source, uuid5(_RUN_NAMESPACE, str(ask_id)))
+                # Names this redemption to admission, which reserves the retry identity and
+                # hands owner evidence only to the ask being redeemed for Run right here.
+                marker = RUN_REDEMPTION.set(str(ask_id))
+                try:
+                    admitted = await self.admit(conn, source, uuid5(_RUN_NAMESPACE, str(ask_id)))
+                finally:
+                    RUN_REDEMPTION.reset(marker)
                 if admitted.result not in ("admitted", "joined"):
-                    raise AskDecisionRefused("still_refused")
+                    # TODO(cutover): a purged source message reads as source_evidence_unavailable
+                    # from the production reader; it refuses here and admits no goal.
+                    raise AskDecisionRefused(
+                        "source_unavailable"
+                        if admitted.reason == "source_evidence_unavailable"
+                        else "still_refused"
+                    )
                 state = "run"
             # Every terminal state clears the reference in the same update.
             await conn.execute(
@@ -224,6 +243,9 @@ class OwnerRetryEvidence:
             ask_id = UUID(source.id[len(RETRY_PREFIX) :])
         except ValueError:
             raise EvidenceRefused("source_evidence_unavailable") from None
+        if RUN_REDEMPTION.get() != str(ask_id):
+            # Owner evidence only while this ask is being redeemed for Run in this context.
+            raise EvidenceRefused("source_evidence_unavailable")
         goal = await connection.fetchrow(
             "SELECT g.exposed FROM switchboard.pending_asks a "
             "JOIN switchboard.goals g ON g.id = a.goal_id "
