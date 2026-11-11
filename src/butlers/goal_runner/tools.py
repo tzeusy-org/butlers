@@ -41,6 +41,11 @@ NAMESPACE = "goal"
 RESERVED_NAMESPACES = (NAMESPACE, "context", "guidance")
 # Served only when configured; an unserved one is refused CAPABILITY.
 _OPTIONAL = frozenset({CONTEXT_SEARCH, GUIDANCE_SEARCH, GUIDANCE_LOAD})
+# goal.wait_until stays dark until goal events feed the evaluator (bu-dhloi1.305 PR2): until
+# then a wait that is not already true can only expire. Dark tools are neither listed nor
+# callable (CAPABILITY); the runner and ledger paths exist and are tested directly.
+WAIT_UNTIL_LIVE = False
+_DARK = frozenset() if WAIT_UNTIL_LIVE else frozenset({"goal__wait_until"})
 
 _UUID = {"type": "string", "format": "uuid"}
 
@@ -296,12 +301,16 @@ class GoalTools:
         return name.startswith(tuple(f"{ns}__" for ns in RESERVED_NAMESPACES))
 
     def listed(self, depth: int) -> tuple[GoalTool, ...]:
-        return tuple(tool for tool in (*_TOOLS, *self._optional) if depth in tool.depths)
+        return tuple(
+            tool
+            for tool in (*_TOOLS, *self._optional)
+            if depth in tool.depths and tool.name not in _DARK
+        )
 
     async def call(self, goal_id: UUID, token: str, name: str, arguments: Any) -> dict[str, Any]:
         handler = self._handlers.get(name)
         unserved = name in _OPTIONAL and name not in {t.name for t in self._optional}
-        if handler is None or unserved:
+        if handler is None or unserved or name in _DARK:
             raise BrokerRefused(Reason.CAPABILITY)
         return await handler(goal_id, token, arguments)
 

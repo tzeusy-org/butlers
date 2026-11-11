@@ -9,14 +9,17 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import asyncpg
 import pytest
 
+from butlers.capability_broker.contracts import BrokerRefused, Reason
 from butlers.conditions import PredicateError, validate
 from butlers.conditions.service import StoreConflict
 from butlers.conditions.sql import ConnectionConditionStore
+from butlers.goal_runner import tools as goal_tools
 from butlers.goal_runner.own_conditions import (
     OwnEffect,
     grant_for,
@@ -155,3 +158,17 @@ async def test_the_connection_store_maps_driver_errors_like_the_pool_store(error
     with pytest.raises(mapped):
         async with store.transaction():
             pass
+
+
+async def test_wait_until_is_dark_to_leads_until_the_event_feed_lands():
+    # Flipped by bu-dhloi1.305 PR2, together with this test.
+    assert goal_tools.WAIT_UNTIL_LIVE is False
+    runner = MagicMock()
+    runner.wait_until = AsyncMock(return_value="waiting")
+    tools = goal_tools.GoalTools(MagicMock(), runner)
+    assert "goal__wait_until" not in [t.name for t in tools.listed(0)]
+    arguments = {"predicate": {}, "deadline": "2099-01-01T00:00:00+00:00", "max_wakes": 1}
+    with pytest.raises(BrokerRefused) as refused:
+        await tools.call(uuid4(), "token", "goal__wait_until", arguments)
+    assert refused.value.reason is Reason.CAPABILITY
+    runner.wait_until.assert_not_awaited()

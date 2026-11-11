@@ -21,6 +21,7 @@ from butlers.conditions.sql import PostgresConditionStore, intent_from_row
 from butlers.core.goal_admission import decode_grants, encode_grants, intersect
 from tests.capability_broker.test_broker_ledger import NOTIFY, SEND, TO_OWNER
 from tests.goal_runner.test_goal_runner import SEARCH, _grant, harness, refused
+from tests.goal_runner.test_goal_wake_runner import waiting_on_conditions
 
 pytestmark = pytest.mark.integration  # the harness module carries the shared marks
 pytest_plugins = ("tests.capability_broker.test_broker_ledger",)
@@ -44,6 +45,14 @@ def soon(minutes: int = 30) -> str:
 
 def wait_args(predicate, deadline: str | None = None, max_wakes=1) -> dict:
     return {"predicate": predicate, "deadline": deadline or soon(), "max_wakes": max_wakes}
+
+
+async def wait_until(h, goal: UUID, token: str, args: dict) -> dict:
+    """The runner's ``goal.wait_until`` path; the tool is dark to leads until PR2 (below)."""
+    status = await h.runner.wait_until(
+        goal, token, args.get("predicate"), args.get("deadline"), args.get("max_wakes")
+    )
+    return {"status": status}
 
 
 async def parked(h, launch: int = 1):
@@ -82,7 +91,7 @@ async def test_a_predicate_that_already_holds_wakes_one_successor_at_once(broker
             "UPDATE switchboard.effects SET status = 'approved' WHERE id = $1", effect
         )
 
-        result = await h.call(goal, lead.token, "goal__wait_until", wait_args(decision(effect)))
+        result = await wait_until(h, goal, lead.token, wait_args(decision(effect)))
 
         assert result == {"status": "woken"}
         assert (await h.row(lead.invocation_id))["status"] == "returned"
@@ -119,7 +128,7 @@ async def test_a_predicate_not_yet_true_waits_until_its_event_fires(broker_db_ur
         goal, lead, effect = await parked(h)
         predicate = {"tag": "any", "children": [decision(effect), decision(effect, "rejected")]}
 
-        result = await h.call(goal, lead.token, "goal__wait_until", wait_args(predicate))
+        result = await wait_until(h, goal, lead.token, wait_args(predicate))
 
         assert result == {"status": "waiting"}
         assert await h.goal_status(goal) == "waiting"
@@ -160,7 +169,7 @@ async def test_the_envelope_is_bound_by_the_waiting_lead_and_the_goal(broker_db_
         # A later deadline than the goal's budget is held to the budget.
         args = wait_args(decision(effect), deadline=soon(60 * 24 * 10), max_wakes=6)
 
-        assert await h.call(goal, lead.token, "goal__wait_until", args) == {"status": "waiting"}
+        assert await wait_until(h, goal, lead.token, args) == {"status": "waiting"}
 
         env = await envelope(h, goal)
         budget = await h.budget(goal)
@@ -184,9 +193,7 @@ async def test_a_leaf_outside_the_goals_own_ledger_is_refused_as_resource(broker
             decision(foreign),  # another goal's approval
             settled(foreign),  # another goal's effect
         ):
-            reason = await refused(
-                h.call(goal, lead.token, "goal__wait_until", wait_args(predicate))
-            )
+            reason = await refused(wait_until(h, goal, lead.token, wait_args(predicate)))
             assert reason is Reason.RESOURCE, predicate
         await nothing_recorded(h, goal, lead)
 
@@ -198,9 +205,7 @@ async def test_a_decision_on_an_effect_that_needed_no_approval_is_refused(broker
         sent = await h.w.broker.call(goal, lead.token, SEND.identity, TO_OWNER)
         assert sent.effect_id is not None
 
-        reason = await refused(
-            h.call(goal, lead.token, "goal__wait_until", wait_args(decision(sent.effect_id)))
-        )
+        reason = await refused(wait_until(h, goal, lead.token, wait_args(decision(sent.effect_id))))
 
         assert reason is Reason.RESOURCE
         await nothing_recorded(h, goal, lead)
@@ -224,7 +229,7 @@ async def test_an_unbounded_or_foreign_shaped_wait_is_refused_as_policy(broker_d
             {"predicate": decision(effect), "max_wakes": 1},
         ]
         for args in cases:
-            reason = await refused(h.call(goal, lead.token, "goal__wait_until", args))
+            reason = await refused(wait_until(h, goal, lead.token, args))
             assert reason is Reason.POLICY, args
         await nothing_recorded(h, goal, lead)
 
@@ -232,7 +237,7 @@ async def test_an_unbounded_or_foreign_shaped_wait_is_refused_as_policy(broker_d
 async def test_stop_while_waiting_cancels_the_wait_and_its_fire(broker_db_url):
     async with harness(broker_db_url) as h:
         goal, lead, effect = await parked(h)
-        assert await h.call(goal, lead.token, "goal__wait_until", wait_args(decision(effect))) == {
+        assert await wait_until(h, goal, lead.token, wait_args(decision(effect))) == {
             "status": "waiting"
         }
         (instance,) = (await envelope(h, goal))["condition_instance_ids"]
@@ -241,6 +246,11 @@ async def test_stop_while_waiting_cancels_the_wait_and_its_fire(broker_db_url):
 
         assert await h.goal_status(goal) == "stopped"
         assert (await envelope(h, goal))["state"] == "cancelled"
+        # Stop cancelled the condition instance in its own transaction: nothing can fire.
+        state = await h.w.owner.fetchval(
+            "SELECT state FROM public.condition_instances WHERE id = $1", instance
+        )
+        assert state == "cancelled"
         now = datetime.now(UTC)
         event = ConditionEvent(
             id=str(uuid4()),
@@ -252,9 +262,39 @@ async def test_stop_while_waiting_cancels_the_wait_and_its_fire(broker_db_url):
         )
         evaluator = ConditionEvaluator(PostgresConditionStore(h.w.broker.pool))
         fired = await evaluator.evaluate(instance, [event], now=now)
-        # The instance may still fire; admission records it refused and launches nothing.
-        assert fired.intent is not None
-        result = await h.runner.admit_wake(fired.intent)
-        assert (result.state, result.reason) == ("not_admitted", "stopped")
+        assert fired.intent is None
         await h.runner.supervise_once()
         assert len(h.host.launches) == 1
+
+
+async def test_stop_leaves_another_goals_instance_of_the_same_id_alone(broker_db_url):
+    async with harness(broker_db_url) as h:
+        other, other_lead, other_effect = await parked(h)
+        assert await wait_until(h, other, other_lead.token, wait_args(decision(other_effect))) == {
+            "status": "waiting"
+        }
+        (theirs,) = (await envelope(h, other))["condition_instance_ids"]
+        # This goal's generation names the other goal's instance id: not its to cancel.
+        goal = await h.goal(_grant(SEARCH))
+        lead = await h.lead(goal, 2)
+        await waiting_on_conditions(h, goal, lead, instance=theirs)
+
+        await h.runner.stop(goal)
+
+        state = await h.w.owner.fetchval(
+            "SELECT state FROM public.condition_instances WHERE id = $1", theirs
+        )
+        assert state == "open"
+
+
+async def test_the_tool_is_dark_to_leads_until_goal_events_feed_the_evaluator(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal, lead, effect = await parked(h)
+        assert "goal__wait_until" not in [t.name for t in h.tools.listed(0)]
+
+        reason = await refused(
+            h.call(goal, lead.token, "goal__wait_until", wait_args(decision(effect)))
+        )
+
+        assert reason is Reason.CAPABILITY
+        await nothing_recorded(h, goal, lead)

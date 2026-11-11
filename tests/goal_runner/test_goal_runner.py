@@ -312,7 +312,6 @@ async def test_a_child_never_lists_or_calls_a_lead_tool_or_administer(broker_db_
             "goal__complete",
             "goal__wait_approval",
             "goal__wait_owner",
-            "goal__wait_until",
             "goal__plan",
             "goal__inbox",
             "goal__escalate",

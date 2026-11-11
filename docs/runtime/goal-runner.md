@@ -96,7 +96,7 @@ capability and never lists one. The runner serves these tools on the same per-go
 | `goal__complete` | lead | Record the outcome; the goal settles |
 | `goal__wait_approval` | lead | End the lead and wait on one effect parked for approval (see below) |
 | `goal__wait_owner` | lead | End the lead and wait for the owner's answer to a delivered prompt (see below) |
-| `goal__wait_until` | lead | End the lead and wait on a predicate over this goal's own decisions and effects (see below) |
+| `goal__wait_until` | lead (dark) | End the lead and wait on a predicate over this goal's own decisions and effects (see below); not listed or callable until goal events feed the evaluator |
 | `goal__plan` | lead | Record the plan as the goal's next version of goal-owned references (see below) |
 | `goal__inbox` | lead | Take the owner replies joined to this goal since the last call |
 | `goal__escalate` | lead | Hand the goal to a fresh lead on the next ladder tier |
@@ -527,7 +527,10 @@ goal is not part of this change.
 ### Waiting on the goal's own conditions (S2.2, S4)
 
 `goal__wait_until {predicate, deadline, max_wakes}` is for a lead that has nothing to do until
-something of its own goal happens (bu-dhloi1.305). The predicate is the closed S4 language
+something of its own goal happens (bu-dhloi1.305). It is dark: `tools.WAIT_UNTIL_LIVE` is off, so
+the tool is neither listed nor callable (`capability`) until goal events feed the evaluator (the
+next step), because until then a wait that is not already true can only expire. The runner and
+ledger path below exists and is tested directly. The predicate is the closed S4 language
 (`all`/`any`, at most two levels and 16 leaves) restricted to the goal's own leaves, which need no
 approval:
 
@@ -554,8 +557,10 @@ snapshot are read from the goal's effect rows, never from the model. A predicate
 fires at registration and is admitted in that transaction as the wait's wake: the call returns
 `woken` and the sweep launches the successor. Otherwise it returns `waiting`. Feeding later goal
 events to the evaluator, and `rearm` after a wake, are later steps of bu-dhloi1.305; until then a
-wait that is not already true ends at its deadline (below). Stop cancels the envelope; a fire
-after Stop is recorded `not_admitted: stopped`.
+wait that is not already true ends at its deadline (below). `max_wakes` above 1 has no effect
+until `rearm`. Stop cancels the envelope and, in the same transaction, the goal's own condition
+instance, so nothing is left for the evaluator to fire; a fire that raced Stop is still recorded
+`not_admitted: stopped`.
 
 ### Expiry of a wait
 
