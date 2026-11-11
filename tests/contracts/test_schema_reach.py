@@ -1053,6 +1053,13 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         )
     },
     **{
+        ("src/butlers/goal_runner/owner_failure.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: S6 owner failure cause line (sw_068) over the Switchboard-owned "
+            "goal ledger; qualified SQL allocated to goal_runner/owner_failure.py (bu-dhloi1.14)"
+        )
+        for relation in ("broker_refusals", "effects", "goals", "pending_asks")
+    },
+    **{
         ("src/butlers/capability_broker/m7_report.py", f"switchboard.{relation}"): (
             "sanctioned:RFC-0038: M7 gate report, content-blind counts over the owner-only "
             "S1 measurements view and sw_058 stores (bu-4c7nvp.1.2)"

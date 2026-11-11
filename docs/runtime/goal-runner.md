@@ -589,6 +589,38 @@ outcome is resolved `partial`. This includes a legacy approval wait that `sw_064
 `evidence_unavailable` envelope. A parked effect left behind is refused later because its goal has
 ended.
 
+## Owner failure cause line (S6, sw_068, dark)
+
+An owner message that became a goal and ended `failed` or `budget_exhausted`, with no owner delivery
+in its own lineage, would leave the owner with silence. The sweep's last step
+(`GoalRunner._report_owner_failures`, given an `OwnerFailureReporter`) records one
+`switchboard.pending_asks` row per such goal and sends one model-free cause line.
+
+- Identity: `pending_asks.source_key` is the goal's own `source_key` (unique), so one failure has one
+  row however often it is swept. The row also opens an `owner_delivery` subject of kind `pending_ask`
+  (`source_ref` is the row id).
+- "Already told": a `committed`, `dispatched` or `unknown` effect to the owner entity inside this goal's
+  lineage that is not an awaits-reply prompt (a question is not a failure report) (the goal and the goals it caused). A parked, requested, failed or refused effect does not
+  count, and an owner delivery by an unrelated goal does not silence this failure.
+- Cause: `failed`, `budget_exhausted`, or `capability_unavailable` when the broker recorded a
+  `capability_unavailable` refusal for that goal. The health cause itself lives in published health, not
+  in the refusal record, so it is not repeated here. `admission_refused` is admitted by the CHECK but
+  written by a later package (a refused admission has no goal row).
+- The line is one fixed sentence per cause (`CAUSE_LINES`): no ask text, token or provider detail. The
+  presentation (`owner_delivery.present`, surface `telegram`) is the retry identity and is marked
+  handed-off before the send, so a crash or an ambiguous send leaves `unknown` and is never sent again. Only a result decided
+  before any provider call (suppressed, no recipient, no client) is a proven non-send (`failed`): the next
+  sweep presents it again and sends once. A failed call that began is ambiguous (`unknown`). One ask's
+  failure never stops the others in the sweep.
+  Quiet hours and context holds (the owner notify suppression check) delay the line to a later sweep.
+- Dark: nothing is written or sent unless `public.owner_delivery_rollout` is on and exactly one owner
+  entity exists. Rolling back disables the sweep and keeps every row and receipt.
+- The state column already admits Run, Drop, ack and `dropped_stale`; nothing writes them yet
+  (recovery, the original-ask JSONB and the 24 hour expiry are the next package).
+- The production sender is `OwnerNotifySender` (the existing `send_owner_telegram` path). It needs the
+  Switchboard client that path binds, so it is wired where the runner is constructed; the runner is not
+  constructed in production yet.
+
 ## Not yet delivered
 
 - The per-domain `ContextSource` adapters (a domain's memory and facts).
