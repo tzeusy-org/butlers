@@ -35,13 +35,16 @@ def _ledger(container):
 
 
 async def _replied(url, delivery: str):
-    """A running owner goal with one joined, unread reply to its prompt: (goal, inbox row)."""
+    """A running owner goal with one joined, unread reply to its prompt.
+
+    Returns (goal, inbox row, the lead invocation that sent the prompt).
+    """
     async with pools(url) as (owner, runtime):
         await configure(owner, limits())
         goal = await admit(runtime, OWNER)
         entity = uuid4()
         expiry = await owner.fetchval("SELECT now() + interval '1 hour'")
-        await effect(
+        lead, _ = await effect(
             owner,
             goal.goal_id,
             delivery=delivery,
@@ -63,7 +66,7 @@ async def _replied(url, delivery: str):
         inbox = await owner.fetchval(
             "SELECT id FROM switchboard.goal_inbox WHERE goal_id = $1", goal.goal_id
         )
-        return goal.goal_id, inbox
+        return goal.goal_id, inbox, lead
 
 
 async def _end(url, goal, status):
@@ -86,7 +89,7 @@ async def _runtime_try(url, query, *args):
 
 def test_an_ended_goal_releases_its_unread_replies_once(postgres_container):
     url = _ledger(postgres_container)
-    goal, inbox = asyncio.run(_replied(url, "prompt-1"))
+    goal, inbox, _ = asyncio.run(_replied(url, "prompt-1"))
 
     released = asyncio.run(_end(url, goal, "stopped"))
 
@@ -102,21 +105,22 @@ def test_an_ended_goal_releases_its_unread_replies_once(postgres_container):
         assert asyncio.run(_runtime_try(url, query)) is False, query
 
     # A goal whose reply was read releases nothing.
-    other, other_inbox = asyncio.run(_replied(url, "prompt-2"))
+    other, other_inbox, other_lead = asyncio.run(_replied(url, "prompt-2"))
 
     async def consume():
+        # The consumption BrokerLedger.consume_inbox writes: the one-time (consumed_at,
+        # consumed_epoch) tuple, the epoch being the reading lead's. No guard is disabled.
         async with pools(url) as (owner, _):
-            await owner.execute(
-                "ALTER TABLE switchboard.goal_inbox DISABLE TRIGGER goal_ledger_immutable"
-            )
-            await owner.execute(
-                "UPDATE switchboard.goal_inbox SET consumed_at = now(), legacy_consumed = true "
-                "WHERE id = $1",
+            consumed = await owner.execute(
+                "UPDATE switchboard.goal_inbox SET consumed_at = clock_timestamp(), "
+                "consumed_epoch = (SELECT lead_epoch FROM switchboard.invocations "
+                "WHERE goal_id = $1 AND id = $3) "
+                "WHERE goal_id = $1 AND id = $2 AND consumed_at IS NULL",
+                other,
                 other_inbox,
+                other_lead,
             )
-            await owner.execute(
-                "ALTER TABLE switchboard.goal_inbox ENABLE TRIGGER goal_ledger_immutable"
-            )
+            assert consumed == "UPDATE 1"
 
     asyncio.run(consume())
     assert asyncio.run(_end(url, other, "failed")) == []
