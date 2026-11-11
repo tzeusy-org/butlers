@@ -43,7 +43,7 @@ from .contracts import (
     Role,
 )
 from .delegation import DelegationRequest, child_grant
-from .own_conditions import HORIZON, OwnEffect, grant_for, named, snapshot_for
+from .own_conditions import HORIZON, OwnEffect, OwnReply, grant_for, named, snapshot_for
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,10 @@ def published(grants: tuple[Grant, ...], catalog: Catalog) -> tuple[Grant, ...]:
         if (capability := catalog.get(grant.capability)) is not None
         and capability.effect_class != "transact"
     )
+
+
+def _own_effect(row: Any) -> OwnEffect:
+    return OwnEffect(row["id"], row["status"], row["approval"], row["prompt"])
 
 
 @dataclass(frozen=True, slots=True)
@@ -743,30 +747,30 @@ class RunnerLedger:
         """``goal.wait_until``: the lead ends and the goal waits on its own conditions (S2.2).
 
         ``predicate`` is a canonical goal-own predicate (``own_predicate``). Every decision it
-        names must be one of this goal's approval effects and every effect one of its effects,
-        else RESOURCE; a deadline past ``HORIZON`` from admission or not in the future is POLICY.
-        Nothing is recorded on a refusal. Otherwise, in this transaction, live children stop,
-        the lead ends, a ``conditions`` envelope opens and its condition instance registers
-        against a snapshot read under the goal lock. A predicate that already holds fires at
-        registration and is admitted here as the wait's wake, exactly once. Returns the stopped
-        children and whether the goal was woken.
+        names must be one of this goal's approval effects, every effect one of its effects and
+        every owner input this goal's live prompt to the owner, else RESOURCE; a deadline past
+        ``HORIZON`` from admission or not in the future is POLICY. Nothing is recorded on a
+        refusal. Otherwise, in this transaction, live children stop, the lead ends, a
+        ``conditions`` envelope opens and its condition instance registers against a snapshot
+        read under the goal lock. A predicate that already holds (an unread reply counts as
+        input) fires at registration and is admitted here as the wait's wake, exactly once.
+        Returns the stopped children and whether the goal was woken.
         """
         goal = await self.lock(principal.goal_id)
         if goal is None or goal["status"] != "running":
             raise BrokerRefused(Reason.GOAL)
         if principal.depth != 0:
             raise BrokerRefused(Reason.CAPABILITY)
-        rows = await self.connection.fetch(
-            "SELECT id::text AS id, status, approval_ref IS NOT NULL AS approval "
-            "FROM switchboard.effects WHERE goal_id = $1",
-            principal.goal_id,
-        )
-        effects = [OwnEffect(r["id"], r["status"], r["approval"]) for r in rows]
-        decisions, named_effects = named(predicate)
-        if not decisions <= {e.id for e in effects if e.approval} or not named_effects <= {
-            e.id for e in effects
-        }:
+        effects = await self._own_effect_rows(principal.goal_id)
+        refs = named(predicate)
+        if (
+            not refs.decisions <= {e.id for e in effects if e.approval}
+            or not refs.effects <= {e.id for e in effects}
+            or not refs.inputs <= {e.id for e in effects if e.prompt}
+            or not refs.goals <= {str(principal.goal_id)}
+        ):
             raise BrokerRefused(Reason.RESOURCE)
+        unread = {reply.binding for reply in await self.own_replies(principal.goal_id)}
         bounds = await self.connection.fetchrow(
             "SELECT now() AS now, b.deadline AS budget, g.created_at + $2::interval AS horizon, "
             "g.label_version, g.label_instr, g.label_data, g.label_sens "
@@ -823,7 +827,7 @@ class RunnerLedger:
                     bounds["label_data"],
                     bounds["label_sens"],
                 ),
-                snapshot=snapshot_for(bounds["now"], effects),
+                snapshot=snapshot_for(bounds["now"], effects, unread),
                 expires_at=expires,
             )
         except RegistrationRefused:
@@ -1164,12 +1168,33 @@ class RunnerLedger:
 
     async def own_effects(self, goal_id: UUID) -> list[tuple[OwnEffect, datetime]]:
         """The goal's effects as the conditions feed reads them, with their last change."""
+        rows = await self._effect_rows(goal_id)
+        return [(_own_effect(row), row["updated_at"]) for row in rows]
+
+    async def own_replies(self, goal_id: UUID) -> list[OwnReply]:
+        """The owner's replies to the goal's prompts that no lead has read yet, oldest first."""
         rows = await self.connection.fetch(
-            "SELECT id::text AS id, status, approval_ref IS NOT NULL AS approval, updated_at "
-            "FROM switchboard.effects WHERE goal_id = $1",
+            "SELECT id::text AS id, reply_effect_id::text AS binding, created_at "
+            "FROM switchboard.goal_inbox WHERE goal_id = $1 AND consumed_at IS NULL "
+            "AND reply_effect_id IS NOT NULL ORDER BY created_at, id",
             goal_id,
         )
-        return [(OwnEffect(r["id"], r["status"], r["approval"]), r["updated_at"]) for r in rows]
+        return [OwnReply(r["id"], str(goal_id), r["binding"], r["created_at"]) for r in rows]
+
+    async def _own_effect_rows(self, goal_id: UUID) -> list[OwnEffect]:
+        return [_own_effect(row) for row in await self._effect_rows(goal_id)]
+
+    async def _effect_rows(self, goal_id: UUID) -> list[Any]:
+        # A prompt is a binding only while a reply to it can still join the goal: committed,
+        # accepting input, unexpired, and delivered to the live owner (as goal.wait_owner).
+        return await self.connection.fetch(
+            "SELECT id::text AS id, status, approval_ref IS NOT NULL AS approval, updated_at, "
+            "COALESCE(status = 'committed' AND prompt_accepts_input "
+            "AND prompt_expires_at > now() AND recipient_entity = $2, false) AS prompt "
+            "FROM switchboard.effects WHERE goal_id = $1",
+            goal_id,
+            await live_owner(self.connection),
+        )
 
     async def _cancel_conditions(self, goal_id: UUID) -> None:
         """Stop cancels the condition instances of the goal's live waits, in Stop's transaction.

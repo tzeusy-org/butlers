@@ -534,16 +534,21 @@ class GoalAdmission:
                 and binding["prompt_expires_at"] is not None
                 and binding["prompt_expires_at"] > prompt_now
             )
-            # A waiting goal joins only by the exact reply to the prompt its owner-answer wait
-            # is bound to (RFC 0038 S2.2); the reply is that wait's one wake. Any other waiting
-            # goal (settle, approval, conditions) has no waiting -> running edge for an inbox
-            # row, so a reply to it is admitted as new intent.
-            answer = None
+            # A waiting goal joins only by the exact reply to the prompt its wait names (RFC 0038
+            # S2.2). On an owner-answer wait the reply is that wait's one wake. On a conditions
+            # wait with an owner_input leaf on the prompt, the reply joins as an unread inbox row
+            # and the goal stays waiting: the conditions feed makes it the leaf's event. Any
+            # other waiting goal (settle, approval, a conditions wait not naming the prompt) has
+            # no waiting -> running edge for an inbox row, so a reply to it is new intent.
+            answer, awaited = None, False
             if prompt_live and goal["status"] == "waiting":
-                answer = await WakeAdmission(ledger.connection).answer_envelope(
-                    goal["id"], binding["id"]
-                )
-            if prompt_live and (goal["status"] in {"admitted", "running"} or answer is not None):
+                wakes = WakeAdmission(ledger.connection)
+                answer = await wakes.answer_envelope(goal["id"], binding["id"])
+                if answer is None:
+                    awaited = await wakes.awaits_input(goal["id"], binding["id"])
+            if prompt_live and (
+                goal["status"] in {"admitted", "running"} or answer is not None or awaited
+            ):
                 joined = await ledger.decide(
                     source, attempt_id, "joined", "reply_joined", goal["id"]
                 )

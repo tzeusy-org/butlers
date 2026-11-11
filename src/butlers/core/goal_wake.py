@@ -30,6 +30,7 @@ import asyncpg
 from asyncpg.pool import PoolConnectionProxy
 
 from butlers.conditions import FireIntent
+from butlers.conditions.predicate import leaves
 from butlers.conditions.sql import intent_from_row
 from butlers.core.goal_admission import SourceRef
 from butlers.core.goal_labels import Label
@@ -56,6 +57,18 @@ class WakeResult:
     intent_id: UUID | None = None
     epoch: int | None = None
     replayed: bool = False
+
+
+def names_input(predicate: Any, binding: str) -> bool:
+    """Whether a stored predicate has an ``owner_input`` leaf on ``binding``; a malformed one
+    names nothing, so it can never make a reply join."""
+    try:
+        return any(
+            leaf.tag == "owner_input" and leaf.body.get("binding_ref") == binding
+            for leaf in leaves(predicate)
+        )
+    except (KeyError, TypeError, AttributeError):
+        return False
 
 
 def condition_source(envelope_id: UUID, generation: int, event_id: UUID) -> SourceRef:
@@ -128,6 +141,25 @@ class WakeAdmission:
             goal_id,
             str(prompt_effect_id),
         )
+
+    async def awaits_input(self, goal_id: UUID, prompt_effect_id: UUID) -> bool:
+        """Whether the goal's open conditions wait names the owner's input on this prompt.
+
+        True only if the goal is waiting and its envelope is an open ``conditions`` wait inside
+        its deadline and wake cap whose predicate has an ``owner_input`` leaf bound to the
+        prompt (bu-dhloi1.305 PR2b). The reply then joins as an unread inbox row and the goal
+        stays waiting: the conditions feed turns that row into the leaf's event. Takes the
+        envelope ``FOR UPDATE``; the caller holds the goal lock already.
+        """
+        rows = await self.connection.fetch(
+            "SELECT e.predicate::text AS predicate FROM switchboard.wait_envelopes e "
+            "JOIN switchboard.goals g ON g.id = e.goal_id WHERE e.goal_id = $1 "
+            "AND g.status = 'waiting' AND e.kind = 'conditions' AND e.state = 'open' "
+            "AND e.deadline > now() AND e.consumed_wakes < e.max_wakes FOR UPDATE OF e",
+            goal_id,
+        )
+        binding = str(prompt_effect_id)
+        return any(names_input(json.loads(row["predicate"]), binding) for row in rows)
 
     async def admit_answer(self, envelope: Any, decision_id: UUID, inbox_id: UUID) -> WakeResult:
         """The joined reply is the wait's one wake: its successor epoch and pending intent.
