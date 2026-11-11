@@ -652,7 +652,7 @@ in its own lineage, would leave the owner with silence. The sweep's last step
   the stored source reference again through the full current admission rules on the redemption's own
   connection, with an attempt id derived from the ask. Evidence is loaded afresh, so Run is exactly
   an owner re-send now and never pre-satisfies an authorization check. If admission refuses again
-  (`still_refused`) the whole decision rolls back and the card stays. A second Run is a `duplicate`
+  (`still_refused`) the whole decision rolls back and the card stays. A Run on an expired ask is refused `ask_expired` (Drop still works). A fault in admission becomes `admission_unavailable`. A second Run is a `duplicate`
   and admits once.
 - Run on a failed or budget-exhausted goal cannot reuse the message's source key (the failed goal
   owns it), so it admits a new owner goal from the source `("message", "owner_retry:<ask id>")`.
@@ -667,7 +667,8 @@ in its own lineage, would leave the owner with silence. The sweep's last step
 - `owner_delivery.redeem` takes approve/reject for `approval` and `pending_ask` subjects only
   (`DECIDABLE_KINDS`), each through its own `decide` callback. The kind and source reference bound
   into a token mean an approval token never redeems a pending ask and the reverse; the dashboard's
-  approval route still refuses a `pending_ask` token as `action_unsupported`.
+  approval route still refuses a `pending_ask` token (`action_unsupported` at the route, and
+  `subject_mismatch` if it reached `redeem` as an approval).
 - Not wired: the HTTP route and Telegram buttons that carry a token to `decide`, and the production
   evidence reader that `admit` needs, belong to the cutover with the runner.
 

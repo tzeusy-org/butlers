@@ -141,7 +141,8 @@ class OwnerRecovery:
 
         async def decide(conn: Any, verb: str) -> dict[str, Any]:
             ask = await conn.fetchrow(
-                "SELECT state, cause, original_ask, goal_id FROM switchboard.pending_asks "
+                "SELECT state, cause, original_ask, goal_id, source_key, "
+                "expires_at <= clock_timestamp() AS expired FROM switchboard.pending_asks "
                 "WHERE id = $1 FOR UPDATE",
                 ask_id,
             )
@@ -150,8 +151,13 @@ class OwnerRecovery:
             if verb == "reject":
                 state = "dropped"
             else:
+                if ask["expired"]:
+                    # A card rendered just before expiry must not replay a stale ask.
+                    raise AskDecisionRefused("ask_expired")
                 if ask["cause"] == "admission_refused":
                     source = source_of(ask["original_ask"])
+                    if source.key != ask["source_key"]:
+                        raise AskDecisionRefused("cannot_run")
                 elif ask["cause"] in RETRY_CAUSES and ask["goal_id"] is not None:
                     source = SourceRef("message", RETRY_PREFIX + str(ask_id))
                 else:
@@ -185,6 +191,11 @@ class OwnerRecovery:
                 )
         except AskDecisionRefused as refused:
             return AskDecision("refused", refused.reason)
+        except Exception:
+            # Admission unavailable or any other fault: the transaction rolled back, the card
+            # stays, and the caller gets a closed reason instead of an exception.
+            logger.warning("pending ask decision failed ask=%s", ask_id)
+            return AskDecision("refused", "admission_unavailable")
         if redemption.outcome == "refused":
             return AskDecision("refused", redemption.reason)
         return AskDecision(redemption.outcome, None, decided.get("state"))

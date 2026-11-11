@@ -300,3 +300,55 @@ async def test_other_subject_kinds_still_refuse_a_decision(world):  # noqa: F811
             decide=decide,
         )
         assert (result.outcome, result.reason) == ("refused", "action_unsupported")
+
+
+async def test_run_on_an_expired_ask_is_refused_even_before_the_sweep_but_drop_works(world):  # noqa: F811
+    owner, runtime, _ = world
+    source, row = await refused_ask(owner, runtime)
+    await configure(owner, limits(new_goals=5))
+    card = await card_for(runtime, row["id"])
+    await owner.execute(
+        "UPDATE switchboard.pending_asks SET expires_at = clock_timestamp() - interval '1 second'"
+    )
+    refused = await recovery(runtime).decide(card.tokens["approve"], row["id"], "approve")
+    assert (refused.outcome, refused.reason) == ("refused", "ask_expired")
+    assert (
+        await owner.fetchval(
+            "SELECT count(*) FROM switchboard.goals WHERE source_key=$1", source.key
+        )
+        == 0
+    )
+    dropped = await recovery(runtime).decide(card.tokens["reject"], row["id"], "reject")
+    assert dropped.state == "dropped"
+
+
+async def test_a_reference_that_does_not_match_its_ask_cannot_run(world):  # noqa: F811
+    owner, runtime, _ = world
+    source, row = await refused_ask(owner, runtime)
+    await configure(owner, limits(new_goals=5))
+    card = await card_for(runtime, row["id"])
+    await owner.execute(
+        "UPDATE switchboard.pending_asks SET original_ask = "
+        '\'{"v":1,"source":{"kind":"message","id":"someone-else"},'
+        '"refusal":"quota_exhausted"}\'::jsonb WHERE id = $1',
+        row["id"],
+    )
+    result = await recovery(runtime).decide(card.tokens["approve"], row["id"], "approve")
+    assert (result.outcome, result.reason) == ("refused", "cannot_run")
+    assert await owner.fetchval("SELECT count(*) FROM switchboard.goals") == 1
+
+
+async def test_an_admission_fault_becomes_a_closed_refusal(world):  # noqa: F811
+    owner, runtime, _ = world
+    _, row = await refused_ask(owner, runtime)
+    card = await card_for(runtime, row["id"])
+
+    async def broken(conn, source, attempt):
+        raise RuntimeError("boom")
+
+    result = await OwnerRecovery(runtime, broken).decide(
+        card.tokens["approve"], row["id"], "approve"
+    )
+    assert (result.outcome, result.reason) == ("refused", "admission_unavailable")
+    (after,) = [r for r in await asks(owner) if r["id"] == row["id"]]
+    assert after["state"] == "open"
