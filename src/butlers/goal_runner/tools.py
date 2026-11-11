@@ -41,9 +41,10 @@ NAMESPACE = "goal"
 RESERVED_NAMESPACES = (NAMESPACE, "context", "guidance")
 # Served only when configured; an unserved one is refused CAPABILITY.
 _OPTIONAL = frozenset({CONTEXT_SEARCH, GUIDANCE_SEARCH, GUIDANCE_LOAD})
-# goal.wait_until stays dark until goal events feed the evaluator (bu-dhloi1.305 PR2): until
-# then a wait that is not already true can only expire. Dark tools are neither listed nor
-# callable (CAPABILITY); the runner and ledger paths exist and are tested directly.
+# goal.wait_until stays dark until the goal-event feed is wired live (GoalRunner.feed_conditions,
+# bu-dhloi1.305 PR2), which waits on PR5's label narrowing of feed-triggered wakes; until then a
+# wait that is not already true can only expire. Dark tools are neither listed nor callable
+# (CAPABILITY); the runner and ledger paths exist and are tested directly. Flip with the feed.
 WAIT_UNTIL_LIVE = False
 _DARK = frozenset() if WAIT_UNTIL_LIVE else frozenset({"goal__wait_until"})
 

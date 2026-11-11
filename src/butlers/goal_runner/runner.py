@@ -28,7 +28,13 @@ from opentelemetry import trace
 
 from butlers.capability_broker.contracts import BrokerRefused, Reason
 from butlers.capability_broker.service import Broker
-from butlers.conditions import FireIntent, PredicateError
+from butlers.conditions import (
+    ConditionEvaluator,
+    ConditionsUnavailable,
+    FireIntent,
+    PredicateError,
+)
+from butlers.conditions.sql import PostgresConditionStore
 from butlers.core.goal_labels import Label
 from butlers.core.goal_wake import WakeAdmission, WakeResult
 from butlers.core.model_call import AttemptOutcome, AttemptSink, CallSpec, Candidate, call_model
@@ -48,7 +54,7 @@ from .contracts import (
 from .delegation import DelegationRequest, parse_delegation
 from .ledger import Leaderless, RunnerLedger, Started, WakeClaim, plan_refs
 from .models import ModelLadders, next_tier
-from .own_conditions import MAX_WAKES, own_predicate
+from .own_conditions import MAX_WAKES, events_for, own_predicate
 from .packet import PacketComposer
 
 _ADMIT_ATTEMPTS = 3  # sweeps a fire may fail admission before it is closed as admit_error
@@ -818,6 +824,41 @@ class GoalRunner:
         await self._resolve_approvals()
         await self._admit_fires()
         await self._launch_wakes()
+
+    async def feed_conditions(self) -> None:
+        """Feed each waiting goal's own decisions and settled effects to its condition instance.
+
+        RFC 0038 S2.2 / S4 (bu-dhloi1.305 PR2). For every waiting goal with an open conditions
+        envelope, the domain's decisions are synced onto its parked effects first (as the
+        approval wait does), then the goal's own events (``events_for``) are evaluated against
+        the envelope's current instance, and a fire is admitted as the wait's wake at once (the
+        ``_admit_fires`` sweep completes any that fails here).
+
+        Dark: ``supervise_once`` does not call this. A feed-triggered wake is third-party
+        sourced, and its lead would hold the envelope's full waiting grant; under the
+        bu-dhloi1.305 ruling it is wired live only once PR5 narrows such wakes by label.
+        """
+        async with self._txn() as ledger:
+            waits = await ledger.condition_waits()
+        evaluator = ConditionEvaluator(PostgresConditionStore(self.broker.pool))
+        for goal_id, instance_id in waits:
+            try:
+                await self.broker.sync_parked(goal_id)
+            except BrokerRefused:
+                logger.warning("goal runner parked sync unavailable goal=%s", goal_id)
+            async with self._txn() as ledger:
+                effects = await ledger.own_effects(goal_id)
+            try:
+                outcome = await evaluator.evaluate(
+                    instance_id, events_for(effects), now=datetime.now(UTC)
+                )
+            except KeyError:
+                continue  # a generation id the evaluator never registered
+            except ConditionsUnavailable:
+                logger.warning("goal runner conditions feed unavailable goal=%s", goal_id)
+                continue
+            if outcome.intent is not None:
+                await self._admit_guarded(outcome.intent)
 
     async def _admit_fires(self) -> None:
         """Admit the fires the evaluator committed that no wake intent answers yet.

@@ -22,8 +22,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from uuid import NAMESPACE_URL, uuid5
 
-from butlers.conditions import Grant, PredicateError, Snapshot
+from butlers.conditions import ConditionEvent, Grant, PredicateError, Snapshot
 from butlers.conditions import predicate as ast
 
 #: The most wakes one wait may grant its goal, and how far past admission it may run.
@@ -91,6 +92,47 @@ def grant_for(goal_id: str, predicate: dict, effects: Iterable[OwnEffect]) -> Gr
         sources=ast.sources(predicate),
         decisions=frozenset(e.id for e in effects if e.approval),
         effects=frozenset(e.id for e in effects),
+    )
+
+
+def events_for(effects: Iterable[tuple[OwnEffect, datetime]]) -> list[ConditionEvent]:
+    """The goal's own events, from each effect's current status and when it last changed.
+
+    The same mappings as the registration snapshot. A decision event names the effect id as
+    its ``subject_id``, which is what a ``decision`` leaf binds. Each event's id is derived from
+    its source, effect and value, so a redelivered event is the same event; its position is
+    the status change time in microseconds. The facts are monotonic (a decision is made once,
+    a settled effect stays settled), so feeding current state never loses or invents a fire.
+    """
+    events: list[ConditionEvent] = []
+    for effect, changed_at in effects:
+        position = int(changed_at.timestamp() * 1_000_000)
+        if effect.approval and (outcome := _DECIDED.get(effect.status)) is not None:
+            events.append(
+                _event(ast.SOURCE_DECISION, "decision", effect.id, outcome, position, changed_at)
+            )
+        if (status := _SETTLED.get(effect.status)) is not None:
+            events.append(
+                _event(ast.SOURCE_EFFECT, "effect_settled", effect.id, status, position, changed_at)
+            )
+    return events
+
+
+def _event(
+    source: str, tag: str, effect_id: str, value: str, position: int, at: datetime
+) -> ConditionEvent:
+    data = (
+        {"subject_id": effect_id, "outcome": value}
+        if tag == "decision"
+        else {"effect_id": effect_id, "status": value}
+    )
+    return ConditionEvent(
+        id=str(uuid5(NAMESPACE_URL, f"butlers:goal-event:{source}:{effect_id}:{value}")),
+        source=source,
+        position=position,
+        at=at,
+        tag=tag,
+        data=data,
     )
 
 
