@@ -657,6 +657,89 @@ class TestLabels:
         await evaluator.cancel("c", now=NOW)
         assert len(store.receipts) >= 4 and {r.label for r in store.receipts} == {LABEL}
 
+
+#: Provenance a producer can stamp on its events (bu-dhloi1.305 PR5a).
+OWNER = Label.owner()
+TAINTED = Label(frozenset({"owner", "external:mail"}), frozenset({"external:mail"}), frozenset())
+
+
+class TestLabelledEvidence:
+    """A producer may stamp each event with the label of the row it came from.
+
+    A data fire then joins the labels of the events that hold its true leaves, instead of the
+    unknown label. Every true leaf must be held by a labelled event of the firing batch (or the
+    labelled registration snapshot); otherwise the fire joins the unknown label exactly as an
+    unlabelled producer's does today.
+    """
+
+    FIRE = LABEL.join(Label.unknown())
+
+    async def test_a_labelled_event_fire_joins_its_label_not_the_unknown_one(self, evaluator):
+        await register(evaluator, DECISION)
+        out = await evaluator.evaluate("c1", [decision_ev(label=OWNER)], now=NOW)
+        assert out.intent is not None and out.intent.label == LABEL.join(OWNER)
+        assert out.receipt.label == LABEL.join(OWNER)
+        assert not out.intent.label.covers(Label.unknown())
+
+    async def test_every_true_leaf_joins_the_label_of_the_event_holding_it(self, evaluator):
+        both = {"tag": "all", "children": [DECISION, INPUT]}
+        await register(evaluator, both)
+        batch = [decision_ev(label=OWNER), input_ev(position=2, label=TAINTED)]
+        out = await evaluator.evaluate("c1", batch, now=NOW)
+        assert out.intent is not None and out.intent.label == LABEL.join(OWNER).join(TAINTED)
+
+    async def test_a_leaf_held_only_by_an_earlier_batch_joins_the_unknown_label(self, evaluator):
+        both = {"tag": "all", "children": [DECISION, INPUT]}
+        await register(evaluator, both)
+        await evaluator.evaluate("c1", [input_ev(label=OWNER)], now=NOW)
+        out = await evaluator.evaluate("c1", [decision_ev(position=2, label=OWNER)], now=NOW)
+        assert out.intent is not None and out.intent.label == self.FIRE
+
+    async def test_one_unlabelled_event_holding_a_leaf_joins_the_unknown_label(self, evaluator):
+        both = {"tag": "all", "children": [DECISION, INPUT]}
+        await register(evaluator, both)
+        batch = [decision_ev(label=OWNER), input_ev(position=2)]
+        out = await evaluator.evaluate("c1", batch, now=NOW)
+        assert out.intent is not None and out.intent.label == self.FIRE
+
+    async def test_an_event_holding_no_true_leaf_adds_nothing(self, evaluator):
+        await register(evaluator, DECISION)
+        batch = [
+            decision_ev(label=OWNER),
+            decision_ev(position=2, outcome="rejected", label=TAINTED),
+        ]
+        out = await evaluator.evaluate("c1", batch, now=NOW)
+        assert out.intent is not None and out.intent.label == LABEL.join(OWNER)
+
+    async def test_a_labelled_registration_snapshot_fires_with_its_label(self, evaluator):
+        snap = Snapshot(now=NOW, decisions={SUBJECT: "approved"}, label=OWNER)
+        out = await register(evaluator, DECISION, snapshot=snap)
+        assert out.intent is not None and out.intent.label == LABEL.join(OWNER)
+
+    async def test_a_retry_carries_its_snapshot_label_only_if_that_snapshot_holds_it(
+        self, evaluator
+    ):
+        both = {"tag": "all", "children": [DECISION, INPUT]}
+        decided = Snapshot(now=NOW, decisions={SUBJECT: "approved"}, label=OWNER)
+        assert (await register(evaluator, both, snapshot=decided)).intent is None
+        replied = Snapshot(now=NOW, inputs=frozenset({BINDING}), label=OWNER)
+        out = await register(evaluator, both, snapshot=replied)
+        # The decision leaf latched from the first snapshot, which this label does not cover.
+        assert out.intent is not None and out.intent.label == self.FIRE
+        await register(evaluator, both, instance_id="c2", snapshot=decided)
+        full = Snapshot(
+            now=NOW, decisions={SUBJECT: "approved"}, inputs=frozenset({BINDING}), label=OWNER
+        )
+        out = await register(evaluator, both, instance_id="c2", snapshot=full)
+        assert out.intent is not None and out.intent.label == LABEL.join(OWNER)
+
+    async def test_an_unlabelled_non_goal_producer_keeps_the_unknown_label(self, evaluator):
+        """A perception producer that stamps nothing behaves exactly as before."""
+        await register(evaluator, TRANSITION)
+        out = await evaluator.evaluate("c1", [transition_ev()], now=NOW)
+        assert out.intent is not None and out.intent.label == self.FIRE
+        assert out.receipt.label == self.FIRE
+
     async def test_reregistering_with_a_different_label_refuses(self, evaluator):
         await register(evaluator, DECISION)
         wider = LABEL.join(Label.unknown())
