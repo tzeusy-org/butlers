@@ -432,7 +432,7 @@ def _flaky_download(package, failures, error):
     return urlopen, attempts
 
 
-@pytest.mark.parametrize("error", [TimeoutError("timed out"), OSError("reset")])
+@pytest.mark.parametrize("error", [TimeoutError("timed out"), ConnectionResetError("reset")])
 def test_a_transient_download_fault_is_retried_and_the_digest_is_still_checked(
     host, monkeypatch, error
 ):
@@ -483,3 +483,76 @@ def test_a_wrong_download_is_never_retried_into_acceptance(host, monkeypatch):
         ci.prepare(root)
     assert len(calls) == 1
     assert not any("apparmor_parser" in args for args in state["calls"])
+
+
+def _http_error(code):
+    import urllib.error
+
+    return urllib.error.HTTPError(ci.PACKAGE_URL, code, "secret body", {}, None)
+
+
+@pytest.mark.parametrize(
+    "error", [_http_error(503), ConnectionResetError("reset"), TimeoutError("t")]
+)
+def test_server_errors_connection_faults_and_timeouts_are_retried(host, monkeypatch, error):
+    state, root, package, _ = host
+    urlopen, attempts = _flaky_download(package, 1, error)
+    monkeypatch.setattr(ci.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(ci.time, "sleep", lambda seconds: None)
+    ci.prepare(root)
+    assert len(attempts) == 2
+
+
+@pytest.mark.parametrize("code", [403, 404])
+def test_a_client_error_is_a_definite_answer_and_is_never_retried(host, monkeypatch, code):
+    state, root, package, _ = host
+    urlopen, attempts = _flaky_download(package, 99, _http_error(code))
+    monkeypatch.setattr(ci.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(ci.time, "sleep", lambda seconds: pytest.fail("no wait for a 4xx"))
+    with pytest.raises(ci.Refusal, match="^package_download_failed$"):
+        ci.prepare(root)
+    assert len(attempts) == 1
+
+
+def test_a_profile_load_that_cannot_run_is_named_and_not_retried(host, monkeypatch):
+    state, root, _, _ = host
+    real = ci.run
+    loads = []
+
+    def run(args, **kwargs):
+        if args[:4] == ["sudo", "-n", "apparmor_parser", "-a"]:
+            loads.append(args)
+            raise subprocess.TimeoutExpired(args, 15)
+        return real(args, **kwargs)
+
+    monkeypatch.setattr(ci, "run", run)
+    with pytest.raises(ci.Refusal, match="^profile_load_failed$"):
+        ci.prepare(root)
+    assert len(loads) == 1
+
+
+def test_every_refusal_word_is_in_the_closed_set_and_content_blind():
+    import ast
+    import re
+
+    source = Path(ci.__file__).read_text()
+    literals = {
+        node.args[0].value
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "Refusal"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+    }
+    assert literals and literals <= ci.REFUSALS
+    assert "profile_load_failed" in ci.REFUSALS and "package_download_failed" in ci.REFUSALS
+    assert all(re.fullmatch(r"[a-z_]+", word) for word in ci.REFUSALS)
+    # No Refusal is ever built from a variable, so no URL, status or body can enter one.
+    dynamic = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "Refusal"
+        and not (node.args and isinstance(node.args[0], ast.Constant))
+    ]
+    assert dynamic == []

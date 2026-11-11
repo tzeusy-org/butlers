@@ -41,6 +41,41 @@ int main(void) {
 """
 
 
+#: The closed set of refusal words this script may print. Each is a fixed, content-blind category;
+#: a test pins that every ``Refusal(...)`` literal is in it and none carries a URL, status or body.
+REFUSALS = frozenset(
+    {
+        "cleanup_load_identity_refused",
+        "cleanup_load_ownership_unproven",
+        "cleanup_owned_profiles_unobserved",
+        "cleanup_profile_identity_refused",
+        "command_output_limit",
+        "experiment_already_exists",
+        "generic_userns_not_denied",
+        "global_restriction_not_one",
+        "host_command_refused",
+        "hosted_runner_required",
+        "invalid_profile_member",
+        "local_profile_override_conflict",
+        "native_preflight_still_refused",
+        "package_archive_limit",
+        "package_digest_mismatch",
+        "package_download_failed",
+        "preflight_compile_failed",
+        "preloaded_profile_conflict",
+        "profile_cleanup_unobserved",
+        "profile_digest_mismatch",
+        "profile_header_mismatch",
+        "profile_load_failed",
+        "profile_load_unobserved",
+        "profile_load_unproven",
+        "runner_profile_digest_mismatch",
+        "unattributed_native_preflight",
+        "unsupported_runner_release",
+    }
+)
+
+
 class Refusal(Exception):
     """Fixed refusal categories; other command output stays private.
 
@@ -125,6 +160,13 @@ def generic_denied() -> None:
         raise Refusal("generic_userns_not_denied")
 
 
+def _transient(error: Exception) -> bool:
+    """Only a fault that a repeat can cure: timeout, connection, URL error or HTTP 5xx."""
+    if isinstance(error, urllib.error.HTTPError):
+        return 500 <= error.code < 600  # a 4xx is a definite answer, never retried
+    return isinstance(error, TimeoutError | ConnectionError | urllib.error.URLError)
+
+
 def fetch_package() -> bytes:
     """Download the pinned profile package, retrying a transient network fault.
 
@@ -136,7 +178,9 @@ def fetch_package() -> bytes:
         try:
             with urllib.request.urlopen(PACKAGE_URL, timeout=_DOWNLOAD_TIMEOUT) as response:
                 return response.read(_LIMIT + 1)
-        except (OSError, urllib.error.URLError):  # includes timeouts and connection resets
+        except Exception as error:
+            if not _transient(error):
+                raise Refusal("package_download_failed") from None
             if attempt + 1 < _DOWNLOAD_ATTEMPTS:
                 time.sleep(_DOWNLOAD_BACKOFF[attempt])
     raise Refusal("package_download_failed")
@@ -289,7 +333,10 @@ def prepare(root: Path) -> None:
     restricted()
     profile_absent()
     _write(root / "load-intent.json", load_receipt())
-    result = run(["sudo", "-n", "apparmor_parser", "-a", str(path)])
+    try:
+        result = run(["sudo", "-n", "apparmor_parser", "-a", str(path)])
+    except (OSError, subprocess.SubprocessError):
+        raise Refusal("profile_load_failed") from None
     if result.returncode:
         raise Refusal("profile_load_unproven")
     if not _PROFILE_NAMES.issubset(loaded()):
