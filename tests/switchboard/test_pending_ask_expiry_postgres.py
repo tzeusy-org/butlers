@@ -233,18 +233,40 @@ async def test_giving_up_on_a_line_is_logged_once_without_content(world, caplog)
     assert len(given_up) == 1
 
 
-async def test_one_bad_expiry_does_not_stop_the_others(world):  # noqa: F811
+async def test_one_bad_expiry_does_not_stop_the_others(world, monkeypatch):  # noqa: F811
+    from butlers.core import owner_delivery as od
+
     owner, runtime, _ = world
     await refuse_owner_message(owner, runtime)
+    await owner_goal(runtime, owner)
     await reporter(runtime, Sender()).sweep()
+    rows = await asks(owner)
+    assert len(rows) == 2
+    bad = rows[0]["id"]
+    real = od.close_for_authority
+
+    async def flaky(conn, *, kind, source_ref, status):
+        if source_ref == str(bad):
+            raise RuntimeError("cannot close")
+        return await real(conn, kind=kind, source_ref=source_ref, status=status)
+
+    monkeypatch.setattr(od, "close_for_authority", flaky)
     await owner.execute(
         "UPDATE switchboard.pending_asks SET expires_at = clock_timestamp() - interval '1 second'"
     )
-    # A subject that cannot be closed must not abort the sweep for the rest.
-    await owner.execute(
-        "INSERT INTO switchboard.pending_asks (source_key, cause, expires_at, subject_id) "
-        "VALUES ('bad', 'failed', clock_timestamp() - interval '1 second', gen_random_uuid())"
-    )
     await reporter(runtime, Sender()).sweep()
-    states = {r["source_key"]: r["state"] for r in await asks(owner)}
-    assert list(states.values()).count("dropped_stale") >= 1
+    states = {r["id"]: r["state"] for r in await asks(owner)}
+    assert states[bad] == "open"
+    assert [state for ask, state in states.items() if ask != bad] == ["dropped_stale"]
+
+
+async def test_a_successful_last_send_does_not_log_giving_up(world, caplog):  # noqa: F811
+    from butlers.goal_runner.owner_failure import MAX_LINE_ATTEMPTS
+
+    owner, runtime, _ = world
+    await owner_goal(runtime, owner)
+    with caplog.at_level("WARNING"):
+        for _ in range(MAX_LINE_ATTEMPTS - 1):
+            await reporter(runtime, Sender("failed")).sweep()
+        await reporter(runtime, Sender()).sweep()
+    assert not [r for r in caplog.records if "given up" in r.getMessage()]

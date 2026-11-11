@@ -294,13 +294,6 @@ class OwnerFailureReporter:
                 "WHERE id = $1",
                 ask["id"],
             )
-            if ask["line_attempts"] + 1 >= MAX_LINE_ATTEMPTS:
-                logger.warning(
-                    "pending ask cause line given up after %d presentations ask=%s cause=%s",
-                    MAX_LINE_ATTEMPTS,
-                    ask["id"],
-                    ask["cause"],
-                )
         try:
             outcome = await self.sender.send(line, dedup_key=f"pending_ask:{ask['id']}")
         except Exception:
@@ -309,6 +302,13 @@ class OwnerFailureReporter:
         async with self.pool.acquire() as conn, conn.transaction():
             await conn.execute("SELECT set_config('search_path', 'switchboard,public', true)")
             await od.record_send(conn, presentation.id, outcome=outcome)
+        if outcome == "failed" and ask["line_attempts"] + 1 >= MAX_LINE_ATTEMPTS:
+            logger.warning(
+                "pending ask cause line given up after %d presentations ask=%s cause=%s",
+                MAX_LINE_ATTEMPTS,
+                ask["id"],
+                ask["cause"],
+            )
         return outcome == "sent"
 
 
