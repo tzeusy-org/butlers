@@ -31,6 +31,7 @@ from butlers.goal_runner.own_conditions import (
     named,
     own_predicate,
     snapshot_for,
+    snapshot_label,
 )
 
 NOW = datetime(2026, 11, 11, 9, tzinfo=UTC)
@@ -411,3 +412,124 @@ async def test_old_facts_fed_again_never_wake_a_rearmed_generation(leaf, effect)
     if registered.intent is None:
         assert fed.intent is None
         assert fed.instance.leaves == registered.instance.leaves
+
+
+# -- labels (bu-dhloi1.305 PR5a) ------------------------------------------------------------
+# A fire carries the labels of the rows that hold it, so the woken lead starts with them.
+
+OWNER = Label.owner()
+FORWARDED = Label(
+    frozenset({"owner", "external:mail"}), frozenset({"owner", "external:mail"}), frozenset()
+)
+
+
+async def _fired_label(predicate: dict, effects, fed, replies=()):
+    goal = str(uuid4())
+    evaluator = ConditionEvaluator(InMemoryConditionStore())
+    registered = await evaluator.register(
+        instance_id="i0",
+        predicate=predicate,
+        grant=grant_for(goal, predicate, effects),
+        goal_id=goal,
+        label=OWNER,
+        snapshot=snapshot_for(NOW, effects),
+        expires_at=datetime(2026, 11, 12, tzinfo=UTC),
+    )
+    assert registered.intent is None
+    fired = await evaluator.evaluate("i0", events_for(fed, replies), now=CHANGED)
+    assert fired.intent is not None
+    return fired.intent.label
+
+
+def test_each_fed_event_carries_its_rows_label():
+    effect = OwnEffect(PARKED, "committed", True, label=FORWARDED)
+    assert {e.label for e in events_for([(effect, CHANGED)])} == {FORWARDED}
+    goal = str(uuid4())
+    (reply,) = events_for([], [OwnReply(str(uuid4()), goal, PROMPT, CHANGED, FORWARDED)])
+    assert reply.label == FORWARDED
+    # A row with no stored label feeds an unlabelled event: missing provenance.
+    assert events_for([(OwnEffect(PARKED, "committed", True), CHANGED)])[0].label is None
+
+
+async def test_an_owner_labelled_decision_wakes_unexposed():
+    pending = [OwnEffect(PARKED, "parked", True, label=OWNER)]
+    label = await _fired_label(
+        decision(), pending, [(OwnEffect(PARKED, "approved", True, label=OWNER), CHANGED)]
+    )
+    assert label == OWNER and not label.exposed
+
+
+async def test_a_decision_on_outside_content_wakes_exposed():
+    pending = [OwnEffect(PARKED, "parked", True, label=FORWARDED)]
+    label = await _fired_label(
+        decision(), pending, [(OwnEffect(PARKED, "approved", True, label=FORWARDED), CHANGED)]
+    )
+    assert label.covers(FORWARDED) and label.exposed
+
+
+async def test_an_unlabelled_row_wakes_as_unknown():
+    pending = [OwnEffect(PARKED, "parked", True)]
+    label = await _fired_label(
+        decision(), pending, [(OwnEffect(PARKED, "approved", True), CHANGED)]
+    )
+    assert label.covers(Label.unknown())
+
+
+@pytest.mark.parametrize(("reply_label", "exposed"), [(OWNER, False), (FORWARDED, True)])
+async def test_a_reply_wakes_with_its_own_inbox_label(reply_label, exposed):
+    """A plain owner reply wakes unexposed; a reply forwarding outside content wakes exposed."""
+    prompt = [OwnEffect(PROMPT, "committed", False, prompt=True, label=OWNER)]
+    goal = str(uuid4())
+    evaluator = ConditionEvaluator(InMemoryConditionStore())
+    predicate = owner_input(goal, PROMPT)
+    await evaluator.register(
+        instance_id="i0",
+        predicate=predicate,
+        grant=grant_for(goal, predicate, prompt),
+        goal_id=goal,
+        label=OWNER,
+        snapshot=snapshot_for(NOW, prompt),
+        expires_at=datetime(2026, 11, 12, tzinfo=UTC),
+    )
+    reply = OwnReply(str(uuid4()), goal, PROMPT, CHANGED, reply_label)
+    fired = await evaluator.evaluate("i0", events_for([], [reply]), now=CHANGED)
+    assert fired.intent is not None
+    assert fired.intent.label.covers(reply_label)
+    assert fired.intent.label.exposed is exposed
+
+
+def test_the_snapshot_label_joins_only_the_rows_the_predicate_names():
+    goal = str(uuid4())
+    named_effect = OwnEffect(PARKED, "approved", True, label=OWNER)
+    unnamed = OwnEffect(SENT, "committed", False, label=FORWARDED)
+    assert snapshot_label(decision(), [named_effect, unnamed]) == OWNER
+    reply = OwnReply(str(uuid4()), goal, PROMPT, CHANGED, FORWARDED)
+    both = {"tag": "all", "children": [decision(), owner_input(goal, PROMPT)]}
+    assert snapshot_label(both, [named_effect], [reply]) == OWNER.join(FORWARDED)
+    # A reply to a prompt the predicate does not name is not read.
+    assert snapshot_label(decision(), [named_effect], [reply]) == OWNER
+
+
+def test_the_snapshot_label_is_missing_when_any_named_row_is_unlabelled_or_none_is_named():
+    assert snapshot_label(decision(), [OwnEffect(PARKED, "approved", True)]) is None
+    assert snapshot_label(decision(), [OwnEffect(SENT, "committed", False, label=OWNER)]) is None
+
+
+async def test_a_registration_fire_on_a_forwarded_reply_is_exposed():
+    goal = str(uuid4())
+    predicate = owner_input(goal, PROMPT)
+    effects = [OwnEffect(PROMPT, "committed", False, prompt=True, label=OWNER)]
+    replies = [OwnReply(str(uuid4()), goal, PROMPT, CHANGED, FORWARDED)]
+    registered = await ConditionEvaluator(InMemoryConditionStore()).register(
+        instance_id="i0",
+        predicate=predicate,
+        grant=grant_for(goal, predicate, effects),
+        goal_id=goal,
+        label=OWNER,
+        snapshot=snapshot_for(
+            NOW, effects, [PROMPT], label=snapshot_label(predicate, effects, replies)
+        ),
+        expires_at=datetime(2026, 11, 12, tzinfo=UTC),
+    )
+    assert registered.intent is not None
+    assert registered.intent.label.covers(FORWARDED) and registered.intent.label.exposed

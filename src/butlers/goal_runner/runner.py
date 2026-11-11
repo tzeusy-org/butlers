@@ -876,7 +876,8 @@ class GoalRunner:
 
         Dark: ``supervise_once`` does not call this. A feed-triggered wake is third-party
         sourced, and its lead would hold the envelope's full waiting grant; under the
-        bu-dhloi1.305 ruling it is wired live only once PR5 narrows such wakes by label.
+        bu-dhloi1.305 ruling such a wake's lead starts with the label of what woke it (PR5a);
+        wiring this into the sweep is the separate PR5b flip.
         """
         async with self._txn() as ledger:
             waits = await ledger.condition_waits()

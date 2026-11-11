@@ -13,6 +13,7 @@ from uuid import UUID
 
 from butlers.conditions.model import ConditionEvent, Instance, Snapshot, State, Tri
 from butlers.conditions.predicate import SOURCE_CLOCK, Leaf, leaves
+from butlers.core.goal_labels import Label
 from butlers.perception.model import instant
 
 REALTIME_HORIZON = timedelta(minutes=10)
@@ -102,6 +103,29 @@ class Advance:
     changed: bool
     reason: str
     trigger: UUID | None = None  # the fire-event UUID when this advance fired
+    # An event fire's evidence: the labels of the events holding its true leaves, or None
+    # when any true leaf is held by no labelled event of this batch (missing provenance).
+    evidence: tuple[Label, ...] | None = None
+
+
+def _evidence(
+    leaf_list: list[Leaf], values: dict[str, Tri], eligible: list[ConditionEvent], now: datetime
+) -> tuple[Label, ...] | None:
+    """The labels of the events of this batch that hold each true data leaf.
+
+    Every true leaf other than a clock leaf must be held by at least one event of the batch,
+    and every event holding one must be labelled; otherwise the provenance is missing (None).
+    An event holds a leaf when it alone would make that leaf true.
+    """
+    labels: list[Label] = []
+    for leaf in leaf_list:
+        if values[leaf.path] is not Tri.TRUE or leaf.tag == "at":
+            continue
+        holding = [ev for ev in eligible if _event_leaf(leaf, Tri.FALSE, ev, now) is Tri.TRUE]
+        if not holding or any(ev.label is None for ev in holding):
+            return None
+        labels.extend(ev.label for ev in holding if ev.label is not None)
+    return tuple(labels)
 
 
 def advance(
@@ -125,6 +149,7 @@ def advance(
     values = dict(inst.leaves)
     cursors = dict(inst.cursors)
     trigger: UUID | None = None
+    evidence: tuple[Label, ...] | None = None
     reason = "pending"
     # Apply the clock first so an event completing the predicate is the recorded cause.
     for leaf in leaf_list:
@@ -137,19 +162,14 @@ def advance(
         ):
             reason = "fired:clock_late"
     else:
-        for ev in sorted(events, key=lambda e: (e.position, e.id)):
-            floor = inst.floor.get(ev.source)
-            if ev.source not in inst.source_boundary or ev.at >= inst.expires_at:
-                continue  # undeclared source or post-expiry evidence never contributes
-            if floor is not None and ev.position <= floor:
-                continue  # replay of an interval an earlier generation/run already consumed
-            if ev.tag == "transition" and ev.at - now > FUTURE_EVENT_SKEW:
-                continue  # not yet true: neither evidence nor consumed, so a redelivery counts
+        eligible = [ev for ev in events if _eligible(inst, ev, now)]
+        for ev in sorted(eligible, key=lambda e: (e.position, e.id)):
             cursors[ev.source] = max(cursors.get(ev.source, -1), ev.position)
             for leaf in leaf_list:
                 values[leaf.path] = _event_leaf(leaf, values[leaf.path], ev, now)
             if combine(inst.predicate, values) is Tri.TRUE:
                 trigger, reason = UUID(ev.id), "fired:event"
+                evidence = _evidence(leaf_list, values, eligible, now)
                 break
     new = replace(
         inst,
@@ -166,4 +186,15 @@ def advance(
     )
     if changed:
         new = replace(new, version=inst.version + 1)
-    return Advance(new if changed else inst, changed, reason, trigger)
+    return Advance(new if changed else inst, changed, reason, trigger, evidence)
+
+
+def _eligible(inst: Instance, ev: ConditionEvent, now: datetime) -> bool:
+    """Whether an event may touch a leaf: declared, before expiry, past the floor, not future."""
+    floor = inst.floor.get(ev.source)
+    if ev.source not in inst.source_boundary or ev.at >= inst.expires_at:
+        return False  # undeclared source or post-expiry evidence never contributes
+    if floor is not None and ev.position <= floor:
+        return False  # replay of an interval an earlier generation/run already consumed
+    # A transition not yet true is neither evidence nor consumed, so a redelivery counts.
+    return not (ev.tag == "transition" and ev.at - now > FUTURE_EVENT_SKEW)

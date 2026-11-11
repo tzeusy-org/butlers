@@ -33,6 +33,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from butlers.conditions import ConditionEvent, Grant, PredicateError, Snapshot
 from butlers.conditions import predicate as ast
+from butlers.core.goal_labels import Label
 
 #: The most wakes one wait may grant its goal, and how far past admission it may run.
 MAX_WAKES = 6
@@ -81,6 +82,7 @@ class OwnEffect:
     approval: bool
     prompt: bool = False
     edited: bool = False
+    label: Label | None = None  # the effect row's S1 label; None is missing provenance
 
     @property
     def decision(self) -> str | None:
@@ -98,6 +100,9 @@ class OwnReply:
     goal_id: str
     binding: str
     at: datetime
+    # The inbox row's S1 label: the answered prompt's, the owner's, and any outside content the
+    # reply carried (a forwarded or quoted span exposes it). None is missing provenance.
+    label: Label | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,11 +169,11 @@ def events_for(
         position = int(changed_at.timestamp() * 1_000_000)
         if (outcome := effect.decision) is not None:
             events.append(
-                _event(ast.SOURCE_DECISION, "decision", effect.id, outcome, position, changed_at)
+                _event(ast.SOURCE_DECISION, "decision", effect, outcome, position, changed_at)
             )
         if (status := _SETTLED.get(effect.status)) is not None:
             events.append(
-                _event(ast.SOURCE_EFFECT, "effect_settled", effect.id, status, position, changed_at)
+                _event(ast.SOURCE_EFFECT, "effect_settled", effect, status, position, changed_at)
             )
     for reply in replies:
         events.append(
@@ -179,14 +184,35 @@ def events_for(
                 at=reply.at,
                 tag="owner_input",
                 data={"goal_id": reply.goal_id, "binding_ref": reply.binding},
+                label=reply.label,
             )
         )
     return events
 
 
+def snapshot_label(
+    predicate: dict, effects: Iterable[OwnEffect], replies: Iterable[OwnReply] = ()
+) -> Label | None:
+    """The S1 label of the rows a registration snapshot reads for ``predicate``: every effect
+    it names and every unread reply to a prompt it names. None when any is unlabelled, or none
+    is named (nothing it reads can hold a data leaf)."""
+    refs = named(predicate)
+    names = refs.decisions | refs.effects
+    rows = [e.label for e in effects if e.id in names]
+    rows += [r.label for r in replies if r.binding in refs.inputs and r.goal_id in refs.goals]
+    labels = [label for label in rows if label is not None]
+    if not labels or len(labels) != len(rows):
+        return None
+    joined = labels[0]
+    for label in labels[1:]:
+        joined = joined.join(label)
+    return joined
+
+
 def _event(
-    source: str, tag: str, effect_id: str, value: str, position: int, at: datetime
+    source: str, tag: str, effect: OwnEffect, value: str, position: int, at: datetime
 ) -> ConditionEvent:
+    effect_id = effect.id
     data = (
         {"subject_id": effect_id, "outcome": value}
         if tag == "decision"
@@ -199,14 +225,19 @@ def _event(
         at=at,
         tag=tag,
         data=data,
+        label=effect.label,
     )
 
 
 def snapshot_for(
-    now: datetime, effects: Iterable[OwnEffect], inputs: Iterable[str] = ()
+    now: datetime,
+    effects: Iterable[OwnEffect],
+    inputs: Iterable[str] = (),
+    label: Label | None = None,
 ) -> Snapshot:
     """The registration snapshot, read under the goal lock: what each effect already shows, and
-    ``inputs``, the prompts with an unread reply in the goal's inbox."""
+    ``inputs``, the prompts with an unread reply in the goal's inbox. ``label`` is the label of
+    the rows read (``snapshot_label``); None is missing provenance."""
     decisions: dict[str, str] = {}
     settled: dict[str, str] = {}
     for effect in effects:
@@ -214,4 +245,6 @@ def snapshot_for(
             decisions[effect.id] = outcome
         if (status := _SETTLED.get(effect.status)) is not None:
             settled[effect.id] = status
-    return Snapshot(now=now, decisions=decisions, inputs=frozenset(inputs), effects=settled)
+    return Snapshot(
+        now=now, decisions=decisions, inputs=frozenset(inputs), effects=settled, label=label
+    )

@@ -43,7 +43,7 @@ RESERVED_NAMESPACES = (NAMESPACE, "context", "guidance")
 # Served only when configured; an unserved one is refused CAPABILITY.
 _OPTIONAL = frozenset({CONTEXT_SEARCH, GUIDANCE_SEARCH, GUIDANCE_LOAD})
 # goal.wait_until stays dark until the goal-event feed is wired live (GoalRunner.feed_conditions,
-# bu-dhloi1.305 PR2), which waits on PR5's label narrowing of feed-triggered wakes; until then a
+# bu-dhloi1.305 PR2) by the PR5b flip, after PR5a's wake-lead labels; until then a
 # wait that is not already true can only expire. Dark tools are neither listed nor callable
 # (CAPABILITY); the runner and ledger paths exist and are tested directly. Flip with the feed.
 # goal.wait_again re-arms a fired goal.wait_until envelope, so it goes live with it.

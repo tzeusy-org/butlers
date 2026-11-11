@@ -130,18 +130,29 @@ def check_registration(
     return canonical
 
 
-#: Fires caused by registration-snapshot or event data. Neither carries a label yet (producers
-#: stamp events under bu-dhloi1.9), and S1 makes missing provenance the unknown label.
+#: Fires caused by registration-snapshot or event data. Their provenance is what the producer
+#: stamped (bu-dhloi1.305 PR5a); S1 makes missing provenance the unknown label.
 _DATA_FIRES = frozenset({"fired:registration", "fired:event"})
 
 
-def _outcome_label(inst: Instance, reason: str) -> Label:
+def _outcome_label(inst: Instance, reason: str, evidence: tuple[Label, ...] | None = None) -> Label:
     """The label a fire intent or receipt carries: the registered snapshot, joined (S4).
 
-    Data-caused fires join the unknown label, so they fail closed until events carry their own
-    labels. A clock fire conveys no source data and keeps the registered label. Never narrower.
+    A data-caused fire joins its evidence: the labels of the labelled snapshot or of the
+    events holding its true leaves. With no evidence (an unlabelled producer, or a true leaf no
+    labelled event of the firing batch holds) it joins the unknown label and fails closed. A
+    clock fire conveys no source data and keeps the registered label. Never narrower.
     """
-    return inst.label.join(Label.unknown()) if reason in _DATA_FIRES else inst.label
+    if reason not in _DATA_FIRES:
+        return inst.label
+    label = inst.label
+    for joined in (Label.unknown(),) if evidence is None else evidence:
+        label = label.join(joined)
+    return label
+
+
+def _snapshot_evidence(snapshot: Snapshot) -> tuple[Label, ...] | None:
+    return None if snapshot.label is None else (snapshot.label,)
 
 
 def _boundary(inst: Instance) -> tuple:
@@ -243,11 +254,12 @@ class ConditionEvaluator:
                     fired = replace(inst, state=State.FIRED, version=1)
                     await tx.save_instance(fired, 0)
                     event_id = fired.synthetic_event_id("registration")
+                    evidence = _snapshot_evidence(snapshot)
                     intent = await tx.insert_fire_intent(
-                        self._intent(fired, event_id, "fired:registration", snapshot)
+                        self._intent(fired, event_id, "fired:registration", snapshot, evidence)
                     )
                     receipt = self._receipt(
-                        fired, "register", "fired:registration", str(event_id), snapshot
+                        fired, "register", "fired:registration", str(event_id), snapshot, evidence
                     )
                     await tx.append_receipt(receipt)
                     return Outcome(fired, receipt, intent)
@@ -282,11 +294,15 @@ class ConditionEvaluator:
                 intent = None
                 if result.trigger is not None:
                     intent = await tx.insert_fire_intent(
-                        self._intent(result.instance, result.trigger, result.reason, snap)
+                        self._intent(
+                            result.instance, result.trigger, result.reason, snap, result.evidence
+                        )
                     )
                 kind = "expire" if result.instance.state is State.EXPIRED else "evaluate"
                 trigger = str(result.trigger) if result.trigger else None
-                receipt = self._receipt(result.instance, kind, result.reason, trigger, snap)
+                receipt = self._receipt(
+                    result.instance, kind, result.reason, trigger, snap, result.evidence
+                )
                 await tx.append_receipt(receipt)
                 return Outcome(result.instance, receipt, intent)
 
@@ -336,9 +352,16 @@ class ConditionEvaluator:
             for path, value in stored.leaves.items()
         }
         seeded = replace(stored, leaves=leaves, result=combine(stored.predicate, leaves))
+        evidence: tuple[Label, ...] | None = None
         if seeded.result is Tri.TRUE:
             new = replace(seeded, state=State.FIRED, version=stored.version + 1)
             trigger, reason = new.synthetic_event_id("registration"), "fired:registration"
+            # The stored leaves may hold facts of an earlier snapshot whose label is not this
+            # one's; only a fire this snapshot alone holds may carry its label.
+            if all(
+                seen.get(path) is Tri.TRUE for path, value in leaves.items() if value is Tri.TRUE
+            ):
+                evidence = _snapshot_evidence(snapshot)
         else:
             adv = advance(seeded, [], snapshot.now, unmeasurable=snapshot.unmeasurable)
             if adv.changed:
@@ -351,9 +374,13 @@ class ConditionEvaluator:
         await tx.save_instance(new, stored.version)
         intent = None
         if trigger is not None:
-            intent = await tx.insert_fire_intent(self._intent(new, trigger, reason, snapshot))
+            intent = await tx.insert_fire_intent(
+                self._intent(new, trigger, reason, snapshot, evidence)
+            )
         kind = "expire" if new.state is State.EXPIRED else "register"
-        receipt = self._receipt(new, kind, reason, str(trigger) if trigger else None, snapshot)
+        receipt = self._receipt(
+            new, kind, reason, str(trigger) if trigger else None, snapshot, evidence
+        )
         await tx.append_receipt(receipt)
         return Outcome(new, receipt, intent)
 
@@ -370,7 +397,14 @@ class ConditionEvaluator:
         )
         return Outcome(inst, receipt, intent)
 
-    def _intent(self, inst: Instance, event_id: UUID, reason: str, snap: Snapshot) -> FireIntent:
+    def _intent(
+        self,
+        inst: Instance,
+        event_id: UUID,
+        reason: str,
+        snap: Snapshot,
+        evidence: tuple[Label, ...] | None = None,
+    ) -> FireIntent:
         return FireIntent(
             fire_key=inst.fire_key,
             instance_id=inst.id,
@@ -380,11 +414,17 @@ class ConditionEvaluator:
             fired_at=snap.now,
             snapshot_generation=snap.generation,
             cursors=dict(inst.cursors),
-            label=_outcome_label(inst, reason),
+            label=_outcome_label(inst, reason, evidence),
         )
 
     def _receipt(
-        self, inst: Instance, kind: str, reason: str, trigger: str | None, snap: Snapshot
+        self,
+        inst: Instance,
+        kind: str,
+        reason: str,
+        trigger: str | None,
+        snap: Snapshot,
+        evidence: tuple[Label, ...] | None = None,
     ) -> Receipt:
         return Receipt(
             instance_id=inst.id,
@@ -398,5 +438,5 @@ class ConditionEvaluator:
             at=snap.now,
             snapshot_generation=snap.generation,
             clock=self.clock,
-            label=_outcome_label(inst, reason),
+            label=_outcome_label(inst, reason, evidence),
         )

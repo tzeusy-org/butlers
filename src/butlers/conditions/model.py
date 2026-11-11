@@ -67,6 +67,9 @@ class ConditionEvent:
     late: bool = False
     retracted: bool = False
     record: bool = False  # a retraction record itself, never a transition
+    # The S1 label of the row the producer read it from. None (an unlabelled producer) is
+    # missing provenance: a fire it holds joins the unknown label.
+    label: Label | None = None
 
     def __post_init__(self) -> None:
         if str(UUID(self.id)) != self.id:
@@ -91,6 +94,8 @@ class Snapshot:
     effects: Mapping[str, str] = field(default_factory=dict)
     unmeasurable: frozenset[str] = frozenset()  # source names
     generation: int = 0  # source snapshot generation recorded in the receipt
+    # The S1 label of the rows read for it; None is missing provenance (the unknown label).
+    label: Label | None = None
 
 
 @dataclass(frozen=True)

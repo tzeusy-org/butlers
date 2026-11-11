@@ -591,10 +591,36 @@ goal itself registered (instance ids are global, as for Stop's cancel), and one 
 logged and skipped so the rest are still fed.
 
 The feed is dark: `supervise_once` does not call it. A feed-triggered wake comes from evidence
-outside the waiting lead (the owner's or a domain's action), and its lead would hold the
-envelope's full waiting grant. Under the bu-dhloi1.305 ruling, no live feed-triggered wake may
-hold that grant until the label narrowing of third-party-sourced wakes lands (PR5), so the feed
-is wired into the sweep, and `goal__wait_until` listed, only then.
+outside the waiting lead (the owner's or a domain's action), and its lead holds the envelope's
+waiting grant. Under the bu-dhloi1.305 ruling, such a wake goes live only once its lead is
+narrowed by the label of what woke it (below, PR5a); wiring the feed into the sweep and listing
+`goal__wait_until` is a separate flip (PR5b).
+
+#### What a wake lead starts with (S1, S2.2; dark)
+
+A wake lead starts with the label of what woke it; its grant is unchanged (the
+[wake grant](#wake-grants-s22): ceiling ∩ envelope snapshot ∩ published catalog). The label is
+carried end to end:
+
+- Each condition event carries the S1 label of the row its producer read it from: an effect
+  event the effect row's label, an `owner_input` event the reply's own `goal_inbox` row label (the
+  answered prompt's, the owner's, and `unknown` when admission saw the reply forward or quote
+  outside content). An event with no label (any producer that does not label, and any row with no
+  stored label) is missing provenance.
+- The evaluator labels an event fire with the instance's registered label joined with the labels
+  of the batch's events that hold each true leaf (`Advance.evidence`). A true leaf held by no
+  event of the batch, or by an unlabelled one, joins `unknown`, so an unlabelled producer's fire
+  is exactly as before. A registration fire joins the snapshot's label (`own_conditions.
+  snapshot_label`: the named effects and unread replies it read). Clock fires join nothing.
+- Wake admission writes the fire's label, joined with the envelope's, on the `wake` epoch.
+  `RunnerLedger.open_lead` starts the wake lead with that epoch label on top of the ledger's own
+  start label. When it exposes the lead, the cause is the start label's own (`ingress`,
+  `recovery`) or else `inbox`. A relaunch or recovery lead inherits it through the earlier leads'
+  labels (cause `recovery`).
+
+So an exposed wake lead is exposed from its first call: an owner-bound call is asserted under
+exposure, and an owner send parks. A plain owner reply or an owner's own decision wakes an
+unexposed lead.
 
 #### Waiting again (dark)
 

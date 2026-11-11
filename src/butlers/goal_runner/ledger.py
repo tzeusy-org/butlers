@@ -35,7 +35,7 @@ from butlers.conditions.predicate import digest as predicate_digest
 from butlers.conditions.predicate import sources as predicate_sources
 from butlers.conditions.sql import ConnectionConditionStore
 from butlers.core.goal_admission import Grant, decode_grants, digest, encode_grants, intersect
-from butlers.core.goal_labels import Label
+from butlers.core.goal_labels import Label, LabelRefused
 from butlers.core.goal_waiting import WaitLedger
 from butlers.core.goal_wake import WakeAdmission
 
@@ -50,7 +50,15 @@ from .contracts import (
     Role,
 )
 from .delegation import DelegationRequest, child_grant
-from .own_conditions import HORIZON, OwnEffect, OwnReply, grant_for, named, snapshot_for
+from .own_conditions import (
+    HORIZON,
+    OwnEffect,
+    OwnReply,
+    grant_for,
+    named,
+    snapshot_for,
+    snapshot_label,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,8 +137,20 @@ def published(grants: tuple[Grant, ...], catalog: Catalog) -> tuple[Grant, ...]:
     )
 
 
+def _row_label(row: Any) -> Label | None:
+    """A ledger row's stored S1 label, or None (missing provenance) when it has none."""
+    try:
+        return Label.from_row(
+            row["label_version"], row["label_instr"], row["label_data"], row["label_sens"]
+        )
+    except LabelRefused:
+        return None
+
+
 def _own_effect(row: Any) -> OwnEffect:
-    return OwnEffect(row["id"], row["status"], row["approval"], row["prompt"], row["edited"])
+    return OwnEffect(
+        row["id"], row["status"], row["approval"], row["prompt"], row["edited"], _row_label(row)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,17 +269,23 @@ class RunnerLedger:
         max_calls: int | None = None,
         deadline_seconds: int | None = None,
         relaunch_of: UUID | None = None,
+        label: Label | None = None,
+        exposure_cause: str | None = None,
     ) -> UUID:
+        """Insert a launching invocation. ``label`` is joined onto the start label the ledger
+        trigger derives (it can only widen it); ``exposure_cause`` names why, when it exposes."""
         await self._reserve_invocation(goal_id)
         invocation_id, snapshot = uuid4(), encode_grants(grants)
+        _, instr, data, sens = label.to_row() if label is not None else (None, None, None, None)
         await self.connection.execute(
             "INSERT INTO switchboard.invocations (id, goal_id, parent_invocation_id, depth, role, "
             "lead_epoch, status, grant_snapshot, grant_digest, max_turns, max_tokens, max_calls, "
-            "deadline, model_role, model_tier, model_id, relaunch_of) VALUES ($1, $2, $3, $4, $5, "
+            "deadline, model_role, model_tier, model_id, relaunch_of, label_instr, label_data, "
+            "label_sens, exposure_cause) VALUES ($1, $2, $3, $4, $5, "
             "$6, 'launching', $7::jsonb, $8, $9, $10, $11, "
             "CASE WHEN $12::bigint IS NULL THEN NULL "
             "ELSE clock_timestamp() + make_interval(secs => $12::bigint) END, "
-            "$13, $14, $15, $16)",
+            "$13, $14, $15, $16, $17::text[], $18::text[], $19::text[], $20)",
             invocation_id,
             goal_id,
             parent,
@@ -276,6 +302,10 @@ class RunnerLedger:
             tier,
             model_id,
             relaunch_of,
+            instr,
+            data,
+            sens,
+            exposure_cause,
         )
         return invocation_id
 
@@ -397,6 +427,7 @@ class RunnerLedger:
         ):
             raise GoalEnded("wake_not_claimed")
         grants = await self._lead_grants(goal, wake, catalog)
+        label, cause = (None, None) if wake is None else await self._wake_label(goal_id, epoch)
         await self.connection.execute(
             "UPDATE switchboard.goals SET status = 'running', updated_at = now() "
             "WHERE id = $1 AND status <> 'running'",
@@ -414,8 +445,34 @@ class RunnerLedger:
             tier=tier,
             model_id=model_id,
             relaunch_of=relaunch_of,
+            label=label,
+            exposure_cause=cause,
         )
         return await self._start(goal, invocation_id, lease_seconds)
+
+    async def _wake_label(self, goal_id: UUID, epoch: int) -> tuple[Label, str | None]:
+        """A wake lead's starting label and, when it exposes the lead, why (bu-dhloi1.305).
+
+        The wake epoch's label is what woke the goal: the wait's registered label and the
+        fire's evidence, written by wake admission. The lead starts with it, so an exposed fire
+        starts an exposed lead; a later relaunch or recovery lead inherits it through the start
+        label of earlier leads. A missing epoch label is missing provenance, so unknown.
+        The grant is not touched: a wake is narrowed by its envelope and policy only.
+        """
+        row = await self.connection.fetchrow(
+            "SELECT label_version, label_instr, label_data, label_sens "
+            "FROM switchboard.goal_epochs WHERE goal_id = $1 AND epoch = $2",
+            goal_id,
+            epoch,
+        )
+        label = (_row_label(row) if row is not None else None) or Label.unknown()
+        if not label.exposed:
+            return label, None
+        # The start label's own cause (ingress, recovery) wins; else the fire's inbox row.
+        start = await self.connection.fetchval(
+            "SELECT cause FROM switchboard.goal_label_start($1, NULL, $2)", goal_id, epoch
+        )
+        return label, start or "inbox"
 
     async def delegate(
         self,
@@ -783,7 +840,8 @@ class RunnerLedger:
             raise BrokerRefused(Reason.CAPABILITY)
         effects = await self._own_effect_rows(principal.goal_id)
         _check_own(principal.goal_id, predicate, effects)
-        unread = {reply.binding for reply in await self.own_replies(principal.goal_id)}
+        replies = await self.own_replies(principal.goal_id)
+        unread = {reply.binding for reply in replies}
         bounds = await self.connection.fetchrow(
             "SELECT now() AS now, b.deadline AS budget, g.created_at + $2::interval AS horizon, "
             "g.label_version, g.label_instr, g.label_data, g.label_sens "
@@ -840,7 +898,13 @@ class RunnerLedger:
                     bounds["label_data"],
                     bounds["label_sens"],
                 ),
-                snapshot=snapshot_for(bounds["now"], effects, unread),
+                # A registration fire carries the label of the rows that hold it (bu-dhloi1.305).
+                snapshot=snapshot_for(
+                    bounds["now"],
+                    effects,
+                    unread,
+                    label=snapshot_label(predicate, effects, replies),
+                ),
                 expires_at=expires,
             )
         except RegistrationRefused:
@@ -898,7 +962,7 @@ class RunnerLedger:
         predicate = validate(json.loads(env["predicate"]))
         effects = await self._own_effect_rows(principal.goal_id)
         _check_own(principal.goal_id, predicate, effects)
-        snapshot = snapshot_for(env["now"], effects)
+        snapshot = snapshot_for(env["now"], effects, label=snapshot_label(predicate, effects))
         if combine(predicate, initial_leaves(predicate, snapshot)) is Tri.TRUE:
             raise BrokerRefused(Reason.POLICY)  # before any charge or end: the lead runs on
         label = await self.connection.fetchrow(
@@ -1282,12 +1346,18 @@ class RunnerLedger:
     async def own_replies(self, goal_id: UUID) -> list[OwnReply]:
         """The owner's replies to the goal's prompts that no lead has read yet, oldest first."""
         rows = await self.connection.fetch(
-            "SELECT id::text AS id, reply_effect_id::text AS binding, created_at "
+            "SELECT id::text AS id, reply_effect_id::text AS binding, created_at, "
+            "label_version, label_instr, label_data, label_sens "
             "FROM switchboard.goal_inbox WHERE goal_id = $1 AND consumed_at IS NULL "
             "AND reply_effect_id IS NOT NULL ORDER BY created_at, id",
             goal_id,
         )
-        return [OwnReply(r["id"], str(goal_id), r["binding"], r["created_at"]) for r in rows]
+        # Each reply carries its own inbox row's label: the answered prompt's, the owner's, and
+        # any outside content the reply forwarded, so a forwarded reply wakes its goal exposed.
+        return [
+            OwnReply(r["id"], str(goal_id), r["binding"], r["created_at"], _row_label(r))
+            for r in rows
+        ]
 
     async def released_replies(self, goal_id: UUID) -> int:
         """How many owner replies the goal joined but never read before it ended (sw_070).
@@ -1318,7 +1388,8 @@ class RunnerLedger:
             "(e.status = 'rejected' AND e.approval_ref = e.id::text "
             "AND EXISTS (SELECT 1 FROM switchboard.effects s "
             "WHERE s.goal_id = e.goal_id AND s.approval_ref = e.approval_ref "
-            "AND s.id <> e.id)) AS edited "
+            "AND s.id <> e.id)) AS edited, "
+            "e.label_version, e.label_instr, e.label_data, e.label_sens "
             "FROM switchboard.effects e WHERE e.goal_id = $1",
             goal_id,
             await live_owner(self.connection),
