@@ -334,6 +334,8 @@ async def lifespan(app: FastAPI):
                     health=job_health.recorder("capability_health", "periodic", 60),
                 )
             )
+        else:
+            await job_health.recorder("capability_health", "periodic", 60).disabled()
 
         # Hourly automated model-catalog verification sweep (bu-hmdqz.2):
         # closes the loop left open by the manual-only "Verify all" button —

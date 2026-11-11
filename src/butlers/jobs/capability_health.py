@@ -22,6 +22,7 @@ from butlers.capability_health.collectors import credential_observations, probe_
 from butlers.capability_health.model import Observation, reduce
 from butlers.capability_health.publish import HealthPublisher, PublishState, should_publish
 from butlers.core.capability_dependencies import DEPENDENCY_IDS
+from butlers.core.job_health import mark_tick_incomplete, record_tick
 from butlers.perception import PerceptionStore
 
 logger = logging.getLogger(__name__)
@@ -55,12 +56,17 @@ async def run_tick(
     state: dict[str, PublishState],
     now: datetime,
 ) -> None:
-    """Reduce every declared dependency and publish those that are due."""
+    """Reduce every declared dependency and publish those that are due.
+
+    The tick is reported failed when collection failed or any publish was refused.
+    """
+    failed = False
     try:
         observations = await gather(now)
     except Exception:
         logger.warning("capability health: collection failed; publishing unmeasurable")
         observations = []
+        failed = True
     for dependency in sorted(DEPENDENCY_IDS):
         reduction = reduce(dependency, [o for o in observations if o.dependency == dependency], now)
         if not should_publish(state.get(dependency), reduction, now):
@@ -69,9 +75,11 @@ async def run_tick(
         if result.published:
             state[dependency] = PublishState(reduction.state, reduction.cause, now)
         else:
+            failed = True
             logger.warning(
                 "capability health: publish for %s refused (%s)", dependency, result.reason
             )
+    await record_tick(failed=failed)
 
 
 async def run_loop(tick: Callable[[], Awaitable[None]], *, interval_s: float) -> None:
@@ -85,6 +93,7 @@ async def run_loop(tick: Callable[[], Awaitable[None]], *, interval_s: float) ->
             raise
         except Exception:
             logger.warning("capability health: tick failed", exc_info=True)
+            await record_tick(failed=True)
         await asyncio.sleep(interval_s)
 
 
@@ -102,10 +111,12 @@ async def run_capability_health_loop(
                 [(s.key, s.state, s.last_verified) for s in snapshots], now
             )
         except Exception:
+            mark_tick_incomplete()
             logger.warning("capability health: credential collection failed")
         try:
             observations.append(await probe_conditions(db.pool("switchboard")))
         except Exception:
+            mark_tick_incomplete()
             logger.warning("capability health: conditions probe unavailable")
         return observations
 

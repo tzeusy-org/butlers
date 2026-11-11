@@ -291,3 +291,19 @@ async def test_capability_health_never_borrows_the_dashboard_login(monkeypatch):
     calls = _spy_on_supervisor(monkeypatch)
     async with api_app.lifespan(FastAPI()):
         assert "capability_health" not in {name for name, _ in calls}
+
+
+async def test_capability_health_without_a_dsn_is_reported_disabled(monkeypatch):
+    from butlers.core import job_health
+
+    disabled: list[str] = []
+
+    async def spy(self):
+        disabled.append(self.spec.name)
+
+    monkeypatch.setattr(job_health.JobRecorder, "disabled", spy)
+    monkeypatch.delenv(api_app.EXTERNAL_DEADMAN_URL_ENV, raising=False)
+    monkeypatch.delenv("BUTLERS_HEALTH_WRITER_DSN", raising=False)
+    _install_common_mocks(monkeypatch, call_counts={})
+    async with api_app.lifespan(FastAPI()):
+        assert "capability_health" in disabled

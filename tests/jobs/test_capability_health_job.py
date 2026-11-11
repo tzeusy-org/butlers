@@ -117,3 +117,46 @@ def test_a_non_positive_interval_is_refused() -> None:
 
     with pytest.raises(ValueError):
         asyncio.run(job.run_loop(tick, interval_s=0))
+
+
+@pytest.fixture
+def ticks(monkeypatch):
+    recorded = []
+
+    async def record_tick(*, failed=False, interval_s=None):
+        recorded.append(failed)
+
+    monkeypatch.setattr(job, "record_tick", record_tick)
+    return recorded
+
+
+async def test_a_clean_tick_is_recorded_ok(ticks) -> None:
+    await job.run_tick(gather, Publisher(), {}, NOW)
+    assert ticks == [False]
+
+
+async def test_a_refused_publish_or_failed_collection_is_recorded_failed(ticks) -> None:
+    await job.run_tick(gather, Publisher(ok=False), {}, NOW)
+
+    async def broken(_now):
+        raise RuntimeError
+
+    await job.run_tick(broken, Publisher(), {}, NOW)
+    assert ticks == [True, True]
+
+
+async def test_a_tick_that_raises_is_recorded_failed_and_the_loop_goes_on(ticks) -> None:
+    calls = []
+
+    async def tick():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError
+
+    task = asyncio.create_task(job.run_loop(tick, interval_s=0.001))
+    while len(calls) < 2:  # noqa: ASYNC110
+        await asyncio.sleep(0.001)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert ticks[0] is True

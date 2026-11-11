@@ -65,14 +65,27 @@ def test_an_unmeasured_credential_carries_no_state_and_is_stamped_at_collection(
     assert obs.state is None and obs.cause is None and obs.observed_at == NOW
 
 
-class Pool:
+class Connection:
     def __init__(self, behaviour) -> None:
         self.behaviour = behaviour
-        self.calls = 0
 
     async def fetchval(self, query, *args, timeout=None):  # noqa: ASYNC109
-        self.calls += 1
         return await self.behaviour(query)
+
+
+class Pool:
+    def __init__(self, behaviour, acquire=None) -> None:
+        self.behaviour = behaviour
+        self.acquire_behaviour = acquire
+        self.released = 0
+
+    async def acquire(self, *, timeout=None):  # noqa: ASYNC109
+        if self.acquire_behaviour is not None:
+            await self.acquire_behaviour()
+        return Connection(self.behaviour)
+
+    async def release(self, connection) -> None:
+        self.released += 1
 
 
 async def ok(_query):
@@ -153,3 +166,47 @@ def test_row_facts_need_no_probe_and_are_observed_at_read(state, expected) -> No
 def test_a_failing_probe_that_is_old_does_not_stay_down_forever() -> None:
     (obs,) = credential_observations([("u:google", "failing", NOW - timedelta(hours=2))], NOW)
     assert reduce("google", [obs], NOW).unmeasurable
+
+
+async def test_waiting_for_a_pool_connection_is_unmeasured_not_down() -> None:
+    async def busy():
+        raise TimeoutError("pool exhausted")
+
+    async def never(_query):
+        raise AssertionError("no connection, no query")
+
+    obs = await probe_conditions(Pool(never, acquire=busy), clock=lambda: NOW)
+    assert obs.state is None and obs.cause is None and obs.observed_at == NOW
+
+
+async def test_an_acquire_that_hangs_is_bounded_and_unmeasured() -> None:
+    async def hang():
+        await asyncio.sleep(10)
+
+    async def never(_query):
+        raise AssertionError("no connection, no query")
+
+    obs = await probe_conditions(Pool(never, acquire=hang), acquire_s=0.01, clock=lambda: NOW)
+    assert obs.state is None
+
+
+async def test_failing_to_connect_at_all_is_down_domain_unreachable() -> None:
+    async def refused():
+        raise ConnectionRefusedError
+
+    async def never(_query):
+        raise AssertionError
+
+    obs = await probe_conditions(Pool(never, acquire=refused), clock=lambda: NOW)
+    assert (obs.state, obs.cause) == ("down", "domain_unreachable")
+
+
+async def test_the_connection_is_released_after_every_outcome() -> None:
+    async def fail(_query):
+        raise RuntimeError
+
+    pool = Pool(fail)
+    await probe_conditions(pool, clock=lambda: NOW)
+    pool_ok = Pool(ok)
+    await probe_conditions(pool_ok, clock=lambda: NOW)
+    assert (pool.released, pool_ok.released) == (1, 1)

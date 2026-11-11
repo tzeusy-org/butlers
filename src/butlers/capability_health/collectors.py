@@ -9,6 +9,7 @@ and dropped.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -34,6 +35,7 @@ _STATE_MAP: dict[str, tuple[str | None, str | None]] = {
     "failing": ("down", "unknown"),
 }
 PROBE_TIMEOUT_S = 2.0
+ACQUIRE_TIMEOUT_S = 2.0
 _PROBE_SQL = "SELECT 1 FROM public.condition_instances LIMIT 1"
 _NETWORK = (TimeoutError, ConnectionError, OSError)
 
@@ -68,28 +70,51 @@ def credential_observations(
     return out
 
 
-class ProbePool(Protocol):
+class ProbeConnection(Protocol):
     async def fetchval(self, query: str, *args: Any, timeout: float | None = None) -> Any: ...  # noqa: ASYNC109
+
+
+class ProbePool(Protocol):
+    async def acquire(self, *, timeout: float | None = None) -> ProbeConnection: ...  # noqa: ASYNC109
+
+    async def release(self, connection: ProbeConnection) -> None: ...
 
 
 async def probe_conditions(
     pool: ProbePool,
     *,
+    acquire_s: float = ACQUIRE_TIMEOUT_S,
     deadline_s: float = PROBE_TIMEOUT_S,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> Observation:
     """Ask the conditions store directly. Only a prompt answer is ``available``.
 
-    A timeout or connection failure is ``down``/``domain_unreachable``. Any other failure (a
+    Getting a connection from a busy shared pool says nothing about the store, so it is bounded
+    separately and a wait there is unmeasured. Only the query is timed against the store: a
+    timeout or connection failure is ``down``/``domain_unreachable``. Any other failure (a
     missing grant or table, a driver error) says nothing about reachability and is unmeasured.
     """
     started = clock()
+    unmeasured = Observation("conditions", None, None, started)
     try:
-        await asyncio.wait_for(pool.fetchval(_PROBE_SQL, timeout=deadline_s), deadline_s)
-    except PermissionError:  # an OSError, but a local fault that says nothing about the store
-        return Observation("conditions", None, None, started)
+        connection = await asyncio.wait_for(pool.acquire(timeout=acquire_s), acquire_s + 0.5)
+    except TimeoutError:
+        return unmeasured  # pool contention, not the store
+    except PermissionError:
+        return unmeasured
     except _NETWORK:
         return Observation("conditions", "down", "domain_unreachable", started)
     except Exception:
-        return Observation("conditions", None, None, started)
+        return unmeasured
+    try:
+        await asyncio.wait_for(connection.fetchval(_PROBE_SQL, timeout=deadline_s), deadline_s)
+    except PermissionError:  # an OSError, but a local fault that says nothing about the store
+        return unmeasured
+    except _NETWORK:
+        return Observation("conditions", "down", "domain_unreachable", started)
+    except Exception:
+        return unmeasured
+    finally:
+        with contextlib.suppress(Exception):
+            await pool.release(connection)
     return Observation("conditions", "available", None, started)
