@@ -939,6 +939,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.admission_attempt_bindings",
     ): "sanctioned:RFC-0038: D1/D17 Switchboard-owned immutable admission retry identity; same ledger transaction and runtime role as canonical decisions (bu-lb99gq)",
     (
+        "src/butlers/goal_runner/owner_recovery.py",
+        "switchboard.pending_asks",
+    ): "sanctioned:RFC-0038 S6: Run/Drop decisions over the Switchboard-owned pending_asks (bu-dhloi1.14 4b)",
+    (
         "src/butlers/core/goal_ledger.py",
         "switchboard.pending_asks",
     ): "sanctioned:RFC-0038 S6: Switchboard-owned pending_asks; the admission refusal remembers an owner ask in the refusing ledger transaction's role (bu-dhloi1.14)",

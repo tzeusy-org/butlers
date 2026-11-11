@@ -639,6 +639,29 @@ in its own lineage, would leave the owner with silence. The sweep's last step
   Switchboard client that path binds, so it is wired where the runner is constructed; the runner is not
   constructed in production yet.
 
+### Run or Drop a refused ask (package 4b, dark)
+
+`goal_runner/owner_recovery.OwnerRecovery` is the service behind the Run/Drop card.
+
+- Cards: `cards()` presents each runnable ask (open, `admission_refused`, reference kept) on the
+  dashboard surface with an approve (Run) and a reject (Drop) token, and returns one batch with
+  counts by cause. Empty while the rollout is off. No "Run all". Goal-failed, budget and
+  capability asks get no card: the goal already owns the source key, so a replay would only find it.
+- Run: `decide(token, ask, "approve")` redeems the token on the `pending_ask` subject, then admits
+  the stored source reference again through the full current admission rules on the redemption's own
+  connection, with an attempt id derived from the ask. Evidence is loaded afresh, so Run is exactly
+  an owner re-send now and never pre-satisfies an authorization check. If admission refuses again
+  (`still_refused`) the whole decision rolls back and the card stays. A second Run is a `duplicate`
+  and admits once.
+- Drop: reject ends the ask `dropped`.
+- Both clear `original_ask` in the same update as the state change.
+- `owner_delivery.redeem` takes approve/reject for `approval` and `pending_ask` subjects only
+  (`DECIDABLE_KINDS`), each through its own `decide` callback. The kind and source reference bound
+  into a token mean an approval token never redeems a pending ask and the reverse; the dashboard's
+  approval route still refuses a `pending_ask` token as `action_unsupported`.
+- Not wired: the HTTP route and Telegram buttons that carry a token to `decide`, and the production
+  evidence reader that `admit` needs, belong to the cutover with the runner.
+
 ## Not yet delivered
 
 - The per-domain `ContextSource` adapters (a domain's memory and facts).

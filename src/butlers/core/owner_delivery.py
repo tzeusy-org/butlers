@@ -43,6 +43,8 @@ TOKEN_NONCE_BYTES: Final = 32
 SURFACES: Final = frozenset({"dashboard", "telegram"})
 ACTIONS: Final = frozenset({"approve", "reject", "ack"})
 DECISIONS: Final = frozenset({"approve", "reject"})
+#: Subject kinds whose authority takes approve/reject through its own ``decide`` callback.
+DECIDABLE_KINDS: Final = frozenset({"approval", "pending_ask"})
 SUBJECT_KINDS: Final = frozenset({"approval", "goal_answer", "pending_ask"})
 RESOLVED: Final = frozenset({"decided", "cancelled", "expired"})
 RETRACTION_MAX_FAILED_ATTEMPTS: Final = 5
@@ -602,7 +604,7 @@ async def redeem(
     ):
         return await _refuse(conn, row, "action_changed", subject["generation"])
     action = row["action"]
-    if action in DECISIONS and (subject["kind"] != "approval" or decide is None):
+    if action in DECISIONS and (subject["kind"] not in DECIDABLE_KINDS or decide is None):
         return await _refuse(conn, row, "action_unsupported", subject["generation"])
 
     next_generation = subject["generation"] + 1
