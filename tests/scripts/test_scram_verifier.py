@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import importlib.util
 import re
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -51,7 +52,7 @@ def test_unusable_passwords_are_refused(bad) -> None:
 
 
 def test_the_script_reads_stdin_prints_only_the_verifier_and_never_the_password() -> None:
-    secret = "s3cr3t-hex-0123456789abcdef"
+    secret = secrets.token_hex(16)
     done = subprocess.run(
         [sys.executable, "-I", str(SCRIPT)], input=secret + "\n", text=True, capture_output=True
     )

@@ -126,6 +126,9 @@ Known gaps:
 
 - The bws-mode ExternalSecret mapping for `BUTLERS_HEALTH_WRITER_DSN` is not added; the key is
   local-env only until a BWS secret exists.
+- The probe log (`public.secret_probe_log`) has no entity column, so a user-family credential uses its
+  latest attempt only when exactly one `entity_info` row of that type exists across all entities;
+  with two Google accounts both read unmeasured. Entity-qualified probe-log keys would lift this.
 - Several credential rows (for example one per butler schema) can feed one dependency; the reducer takes
   the worst fresh state. A probe-less row is unmeasured, so most of these do not hold a dependency down,
   but a recently probed `failing` row still can.

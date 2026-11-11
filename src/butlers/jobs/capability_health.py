@@ -110,6 +110,14 @@ SELECT DISTINCT ON (credential_scope, credential_key)
 """
 
 
+_USER_TYPE_COUNTS = """
+SELECT type, count(*) AS holders
+  FROM public.entity_info
+ WHERE type = ANY($1::text[])
+ GROUP BY type
+"""
+
+
 async def credential_probe_observations(
     pool: Any, snapshots: list[Any], now: datetime
 ) -> list[Observation]:
@@ -126,6 +134,16 @@ async def credential_probe_observations(
         if s.key in CREDENTIAL_DEPENDENCIES and s.probe_scope is not None and s.probe_key
     ]
     attempts: dict[tuple[str, str], datetime] = {}
+    if feeding:
+        # The probe log is keyed by credential type, with no entity. A user-family credential
+        # may use it only when exactly one entity holds that type; otherwise one account's
+        # probe would vouch for another's. Entity-qualified probe-log keys would lift this.
+        user_types = sorted({s.probe_key for s in feeding if s.probe_scope == "user"})
+        sole: set[str] = set()
+        if user_types:
+            held = await pool.fetch(_USER_TYPE_COUNTS, user_types)
+            sole = {r["type"] for r in held if r["holders"] == 1}
+        feeding = [s for s in feeding if s.probe_scope != "user" or s.probe_key in sole]
     if feeding:
         rows = await pool.fetch(
             _LATEST_ATTEMPTS, [s.probe_scope for s in feeding], [s.probe_key for s in feeding]

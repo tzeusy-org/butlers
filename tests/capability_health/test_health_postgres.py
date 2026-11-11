@@ -155,6 +155,22 @@ def snapshot(key, state, scope, probe_key):
     )
 
 
+async def hold(connection, kind, holders=1):
+    """``holders`` entities each holding a credential of ``kind``."""
+    for index in range(holders):
+        entity = await connection.fetchval(
+            "INSERT INTO public.entities (canonical_name, entity_type) "
+            "VALUES ($1, 'person') RETURNING id",
+            f"holder-{kind}-{index}-{id(connection)}",
+        )
+        await connection.execute(
+            "INSERT INTO public.entity_info (entity_id, type, value, secured) "
+            "VALUES ($1, $2, 'x', true)",
+            entity,
+            kind,
+        )
+
+
 async def log_probe(connection, scope, key, ok, at):
     await connection.execute(
         "INSERT INTO public.secret_probe_log (credential_scope, credential_key, ok, recorded_at) "
@@ -172,6 +188,7 @@ async def test_a_credential_that_just_failed_is_down_even_when_its_last_success_
     from butlers.jobs.capability_health import credential_probe_observations
 
     async with transaction(dsn) as connection:
+        await hold(connection, "google_oauth_refresh")
         await log_probe(connection, "user", "google_oauth_refresh", True, NOW - timedelta(days=30))
         await log_probe(
             connection, "user", "google_oauth_refresh", False, NOW - timedelta(minutes=1)
@@ -196,6 +213,7 @@ async def test_the_latest_attempt_of_each_credential_is_used_and_old_oks_age_out
     from butlers.jobs.capability_health import credential_probe_observations
 
     async with transaction(dsn) as connection:
+        await hold(connection, "steam_api_key")
         await log_probe(connection, "user", "steam_api_key", True, NOW - timedelta(hours=24))
         await log_probe(
             connection, "system", "BUTLER_TELEGRAM_TOKEN", True, NOW - timedelta(minutes=2)
@@ -207,6 +225,19 @@ async def test_the_latest_attempt_of_each_credential_is_used_and_old_oks_age_out
         observations = await credential_probe_observations(connection, snapshots, NOW)
         by = {o.dependency: reduce(o.dependency, [o], NOW) for o in observations}
         assert by["steam"].unmeasurable and by["telegram"].state == "available"
+
+
+async def test_a_probe_of_one_account_never_vouches_for_another_of_the_same_type(dsn) -> None:
+    from butlers.jobs.capability_health import credential_probe_observations
+
+    async with transaction(dsn) as connection:
+        await hold(connection, "google_oauth_refresh", holders=2)
+        await log_probe(
+            connection, "user", "google_oauth_refresh", True, NOW - timedelta(minutes=1)
+        )
+        snapshots = [snapshot("u:google", "ok", "user", "google_oauth_refresh")]
+        (observation,) = await credential_probe_observations(connection, snapshots, NOW)
+        assert observation.state is None and reduce("google", [observation], NOW).unmeasurable
 
 
 async def test_a_credential_that_feeds_no_dependency_costs_no_query() -> None:
