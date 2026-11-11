@@ -612,7 +612,22 @@ owner decision, a settlement and a reply only accumulate), so an old fact fed ag
 leaf and cannot fire. A leaf can only flip on something new. An already-true leaf still counts
 toward an `all`, so `all(owner_input, decision)` wakes again on the owner's next reply.
 
-Refused with nothing recorded:
+Facts only accumulate, with one exception: an approval can become an edit. The domain may record
+the owner's approval with an edit, the parked-effect sync writes the stored call `approved`, and
+only `execute_approved` later records it `rejected` with the edit as a second effect, so its
+decision reads `edited`. That flip is a real new fact and may fire. An `approved` wait that fired
+first stands, since the owner did approve (bu-dhloi1.325).
+
+Rearm takes the goal row `FOR UPDATE` and then the envelope, the order reply admission takes,
+before it reads the unread replies. A concurrent reply either commits first (it is unread, and
+the rearm is refused) or waits and then finds the goal waiting on the next generation, which it
+joins. The cap and the deadline hold in SQL as well: `WaitLedger.rearm` reopens the envelope
+only by a compare-and-set on `state = 'fired'`, the generation, `consumed_wakes < max_wakes` and
+`deadline > now()`, under the envelope lock.
+
+Refused with nothing recorded, and the lead runs on. Each check below runs before the call is
+charged or the lead ends. `WaitLedger.rearm`'s own fences run after the end, but in the same
+transaction: refusing there rolls back the charge and the end with everything else.
 
 - `resource`: no conditions wait of the goal has fired, or its successor never launched.
 - `policy`: the wake count is spent (the loop's cap: at most `max_wakes`, at most 6, wakes per

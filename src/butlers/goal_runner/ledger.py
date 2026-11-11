@@ -23,7 +23,8 @@ from butlers.capability_broker.contracts import BrokerRefused, Catalog, Principa
 from butlers.capability_broker.ledger import BrokerLedger
 from butlers.capability_broker.recipients import live_owner
 from butlers.capability_broker.typed import TypedSchema, parse_schema
-from butlers.conditions import ConditionEvaluator, ConditionsUnavailable, RegistrationRefused
+from butlers.conditions import ConditionEvaluator, ConditionsUnavailable, RegistrationRefused, Tri
+from butlers.conditions.evaluate import combine, initial_leaves
 from butlers.conditions.predicate import digest as predicate_digest
 from butlers.conditions.predicate import sources as predicate_sources
 from butlers.conditions.sql import ConnectionConditionStore
@@ -860,7 +861,15 @@ class RunnerLedger:
         (or its successor never launched); POLICY when the wake count is spent, the deadline
         passed, an owner reply sits unread (the lead reads what woke it first, so the same
         reply never wakes it twice), or the snapshot alone already holds the predicate (old
-        facts cannot make another wake). Returns the stopped children.
+        facts cannot make another wake). These checks run before the call is charged or the lead
+        ends; ``WaitLedger.rearm``'s own fences (its SQL compare-and-set included) run after, in
+        the same transaction, so a refusal there rolls the charge and the end back. Returns the
+        stopped children.
+
+        The goal row is locked ``FOR UPDATE`` and then the envelope, the order reply admission
+        takes, before the unread replies are read. So a concurrent reply either commits first
+        (it is unread here and refuses the rearm) or waits and then finds the goal waiting on
+        the next generation, which it joins.
         """
         goal = await self.lock(principal.goal_id)
         if goal is None or goal["status"] != "running":
@@ -882,6 +891,9 @@ class RunnerLedger:
         predicate = json.loads(env["predicate"])
         effects = await self._own_effect_rows(principal.goal_id)
         _check_own(principal.goal_id, predicate, effects)
+        snapshot = snapshot_for(env["now"], effects)
+        if combine(predicate, initial_leaves(predicate, snapshot)) is Tri.TRUE:
+            raise BrokerRefused(Reason.POLICY)  # before any charge or end: the lead runs on
         label = await self.connection.fetchrow(
             "SELECT label_version, label_instr, label_data, label_sens "
             "FROM switchboard.goals WHERE id = $1",
@@ -916,7 +928,7 @@ class RunnerLedger:
                     label["label_data"],
                     label["label_sens"],
                 ),
-                snapshot=snapshot_for(env["now"], effects),
+                snapshot=snapshot,
                 expires_at=env["deadline"],
             )
         except RegistrationRefused:
@@ -924,7 +936,8 @@ class RunnerLedger:
         except ConditionsUnavailable:
             raise BrokerRefused(Reason.UNAVAILABLE) from None
         if registered.intent is not None:
-            # The old facts alone hold it: raising rolls the whole rearm back.
+            # Unreachable after the check above (same snapshot, same evaluator); should it
+            # ever fire, raising rolls the whole rearm back, charge and end included.
             raise BrokerRefused(Reason.POLICY)
         return children
 

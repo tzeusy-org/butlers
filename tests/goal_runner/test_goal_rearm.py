@@ -11,6 +11,8 @@ wake count is spent, and before anything has fired. The feed is dark and called 
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
 
 import pytest
@@ -66,6 +68,16 @@ async def read_inbox(h, goal: UUID, lead) -> list[str]:
     return sorted(item["kind"] for item in replies)
 
 
+async def calls_used(h, goal: UUID, lead) -> tuple[int, int]:
+    """The goal's and the lead's charged calls: a refused rearm charges neither."""
+    return (
+        await h.w.owner.fetchval(
+            "SELECT used_calls FROM switchboard.budgets WHERE goal_id = $1", goal
+        ),
+        (await h.row(lead.invocation_id))["used_calls"],
+    )
+
+
 async def parked_call(h, goal: UUID, lead) -> UUID:
     args = {"entity_id": str(uuid4()), "message": "Running late", "channel": "telegram"}
     effect = await h.w.broker.call(goal, lead.token, NOTIFY.identity, args)
@@ -113,6 +125,7 @@ async def test_the_wake_count_is_cumulative_and_caps_the_loop(broker_db_url):
         await h.runner.supervise_once()
         third = await h.launched(3)
         await read_inbox(h, goal, third)
+        charged = await calls_used(h, goal, third)
 
         reason = await refused(wait_again(h, goal, third.token))
 
@@ -120,6 +133,7 @@ async def test_the_wake_count_is_cumulative_and_caps_the_loop(broker_db_url):
         # Refused before anything is recorded: the lead runs on and the count never resets.
         assert await h.goal_status(goal) == "running"
         assert (await h.row(third.invocation_id))["status"] == "running"
+        assert await calls_used(h, goal, third) == charged
         env = await live_envelope(h, goal)
         assert (env["state"], env["generation"], env["consumed_wakes"]) == ("fired", 1, 2)
 
@@ -187,11 +201,15 @@ async def test_a_predicate_the_old_facts_already_hold_is_refused(broker_db_url):
         await h.runner.supervise_once()
         successor = await h.launched(2)
         await read_inbox(h, goal, successor)
+        charged = await calls_used(h, goal, successor)
 
         reason = await refused(wait_again(h, goal, successor.token))
 
+        # The goal is as it was: the lead runs on, nothing is charged, no generation opens.
         assert reason is Reason.POLICY
         assert await h.goal_status(goal) == "running"
+        assert (await h.row(successor.invocation_id))["status"] == "running"
+        assert await calls_used(h, goal, successor) == charged
         env = await live_envelope(h, goal)
         assert (env["state"], env["generation"]) == ("fired", 0)
         assert not await h.w.owner.fetchval(
@@ -260,3 +278,72 @@ async def test_the_tool_is_dark_to_leads(broker_db_url):
         reason = await refused(h.call(goal, lead.token, "goal__wait_again", {}))
 
         assert reason is Reason.CAPABILITY
+
+
+async def waiters(h, count: int) -> None:
+    """Return once ``count`` lock requests are queued (rows a holder keeps locked)."""
+    query = (
+        # The first waiter holds the tuple lock and waits on the holder's transaction id (no
+        # database); later ones wait on the tuple lock in this database.
+        "SELECT count(*) FROM pg_locks WHERE NOT granted AND (locktype = 'transactionid' "
+        "OR database = (SELECT oid FROM pg_database WHERE datname = current_database()))"
+    )
+    for _ in range(500):
+        if await h.w.owner.fetchval(query) >= count:
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("nothing queued on the goal lock")
+
+
+@asynccontextmanager
+async def goal_locked(h, goal: UUID):
+    """Hold the goal row ``FOR UPDATE`` (the lock rearm and reply admission both take first)."""
+    async with h.w.owner.acquire() as holder:
+        tx = holder.transaction()
+        await tx.start()
+        await holder.execute("SELECT id FROM switchboard.goals WHERE id = $1 FOR UPDATE", goal)
+        try:
+            yield
+        finally:
+            await tx.rollback()
+
+
+async def test_a_reply_queued_behind_the_rearm_joins_the_next_generation(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal, _, successor = await woken_by_reply(h, broker_db_url)
+        await read_inbox(h, goal, successor)
+
+        async with goal_locked(h, goal):
+            rearm = asyncio.create_task(wait_again(h, goal, successor.token))
+            await waiters(h, 1)
+            racing = asyncio.create_task(reply(broker_db_url))
+            await waiters(h, 2)
+
+        # The rearm took the goal first: the reply then found it waiting on generation 1.
+        assert await rearm == "waiting"
+        joined = await racing
+        assert (joined.reason, joined.goal_id) == ("reply_joined", goal)
+        await h.runner.feed_conditions()
+        assert await h.goal_status(goal) == "admitted"
+        env = await live_envelope(h, goal)
+        assert (env["state"], env["generation"], env["consumed_wakes"]) == ("fired", 1, 2)
+
+
+async def test_a_reply_queued_ahead_of_the_rearm_refuses_it(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal, _, successor = await woken_by_reply(h, broker_db_url)
+        await read_inbox(h, goal, successor)
+
+        async with goal_locked(h, goal):
+            racing = asyncio.create_task(reply(broker_db_url))
+            await waiters(h, 1)
+            rearm = asyncio.create_task(refused(wait_again(h, goal, successor.token)))
+            await waiters(h, 2)
+
+        # The reply joined the running goal first; the rearm then saw it unread.
+        joined = await racing
+        assert (joined.reason, joined.goal_id) == ("reply_joined", goal)
+        assert await rearm is Reason.POLICY
+        assert await h.goal_status(goal) == "running"
+        assert (await live_envelope(h, goal))["state"] == "fired"
+        assert await read_inbox(h, goal, successor) == ["owner_reply"]

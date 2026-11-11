@@ -155,7 +155,9 @@ def events_for(
     derived from its source, effect and value, so a redelivered event is the same event; its
     position is the status change time in microseconds. The facts are monotonic (a decision is
     made once, a settled effect stays settled), so feeding current state never loses or invents
-    a fire. A reply's event is its inbox row: one event per row, positioned at its arrival.
+    a fire. The one exception is an approval that becomes an edit once ``execute_approved``
+    records it; that flip is a real new fact and may fire (bu-dhloi1.325). A reply's event is
+    its inbox row: one event per row, positioned at its arrival.
     """
     events: list[ConditionEvent] = []
     for effect, changed_at in effects:
