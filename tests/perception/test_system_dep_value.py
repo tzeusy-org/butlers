@@ -205,29 +205,41 @@ def test_activated_profile_writes_cas_and_reads_by_alias(postgres_container) -> 
         engine.dispose()
 
 
-@pytest.mark.integration
-@pytest.mark.db
-def test_reinstalling_never_overwrites_an_operator_profile(postgres_container) -> None:
+PROFILE = (
+    "SELECT max_age_seconds, subjects, evidence_sources "
+    "FROM perception_private.sources WHERE source='health.dependencies'"
+)
+
+
+def fresh_database(postgres_container):
     name = migration_db_name()
     create_migrated_test_db(postgres_container, name, chains=["core"])
-    engine = create_engine(migration_bootstrap_db_url(postgres_container, name))
+    return create_engine(migration_bootstrap_db_url(postgres_container, name))
+
+
+@pytest.mark.integration
+@pytest.mark.db
+def test_reinstalling_never_touches_an_operator_configured_profile(postgres_container) -> None:
+    engine = fresh_database(postgres_container)
     try:
         with engine.begin() as c:
             c.execute(
                 text(
-                    "UPDATE perception_private.sources SET max_age_seconds=123 "
+                    "UPDATE perception_private.sources SET max_age_seconds=123, "
+                    "subjects=ARRAY[CAST(:one AS uuid)], evidence_sources=ARRAY['operator'] "
                     "WHERE source='health.dependencies'"
-                )
+                ),
+                {"one": dependency_subject("google")},
             )
+            before = tuple(c.execute(text(PROFILE)).one())
+            refs = c.execute(
+                text("SELECT count(*) FROM perception_private.source_refs")
+            ).scalar_one()
             c.execute(text("SELECT perception_admin.install_interface()"))
+            assert tuple(c.execute(text(PROFILE)).one()) == before
             assert (
-                c.execute(
-                    text(
-                        "SELECT max_age_seconds FROM perception_private.sources "
-                        "WHERE source='health.dependencies'"
-                    )
-                ).scalar_one()
-                == 123
+                c.execute(text("SELECT count(*) FROM perception_private.source_refs")).scalar_one()
+                == refs
             )
     finally:
         engine.dispose()
@@ -235,23 +247,74 @@ def test_reinstalling_never_overwrites_an_operator_profile(postgres_container) -
 
 @pytest.mark.integration
 @pytest.mark.db
-def test_installer_refuses_legacy_string_values(postgres_container) -> None:
-    name = migration_db_name()
-    create_migrated_test_db(postgres_container, name, chains=["core"])
-    engine = create_engine(migration_bootstrap_db_url(postgres_container, name))
+def test_reinstalling_registers_a_new_dependency_and_keeps_the_configured_age(
+    postgres_container,
+) -> None:
+    engine = fresh_database(postgres_container)
+    gone = dependency_subject("conditions")
+    try:
+        with engine.begin() as c:
+            # An installer-owned profile from before `conditions` was declared.
+            c.execute(
+                text(
+                    "UPDATE perception_private.sources SET max_age_seconds=123, "
+                    "subjects=array_remove(subjects, CAST(:gone AS uuid)) "
+                    "WHERE source='health.dependencies'"
+                ),
+                {"gone": gone},
+            )
+            c.execute(
+                text("DELETE FROM perception_private.source_refs WHERE id IN (:a, :b)"),
+                {"a": gone, "b": dependency_evidence_ref("conditions")},
+            )
+            c.execute(text("SELECT perception_admin.install_interface()"))
+            row = c.execute(text(PROFILE)).one()
+            assert row.max_age_seconds == 123
+            assert set(row.subjects) == {dependency_subject(n) for n in DEPENDENCY_IDS}
+            assert (
+                c.execute(
+                    text(
+                        "SELECT read_alias FROM perception_private.source_refs "
+                        "WHERE id=:gone AND ref_type='dependency'"
+                    ),
+                    {"gone": gone},
+                ).scalar_one()
+                == "conditions"
+            )
+    finally:
+        engine.dispose()
+
+
+LEGACY_SLOT = (
+    "INSERT INTO public.situation_slots(id,kind,subject_entity,state,typed_value,"
+    "source,observed_at,fresh_until,evidence_refs,labels,generation,writer) "
+    "VALUES(gen_random_uuid(),'system.dep',:s,'known',CAST(:v AS jsonb),"
+    "'health.dependencies',now(),now()+interval '1 hour','[]','{}',1,"
+    "'perception_health_writer')"
+)
+LEGACY_EVENT = (
+    "INSERT INTO public.timeline(id,source,event_key,digest,kind,subject_entity,class,"
+    "operation,at,confirmed_at,late,effective_span,observed_at,typed_value,evidence_refs,"
+    "labels,generation,writer) VALUES(gen_random_uuid(),'health.dependencies','legacy','d',"
+    "'system.dep',:s,'record','assert',now(),now(),false,'{}',now(),CAST(:v AS jsonb),"
+    "'[]','{}',1,'perception_health_writer')"
+)
+
+
+@pytest.mark.integration
+@pytest.mark.db
+@pytest.mark.parametrize("table", ["situation_slots", "timeline"])
+def test_installer_refuses_legacy_string_values_in_slots_and_history(
+    postgres_container, table
+) -> None:
+    engine = fresh_database(postgres_container)
     try:
         with engine.begin() as c:
             c.execute(text("SET LOCAL ROLE perception_owner"))
-            c.execute(text("ALTER TABLE public.situation_slots DISABLE ROW LEVEL SECURITY"))
+            c.execute(text(f"ALTER TABLE public.{table} DISABLE ROW LEVEL SECURITY"))
             c.execute(text("RESET ROLE"))
             c.execute(
-                text(
-                    "INSERT INTO public.situation_slots(id,kind,subject_entity,state,typed_value,"
-                    "source,observed_at,fresh_until,evidence_refs,labels,generation,writer) "
-                    "VALUES(gen_random_uuid(),'system.dep',:s,'known',CAST(:v AS jsonb),"
-                    "'health.dependencies',now(),now()+interval '1 hour','[]','{}',1,"
-                    "'perception_health_writer')"
-                ),
+                text(LEGACY_SLOT if table == "situation_slots" else LEGACY_EVENT),
                 {"s": dependency_subject("google"), "v": json.dumps("available")},
             )
         with pytest.raises(DBAPIError, match="legacy system.dep"):

@@ -574,7 +574,7 @@ def test_read_aliases_share_the_canonical_row_without_write_authority(db):
 def test_dynamic_read_aliases_require_registered_subject_and_profile(db):
     db.execute(
         text(
-            "INSERT INTO perception_private.source_refs(id,source,ref_type,read_alias) VALUES(:id,'health.dependencies','dependency','conditions'),(:id,'chronicler.expectations','routine',NULL)"
+            "INSERT INTO perception_private.source_refs(id,source,ref_type,read_alias) VALUES(:id,'health.dependencies','dependency','fixture-dependency'),(:id,'chronicler.expectations','routine',NULL)"
         ),
         {"id": OWNER},
     )
@@ -586,7 +586,7 @@ def test_dynamic_read_aliases_require_registered_subject_and_profile(db):
     write(db, request(kind="system.dep"), "perception_health_writer")
     write(db, request(kind="expect.window"), "perception_expect_writer")
     for alias, canonical in [
-        ("system.dep.conditions", "system.dep"),
+        ("system.dep.fixture-dependency", "system.dep"),
         (f"system.dep.{OWNER}", "system.dep"),
         (f"expect.confirmed_routine[{OWNER}]", "expect.window"),
     ]:
@@ -614,7 +614,7 @@ def test_dynamic_read_aliases_require_registered_subject_and_profile(db):
         )
     )
     with pytest.raises(DBAPIError):
-        read(db, kind="system.dep.conditions", subject=None)
+        read(db, kind="system.dep.fixture-dependency", subject=None)
     with pytest.raises(DBAPIError):
         read(db, kind=f"expect.confirmed_routine[{OWNER}]", subject=None)
 

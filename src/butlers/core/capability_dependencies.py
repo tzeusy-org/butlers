@@ -15,7 +15,7 @@ from uuid import UUID, uuid5
 DEPENDENCY_NAMESPACE = UUID("fbb3d862-d597-5afb-b727-949f3a0e8829")
 
 DEPENDENCY_IDS: frozenset[str] = frozenset(
-    {"google", "home_assistant", "owntracks", "spotify", "steam", "telegram"}
+    {"conditions", "google", "home_assistant", "owntracks", "spotify", "steam", "telegram"}
 )
 
 
