@@ -604,6 +604,18 @@ outcome is resolved `partial`. This includes a legacy approval wait that `sw_064
 `evidence_unavailable` envelope. A parked effect left behind is refused later because its goal has
 ended.
 
+### Unread replies of an ended goal
+
+A reply joined to a goal stays an unread inbox row until a lead takes it, and on a conditions wait
+it waits for the goal-event feed. A goal can end first: at its deadline, by Stop, by failure or by
+budget. Such a reply is never swallowed silently. The goal's own transition into a terminal status
+records each unconsumed `owner_reply` row once in `switchboard.goal_inbox_releases` (`sw_067`, one
+`SECURITY DEFINER` trigger on `goals`, so no end path can skip it), with the reason: the terminal
+status, or `deadline` for a failed or partial end with an expired wait. The record is content-blind
+(ids, reason, time) and durable; the runtime role may only read it. The row itself stays in the
+inbox, unread. `RunnerLedger.released_replies(goal)` is the count the owner-failure ask reports, so
+the owner sees that an answer was not acted on.
+
 ## Owner failure cause line (S6, sw_068, dark)
 
 An owner message that became a goal and ended `failed` or `budget_exhausted`, with no owner delivery

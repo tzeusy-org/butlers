@@ -1181,6 +1181,17 @@ class RunnerLedger:
         )
         return [OwnReply(r["id"], str(goal_id), r["binding"], r["created_at"]) for r in rows]
 
+    async def released_replies(self, goal_id: UUID) -> int:
+        """How many owner replies the goal joined but never read before it ended (sw_067).
+
+        A count only: the reply itself is never read here. The goal's transition into a
+        terminal status records each such row, so an ended goal never swallows one silently;
+        the owner-failure ask reports the count.
+        """
+        return await self.connection.fetchval(
+            "SELECT count(*) FROM switchboard.goal_inbox_releases WHERE goal_id = $1", goal_id
+        )
+
     async def _own_effect_rows(self, goal_id: UUID) -> list[OwnEffect]:
         return [_own_effect(row) for row in await self._effect_rows(goal_id)]
 

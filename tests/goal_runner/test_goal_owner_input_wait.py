@@ -9,6 +9,8 @@ reply the lead already read is not new input; a reply to any other prompt is new
 
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -155,3 +157,64 @@ async def test_input_on_anything_but_this_goals_live_prompt_is_refused(broker_db
             assert reason is Reason.RESOURCE, predicate
         assert await h.goal_status(goal) == "running"
         assert await envelope(h, goal) is None
+
+
+async def released(h, goal: UUID) -> list[tuple[UUID, str]]:
+    rows = await h.w.owner.fetch(
+        "SELECT inbox_id, reason FROM switchboard.goal_inbox_releases WHERE goal_id = $1", goal
+    )
+    return [(row["inbox_id"], row["reason"]) for row in rows]
+
+
+async def unread_reply(h, goal: UUID) -> UUID:
+    return await h.w.owner.fetchval(
+        "SELECT id FROM switchboard.goal_inbox WHERE goal_id = $1 AND consumed_at IS NULL", goal
+    )
+
+
+async def test_a_goal_ending_at_its_deadline_releases_the_unread_reply(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal, lead, prompt = await prompted(h)
+        deadline = (datetime.now(UTC) + timedelta(seconds=2)).isoformat()
+        args = wait_args(owner_input(goal, prompt), deadline=deadline)
+        assert await wait_until(h, goal, lead.token, args) == {"status": "waiting"}
+        joined = await reply(broker_db_url)  # joined, but the dark feed never wakes the goal
+        assert joined.reason == "reply_joined"
+        inbox = await unread_reply(h, goal)
+        await asyncio.sleep(2.2)
+
+        await h.runner.supervise_once()
+
+        assert await h.goal_status(goal) == "failed"
+        # Not swallowed: the reply is still there, unread, and recorded as released.
+        assert await unread_reply(h, goal) == inbox
+        assert await released(h, goal) == [(inbox, "deadline")]
+        async with h.runner._txn() as ledger:
+            assert await ledger.released_replies(goal) == 1
+
+
+async def test_stop_releases_the_unread_reply(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal, lead, prompt = await prompted(h)
+        assert await wait_until(h, goal, lead.token, wait_args(owner_input(goal, prompt))) == {
+            "status": "waiting"
+        }
+        await reply(broker_db_url)
+        inbox = await unread_reply(h, goal)
+
+        await h.runner.stop(goal)
+
+        assert await released(h, goal) == [(inbox, "stopped")]
+
+
+async def test_a_read_reply_is_not_released(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal, lead, _ = await prompted(h)
+        await reply(broker_db_url)
+        assert len((await h.call(goal, lead.token, "goal__inbox", {}))["replies"]) == 1
+
+        await h.runner.stop(goal)
+
+        assert await released(h, goal) == []
+        async with h.runner._txn() as ledger:
+            assert await ledger.released_replies(goal) == 0
