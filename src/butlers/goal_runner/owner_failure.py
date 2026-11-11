@@ -31,11 +31,16 @@ ROUTE_REF: Final = "owner:telegram"
 #: Presentation tokens are minted but never shown on a cause line; they lapse unused.
 _TOKEN_TTL: Final = timedelta(hours=24)
 _BATCH: Final = 10
+#: How long an ask stays open from the failure or refusal; after it, dropped(stale), never replayed.
+ASK_LIFETIME: Final = timedelta(hours=24)
 
 #: Closed cause words to the one sentence the owner sees. Nothing else is ever sent.
 CAUSE_LINES: Final = {
     "failed": "A request you sent did not complete. Nothing was done in response.",
     "budget_exhausted": "A request you sent used up its work budget before it could finish.",
+    "admission_refused": (
+        "A request you sent was not accepted because the assistant was too busy. It was not run."
+    ),
     "capability_unavailable": (
         "A request you sent could not run because a service it needs was unavailable."
     ),
@@ -52,12 +57,13 @@ WITH RECURSIVE lineage (root, goal_id) AS (
     SELECT l.root, c.id FROM lineage l
       JOIN switchboard.goals c ON c.caused_by_goal = l.goal_id
 )
-SELECT g.id, g.source_key, g.status,
+SELECT g.id, g.source_key, g.status, g.updated_at AS ended_at,
        EXISTS (SELECT 1 FROM switchboard.broker_refusals r
                 WHERE r.goal_id = g.id AND r.reason = 'capability_unavailable') AS unavailable
   FROM switchboard.goals g
  WHERE g.origin = 'owner' AND g.source_kind = 'message'
    AND g.status IN ('failed', 'budget_exhausted')
+   AND g.updated_at > clock_timestamp() - interval '24 hours'
    AND NOT EXISTS (SELECT 1 FROM switchboard.pending_asks p WHERE p.source_key = g.source_key)
    AND NOT EXISTS (
        SELECT 1 FROM lineage l JOIN switchboard.effects e ON e.goal_id = l.goal_id
@@ -74,12 +80,20 @@ _UNPRESENTED = """
 SELECT p.id, p.cause, p.subject_id
   FROM switchboard.pending_asks p
   JOIN public.owner_delivery_subjects s ON s.id = p.subject_id
- WHERE p.state = 'open'
+ WHERE p.state = 'open' AND p.expires_at > clock_timestamp() AND p.cause = ANY($3::text[])
    AND NOT EXISTS (SELECT 1 FROM public.owner_delivery_presentations x
                     WHERE x.subject_id = s.id AND x.surface = $1 AND x.generation = s.generation
                       AND x.state <> 'failed')
  ORDER BY p.created_at, p.id
  LIMIT $2
+"""
+
+
+# Open, unexpired asks the sweep has not yet given an owner-delivery subject (refused admissions).
+_UNOPENED = """
+SELECT id, source_key, cause FROM switchboard.pending_asks
+ WHERE state = 'open' AND subject_id IS NULL AND expires_at > clock_timestamp()
+ ORDER BY created_at, id LIMIT $1
 """
 
 
@@ -116,6 +130,7 @@ class OwnerFailureReporter:
 
     async def sweep(self) -> int:
         """Returns how many cause lines were handed to the sender."""
+        await self._expire()  # privacy first: runs even while delivery is dark
         if await self._record() is None:
             return 0
         return await self._present()
@@ -137,40 +152,73 @@ class OwnerFailureReporter:
                         made += await self._record_one(conn, row, owner)
                 except Exception:
                     logger.warning("pending ask could not be recorded goal=%s", row["id"])
+            orphans = await conn.fetch(_UNOPENED, self.batch)
+            for orphan in orphans:
+                try:
+                    async with conn.transaction():
+                        await self._open_subject(
+                            conn, orphan["id"], orphan["source_key"], orphan["cause"], owner
+                        )
+                except Exception:
+                    logger.warning("pending ask subject could not be opened ask=%s", orphan["id"])
             return made
 
-    @staticmethod
-    async def _record_one(conn: Any, row: Any, owner: Any) -> int:
+    async def _expire(self) -> int:
+        """Open asks past their expiry become ``dropped_stale``: the reference is cleared, the
+        subject is closed, and nothing is replayed. Runs whether or not delivery is on."""
+        async with self.pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT set_config('search_path', 'switchboard,public', true)")
+            rows = await conn.fetch(
+                "UPDATE switchboard.pending_asks SET state = 'dropped_stale', original_ask = NULL, "
+                "updated_at = clock_timestamp() "
+                "WHERE state = 'open' AND expires_at <= clock_timestamp() RETURNING id, subject_id"
+            )
+            for row in rows:
+                if row["subject_id"] is not None:
+                    await od.close_for_authority(
+                        conn, kind="pending_ask", source_ref=str(row["id"]), status="expired"
+                    )
+            return len(rows)
+
+    @classmethod
+    async def _record_one(cls, conn: Any, row: Any, owner: Any) -> int:
         cause = cause_for(row["status"], row["unavailable"])
         ask = await conn.fetchrow(
-            "INSERT INTO switchboard.pending_asks (source_key, goal_id, cause) "
-            "VALUES ($1, $2, $3) ON CONFLICT (source_key) DO NOTHING RETURNING id",
+            "INSERT INTO switchboard.pending_asks (source_key, goal_id, cause, expires_at) "
+            "VALUES ($1, $2, $3, $4) ON CONFLICT (source_key) DO NOTHING RETURNING id",
             row["source_key"],
             row["id"],
             cause,
+            row["ended_at"] + ASK_LIFETIME,
         )
         if ask is None:
             return 0
+        await cls._open_subject(conn, ask["id"], row["source_key"], cause, owner)
+        return 1
+
+    @staticmethod
+    async def _open_subject(
+        conn: Any, ask_id: Any, source_key: str, cause: str, owner: Any
+    ) -> None:
         subject = await od.open_subject(
             conn,
             kind="pending_ask",
-            source_ref=str(ask["id"]),
+            source_ref=str(ask_id),
             owner_entity=owner,
-            content_digest=od.digest_of({"cause": cause, "source_key": row["source_key"]}),
-            action_digest=od.digest_of({"kind": "pending_ask", "ask": str(ask["id"])}),
+            content_digest=od.digest_of({"cause": cause, "source_key": source_key}),
+            action_digest=od.digest_of({"kind": "pending_ask", "ask": str(ask_id)}),
         )
         await conn.execute(
             "UPDATE switchboard.pending_asks SET subject_id = $2 WHERE id = $1",
-            ask["id"],
+            ask_id,
             subject.id,
         )
-        return 1
 
     async def _present(self) -> int:
         """Send the cause line of each ask that has none, at most once each."""
         async with self.pool.acquire() as conn, conn.transaction():
             await conn.execute("SELECT set_config('search_path', 'switchboard,public', true)")
-            pending = await conn.fetch(_UNPRESENTED, SURFACE, self.batch)
+            pending = await conn.fetch(_UNPRESENTED, SURFACE, self.batch, list(CAUSE_LINES))
         sent = 0
         for ask in pending:
             if await self.sender.suppressed():

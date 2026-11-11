@@ -300,5 +300,10 @@ async def test_the_cause_line_is_built_from_closed_words_only(world):
 
 
 async def test_every_closed_cause_has_exactly_one_line():
-    assert set(CAUSE_LINES) == {"failed", "budget_exhausted", "capability_unavailable"}
+    assert set(CAUSE_LINES) == {
+        "failed",
+        "budget_exhausted",
+        "capability_unavailable",
+        "admission_refused",
+    }
     assert len(set(CAUSE_LINES.values())) == len(CAUSE_LINES)

@@ -442,7 +442,13 @@ class GoalAdmission:
                 try:
                     config = await read_goal_admission_config(connection)
                 except ValueError:
-                    return await ledger.decide(source, attempt_id, "refused", "limits_unavailable")
+                    refused = await ledger.decide(
+                        source, attempt_id, "refused", "limits_unavailable"
+                    )
+                    await ledger.remember_refused_owner_ask(
+                        source, facts, plan.origin, "limits_unavailable"
+                    )
+                    return refused
                 config_data = config.model_dump(mode="json")
                 config_digest = digest(config_data)
                 limits = next(entry for entry in config.origins if entry.origin == plan.origin)
@@ -562,9 +568,11 @@ class GoalAdmission:
         )
         origin_count, source_count = await ledger.quota_counts(plan.origin, facts.source_partition)
         if origin_count >= limits.new_goals or source_count >= limits.per_source:
-            return await ledger.decide(
+            refused = await ledger.decide(
                 source, attempt_id, "refused", "quota_exhausted", retry_after=retry_after
             )
+            await ledger.remember_refused_owner_ask(source, facts, plan.origin, "quota_exhausted")
+            return refused
         goal_id = uuid4()
         await ledger.create_goal(
             goal_id,
