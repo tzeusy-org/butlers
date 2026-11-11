@@ -1,6 +1,6 @@
 """Run or Drop a refused owner request (RFC 0038 S6, bu-dhloi1.14 package 4b).
 
-A refused admission of an owner message leaves one ``pending_asks`` row (cause
+A refused admission, or a failed goal, of an owner message leaves one ``pending_asks`` row (cause
 ``admission_refused``) holding a source *reference*. The owner may then:
 
 - **Run**: admit the reference again through the full current admission rules, exactly as if
@@ -27,7 +27,7 @@ from typing import Any, Final, Literal
 from uuid import UUID, uuid5
 
 from butlers.core import owner_delivery as od
-from butlers.core.goal_admission import AdmissionResult, SourceRef
+from butlers.core.goal_admission import AdmissionResult, Evidence, EvidenceRefused, SourceRef
 
 logger = logging.getLogger(__name__)
 
@@ -72,10 +72,14 @@ class AskDecision:
     state: str | None = None
 
 
+RETRY_PREFIX: Final = "owner_retry:"
+RETRY_CAUSES: Final = ("failed", "budget_exhausted")
+
 _RUNNABLE = """
 SELECT id, cause, subject_id FROM switchboard.pending_asks
- WHERE state = 'open' AND cause = 'admission_refused' AND original_ask IS NOT NULL
-   AND subject_id IS NOT NULL AND expires_at > clock_timestamp()
+ WHERE state = 'open' AND subject_id IS NOT NULL AND expires_at > clock_timestamp()
+   AND ((cause = 'admission_refused' AND original_ask IS NOT NULL)
+        OR (cause = ANY('{failed,budget_exhausted}'::text[]) AND goal_id IS NOT NULL))
  ORDER BY created_at, id LIMIT $1
 """
 
@@ -137,7 +141,7 @@ class OwnerRecovery:
 
         async def decide(conn: Any, verb: str) -> dict[str, Any]:
             ask = await conn.fetchrow(
-                "SELECT state, cause, original_ask FROM switchboard.pending_asks "
+                "SELECT state, cause, original_ask, goal_id FROM switchboard.pending_asks "
                 "WHERE id = $1 FOR UPDATE",
                 ask_id,
             )
@@ -146,9 +150,12 @@ class OwnerRecovery:
             if verb == "reject":
                 state = "dropped"
             else:
-                if ask["cause"] != "admission_refused":
+                if ask["cause"] == "admission_refused":
+                    source = source_of(ask["original_ask"])
+                elif ask["cause"] in RETRY_CAUSES and ask["goal_id"] is not None:
+                    source = SourceRef("message", RETRY_PREFIX + str(ask_id))
+                else:
                     raise AskDecisionRefused("cannot_run")
-                source = source_of(ask["original_ask"])
                 admitted = await self.admit(conn, source, uuid5(_RUN_NAMESPACE, str(ask_id)))
                 if admitted.result not in ("admitted", "joined"):
                     raise AskDecisionRefused("still_refused")
@@ -191,6 +198,33 @@ class OwnerRecovery:
                 "SELECT id FROM switchboard.pending_asks WHERE id = $1 FOR UPDATE", ask_id
             )
             yield conn
+
+
+class OwnerRetryEvidence:
+    """Evidence reader that answers owner-retry sources and hands everything else to ``inner``."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+
+    async def load(self, connection: Any, source: SourceRef) -> Evidence:
+        if source.kind != "message" or not source.id.startswith(RETRY_PREFIX):
+            return await self.inner.load(connection, source)
+        try:
+            ask_id = UUID(source.id[len(RETRY_PREFIX) :])
+        except ValueError:
+            raise EvidenceRefused("source_evidence_unavailable") from None
+        goal = await connection.fetchrow(
+            "SELECT g.exposed FROM switchboard.pending_asks a "
+            "JOIN switchboard.goals g ON g.id = a.goal_id "
+            "WHERE a.id = $1 AND a.state = 'open' AND a.cause = ANY($2::text[]) "
+            "AND g.origin = 'owner' AND g.source_kind = 'message'",
+            ask_id,
+            list(RETRY_CAUSES),
+        )
+        if goal is None:
+            raise EvidenceRefused("source_evidence_unavailable")
+        # Owner evidence is the redeemed Run token, checked by ``redeem`` before this runs.
+        return Evidence("message", "owner_retry", owner=True, outside_content=bool(goal["exposed"]))
 
 
 def bound(connection: Any) -> Any:

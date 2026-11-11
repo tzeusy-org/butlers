@@ -70,14 +70,20 @@ WITH RECURSIVE lineage (root, goal_id) AS (
     SELECT l.root, c.id FROM lineage l
       JOIN switchboard.goals c ON c.caused_by_goal = l.goal_id
 )
-SELECT g.id, g.source_key, g.status, g.updated_at AS ended_at,
+SELECT g.id, k.ask_key AS source_key, g.status, g.updated_at AS ended_at,
        EXISTS (SELECT 1 FROM switchboard.broker_refusals r
                 WHERE r.goal_id = g.id AND r.reason = 'capability_unavailable') AS unavailable
   FROM switchboard.goals g
+  -- A refused ask that Run admitted owns the message's source key; if that goal then fails, its
+  -- own ask is keyed '#run' so the failed retry still tells the owner.
+  CROSS JOIN LATERAL (SELECT CASE WHEN EXISTS (
+          SELECT 1 FROM switchboard.pending_asks r
+           WHERE r.source_key = g.source_key AND r.goal_id IS NULL)
+          THEN g.source_key || '#run' ELSE g.source_key END AS ask_key) k
  WHERE g.origin = 'owner' AND g.source_kind = 'message'
    AND g.status IN ('failed', 'budget_exhausted')
    AND g.updated_at > clock_timestamp() - interval '24 hours'
-   AND NOT EXISTS (SELECT 1 FROM switchboard.pending_asks p WHERE p.source_key = g.source_key)
+   AND NOT EXISTS (SELECT 1 FROM switchboard.pending_asks p WHERE p.source_key = k.ask_key)
    AND NOT EXISTS (
        SELECT 1 FROM lineage l JOIN switchboard.effects e ON e.goal_id = l.goal_id
         WHERE l.root = g.id AND e.recipient_entity = $1

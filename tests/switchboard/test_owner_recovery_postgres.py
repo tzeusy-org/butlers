@@ -6,7 +6,7 @@ import pytest
 
 from butlers.core import owner_delivery as od
 from butlers.core.goal_admission import Evidence, GoalAdmission
-from butlers.goal_runner.owner_recovery import OwnerRecovery, bound
+from butlers.goal_runner.owner_recovery import OwnerRecovery, OwnerRetryEvidence, bound
 from tests.switchboard.goal_admission_fixtures import Catalogs, Sources, limits
 from tests.switchboard.goal_ledger_fixtures import (  # noqa: F401
     admit,
@@ -26,14 +26,18 @@ from tests.switchboard.test_pending_ask_expiry_postgres import refuse_owner_mess
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
-async def admit_on(conn, source, attempt):
-    return await GoalAdmission(
-        bound(conn), Sources(Evidence("message", "p-2", owner=True)), Catalogs()
-    ).admit_submission(source, attempt)
+def admitter(facts=None):
+    async def admit_on(conn, source, attempt):
+        reader = OwnerRetryEvidence(Sources(facts or Evidence("message", "p-2", owner=True)))
+        return await GoalAdmission(bound(conn), reader, Catalogs()).admit_submission(
+            source, attempt
+        )
+
+    return admit_on
 
 
-def recovery(runtime):
-    return OwnerRecovery(runtime, admit_on)
+def recovery(runtime, facts=None):
+    return OwnerRecovery(runtime, admitter(facts))
 
 
 async def refused_ask(owner, runtime):
@@ -51,9 +55,9 @@ async def test_cards_are_offered_only_for_runnable_asks_and_are_coalesced(world)
     await owner_goal(runtime, owner)  # a failed goal: told, but cannot be run
     await reporter(runtime, Sender()).sweep()
     batch = await recovery(runtime).cards()
-    assert batch.counts == {"admission_refused": 1}
-    (card,) = batch.cards
-    assert card.ask_id == row["id"] and set(card.tokens) == {"approve", "reject"}
+    assert batch.counts == {"admission_refused": 1, "failed": 1}
+    assert {c.ask_id for c in batch.cards} >= {row["id"]}
+    assert all(set(c.tokens) == {"approve", "reject"} for c in batch.cards)
 
 
 async def test_no_cards_while_delivery_is_dark(world):  # noqa: F811
@@ -121,11 +125,51 @@ async def test_a_token_asked_for_the_wrong_action_is_refused(world):  # noqa: F8
     assert (result.outcome, result.reason) == ("refused", "action_mismatch")
 
 
-async def test_a_failed_goals_ask_cannot_be_run(world):  # noqa: F811
+async def card_for(runtime, ask_id, facts=None):
+    batch = await recovery(runtime, facts).cards()
+    return next(c for c in batch.cards if c.ask_id == ask_id)
+
+
+async def test_run_on_a_failed_goal_admits_a_new_goal_from_the_retry_source(world):  # noqa: F811
+    owner, runtime, _ = world
+    goal_id = await owner_goal(runtime, owner)
+    await owner.execute("UPDATE switchboard.goals SET exposed = true WHERE id = $1", goal_id)
+    await reporter(runtime, Sender()).sweep()
+    (row,) = await asks(owner)
+    card = await card_for(runtime, row["id"])
+    won = await recovery(runtime).decide(card.tokens["approve"], row["id"], "approve")
+    assert (won.outcome, won.state) == ("won", "run")
+    retry = await owner.fetchrow(
+        "SELECT * FROM switchboard.goals WHERE source_ref = $1", f"owner_retry:{row['id']}"
+    )
+    assert retry is not None and retry["id"] != goal_id and retry["origin"] == "owner"
+    assert retry["exposed"] is True  # the failed goal's label applies again
+    assert retry["caused_by_goal"] is None
+    again = await recovery(runtime).decide(card.tokens["approve"], row["id"], "approve")
+    assert again.outcome == "duplicate"
+    assert (
+        await owner.fetchval(
+            "SELECT count(*) FROM switchboard.goals WHERE source_ref = $1",
+            f"owner_retry:{row['id']}",
+        )
+        == 1
+    )
+    # The retry fails in turn: the owner is told again, under the retry's own ask.
+    await owner.execute("UPDATE switchboard.goals SET status = 'failed' WHERE id = $1", retry["id"])
+    await reporter(runtime, Sender()).sweep()
+    again_asks = [r for r in await asks(owner) if r["goal_id"] == retry["id"]]
+    assert len(again_asks) == 1 and again_asks[0]["state"] == "open"
+
+
+async def test_a_capability_unavailable_ask_cannot_be_run(world):  # noqa: F811
     owner, runtime, owner_id = world
     await owner_goal(runtime, owner)
     await reporter(runtime, Sender()).sweep()
     (row,) = await asks(owner)
+    await owner.execute(
+        "UPDATE switchboard.pending_asks SET cause = 'capability_unavailable' WHERE id = $1",
+        row["id"],
+    )
     async with runtime.acquire() as conn, conn.transaction():
         await conn.execute("SELECT set_config('search_path', 'switchboard,public', true)")
         presentation = await od.present(
@@ -140,6 +184,25 @@ async def test_a_failed_goals_ask_cannot_be_run(world):  # noqa: F811
     assert (result.outcome, result.reason) == ("refused", "cannot_run")
     (after,) = await asks(owner)
     assert after["state"] == "open"
+
+
+async def test_a_refused_forwarded_run_keeps_its_exposure_and_a_failed_run_is_told(world):  # noqa: F811
+    owner, runtime, _ = world
+    facts = Evidence("message", "p-2", owner=True, forwarded=True, outside_content=True)
+    source, _ = await refuse_owner_message(owner, runtime, facts)
+    await reporter(runtime, Sender()).sweep()
+    (row,) = [r for r in await asks(owner) if r["cause"] == "admission_refused"]
+    await configure(owner, limits(new_goals=5))
+    card = await card_for(runtime, row["id"], facts)
+    won = await recovery(runtime, facts).decide(card.tokens["approve"], row["id"], "approve")
+    assert won.state == "run"
+    goal = await owner.fetchrow("SELECT * FROM switchboard.goals WHERE source_key = $1", source.key)
+    assert goal["exposed"] is True
+    # That goal fails; its ask must not collide with the refused ask that shares the source key.
+    await owner.execute("UPDATE switchboard.goals SET status = 'failed' WHERE id = $1", goal["id"])
+    await reporter(runtime, Sender()).sweep()
+    told = [r for r in await asks(owner) if r["goal_id"] == goal["id"]]
+    assert len(told) == 1 and told[0]["source_key"] == source.key + "#run"
 
 
 async def test_a_pending_ask_token_never_redeems_an_approval_and_the_reverse(world):  # noqa: F811
