@@ -46,6 +46,19 @@ CAUSE_LINES: Final = {
     ),
 }
 
+#: A configuration fault is not "too busy": a refusal for unreadable limits gets its own sentence.
+LIMITS_UNAVAILABLE_LINE: Final = (
+    "A request you sent was not accepted because the assistant could not check its limits. "
+    "It was not run."
+)
+
+
+def line_for(cause: str, refusal: str | None) -> str | None:
+    if cause == "admission_refused" and refusal == "limits_unavailable":
+        return LIMITS_UNAVAILABLE_LINE
+    return CAUSE_LINES.get(cause)
+
+
 # A terminal owner-message goal with no possibly-delivered owner effect in its lineage and
 # no pending ask yet. 'committed', 'dispatched' and 'unknown' may have reached the owner.
 _UNREPORTED = """
@@ -80,7 +93,7 @@ SELECT g.id, g.source_key, g.status, g.updated_at AS ended_at,
 MAX_LINE_ATTEMPTS = 3
 
 _UNPRESENTED = """
-SELECT p.id, p.cause, p.subject_id
+SELECT p.id, p.cause, p.subject_id, p.original_ask ->> 'refusal' AS refusal, p.line_attempts
   FROM switchboard.pending_asks p
   JOIN public.owner_delivery_subjects s ON s.id = p.subject_id
  WHERE p.state = 'open' AND p.expires_at > clock_timestamp() AND p.cause = ANY($3::text[])
@@ -169,20 +182,41 @@ class OwnerFailureReporter:
 
     async def _expire(self) -> int:
         """Open asks past their expiry become ``dropped_stale``: the reference is cleared, the
-        subject is closed, and nothing is replayed. Runs whether or not delivery is on."""
+        subject is closed, and nothing is replayed. Runs whether or not delivery is on.
+
+        Each row is its own savepoint, so one bad row cannot abort the rest of the sweep.
+        """
+        done = 0
         async with self.pool.acquire() as conn, conn.transaction():
             await conn.execute("SELECT set_config('search_path', 'switchboard,public', true)")
-            rows = await conn.fetch(
-                "UPDATE switchboard.pending_asks SET state = 'dropped_stale', original_ask = NULL, "
-                "updated_at = clock_timestamp() "
-                "WHERE state = 'open' AND expires_at <= clock_timestamp() RETURNING id, subject_id"
+            due = await conn.fetch(
+                "SELECT id FROM switchboard.pending_asks "
+                "WHERE state = 'open' AND expires_at <= clock_timestamp() "
+                "ORDER BY expires_at, id LIMIT $1",
+                self.batch * 5,
             )
-            for row in rows:
-                if row["subject_id"] is not None:
-                    await od.close_for_authority(
-                        conn, kind="pending_ask", source_ref=str(row["id"]), status="expired"
-                    )
-            return len(rows)
+            for ask in due:
+                try:
+                    async with conn.transaction():
+                        row = await conn.fetchrow(
+                            "UPDATE switchboard.pending_asks SET state = 'dropped_stale', "
+                            "original_ask = NULL, updated_at = clock_timestamp() "
+                            "WHERE id = $1 AND state = 'open' RETURNING subject_id",
+                            ask["id"],
+                        )
+                        if row is None:
+                            continue
+                        if row["subject_id"] is not None:
+                            await od.close_for_authority(
+                                conn,
+                                kind="pending_ask",
+                                source_ref=str(ask["id"]),
+                                status="expired",
+                            )
+                        done += 1
+                except Exception:
+                    logger.warning("pending ask could not be expired ask=%s", ask["id"])
+        return done
 
     @classmethod
     async def _record_one(cls, conn: Any, row: Any, owner: Any) -> int:
@@ -193,6 +227,8 @@ class OwnerFailureReporter:
             row["source_key"],
             row["id"],
             cause,
+            # ended_at is goals.updated_at, which later touches can move; acceptable for a
+            # 24 hour bound that only ever errs toward offering the ask for longer.
             row["ended_at"] + ASK_LIFETIME,
         )
         if ask is None:
@@ -237,7 +273,7 @@ class OwnerFailureReporter:
         return sent
 
     async def _deliver(self, ask: Any) -> bool:
-        line = CAUSE_LINES.get(ask["cause"])
+        line = line_for(ask["cause"], ask["refusal"])
         if line is None:
             return False
         async with self.pool.acquire() as conn, conn.transaction():
@@ -258,6 +294,13 @@ class OwnerFailureReporter:
                 "WHERE id = $1",
                 ask["id"],
             )
+            if ask["line_attempts"] + 1 >= MAX_LINE_ATTEMPTS:
+                logger.warning(
+                    "pending ask cause line given up after %d presentations ask=%s cause=%s",
+                    MAX_LINE_ATTEMPTS,
+                    ask["id"],
+                    ask["cause"],
+                )
         try:
             outcome = await self.sender.send(line, dedup_key=f"pending_ask:{ask['id']}")
         except Exception:

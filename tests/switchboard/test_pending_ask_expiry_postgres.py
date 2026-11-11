@@ -47,7 +47,7 @@ async def test_a_quota_refused_owner_message_leaves_one_ask_with_a_source_refere
         "refusal": "quota_exhausted",
     }
     window = row["expires_at"] - row["created_at"]
-    assert 23.9 * 3600 < window.total_seconds() <= 24 * 3600
+    assert 23.9 * 3600 < window.total_seconds() <= 24 * 3600 + 1
     # A retry of the same message does not make a second ask.
     await admit(runtime, Evidence("message", "p-2", owner=True), source)
     assert len([r for r in await asks(owner) if r["cause"] == "admission_refused"]) == 1
@@ -185,3 +185,66 @@ async def test_a_line_that_can_never_be_sent_is_given_up_after_a_few_sweeps(worl
     assert len(sender.lines) == MAX_LINE_ATTEMPTS
     (row,) = await asks(owner)
     assert row["state"] == "open" and row["line_attempts"] == MAX_LINE_ATTEMPTS
+
+
+async def test_a_forwarded_owner_message_with_outside_content_still_leaves_an_ask(world):  # noqa: F811
+    owner, runtime, _ = world
+    facts = Evidence("message", "p-2", owner=True, forwarded=True, outside_content=True)
+    source, refused = await refuse_owner_message(owner, runtime, facts)
+    assert refused.reason == "quota_exhausted"
+    (row,) = [r for r in await asks(owner) if r["cause"] == "admission_refused"]
+    assert row["source_key"] == source.key
+
+
+async def test_an_oversized_reference_is_refused_by_the_database(world):  # noqa: F811
+    owner, _, _ = world
+    with pytest.raises(Exception, match="ck_pending_ask_original"):
+        await owner.execute(
+            "INSERT INTO switchboard.pending_asks (source_key, cause, original_ask) "
+            "VALUES ('big', 'admission_refused', jsonb_build_object('x', repeat('a', 2000)))"
+        )
+
+
+async def test_an_unreadable_limits_refusal_gets_its_own_sentence(world):  # noqa: F811
+    from butlers.goal_runner.owner_failure import LIMITS_UNAVAILABLE_LINE
+
+    owner, runtime, _ = world
+    await owner.execute(
+        "INSERT INTO switchboard.pending_asks (source_key, cause, original_ask) "
+        "VALUES ('lim', 'admission_refused', "
+        '\'{"v":1,"source":{"kind":"message","id":"m"},"refusal":"limits_unavailable"}\')'
+    )
+    sender = Sender()
+    assert await reporter(runtime, sender).sweep() == 1
+    assert sender.lines[0][0] == LIMITS_UNAVAILABLE_LINE
+    assert LIMITS_UNAVAILABLE_LINE not in CAUSE_LINES.values()
+    assert "busy" not in LIMITS_UNAVAILABLE_LINE
+
+
+async def test_giving_up_on_a_line_is_logged_once_without_content(world, caplog):  # noqa: F811
+    from butlers.goal_runner.owner_failure import MAX_LINE_ATTEMPTS
+
+    owner, runtime, _ = world
+    await owner_goal(runtime, owner)
+    with caplog.at_level("WARNING"):
+        for _ in range(MAX_LINE_ATTEMPTS + 2):
+            await reporter(runtime, Sender("failed")).sweep()
+    given_up = [r for r in caplog.records if "given up" in r.getMessage()]
+    assert len(given_up) == 1
+
+
+async def test_one_bad_expiry_does_not_stop_the_others(world):  # noqa: F811
+    owner, runtime, _ = world
+    await refuse_owner_message(owner, runtime)
+    await reporter(runtime, Sender()).sweep()
+    await owner.execute(
+        "UPDATE switchboard.pending_asks SET expires_at = clock_timestamp() - interval '1 second'"
+    )
+    # A subject that cannot be closed must not abort the sweep for the rest.
+    await owner.execute(
+        "INSERT INTO switchboard.pending_asks (source_key, cause, expires_at, subject_id) "
+        "VALUES ('bad', 'failed', clock_timestamp() - interval '1 second', gen_random_uuid())"
+    )
+    await reporter(runtime, Sender()).sweep()
+    states = {r["source_key"]: r["state"] for r in await asks(owner)}
+    assert list(states.values()).count("dropped_stale") >= 1
