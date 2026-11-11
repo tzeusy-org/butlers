@@ -1066,6 +1066,14 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         )
     },
     **{
+        ("src/butlers/goal_runner/ledger.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: S1/S2.2 a wake lead starts with its epoch's label (sw_063) "
+            "over the Switchboard-owned goal ledger; qualified SQL allocated to "
+            "goal_runner/ledger.py (bu-dhloi1.305)"
+        )
+        for relation in ("goal_epochs", "goal_label_start")
+    },
+    **{
         ("src/butlers/goal_runner/owner_failure.py", f"switchboard.{relation}"): (
             "sanctioned:RFC-0038: S6 owner failure cause line (sw_068) over the Switchboard-owned "
             "goal ledger; qualified SQL allocated to goal_runner/owner_failure.py (bu-dhloi1.14)"
