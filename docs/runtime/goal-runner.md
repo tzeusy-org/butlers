@@ -96,6 +96,7 @@ capability and never lists one. The runner serves these tools on the same per-go
 | `goal__complete` | lead | Record the outcome; the goal settles |
 | `goal__wait_approval` | lead | End the lead and wait on one effect parked for approval (see below) |
 | `goal__wait_owner` | lead | End the lead and wait for the owner's answer to a delivered prompt (see below) |
+| `goal__wait_until` | lead | End the lead and wait on a predicate over this goal's own decisions and effects (see below) |
 | `goal__plan` | lead | Record the plan as the goal's next version of goal-owned references (see below) |
 | `goal__inbox` | lead | Take the owner replies joined to this goal since the last call |
 | `goal__escalate` | lead | Hand the goal to a fresh lead on the next ladder tier |
@@ -394,8 +395,8 @@ registry, plan versions, opening an envelope (superseding a fired predecessor) a
 opens the next generation only when the goal is live, no lead is running, the fired generation's
 successor launched, the cumulative cap and the original deadline hold. Plan versions are written
 by `goal__plan` (below) and, when a goal first waits with none recorded, as an empty version 1 for
-the envelope to bind. Nothing calls the thread registry yet (`bu-dhloi1.296`), and nothing opens a
-`conditions` envelope or calls `rearm` (`bu-dhloi1.305`).
+the envelope to bind. Nothing calls the thread registry yet (`bu-dhloi1.296`). `goal__wait_until`
+opens a `conditions` envelope (below); nothing calls `rearm` yet (`bu-dhloi1.305`).
 
 ### Plan versions (S2)
 
@@ -461,7 +462,8 @@ survives only while its capability is still published and not `transact` (admiss
 set), so a policy change while the goal waited narrows its wake. An `owner_answer` or `approval`
 envelope snapshots the waiting lead's grant ∩ the ceiling, so its wake is not narrowed beyond the
 lead that waited; a `settle` envelope snapshots no grant, since nothing is launched from it. A
-`conditions` envelope carries the snapshot its opener recorded. Because a relaunch, recovery or
+`conditions` envelope carries the snapshot its opener recorded (`goal__wait_until`: the waiting
+lead's grant ∩ the ceiling). Because a relaunch, recovery or
 escalation takes the latest lead's grant, a failed narrowed wake lead's replacement stays narrowed.
 
 ### Waiting on an approval (bu-dhloi1.204)
@@ -521,6 +523,39 @@ above, and the lead reads the reply from `goal__inbox` as `kind: owner_reply`. A
 waiting goal in any other case (another prompt, an expired wait, a settle, approval or conditions
 wait, a stopped goal) is new owner intent, as before. Same-chat non-reply joining of a running
 goal is not part of this change.
+
+### Waiting on the goal's own conditions (S2.2, S4)
+
+`goal__wait_until {predicate, deadline, max_wakes}` is for a lead that has nothing to do until
+something of its own goal happens (bu-dhloi1.305). The predicate is the closed S4 language
+(`all`/`any`, at most two levels and 16 leaves) restricted to the goal's own leaves, which need no
+approval:
+
+- `decision {subject_id, outcome}`: the owner's decision on one of this goal's effects that parked
+  for approval. Past `parked` the call was approved whatever its dispatch did since; `rejected`,
+  `expired` and `cancelled` are the decision itself.
+- `effect_settled {effect_id, status_set}`: one of this goal's effects settled as `succeeded`
+  (`committed`), `failed`, `unknown` or `cancelled` (an effect that never ran).
+
+`owner_input` is refused `policy`: admission joins a reply only to an `owner_answer` wait, so a
+conditions instance on it could not be fed; `goal__wait_owner` is the reply wait. `at` and
+`transition` (clock and perception, third-party evidence) are refused `policy` too. So are free
+text, a `deadline` that is not an ISO 8601 timestamp with an offset, one later than 45 days after
+the goal's admission or not in the future, and `max_wakes` outside 1-6. A decision or effect that is
+not this goal's (or a decision on an effect that never parked) is refused `resource`. Nothing is
+recorded on a refusal; a child is refused `capability`.
+
+In one transaction, under the goal lock, the lead and its live children end, a `conditions`
+envelope opens (the predicate and its S4 digest, its sources, the goal's label, the deadline or the
+budget deadline if sooner, `max_wakes`, a grant snapshot of the waiting lead's grant ∩ the
+ceiling), and its condition instance registers with the evaluator on the same connection
+(`ConnectionConditionStore`, one savepoint per unit). The subscription grant and the registration
+snapshot are read from the goal's effect rows, never from the model. A predicate that already holds
+fires at registration and is admitted in that transaction as the wait's wake: the call returns
+`woken` and the sweep launches the successor. Otherwise it returns `waiting`. Feeding later goal
+events to the evaluator, and `rearm` after a wake, are later steps of bu-dhloi1.305; until then a
+wait that is not already true ends at its deadline (below). Stop cancels the envelope; a fire
+after Stop is recorded `not_admitted: stopped`.
 
 ### Expiry of a wait
 

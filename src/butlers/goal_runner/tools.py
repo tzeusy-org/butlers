@@ -2,7 +2,7 @@
 
 They are not domain capabilities. The lead holds ``goal.delegate``,
 ``goal.await``, ``goal.stop_child``, ``goal.complete``, ``goal.wait_approval``,
-``goal.wait_owner``, ``goal.plan``, ``goal.escalate`` and ``goal.inbox``;
+``goal.wait_owner``, ``goal.wait_until``, ``goal.plan``, ``goal.escalate`` and ``goal.inbox``;
 a child holds only ``goal.return``. Each is listed by the calling invocation's
 depth, read from its ledger row under the goal lock, and each handler checks
 that depth again in its own transaction, so a child can neither list nor call
@@ -33,6 +33,7 @@ from .guidance import LOAD_TOOL as GUIDANCE_LOAD
 from .guidance import SEARCH_TOOL as GUIDANCE_SEARCH
 from .guidance import Guidance
 from .ledger import MAX_PLAN_REFS
+from .own_conditions import MAX_WAKES
 from .packet import PacketComposer
 from .runner import GoalRunner
 
@@ -130,6 +131,25 @@ _TOOLS = (
             "type": "object",
             "properties": {"effect_id": _UUID},
             "required": ["effect_id"],
+            "additionalProperties": False,
+        },
+    ),
+    GoalTool(
+        "goal__wait_until",
+        (0,),
+        "End your turn and wait until a condition over this goal's own effects holds: the "
+        "owner's decision on an effect parked for approval ({tag: decision, subject_id, "
+        "outcome}) or an effect settling ({tag: effect_settled, effect_id, status_set}), "
+        "combined with all/any. The goal ends if the deadline passes first. Returns woken when "
+        "the condition already holds.",
+        {
+            "type": "object",
+            "properties": {
+                "predicate": {"type": "object"},
+                "deadline": {"type": "string", "format": "date-time"},
+                "max_wakes": {"type": "integer", "minimum": 1, "maximum": MAX_WAKES},
+            },
+            "required": ["predicate", "deadline", "max_wakes"],
             "additionalProperties": False,
         },
     ),
@@ -261,6 +281,7 @@ class GoalTools:
             "goal__complete": self._complete,
             "goal__wait_approval": self._wait_approval,
             "goal__wait_owner": self._wait_owner,
+            "goal__wait_until": self._wait_until,
             "goal__plan": self._plan,
             "goal__escalate": self._escalate,
             "goal__inbox": self._inbox,
@@ -315,6 +336,14 @@ class GoalTools:
     async def _wait_owner(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
         args = _closed(arguments, {"effect_id"}, {"effect_id"})
         return {"status": await self.runner.wait_owner(goal_id, token, args["effect_id"])}
+
+    async def _wait_until(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
+        keys = {"predicate", "deadline", "max_wakes"}
+        args = _closed(arguments, keys, keys)
+        status = await self.runner.wait_until(
+            goal_id, token, args["predicate"], args["deadline"], args["max_wakes"]
+        )
+        return {"status": status}
 
     async def _plan(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
         keys = {"premise_refs", "evidence_refs", "step_refs"}

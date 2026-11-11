@@ -28,7 +28,7 @@ from opentelemetry import trace
 
 from butlers.capability_broker.contracts import BrokerRefused, Reason
 from butlers.capability_broker.service import Broker
-from butlers.conditions import FireIntent
+from butlers.conditions import FireIntent, PredicateError
 from butlers.core.goal_labels import Label
 from butlers.core.goal_wake import WakeAdmission, WakeResult
 from butlers.core.model_call import AttemptOutcome, AttemptSink, CallSpec, Candidate, call_model
@@ -48,6 +48,7 @@ from .contracts import (
 from .delegation import DelegationRequest, parse_delegation
 from .ledger import Leaderless, RunnerLedger, Started, WakeClaim, plan_refs
 from .models import ModelLadders, next_tier
+from .own_conditions import MAX_WAKES, own_predicate
 from .packet import PacketComposer
 
 _ADMIT_ATTEMPTS = 3  # sweeps a fire may fail admission before it is closed as admit_error
@@ -598,6 +599,39 @@ class GoalRunner:
         """``goal.wait_owner`` (S2.2): the lead ends; the goal waits for the owner's answer."""
         return await self._wait_on(goal_id, token, effect_id, "wait_owner")
 
+    async def wait_until(
+        self, goal_id: UUID, token: str, predicate: Any, deadline: Any, max_wakes: Any
+    ) -> str:
+        """``goal.wait_until`` (S2.2): the lead ends; the goal waits on its own conditions.
+
+        Returns ``woken`` when the predicate already held (its one successor is admitted) and
+        ``waiting`` otherwise. A predicate outside the goal-own language, a deadline that is not
+        an aware timestamp or a wake count outside ``1..MAX_WAKES`` is refused POLICY.
+        """
+        try:
+            canonical = own_predicate(predicate)
+        except PredicateError:
+            raise BrokerRefused(Reason.POLICY) from None
+        until = _aware(deadline)
+        if type(max_wakes) is not int or not 1 <= max_wakes <= MAX_WAKES:
+            raise BrokerRefused(Reason.POLICY)
+        with _tracer.start_as_current_span(
+            "goal.wait_until", record_exception=False, set_status_on_exception=False
+        ) as span:
+            span.set_attribute("goal_id", str(goal_id))
+            async with self.broker._transaction() as broker_ledger:
+                principal = await broker_ledger.authenticate(goal_id, token)
+                span.set_attribute("invocation_id", str(principal.invocation_id))
+                ledger = RunnerLedger(broker_ledger.connection)
+                waited = await ledger.wait_until(principal, canonical, until, max_wakes)
+            if isinstance(waited, BrokerRefused):
+                raise waited
+            children, woken = waited
+            span.set_attribute("woken", woken)
+        await self._terminate_all(children)
+        self._terminate_later(principal.invocation_id)
+        return "woken" if woken else "waiting"
+
     async def plan(self, goal_id: UUID, token: str, premise: Any, evidence: Any, steps: Any) -> int:
         """``goal.plan`` (RFC 0038 S2): record the lead's plan as the goal's next version."""
         refs = (plan_refs(premise), plan_refs(evidence), plan_refs(steps))
@@ -903,6 +937,17 @@ def _uuid(value: Any) -> UUID:
     except ValueError:
         parsed = None
     if parsed is None or str(parsed) != value:
+        raise BrokerRefused(Reason.POLICY)
+    return parsed
+
+
+def _aware(value: Any) -> datetime:
+    """An ISO 8601 timestamp with its offset; a naive or unparseable one is POLICY."""
+    try:
+        parsed = datetime.fromisoformat(value) if type(value) is str else None
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.utcoffset() is None:
         raise BrokerRefused(Reason.POLICY)
     return parsed
 
