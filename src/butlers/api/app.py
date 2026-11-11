@@ -89,6 +89,7 @@ from butlers.jobs.calendar_sync_deadman import (
     DEFAULT_CALENDAR_DEADMAN_CHECK_INTERVAL_S,
     run_calendar_sync_deadman_loop,
 )
+from butlers.jobs.capability_health import run_capability_health_loop, writer_dsn
 from butlers.jobs.deploy_drift import (
     DEFAULT_DRIFT_CHECK_INTERVAL_S,
     run_migration_drift_loop,
@@ -204,6 +205,7 @@ async def lifespan(app: FastAPI):
     job_health = JobHealthStore(lambda: get_db_manager().pool("switchboard"))
     app.state.background_job_health = job_health
     secrets_lifecycle_task: asyncio.Task | None = None
+    capability_health_task: asyncio.Task | None = None
     settings_console_delta_task: asyncio.Task | None = None
     secrets_staleness_task: asyncio.Task | None = None
     migration_drift_task: asyncio.Task | None = None
@@ -320,6 +322,20 @@ async def lifespan(app: FastAPI):
                 health=job_health.recorder("secrets_lifecycle", "periodic", scan_interval_s),
             )
         )
+
+        # Capability health (RFC 0038 S6): publishes system.dep through its own login as
+        # perception_health_writer. No dedicated DSN means no job; readers then see unknown.
+        health_dsn = writer_dsn()
+        if health_dsn is not None:
+            capability_health_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "capability_health",
+                    lambda: run_capability_health_loop(get_db_manager(), health_dsn),
+                    health=job_health.recorder("capability_health", "periodic", 60),
+                )
+            )
+        else:
+            await job_health.recorder("capability_health", "periodic", 60).disabled()
 
         # Hourly automated model-catalog verification sweep (bu-hmdqz.2):
         # closes the loop left open by the manual-only "Verify all" button —
@@ -604,6 +620,10 @@ async def lifespan(app: FastAPI):
         secrets_lifecycle_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await secrets_lifecycle_task
+    if capability_health_task is not None:
+        capability_health_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await capability_health_task
     if model_verify_task is not None:
         model_verify_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

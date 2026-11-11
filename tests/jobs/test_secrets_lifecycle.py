@@ -104,6 +104,36 @@ async def test_collect_snapshots_aggregates_all_families_with_canonical_keys():
     assert keys["u:google"].state == "expiring"
 
 
+async def test_collect_snapshots_say_where_each_credentials_probe_attempts_are_logged():
+    finance_pool = object()
+    shared_pool = object()
+    db = db_manager({"finance": finance_pool}, credential_pool=shared_pool)
+
+    async def fake_system(pool, butler_name, **kwargs):
+        key = "PER_BUTLER" if pool is finance_pool else "SHARED"
+        return [SystemSecret(key=key, state="ok", butler=butler_name)]
+
+    async def fake_cli(pool):
+        return [CliRuntime(key="claude", state="ok")]
+
+    async def fake_user(pool, *, identity):
+        return [UserSecret(id="u1", entity_id="e1", type="google_oauth_refresh", state="ok")]
+
+    with (
+        patch("butlers.jobs.secrets_lifecycle._fetch_system_secrets", side_effect=fake_system),
+        patch("butlers.jobs.secrets_lifecycle._fetch_cli_secrets", side_effect=fake_cli),
+        patch("butlers.jobs.secrets_lifecycle._fetch_user_secrets", side_effect=fake_user),
+    ):
+        snapshots = await _collect_snapshots(db)
+
+    assert {s.key: (s.probe_scope, s.probe_key) for s in snapshots} == {
+        "s:PER_BUTLER": ("system", "PER_BUTLER"),
+        "s:SHARED": ("system", "SHARED"),
+        "c:claude": ("cli", "claude"),
+        "u:google": ("user", "google_oauth_refresh"),
+    }
+
+
 async def test_collect_snapshots_excludes_spotify_system_credentials():
     lifestyle_pool = object()
     shared_pool = object()

@@ -5643,7 +5643,7 @@
       "sha256": "174eccfe628196cc18d86b6175b4284301d5adb67169e1751313505d12b19697"
     },
     "deploy/helm/butlers/templates/dashboard-api.yaml": {
-      "sha256": "1dfec5fb6b88cd21c08a81d1043590c86012c6f644eac4e43f0ced3b35709f99"
+      "sha256": "be9aaa12e78c54d72b437411caf00bb577e9594589861465b707f87276bd6601"
     },
     "deploy/helm/butlers/templates/egress-gateway.yaml": {
       "sha256": "46726ddc9aa6cb92b69054cca56e5772923848af373dc68022d239cf8f4544bd"
