@@ -56,6 +56,12 @@ from butlers.testing.tool_host import host_tools
 
 pytestmark = pytest.mark.unit
 
+# Heartbeat tests wait for background-task progress that needs a few event-loop iterations
+# (under a millisecond measured). The wait is a hang guard, not a latency assertion: a loaded
+# xdist worker can stall for seconds (bu-dhloi1.319), and a real hang still fails here and, at the
+# latest, at the 300s pytest-timeout.
+_HANG_GUARD_S = 30.0
+
 # ---------------------------------------------------------------------------
 # Test helpers: stub modules
 # ---------------------------------------------------------------------------
@@ -1119,7 +1125,7 @@ async def test_switchboard_client_lifecycle(butler_dir: Path, monkeypatch) -> No
         ):
             heartbeat = asyncio.create_task(domain._switchboard_heartbeat_loop())
             try:
-                await asyncio.wait_for(connected.wait(), timeout=1)
+                await asyncio.wait_for(connected.wait(), timeout=_HANG_GUARD_S)
             finally:
                 heartbeat.cancel()
                 await heartbeat
@@ -1153,7 +1159,7 @@ async def test_switchboard_heartbeat_uses_ping_for_liveness_probe(butler_dir: Pa
 
     with patch("butlers.switchboard_wiring._SWITCHBOARD_HEARTBEAT_INTERVAL_S", 0):
         task = asyncio.create_task(daemon._switchboard_heartbeat_loop())
-        await asyncio.wait_for(ping_called.wait(), timeout=1.0)
+        await asyncio.wait_for(ping_called.wait(), timeout=_HANG_GUARD_S)
         task.cancel()
         await task
 
@@ -1190,8 +1196,8 @@ async def test_switchboard_heartbeat_reconnects_on_stale_ping_error(butler_dir: 
         patch("butlers.switchboard_wiring.connect_switchboard", new=AsyncMock(side_effect=connect)),
     ):
         task = asyncio.create_task(daemon._switchboard_heartbeat_loop())
-        await asyncio.wait_for(ping_called.wait(), timeout=1.0)
-        await asyncio.wait_for(reconnect_done.wait(), timeout=1.0)
+        await asyncio.wait_for(ping_called.wait(), timeout=_HANG_GUARD_S)
+        await asyncio.wait_for(reconnect_done.wait(), timeout=_HANG_GUARD_S)
         task.cancel()
         await task
 
@@ -1246,10 +1252,10 @@ async def test_a_stray_cancel_does_not_end_the_switchboard_heartbeat(
         patch("butlers.switchboard_wiring.connect_switchboard", new=connect),
     ):
         task = asyncio.create_task(daemon._switchboard_heartbeat_loop())
-        await asyncio.wait_for(survived.wait(), timeout=2.0)
+        await asyncio.wait_for(survived.wait(), timeout=_HANG_GUARD_S)
         assert not task.done()
         task.cancel()
-        await asyncio.wait_for(task, timeout=2.0)
+        await asyncio.wait_for(task, timeout=_HANG_GUARD_S)
 
     assert not task.cancelled()
     # Whichever step strayed, the dead connection was evicted rather than pinged forever.
@@ -1275,9 +1281,9 @@ async def test_a_real_cancel_during_ping_still_ends_the_switchboard_heartbeat(
         patch("butlers.switchboard_wiring.disconnect_switchboard", new=disconnect),
     ):
         task = asyncio.create_task(daemon._switchboard_heartbeat_loop())
-        await asyncio.wait_for(pinging.wait(), timeout=1.0)
+        await asyncio.wait_for(pinging.wait(), timeout=_HANG_GUARD_S)
         task.cancel()
-        await asyncio.wait_for(task, timeout=2.0)
+        await asyncio.wait_for(task, timeout=_HANG_GUARD_S)
 
     disconnect.assert_not_awaited()
 
