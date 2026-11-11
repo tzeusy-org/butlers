@@ -556,3 +556,17 @@ def test_every_refusal_word_is_in_the_closed_set_and_content_blind():
         and not (node.args and isinstance(node.args[0], ast.Constant))
     ]
     assert dynamic == []
+
+
+def test_an_after_preflight_that_cannot_run_is_named_profile_load_failed(host, monkeypatch):
+    state, root, _, _ = host
+    real = ci.repeat_preflight
+
+    def preflight(path):
+        if path.name == "after":
+            raise subprocess.TimeoutExpired(["bwrap"], 15)
+        return real(path)
+
+    monkeypatch.setattr(ci, "repeat_preflight", preflight)
+    with pytest.raises(ci.Refusal, match="^profile_load_failed$"):
+        ci.prepare(root)

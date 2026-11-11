@@ -344,7 +344,10 @@ def prepare(root: Path) -> None:
     _write(root / "loaded.json", load_receipt())
     restricted()
     generic_denied()
-    after = repeat_preflight(root / "after")
+    try:
+        after = repeat_preflight(root / "after")
+    except (OSError, subprocess.SubprocessError):
+        raise Refusal("profile_load_failed") from None
     print(
         json.dumps(
             {
