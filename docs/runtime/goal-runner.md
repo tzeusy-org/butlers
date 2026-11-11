@@ -528,8 +528,8 @@ goal is not part of this change.
 
 `goal__wait_until {predicate, deadline, max_wakes}` is for a lead that has nothing to do until
 something of its own goal happens (bu-dhloi1.305). It is dark: `tools.WAIT_UNTIL_LIVE` is off, so
-the tool is neither listed nor callable (`capability`) until goal events feed the evaluator (the
-next step), because until then a wait that is not already true can only expire. The runner and
+the tool is neither listed nor callable (`capability`) until the goal-event feed (below) is wired
+into the sweep, because until then a wait that is not already true can only expire. The runner and
 ledger path below exists and is tested directly. The predicate is the closed S4 language
 (`all`/`any`, at most two levels and 16 leaves) restricted to the goal's own leaves, which need no
 approval:
@@ -555,12 +555,30 @@ ceiling), and its condition instance registers with the evaluator on the same co
 (`ConnectionConditionStore`, one savepoint per unit). The subscription grant and the registration
 snapshot are read from the goal's effect rows, never from the model. A predicate that already holds
 fires at registration and is admitted in that transaction as the wait's wake: the call returns
-`woken` and the sweep launches the successor. Otherwise it returns `waiting`. Feeding later goal
-events to the evaluator, and `rearm` after a wake, are later steps of bu-dhloi1.305; until then a
-wait that is not already true ends at its deadline (below). `max_wakes` above 1 has no effect
-until `rearm`. Stop cancels the envelope and, in the same transaction, the goal's own condition
+`woken` and the sweep launches the successor. Otherwise it returns `waiting`. `max_wakes` above 1
+has no effect until `rearm` (a later step of bu-dhloi1.305). Stop cancels the envelope and, in the same transaction, the goal's own condition
 instance, so nothing is left for the evaluator to fire; a fire that raced Stop is still recorded
 `not_admitted: stopped`.
+
+#### The goal-event feed (dark)
+
+`GoalRunner.feed_conditions` wakes a goal whose conditions held after it began waiting. For every
+`waiting` goal with an open `conditions` envelope it syncs the domain's decisions onto the goal's
+parked effects (as an approval wait does), derives the goal's own events from its effect rows
+(`own_conditions.events_for`, the same mappings as the registration snapshot), evaluates them
+against the envelope's current condition instance and admits a fire as the wait's one wake.
+Events come from current state, not a log. That is sound because the facts only accumulate (an
+owner decides once and a settled effect stays settled), so feeding current state can neither lose
+nor invent a fire. A `decision` event names the effect id as its `subject_id`, the id a
+`decision` leaf binds. Each event's id derives from its source, effect and value, so a redelivered
+event is the same event; its position is the effect's last change in microseconds.
+
+The feed is dark: `supervise_once` does not call it. A feed-triggered wake comes from evidence
+outside the waiting lead (the owner's or a domain's action), and its lead would hold the
+envelope's full waiting grant. Under the bu-dhloi1.305 ruling, no live feed-triggered wake may
+hold that grant until the label narrowing of third-party-sourced wakes lands (PR5), so the feed
+is wired into the sweep, and `goal__wait_until` listed, only then. `owner_input` stays refused
+until admission joins an owner's reply to a conditions wait on that prompt.
 
 ### Expiry of a wait
 

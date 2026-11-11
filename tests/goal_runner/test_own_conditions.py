@@ -16,12 +16,15 @@ import asyncpg
 import pytest
 
 from butlers.capability_broker.contracts import BrokerRefused, Reason
-from butlers.conditions import PredicateError, validate
+from butlers.conditions import ConditionEvaluator, PredicateError, validate
+from butlers.conditions.memory import InMemoryConditionStore
 from butlers.conditions.service import StoreConflict
 from butlers.conditions.sql import ConnectionConditionStore
+from butlers.core.goal_labels import Label
 from butlers.goal_runner import tools as goal_tools
 from butlers.goal_runner.own_conditions import (
     OwnEffect,
+    events_for,
     grant_for,
     named,
     own_predicate,
@@ -161,7 +164,7 @@ async def test_the_connection_store_maps_driver_errors_like_the_pool_store(error
 
 
 async def test_wait_until_is_dark_to_leads_until_the_event_feed_lands():
-    # Flipped by bu-dhloi1.305 PR2, together with this test.
+    # Flipped when the goal-event feed is wired live (after PR5), together with this test.
     assert goal_tools.WAIT_UNTIL_LIVE is False
     runner = MagicMock()
     runner.wait_until = AsyncMock(return_value="waiting")
@@ -172,3 +175,68 @@ async def test_wait_until_is_dark_to_leads_until_the_event_feed_lands():
         await tools.call(uuid4(), "token", "goal__wait_until", arguments)
     assert refused.value.reason is Reason.CAPABILITY
     runner.wait_until.assert_not_awaited()
+
+
+CHANGED = datetime(2026, 11, 11, 10, tzinfo=UTC)
+
+
+def test_a_decision_event_names_the_effect_as_its_subject():
+    events = events_for([(OwnEffect(PARKED, "rejected", True), CHANGED)])
+    (event,) = [e for e in events if e.tag == "decision"]
+    assert event.source == "goal.decision"
+    assert dict(event.data) == {"subject_id": PARKED, "outcome": "rejected"}
+    assert event.at == CHANGED and event.position == int(CHANGED.timestamp() * 1_000_000)
+
+
+def test_an_approved_effect_that_ran_is_both_a_decision_and_a_settlement():
+    events = events_for([(OwnEffect(PARKED, "committed", True), CHANGED)])
+    assert {(e.tag, tuple(sorted(e.data.values()))) for e in events} == {
+        ("decision", tuple(sorted((PARKED, "approved")))),
+        ("effect_settled", tuple(sorted((PARKED, "succeeded")))),
+    }
+
+
+@pytest.mark.parametrize("status", ["requested", "parked"])
+def test_an_undecided_effect_feeds_nothing(status):
+    assert events_for([(OwnEffect(PARKED, status, True), CHANGED)]) == []
+
+
+def test_a_dispatched_approval_is_decided_but_not_yet_settled():
+    (event,) = events_for([(OwnEffect(PARKED, "dispatched", True), CHANGED)])
+    assert event.tag == "decision" and event.data["outcome"] == "approved"
+
+
+def test_a_redelivered_event_is_the_same_event():
+    first = events_for([(OwnEffect(SENT, "failed", False), CHANGED)])
+    again = events_for([(OwnEffect(SENT, "failed", False), CHANGED)])
+    assert [e.id for e in first] == [e.id for e in again]
+    other = events_for([(OwnEffect(SENT, "unknown", False), CHANGED)])
+    assert first[0].id != other[0].id
+
+
+async def test_fed_events_fire_a_registered_goal_own_wait_once():
+    goal = str(uuid4())
+    predicate = {"tag": "all", "children": [decision(PARKED), settled(SENT, "succeeded")]}
+    pending = [OwnEffect(PARKED, "parked", True), OwnEffect(SENT, "dispatched", False)]
+    evaluator = ConditionEvaluator(InMemoryConditionStore())
+    registered = await evaluator.register(
+        instance_id="i0",
+        predicate=predicate,
+        grant=grant_for(goal, predicate, pending),
+        goal_id=goal,
+        label=Label.owner(),
+        snapshot=snapshot_for(NOW, pending),
+        expires_at=datetime(2026, 11, 12, tzinfo=UTC),
+    )
+    assert registered.intent is None
+
+    half = [(OwnEffect(PARKED, "approved", True), CHANGED), (pending[1], CHANGED)]
+    assert (await evaluator.evaluate("i0", events_for(half), now=CHANGED)).intent is None
+    done = [
+        (OwnEffect(PARKED, "approved", True), CHANGED),
+        (OwnEffect(SENT, "committed", False), CHANGED),
+    ]
+    fired = await evaluator.evaluate("i0", events_for(done), now=CHANGED)
+    assert fired.intent is not None
+    replay = await evaluator.evaluate("i0", events_for(done), now=CHANGED)
+    assert replay.intent == fired.intent

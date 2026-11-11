@@ -1150,6 +1150,27 @@ class RunnerLedger:
         )
         return True, live
 
+    async def condition_waits(self) -> list[tuple[UUID, str]]:
+        """``(goal, instance id)`` of every waiting goal's open conditions envelope generation."""
+        rows = await self.connection.fetch(
+            "SELECT e.goal_id, unnest(g.condition_instance_ids) AS instance_id "
+            "FROM switchboard.wait_envelopes e JOIN switchboard.goals o ON o.id = e.goal_id "
+            "JOIN switchboard.wait_generations g "
+            "ON (g.goal_id, g.envelope_id, g.generation) = (e.goal_id, e.id, e.generation) "
+            "WHERE e.kind = 'conditions' AND e.state = 'open' AND o.status = 'waiting' "
+            "ORDER BY e.goal_id"
+        )
+        return [(row["goal_id"], row["instance_id"]) for row in rows]
+
+    async def own_effects(self, goal_id: UUID) -> list[tuple[OwnEffect, datetime]]:
+        """The goal's effects as the conditions feed reads them, with their last change."""
+        rows = await self.connection.fetch(
+            "SELECT id::text AS id, status, approval_ref IS NOT NULL AS approval, updated_at "
+            "FROM switchboard.effects WHERE goal_id = $1",
+            goal_id,
+        )
+        return [(OwnEffect(r["id"], r["status"], r["approval"]), r["updated_at"]) for r in rows]
+
     async def _cancel_conditions(self, goal_id: UUID) -> None:
         """Stop cancels the condition instances of the goal's live waits, in Stop's transaction.
 
