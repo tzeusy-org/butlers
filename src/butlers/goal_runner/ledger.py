@@ -26,7 +26,6 @@ from butlers.capability_broker.typed import TypedSchema, parse_schema
 from butlers.conditions import ConditionEvaluator, ConditionsUnavailable, RegistrationRefused
 from butlers.conditions.predicate import digest as predicate_digest
 from butlers.conditions.predicate import sources as predicate_sources
-from butlers.conditions.service import StoreConflict
 from butlers.conditions.sql import ConnectionConditionStore
 from butlers.core.goal_admission import Grant, decode_grants, digest, encode_grants, intersect
 from butlers.core.goal_labels import Label
@@ -1155,8 +1154,8 @@ class RunnerLedger:
         """Stop cancels the condition instances of the goal's live waits, in Stop's transaction.
 
         Nothing is left for the evaluator to fire. A generation id with no stored instance of
-        this goal (one admitted without the evaluator) is skipped. If the store cannot cancel, Stop
-        still commits: a later fire is refused ``stopped`` by wake admission.
+        this goal (one admitted without the evaluator) is skipped. If a cancel fails for any
+        reason, Stop still commits: a later fire is refused ``stopped`` by wake admission.
         """
         instances = await self.connection.fetch(
             "SELECT unnest(g.condition_instance_ids) AS id FROM switchboard.wait_envelopes e "
@@ -1178,7 +1177,9 @@ class RunnerLedger:
                 if stored is None or stored.goal_id != str(goal_id):
                     continue
                 await evaluator.cancel(row["id"], now=now)
-            except (ConditionsUnavailable, ConnectionError, StoreConflict):
+            except Exception:
+                # Stop is the owner's kill switch and always commits; each store unit is its
+                # own savepoint, so a failed cancel leaves Stop's transaction usable.
                 logger.warning("goal stop could not cancel condition goal=%s", goal_id)
 
     async def end_goal(self, goal_id: UUID, status: str, reason: str) -> list[UUID]:

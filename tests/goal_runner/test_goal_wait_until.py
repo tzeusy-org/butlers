@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -25,6 +26,11 @@ from tests.goal_runner.test_goal_wake_runner import waiting_on_conditions
 
 pytestmark = pytest.mark.integration  # the harness module carries the shared marks
 pytest_plugins = ("tests.capability_broker.test_broker_ledger",)
+
+
+# A pinned evaluation instant. A wait's instance expires at a real deadline after the test
+# starts, so this instant is always before expiry and the evaluation means the same at any hour.
+AT = datetime(2026, 1, 1, 12, tzinfo=UTC)
 
 
 def decision(effect: UUID, outcome: str = "approved") -> dict:
@@ -145,17 +151,16 @@ async def test_a_predicate_not_yet_true_waits_until_its_event_fires(broker_db_ur
             == "open"
         )
 
-        now = datetime.now(UTC)
         event = ConditionEvent(
             id=str(uuid4()),
             source="goal.decision",
             position=1,
-            at=now,
+            at=AT,
             tag="decision",
             data={"subject_id": str(effect), "outcome": "rejected"},
         )
         evaluator = ConditionEvaluator(PostgresConditionStore(h.w.broker.pool))
-        fired = await evaluator.evaluate(instance, [event], now=now)
+        fired = await evaluator.evaluate(instance, [event], now=AT)
         assert fired.intent is not None
         admitted = await h.runner.admit_wake(fired.intent)
         assert admitted.state == "admitted"
@@ -251,20 +256,36 @@ async def test_stop_while_waiting_cancels_the_wait_and_its_fire(broker_db_url):
             "SELECT state FROM public.condition_instances WHERE id = $1", instance
         )
         assert state == "cancelled"
-        now = datetime.now(UTC)
         event = ConditionEvent(
             id=str(uuid4()),
             source="goal.decision",
             position=1,
-            at=now,
+            at=AT,
             tag="decision",
             data={"subject_id": str(effect), "outcome": "approved"},
         )
         evaluator = ConditionEvaluator(PostgresConditionStore(h.w.broker.pool))
-        fired = await evaluator.evaluate(instance, [event], now=now)
+        fired = await evaluator.evaluate(instance, [event], now=AT)
         assert fired.intent is None
         await h.runner.supervise_once()
         assert len(h.host.launches) == 1
+
+
+async def test_stop_commits_even_when_cancelling_the_condition_fails(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal, lead, effect = await parked(h)
+        assert await wait_until(h, goal, lead.token, wait_args(decision(effect))) == {
+            "status": "waiting"
+        }
+        failing = AsyncMock(side_effect=RuntimeError("store down"))
+
+        with patch.object(ConditionEvaluator, "cancel", failing):
+            await h.runner.stop(goal)
+
+        failing.assert_awaited()
+        # Stop is the owner's kill switch: it committed although the cancel failed.
+        assert await h.goal_status(goal) == "stopped"
+        assert (await envelope(h, goal))["state"] == "cancelled"
 
 
 async def test_stop_leaves_another_goals_instance_of_the_same_id_alone(broker_db_url):
