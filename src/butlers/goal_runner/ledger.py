@@ -23,7 +23,13 @@ from butlers.capability_broker.contracts import BrokerRefused, Catalog, Principa
 from butlers.capability_broker.ledger import BrokerLedger
 from butlers.capability_broker.recipients import live_owner
 from butlers.capability_broker.typed import TypedSchema, parse_schema
-from butlers.conditions import ConditionEvaluator, ConditionsUnavailable, RegistrationRefused, Tri
+from butlers.conditions import (
+    ConditionEvaluator,
+    ConditionsUnavailable,
+    RegistrationRefused,
+    Tri,
+    validate,
+)
 from butlers.conditions.evaluate import combine, initial_leaves
 from butlers.conditions.predicate import digest as predicate_digest
 from butlers.conditions.predicate import sources as predicate_sources
@@ -888,7 +894,8 @@ class RunnerLedger:
             raise BrokerRefused(Reason.POLICY)
         if await self.own_replies(principal.goal_id):
             raise BrokerRefused(Reason.POLICY)
-        predicate = json.loads(env["predicate"])
+        # Canonical as register makes it, so the check below is the evaluator's own.
+        predicate = validate(json.loads(env["predicate"]))
         effects = await self._own_effect_rows(principal.goal_id)
         _check_own(principal.goal_id, predicate, effects)
         snapshot = snapshot_for(env["now"], effects)

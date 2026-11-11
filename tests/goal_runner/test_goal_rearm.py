@@ -280,16 +280,20 @@ async def test_the_tool_is_dark_to_leads(broker_db_url):
         assert reason is Reason.CAPABILITY
 
 
-async def waiters(h, count: int) -> None:
-    """Return once ``count`` lock requests are queued (rows a holder keeps locked)."""
-    query = (
-        # The first waiter holds the tuple lock and waits on the holder's transaction id (no
-        # database); later ones wait on the tuple lock in this database.
-        "SELECT count(*) FROM pg_locks WHERE NOT granted AND (locktype = 'transactionid' "
-        "OR database = (SELECT oid FROM pg_database WHERE datname = current_database()))"
-    )
+#: Sessions queued behind the holder, directly or behind another of its waiters: the first
+#: waiter is blocked by the holder, a later one by the waiter holding the tuple lock ahead of it.
+_QUEUED = (
+    "WITH RECURSIVE queued AS ("
+    "SELECT pid FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid)) "
+    "UNION SELECT a.pid FROM pg_stat_activity a JOIN queued q "
+    "ON q.pid = ANY(pg_blocking_pids(a.pid))) SELECT count(*) FROM queued"
+)
+
+
+async def waiters(h, holder: int, count: int) -> None:
+    """Return once ``count`` sessions are queued behind the ``holder`` backend's lock."""
     for _ in range(500):
-        if await h.w.owner.fetchval(query) >= count:
+        if await h.w.owner.fetchval(_QUEUED, holder) >= count:
             return
         await asyncio.sleep(0.02)
     raise AssertionError("nothing queued on the goal lock")
@@ -297,13 +301,14 @@ async def waiters(h, count: int) -> None:
 
 @asynccontextmanager
 async def goal_locked(h, goal: UUID):
-    """Hold the goal row ``FOR UPDATE`` (the lock rearm and reply admission both take first)."""
+    """Hold the goal row ``FOR UPDATE`` (the lock rearm and reply admission both take first);
+    yields the holding backend's pid."""
     async with h.w.owner.acquire() as holder:
         tx = holder.transaction()
         await tx.start()
         await holder.execute("SELECT id FROM switchboard.goals WHERE id = $1 FOR UPDATE", goal)
         try:
-            yield
+            yield await holder.fetchval("SELECT pg_backend_pid()")
         finally:
             await tx.rollback()
 
@@ -313,11 +318,11 @@ async def test_a_reply_queued_behind_the_rearm_joins_the_next_generation(broker_
         goal, _, successor = await woken_by_reply(h, broker_db_url)
         await read_inbox(h, goal, successor)
 
-        async with goal_locked(h, goal):
+        async with goal_locked(h, goal) as holder:
             rearm = asyncio.create_task(wait_again(h, goal, successor.token))
-            await waiters(h, 1)
+            await waiters(h, holder, 1)
             racing = asyncio.create_task(reply(broker_db_url))
-            await waiters(h, 2)
+            await waiters(h, holder, 2)
 
         # The rearm took the goal first: the reply then found it waiting on generation 1.
         assert await rearm == "waiting"
@@ -334,11 +339,11 @@ async def test_a_reply_queued_ahead_of_the_rearm_refuses_it(broker_db_url):
         goal, _, successor = await woken_by_reply(h, broker_db_url)
         await read_inbox(h, goal, successor)
 
-        async with goal_locked(h, goal):
+        async with goal_locked(h, goal) as holder:
             racing = asyncio.create_task(reply(broker_db_url))
-            await waiters(h, 1)
+            await waiters(h, holder, 1)
             rearm = asyncio.create_task(refused(wait_again(h, goal, successor.token)))
-            await waiters(h, 2)
+            await waiters(h, holder, 2)
 
         # The reply joined the running goal first; the rearm then saw it unread.
         joined = await racing
