@@ -140,3 +140,67 @@ async def test_an_obligation_goal_that_released_an_owner_reply_also_tells_the_ow
     sender = Sender()
     assert await reporter(runtime, sender).sweep() == 1
     assert [r["cause"] for r in await asks(owner)] == ["replies_unread"]
+
+
+async def one_ask_for(owner, goal_id):
+    return [r for r in await asks(owner) if r["goal_id"] == goal_id]
+
+
+async def test_a_failed_obligation_goal_with_a_released_reply_gets_one_unread_ask(world):  # noqa: F811
+    owner, runtime, _ = world
+    goal_id = await goal_with_replies(owner, runtime)
+    await owner.execute("ALTER TABLE switchboard.goals DISABLE TRIGGER USER")
+    try:
+        await owner.execute(
+            "UPDATE switchboard.goals SET origin='third_party', status='failed' WHERE id=$1",
+            goal_id,
+        )
+    finally:
+        await owner.execute("ALTER TABLE switchboard.goals ENABLE TRIGGER USER")
+    await owner.execute(
+        "INSERT INTO switchboard.goal_inbox_releases (inbox_id, goal_id, reason) "
+        "SELECT id, goal_id, 'failed' FROM switchboard.goal_inbox WHERE goal_id = $1",
+        goal_id,
+    )
+    for _ in range(2):
+        await reporter(runtime, Sender()).sweep()
+    assert [r["cause"] for r in await one_ask_for(owner, goal_id)] == ["replies_unread"]
+
+
+async def test_a_failed_owner_goal_that_already_settled_an_owner_delivery_gets_an_unread_ask(
+    world,  # noqa: F811
+):
+    owner, runtime, owner_id = world
+    goal_id = await goal_with_replies(owner, runtime)
+    await effect(owner, goal_id, entity=owner_id, channel="telegram_bot", status="committed")
+    await end(owner, goal_id, "failed")
+    for _ in range(2):
+        await reporter(runtime, Sender()).sweep()
+    assert [r["cause"] for r in await one_ask_for(owner, goal_id)] == ["replies_unread"]
+
+
+@pytest.mark.parametrize(
+    ("settles", "cause"), [("failed", "failed"), ("committed", "replies_unread")]
+)
+async def test_a_dispatched_owner_effect_waits_then_gets_exactly_one_ask(world, settles, cause):  # noqa: F811
+    owner, runtime, owner_id = world
+    goal_id = await goal_with_replies(owner, runtime)
+    _, effect_id = await effect(
+        owner, goal_id, entity=owner_id, channel="telegram_bot", status="dispatched"
+    )
+    await end(owner, goal_id, "failed")
+    sender = Sender()
+    for _ in range(2):
+        await reporter(runtime, sender).sweep()
+    assert await one_ask_for(owner, goal_id) == []  # nothing yet: the effect may still settle
+    assert sender.lines == []
+    async with owner.acquire() as conn, conn.transaction():
+        await conn.execute("ALTER TABLE switchboard.effects DISABLE TRIGGER USER")
+        await conn.execute(
+            "UPDATE switchboard.effects SET status = $2 WHERE id = $1", effect_id, settles
+        )
+        await conn.execute("ALTER TABLE switchboard.effects ENABLE TRIGGER USER")
+    for _ in range(2):
+        await reporter(runtime, sender).sweep()
+    rows = await one_ask_for(owner, goal_id)
+    assert [r["cause"] for r in rows] == [cause]

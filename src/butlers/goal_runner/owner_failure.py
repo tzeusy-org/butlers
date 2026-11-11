@@ -74,6 +74,17 @@ def line_for(cause: str, refusal: str | None, released: int = 0) -> str | None:
     return line
 
 
+# "Told": an owner effect in the goal's lineage that is not an awaits-reply prompt. _UNREPORTED
+# treats any possibly-delivered status as told; _UNREAD's failed-goal branch takes only the settled
+# ones. Both read these two lines, so the passes cannot drift apart.
+_TOLD_STATUSES = "('committed', 'dispatched', 'unknown')"
+_SETTLED_TOLD_STATUSES = "('committed', 'unknown')"
+_LINEAGE_OWNER_EFFECT = """SELECT 1 FROM lineage l
+          JOIN switchboard.effects e ON e.goal_id = l.goal_id
+        WHERE l.root = g.id AND e.recipient_entity = $1
+          AND NOT e.prompt_accepts_input
+          AND e.status IN {statuses}"""
+
 # A terminal owner-message goal with no possibly-delivered owner effect in its lineage and
 # no pending ask yet. 'committed', 'dispatched' and 'unknown' may have reached the owner.
 _UNREPORTED = """
@@ -100,28 +111,40 @@ SELECT g.id, k.ask_key AS source_key, g.status, g.updated_at AS ended_at,
    AND g.updated_at > clock_timestamp() - interval '24 hours'
    AND NOT EXISTS (SELECT 1 FROM switchboard.pending_asks p WHERE p.source_key = k.ask_key)
    AND NOT EXISTS (
-       SELECT 1 FROM lineage l JOIN switchboard.effects e ON e.goal_id = l.goal_id
-        WHERE l.root = g.id AND e.recipient_entity = $1
-          AND NOT e.prompt_accepts_input
-          AND e.status IN ('committed', 'dispatched', 'unknown'))
+       __TOLD__)
  ORDER BY g.updated_at, g.id
  LIMIT $2
-"""
+""".replace("__TOLD__", _LINEAGE_OWNER_EFFECT.format(statuses=_TOLD_STATUSES))
 
-# A completed or partial goal that released owner replies unread (sw_070) and has no pending ask.
-# Failed and budget-exhausted goals are never discovered here: their failure ask states the count
-# on its own line (even if it is recorded late), so a goal never gets two asks.
+# A goal that released owner replies unread (sw_070) and has no pending ask: completed or partial,
+# or a failed / budget-exhausted goal that _UNREPORTED will NEVER select. That is decided only on
+# facts that cannot change later: a goal that is not an owner message, or whose lineage already
+# has a settled (committed / unknown) owner delivery. A goal whose only owner effect is still
+# 'dispatched' is left alone until it settles, then it is either excluded for good here or picked
+# up by _UNREPORTED, whose failure ask carries the count. The failed-goal branch must stay the exact
+# complement of _UNREPORTED, so a goal never gets two asks and no pass needs to guard the other.
 _UNREAD = """
+WITH RECURSIVE lineage (root, goal_id) AS (
+    SELECT g.id, g.id FROM switchboard.goals g
+     WHERE g.status IN ('failed', 'budget_exhausted')
+       AND EXISTS (SELECT 1 FROM switchboard.goal_inbox_releases r WHERE r.goal_id = g.id)
+    UNION
+    SELECT l.root, c.id FROM lineage l
+      JOIN switchboard.goals c ON c.caused_by_goal = l.goal_id
+)
 SELECT g.id, g.source_key || '#unread' AS ask_key, g.updated_at AS ended_at
   FROM switchboard.goals g
- WHERE g.status IN ('completed', 'partial')
-   AND g.updated_at > clock_timestamp() - interval '24 hours'
+ WHERE g.updated_at > clock_timestamp() - interval '24 hours'
    AND EXISTS (SELECT 1 FROM switchboard.goal_inbox_releases r WHERE r.goal_id = g.id)
    AND NOT EXISTS (SELECT 1 FROM switchboard.pending_asks p
                     WHERE p.goal_id = g.id OR p.source_key = g.source_key || '#unread')
+   AND (g.status IN ('completed', 'partial')
+        OR (g.status IN ('failed', 'budget_exhausted')
+            AND (g.origin <> 'owner' OR g.source_kind <> 'message'
+                 OR EXISTS (__SETTLED__))))
  ORDER BY g.updated_at, g.id
- LIMIT $1
-"""
+ LIMIT $2
+""".replace("__SETTLED__", _LINEAGE_OWNER_EFFECT.format(statuses=_SETTLED_TOLD_STATUSES))
 
 # Pending asks with no presentation at the subject's current generation, or whose presentation
 # there was proven not sent ('failed'): ``present`` resets that one and it is sent once.
@@ -207,7 +230,7 @@ class OwnerFailureReporter:
                         made += await self._record_one(conn, row, owner)
                 except Exception:
                     logger.warning("pending ask could not be recorded goal=%s", row["id"])
-            for row in await conn.fetch(_UNREAD, self.batch):
+            for row in await conn.fetch(_UNREAD, owner, self.batch):
                 try:
                     async with conn.transaction():
                         made += await self._record_unread(conn, row, owner)

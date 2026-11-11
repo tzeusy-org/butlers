@@ -658,7 +658,9 @@ in its own lineage, would leave the owner with silence. The sweep's last step
   joined but never read, the owner is told how many, as a count only (never a reply). A failed or
   budget-exhausted owner request states it on its own failure line, whenever that ask is recorded;
   it never gets a second ask. A goal that ended `completed` or `partial` with released replies and no
-  ask gets one ask with the closed cause `replies_unread`, keyed `<source key>#unread`, with the same
+  ask, or that failed / exhausted its budget but can never receive a failure ask (not an owner
+  message, or its lineage already settled a `committed` / `unknown` owner delivery; a goal whose only
+  owner effect is still `dispatched` waits until it settles), gets one ask with the closed cause `replies_unread`, keyed `<source key>#unread`, with the same
   dark gating, 24 hour expiry and retry cap; it has no Run or Drop card. A `stopped` goal needs
   nothing, since the owner caused it. The count is `COUNT(*)` of `goal_inbox_releases` for the goal,
   the same value as `RunnerLedger.released_replies`. Lines are not stored or length-checked, so the

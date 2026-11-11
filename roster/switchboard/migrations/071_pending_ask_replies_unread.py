@@ -5,9 +5,10 @@ Revises: sw_070
 
 RFC 0038 S2.2 and S6 (bu-dhloi1.323). sw_070 records, content-blind, each joined owner reply
 that a goal's end released unread. A failed or budget-exhausted owner request already has a
-pending ask; its cause line now states the count. A goal that ended ``completed`` or ``partial``
-(or any goal that has no failure ask) gets its own ask with the new closed cause
-``replies_unread``, so the owner is never left thinking a reply was acted on.
+pending ask; its cause line now states the count. A goal that ended ``completed`` or ``partial``,
+or that failed but can never receive a failure ask (it is not an owner message, or its lineage
+already settled an owner delivery), gets its own ask with the new closed cause ``replies_unread``,
+so the owner is never left thinking a reply was acted on. A goal gets one ask, never two.
 
 Only the cause CHECK widens. The downgrade refuses while a ``replies_unread`` ask exists,
 because it is the only record that the owner was not told.
