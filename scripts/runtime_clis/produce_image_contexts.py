@@ -307,6 +307,10 @@ def _produce(project: Path, work: Path, output: Path, commands: Runner) -> dict:
         if tracked_inputs(project, commands) != identity:
             raise ValueError("checkout changed while capturing the Python source snapshot")
         for build in builds():
+            # One tar stream, then a local extract. The per-file local exporter
+            # stalled indefinitely on the Python producer's ~190k-file output;
+            # the same graph exported as a tarball finishes in about a minute.
+            tarball = Path(temporary) / (build.name + ".tar")
             argv = [
                 "docker",
                 "buildx",
@@ -322,7 +326,7 @@ def _produce(project: Path, work: Path, output: Path, commands: Runner) -> dict:
                 "--file",
                 str(source / build.dockerfile),
                 "--output",
-                "type=local,dest=" + str(stage / build.name),
+                "type=tar,dest=" + str(tarball),
             ]
             for name, dependency in build.contexts:
                 if not (stage / dependency).is_dir():
@@ -331,7 +335,23 @@ def _produce(project: Path, work: Path, output: Path, commands: Runner) -> dict:
             for argument in build.arguments:
                 argv += ["--build-arg", argument]
             commands.run(argv + [str(source)], cwd=source, timeout=10800)
-            if not (stage / build.name).is_dir():
+            if not tarball.is_file() or tarball.is_symlink():
+                raise ValueError("producer did not export its complete context")
+            (stage / build.name).mkdir(mode=0o755)
+            commands.run(
+                [
+                    "tar",
+                    "--extract",
+                    "--no-same-owner",
+                    "--file",
+                    str(tarball),
+                    "--directory",
+                    str(stage / build.name),
+                ],
+                cwd=source,
+            )
+            tarball.unlink()
+            if not any((stage / build.name).iterdir()):
                 raise ValueError("producer did not export its complete context")
         components = {
             "node": stage / "toolchains/components/node",
