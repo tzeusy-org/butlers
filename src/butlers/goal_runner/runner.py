@@ -646,6 +646,26 @@ class GoalRunner:
         self._terminate_later(principal.invocation_id)
         return "woken" if woken else "waiting"
 
+    async def wait_again(self, goal_id: UUID, token: str) -> str:
+        """``goal.wait_again`` (S2.2): the woken lead ends; its conditions wait re-arms.
+
+        The next generation keeps the fired envelope's bounds and wakes only on a new fact;
+        see ``RunnerLedger.wait_again`` for the refusals. Returns ``waiting``.
+        """
+        with _tracer.start_as_current_span(
+            "goal.wait_again", record_exception=False, set_status_on_exception=False
+        ) as span:
+            span.set_attribute("goal_id", str(goal_id))
+            async with self.broker._transaction() as broker_ledger:
+                principal = await broker_ledger.authenticate(goal_id, token)
+                span.set_attribute("invocation_id", str(principal.invocation_id))
+                waited = await RunnerLedger(broker_ledger.connection).wait_again(principal)
+            if isinstance(waited, BrokerRefused):
+                raise waited
+        await self._terminate_all(waited)
+        self._terminate_later(principal.invocation_id)
+        return "waiting"
+
     async def plan(self, goal_id: UUID, token: str, premise: Any, evidence: Any, steps: Any) -> int:
         """``goal.plan`` (RFC 0038 S2): record the lead's plan as the goal's next version."""
         refs = (plan_refs(premise), plan_refs(evidence), plan_refs(steps))

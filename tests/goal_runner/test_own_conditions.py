@@ -388,3 +388,26 @@ async def test_an_edited_approval_still_settles_its_effect():
     pending = [OwnEffect(PARKED, "parked", True)]
     _, fed = await evaluated(settled(PARKED, "cancelled"), pending, [EDITED])
     assert fed.intent is not None
+
+
+_STATUSES = ("requested", "parked", "approved", "dispatched", "committed", "failed", "unknown")
+_STATUSES += ("rejected", "expired", "cancelled", "refused")
+_REARM_LEAVES = [decision(PARKED, o) for o in ("approved", "rejected", "expired", "cancelled")] + [
+    settled(PARKED, s) for s in ("succeeded", "failed", "unknown", "cancelled")
+]
+
+
+@pytest.mark.parametrize("leaf", _REARM_LEAVES)
+@pytest.mark.parametrize(
+    "effect",
+    [OwnEffect(PARKED, status, True) for status in _STATUSES] + [EDITED],
+    ids=lambda e: f"{e.status}{'-edited' if e.edited else ''}",
+)
+async def test_old_facts_fed_again_never_wake_a_rearmed_generation(leaf, effect):
+    """A rearmed generation registers on the current snapshot with no position floor. The
+    feed then re-sends the same rows (at a later time): that must change no leaf, so only a
+    new fact can wake it. A snapshot that already holds is refused before registering."""
+    registered, fed = await evaluated(leaf, [effect], [effect])
+    if registered.intent is None:
+        assert fed.intent is None
+        assert fed.instance.leaves == registered.instance.leaves
