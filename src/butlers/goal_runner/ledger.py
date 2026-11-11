@@ -23,7 +23,14 @@ from butlers.capability_broker.contracts import BrokerRefused, Catalog, Principa
 from butlers.capability_broker.ledger import BrokerLedger
 from butlers.capability_broker.recipients import live_owner
 from butlers.capability_broker.typed import TypedSchema, parse_schema
-from butlers.conditions import ConditionEvaluator, ConditionsUnavailable, RegistrationRefused
+from butlers.conditions import (
+    ConditionEvaluator,
+    ConditionsUnavailable,
+    RegistrationRefused,
+    Tri,
+    validate,
+)
+from butlers.conditions.evaluate import combine, initial_leaves
 from butlers.conditions.predicate import digest as predicate_digest
 from butlers.conditions.predicate import sources as predicate_sources
 from butlers.conditions.sql import ConnectionConditionStore
@@ -67,6 +74,19 @@ _PLAN_REF_ROWS = {
     "child": "SELECT id::text FROM switchboard.invocations "
     "WHERE goal_id = $1 AND depth = 1 AND id = ANY($2)",
 }
+
+
+def _check_own(goal_id: UUID, predicate: dict, effects: list[OwnEffect]) -> None:
+    """RESOURCE unless every row the predicate names is this goal's: a decision on one of its
+    approval effects, a settlement of one of its effects, input on one of its live prompts."""
+    refs = named(predicate)
+    if (
+        not refs.decisions <= {e.id for e in effects if e.approval}
+        or not refs.effects <= {e.id for e in effects}
+        or not refs.inputs <= {e.id for e in effects if e.prompt}
+        or not refs.goals <= {str(goal_id)}
+    ):
+        raise BrokerRefused(Reason.RESOURCE)
 
 
 def plan_refs(value: Any) -> tuple[str, ...]:
@@ -762,14 +782,7 @@ class RunnerLedger:
         if principal.depth != 0:
             raise BrokerRefused(Reason.CAPABILITY)
         effects = await self._own_effect_rows(principal.goal_id)
-        refs = named(predicate)
-        if (
-            not refs.decisions <= {e.id for e in effects if e.approval}
-            or not refs.effects <= {e.id for e in effects}
-            or not refs.inputs <= {e.id for e in effects if e.prompt}
-            or not refs.goals <= {str(principal.goal_id)}
-        ):
-            raise BrokerRefused(Reason.RESOURCE)
+        _check_own(principal.goal_id, predicate, effects)
         unread = {reply.binding for reply in await self.own_replies(principal.goal_id)}
         bounds = await self.connection.fetchrow(
             "SELECT now() AS now, b.deadline AS budget, g.created_at + $2::interval AS horizon, "
@@ -839,6 +852,101 @@ class RunnerLedger:
             wake = await WakeAdmission(self.connection).admit(registered.intent)
             woken = wake.state == "admitted"
         return children, woken
+
+    async def wait_again(self, principal: Principal) -> list[UUID] | BrokerRefused:
+        """``goal.wait_again``: the woken lead ends and its conditions wait re-arms (S2.2).
+
+        The goal's fired ``conditions`` envelope opens its next generation on unchanged bounds:
+        the same predicate, deadline, cumulative wake count and grant snapshot, nothing from the
+        model. The new condition instance registers against a snapshot of the goal's own ledger
+        with no replay floor. The snapshot and the feed's events are one derivation over the same
+        rows, so an old decision, settlement or reply fed again changes no leaf, however its
+        row's time moves; only a new fact can flip a leaf and wake the goal.
+
+        Refused, with nothing recorded: RESOURCE when no conditions wait of the goal has fired
+        (or its successor never launched); POLICY when the wake count is spent, the deadline
+        passed, an owner reply sits unread (the lead reads what woke it first, so the same
+        reply never wakes it twice), or the snapshot alone already holds the predicate (old
+        facts cannot make another wake). These checks run before the call is charged or the lead
+        ends; ``WaitLedger.rearm``'s own fences (its SQL compare-and-set included) run after, in
+        the same transaction, so a refusal there rolls the charge and the end back. Returns the
+        stopped children.
+
+        The goal row is locked ``FOR UPDATE`` and then the envelope, the order reply admission
+        takes, before the unread replies are read. So a concurrent reply either commits first
+        (it is unread here and refuses the rearm) or waits and then finds the goal waiting on
+        the next generation, which it joins.
+        """
+        goal = await self.lock(principal.goal_id)
+        if goal is None or goal["status"] != "running":
+            raise BrokerRefused(Reason.GOAL)
+        if principal.depth != 0:
+            raise BrokerRefused(Reason.CAPABILITY)
+        env = await self.connection.fetchrow(
+            "SELECT id, predicate::text AS predicate, deadline, consumed_wakes, max_wakes, "
+            "now() AS now FROM switchboard.wait_envelopes "
+            "WHERE goal_id = $1 AND kind = 'conditions' AND state = 'fired' FOR UPDATE",
+            principal.goal_id,
+        )
+        if env is None:
+            raise BrokerRefused(Reason.RESOURCE)
+        if env["consumed_wakes"] >= env["max_wakes"] or env["deadline"] <= env["now"]:
+            raise BrokerRefused(Reason.POLICY)
+        if await self.own_replies(principal.goal_id):
+            raise BrokerRefused(Reason.POLICY)
+        # Canonical as register makes it, so the check below is the evaluator's own.
+        predicate = validate(json.loads(env["predicate"]))
+        effects = await self._own_effect_rows(principal.goal_id)
+        _check_own(principal.goal_id, predicate, effects)
+        snapshot = snapshot_for(env["now"], effects)
+        if combine(predicate, initial_leaves(predicate, snapshot)) is Tri.TRUE:
+            raise BrokerRefused(Reason.POLICY)  # before any charge or end: the lead runs on
+        label = await self.connection.fetchrow(
+            "SELECT label_version, label_instr, label_data, label_sens "
+            "FROM switchboard.goals WHERE id = $1",
+            principal.goal_id,
+        )
+        exhausted = await self.broker.charge_call(principal)
+        if exhausted is not None:
+            return exhausted
+        children = await self._end_live(principal.goal_id, "stopped", "goal_ended", depth=1)
+        await self.end(principal.goal_id, principal.invocation_id, "returned", "completed")
+        instance = f"goal:{principal.goal_id}:conditions:{uuid4()}"
+        # No position floor: effect positions are transaction-start times, not commit order.
+        generation = await WaitLedger(self.connection).rearm(
+            principal.goal_id, env["id"], [instance], {}
+        )
+        if generation is None:
+            raise BrokerRefused(Reason.RESOURCE)
+        await self.connection.execute(
+            "UPDATE switchboard.goals SET status = 'waiting', updated_at = now() WHERE id = $1",
+            principal.goal_id,
+        )
+        evaluator = ConditionEvaluator(ConnectionConditionStore(self.connection))
+        try:
+            registered = await evaluator.register(
+                instance_id=instance,
+                predicate=predicate,
+                grant=grant_for(str(principal.goal_id), predicate, effects),
+                goal_id=str(principal.goal_id),
+                label=Label.from_row(
+                    label["label_version"],
+                    label["label_instr"],
+                    label["label_data"],
+                    label["label_sens"],
+                ),
+                snapshot=snapshot,
+                expires_at=env["deadline"],
+            )
+        except RegistrationRefused:
+            raise BrokerRefused(Reason.RESOURCE) from None
+        except ConditionsUnavailable:
+            raise BrokerRefused(Reason.UNAVAILABLE) from None
+        if registered.intent is not None:
+            # Unreachable after the check above (same snapshot, same evaluator); should it
+            # ever fire, raising rolls the whole rearm back, charge and end included.
+            raise BrokerRefused(Reason.POLICY)
+        return children
 
     async def _wait(
         self, principal: Principal, effect_id: UUID, *, approval: bool

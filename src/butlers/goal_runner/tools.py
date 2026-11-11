@@ -2,7 +2,8 @@
 
 They are not domain capabilities. The lead holds ``goal.delegate``,
 ``goal.await``, ``goal.stop_child``, ``goal.complete``, ``goal.wait_approval``,
-``goal.wait_owner``, ``goal.wait_until``, ``goal.plan``, ``goal.escalate`` and ``goal.inbox``;
+``goal.wait_owner``, ``goal.wait_until``, ``goal.wait_again``, ``goal.plan``, ``goal.escalate``
+and ``goal.inbox``;
 a child holds only ``goal.return``. Each is listed by the calling invocation's
 depth, read from its ledger row under the goal lock, and each handler checks
 that depth again in its own transaction, so a child can neither list nor call
@@ -45,8 +46,9 @@ _OPTIONAL = frozenset({CONTEXT_SEARCH, GUIDANCE_SEARCH, GUIDANCE_LOAD})
 # bu-dhloi1.305 PR2), which waits on PR5's label narrowing of feed-triggered wakes; until then a
 # wait that is not already true can only expire. Dark tools are neither listed nor callable
 # (CAPABILITY); the runner and ledger paths exist and are tested directly. Flip with the feed.
+# goal.wait_again re-arms a fired goal.wait_until envelope, so it goes live with it.
 WAIT_UNTIL_LIVE = False
-_DARK = frozenset() if WAIT_UNTIL_LIVE else frozenset({"goal__wait_until"})
+_DARK = frozenset() if WAIT_UNTIL_LIVE else frozenset({"goal__wait_until", "goal__wait_again"})
 
 _UUID = {"type": "string", "format": "uuid"}
 
@@ -159,6 +161,14 @@ _TOOLS = (
             "required": ["predicate", "deadline", "max_wakes"],
             "additionalProperties": False,
         },
+    ),
+    GoalTool(
+        "goal__wait_again",
+        (0,),
+        "After goal__wait_until woke you, end your turn and wait on the same condition again. "
+        "Only something new wakes the goal, within the wait's deadline and wake count. Read "
+        "goal__inbox first: an unread reply refuses this, as does a condition already true.",
+        {"type": "object", "properties": {}, "additionalProperties": False},
     ),
     GoalTool(
         "goal__plan",
@@ -289,6 +299,7 @@ class GoalTools:
             "goal__wait_approval": self._wait_approval,
             "goal__wait_owner": self._wait_owner,
             "goal__wait_until": self._wait_until,
+            "goal__wait_again": self._wait_again,
             "goal__plan": self._plan,
             "goal__escalate": self._escalate,
             "goal__inbox": self._inbox,
@@ -355,6 +366,10 @@ class GoalTools:
             goal_id, token, args["predicate"], args["deadline"], args["max_wakes"]
         )
         return {"status": status}
+
+    async def _wait_again(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
+        _closed(arguments, set(), set())
+        return {"status": await self.runner.wait_again(goal_id, token)}
 
     async def _plan(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
         keys = {"premise_refs", "evidence_refs", "step_refs"}

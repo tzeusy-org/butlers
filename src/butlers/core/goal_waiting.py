@@ -263,6 +263,19 @@ class WaitLedger:
         if successor is None:
             return None
         generation = env["generation"] + 1
+        # The cap and deadline hold in SQL too, as a CAS under the envelope lock: whatever the
+        # caller read, a spent or expired envelope never reopens.
+        reopened = await self.connection.fetchrow(
+            "UPDATE switchboard.wait_envelopes SET state = 'open', generation = $3, "
+            "updated_at = now() WHERE goal_id = $1 AND id = $2 AND state = 'fired' "
+            "AND generation = $3 - 1 AND consumed_wakes < max_wakes AND deadline > now() "
+            "RETURNING id",
+            goal_id,
+            envelope_id,
+            generation,
+        )
+        if reopened is None:
+            return None
         await self.connection.execute(
             "INSERT INTO switchboard.wait_generations (goal_id, envelope_id, generation, "
             "condition_instance_ids, predecessor_epoch, predecessor_fire_event_id, "
@@ -274,13 +287,6 @@ class WaitLedger:
             successor["epoch"],
             successor["fire_event_id"],
             json.dumps(registration_cursor),
-        )
-        await self.connection.execute(
-            "UPDATE switchboard.wait_envelopes SET state = 'open', generation = $3, "
-            "updated_at = now() WHERE goal_id = $1 AND id = $2",
-            goal_id,
-            envelope_id,
-            generation,
         )
         await self.connection.execute(
             "UPDATE switchboard.goals SET wait_generation = $2, updated_at = now() WHERE id = $1",

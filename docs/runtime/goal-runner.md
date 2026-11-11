@@ -396,7 +396,7 @@ opens the next generation only when the goal is live, no lead is running, the fi
 successor launched, the cumulative cap and the original deadline hold. Plan versions are written
 by `goal__plan` (below) and, when a goal first waits with none recorded, as an empty version 1 for
 the envelope to bind. Nothing calls the thread registry yet (`bu-dhloi1.296`). `goal__wait_until`
-opens a `conditions` envelope (below); nothing calls `rearm` yet (`bu-dhloi1.305`).
+opens a `conditions` envelope and `goal__wait_again` re-arms it (both below).
 
 ### Plan versions (S2)
 
@@ -566,8 +566,8 @@ ceiling), and its condition instance registers with the evaluator on the same co
 (`ConnectionConditionStore`, one savepoint per unit). The subscription grant and the registration
 snapshot are read from the goal's effect rows, never from the model. A predicate that already holds
 fires at registration and is admitted in that transaction as the wait's wake: the call returns
-`woken` and the sweep launches the successor. Otherwise it returns `waiting`. `max_wakes` above 1
-has no effect until `rearm` (a later step of bu-dhloi1.305). Stop cancels the envelope and, in the same transaction, the goal's own condition
+`woken` and the sweep launches the successor. Otherwise it returns `waiting`. `max_wakes` bounds
+the wakes across every generation `goal__wait_again` (below) opens. Stop cancels the envelope and, in the same transaction, the goal's own condition
 instance, so nothing is left for the evaluator to fire; a fire that raced Stop is still recorded
 `not_admitted: stopped`.
 
@@ -580,7 +580,8 @@ parked effects (as an approval wait does), derives the goal's own events from it
 against the envelope's current condition instance and admits a fire as the wait's one wake.
 Events come from current state, not a log. That is sound because the facts only accumulate (an
 owner decides once and a settled effect stays settled), so feeding current state can neither lose
-nor invent a fire. A `decision` event names the effect id as its `subject_id`, the id a
+nor invent a fire. There is one exception, an approval that becomes an edit (see [Waiting
+again](#waiting-again-dark) and race bu-dhloi1.325). A `decision` event names the effect id as its `subject_id`, the id a
 `decision` leaf binds. Each event's id derives from its source, effect and value, so a redelivered
 event is the same event; its position is the effect's last change in microseconds. An unread
 owner reply to one of the goal's prompts is an `owner_input` event `{goal_id, binding_ref}` on
@@ -594,6 +595,57 @@ outside the waiting lead (the owner's or a domain's action), and its lead would 
 envelope's full waiting grant. Under the bu-dhloi1.305 ruling, no live feed-triggered wake may
 hold that grant until the label narrowing of third-party-sourced wakes lands (PR5), so the feed
 is wired into the sweep, and `goal__wait_until` listed, only then.
+
+#### Waiting again (dark)
+
+`goal__wait_again {}` is for the lead a conditions wait woke, once it has dealt with what woke it
+and wants the same wait again. It takes no arguments: in one transaction under the goal lock the
+lead and its live children end, and `WaitLedger.rearm` opens the fired envelope's next generation
+on its unchanged bounds (predicate, deadline, cumulative `max_wakes`, grant snapshot). It
+registers a fresh, generation-owned condition instance against a snapshot of the goal's own ledger
+and returns `waiting`. The tool is dark with `goal__wait_until` (same flag).
+
+Only a new fact wakes the next generation. The instance has no replay floor, because an effect's
+position is its row's last `updated_at`, a transaction-start time that is not commit order: a
+floor on it could drop an event that committed late, or present an old one again when its row
+changes. Instead the snapshot and the feed's events are one derivation over the same rows (an
+owner decision, a settlement and a reply only accumulate, with the one exception below), so an
+old fact fed again changes no leaf and cannot fire. A leaf can only flip on something new. An
+already-true leaf still counts toward an `all`, so `all(owner_input, decision)` wakes again on the
+owner's next reply.
+
+The exception is an approval that becomes an edit, the one transition that does not only move
+forward. The domain may record the owner's approval with an edit; the parked-effect sync writes
+the stored call `approved`, and only when `begin_approved`'s edit branch runs is it recorded
+`rejected`, with the edit as a second effect, so its decision reads `edited`. Then:
+
+- `decision = approved` stops holding. A generation registered after the edit seeds that leaf
+  false, so an `all` that held on it no longer holds.
+- `effect_settled` with `cancelled` starts holding.
+
+That is a genuine new fact, so it may flip a leaf in the next generation and fire it. An
+`approved` wait that fired before the edit stands, since the owner did approve. The race itself
+is bu-dhloi1.325.
+
+Rearm takes the goal row `FOR UPDATE` and then the envelope, the order reply admission takes,
+before it reads the unread replies. A concurrent reply either commits first (it is unread, and
+the rearm is refused) or waits and then finds the goal waiting on the next generation, which it
+joins. The cap and the deadline hold in SQL as well: `WaitLedger.rearm` reopens the envelope
+only by a compare-and-set on `state = 'fired'`, the generation, `consumed_wakes < max_wakes` and
+`deadline > now()`, under the envelope lock.
+
+Refused with nothing recorded, and the lead runs on. Each check below runs before the call is
+charged or the lead ends. `WaitLedger.rearm`'s own fences run after the end, but in the same
+transaction: refusing there rolls back the charge and the end with everything else.
+
+- `resource`: no conditions wait of the goal has fired, or its successor never launched.
+- `policy`: the wake count is spent (the loop's cap: at most `max_wakes`, at most 6, wakes per
+  envelope, never reset), the deadline passed, or an owner reply is unread. The lead reads what woke
+  it through `goal__inbox` first, so the same reply never wakes the goal twice, and a reply that
+  arrived after the fire is read rather than dropped.
+- `policy`: the snapshot alone already holds the predicate (for example `any` with a leaf that
+  stays true). Old facts cannot make another wake, so the lead opens a new `goal__wait_until` on
+  what it still waits for.
 
 ### Expiry of a wait
 
