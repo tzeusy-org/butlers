@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 from datetime import timedelta
 from uuid import uuid4
 
+from butlers.core import owner_delivery
 from butlers.core.goal_admission import (
     AdmissionResult,
     AdmissionUnavailable,
@@ -13,6 +16,13 @@ from butlers.core.goal_admission import (
     encode_grants,
 )
 from butlers.core.goal_labels import Label
+
+logger = logging.getLogger(__name__)
+
+
+#: Refusals that say "not now" rather than "no": capacity and unavailability. Authorization and
+#: owner-law refusals never leave a pending ask, and neither does a sender who is not the owner.
+RETRYABLE_REFUSALS = frozenset({"quota_exhausted", "limits_unavailable"})
 
 
 class GoalLedger:
@@ -254,3 +264,38 @@ class GoalLedger:
         )
         await self.bind_attempt(attempt_id, source.key, id)
         return AdmissionResult(id, goal_id, result, reason)
+
+    async def remember_refused_owner_ask(self, source, facts, origin, reason):
+        """Keep a retryable refusal of an owner's message as one pending ask (S6).
+
+        A refused admission has no goal row, so this is its only memory. Owner-origin messages
+        only, retryable reasons only, and only while the owner-delivery path is on. The row holds
+        a source reference, never message text; failure here never changes the refusal itself.
+        """
+        if not (
+            source.kind == "message"
+            and origin == "owner"
+            and facts is not None
+            and facts.owner is True
+            and reason in RETRYABLE_REFUSALS
+        ):
+            return
+        try:
+            async with self.connection.transaction():  # a savepoint
+                if not await owner_delivery.rollout_enabled(self.connection):
+                    return
+                await self.connection.execute(
+                    "INSERT INTO switchboard.pending_asks (source_key, cause, original_ask) "
+                    "VALUES ($1, 'admission_refused', ($2::text)::jsonb) "
+                    "ON CONFLICT (source_key) DO NOTHING",
+                    source.key,
+                    json.dumps(
+                        {
+                            "v": 1,
+                            "source": {"kind": source.kind, "id": source.id},
+                            "refusal": reason,
+                        }
+                    ),
+                )
+        except Exception:
+            logger.warning("refused owner ask could not be remembered")

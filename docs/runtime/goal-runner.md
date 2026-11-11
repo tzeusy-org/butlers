@@ -604,8 +604,7 @@ in its own lineage, would leave the owner with silence. The sweep's last step
   count, and an owner delivery by an unrelated goal does not silence this failure.
 - Cause: `failed`, `budget_exhausted`, or `capability_unavailable` when the broker recorded a
   `capability_unavailable` refusal for that goal. The health cause itself lives in published health, not
-  in the refusal record, so it is not repeated here. `admission_refused` is admitted by the CHECK but
-  written by a later package (a refused admission has no goal row).
+  in the refusal record, so it is not repeated here. `admission_refused` is written at admission (below).
 - The line is one fixed sentence per cause (`CAUSE_LINES`): no ask text, token or provider detail. The
   presentation (`owner_delivery.present`, surface `telegram`) is the retry identity and is marked
   handed-off before the send, so a crash or an ambiguous send leaves `unknown` and is never sent again. Only a result decided
@@ -615,8 +614,27 @@ in its own lineage, would leave the owner with silence. The sweep's last step
   Quiet hours and context holds (the owner notify suppression check) delay the line to a later sweep.
 - Dark: nothing is written or sent unless `public.owner_delivery_rollout` is on and exactly one owner
   entity exists. Rolling back disables the sweep and keeps every row and receipt.
-- The state column already admits Run, Drop, ack and `dropped_stale`; nothing writes them yet
-  (recovery, the original-ask JSONB and the 24 hour expiry are the next package).
+- The state column admits Run, Drop, ack and `dropped_stale`; only `dropped_stale` is written so far
+  (Run/Drop recovery is the next package).
+
+### Refused owner asks and the 24 hour expiry (sw_069)
+
+- Producer: `GoalLedger.remember_refused_owner_ask`, called when admission refuses. It writes a
+  `pending_asks` row (`cause = admission_refused`, `goal_id` NULL) only for a message whose origin is
+  `owner` and whose evidence says the sender is the owner, refused for a retryable reason
+  (`RETRYABLE_REFUSALS`: `quota_exhausted`, `limits_unavailable`), with the rollout on. Authorization and
+  owner-law refusals, and any non-owner sender, never write one. A write failure is logged and never
+  changes the refusal.
+- Retry cap: `line_attempts` counts presentations of the cause line; after `MAX_LINE_ATTEMPTS` (3) a
+  line that keeps failing before any provider call (for example no owner recipient) is no longer
+  presented, and the ask waits for its 24 hour expiry.
+- `original_ask` is a versioned reference `{v, source:{kind,id}, refusal}`, not message text: a refused
+  admission can be re-admitted with a fresh attempt id, so the reference is enough to replay it. It
+  exists only while the ask is open (CHECK `ck_pending_ask_original`).
+- Expiry: every ask carries `expires_at` (24h from the failure for goal asks, from the refusal for
+  refused asks). The sweep turns an expired open ask into `dropped_stale`, nulls `original_ask`, closes
+  its subject as expired and never sends a line for it. This runs while delivery is dark. A goal that
+  ended more than 24 hours ago is not reported on first rollout.
 - The production sender is `OwnerNotifySender` (the existing `send_owner_telegram` path). It needs the
   Switchboard client that path binds, so it is wired where the runner is constructed; the runner is not
   constructed in production yet.
