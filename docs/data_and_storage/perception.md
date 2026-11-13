@@ -188,14 +188,17 @@ writes `owner.clock`, and no consumer has switched.
   and never switches; an owner-confirmed booking switches
   (`owner_confirmed_booking`); an owner-set zone holds against phone fixes until
   the owner clears it. Undo reverts an automatic switch and holds that phone
-  zone off for 24 hours. With no evidence the clock is the home zone, else UTC
-  (`utc_fallback`); no zone is hardcoded.
+  zone off for 24 hours. Holds are per zone and judged at the reducer's injected
+  instant, not the fix's own stamp. A later automatic switch keeps every hold;
+  only an owner set, confirm or clear removes them. With no evidence the clock is
+  the home zone, else UTC (`utc_fallback`); no zone is hardcoded.
 - `brief_due` gives once-a-day idempotence on the owner-local date: the key is
   the local date at the tick, and a watermark (the last key sent) stops a
   repeat after a westward jump, a DST repeated hour or an undo. A missed tick
   catches up later the same local day. A watermark later than the UTC date plus
   one day is no real local date and is ignored, so it cannot suppress the brief
-  forever.
+  forever. The caller persists each returned key over the watermark; a clock
+  skewed backward by more than a day may repeat one day (accepted trade-off).
 - `clock_parity` is the shadow-parity receipt: legacy zone (the saved
   `settings.general` zone, else the `Asia/Singapore` fallback the briefing
   uses) against the clock zone and basis, with both local dates. While dark,

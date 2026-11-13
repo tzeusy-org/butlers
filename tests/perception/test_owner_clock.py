@@ -47,6 +47,11 @@ def _home() -> ClockState:
     return ClockState.initial(HOME)
 
 
+def _step(state, evidence, now=None):
+    """Apply evidence with the reducer's injected instant (the evidence time by default)."""
+    return reduce_clock(state, evidence, now=evidence.at if now is None else now)
+
+
 # -- explicit owner/home/UTC policy -------------------------------------------------
 
 
@@ -76,7 +81,7 @@ def test_resolving_the_owner_clock_from_a_read(state, value, home, expected):
 
 
 def test_a_phone_fix_in_a_new_zone_switches_with_a_notice_and_undo():
-    step = reduce_clock(_home(), PhoneFix("Asia/Tokyo", T0))
+    step = _step(_home(), PhoneFix("Asia/Tokyo", T0))
     assert step.effect == "switch"
     assert step.notice is True
     assert step.state.current == ClockValue("Asia/Tokyo", "phone")
@@ -84,64 +89,128 @@ def test_a_phone_fix_in_a_new_zone_switches_with_a_notice_and_undo():
 
 
 def test_a_phone_fix_in_the_current_zone_changes_nothing():
-    step = reduce_clock(_home(), PhoneFix(HOME, T0))
+    step = _step(_home(), PhoneFix(HOME, T0))
     assert step.effect == "none"
     assert step.state == _home()
 
 
 def test_undo_reverts_and_holds_the_undone_zone_then_releases_it():
-    moved = reduce_clock(_home(), PhoneFix("Asia/Tokyo", T0)).state
-    undone = reduce_clock(moved, Undo(T0 + timedelta(minutes=5)))
+    moved = _step(_home(), PhoneFix("Asia/Tokyo", T0)).state
+    undone = _step(moved, Undo(T0 + timedelta(minutes=5)))
     assert undone.effect == "revert"
     assert undone.state.current == ClockValue(HOME, "home")
     assert undone.state.previous is None
 
     # Inside the hold the same phone zone does not switch again ...
-    held = reduce_clock(undone.state, PhoneFix("Asia/Tokyo", T0 + timedelta(hours=1)))
+    held = _step(undone.state, PhoneFix("Asia/Tokyo", T0 + timedelta(hours=1)))
     assert held.effect == "none"
     # ... but a different zone still does, and the hold is not forever.
-    other = reduce_clock(undone.state, PhoneFix("Asia/Seoul", T0 + timedelta(hours=1)))
+    other = _step(undone.state, PhoneFix("Asia/Seoul", T0 + timedelta(hours=1)))
     assert other.effect == "switch"
     later = T0 + timedelta(minutes=5) + UNDO_HOLD + timedelta(seconds=1)
-    again = reduce_clock(undone.state, PhoneFix("Asia/Tokyo", later))
+    again = _step(undone.state, PhoneFix("Asia/Tokyo", later))
     assert again.effect == "switch"
 
 
+def _undone_tokyo(at=T0):
+    moved = _step(_home(), PhoneFix("Asia/Tokyo", at)).state
+    return _step(moved, Undo(at)).state
+
+
+def test_an_automatic_switch_elsewhere_keeps_the_undone_zone_held():
+    # Border bounce: undo Tokyo, a Seoul fix switches, Tokyo again within 24h is held.
+    seoul = _step(_undone_tokyo(), PhoneFix("Asia/Seoul", T0 + timedelta(minutes=10)))
+    assert seoul.effect == "switch"
+    back = _step(seoul.state, PhoneFix("Asia/Tokyo", T0 + timedelta(minutes=20)))
+    assert back.effect == "none"
+    assert back.state.current == ClockValue("Asia/Seoul", "phone")
+
+
+def test_a_border_bounce_gives_one_notice_per_zone_not_one_per_fix():
+    state, notices = _undone_tokyo(), 0
+    for minute in range(1, 21):
+        zone = "Asia/Seoul" if minute % 2 else "Asia/Tokyo"
+        step = _step(state, PhoneFix(zone, T0 + timedelta(minutes=minute)))
+        state, notices = step.state, notices + step.notice
+    assert notices == 1
+
+
+def test_a_second_undo_keeps_the_first_zones_hold():
+    seoul = _step(_undone_tokyo(), PhoneFix("Asia/Seoul", T0 + timedelta(minutes=10))).state
+    both = _step(seoul, Undo(T0 + timedelta(minutes=11))).state
+    later = T0 + timedelta(hours=1)
+    assert _step(both, PhoneFix("Asia/Tokyo", later)).effect == "none"
+    assert _step(both, PhoneFix("Asia/Seoul", later)).effect == "none"
+
+
+def test_a_future_skewed_fix_cannot_bypass_the_hold():
+    now = T0 + timedelta(hours=1)
+    skewed = PhoneFix("Asia/Tokyo", T0 + UNDO_HOLD + timedelta(days=3))
+    assert _step(_undone_tokyo(), skewed, now=now).effect == "none"
+
+
+def test_the_undo_hold_boundary_is_exactly_undo_hold():
+    undone = _undone_tokyo()
+    edge = T0 + UNDO_HOLD
+    assert _step(undone, PhoneFix("Asia/Tokyo", edge)).effect == "none"
+    after = edge + timedelta(seconds=1)
+    assert _step(undone, PhoneFix("Asia/Tokyo", after)).effect == "switch"
+
+
+@pytest.mark.parametrize(
+    "owner_act",
+    [
+        OwnerSet("Europe/Paris", T0 + timedelta(minutes=1)),
+        OwnerConfirm("Europe/Paris", T0 + timedelta(minutes=1), "hotel-1"),
+    ],
+)
+def test_only_an_owner_act_clears_the_undo_hold(owner_act):
+    acted = _step(_undone_tokyo(), owner_act).state
+    cleared = _step(acted, OwnerClear(T0 + timedelta(minutes=2))).state
+    assert _step(cleared, PhoneFix("Asia/Tokyo", T0 + timedelta(minutes=3))).effect == "switch"
+
+
+def test_owner_clear_alone_clears_the_undo_hold():
+    # Undo returns to home, so OwnerClear is a no-op move but still the owner's act.
+    cleared = _step(_undone_tokyo(), OwnerClear(T0 + timedelta(minutes=1))).state
+    assert _step(cleared, PhoneFix("Asia/Tokyo", T0 + timedelta(minutes=2))).effect == "switch"
+
+
 def test_undo_without_an_auto_switch_does_nothing():
-    assert reduce_clock(_home(), Undo(T0)).effect == "none"
-    owner = reduce_clock(_home(), OwnerSet("Europe/Paris", T0)).state
-    assert reduce_clock(owner, Undo(T0)).effect == "none"
+    assert _step(_home(), Undo(T0)).effect == "none"
+    owner = _step(_home(), OwnerSet("Europe/Paris", T0)).state
+    assert _step(owner, Undo(T0)).effect == "none"
 
 
 def test_an_owner_set_zone_holds_against_phone_fixes_until_cleared():
-    owner = reduce_clock(_home(), OwnerSet("Europe/Paris", T0))
+    owner = _step(_home(), OwnerSet("Europe/Paris", T0))
     assert owner.effect == "switch" and owner.notice is False
     assert owner.state.current == ClockValue("Europe/Paris", "owner")
-    assert reduce_clock(owner.state, PhoneFix("Asia/Tokyo", T0)).effect == "none"
-    cleared = reduce_clock(owner.state, OwnerClear(T0))
+    assert _step(owner.state, PhoneFix("Asia/Tokyo", T0)).effect == "none"
+    cleared = _step(owner.state, OwnerClear(T0))
     assert cleared.state.current == ClockValue(HOME, "home")
-    assert reduce_clock(cleared.state, PhoneFix("Asia/Tokyo", T0)).effect == "switch"
+    assert _step(cleared.state, PhoneFix("Asia/Tokyo", T0)).effect == "switch"
 
 
 # -- booking-only evidence asks once ------------------------------------------------
 
 
 def test_an_unconfirmed_booking_asks_once_and_never_switches():
-    first = reduce_clock(_home(), Booking("America/New_York", T0, "flight-1"))
+    first = _step(_home(), Booking("America/New_York", T0, "flight-1"))
     assert first.effect == "ask"
     assert first.ask_ref == "flight-1"
     assert first.state.current == ClockValue(HOME, "home")
-    repeat = reduce_clock(first.state, Booking("America/New_York", T0, "flight-1"))
+    repeat = _step(first.state, Booking("America/New_York", T0, "flight-1"))
     assert repeat.effect == "none"
-    other = reduce_clock(first.state, Booking("Europe/Paris", T0, "hotel-2"))
+    other = _step(first.state, Booking("Europe/Paris", T0, "hotel-2"))
     assert other.effect == "ask"
 
 
 def test_a_confirmed_booking_switches_and_a_later_phone_fix_wins():
-    confirmed = reduce_clock(_home(), OwnerConfirm("America/New_York", T0, "flight-1"))
+    confirmed = _step(_home(), OwnerConfirm("America/New_York", T0, "flight-1"))
     assert confirmed.effect == "switch" and confirmed.notice is False
     assert confirmed.state.current == ClockValue("America/New_York", "owner_confirmed_booking")
-    landed = reduce_clock(confirmed.state, PhoneFix("America/Chicago", T0 + timedelta(hours=8)))
+    landed = _step(confirmed.state, PhoneFix("America/Chicago", T0 + timedelta(hours=8)))
     assert landed.state.current == ClockValue("America/Chicago", "phone")
 
 
@@ -152,7 +221,7 @@ def test_an_invalid_zone_is_ignored():
         OwnerConfirm("Mars/Base", T0, "x"),
         OwnerSet("Mars/Base", T0),
     ):
-        step = reduce_clock(_home(), event)
+        step = _step(_home(), event)
         assert (step.effect, step.state) == ("none", _home())
 
 
@@ -237,8 +306,8 @@ def test_dst_fall_back_repeated_hour_sends_once():
 
 
 def test_a_phone_switch_then_undo_mid_day_never_repeats():
-    moved = reduce_clock(_home(), PhoneFix("Asia/Tokyo", T0)).state
-    undone = reduce_clock(moved, Undo(T0)).state
+    moved = _step(_home(), PhoneFix("Asia/Tokyo", T0)).state
+    undone = _step(moved, Undo(T0)).state
     ticks = [
         (_home().current.zone, datetime(2026, 3, 1, 23, 30, tzinfo=UTC)),  # 07:30 SGT 2 Mar
         (moved.current.zone, datetime(2026, 3, 2, 0, 0, tzinfo=UTC)),  # 09:00 JST 2 Mar
@@ -248,7 +317,7 @@ def test_a_phone_switch_then_undo_mid_day_never_repeats():
 
 
 def test_a_booking_ask_does_not_move_the_brief():
-    asked = reduce_clock(_home(), Booking("America/New_York", T0, "flight-1")).state
+    asked = _step(_home(), Booking("America/New_York", T0, "flight-1")).state
     now = datetime(2026, 3, 1, 23, 30, tzinfo=UTC)  # 07:30 SGT, 18:30 EST previous day
     due = brief_due(zone=ZoneInfo(asked.current.zone), now=now, at_local=BRIEF, watermark=None)
     assert due == date(2026, 3, 2)
@@ -263,6 +332,11 @@ def test_a_watermark_beyond_any_real_local_date_cannot_suppress_forever():
     # The largest legitimate watermark (UTC date + 1, the furthest-east zone) still holds.
     edge = date(2026, 3, 3)
     assert brief_due(zone=ZoneInfo(HOME), now=now, at_local=BRIEF, watermark=edge) is None
+    # One day past that edge is already not a real local date: the ceiling is exactly +1.
+    past = date(2026, 3, 4)
+    assert brief_due(zone=ZoneInfo(HOME), now=now, at_local=BRIEF, watermark=past) == date(
+        2026, 3, 2
+    )
 
 
 def test_brief_due_requires_an_aware_instant():

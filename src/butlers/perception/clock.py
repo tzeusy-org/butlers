@@ -7,6 +7,8 @@ Three parts, all pure and driven by an injected instant:
   asks, once per booking. An owner-confirmed booking switches. An owner-set
   zone holds against phone fixes until the owner clears it. Undo reverts an
   automatic switch and holds that phone zone off for ``UNDO_HOLD``, not forever.
+  Holds are per zone, judged at the reducer's injected instant, survive later
+  automatic switches, and only an owner set, confirm or clear removes them.
   With no evidence the clock is the home zone, else UTC (``utc_fallback``).
   No zone is hardcoded.
 * ``brief_due``: once-a-day idempotence on the owner's local date. The key is
@@ -119,8 +121,9 @@ class ClockState:
     current: ClockValue
     home: ClockValue
     previous: ClockValue | None = None
-    undone_zone: str | None = None
-    undone_at: datetime | None = None
+    #: Undone phone zones and the instant each hold ends, sorted by zone. Only an
+    #: owner act (set, confirm or clear) removes a hold; an automatic switch never does.
+    undo_holds: tuple[tuple[str, datetime], ...] = ()
     asked: frozenset[str] = field(default_factory=frozenset)
 
     @classmethod
@@ -141,12 +144,10 @@ class ClockStep:
     ask_ref: str | None = None
 
 
-def _held(state: ClockState, fix: PhoneFix) -> bool:
-    return (
-        state.undone_zone == fix.zone
-        and state.undone_at is not None
-        and fix.at <= state.undone_at + UNDO_HOLD
-    )
+def _held(state: ClockState, zone: str, now: datetime) -> bool:
+    # Judged at the reducer's instant, never the fix's own stamp, so a phone
+    # clock skewed ahead cannot step past the hold.
+    return any(held == zone and now <= until for held, until in state.undo_holds)
 
 
 def _switch(state: ClockState, value: ClockValue, *, automatic: bool) -> ClockStep:
@@ -154,29 +155,37 @@ def _switch(state: ClockState, value: ClockValue, *, automatic: bool) -> ClockSt
         state,
         current=value,
         previous=state.current if automatic else None,
-        undone_zone=None,
-        undone_at=None,
+        undo_holds=state.undo_holds if automatic else (),
     )
     return ClockStep(moved, "switch", notice=automatic)
 
 
-def reduce_clock(state: ClockState, evidence: ClockEvidence) -> ClockStep:
-    """Apply one piece of evidence. Invalid zones change nothing."""
+def reduce_clock(state: ClockState, evidence: ClockEvidence, *, now: datetime) -> ClockStep:
+    """Apply one piece of evidence at the injected instant ``now``.
+
+    Invalid zones change nothing. Undo holds are judged against ``now``.
+    """
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("an aware instant is required")
     unchanged = ClockStep(state, "none")
     if isinstance(evidence, Undo):
         if state.previous is None or state.current.basis != "phone":
             return unchanged
+        undone = state.current.zone
+        holds = {zone: until for zone, until in state.undo_holds if now <= until}
+        holds[undone] = now + UNDO_HOLD
         reverted = replace(
             state,
             current=state.previous,
             previous=None,
-            undone_zone=state.current.zone,
-            undone_at=evidence.at,
+            undo_holds=tuple(sorted(holds.items())),
         )
         return ClockStep(reverted, "revert")
     if isinstance(evidence, OwnerClear):
         if state.current == state.home:
-            return unchanged
+            if not state.undo_holds:
+                return unchanged
+            return ClockStep(replace(state, previous=None, undo_holds=()), "none")
         return _switch(state, state.home, automatic=False)
     if _zone(evidence.zone) is None:
         return unchanged
@@ -184,7 +193,7 @@ def reduce_clock(state: ClockState, evidence: ClockEvidence) -> ClockStep:
         if (
             state.current.basis == "owner"
             or evidence.zone == state.current.zone
-            or _held(state, evidence)
+            or _held(state, evidence.zone, now)
         ):
             return unchanged
         return _switch(state, ClockValue(evidence.zone, "phone"), automatic=True)
@@ -224,6 +233,10 @@ def brief_due(
     watermark. A DST gap that skips ``at_local`` is passed, so the brief still
     goes. No zone is more than one day ahead of UTC, so a watermark beyond the
     UTC date plus one is not a real local date and is ignored.
+
+    The caller must persist the returned key as the new watermark, overwriting
+    the old one. Accepted trade-off: if the clock is skewed backward by more
+    than a day, the ceiling ignores the true watermark and one day may repeat.
     """
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("an aware instant is required")
