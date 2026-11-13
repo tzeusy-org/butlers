@@ -987,7 +987,7 @@ reasons and SHALL decide nothing.
 - **WHEN** the goal runner sweeps open decidable set versions with the decision path and rollout on
 - **THEN** each `(set id, version)` is card-sent once across replays, restarts and concurrent runners
 - **AND** while the owner is suppressed no presentation, subject or token is created
-- **AND** a set that is not decidable is not card-sent
+- **AND** a set whose card cannot offer a decision is not card-sent
 
 #### Scenario: A version that left open retracts its card
 

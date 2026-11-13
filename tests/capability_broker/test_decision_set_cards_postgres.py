@@ -268,6 +268,20 @@ async def test_a_sweep_sends_at_most_the_bound_oldest_first(broker_db_url):
         assert await sweep.sweep() == 2
 
 
+async def test_a_failing_transport_stops_the_sweep_at_the_first_failure(broker_db_url):
+    async with world(broker_db_url) as w:
+        await _reset(w)
+        for _ in range(SEND_LIMIT + 2):
+            await _set(w)
+        transport = Transport("failed")
+        sweep = await _sweeper(w, transport)
+        assert await sweep.sweep() == 0
+        # Pre-call failures are global (no client, suppressed, no recipient): one try, not all.
+        assert len(transport.envelopes) == 1
+        assert await _presentations(w) == 1
+        assert await _tokens(w) == 2
+
+
 async def _sent_set(w):
     proposed, effects = await _set(w)
     sweep = await _sweeper(w, Transport())

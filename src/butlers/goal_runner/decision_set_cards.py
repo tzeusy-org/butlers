@@ -143,9 +143,9 @@ class DecisionSetCards:
                 now,
                 SCAN_LIMIT,
             )
-        handed_off = 0
+        handed_off = attempted = 0
         for row in candidates:
-            if handed_off >= SEND_LIMIT:
+            if attempted >= SEND_LIMIT:
                 break
             set_id, version = row["set_id"], row["version"]
             try:
@@ -169,8 +169,13 @@ class DecisionSetCards:
             except Exception:
                 logger.exception("decision set card skipped set=%s version=%s", set_id, version)
                 continue
+            attempted += 1
             if sent.status in ("sent", "unknown"):
                 handed_off += 1
+            elif sent.status == "failed":
+                # A pre-call failure (no client, suppressed, no recipient) is global: stop,
+                # rather than present and mint tokens for every scanned set during an outage.
+                break
         return handed_off
 
     # -- close ----------------------------------------------------------------
