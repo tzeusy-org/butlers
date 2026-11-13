@@ -12,7 +12,6 @@ function describe(transition: PresenceTransition, labels: Map<string, string>): 
 }
 
 function Row({ transition, labels }: { transition: PresenceTransition; labels: Map<string, string> }) {
-  const muted = transition.retracted || transition.late;
   return (
     <li
       className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-1.5"
@@ -25,7 +24,15 @@ function Row({ transition, labels }: { transition: PresenceTransition; labels: M
         compact
         className="w-32 shrink-0 font-mono text-xs text-muted-foreground"
       />
-      <span className={muted ? "text-sm text-muted-foreground line-through" : "text-sm"}>
+      <span
+        className={
+          transition.retracted
+            ? "text-sm text-muted-foreground line-through"
+            : transition.late
+              ? "text-sm text-muted-foreground"
+              : "text-sm"
+        }
+      >
         {describe(transition, labels)}
       </span>
       {transition.retracted ? (
@@ -39,8 +46,9 @@ function Row({ transition, labels }: { transition: PresenceTransition; labels: M
 }
 
 /**
- * Owner-only history of confirmed leave and arrive events. Undone and late events stay listed
- * (history is never hidden) but read as muted; nothing here acts on them. While the presence
+ * Owner-only history of confirmed leave and arrive events. Undone events are struck through and
+ * late ones muted; both stay listed
+ * (history is never hidden); nothing here acts on them. While the presence
  * reader is not yet switched on the panel says so quietly instead of showing an error.
  */
 export function PresenceTimeline() {

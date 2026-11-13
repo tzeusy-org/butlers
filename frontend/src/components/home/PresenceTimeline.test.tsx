@@ -85,8 +85,11 @@ describe("PresenceTimeline", () => {
     expect(rows[2].textContent).toContain("confirmed late, so not acted on");
     expect(rows[3].textContent).toContain("Left a saved place");
     expect(rows[0].textContent).not.toContain("undone");
-    // Undone and late rows are struck through; a live edge is not.
+    // Only the undone row is struck through; the late one is muted, a live edge is neither.
     expect(within(rows[1]).getByText("Left Flat").className).toContain("line-through");
+    const lateText = within(rows[2]).getByText("Left Flat");
+    expect(lateText.className).toContain("text-muted-foreground");
+    expect(lateText.className).not.toContain("line-through");
     expect(within(rows[0]).getByText("Arrived at Flat").className).not.toContain("line-through");
   });
 

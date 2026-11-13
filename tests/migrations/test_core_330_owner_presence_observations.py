@@ -31,6 +31,7 @@ def test_the_function_is_a_pinned_schema_qualified_definer_with_no_caller_check(
     for relation in ("connectors.owntracks_points", "public.owner_places"):
         assert relation in sql
     returned = sql.split("RETURNS TABLE (")[1].split(")")[0]
+    assert "p_place uuid" in sql
     assert [c.split()[0] for c in returned.split(",")] == [
         "observed_at",
         "accuracy_m",

@@ -104,7 +104,7 @@ def ha_observations(
     return found
 
 
-_FEED = "SELECT * FROM public.owner_presence_observations($1, $2, $3)"
+_FEED = "SELECT * FROM public.owner_presence_observations($1, $2, $3, $4)"
 _FEED_LIMIT = 500
 
 
@@ -116,8 +116,13 @@ async def owntracks_observations(pool: Any, *, place_ref: UUID, now: datetime) -
     (Home Assistant carries presence alone); it never raises into the reducer run.
     """
     try:
-        rows = await pool.fetch(_FEED, now - OBSERVATION_FRESH, now, _FEED_LIMIT)
-    except (asyncpg.UndefinedFunctionError, asyncpg.InsufficientPrivilegeError):
+        rows = await pool.fetch(_FEED, now - OBSERVATION_FRESH, now, _FEED_LIMIT, place_ref)
+    except (asyncpg.UndefinedFunctionError, asyncpg.InsufficientPrivilegeError) as exc:
+        # Diagnosable but quiet: the OwnTracks path is off until the feed is installed and granted.
+        logger.warning(
+            "presence reducer: OwnTracks feed off (%s); using Home Assistant alone",
+            type(exc).__name__,
+        )
         return []
     except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError):
         logger.warning("presence reducer: OwnTracks feed unavailable")

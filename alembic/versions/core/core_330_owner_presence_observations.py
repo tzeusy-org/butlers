@@ -4,7 +4,7 @@ Revision ID: core_330
 Revises: core_329
 Create Date: 2026-11-13 00:00:00.000000
 
-``public.owner_presence_observations`` is the one typed feed the Home presence reducer reads
+``public.owner_presence_observations(since, until, limit, place)`` is the one typed feed the Home presence reducer reads
 OwnTracks through. Home has no read on ``connectors.owntracks_points`` and never will; this
 function classifies fixes against the owner's live places inside the database and returns only
 ``(observed_at, accuracy_m, place_ref, side, ssid_match)``. Coordinates, SSIDs and the raw
@@ -18,6 +18,9 @@ Rules, mirrored in ``butlers.perception.presence`` (a contract test pins the par
   accuracy;
 * an exact, case-sensitive match of the payload ``SSID`` to one of the place's SSIDs is an
   inside row with ``ssid_match`` true whatever the GPS says.
+
+The limit applies to the one requested place and keeps the newest fixes (returned oldest
+first), so a busy window never drops the fixes that open or confirm an edge.
 
 SECURITY DEFINER with a pinned search_path and schema-qualified objects. Inside a definer
 function ``current_user`` is the definer, so there is no in-body caller check: the gate is
@@ -37,12 +40,12 @@ branch_labels = None
 depends_on = None
 
 _LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_330:presence-feed', 0))"
-_SIGNATURE = "public.owner_presence_observations(timestamptz, timestamptz, integer)"
+_SIGNATURE = "public.owner_presence_observations(timestamptz, timestamptz, integer, uuid)"
 _HOME_ROLE = "butler_home_rw"
 
 _FUNCTION = """
 CREATE OR REPLACE FUNCTION public.owner_presence_observations(
-    p_since timestamptz, p_until timestamptz, p_limit integer
+    p_since timestamptz, p_until timestamptz, p_limit integer, p_place uuid
 ) RETURNS TABLE (
     observed_at timestamptz, accuracy_m integer, place_ref uuid, side text, ssid_match boolean
 )
@@ -57,6 +60,7 @@ DECLARE
 BEGIN
     IF p_since IS NULL OR p_until IS NULL OR p_limit IS NULL
        OR NOT isfinite(p_since) OR NOT isfinite(p_until) OR p_since >= p_until
+       OR p_place IS NULL
        OR p_until - p_since > interval '24 hours' OR p_limit NOT BETWEEN 1 AND 500 THEN
         RAISE EXCEPTION 'bounded presence window required' USING ERRCODE = '22023';
     END IF;
@@ -71,20 +75,21 @@ BEGIN
         FROM connectors.owntracks_points pt
         CROSS JOIN public.owner_places pl
         WHERE pt.ts >= p_since AND pt.ts < p_until
-          AND pl.deleted_at IS NULL AND NOT pl.paused
+          AND pl.id = p_place AND pl.deleted_at IS NULL AND NOT pl.paused
+    ), newest AS (
+        SELECT s.ts AS t, s.acc AS a, s.place_id AS pid, s.ssid_hit AS hit,
+               CASE WHEN s.ssid_hit OR s.dist <= s.radius THEN 'inside' ELSE 'outside' END AS sd
+        FROM scored s
+        WHERE s.ssid_hit
+           OR (s.acc IS NOT NULL AND s.acc >= 0 AND s.acc <= c_max_accuracy_m
+               AND (s.dist <= s.radius
+                    OR s.dist > s.radius + greatest(s.acc, c_margin_floor_m)))
+        ORDER BY s.ts DESC, s.place_id DESC
+        LIMIT p_limit
     )
-    SELECT s.ts, round(s.acc)::integer, s.place_id,
-           CASE WHEN s.ssid_hit THEN 'inside'
-                WHEN s.dist <= s.radius THEN 'inside'
-                ELSE 'outside' END,
-           s.ssid_hit
-    FROM scored s
-    WHERE s.ssid_hit
-       OR (s.acc IS NOT NULL AND s.acc >= 0 AND s.acc <= c_max_accuracy_m
-           AND (s.dist <= s.radius
-                OR s.dist > s.radius + greatest(s.acc, c_margin_floor_m)))
-    ORDER BY s.ts ASC, s.place_id ASC
-    LIMIT p_limit;
+    SELECT n.t, round(n.a)::integer, n.pid, n.sd, n.hit
+    FROM newest n
+    ORDER BY n.t ASC, n.pid ASC;
 END
 $fn$
 """
