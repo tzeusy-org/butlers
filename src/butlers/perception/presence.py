@@ -59,6 +59,16 @@ def gps_outside(distance_m: float, accuracy_m: float, radius_m: float) -> bool:
     return accuracy_m <= MAX_ACCURACY_M and distance_m > radius_m + max(accuracy_m, MIN_MARGIN_M)
 
 
+def gps_inside(distance_m: float, accuracy_m: float, radius_m: float) -> bool:
+    """Qualifying inside fix: accuracy <=100 m and distance <= radius.
+
+    Inside carries no margin: a literal mirror of the outside margin would be unreachable for a
+    50 m place. The gap up to ``radius + max(accuracy, 50 m)`` is no signal, which gives
+    hysteresis against flapping. ``public.owner_presence_observations`` holds the same rule.
+    """
+    return accuracy_m <= MAX_ACCURACY_M and distance_m <= radius_m
+
+
 def observation_key(*parts: str) -> str:
     """Opaque stable key for one source observation (never the raw identifiers)."""
     return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:24]

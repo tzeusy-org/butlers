@@ -33,3 +33,25 @@ export async function putPresenceOwnerEntities(
   });
   return response.data;
 }
+
+export interface PresenceTransition {
+  id: string;
+  direction: "leave" | "enter";
+  place_ref: string | null;
+  at: string;
+  confirmed_at: string;
+  late: boolean;
+  retracted: boolean;
+  retraction_event_id: string | null;
+}
+
+export interface PresenceTransitions {
+  transitions: PresenceTransition[];
+  next_before: string | null;
+}
+
+/** Confirmed owner leave/enter edges, newest first. 503 until the reader login is activated. */
+export async function getPresenceTransitions(limit = 20): Promise<PresenceTransitions> {
+  const route = `/home/presence/transitions?limit=${limit}`;
+  return (await apiFetch<Envelope<PresenceTransitions>>(route)).data;
+}

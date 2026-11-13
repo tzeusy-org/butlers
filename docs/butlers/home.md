@@ -111,8 +111,15 @@ still read and overwrite the same key without this validation or lock.
 `butlers.perception.presence` is a pure reducer; `butlers.jobs.home_presence_reducer` is its Home
 adapter. Observations are typed and coordinate-free (side, opaque place reference, opaque key). The
 Home Assistant input is the owner entities' `home`/`not_home` rows in `ha_entity_snapshot`, gated
-by `ha_source_health`; the OwnTracks input is a connector-owned typed feed that a later slice
-supplies (Home has no read on `connectors.owntracks_points` and never will). Confirmed leave/enter
+by `ha_source_health`; the OwnTracks input is `public.owner_presence_observations(since, until, limit)`
+(core_330): a SECURITY DEFINER feed, executable by `butler_home_rw` alone, that classifies
+`connectors.owntracks_points` fixes against the live `owner_places` inside the database and returns only
+`(observed_at, accuracy_m, place_ref, side, ssid_match)` (no coordinate, SSID or payload). Outside is
+accuracy <= 100 m and distance > radius + max(accuracy, 50 m); inside is accuracy <= 100 m and
+distance <= radius; the band between is no signal, which gives hysteresis; an exact case-sensitive
+SSID match is an inside row that vetoes a leave. The init-db blanket `GRANT SELECT ON ALL TABLES IN
+SCHEMA connectors` still lets Home read the raw table; Home code does not, and the feed is the one
+place that classifies. A missing or ungranted feed degrades to Home Assistant alone. Confirmed leave/enter
 transitions are written to the canonical `owner.place` slot and timeline as source `home.dots`; no
 presence tables exist. Thresholds are named constants (3 minute quiet period, 2 distinct fixes at least 30 seconds apart,
 100 m accuracy ceiling, 50 m margin floor, 10 minute retraction window, 5 minute heartbeat).
@@ -122,7 +129,8 @@ window and any pending candidate, and a leave that happens while the reducer is 
 finite freshness maximum above the heartbeat, the owner subject, a `place` reference per home
 place, the evidence references from `evidence_ref`, a writer login and the schedule) is a
 separate owner-authorized act; until then nothing runs. `GET /api/home/presence/transitions`
-(owner-only) lists confirmed edges with `late` and `retracted` flags.
+(owner-only) lists confirmed edges with `late` and `retracted` flags; the Devices page shows them in
+`PresenceTimeline`, with a quiet "not activated" state while the reader login is absent.
 
 ## Proposed realtime feature specifications
 

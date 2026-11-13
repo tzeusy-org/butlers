@@ -2,8 +2,13 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { getPresenceOwnerEntities, putPresenceOwnerEntities } from "@/api/home-presence.ts";
-import type { PresenceOwnerEntities } from "@/api/home-presence.ts";
+import {
+  getPresenceOwnerEntities,
+  getPresenceTransitions,
+  putPresenceOwnerEntities,
+} from "@/api/home-presence.ts";
+import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy.ts";
+import type { PresenceOwnerEntities, PresenceTransitions } from "@/api/home-presence.ts";
 
 export const presenceOwnerEntitiesKey = ["home", "presence", "owner-entities"] as const;
 
@@ -25,5 +30,16 @@ export function useSavePresenceOwnerEntities() {
     onSettled: async () => {
       await queryClient.invalidateQueries({ queryKey: presenceOwnerEntitiesKey });
     },
+  });
+}
+
+export const presenceTransitionsKey = ["home", "presence", "transitions"] as const;
+
+export function usePresenceTransitions() {
+  return useQuery<PresenceTransitions>({
+    queryKey: presenceTransitionsKey,
+    queryFn: () => getPresenceTransitions(),
+    retry: false,
+    refetchInterval: POLL_BUS_RECONCILE_MS,
   });
 }
