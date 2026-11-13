@@ -192,6 +192,64 @@ Scope: v1-mandatory
 - **WHEN** the audit append or any statement fails before commit
 - **THEN** the API returns `503 PLACES_UNAVAILABLE` and the place and version are unchanged
 
+### Requirement: Owner presence reducer
+
+Home SHALL own one deterministic reducer that turns the owner's typed, coordinate-free
+presence observations into confirmed leave and enter transitions on the canonical
+`owner.place` slot and timeline (source `home.dots`, writer role
+`perception_dots_writer`), through `PerceptionStore.write` only. It SHALL NOT create
+`presence_observations`, `presence_edges` or `travel_legs`, keep a second owner clock,
+notify, or actuate. Raw locations stay in connector-owned stores; Home never reads them.
+
+Named constants, not runtime configuration: a side change opens a candidate on its first
+qualifying observation and is confirmed after 3 minutes with no fresh observation of the
+confirmed side, or on 2 distinct qualifying observations, whichever is first. A
+qualifying Home Assistant observation is a fresh owner-entity `home` or `not_home`
+state; a qualifying OwnTracks outside fix has accuracy of at most 100 m and a distance
+beyond the radius plus the larger of the accuracy and 50 m. A fresh home SSID match
+counts as an inside observation and so vetoes a leave. Enter is symmetric. Stale,
+unconfigured or unreadable input yields unknown and never an edge: a side established
+from an unknown prior is preceded by an explicit `unknown` assertion, so the database
+cannot classify it as a leave or enter. An enter confirmed within 10 minutes of the
+leave it follows retracts that leave in the same compare-and-swap, keeping the leave in
+history. `confirmed_at - at` above 15 minutes (exactly 15 is not) marks a transition
+late; consumers skip late and retracted transitions. Stable event keys plus the slot
+compare-and-swap make replay and concurrent delivery one transition. A confirmed state
+is republished every 5 minutes while fresh evidence holds so its slot stays fresh.
+
+`GET /api/home/presence/transitions` is the owner-only, read-only projection: confirmed
+leave/enter edges newest first with opaque place references, `late` and `retracted`
+flags and a cursor. It answers `503 PRESENCE_TIMELINE_UNAVAILABLE` until the private
+perception reader login is activated. The reducer is released dark: no schedule, no
+`home.dots` profile and no login exist until the owner-authorized activation (and
+bu-dhloi1.21). Rollback disables the reducer and consumer and retains canonical history.
+
+ID: REQ-butler-home-presence-reducer-001
+Source: bu-jv1moa.17
+Scope: v1-mandatory
+
+#### Scenario: Unknown prior never becomes a leave
+
+- **WHEN** the reducer has no confirmed state and a confirmed outside signal arrives
+- **THEN** it writes `unknown` and then the outside assertion, and the timeline row
+  records an unknown prior state, not a leave
+
+#### Scenario: Quick return retracts the leave
+
+- **WHEN** an enter is confirmed within 10 minutes of the leave it follows
+- **THEN** one write records the enter and a bound retraction, and the leave stays in
+  history marked retracted
+
+#### Scenario: Late confirmation is flagged
+
+- **WHEN** a transition is confirmed more than 15 minutes after its `at`
+- **THEN** the timeline marks it late and live reads skip it
+
+#### Scenario: Duplicate delivery is one transition
+
+- **WHEN** the same transition is delivered twice, or by two runners
+- **THEN** the slot advances one generation and the timeline holds one assertion
+
 ### Requirement: Switchboard Registration
 
 The home butler SHALL register with the Switchboard for cross-butler accessibility.

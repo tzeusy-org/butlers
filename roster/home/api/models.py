@@ -459,6 +459,26 @@ class PresenceOwnerEntitiesResponse(BaseModel):
     version: int
 
 
+class PresenceTransition(BaseModel):
+    """One confirmed owner leave or enter. Coordinate-free; the place is an opaque reference."""
+
+    id: UUID
+    direction: Literal["leave", "enter"]
+    place_ref: UUID | None
+    at: datetime
+    confirmed_at: datetime
+    late: bool
+    retracted: bool
+    retraction_event_id: UUID | None = None
+
+
+class PresenceTransitionsResponse(BaseModel):
+    """A page of presence transitions, newest first, with the cursor for the next page."""
+
+    transitions: list[PresenceTransition]
+    next_before: UUID | None = None
+
+
 class OwnerPlaceResponse(BaseModel):
     """One registry row as the owner's dashboard editor sees it."""
 
