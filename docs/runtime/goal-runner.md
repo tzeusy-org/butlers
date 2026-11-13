@@ -896,6 +896,35 @@ A wake that cannot be admitted (refused for any reason but Stop, or unmapped) en
 `goal_epochs` row supersedes one proposed at an earlier epoch (a recovery, an escalation or a
 wake). A set proposed again after such a move is a new set, not the next version of the old one.
 
+## Evidence-based completion (D11, D13, sw_075, dark)
+
+Behind `goal_runner/evidence.py` `EVIDENCE_COMPLETION_LIVE` (False), a goal whose lead claimed
+`completed` settles `completed` only when receipts prove what it requires; otherwise `partial`.
+
+- Requirements (`goal_plans.requirements`, at most 64): `{ref, evidence, anchor}`, where `ref` is
+  `effect:<id>` (`committed` or `owner_delivered`), `child:<id>` (`returned`), `inbox:<id>`
+  (`consumed`) or `reply` (`owner_delivered`). They are folded into the plan digest only when
+  present, so a version recorded without them keeps its digest.
+- Owner anchors come only from server facts (`RunnerLedger.owner_anchors`): the reply an
+  owner-message goal owes, each effect with an approving owner decision receipt, and each owner
+  reply that joined the goal. The lead names only its own (`lead`) requirements through
+  `goal.plan`'s `requirements`. A new plan version records every owner anchor derived so far and
+  every one its predecessor kept. `WaitLedger.append_plan` refuses a version that drops or changes
+  one (`PlanRequirementDropped`), and the sw_075 trigger refuses it again. A lead requirement may
+  be dropped.
+- The settle resolution (`RunnerLedger.resolve`, then `_judge`, then `evidence.judge`, a pure
+  predicate) evaluates the latest plan's requirements, the owner anchors derived now, and the
+  lead's relied effects (each must commit). The reply checks and `delivery_failure` run first and
+  are unchanged. A `completed` claim with any proof missing ends `partial`, and a `partial` or
+  `failed` claim is never upgraded. The verdict is written once to `goal_outcome_evidence`
+  (`satisfied`, and `missing` with the status each requirement found). That table is append-only:
+  REVOKE before GRANT, read and insert only, and a statement-level UPDATE guard.
+- Dark, no requirement is recorded (`goal.plan` refuses one POLICY, and its tool schema does not
+  offer it), `resolve` is unchanged, and nothing is written to `goal_outcome_evidence`.
+- Flipping the flag changes completion for every goal that settles afterwards, including goals
+  already running: a relied effect that did not commit, an owner-approved effect that did not
+  commit, or an unread owner reply then ends the goal `partial`.
+
 ## Not yet delivered
 
 - The per-domain `ContextSource` adapters (a domain's memory and facts).

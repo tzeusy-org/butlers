@@ -52,15 +52,29 @@ class EnvelopeSpec:
 
 
 def plan_digest(
-    premise_refs: Sequence[Any], evidence_refs: Sequence[Any], step_refs: Sequence[Any]
+    premise_refs: Sequence[Any],
+    evidence_refs: Sequence[Any],
+    step_refs: Sequence[Any],
+    requirements: Sequence[Any] = (),
 ):
-    """Digest of a plan version's content (identifiers only), stable across processes."""
-    body = json.dumps(
-        {"premise": premise_refs, "evidence": evidence_refs, "steps": step_refs},
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    """Digest of a plan version's content (identifiers only), stable across processes.
+
+    Requirements (sw_075) are folded in only when there are any, so every plan version recorded
+    without them keeps the digest it was recorded with.
+    """
+    content: dict[str, Any] = {
+        "premise": premise_refs,
+        "evidence": evidence_refs,
+        "steps": step_refs,
+    }
+    if requirements:
+        content["requirements"] = list(requirements)
+    body = json.dumps(content, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(body.encode()).hexdigest()
+
+
+class PlanRequirementDropped(ValueError):
+    """A new plan version would drop or change an owner-anchored requirement (sw_075)."""
 
 
 class WaitLedger:
@@ -104,16 +118,23 @@ class WaitLedger:
         premise_refs: Sequence[Any],
         evidence_refs: Sequence[Any],
         step_refs: Sequence[Any],
+        requirements: Sequence[dict[str, str]] | None = None,
     ) -> int | None:
         """Append the next plan version and bind the goal to it; None when the goal is gone.
 
         A changed premise is a new version, never an edit of the approved one. Returns the
         existing version when the same content is already the goal's latest (a retry).
+
+        ``requirements`` (sw_075, canonical ``{ref, evidence, anchor}`` dicts) are recorded with
+        the version and folded into its digest. A version that would drop or change an
+        owner-anchored requirement of its predecessor raises ``PlanRequirementDropped``; the
+        sw_075 trigger refuses it again. None records none, with the pre-sw_075 statement.
         """
         goal = await self._goal(goal_id)
         if goal is None:
             return None
-        digest = plan_digest(premise_refs, evidence_refs, step_refs)
+        recorded = list(requirements) if requirements is not None else None
+        digest = plan_digest(premise_refs, evidence_refs, step_refs, recorded or ())
         latest = await self.connection.fetchrow(
             "SELECT version, digest FROM switchboard.goal_plans WHERE goal_id = $1 "
             "ORDER BY version DESC LIMIT 1",
@@ -122,10 +143,25 @@ class WaitLedger:
         if latest is not None and latest["digest"] == digest:
             return latest["version"]
         version = 1 if latest is None else latest["version"] + 1
+        if recorded is not None and latest is not None:
+            previous = await self.connection.fetchval(
+                "SELECT requirements::text FROM switchboard.goal_plans "
+                "WHERE goal_id = $1 AND version = $2",
+                goal_id,
+                latest["version"],
+            )
+            if any(
+                item.get("anchor") == "owner" and item not in recorded
+                for item in json.loads(previous or "[]")
+            ):
+                raise PlanRequirementDropped("a plan version keeps every owner anchor")
         await self.connection.execute(
             "INSERT INTO switchboard.goal_plans (goal_id, version, predecessor_version, "
-            "premise_refs, evidence_refs, step_refs, created_epoch, digest) "
-            "VALUES ($1, $2, $3, $4::text::jsonb, $5::text::jsonb, $6::text::jsonb, $7, $8)",
+            "premise_refs, evidence_refs, step_refs, created_epoch, digest"
+            + (", requirements" if recorded is not None else "")
+            + ") VALUES ($1, $2, $3, $4::text::jsonb, $5::text::jsonb, $6::text::jsonb, $7, $8"
+            + (", $9::text::jsonb" if recorded is not None else "")
+            + ")",
             goal_id,
             version,
             None if latest is None else latest["version"],
@@ -134,6 +170,7 @@ class WaitLedger:
             json.dumps(list(step_refs)),
             epoch,
             digest,
+            *(() if recorded is None else (json.dumps(recorded),)),
         )
         await self.connection.execute(
             "UPDATE switchboard.goals SET plan_version = $2, updated_at = now() WHERE id = $1",
