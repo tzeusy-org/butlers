@@ -256,6 +256,11 @@ _REPLAY_WIDENED: dict[str, RelationGrant] = {
             "owner_delivery_tokens",
         )
     },
+    "owner_delivery_subject_members": _replay_widened(
+        _NONE,
+        {_SWITCHBOARD: frozenset({"SELECT", "INSERT"})},
+        "migration: append-only member mirror; Switchboard SELECT and INSERT only",
+    ),
     "owner_places": _replay_widened(
         _NONE,
         {_CONCIERGE: _DML, "butler_chronicler_rw": _SELECT, "butler_travel_rw": _SELECT},
