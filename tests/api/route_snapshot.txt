@@ -224,6 +224,7 @@ OP GET /api/home/entities 1207355eb45c
 OP GET /api/home/entities/{entity_id} 201db69dbe1b
 OP GET /api/home/maintenance 0b6e56c40750
 OP GET /api/home/places 3121184e9d2b
+OP GET /api/home/presence/transitions 56303003e18f
 OP GET /api/home/safety-watch 022eebc6c393
 OP GET /api/home/settings/presence/owner-entities 1ed414543f3d
 OP GET /api/home/settings/thresholds 70f7d9fbd4d2
@@ -878,6 +879,7 @@ ROUTE APIRoute GET '/api/home/entities' name=list_entities op=list_entities_api_
 ROUTE APIRoute GET '/api/home/entities/{entity_id:path}' name=get_entity op=get_entity_api_home_entities__entity_id__get tags=home schema=True
 ROUTE APIRoute GET '/api/home/maintenance' name=list_maintenance op=list_maintenance_api_home_maintenance_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/places' name=list_owner_places op=list_owner_places_api_home_places_get tags=home schema=True
+ROUTE APIRoute GET '/api/home/presence/transitions' name=get_presence_transitions op=get_presence_transitions_api_home_presence_transitions_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/safety-watch' name=list_safety_watch op=list_safety_watch_api_home_safety_watch_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/settings/presence/owner-entities' name=get_presence_owner_entities op=get_presence_owner_entities_api_home_settings_presence_owner_entities_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/settings/thresholds' name=get_thresholds op=get_thresholds_api_home_settings_thresholds_get tags=home schema=True
@@ -2104,6 +2106,7 @@ SCHEMA Page_FleetCaseSummary_ 594f7698dd4e
 SCHEMA Page_IngestionEventSummary_ 307e0f0b28bc
 SCHEMA Page_MemoryGap_ 32385070b1b5
 SCHEMA Page_MessageSearchResult_ f178406171a6
+SCHEMA Page_PresenceTransition_ c96b51640a0b
 SCHEMA Page_StandingReplyTemplateDraft_ faa0b157de1e
 SCHEMA PaginatedResponse_AccountModel_ 3b10cb7bc9dc
 SCHEMA PaginatedResponse_ApprovalAction_ 4c86a90c7e09
@@ -2175,6 +2178,7 @@ SCHEMA PreTripActionModel ca7f0085208b
 SCHEMA PredicateTab b88253f822af
 SCHEMA PreferenceEntry 2a25de211be4
 SCHEMA PresenceOwnerEntitiesResponse 263a32cfdb98
+SCHEMA PresenceTransition 7e8d80940f9b
 SCHEMA PriorityContactAddRequest e05a70e06178
 SCHEMA PriorityContactAddResponse cb1bab04fc54
 SCHEMA PriorityContactEntry ded0024322ee

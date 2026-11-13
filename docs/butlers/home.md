@@ -106,6 +106,24 @@ settings receipt only: the next scheduled `run_home_presence_context_producer` r
 These guarantees cover only these two routes. The generic state API and the `state_*` MCP tools can
 still read and overwrite the same key without this validation or lock.
 
+## Owner presence reducer
+
+`butlers.perception.presence` is a pure reducer; `butlers.jobs.home_presence_reducer` is its Home
+adapter. Observations are typed and coordinate-free (side, opaque place reference, opaque key). The
+Home Assistant input is the owner entities' `home`/`not_home` rows in `ha_entity_snapshot`, gated
+by `ha_source_health`; the OwnTracks input is a connector-owned typed feed that a later slice
+supplies (Home has no read on `connectors.owntracks_points` and never will). Confirmed leave/enter
+transitions are written to the canonical `owner.place` slot and timeline as source `home.dots`; no
+presence tables exist. Thresholds are named constants (3 minute quiet period, 2 distinct fixes at least 30 seconds apart,
+100 m accuracy ceiling, 50 m margin floor, 10 minute retraction window, 5 minute heartbeat).
+Reducer state lives in memory, so a restart makes the next confirmed side an `establish` preceded
+by an `unknown` assertion, never a fabricated leave. A restart therefore costs one confirmation
+window and any pending candidate, and a leave that happens while the reducer is down is not recorded. Activation (the `home.dots` profile with a
+finite freshness maximum above the heartbeat, the owner subject, a `place` reference per home
+place, the evidence references from `evidence_ref`, a writer login and the schedule) is a
+separate owner-authorized act; until then nothing runs. `GET /api/home/presence/transitions`
+(owner-only) lists confirmed edges with `late` and `retracted` flags.
+
 ## Proposed realtime feature specifications
 
 The shared [event-response contract](../../openspec/changes/specify-realtime-feature-contracts/specs/event-response-contract/spec.md)

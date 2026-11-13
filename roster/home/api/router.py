@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -31,16 +32,19 @@ from butlers.api.models import (
     PaginationMeta,
 )
 from butlers.api.owner_control import require_dashboard_owner_control
+from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.core.audit import append as append_audit
 from butlers.core.audit_transaction import audit_transaction
 from butlers.core.state import decode_jsonb, state_set
 from butlers.credential_store import upsert_owner_entity_info
+from butlers.db import register_jsonb_codec
 from butlers.home_assistant_client import (
     HAStatisticsClient,
     HAStatisticsError,
     parse_statistics_change_series,
 )
 from butlers.jobs.home import HASourceUnmeasurableError, _require_ha_source_healthy
+from butlers.perception import PerceptionStore
 from butlers.roster_imports import roster_module
 
 # Dynamically load models module from the same directory
@@ -74,6 +78,7 @@ OwnerPlaceUpdate = _models.OwnerPlaceUpdate
 OwnerPlaceResponse = _models.OwnerPlaceResponse
 PresenceOwnerEntitiesUpdate = _models.PresenceOwnerEntitiesUpdate
 PresenceOwnerEntitiesResponse = _models.PresenceOwnerEntitiesResponse
+PresenceTransition = _models.PresenceTransition
 
 logger = logging.getLogger(__name__)
 
@@ -2229,3 +2234,134 @@ async def put_presence_owner_entities(
     if len(result) == 3:
         return _place_error(result)
     return _presence_ok(*result)
+
+
+# ---------------------------------------------------------------------------
+# /api/home/presence/transitions — owner-only, read-only presence timeline
+# (owner.place leave/enter projection over perception_timeline; bu-jv1moa.17)
+# ---------------------------------------------------------------------------
+#
+# Reads the canonical perception timeline as the private owner reader and keeps only
+# confirmed leave/enter edges. Heartbeats, establishing rows and retraction records are
+# not edges. Late and retracted edges are returned flagged, never hidden, so history is
+# complete; consumers skip them. Output is coordinate-free: the place is an opaque reference.
+# The reader login is the owner-authorized activation; without it the route answers 503.
+
+_PERCEPTION_READER_DSN_ENV = "BUTLERS_PERCEPTION_READER_DSN"
+_TRANSITIONS_UNAVAILABLE = (
+    503,
+    "PRESENCE_TIMELINE_UNAVAILABLE",
+    "The presence timeline is unavailable.",
+)
+_TRANSITIONS_WINDOW = timedelta(days=7)
+_TRANSITIONS_CURSOR_SCOPE = "home-presence-transitions"
+_TRANSITIONS_SCAN_PAGE = 100  # the timeline's largest page
+_TRANSITIONS_MAX_SCANS = 20  # bounds one request to 2000 timeline rows
+
+
+async def _open_presence_reader() -> Any | None:
+    """A connection logged in as the private perception reader, or ``None`` when not activated."""
+    dsn = (os.environ.get(_PERCEPTION_READER_DSN_ENV) or "").strip()
+    if not dsn:
+        return None
+    connection = await asyncpg.connect(dsn, command_timeout=15)
+    await register_jsonb_codec(connection)
+    return connection
+
+
+def _edge(item: dict[str, Any]) -> PresenceTransition | None:
+    if item.get("operation") != "assert" or item.get("class") != "transition":
+        return None
+    before, after = item.get("from_value"), item.get("to_value")
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return None
+    if before.get("presence") == after.get("presence"):
+        return None
+    direction = "leave" if after.get("presence") == "outside" else "enter"
+    return PresenceTransition(
+        id=UUID(str(item["id"])),
+        direction=direction,
+        place_ref=UUID(after["place_ref"]) if after.get("place_ref") else None,
+        at=datetime.fromisoformat(item["at"]),
+        confirmed_at=datetime.fromisoformat(item["confirmed_at"]),
+        late=bool(item["late"]),
+        retracted=bool(item["retracted"]),
+        retraction_event_id=(
+            UUID(str(item["retraction_event_id"])) if item.get("retraction_event_id") else None
+        ),
+    )
+
+
+@router.get(
+    "/presence/transitions",
+    response_model=Page[PresenceTransition],
+    responses={
+        400: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+async def get_presence_transitions(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    limit: int = Query(20, ge=1, le=100),
+    cursor: str | None = Query(
+        None, description="Opaque cursor from the previous page's next_cursor."
+    ),
+) -> Any:
+    """Newest-first confirmed owner leave/enter edges for the last seven days."""
+    before: UUID | None = None
+    if cursor is not None:
+        (decoded,) = decode_cursor(cursor, (UUID,), scope=_TRANSITIONS_CURSOR_SCOPE)
+        before = decoded  # type: ignore[assignment]
+    connection = None
+    try:
+        connection = await _open_presence_reader()
+        if connection is None:
+            return _place_error(_TRANSITIONS_UNAVAILABLE)
+        now = datetime.now(UTC)
+        store = PerceptionStore(connection)
+        edges: list[PresenceTransition] = []
+        scan_cursor = before
+        more = False
+        # The timeline holds heartbeats, resets and retractions too, so `limit` counts edges:
+        # scan pages until enough edges are found, the week is exhausted or the scan cap is hit.
+        for _ in range(_TRANSITIONS_MAX_SCANS):
+            rows = await store.timeline(
+                since=now - _TRANSITIONS_WINDOW,
+                until=now,
+                kind="owner.place",
+                before=scan_cursor,
+                limit=_TRANSITIONS_SCAN_PAGE,
+            )
+            for row in rows:
+                scan_cursor = UUID(str(row["id"]))
+                edge = _edge(row)
+                if edge is not None:
+                    edges.append(edge)
+                    if len(edges) == limit:
+                        more = True
+                        break
+            if len(edges) == limit:
+                break
+            if len(rows) < _TRANSITIONS_SCAN_PAGE:
+                break
+        else:
+            more = True
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("presence timeline read failed: database unavailable")
+        return _place_error(_TRANSITIONS_UNAVAILABLE)
+    finally:
+        if connection is not None:
+            await connection.close()
+    # An empty page with a cursor is real: the scan cap was hit before any edge was found.
+    next_cursor = (
+        encode_cursor((scan_cursor,), scope=_TRANSITIONS_CURSOR_SCOPE)
+        if more and scan_cursor is not None
+        else None
+    )
+    page = Page[PresenceTransition](items=edges, next_cursor=next_cursor, limit=limit)
+    return JSONResponse(
+        content=page.model_dump(mode="json"),
+        headers={"Cache-Control": "no-store"},
+    )
