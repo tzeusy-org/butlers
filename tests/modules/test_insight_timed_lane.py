@@ -516,6 +516,94 @@ async def test_stale_digest_claim_is_released_for_a_retry(timed_pool):
     assert fresh["delivered"] == [candidate] and notify.await_count == 1
 
 
+def _retaking_sent(pool, candidate: str, other: list[Any]) -> AsyncMock:
+    """Transport during which the claim is released and re-taken by another cycle."""
+
+    async def send(message: str, metadata: dict[str, Any]) -> dict[str, Any]:
+        other.append(
+            await pool.fetchval(
+                "UPDATE insight_candidates SET claim_id = gen_random_uuid() "
+                "WHERE id = $1::uuid RETURNING claim_id",
+                candidate,
+            )
+        )
+        return {"status": "sent"}
+
+    return AsyncMock(side_effect=send)
+
+
+@pytest.mark.parametrize("lane", ["digest", "timed"])
+async def test_stale_holder_never_settles_a_re_taken_claim(timed_pool, lane):
+    """bu-jv1moa.8 review: only the current claim holder writes the disposition."""
+    from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+    other: list[Any] = []
+    if lane == "digest":
+        candidate = await _propose_digest(timed_pool)
+        notify = _retaking_sent(timed_pool, candidate, other)
+        with patch("butlers.context_bus.get_active_context", _context()):
+            await delivery_cycle(timed_pool, notify_fn=notify, now=_AWAKE)
+    else:
+        candidate = await _propose_timed(timed_pool)
+        notify = _retaking_sent(timed_pool, candidate, other)
+        await _run_timed(timed_pool, notify)
+    row = await _row(timed_pool, candidate)
+    assert notify.await_count == 1
+    assert row["status"] == "pending" and row["claim_id"] == other[0]
+
+
+async def test_timed_claim_refuses_a_window_closed_by_the_send_instant(timed_pool):
+    from butlers.tools.switchboard.insight.broker import claim_for_delivery
+
+    candidate = await _propose_timed(timed_pool, ttl=timedelta(minutes=10))
+    late = _AWAKE + timedelta(minutes=10)
+    claim, refusal = await claim_for_delivery(timed_pool, [candidate], now=late, unexpired_at=late)
+    assert claim is None and refusal == "claim_contended"
+    assert (await _row(timed_pool, candidate))["claim_id"] is None
+
+
+async def test_false_premise_never_withdraws_a_row_another_cycle_holds(timed_pool):
+    from butlers.tools.switchboard.insight.broker import (
+        delivery_cycle,
+        propose_insight_candidate,
+    )
+
+    key = "home:departure:door:held"
+    result = await propose_insight_candidate(
+        timed_pool,
+        origin_butler="home",
+        priority=60,
+        category="departure",
+        dedup_key=key,
+        message=f"Digest {key}",
+        expires_at=_AWAKE + timedelta(days=1),
+        premise=_edge_premise(_AWAKE),
+        now=_AWAKE,
+    )
+    assert result["status"] == "accepted", result
+    candidate = str(
+        await timed_pool.fetchval("SELECT id FROM insight_candidates WHERE dedup_key = $1", key)
+    )
+    holder = await timed_pool.fetchval(
+        "UPDATE insight_candidates SET claim_id = gen_random_uuid(), claimed_at = $2 "
+        "WHERE id = $1::uuid RETURNING claim_id",
+        candidate,
+        _AWAKE - timedelta(minutes=1),
+    )
+    notify = _sent()
+    with (
+        patch.dict(
+            "butlers.tools.switchboard.insight.premises.PREMISE_PROBES",
+            {_EDGE: AsyncMock(return_value=False)},
+        ),
+        patch("butlers.context_bus.get_active_context", _context()),
+    ):
+        await delivery_cycle(timed_pool, notify_fn=notify, now=_AWAKE)
+    row = await _row(timed_pool, candidate)
+    assert row["status"] == "pending" and row["claim_id"] == holder
+    notify.assert_not_awaited()
+
+
 async def test_fresh_digest_claim_is_left_to_its_holder(timed_pool):
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 

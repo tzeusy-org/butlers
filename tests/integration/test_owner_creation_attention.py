@@ -807,6 +807,90 @@ async def test_broker_uses_real_owner_clause_not_rank_and_rechecks_revoke_and_pa
         sent.assert_not_awaited()
 
 
+_OLD_DIGEST_ARRAY = (
+    "ARRAY['status','delivered_at','delivery_attempt_count','metadata','delivery_ref']"
+)
+_LANE_COLUMNS = ("lane", "deliver_after", "claim_id", "claimed_at", "attempt_started_at")
+
+
+def _attention_digest_refresh_block() -> str:
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "scripts/init-db.sql").read_text()
+    start = source.index("-- ATTENTION_DIGEST_REFRESH_BEGIN")
+    return source[start : source.index("-- ATTENTION_DIGEST_REFRESH_END", start)]
+
+
+async def test_lane_and_claim_columns_never_cost_a_candidate_its_origin(attention_env):
+    """bu-jv1moa.8 N1: core_334's columns stay out of the remembered definition digest."""
+    import json
+
+    from butlers.tools.switchboard.insight.broker import (
+        create_insight_tables,
+        propose_insight_candidate,
+    )
+
+    env = attention_env
+    pool = env.migration
+    await create_insight_tables(pool)
+    now = datetime(2026, 1, 15, 12, tzinfo=UTC)
+    origin = AttentionOrigin(entity_id=uuid4())
+    token = _current_origin.set(origin)
+    try:
+        key = f"general:attention:{uuid4().hex}:lane"
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="general",
+            priority=95,
+            category="synthetic",
+            dedup_key=key,
+            message="Synthetic lane candidate",
+            expires_at=now + timedelta(days=1),
+            now=now,
+        )
+    finally:
+        _current_origin.reset(token)
+    assert result["status"] == "accepted"
+    candidate = await pool.fetchval("SELECT id FROM insight_candidates WHERE dedup_key=$1", key)
+
+    async def origin_of() -> object:
+        raw = await pool.fetchval("SELECT dashboard_attention.candidate_origin($1)", candidate)
+        return json.loads(raw) if isinstance(raw, str) else raw
+
+    # Remembered before core_334: the digest a pre-334 row had, without the five columns.
+    pre_334 = "-".join(["to_jsonb(c)", _OLD_DIGEST_ARRAY, f"ARRAY{list(_LANE_COLUMNS)!r}"])
+    await env.admin.execute(
+        "UPDATE dashboard_attention.candidate_causes SET definition_digest = "
+        f"(SELECT encode(sha256(convert_to(({pre_334})::text,'UTF8')),'hex') "
+        "FROM public.insight_candidates c WHERE c.id=$1) WHERE candidate_id=$1",
+        candidate,
+    )
+    remembered_before = await origin_of()
+    # A claim held by a delivery worker does not change the definition either.
+    await pool.execute(
+        "UPDATE insight_candidates SET claim_id=gen_random_uuid(), claimed_at=$2, "
+        "attempt_started_at=$2 WHERE id=$1",
+        candidate,
+        now,
+    )
+    claimed = await origin_of()
+
+    # The bootstrap refresh rewrites an installed pre-fix pair in place.
+    for signature in ("remember(uuid,jsonb)", "candidate_origin(uuid)"):
+        definition = await env.admin.fetchval(
+            "SELECT pg_get_functiondef($1::regprocedure)", f"dashboard_attention.{signature}"
+        )
+        new_array = definition[definition.index("ARRAY['status'") :].split("]", 1)[0] + "]"
+        await env.admin.execute(definition.replace(new_array, _OLD_DIGEST_ARRAY))
+    before_refresh = await origin_of()
+    await env.admin.execute(_attention_digest_refresh_block())
+    await env.admin.execute(_attention_digest_refresh_block())  # idempotent
+
+    assert remembered_before == claimed == origin.record()
+    assert before_refresh is None
+    assert await origin_of() == origin.record()
+
+
 async def test_core_only_migration_replay_rollback_and_hostile_catalogue_refusal(
     postgres_container, fresh_db
 ):

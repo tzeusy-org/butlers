@@ -663,7 +663,7 @@ async def filter_by_cooldown(
             SET status = 'filtered',
                 metadata = COALESCE(metadata, '{}'::jsonb)
                            || jsonb_build_object('blocked_by', 'cooldown')
-            WHERE id = ANY($1::uuid[])
+            WHERE id = ANY($1::uuid[]) AND status = 'pending' AND claim_id IS NULL
             """,
             filtered_ids,
         )
@@ -709,7 +709,7 @@ async def deduplicate_candidates(
             SET status = 'filtered',
                 metadata = COALESCE(metadata, '{}'::jsonb)
                            || jsonb_build_object('blocked_by', 'dedup')
-            WHERE id = ANY($1::uuid[])
+            WHERE id = ANY($1::uuid[]) AND status = 'pending' AND claim_id IS NULL
             """,
             loser_ids,
         )
@@ -1503,7 +1503,7 @@ async def absorb_tensions(
                 SET status = 'delivered', delivered_at = $2, delivery_attempt_count = 0,
                     metadata = COALESCE(metadata, '{}'::jsonb)
                                || jsonb_build_object('tension_ref', $3::text)
-                WHERE id = ANY($1::uuid[])
+                WHERE id = ANY($1::uuid[]) AND status = 'pending' AND claim_id IS NULL
                 """,
                 list(question.member_ids),
                 now,
@@ -2030,7 +2030,7 @@ async def _revalidate_premises(
             """
             SELECT id, origin_butler, priority, dedup_key, channel, premise
             FROM insight_candidates
-            WHERE status = 'pending' AND premise IS NOT NULL
+            WHERE status = 'pending' AND claim_id IS NULL AND premise IS NOT NULL
             """
         )
     verdicts: dict[str, bool | None] = {}
@@ -2051,7 +2051,7 @@ async def _revalidate_premises(
                                'withdrawn_at', $2::text,
                                'withdrawn_reason', 'premise_false'
                            )
-            WHERE id = $1 AND status = 'pending'
+            WHERE id = $1 AND status = 'pending' AND claim_id IS NULL
             """,
             row["id"],
             now.isoformat(),
@@ -2477,6 +2477,7 @@ async def claim_for_delivery(
     *,
     now: datetime,
     budget_check: Any | None = None,
+    unexpired_at: datetime | None = None,
 ) -> tuple[uuid.UUID | None, str | None]:
     """Claim every candidate in ``candidate_ids`` or none of them.
 
@@ -2484,7 +2485,8 @@ async def claim_for_delivery(
     ``claim_contended`` when another worker holds (or already settled) one of
     them, or the reason ``budget_check(conn)`` returned. The budget check and
     the claim run under one advisory lock, so two workers cannot both count the
-    same last slot.
+    same last slot. With ``unexpired_at`` (the timed lane's send instant) a
+    candidate whose window has closed by then is not claimed (``claim_contended``).
     """
     claim_id = uuid.uuid4()
     try:
@@ -2496,11 +2498,13 @@ async def claim_for_delivery(
                 """
                 UPDATE insight_candidates SET claim_id = $1, claimed_at = $2
                 WHERE id = ANY($3::uuid[]) AND status = 'pending' AND claim_id IS NULL
+                  AND ($4::timestamptz IS NULL OR expires_at > $4)
                 RETURNING id
                 """,
                 claim_id,
                 now,
                 candidate_ids,
+                unexpired_at,
             )
             if len(rows) != len(set(candidate_ids)):
                 raise _ClaimContended
@@ -2690,13 +2694,18 @@ async def delivery_cycle(
         result["skipped"] = True
         return result
 
-    async def settle_terminal_insights(ids: list[str], metadata: dict[str, bool]) -> None:
+    async def settle_terminal_insights(
+        ids: list[str], metadata: dict[str, bool], held_claim: uuid.UUID | None = None
+    ) -> None:
+        # Only the claim holder (or nobody, for a quarantined row) settles a row.
         await pool.execute(
             "UPDATE insight_candidates SET status = 'filtered', "
             "metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb "
-            "WHERE id = ANY($1::uuid[])",
+            "WHERE id = ANY($1::uuid[]) AND status = 'pending' "
+            "AND claim_id IS NOT DISTINCT FROM $3",
             ids,
             {"delivery_failure": True, **metadata},
+            held_claim,
         )
         for item in ids:
             _PARTIAL_INSIGHTS.clear(pool, str(item))
@@ -3038,7 +3047,7 @@ async def delivery_cycle(
                     "metadata = COALESCE(metadata, '{}'::jsonb) || "
                     "jsonb_build_object('withdrawn_at', $2::text, "
                     "'withdrawn_reason', 'premise_false') "
-                    "WHERE id = $1 AND status = 'pending'",
+                    "WHERE id = $1 AND status = 'pending' AND claim_id IS NULL",
                     candidate["id"],
                     dispatch_now.isoformat(),
                 )
@@ -3128,7 +3137,7 @@ async def delivery_cycle(
                     """
                     UPDATE insight_candidates
                     SET status = 'delivered', delivered_at = $1, delivery_attempt_count = 0
-                    WHERE id = ANY($2::uuid[]) AND claim_id = $3
+                    WHERE id = ANY($2::uuid[]) AND claim_id = $3 AND status = 'pending'
                     """,
                     delivered_at,
                     selected_ids,
@@ -3202,7 +3211,7 @@ async def delivery_cycle(
             )
     else:
         if terminal_metadata := terminal_telegram_metadata(notify_result):
-            await settle_terminal_insights(selected_ids, terminal_metadata)
+            await settle_terminal_insights(selected_ids, terminal_metadata, claim_id)
             result.update(terminal_metadata)
         # Delivery failed — increment attempt counter and release this cycle's
         # claim so a later cycle can retry; filter candidates that have reached
@@ -3229,6 +3238,7 @@ async def delivery_cycle(
                                'failed_attempts', delivery_attempt_count
                            )
             WHERE id = ANY($1::uuid[]) AND delivery_attempt_count >= 3
+              AND status = 'pending' AND claim_id IS NULL
             """,
             selected_ids,
         )

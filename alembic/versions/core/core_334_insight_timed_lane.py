@@ -21,6 +21,12 @@ Create Date: 2026-11-14 00:00:00.000000
 - a partial unique index on ``dedup_key`` for the timed lane: one timed
   candidate per canonical edge.
 
+The owner-attention digest (``dashboard_attention.remember`` and
+``candidate_origin``) must ignore these columns, or every candidate remembered
+before this revision, and every claim, loses its origin. Those functions belong to
+the superuser bootstrap, so ``scripts/init-db.sql`` refreshes them in place
+(ATTENTION_DIGEST_REFRESH) and this revision refuses to run until it has.
+
 No new table, role, grant or policy. The core chain runs once per butler schema
 over this shared table, so every statement is idempotent under an advisory lock,
 and only the last schema still at core_334 drops the columns again. The
@@ -38,6 +44,24 @@ depends_on = None
 
 _LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_334:insight-lane', 0))"
 _LANE_CHECK = "chk_insight_candidates_lane"
+# The owner-attention digest (scripts/init-db.sql, dashboard_attention.remember and
+# candidate_origin) hashes the whole candidate row. The fixed bootstrap rewrites it to
+# ignore this revision's five columns (ATTENTION_DIGEST_REFRESH); without that, every
+# candidate remembered before this revision, and every claim, loses its origin.
+_REQUIRE_ATTENTION_DIGEST_REFRESH = """
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'dashboard_attention'
+          AND p.proname IN ('remember', 'candidate_origin')
+          AND position('attempt_started_at' IN p.prosrc) = 0
+    ) THEN
+        RAISE EXCEPTION 'core_334 needs the attention digest refresh: re-run scripts/init-db.sql';
+    END IF;
+END
+$$
+"""
 _WINDOW_CHECK = "chk_insight_candidates_timed_window"
 _TIMED_INDEX = "uq_insight_candidates_timed_dedup"
 _DUE_INDEX = "idx_insight_candidates_timed_due"
@@ -77,6 +101,7 @@ def _installation_count() -> int:
 
 def upgrade() -> None:
     op.execute(_LOCK)
+    op.execute(_REQUIRE_ATTENTION_DIGEST_REFRESH)
     op.execute(
         """
         ALTER TABLE public.insight_candidates

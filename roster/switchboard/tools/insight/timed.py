@@ -24,6 +24,7 @@ the cron and flips the flag in one owner-approved change.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -164,7 +165,8 @@ async def _fail(pool: asyncpg.Pool, candidate: dict[str, Any], claim_id: Any, re
             metadata = COALESCE(metadata, '{}'::jsonb)
                 || jsonb_build_object('delivery_failure', true,
                                       'failed_attempts', delivery_attempt_count)
-        WHERE id = $1 AND status = 'pending' AND delivery_attempt_count >= 3
+        WHERE id = $1 AND status = 'pending' AND claim_id IS NULL
+          AND delivery_attempt_count >= 3
         RETURNING status
         """,
         candidate["id"],
@@ -264,7 +266,7 @@ async def _settle_delivered(
             UPDATE insight_candidates
             SET status = 'delivered', delivered_at = $2, delivery_attempt_count = 0,
                 delivery_ref = $4::jsonb
-            WHERE id = $1 AND claim_id = $3
+            WHERE id = $1 AND claim_id = $3 AND status = 'pending'
             """,
             candidate["id"],
             now,
@@ -343,7 +345,7 @@ async def timed_delivery_cycle(
     try:
         from butlers.context_bus import get_active_context
 
-        quiet = is_policy_quiet_now(await get_approvals_policy_quiet_hours(pool), now=now)
+        policy = await get_approvals_policy_quiet_hours(pool)
         hold = _context_hold(await get_active_context(pool), now=now)
     except Exception:
         result.update(skipped=True, reason="attention_store_unavailable")
@@ -378,21 +380,27 @@ async def timed_delivery_cycle(
         return result
 
     eligible = set(await broker.filter_by_cooldown(pool, [str(r["id"]) for r in rows], now=now))
+    started = time.monotonic()
     for row in rows:
         candidate = dict(row)
         candidate_id = str(candidate["id"])
         if candidate_id not in eligible:
             continue
+        # Sends are sequential: judge each candidate's window, quiet hours and
+        # edge freshness at its own send instant, not at the cycle's start.
+        send_now = now + timedelta(seconds=time.monotonic() - started)
         premise = broker._json_object(candidate.get("premise"))
         verdict = await check_premise(pool, premise)
         if verdict is False:
-            result["withdrawn"] += int(await _withdraw(pool, candidate, now=now))
+            result["withdrawn"] += int(await _withdraw(pool, candidate, now=send_now))
             continue
         if verdict is None:
             await _block(pool, candidate["id"], "premise_unknown")
             result["held"][candidate_id] = "premise_unknown"
             continue
-        if quiet and not fresh_presence_edge(premise, now=now):
+        send_now = now + timedelta(seconds=time.monotonic() - started)
+        quiet = is_policy_quiet_now(policy, now=send_now)
+        if quiet and not fresh_presence_edge(premise, now=send_now):
             await _block(pool, candidate["id"], "held_by")
             result["held"][candidate_id] = "quiet_hours"
             continue
@@ -401,14 +409,18 @@ async def timed_delivery_cycle(
             return await _budget_refusal(conn, configured_budget=configured_budget, now=now)
 
         claim_id, refusal = await broker.claim_for_delivery(
-            pool, [candidate_id], now=now, budget_check=budget_check
+            pool,
+            [candidate_id],
+            now=send_now,
+            budget_check=budget_check,
+            unexpired_at=send_now,
         )
         if claim_id is None:
             if refusal == "budget":
                 await _block(pool, candidate["id"], "budget")
                 result["held"][candidate_id] = "budget"
             continue
-        await broker.mark_attempt_started(pool, claim_id, now)
+        await broker.mark_attempt_started(pool, claim_id, send_now)
 
         message = broker._format_standalone(candidate)
         metadata = {
@@ -454,7 +466,7 @@ async def timed_delivery_cycle(
             )
             continue
         await _settle_delivered(
-            pool, candidate, claim_id, now=now, notify_result=notify_result, message=message
+            pool, candidate, claim_id, now=send_now, notify_result=notify_result, message=message
         )
         result["delivered"].append(candidate_id)
     return result
