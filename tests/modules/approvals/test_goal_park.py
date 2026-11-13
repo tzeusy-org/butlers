@@ -24,13 +24,14 @@ OWNER = str(uuid4())
 
 class _Connection:
     def __init__(self, rules):
-        self.rules, self.claimed = rules, []
+        self.rules, self.claimed, self.inserted = rules, [], []
 
     async def fetchrow(self, sql, *args):
         if sql.startswith("SELECT id, approval_rule_id"):
             return None
         if sql.startswith("WITH claimed"):
             self.claimed.append(args[2])
+            self.inserted.append(args)
             return {"id": args[0]}
         raise AssertionError(sql)
 
@@ -173,3 +174,78 @@ async def test_cancel_is_scoped_to_the_goals_own_approval_refs(monkeypatch):
     goal, ref = uuid4(), uuid4()
     await domains.ApprovalsParking({"messenger": "pool"}).cancel("messenger", goal, [str(ref)])
     assert calls == [("pool", goal, [ref])]
+
+
+@pytest.mark.parametrize(
+    ("exposed", "cause", "stored"), [(True, "read", "read"), (False, "read", None)]
+)
+async def test_the_exposure_cause_is_stored_only_for_an_exposed_lineage(exposed, cause, stored):
+    writes = []
+
+    class Connection(_Connection):
+        async def execute(self, sql, *args):
+            writes.append((sql, args))
+            return "UPDATE 1"
+
+    await park_goal_effect(
+        _Pool(Connection([])),
+        lineage=GoalLineage(uuid4(), uuid4(), 0, exposed, "owner", uuid4(), cause),
+        tool_name="notify",
+        tool_args={"to": "x"},
+        allow_standing_rule=False,
+        recipient_is_owner=False,
+        origin_butler="messenger",
+    )
+    [(sql, args)] = [w for w in writes if "goal_exposure_cause" in w[0]]
+    assert args[-2] == stored
+
+
+@pytest.mark.parametrize(
+    ("allow", "tool", "possible"),
+    [(True, "notify", True), (False, "notify", False), (True, "relationship_assert_fact", False)],
+)
+async def test_rule_possible_is_the_brokers_answer_and_prepared_tools_never_qualify(
+    allow, tool, possible
+):
+    writes = []
+
+    class Connection(_Connection):
+        async def execute(self, sql, *args):
+            writes.append((sql, args))
+            return "UPDATE 1"
+
+    await park_goal_effect(
+        _Pool(Connection([])),
+        lineage=GoalLineage(uuid4(), uuid4(), 0, False, "owner", uuid4()),
+        tool_name=tool,
+        tool_args={"to": "x"},
+        allow_standing_rule=allow,
+        recipient_is_owner=False,
+        origin_butler="messenger",
+    )
+    [(sql, args)] = [w for w in writes if "goal_rule_possible" in w[0]]
+    assert args[-1] is possible
+
+
+@pytest.mark.parametrize(
+    ("exposed", "cause", "stored_cause"),
+    [(True, "child", "child"), (True, None, None), (False, "child", None)],
+)
+async def test_the_rule_approved_insert_stamps_cause_and_rule_possible(
+    exposed, cause, stored_cause
+):
+    connection = _Connection([_rule("notify", {"to": _exact(OWNER)})])
+    outcome = await park_goal_effect(
+        _Pool(connection),
+        lineage=GoalLineage(uuid4(), uuid4(), 0, exposed, "third_party", uuid4(), cause),
+        tool_name="notify",
+        tool_args={"to": OWNER},
+        allow_standing_rule=True,
+        recipient_is_owner=True,
+        recipient_args=("to",),
+        origin_butler="messenger",
+    )
+    assert outcome.rule_id is not None
+    [args] = connection.inserted
+    # (effect, tool, rule, now, args, goal, invocation, depth, exposed, origin, cause, possible)
+    assert (args[8], args[9], args[10], args[11]) == (exposed, "third_party", stored_cause, True)

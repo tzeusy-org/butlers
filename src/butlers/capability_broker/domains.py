@@ -183,6 +183,7 @@ class ApprovalsParking:
                 exposed=principal.exposed,
                 origin=principal.origin,
                 effect_id=reservation.effect_id,
+                exposure_cause=principal.exposure_cause,
             ),
             tool_name=capability.name,
             tool_args=args,

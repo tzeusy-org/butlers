@@ -63,6 +63,15 @@ UNPUBLISHED_CAPABILITY = "<unpublished>"
 _CATALOG_IDENTITY = re.compile(r"[a-z][a-z0-9_]{0,62}__[a-z][a-z0-9_]{0,126}")
 
 
+def invocation_exposure_cause(invocation) -> str | None:
+    """The closed S1 cause on an invocation row; anything else reads as unknown."""
+    try:
+        cause = invocation["exposure_cause"]
+    except (KeyError, TypeError):
+        return None
+    return cause if cause in EXPOSURE_CAUSES else None
+
+
 class BrokerLedger:
     def __init__(self, connection: Any):
         self.connection = connection
@@ -115,6 +124,7 @@ class BrokerLedger:
                 goal["catalog_digest"],
                 grants,
                 label,
+                invocation_exposure_cause(invocation),
             )
         except (ValueError, KeyError, TypeError, AttributeError):
             raise BrokerRefused(Reason.AUTHENTICATION) from None
@@ -642,7 +652,8 @@ class BrokerLedger:
             "SELECT e.*, i.depth, i.exposed AS invocation_exposed, i.grant_snapshot, "
             "i.grant_digest, i.label_version AS invocation_label_version, "
             "i.label_instr AS invocation_label_instr, i.label_data AS invocation_label_data, "
-            "i.label_sens AS invocation_label_sens "
+            "i.label_sens AS invocation_label_sens, "
+            "i.exposure_cause AS invocation_exposure_cause "
             "FROM switchboard.effects e JOIN switchboard.invocations i "
             "ON (i.goal_id, i.id) = (e.goal_id, e.invocation_id) "
             "WHERE e.goal_id = $1 AND e.id = $2 FOR UPDATE OF e",
@@ -674,6 +685,7 @@ class BrokerLedger:
             "label_instr": effect["invocation_label_instr"],
             "label_data": effect["invocation_label_data"],
             "label_sens": effect["invocation_label_sens"],
+            "exposure_cause": effect["invocation_exposure_cause"],
         }
         principal = self._principal(goal, invocation)
         effect_label = Label.from_row(
