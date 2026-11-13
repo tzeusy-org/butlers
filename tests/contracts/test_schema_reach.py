@@ -1109,6 +1109,12 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         )
         for relation in ("goal_outcome_evidence", "owner_decision_items")
     },
+    ("src/butlers/perception/mode_overlay.py", "switchboard.owner_mode_overlay"): (
+        "sanctioned:RFC-0038: S3.1 owner mode edits (sw_076, bu-u33sb7) live in the "
+        "Switchboard-owned overlay beside owner policy, written in the same transaction as "
+        "the mode_loosen dashboard step-up; qualified SQL allocated to "
+        "perception/mode_overlay.py (bu-dhloi1.21)"
+    ),
     **{
         ("src/butlers/core/decision_sets.py", f"switchboard.{relation}"): (
             "sanctioned:RFC-0038: D13/S2.2 a decision-set wait reads its version's owner "

@@ -634,12 +634,12 @@ async def test_restricted_login_and_runtime_cannot_mint_or_administer_a_factor(a
 
     # Shared fixtures do not silently activate any future consumer or grant.
     namespace = await pool.fetchval("SELECT current_database() || ':' || current_schema()")
-    for future_kind in ("vouch", "mode_loosen"):
+    for future_kind in ("vouch", "mode_tighten"):
         binding = RuleBinding(future_kind, "new", "a" * 64, "b" * 64, namespace)
         with pytest.raises(AuthError):
             await signed_binding_proof(authority, binding)
-    # The closed catalog admits exactly the registered consumers (bu-dhloi1.29).
-    for kind in ("contain", "policy_loosen"):
+    # The closed catalog admits exactly the registered consumers (bu-dhloi1.29, .21).
+    for kind in ("contain", "policy_loosen", "mode_loosen"):
         binding = RuleBinding(kind, "synthetic", "a" * 64, "b" * 64, namespace)
         assert (await signed_binding_proof(authority, binding)).nonce
     role = await admin.fetchrow(

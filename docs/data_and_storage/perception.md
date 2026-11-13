@@ -236,9 +236,18 @@ calls it.
   mode may hold them. Only owner-declared or owner-confirmed travel arms the
   absence plan. The brief follows the wake signal, never before 06:00, else
   09:30.
-- Not yet live: `mode_loosen` is not in the trusted step-up catalog, so the
-  store refuses it, and owner edits to a mode's holds and break-through senders
-  have no storage. Both land in a separate change.
+- Owner edits to a mode's duration, holds and break-through senders live in
+  `switchboard.owner_mode_overlay` (sw_076): one row per edited mode, keyed by
+  mode and versioned; a mode without a row has its default at version 0.
+  `butlers.perception.mode_overlay.ModeOverlayWriter` writes a tightening with no
+  step-up and a loosening only in the transaction that admits a `mode_loosen`
+  step-up, whose target is `mode:new-version:digest16` over the resulting
+  `duration|holds|senders` state (`modes.state_text`). The finish rule binds the
+  retained result's `rule_id` to `mode:new-version`, so a step-up is never spent
+  on another edit or a stale version. The table's trigger enforces the same rule
+  on any owner SQL; no row is deleted; the runtime role has no privilege.
+- Entering and leaving a mode are the `owner.mode` projection, not the overlay;
+  their writer is a later change.
 
 ## Complete private backup
 

@@ -6987,7 +6987,7 @@ BEGIN
  IF NOT FOUND THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
  IF action='options' THEN
   IF NOT p ?& ARRAY['kind','request_digest','action_digest','ceremony_id','challenge','target','namespace']
-   OR p->>'kind' NOT IN ('create','from_action','approve_with_rule','promotion','contain','policy_loosen')
+   OR p->>'kind' NOT IN ('create','from_action','approve_with_rule','promotion','contain','policy_loosen','mode_loosen')
    OR p->>'request_digest' !~ '^[0-9a-f]{64}$' OR p->>'action_digest' !~ '^[0-9a-f]{64}$'
    OR p->>'ceremony_id' !~ '^[A-Za-z0-9_-]{43}$' OR p->>'challenge' !~ '^[A-Za-z0-9_-]{43}$'
    OR length(p->>'target') NOT BETWEEN 1 AND 128
@@ -7097,11 +7097,15 @@ BEGIN
   OR jsonb_typeof(result->'kind') IS DISTINCT FROM 'string'
   OR result->>'kind' IS DISTINCT FROM kind
   OR result->>'id' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-  OR result->>'rule_id' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  OR (kind<>'mode_loosen'
+      AND result->>'rule_id' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
   OR (kind IN ('create','from_action') AND result->>'id' IS DISTINCT FROM result->>'rule_id')
   OR (kind IN ('approve_with_rule','promotion') AND result->>'id' IS DISTINCT FROM target)
   OR (kind='contain' AND result->>'id' IS DISTINCT FROM result->>'rule_id')
   OR (kind='policy_loosen' AND result->>'rule_id' IS DISTINCT FROM split_part(target,':',1))
+  -- mode_loosen (bu-dhloi1.21): the overlay row the step-up bound, mode:new-version.
+  OR (kind='mode_loosen' AND (result->>'rule_id' !~ '^[a-z_]{1,32}:[1-9][0-9]{0,18}$'
+      OR result->>'rule_id' IS DISTINCT FROM split_part(target,':',1)||':'||split_part(target,':',2)))
   THEN RETURN '{"state":"refused"}'; END IF;
  UPDATE dashboard_stepup.bindings x SET result=consume.result WHERE x.id=b.id;
  RETURN jsonb_build_object('state','completed');
@@ -7133,7 +7137,7 @@ CREATE TABLE dashboard_stepup.bindings (
  id text PRIMARY KEY,
  session_digest text NOT NULL CHECK(session_digest ~ '^[0-9a-f]{64}$'),
  credential_epoch bigint NOT NULL, session_epoch bigint NOT NULL,
- kind text NOT NULL CHECK(kind IN ('create','from_action','approve_with_rule','promotion','contain','policy_loosen')),
+ kind text NOT NULL CHECK(kind IN ('create','from_action','approve_with_rule','promotion','contain','policy_loosen','mode_loosen')),
  target text NOT NULL, request_digest text NOT NULL CHECK(request_digest ~ '^[0-9a-f]{64}$'),
  action_digest text NOT NULL CHECK(action_digest ~ '^[0-9a-f]{64}$'),
  namespace text NOT NULL, expires_at timestamptz NOT NULL,
@@ -7171,7 +7175,8 @@ END $deactivate$;
 REVOKE ALL ON FUNCTION dashboard_stepup.deactivate_interface() FROM PUBLIC;
 
 -- Bring an existing installation to this file's closed consumer catalog
--- (bu-dhloi1.29 added contain and policy_loosen). Idempotent and history
+-- (bu-dhloi1.29 added contain and policy_loosen; bu-dhloi1.21 added
+-- mode_loosen). Idempotent and history
 -- preserving: every past binding and receipt row stays as it is; only the
 -- kind CHECK and the two routines are replaced, then finalize re-asserts
 -- ownership, provenance and grants. Reached only from this privileged
@@ -7184,7 +7189,7 @@ BEGIN
  LOCK TABLE dashboard_stepup.bindings IN ACCESS EXCLUSIVE MODE;
  ALTER TABLE dashboard_stepup.bindings DROP CONSTRAINT IF EXISTS bindings_kind_check,
   ADD CONSTRAINT bindings_kind_check CHECK(kind IN
-   ('create','from_action','approve_with_rule','promotion','contain','policy_loosen'));
+   ('create','from_action','approve_with_rule','promotion','contain','policy_loosen','mode_loosen'));
  PERFORM dashboard_stepup.install_routines();
  PERFORM dashboard_stepup.finalize_interface();
 END $upgrade$;

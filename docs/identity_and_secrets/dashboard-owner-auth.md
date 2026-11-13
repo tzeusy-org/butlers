@@ -69,8 +69,9 @@ the adopted separate-device custody remains an owner operational obligation.
 This source interface does not enroll a device, provision credentials, deploy
 or expose an instance, or activate future goal-runtime consumers.
 
-The closed SQL consumer catalog admits six kinds: the four approvals kinds
-above, `contain` and `policy_loosen` (bu-dhloi1.29). Each derives its exact
+The closed SQL consumer catalog admits seven kinds: the four approvals kinds
+above, `contain` and `policy_loosen` (bu-dhloi1.29), and `mode_loosen`
+(bu-dhloi1.21). Each derives its exact
 binding in its own source and enlists consumption in its owning transaction
 through `butlers.core.dashboard_stepup.consume_stepup`:
 
@@ -85,8 +86,14 @@ through `butlers.core.dashboard_stepup.consume_stepup`:
   `/api/owner-policy/step-up/options` (`{"required": false}` for a change that
   does not loosen), finishes as above, and sends the nonce with
   `/api/owner-policy/terms/{id}/loosen`.
+- `mode_loosen` (`perception.mode_overlay.overlay_binding`) binds the owner
+  action, the edit, the expected version and the mode's current profile. Its
+  target is `mode:version:digest16` over the resulting overlay state, which
+  sw_076's overlay trigger requires a step-up consumed in the same transaction
+  to match; its retained result's `rule_id` must be `mode:version`, the same
+  overlay row. It has no dashboard route yet and stays dark.
 
-Future Vouch and mode-loosening owners can reuse the neutral
+A future Vouch owner can reuse the neutral
 `DashboardStepUpProof`/`StepUpBinding` projection, the restricted service's
 binding ceremony, and the real synthetic `authority`/`signed_binding_proof`
 fixtures in `tests/integration/test_dashboard_stepup.py`. Fixture reuse does
