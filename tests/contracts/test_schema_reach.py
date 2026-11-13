@@ -647,6 +647,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{qualified}>",
     ): "dynamic-local: owning migration's loop over its fixed decision-set table tuple (bu-4c7nvp.1.3); not a foreign-schema exception",
     (
+        "roster/switchboard/migrations/073_owner_decisions.py",
+        "<dynamic:{qualified}>",
+    ): "dynamic-local: owning migration's loop over its fixed owner-decision table tuple (bu-4c7nvp.1.3); not a foreign-schema exception",
+    (
         "roster/switchboard/tests/test_identity_injection.py",
         "relationship.entity_facts",
     ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
@@ -1096,6 +1100,28 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
             "invocations",
         )
     },
+    **{
+        ("src/butlers/capability_broker/owner_decisions.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: D11-D13/M7 owner decision receipts and the decision-set "
+            "resolver (sw_073) over the Switchboard-owned goal ledger; qualified SQL allocated "
+            "to capability_broker/owner_decisions.py (bu-4c7nvp.1.3)"
+        )
+        for relation in (
+            "decision_set_versions",
+            "effects",
+            "goal_epochs",
+            "goals",
+            "owner_decision_items",
+            "owner_decisions",
+        )
+    },
+    (
+        "src/butlers/capability_broker/ledger.py",
+        "switchboard.decision_set_versions",
+    ): (
+        "sanctioned:RFC-0038: S2.2 a Stop cancels the goal's open decision set (sw_072); "
+        "qualified SQL allocated to capability_broker/ledger.py (bu-4c7nvp.1.3)"
+    ),
     **{
         ("src/butlers/goal_runner/owner_failure.py", f"switchboard.{relation}"): (
             "sanctioned:RFC-0038: S6 owner failure cause line (sw_068) over the Switchboard-owned "

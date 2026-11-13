@@ -1,4 +1,4 @@
-"""The broker's seam to owning domains: forward, park and cancel.
+"""The broker's seam to owning domains: forward, park, cancel and mirror owner decisions.
 
 ``Domains`` is a trusted constructor input. Parking always goes through the
 owning domain's approvals module; ``ApprovalsParking`` is the in-process
@@ -19,6 +19,7 @@ from uuid import UUID
 from butlers.modules.approvals.goal_park import (
     GoalLineage,
     cancel_goal_effects,
+    decide_goal_effect,
     goal_action_states,
     park_goal_effect,
     record_goal_outcome,
@@ -84,6 +85,14 @@ class ParkReceipt:
     approved_by_rule: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class DomainDecision:
+    """The domain action's status after an owner decision, with its stored call if approved."""
+
+    status: str
+    arguments: dict[str, Any] | None = None
+
+
 class Domains(Protocol):
     async def dispatch(
         self,
@@ -117,6 +126,15 @@ class Domains(Protocol):
         self, domain: str, goal_id: UUID, approval_refs: list[str]
     ) -> dict[str, str]:
         """The domain's current decision state for each named approval."""
+        ...
+
+    async def decide(
+        self, domain: str, goal_id: UUID, approval_ref: str, *, approve: bool, decided_by: str
+    ) -> DomainDecision | None:
+        """Mirror an owner decision the broker already recorded onto the domain action.
+
+        Idempotent. None when the domain holds no such action of the goal.
+        """
         ...
 
 
@@ -190,3 +208,12 @@ class ApprovalsParking:
     async def action_states(self, domain, goal_id, approval_refs) -> dict[str, str]:
         states = await goal_action_states(self._pool(domain), goal_id, _action_ids(approval_refs))
         return {str(action_id): status for action_id, status in states.items()}
+
+    async def decide(self, domain, goal_id, approval_ref, *, approve, decided_by):
+        for action_id in _action_ids([approval_ref]):
+            decided = await decide_goal_effect(
+                self._pool(domain), goal_id, action_id, approve=approve, decided_by=decided_by
+            )
+            if decided is not None:
+                return DomainDecision(decided.status, decided.tool_args)
+        return None

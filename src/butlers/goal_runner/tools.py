@@ -49,8 +49,9 @@ _OPTIONAL = frozenset({CONTEXT_SEARCH, GUIDANCE_SEARCH, GUIDANCE_LOAD})
 # (CAPABILITY); the runner and ledger paths exist and are tested directly. Flip with the feed.
 # goal.wait_again re-arms a fired goal.wait_until envelope, so it goes live with it.
 WAIT_UNTIL_LIVE = False
-# goal.decide_together (M7 decision sets, bu-4c7nvp.1.3) stays dark until the owner's decision
-# path, the resolver of PR-B, can decide a set; a set nobody can decide would only strand calls.
+# goal.decide_together (M7 decision sets, bu-4c7nvp.1.3) stays dark until the owner can reach
+# the resolver (the card and its od1 token, bu-jv1moa.27); a set nobody can decide would only
+# strand calls.
 DECIDE_TOGETHER_LIVE = False
 _DARK = frozenset(
     ({"goal__wait_until", "goal__wait_again"} if not WAIT_UNTIL_LIVE else set())

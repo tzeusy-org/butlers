@@ -6,7 +6,9 @@ capability broker (RFC 0038 D13). Its execution must go through
 records the effect ledger and signs the assertion. The dashboard REST
 decision and retry routes, the module's approve and dispatch tools, and the
 shared executor therefore refuse it with one typed error code. Rejecting a
-goal action stays allowed: it never runs anything.
+goal action stays allowed: it never runs anything. The owner's approval of a goal action
+reaches the domain row only through the broker's owner-decision path
+(``capability_broker.owner_decisions``, via ``goal_park.decide_goal_effect``).
 """
 
 from __future__ import annotations

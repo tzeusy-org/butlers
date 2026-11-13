@@ -23,6 +23,7 @@ templates are not yet recognised and so park.
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -236,6 +237,62 @@ async def record_goal_outcome(
             metadata={"goal_id": str(goal_id), "status": status},
         )
     return True
+
+
+@dataclass(frozen=True, slots=True)
+class GoalDecision:
+    """A goal action's status after an owner decision was mirrored onto it."""
+
+    status: str
+    tool_args: dict[str, Any] | None = None
+
+
+async def decide_goal_effect(
+    pool: Any,
+    goal_id: uuid.UUID,
+    action_id: uuid.UUID,
+    *,
+    approve: bool,
+    decided_by: str,
+) -> GoalDecision | None:
+    """Mirror the owner's decision of a goal action, recorded first by the broker (D13).
+
+    The broker committed the owner's decision receipt before calling this; the domain row
+    follows it through the canonical transition, which also fences the action's owner prompts.
+    An action whose window elapsed becomes ``expired`` instead, and a decision already mirrored
+    (a re-drive) changes nothing. Returns the action's status afterwards, with its stored
+    arguments when it is ``approved`` (the broker dispatches exactly those), or None when the
+    goal holds no such action. This is the only path that approves a goal action: the legacy
+    approve routes refuse one (``goal_fence``).
+    """
+    async with pool.acquire() as connection, connection.transaction():
+        row = await connection.fetchrow(
+            "SELECT status FROM pending_actions WHERE id = $1 AND goal_id = $2 FOR UPDATE",
+            action_id,
+            goal_id,
+        )
+        if row is None:
+            return None
+        if row["status"] == ActionStatus.PENDING.value:
+            await transition_pending_action(
+                connection,
+                action_id=action_id,
+                target_status=ActionStatus.APPROVED if approve else ActionStatus.REJECTED,
+                decided_by=decided_by,
+                event_actor=decided_by,
+                event_reason="owner decision of a goal effect",
+                event_metadata={"goal_id": str(goal_id)},
+                _already_in_transaction=True,
+            )
+        after = await connection.fetchrow(
+            "SELECT status, tool_args, execution_result FROM pending_actions WHERE id = $1",
+            action_id,
+        )
+    status = after["status"]
+    if status == ActionStatus.APPROVED.value and after["execution_result"] is None:
+        stored = after["tool_args"]
+        return GoalDecision(status, json.loads(stored) if isinstance(stored, str) else stored)
+    return GoalDecision(status)
 
 
 async def goal_action_states(

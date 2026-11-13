@@ -70,7 +70,7 @@ async def reset_ledger(owner):
     sw_070's on ``goal_inbox_releases``, which the CASCADE reaches through its
     goal and inbox keys (a test that ends a goal leaves release rows), and
     sw_072's on the decision set tables, which it reaches through their goal and
-    effect keys. This
+    effect keys, and sw_073's on the owner decision receipts, reached the same way. This
     test-only reset, run as the owner, lifts whichever of those guards the
     pinned revision has, for its own transaction alone.
     """
@@ -86,6 +86,7 @@ async def reset_ledger(owner):
                 "goal_waiting_durable",
                 "goal_inbox_releases_durable",
                 "decision_set_durable",
+                "owner_decision_durable",
             ],
         )
         for guard in guards:

@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 _LIVE_EFFECTS = ("requested", "parked", "approved", "dispatched", "committed", "unknown")
 # Effects that have not reached the domain and that a Stop cancels (D11, D14).
 _CANCELLABLE = ("requested", "parked", "approved")
+_PARKED_ENDS = ("rejected", "expired", "cancelled")
 _ENDED_INVOCATION = ("returned", "failed", "timed_out", "stopped", "escalated")
 # The requested name is session-supplied text. A refusal record keeps it only
 # when it is a catalog identity (``<domain>__<tool>``, which the broker checks
@@ -780,7 +781,7 @@ class BrokerLedger:
 
     async def end_parked(self, goal_id: UUID, effect_id: UUID, status: str) -> bool:
         """D11 ``parked -> rejected | expired | cancelled`` from the domain's decision."""
-        if status not in ("rejected", "expired", "cancelled"):
+        if status not in _PARKED_ENDS:
             raise ValueError("parked_end_status")
         await self._lock_goal(goal_id)
         row = await self.connection.fetchrow(
@@ -807,4 +808,28 @@ class BrokerLedger:
             goal_id,
             list(_CANCELLABLE),
         )
+        # S2.2: a Stop cancels the goal's pending decisions, its open decision set included.
+        await self.connection.execute(
+            "UPDATE switchboard.decision_set_versions SET state = 'cancelled', "
+            "updated_at = clock_timestamp() WHERE goal_id = $1 AND state = 'open'",
+            goal_id,
+        )
         return [(r["capability"], r["approval_ref"]) for r in rows if r["approval_ref"]]
+
+    async def void_approved(self, goal_id: UUID, effect_id: UUID, status: str) -> bool:
+        """D11 ``approved -> rejected | expired | cancelled``: the domain action ended first.
+
+        An owner approval whose domain action had already left ``pending`` (its window elapsed,
+        or it was cancelled) never dispatches. Only a never-dispatched approval is ended.
+        """
+        if status not in _PARKED_ENDS:
+            raise ValueError("approved_end_status")
+        await self._lock_goal(goal_id)
+        row = await self.connection.fetchrow(
+            "UPDATE switchboard.effects SET status = $3, updated_at = now() "
+            "WHERE goal_id = $1 AND id = $2 AND status = 'approved' RETURNING id",
+            goal_id,
+            effect_id,
+            status,
+        )
+        return row is not None
