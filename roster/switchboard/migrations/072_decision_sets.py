@@ -30,7 +30,9 @@ transaction that creates it: a deferred constraint trigger checks at commit that
 holds exactly ``item_count`` items, so no later insert can add an item to a committed version. Nothing can reach ``decided`` yet: the owner's
 decision path and its receipt arrive with the resolver (PR-B), which replaces this guard.
 Nothing is deletable. The Switchboard runtime role may read and insert, and may update only a
-version's state; the guard refuses anything else.
+version's state; the guard refuses anything else. Its schema-default table privileges are revoked
+first, and an UPDATE of a set or item is refused per statement, so it is never a silent no-op
+(row-level security would otherwise narrow it to zero rows, and a row trigger would never fire).
 
 Dark: no listed goal tool creates a set yet (``goal.decide_together`` stays unlisted until the
 resolver lands). The downgrade refuses while any set exists.
@@ -124,6 +126,11 @@ def upgrade() -> None:
         BEGIN
             RAISE EXCEPTION 'Decision sets are durable' USING ERRCODE = 'insufficient_privilege';
         END $$;
+        CREATE FUNCTION switchboard.decision_set_append_only()
+        RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+            RAISE EXCEPTION '% rows are append-only', TG_TABLE_NAME;
+        END $$;
         -- A version is born open; only the guarded state transitions move it on.
         CREATE FUNCTION switchboard.decision_set_born_open()
         RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
@@ -176,6 +183,9 @@ def upgrade() -> None:
         statements += [
             f"ALTER TABLE {qualified} ENABLE ROW LEVEL SECURITY",
             f"REVOKE ALL ON {qualified} FROM PUBLIC",
+            # The schema's default privileges grant the runtime role every table privilege;
+            # take them back so only these grants hold.
+            f"REVOKE ALL ON {qualified} FROM {_RUNTIME}",
             f"GRANT SELECT, INSERT{', UPDATE' if mutable else ''} ON {qualified} TO {_RUNTIME}",
             f"CREATE POLICY decision_set_read ON {qualified} FOR SELECT TO {_RUNTIME} "
             f"USING ({guard})",
@@ -186,6 +196,13 @@ def upgrade() -> None:
             f"CREATE TRIGGER decision_set_durable BEFORE DELETE OR TRUNCATE ON {qualified} "
             "FOR EACH STATEMENT EXECUTE FUNCTION switchboard.decision_set_durable()",
         ]
+        if not mutable:
+            # Refuse every UPDATE statement, even one that matches no visible row: a row trigger
+            # never fires on a statement that RLS narrows to zero rows.
+            statements.append(
+                f"CREATE TRIGGER decision_set_append_only BEFORE UPDATE ON {qualified} "
+                "FOR EACH STATEMENT EXECUTE FUNCTION switchboard.decision_set_append_only()"
+            )
         if mutable:
             statements.append(
                 f"CREATE POLICY decision_set_update ON {qualified} FOR UPDATE TO {_RUNTIME} "
@@ -208,5 +225,6 @@ def downgrade() -> None:
         DROP FUNCTION IF EXISTS switchboard.decision_set_immutable();
         DROP FUNCTION IF EXISTS switchboard.decision_set_durable();
         DROP FUNCTION IF EXISTS switchboard.decision_set_born_open();
+        DROP FUNCTION IF EXISTS switchboard.decision_set_append_only();
         DROP FUNCTION IF EXISTS switchboard.decision_set_membership();
     """)
