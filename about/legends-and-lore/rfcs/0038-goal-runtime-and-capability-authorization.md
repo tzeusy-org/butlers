@@ -932,9 +932,14 @@ the marker the server wrote when Butlers created it, and must have no
 attendees. A recurring or all-day event, or a new time that overlaps another
 event, is not a block move. If the check passes, the move commits with an undo
 receipt: the pre-image and the exact inverse move. If it fails, or the event is
-owner-created, unmarked or unreadable, the domain writes nothing and declines,
-and the call parks as it would have. Events made before the marker existed
-count as owner-created. `calendar_respond` keeps `always_per_event`.
+owner-created, unmarked or unreadable, or the overlap check cannot be read, or
+the provider refuses the write because the event changed since the check, the
+domain writes nothing and declines, and the call parks as it would have. Any
+other write error is an error result, never a committed one. Events made before
+the marker existed count as owner-created. `calendar_respond` keeps
+`always_per_event`. The write is bound to the checked event's version, but not
+to the rest of the calendar: an event created in the new slot between the
+overlap check and the write is not caught, and the undo receipt is the remedy.
 
 A Stop-cancelled parked effect takes a new approvals status,
 `cancelled`. At the switch, `pending_actions` created before cutover remain

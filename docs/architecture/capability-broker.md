@@ -418,18 +418,27 @@ A `REPLAN` call is first sent to the domain as a conditional dispatch:
   attendee added in between fails the write rather than slipping through.
   Events made before Butlers wrote the marker carry none, so they count as
   owner-created.
+- Known gap (N2): the etag binds only the moved event. The overlap check reads
+  the rest of the calendar, and an event created in the new slot between that
+  check and the write is not caught; the move then lands overlapping it. The
+  undo receipt is the remedy.
 - Met: the move commits, settles `committed`, and its result carries the undo
   receipt. That receipt is the pre-image (`pre_state`) and the exact inverse
   call (`undo`), which is itself a move of the same marked block. Both are kept
   in the calendar action log.
-- Unmet, including an unreadable or missing event: the tool writes nothing and
-  returns `status: "replan_declined"` with a reason. The forwarder maps that,
+- Unmet, including an unreadable or missing event, an overlap check that
+  cannot be read, or a write the provider refuses on the etag (412, the event
+  changed since the check): the tool writes nothing and returns
+  `status: "replan_declined"` with a reason. The forwarder maps that,
   for a conditional call only, to a `declined` receipt.
   `BrokerLedger.decline_conditional` returns the effect to `requested`, and the
   broker parks it exactly as `RULE_ELIGIBLE` would. If the goal stopped
   meanwhile, the effect is cancelled instead and the call is refused `goal`.
-- An ambiguous outcome (timeout, broken stream) settles `unknown` and is never
-  parked.
+- Any other provider write error makes the conditional call an error result,
+  never a plain one, so it settles `failed` and is never recorded `committed`
+  (without the condition the tool keeps its structured error result). An
+  ambiguous transport outcome (timeout, broken stream) settles `unknown`.
+  Neither is parked.
 
 `calendar_respond` keeps `always_per_event`, and no other capability has a
 conditional.

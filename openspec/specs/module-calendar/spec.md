@@ -1086,9 +1086,15 @@ A broker-forwarded `calendar_update_event` whose verified assertion names the `r
 - **AND** the result SHALL carry the pre-image (`pre_state`) and an `undo` receipt naming the exact inverse `calendar_update_event` move
 
 #### Scenario: Anything else is declined before any write
-- **WHEN** the provider reports the event unmarked, with attendees, recurring or all-day, or the event cannot be read, or the new time overlaps another event, or the call changes anything other than the event's time
+- **WHEN** the provider reports the event unmarked, with attendees, recurring or all-day, or the event cannot be read, or the new time overlaps another event, or the overlap check cannot be read, or the call changes anything other than the event's time
 - **THEN** the tool SHALL make no provider write
 - **AND** it SHALL return `status: "replan_declined"` with the reason
+
+#### Scenario: Provider write errors are never a plain result
+- **WHEN** the provider refuses a conditional move's etag-bound write with 412 Precondition Failed
+- **THEN** the tool SHALL return `status: "replan_declined"` with reason `changed_since_check`
+- **WHEN** the provider write fails in any other way under the condition
+- **THEN** the tool SHALL end the call as an error result, never a plain result the broker would record as committed
 
 ## Source References
 

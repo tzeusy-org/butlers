@@ -18,7 +18,12 @@ from fastmcp import FastMCP
 
 from butlers.core.capability_json import arguments_digest
 from butlers.core.goal_lineage import VerifiedLineage, lineage_scope
-from butlers.modules.calendar import AttendeeInfo, CalendarAuthError, CalendarModule
+from butlers.modules.calendar import (
+    AttendeeInfo,
+    CalendarAuthError,
+    CalendarModule,
+    CalendarRequestError,
+)
 from butlers.modules.calendar.replan import (
     REPLAN_DECLINED,
     REPLAN_MOVE,
@@ -61,6 +66,24 @@ def _lineage(args, *, conditional=REPLAN_MOVE) -> VerifiedLineage:
 class _FailingGet(_ProviderDouble):
     async def get_event(self, *, calendar_id, event_id):
         raise CalendarAuthError("provider unavailable")
+
+
+class _FailingConflictCheck(_ProviderDouble):
+    async def find_conflicts(self, *, calendar_id, candidate):
+        raise CalendarAuthError("free/busy unavailable")
+
+    async def get_free_busy(self, *, calendar_ids, start_at, end_at, timezone=None):
+        raise CalendarAuthError("free/busy unavailable")
+
+
+class _FailingWrite(_ProviderDouble):
+    def __init__(self, error: Exception, **kwargs):
+        super().__init__(**kwargs)
+        self._error = error
+
+    async def update_event(self, *, calendar_id, event_id, patch):
+        self.update_calls.append({"calendar_id": calendar_id, "event_id": event_id})
+        raise self._error
 
 
 async def _module(provider):
@@ -231,3 +254,45 @@ async def test_calendar_respond_stays_always_per_event():
     ):
         meta = mod.tool_metadata()["calendar_respond"]
     assert meta.approval_policy == {"mode": "always_per_event"}
+
+
+# -- provider errors after the fetch (bu-4c7nvp.1.13) ----------------------------
+
+
+async def test_a_failed_conflict_check_declines():
+    provider = _FailingConflictCheck(event=_block())
+    result = await _move(provider)
+    assert result["status"] == REPLAN_DECLINED
+    assert result["reason"] == "conflict_check_unavailable"
+    assert provider.update_calls == []
+
+
+async def test_a_failed_precondition_on_the_write_declines():
+    # The provider refused the etag-bound write: the event changed since the check.
+    error = CalendarRequestError(status_code=412, message="Precondition Failed")
+    provider = _FailingWrite(error, event=_block())
+    result = await _move(provider)
+    assert result["status"] == REPLAN_DECLINED
+    assert result["reason"] == "changed_since_check"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        CalendarRequestError(status_code=500, message="backend error"),
+        CalendarRequestError(status_code=403, message="forbidden"),
+        CalendarAuthError("connection reset after send"),
+    ],
+)
+async def test_any_other_write_error_is_a_tool_error_never_a_result(error):
+    # A plain result would be recorded as a committed effect; an error result is not.
+    provider = _FailingWrite(error, event=_block())
+    with pytest.raises(CalendarAuthError):
+        await _move(provider)
+
+
+async def test_without_the_condition_a_write_error_is_still_the_structured_result():
+    error = CalendarRequestError(status_code=500, message="backend error")
+    provider = _FailingWrite(error, event=_block())
+    result = await _move(provider, lineage=False)
+    assert result["status"] == "error"
