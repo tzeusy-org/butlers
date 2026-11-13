@@ -49,6 +49,7 @@ from typing import Any
 import asyncpg
 
 from butlers.calendar_action_result import reconstruct_action_result
+from butlers.modules.approvals.command_contracts import REPLAN_UNDO_COMMAND
 from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
 from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.approvals.park import park_pending_action
@@ -221,7 +222,10 @@ class ReplanUndoLedger:
                 conn,
                 action_id=action_id,
                 tool_name="calendar_update_event",
-                tool_args=undo_card_args(pre_state, conflict_policy=conflict_policy),
+                # The declared direct-park command (approvals.command_contracts).
+                tool_args=REPLAN_UNDO_COMMAND.materialize(
+                    undo_card_args(pre_state, conflict_policy=conflict_policy)
+                ),
                 agent_summary=undo_card_summary(pre_state),
                 requested_at=now,
                 expires_at=now + UNDO_CARD_TTL,
