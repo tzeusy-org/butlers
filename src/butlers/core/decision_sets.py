@@ -15,7 +15,8 @@ an "all" selection.
 This module is the immutable read contract the card consumer (bu-jv1moa.27) renders, and the
 producer's write path. Every method runs on the caller's transaction connection. ``create`` takes
 the goal row ``FOR UPDATE`` first, the lock Stop takes. The sw_072 triggers are the second line:
-items are append-only, a version changes only its state, and nothing is deleted.
+items are append-only, a version changes only its state, and nothing is deleted. ``waitable`` and
+``wait_outcome`` serve the lead's ``goal.wait_decision_set`` (sw_074), under the caller's goal lock.
 """
 
 from __future__ import annotations
@@ -311,3 +312,83 @@ class DecisionSetLedger:
         if created is None:  # inserted above in this transaction
             raise RuntimeError("decision set vanished after insert")
         return created
+
+    # -- the lead's wait (goal.wait_decision_set, bu-4c7nvp.1.3 PR-B2) ----------------------
+
+    async def waitable(self, goal_id: UUID, set_id: UUID, epoch: int) -> DecisionSet | None:
+        """The set's latest version if a lead at ``epoch`` may wait on it; None otherwise.
+
+        The caller holds the goal lock. The version must be this goal's, still ``open``,
+        proposed at ``epoch`` under the goal's current plan version, and every item still
+        ``parked``: a set one of whose items was decided on its own can never be decided.
+        """
+        shown = await self.read(set_id)
+        if shown is None or shown.goal_id != goal_id or shown.state != "open":
+            return None
+        plan_version = await self.connection.fetchval(
+            "SELECT plan_version FROM switchboard.goals WHERE id = $1", goal_id
+        )
+        if (shown.epoch, shown.plan_version) != (epoch, plan_version):
+            return None
+        if await self._moved(set_id, shown.version):
+            return None
+        return shown
+
+    async def wait_outcome(self, set_id: UUID, version: int) -> str | None:
+        """What a waited-on version means for its wait now; None while it is still pending.
+
+        The caller holds the goal lock (the order the resolver takes). ``decided``: the owner
+        approved the version and no ticked item is still on its way (an unticked item stays
+        ``parked`` and holds nothing). ``rejected``: the owner rejected it. ``stale``: the
+        version can no longer be decided. An open version one of whose items was decided on its
+        own (N3) is cancelled here, so the owner cannot decide it, and is ``stale`` once that
+        item settled. ``expired``: it passed its expiry.
+        """
+        state = await self.connection.fetchval(
+            "SELECT state FROM switchboard.decision_set_versions "
+            "WHERE set_id = $1 AND version = $2 FOR UPDATE",
+            set_id,
+            version,
+        )
+        if state == "open" and await self._moved(set_id, version):
+            await self.connection.execute(
+                "UPDATE switchboard.decision_set_versions SET state = 'cancelled', "
+                "updated_at = clock_timestamp() WHERE set_id = $1 AND version = $2",
+                set_id,
+                version,
+            )
+            state = "cancelled"
+        if state in (None, "open"):
+            return None
+        if state == "expired":
+            return "expired"
+        if await self.connection.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM switchboard.decision_set_items i "
+            "JOIN switchboard.effects e ON (e.goal_id, e.id) = (i.goal_id, i.effect_id) "
+            "WHERE i.set_id = $1 AND i.set_version = $2 "
+            "AND e.status IN ('requested','approved','dispatched'))",
+            set_id,
+            version,
+        ):
+            return None
+        if state != "decided":
+            return "stale"
+        decision = await self.connection.fetchval(
+            "SELECT decision FROM switchboard.owner_decisions "
+            "WHERE set_id = $1 AND set_version = $2",
+            set_id,
+            version,
+        )
+        return "rejected" if decision == "reject" else "decided"
+
+    async def _moved(self, set_id: UUID, version: int) -> bool:
+        """Whether any item of the version has left ``parked``."""
+        return bool(
+            await self.connection.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM switchboard.decision_set_items i "
+                "JOIN switchboard.effects e ON (e.goal_id, e.id) = (i.goal_id, i.effect_id) "
+                "WHERE i.set_id = $1 AND i.set_version = $2 AND e.status <> 'parked')",
+                set_id,
+                version,
+            )
+        )

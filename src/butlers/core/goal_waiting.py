@@ -47,6 +47,8 @@ class EnvelopeSpec:
     condition_instance_ids: Sequence[str]
     approval_effect_id: UUID | None = None
     approval_digest: str | None = None
+    decision_set_id: UUID | None = None
+    decision_set_version: int | None = None
 
 
 def plan_digest(
@@ -159,13 +161,17 @@ class WaitLedger:
         )
         envelope_id = uuid4()
         _, instr, data, sens = spec.label.to_row()
+        # The decision-set binding columns exist from sw_074 on; only that kind names them, so
+        # every other kind keeps the sw_063 statement.
+        bound = spec.decision_set_id is not None
         await self.connection.execute(
             "INSERT INTO switchboard.wait_envelopes (id, goal_id, kind, original_epoch, "
             "plan_version, plan_digest, predicate, predicate_digest, source_set, "
             "permitted_sources, grant_snapshot, grant_digest, label_version, label_instr, "
-            "label_data, label_sens, deadline, max_wakes, approval_effect_id, approval_digest) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8, $9, $10, $11::text::jsonb, $12, "
-            "1, $13, $14, $15, $16, $17, $18, $19)",
+            "label_data, label_sens, deadline, max_wakes, approval_effect_id, approval_digest"
+            + (", decision_set_id, decision_set_version" if bound else "")
+            + ") VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8, $9, $10, $11::text::jsonb, "
+            "$12, 1, $13, $14, $15, $16, $17, $18, $19" + (", $20, $21" if bound else "") + ")",
             envelope_id,
             spec.goal_id,
             spec.kind,
@@ -185,6 +191,7 @@ class WaitLedger:
             spec.max_wakes,
             spec.approval_effect_id,
             spec.approval_digest,
+            *((spec.decision_set_id, spec.decision_set_version) if bound else ()),
         )
         await self.connection.execute(
             "INSERT INTO switchboard.wait_generations (goal_id, envelope_id, generation, "
@@ -329,6 +336,27 @@ class WaitLedger:
             approval_digest=digest,
         )
 
+    async def open_decision_set(
+        self, goal_id: UUID, epoch: int, set_id: UUID, version: int, expires_at: Any
+    ) -> UUID | None:
+        """Wait on the owner's decision of one decision set version (D13, S2.2, bu-4c7nvp.1.3).
+
+        Bound by foreign key to the exact version (sw_074), it ends with the set's expiry or
+        the goal's budget deadline, whichever is sooner. Its one wake launches a successor
+        summary lead once the version is decided and its ticked items have settled, or once the
+        version went stale under the wait; its grant snapshot is the waiting lead's grant ∩
+        the ceiling.
+        """
+        return await self._open_own_wait(
+            goal_id,
+            epoch,
+            "decision_set",
+            {"kind": "decision_set", "set_id": str(set_id), "version": version},
+            f"decision_set:{set_id}:{version}",
+            latest=expires_at,
+            decision_set=(set_id, version),
+        )
+
     async def open_owner_answer(
         self, goal_id: UUID, epoch: int, prompt_effect_id: UUID, expires_at: Any
     ) -> UUID | None:
@@ -415,6 +443,7 @@ class WaitLedger:
         latest: Any = None,
         max_wakes: int = 1,
         predicate_digest: str | None = None,
+        decision_set: tuple[UUID, int] | None = None,
     ) -> UUID | None:
         goal = await self.connection.fetchrow(
             "SELECT plan_version, label_version, label_instr, label_data, label_sens "
@@ -466,6 +495,8 @@ class WaitLedger:
                 condition_instance_ids=[instance],
                 approval_effect_id=effect_id,
                 approval_digest=approval_digest,
+                decision_set_id=None if decision_set is None else decision_set[0],
+                decision_set_version=None if decision_set is None else decision_set[1],
             )
         )
 

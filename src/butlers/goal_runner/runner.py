@@ -708,6 +708,29 @@ class GoalRunner:
             span.set_attribute("decision_set", f"{proposed.set_id}:{proposed.version}")
             return proposed
 
+    async def wait_decision_set(self, goal_id: UUID, token: str, set_id: Any) -> str:
+        """``goal.wait_decision_set`` (D13, S2.2): the lead ends; the goal waits on one set.
+
+        Dark with ``goal.decide_together``: the tool is unlisted until the owner can reach the
+        resolver (bu-jv1moa.27).
+        """
+        decision_set = _uuid(set_id)
+        with _tracer.start_as_current_span(
+            "goal.wait_decision_set", record_exception=False, set_status_on_exception=False
+        ) as span:
+            span.set_attribute("goal_id", str(goal_id))
+            async with self.broker._transaction() as broker_ledger:
+                principal = await broker_ledger.authenticate(goal_id, token)
+                span.set_attribute("invocation_id", str(principal.invocation_id))
+                children = await RunnerLedger(broker_ledger.connection).wait_decision_set(
+                    principal, decision_set
+                )
+            if isinstance(children, BrokerRefused):
+                raise children
+        await self._terminate_all(children)
+        self._terminate_later(principal.invocation_id)
+        return "waiting"
+
     async def _wait_on(self, goal_id: UUID, token: str, effect_id: Any, tool: str) -> str:
         effect = _uuid(effect_id)
         with _tracer.start_as_current_span(
@@ -799,6 +822,64 @@ class GoalRunner:
             async with self._txn() as ledger:
                 await ledger.end_approval_wait(goal_id, envelope_id, "failed")
 
+    async def _resolve_decision_sets(self) -> None:
+        """Continue or end each goal whose waited-on decision set resolved (D13, S2.2).
+
+        A decided version wakes one successor summary lead once its ticked items settled; a
+        version gone stale under the wait (N3: an item decided on its own) wakes one too, so
+        the successor sees what changed. A rejected version ends the goal ``partial``, an
+        expired one ``failed``; neither launches. A wake that cannot be admitted (refused for
+        any reason but Stop, or unmapped) ends the goal ``failed``, as an approval wake does.
+        """
+        async with self._txn() as ledger:
+            goals = await ledger.decision_set_waits()
+        for goal_id in goals:
+            try:
+                await self._resolve_decision_set(goal_id)
+            except Exception:
+                logger.exception("goal runner decision set resolution failed goal=%s", goal_id)
+
+    async def _resolve_decision_set(self, goal_id: UUID) -> None:
+        try:
+            await self.broker.sync_parked(goal_id)
+        except BrokerRefused:
+            logger.warning("goal runner parked sync unavailable goal=%s", goal_id)
+        async with self._txn() as ledger:
+            resolved = await ledger.decision_set_outcome(goal_id)
+        if resolved is None:
+            return
+        envelope_id, set_id, version, outcome, instance_id = resolved
+        if outcome in ("rejected", "expired"):
+            async with self._txn() as ledger:
+                final = "partial" if outcome == "rejected" else "failed"
+                await ledger.end_approval_wait(goal_id, envelope_id, final)
+            return
+        key = f"decision_set:{envelope_id}:{set_id}:{version}:{outcome}"
+        fire = FireIntent(
+            fire_key=uuid5(NAMESPACE_OID, key),
+            instance_id=instance_id or f"decision_set:{set_id}:{version}",
+            generation=1,
+            event_id=uuid5(NAMESPACE_OID, f"event:{key}"),
+            reason=f"decision_set:{outcome}",
+            fired_at=datetime.now(UTC),
+            snapshot_generation=0,
+            cursors={},
+            label=Label.owner(),
+        )
+        result = await self.admit_wake(fire)
+        if result.state == "unmapped":
+            logger.error(
+                "goal runner decision set wake unmapped goal=%s envelope=%s instance=%s",
+                goal_id,
+                envelope_id,
+                fire.instance_id,
+            )
+        if result.state == "unmapped" or (
+            result.state == "not_admitted" and result.reason != "stopped"
+        ):
+            async with self._txn() as ledger:
+                await ledger.end_approval_wait(goal_id, envelope_id, "failed")
+
     async def _launch_wakes(self) -> None:
         async with self._txn() as ledger:
             await ledger.lapse_wakes()
@@ -878,6 +959,7 @@ class GoalRunner:
         await self._redrive_owner_decisions()
         # Wakes last: a fire that keeps failing must never starve the stages above.
         await self._resolve_approvals()
+        await self._resolve_decision_sets()
         await self._admit_fires()
         await self._launch_wakes()
         await self._report_owner_failures()
