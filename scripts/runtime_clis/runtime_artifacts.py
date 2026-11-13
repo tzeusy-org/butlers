@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from pathlib import Path, PurePosixPath
 
@@ -226,22 +227,36 @@ def manifest(path: Path) -> dict:
     return _manifest(_snapshot(path))
 
 
-def _provenance(data: bytes, expected: dict) -> dict:
+def _observed(inventories: dict[str, list[dict]]) -> dict[str, dict]:
+    return {name: {"tree_sha256": tree_digest(inventories[name])} for name in DESTINATIONS}
+
+
+def _provenance(data: bytes, expected: dict, observed: dict) -> dict:
+    """Record what was actually closed next to what the reviewed manifest pinned.
+
+    Locally built components (Codex compiled from source, npm-assembled trees) are
+    not bit-reproducible across hosts or runs, so the reviewed pins are recorded,
+    not enforced. Install binds to the observed trees recorded here.
+    """
     return {
-        "schema": "butlers.runtime-artifacts/v1",
+        "schema": "butlers.runtime-artifacts/v2",
         "inputs_sha256": hashlib.sha256(data).hexdigest(),
-        "components": expected["components"],
+        "components": observed,
+        "reviewed_components": expected["components"],
+        "matches_reviewed": sorted(
+            name
+            for name in DESTINATIONS
+            if observed[name]["tree_sha256"] == expected["components"][name]["tree_sha256"]
+        ),
     }
 
 
-def _components(components: dict[str, Path], expected: dict, *, closed: bool = False) -> dict:
+def _components(components: dict[str, Path], *, closed: bool = False) -> dict:
     if set(components) != set(DESTINATIONS):
         raise ValueError("all six complete runtime components are required")
     inventories = {}
     for name, source in components.items():
         entries = inventory(source, closed=closed)
-        if tree_digest(entries) != expected["components"][name]["tree_sha256"]:
-            raise ValueError("runtime component differs from reviewed complete tree")
         for entry in ENTRYPOINTS[name]:
             path = source / entry
             try:
@@ -290,7 +305,20 @@ def close(inputs: Path, components: dict[str, Path], output: Path) -> None:
     _parents_real(output.parent)
     if output.exists() or output.is_symlink():
         raise ValueError("new runtime context output is required")
-    inventories = _components(components, expected)
+    inventories = _components(components)
+    observed = _observed(inventories)
+    drift = [
+        name
+        for name in DESTINATIONS
+        if observed[name]["tree_sha256"] != expected["components"][name]["tree_sha256"]
+    ]
+    if drift:
+        print(
+            "runtime artifacts: recorded (not enforced) tree drift from reviewed pins: "
+            + ", ".join(f"{name}={observed[name]['tree_sha256']}" for name in drift),
+            file=sys.stderr,
+            flush=True,
+        )
     absolute = output.absolute()
     if any(
         absolute.is_relative_to(p.absolute()) or p.absolute().is_relative_to(absolute)
@@ -305,13 +333,13 @@ def close(inputs: Path, components: dict[str, Path], output: Path) -> None:
         _mkdir(stage / "components")
         for name, entries in inventories.items():
             _copy(components[name], stage / "components" / name, entries)
-        if _snapshot(inputs) != data or _components(components, expected) != inventories:
+        if _snapshot(inputs) != data or _components(components) != inventories:
             raise ValueError("reviewed runtime inputs changed during close")
         copied = {name: stage / "components" / name for name in DESTINATIONS}
-        if _components(copied, expected, closed=True) != inventories:
+        if _components(copied, closed=True) != inventories:
             raise ValueError("runtime independent copy differs")
         _write(stage / "inputs.json", data)
-        _write(stage / "provenance.json", encoded(_provenance(data, expected)))
+        _write(stage / "provenance.json", encoded(_provenance(data, expected, observed)))
         if _snapshot(inputs) != data:
             raise ValueError("reviewed manifest bytes changed during close")
         if output.exists() or output.is_symlink():
@@ -353,7 +381,21 @@ def install(inputs: Path, artifacts: Path, root: Path) -> None:
         raise ValueError("runtime context has unexpected inputs")
     if _snapshot(artifacts / "inputs.json", closed=True) != data:
         raise ValueError("runtime context belongs to another reviewed manifest")
-    if _json(_snapshot(artifacts / "provenance.json", closed=True)) != _provenance(data, expected):
+    recorded = _json(_snapshot(artifacts / "provenance.json", closed=True))
+    observed = recorded.get("components") if isinstance(recorded, dict) else None
+    if (
+        not isinstance(observed, dict)
+        or set(observed) != set(DESTINATIONS)
+        or any(
+            not isinstance(item, dict)
+            or set(item) != {"tree_sha256"}
+            or not isinstance(item["tree_sha256"], str)
+            or len(item["tree_sha256"]) != 64
+            or any(c not in "0123456789abcdef" for c in item["tree_sha256"])
+            for item in observed.values()
+        )
+        or recorded != _provenance(data, expected, observed)
+    ):
         raise ValueError("runtime context provenance differs")
     _directory(artifacts / "components")
     if stat.S_IMODE((artifacts / "components").stat().st_mode) != 0o755:
@@ -361,7 +403,9 @@ def install(inputs: Path, artifacts: Path, root: Path) -> None:
     if {p.name for p in (artifacts / "components").iterdir()} != set(DESTINATIONS):
         raise ValueError("runtime context components differ")
     components = {name: artifacts / "components" / name for name in DESTINATIONS}
-    inventories = _components(components, expected, closed=True)
+    inventories = _components(components, closed=True)
+    if _observed(inventories) != observed:
+        raise ValueError("runtime component differs from its closed tree")
     if root.absolute().is_relative_to(artifacts.absolute()) or artifacts.absolute().is_relative_to(
         root.absolute()
     ):

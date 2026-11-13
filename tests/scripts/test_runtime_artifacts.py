@@ -216,6 +216,26 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual(os.readlink(command), target)
             self.assertTrue(command.resolve().is_relative_to(self.prefix))
 
+    def test_tree_drift_from_reviewed_pin_is_recorded_and_install_binds_to_closed_tree(self):
+        file(self.components["codex"] / "assets/complete-data", b"locally rebuilt bytes\n")
+        self.close()  # The reviewed pin no longer matches codex: recorded, not refused.
+        provenance = json.loads((self.context / "provenance.json").read_text())
+        observed = runtime.tree_digest(runtime.inventory(self.components["codex"]))
+        self.assertEqual(provenance["components"]["codex"]["tree_sha256"], observed)
+        self.assertNotEqual(provenance["reviewed_components"]["codex"]["tree_sha256"], observed)
+        self.assertNotIn("codex", provenance["matches_reviewed"])
+        self.assertIn("claude", provenance["matches_reviewed"])
+        # Tampering with the closed tree or its recorded digest still refuses install.
+        recorded = (self.context / "provenance.json").read_bytes()
+        forged = json.loads(recorded)
+        forged["components"]["codex"]["tree_sha256"] = "0" * 64
+        (self.context / "provenance.json").write_text(json.dumps(forged))
+        with self.assertRaises(ValueError):
+            runtime.install(self.inputs, self.context, self.prefix)
+        self.assertEqual([], snapshot(self.prefix))
+        (self.context / "provenance.json").write_bytes(recorded)
+        runtime.install(self.inputs, self.context, self.prefix)
+
     def test_reviewed_manifest_rejects_wrong_shape_versions_and_digest(self):
         original = self.inputs.read_bytes()
         for change in [
