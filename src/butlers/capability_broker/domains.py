@@ -61,7 +61,9 @@ class DeliveryReport:
 @dataclass(frozen=True, slots=True)
 class DomainReceipt:
     # ``not_received`` needs affirmative transport evidence; a timeout is unknown.
-    status: Literal["committed", "failed", "unknown", "not_received"]
+    # ``declined``: a conditional call whose condition the domain found unmet;
+    # it wrote nothing, so the broker may still park it (D13 replan exception).
+    status: Literal["committed", "failed", "unknown", "not_received", "declined"]
     receipt_ref: str | None = None
     value: object = field(default=None, repr=False)
     # The owning store's complete stamp account of stamped output (D6, S1):

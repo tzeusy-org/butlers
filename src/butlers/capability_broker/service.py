@@ -44,7 +44,7 @@ from .contracts import (
 )
 from .domains import DomainReceipt, Domains, ParkReceipt
 from .ledger import UNPUBLISHED_CAPABILITY, BrokerLedger
-from .policy import PER_EVENT, decide, listable
+from .policy import PER_EVENT, REPLAN, RULE_ELIGIBLE, decide, listable, replan
 from .recipients import classify_recipients, communication_channel
 from .typed import TypedRefused, parse_schema, typed_value_label, validate_value
 
@@ -59,6 +59,10 @@ ActuationRiskMap = Callable[[Capability, dict[str, Any]], ActuationRisk]
 # Joined replies one goal.inbox call delivers; the rest wait for the next call.
 _INBOX_BATCH = 20
 _PARKED_END = {"rejected": "rejected", "expired": "expired", "cancelled": "cancelled"}
+
+
+class _Declined(Exception):
+    """A conditional dispatch the domain declined, having written nothing (D13)."""
 
 
 def _in_scope(capability: Capability, grant: Grant, args: dict[str, Any]) -> bool:
@@ -230,6 +234,10 @@ class Broker:
             if isinstance(reserved, BrokerRefused):
                 raise reserved
             if reserved.decision.disposition is Disposition.PARK:
+                if reserved.decision.conditional is not None:
+                    moved = await self._conditional(reserved, args)
+                    if moved is not None:
+                        return moved
                 return await self._park(reserved, args)
             return await self._forward(reserved, args)
         except BrokerRefused as refusal:
@@ -325,6 +333,10 @@ class Broker:
             if capability.effect_class == "read":
                 raise self._refused(principal, name, Reason.ASK_ON_READ, hold)
             decision = PER_EVENT
+        elif decision == RULE_ELIGIBLE and replan(principal, capability, args):
+            # D13 replan exception: offered to the domain as a conditional move
+            # first; a decline parks it exactly as RULE_ELIGIBLE would.
+            decision = REPLAN
         if decision.disposition is Disposition.PARK and not capability.approvals_enabled:
             raise self._refused(principal, name, Reason.UNAVAILABLE, hold)
         # S6: after every authorization check and before anything is reserved or
@@ -384,10 +396,17 @@ class Broker:
         )
         return BrokerRefused(reason, hold=hold, unavailable=unavailable)
 
-    def _assertion(self, reservation: Reservation, approval_ref: str | None) -> str:
+    def _assertion(
+        self, reservation: Reservation, approval_ref: str | None, *, conditional: bool = False
+    ) -> str:
         principal, capability = reservation.principal, reservation.capability
+        # Only the conditional dispatch names its condition (D13); every other
+        # assertion, the park's included, keeps exactly the D7 field list.
+        condition = reservation.decision.conditional if conditional else None
+        extra = {} if condition is None else {"conditional": condition}
         return self._live_signer.sign(
             {
+                **extra,
                 "aud": capability.domain,
                 "principal": GOAL_PRINCIPAL,
                 "goal_id": str(principal.goal_id),
@@ -443,8 +462,38 @@ class Broker:
             raise TypeError("domain_receipt")
         return receipt
 
+    async def _conditional(
+        self, reserved: Reservation, args: dict[str, Any]
+    ) -> BrokerResult | None:
+        """D13 replan exception: dispatch on the domain's condition, else ``None`` to park.
+
+        The effect is dispatched before the call leaves, like any dispatch. The
+        domain checks the condition against its own state at execution; on its
+        affirmative decline (nothing written) the effect returns to requested
+        and the caller parks it as it would have. Any other outcome, an
+        ambiguous one included, settles as a dispatch and is never parked.
+        """
+        async with self._transaction() as ledger:
+            begun = await ledger.begin_conditional(reserved)
+        if not begun:
+            raise BrokerRefused(Reason.GOAL)  # Stop cancelled it first.
+        try:
+            return await self._forward(reserved, args, conditional=True)
+        except _Declined:
+            pass
+        async with self._transaction() as ledger:
+            live = await ledger.decline_conditional(reserved)
+        if not live:
+            raise BrokerRefused(Reason.GOAL)
+        return None
+
     async def _forward(
-        self, reserved: Reservation, args: dict[str, Any], approval_ref: str | None = None
+        self,
+        reserved: Reservation,
+        args: dict[str, Any],
+        approval_ref: str | None = None,
+        *,
+        conditional: bool = False,
     ) -> BrokerResult:
         key = (
             str(reserved.effect_id)
@@ -452,7 +501,7 @@ class Broker:
             else None
         )
         try:
-            assertion = self._assertion(reserved, approval_ref)
+            assertion = self._assertion(reserved, approval_ref, conditional=conditional)
         except Exception:
             await self._settle(reserved, "failed")
             raise BrokerRefused(Reason.UNAVAILABLE) from None
@@ -467,7 +516,12 @@ class Broker:
         except Exception:
             await self._settle(reserved, "unknown")
             return BrokerResult("unknown", reserved.effect_id)
-        status = "failed" if receipt.status == "not_received" else receipt.status
+        if receipt.status == "declined" and conditional:
+            raise _Declined
+        # Only a conditional call can decline; any other decline is a failure.
+        status = receipt.status
+        if status == "not_received" or status == "declined":
+            status = "failed"
         capability = reserved.capability
         # D6/S1: a committed result's label joins the reader before it is returned.
         output = (

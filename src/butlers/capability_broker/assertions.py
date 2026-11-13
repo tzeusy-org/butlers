@@ -55,6 +55,12 @@ FIELDS = (
 GOAL_PRINCIPAL = "goal"
 DASHBOARD_PRINCIPAL = "dashboard"
 PRINCIPALS = (GOAL_PRINCIPAL, DASHBOARD_PRINCIPAL)
+#: Conditions a domain checks at execution before it acts (D13 replan exception).
+#: Unmet, the domain writes nothing and declines, and the broker parks the call.
+REPLAN_MOVE = "replan_move"
+#: Each condition's result ``status`` when the domain declines and writes nothing.
+DECLINED_STATUS = {REPLAN_MOVE: "replan_declined"}
+CONDITIONALS = frozenset(DECLINED_STATUS)
 #: A dashboard call names no goal, invocation, effect or approval; every one is null.
 _DASHBOARD_NULLS = ("goal_id", "invocation_id", "effect_id", "approval_ref")
 _KID = re.compile(r"[A-Za-z0-9._-]{1,64}")
@@ -75,8 +81,18 @@ def _unb64(value: str) -> bytes:
 
 
 def _check_payload(payload: dict[str, Any]) -> None:
-    if tuple(sorted(payload)) != tuple(sorted(FIELDS)):
+    # ``conditional`` is the one optional field: present only on a conditional
+    # call, so every unconditional assertion keeps exactly the D7 field list.
+    fields = set(payload) - {"conditional"}
+    if tuple(sorted(fields)) != tuple(sorted(FIELDS)):
         raise ValueError("assertion_shape")
+    if "conditional" in payload and (
+        payload["conditional"] not in CONDITIONALS
+        or payload["principal"] != GOAL_PRINCIPAL
+        or payload["approval_ref"] is not None
+        or payload["effect_id"] is None
+    ):
+        raise ValueError("assertion_conditional")
     if type(payload["depth"]) is not int or payload["depth"] not in (0, 1):
         raise ValueError("assertion_depth")
     if payload["origin"] not in ("owner", "obligation", "third_party", "staffer"):

@@ -221,6 +221,10 @@ class Decision:
     # time. False for park-only grants, always_per_event tools and exposed
     # calls the exposure limits exclude; never authority to skip a park.
     allow_standing_rule: bool = False
+    # D13 replan exception: a park the broker first offers the domain as a
+    # conditional dispatch. The domain acts only if the condition holds against
+    # its own state at execution; otherwise it declines and the call parks.
+    conditional: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

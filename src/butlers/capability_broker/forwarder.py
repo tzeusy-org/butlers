@@ -12,6 +12,8 @@ Receipt mapping (D12):
 * the domain returned a result: ``committed``;
 * the domain returned an error result, including a refused assertion:
   ``failed``;
+* a conditional call (D13 replan exception) whose result is that condition's
+  declined status: ``declined``, nothing written, and the broker parks it;
 * anything after the call was sent (timeout, broken stream) propagates, and
   the broker records the effect ``unknown``; it is never retried here.
 
@@ -34,7 +36,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 from butlers.core.stamp_account import parse_report
 from butlers.mcp_liveness import LivenessClient as Client
 
-from .assertions import ASSERTION_HEADER
+from .assertions import ASSERTION_HEADER, DECLINED_STATUS
 from .contracts import BrokerRefused, Reason, Reservation
 from .domains import DeliveryReport, DomainReceipt
 
@@ -123,6 +125,14 @@ class HttpForwarder:
             args_digest=reservation.args_digest,
         )
         content = result.structuredContent
+        conditional = reservation.decision.conditional
+        if (
+            conditional is not None
+            and isinstance(content, Mapping)
+            and content.get("status") == DECLINED_STATUS.get(conditional)
+        ):
+            # The domain found the condition unmet and wrote nothing (D13).
+            return DomainReceipt("declined")
         return DomainReceipt(
             "committed",
             value=content,

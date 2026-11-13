@@ -920,6 +920,22 @@ The mode adds nothing to any ceiling. `calendar_respond` declares it
 capabilities whose effects must always be the owner's own act, such as
 confirming an owner checklist revision.
 
+**Calendar replan exception (bu-qlx055 q12 = B).** A goal may move, without a
+park, only an owner-only block that Butlers created. The broker judges the call
+and the calendar domain judges the event. The broker offers the domain a
+conditional dispatch for a call that would otherwise park with standing rules
+allowed: an unexposed goal's `calendar_update_event` that moves one event in
+time and changes nothing else. A park-only grant, `always_per_event`, an owner
+`always_ask` or exposure always parks. At execution the domain checks its
+provider's copy of the event, never the model's arguments. The event must carry
+the marker the server wrote when Butlers created it, and must have no
+attendees. A recurring or all-day event, or a new time that overlaps another
+event, is not a block move. If the check passes, the move commits with an undo
+receipt: the pre-image and the exact inverse move. If it fails, or the event is
+owner-created, unmarked or unreadable, the domain writes nothing and declines,
+and the call parks as it would have. Events made before the marker existed
+count as owner-created. `calendar_respond` keeps `always_per_event`.
+
 A Stop-cancelled parked effect takes a new approvals status,
 `cancelled`. At the switch, `pending_actions` created before cutover remain
 executable by the approvals executor and are recorded with goal origin
@@ -1373,6 +1389,7 @@ hard-cutover gates or alter the private-custody boundary.
 | Recorded | Decision | Effect on this RFC |
 |---|---|---|
 | 2026-10-20T14:46Z, `bu-p5umi2.4` = A | Commits Butlers to an "always per-event" approval mode that no standing rule can satisfy, matching `bu-qlx055` = A (decision sets, wait envelopes) and `bu-o3638f` = A (standing-rule slots and categories). | D4 `approval_policy` gains the `always_per_event` mode and D13 applies it. Text conforming to the decision is adopted through independent conformance review (owner rule, 2026-10-21). |
+| 2026-10-20T14:33Z, `bu-qlx055` q12 = B | A replan goal moves directly only owner-only blocks Butlers created, with an undo receipt; anything with attendees, or anything the owner created, parks for approval. | D13 gains the calendar replan exception: a conditional dispatch the calendar domain checks against provider state at execution, declining to a park. `calendar_respond` keeps `always_per_event`. Adopted through the same conformance review. |
 | 2026-10-20T14:46Z, `bu-p5umi2.4` = A (OQ1) | A grant's resource scope binds to the owner's exact selection through a control-plane selection record written only from the owner dashboard, not a General-owned record. | D4 `resource_params` may be selection-bound and D7 adds owner selection records. Adopted through the same conformance review. |
 | 2026-10-24T14:30Z, `bu-u5euwb.21` = C | Names dashboard fast answers as a D18 kind, instead of withdrawing `define-dashboard-fast-answer-runtime` or rewriting it as a goal. Adopted D18 reopens for this one kind only; owner latency work on the goal path (`bu-dhloi1.12`) continues unchanged. | D18 gains the dashboard fast-answer kind as the single exception to its owner-composition rule, and the change is re-scoped to it (`bu-u5euwb.28`). Amendment text: `bu-u5euwb.27`, adopted through the same conformance review. |
 | 2026-10-24T14:30Z, `bu-u5euwb.22` = A | A goal invocation's environment may also hold adapter-owned, non-secret pointers to files staged inside its own sandbox; secrets stay limited to the staged model credential (beside the MCP config D3 already admits). | D3 admits adapter-owned file pointers and `REQ-core-spawner-010` follows. Text only: each adapter still proves D3 eligibility per runtime and model tuple, and runtime activation stays a separate authorization. |

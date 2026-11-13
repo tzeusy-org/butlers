@@ -387,6 +387,53 @@ with the `action_cancelled` delivery reason, admitted by `approvals_022`, so
 approved, never-executed ones become `abandoned`. An action whose effect was
 dispatched or settled is never touched (D14).
 
+### Calendar replan exception (D13, owner decision bu-qlx055 q12 = B)
+
+Dark behind `policy.REPLAN_MOVES_LIVE` (off). Off, every calendar move parks
+exactly as above.
+
+A goal's `calendar_update_event` is a communication whose party set the broker
+cannot determine, so it decides `RULE_ELIGIBLE`. When the flag is on,
+`policy.replan` turns that decision into `REPLAN` for one narrow call: an
+unexposed goal moving one event in time and changing nothing else (only
+`event_id`, `start_at`, `end_at`, `timezone` and `calendar_id`). The call must
+carry no `request_id`, so a declined move leaves no receipt the parked call
+could replay. A park-only grant, `always_per_event`, `administer`, an owner-law
+`always_ask` or an exposed goal never reaches it.
+
+A `REPLAN` call is first sent to the domain as a conditional dispatch:
+
+- `BrokerLedger.begin_conditional` moves the effect `requested -> dispatched`
+  before the call leaves, as for any dispatch, so a Stop in flight cannot cancel
+  an effect the domain may be committing.
+- The assertion carries one optional field, `conditional: "replan_move"`. Every
+  other assertion, the park's and the approved execution's included, keeps
+  exactly the D7 field list. The field is refused on a dashboard assertion, on
+  an approved call and on a call with no effect.
+- The calendar tool (`modules/calendar/replan.py`) checks the event at
+  execution against the provider's copy, never the model's arguments. The event
+  must carry the `butler_generated` marker the server wrote when Butlers
+  created it, and have no attendees, no recurrence, no all-day span and no
+  overlap at the new time. The write is bound to the etag it checked, so an
+  attendee added in between fails the write rather than slipping through.
+  Events made before Butlers wrote the marker carry none, so they count as
+  owner-created.
+- Met: the move commits, settles `committed`, and its result carries the undo
+  receipt. That receipt is the pre-image (`pre_state`) and the exact inverse
+  call (`undo`), which is itself a move of the same marked block. Both are kept
+  in the calendar action log.
+- Unmet, including an unreadable or missing event: the tool writes nothing and
+  returns `status: "replan_declined"` with a reason. The forwarder maps that,
+  for a conditional call only, to a `declined` receipt.
+  `BrokerLedger.decline_conditional` returns the effect to `requested`, and the
+  broker parks it exactly as `RULE_ELIGIBLE` would. If the goal stopped
+  meanwhile, the effect is cancelled instead and the call is refused `goal`.
+- An ambiguous outcome (timeout, broken stream) settles `unknown` and is never
+  parked.
+
+`calendar_respond` keeps `always_per_event`, and no other capability has a
+conditional.
+
 ## Owner law (S1, bu-dhloi1.10)
 
 The owner can hold calls with a tighten-only overlay (REQ-capability-authorization-020).
