@@ -532,6 +532,54 @@ async def test_a_broker_refusal_of_one_item_does_not_stop_the_others(broker_db_u
             proposed.set_id, proposed.version, _picks(proposed), {}, "approve", OWNER_CTX
         )
         assert [(o.status, o.reason) for o in decided.outcomes] == [
-            ("approved", Reason.CATALOG),
+            ("cancelled", Reason.CATALOG),
             ("committed", None),
         ]
+
+
+@pytest.mark.parametrize("reason", [Reason.CAPABILITY, Reason.CATALOG, Reason.POLICY])
+async def test_a_lasting_broker_refusal_ends_the_approval_instead_of_redriving_it(
+    broker_db_url, reason
+):
+    """N1: only a transient refusal stays approved; nothing is re-driven every sweep."""
+    async with world(broker_db_url) as w:
+        goal, _, (stuck, waits) = await _parked(w)
+        real = w.broker.execute_approved
+
+        async def refused(goal_id, effect_id, approval_ref, arguments):
+            if effect_id == stuck:
+                raise BrokerRefused(reason)
+            raise BrokerRefused(Reason.UNAVAILABLE)
+
+        w.broker.execute_approved = refused
+        decisions = OwnerDecisions(w.broker, live=True)
+        lasting = await decisions.approve(goal, stuck, OWNER_CTX)
+        assert (lasting.status, lasting.reason) == ("cancelled", reason)
+        assert (await w.effect(stuck))["status"] == "cancelled"
+        assert (await w.action(stuck))["execution_result"]["status"] == "cancelled"
+        transient = await decisions.approve(goal, waits, OWNER_CTX)
+        assert (transient.status, transient.reason) == ("approved", Reason.UNAVAILABLE)
+
+        w.broker.execute_approved = real
+        # Only the transient one is re-driven, and it dispatches once.
+        assert await decisions.redrive() == 1
+        assert (await w.effect(waits))["status"] == "committed"
+        assert (await w.effect(stuck))["status"] == "cancelled"
+        assert len(w.forwarder.calls) == 1
+        assert await decisions.redrive() == 0
+
+
+async def test_a_domain_call_changed_after_parking_never_dispatches(broker_db_url):
+    """C3a: the domain's stored call must match the receipt's digest, or it is cancelled."""
+    async with world(broker_db_url) as w:
+        goal, _, (effect, _) = await _parked(w)
+        changed = {**(await w.action(effect))["tool_args"], "message": "something else"}
+        await w.domain.execute(
+            "UPDATE pending_actions SET tool_args = $2 WHERE id = $1", effect, changed
+        )
+        outcome = await OwnerDecisions(w.broker, live=True).approve(goal, effect, OWNER_CTX)
+        assert (outcome.status, outcome.reason) == ("cancelled", Reason.POLICY)
+        assert (await w.effect(effect))["status"] == "cancelled"
+        assert w.forwarder.calls == []
+        assert await OwnerDecisions(w.broker, live=True).redrive() == 0
+        assert w.forwarder.calls == []

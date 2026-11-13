@@ -64,6 +64,9 @@ OWNER_DECISIONS_LIVE = False
 UNTICKED_OUTCOME = "left"
 DECISIONS = {"approve": "approved", "reject": "rejected"}
 _ENDED = frozenset({"rejected", "expired", "cancelled"})
+# Broker refusals that can clear on their own; an approval refused for one stays ``approved``
+# for the re-drive. Any other refusal ends the approval (``cancelled``).
+_TRANSIENT = frozenset({Reason.UNAVAILABLE, Reason.CAPABILITY_UNAVAILABLE})
 _LIVE_GOAL = frozenset({"running", "waiting"})
 _REDRIVE_BATCH = 50
 # A rejection's domain mirror is retried while its action could still be pending
@@ -365,7 +368,8 @@ class OwnerDecisions:
             return ItemOutcome(decided.effect_id, decided.outcome, ended)
         arguments = mirrored.arguments
         if status != "approved" or arguments is None:
-            return ItemOutcome(decided.effect_id, decided.outcome, "approved", Reason.POLICY)
+            # The domain holds no runnable approved call for this effect: it never runs.
+            return await self._void(decided, Reason.POLICY)
         try:
             stored = parse_json_object(canonical_bytes(arguments))
         except (InvalidArguments, TypeError):
@@ -377,20 +381,51 @@ class OwnerDecisions:
                 decided.goal_id,
                 decided.effect_id,
             )
-            async with self.broker._transaction() as ledger:
-                await ledger.void_approved(decided.goal_id, decided.effect_id, "cancelled")
-            return ItemOutcome(decided.effect_id, decided.outcome, "cancelled", Reason.POLICY)
+            return await self._void(decided, Reason.POLICY)
         try:
             result = await self.broker.execute_approved(
                 decided.goal_id, decided.effect_id, decided.approval_ref, stored
             )
         except BrokerRefused as refused:
+            if refused.reason not in _TRANSIENT:
+                # A refusal that will not clear on its own (grant, catalog, label, owner law):
+                # end the approval, so it is not re-driven every sweep and starves no other.
+                return await self._void(decided, refused.reason)
             async with self.broker._transaction() as ledger:
                 now = await OwnerDecisionLedger(ledger.connection).effect_status(
                     decided.goal_id, decided.effect_id
                 )
             return ItemOutcome(decided.effect_id, decided.outcome, now or "", refused.reason)
         return ItemOutcome(decided.effect_id, decided.outcome, result.status)
+
+    async def _void(self, decided: _Decided, reason: Reason) -> ItemOutcome:
+        """``approved -> cancelled`` for an approval that will never dispatch.
+
+        Only a never-dispatched approval changes (``void_approved``), so a concurrent driver
+        that already dispatched it is left alone. The domain action is marked with a failed
+        outcome (best effort), which keeps it out of any legacy dispatch recovery.
+        """
+        async with self.broker._transaction() as ledger:
+            voided = await ledger.void_approved(decided.goal_id, decided.effect_id, "cancelled")
+            now = await OwnerDecisionLedger(ledger.connection).effect_status(
+                decided.goal_id, decided.effect_id
+            )
+        if voided:
+            try:
+                await self.broker._live_domains.record_outcome(
+                    _domain(decided.capability),
+                    decided.goal_id,
+                    decided.approval_ref,
+                    "cancelled",
+                    None,
+                )
+            except Exception:
+                logger.warning(
+                    "owner decision void write-back failed goal=%s effect=%s",
+                    decided.goal_id,
+                    decided.effect_id,
+                )
+        return ItemOutcome(decided.effect_id, decided.outcome, now or "", reason)
 
     async def redrive(self) -> int:
         """Finish decisions a crash interrupted after their receipt; returns how many were driven.

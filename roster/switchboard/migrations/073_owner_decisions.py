@@ -38,6 +38,8 @@ _RUNTIME = "butler_switchboard_rw"
 _TABLES = ("owner_decisions", "owner_decision_items")
 _HEX64 = "~ '^[0-9a-f]{64}$'"
 
+# sw_072's ``decision_set_immutable`` body, parameterised: the downgrade restores it exactly
+# (tests/migrations/test_sw073_guard_copy.py pins the copy to sw_072's source).
 _GUARD = """
     CREATE OR REPLACE FUNCTION switchboard.decision_set_immutable()
     RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
@@ -49,11 +51,11 @@ _GUARD = """
            IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['state','updated_at']) THEN
             RAISE EXCEPTION 'A decision set version is immutable except for its state';
         END IF;
+        {decided}
         IF NEW.state IS DISTINCT FROM OLD.state AND NOT (
             OLD.state = 'open' AND NEW.state IN ({targets})) THEN
             RAISE EXCEPTION 'Illegal decision set transition % -> %', OLD.state, NEW.state;
         END IF;
-        {decided}
         RETURN NEW;
     END $$;
 """
@@ -139,13 +141,16 @@ def upgrade() -> None:
         statements += [
             f"ALTER TABLE {qualified} ENABLE ROW LEVEL SECURITY",
             f"REVOKE ALL ON {qualified} FROM PUBLIC",
+            # The schema's default privileges grant the runtime role every table privilege.
+            f"REVOKE ALL ON {qualified} FROM {_RUNTIME}",
             f"GRANT SELECT, INSERT ON {qualified} TO {_RUNTIME}",
             f"CREATE POLICY owner_decision_read ON {qualified} FOR SELECT TO {_RUNTIME} "
             f"USING ({guard})",
             f"CREATE POLICY owner_decision_insert ON {qualified} FOR INSERT TO {_RUNTIME} "
             f"WITH CHECK ({guard})",
+            # Per statement: refused even when row-level security narrows it to no rows.
             f"CREATE TRIGGER owner_decision_immutable BEFORE UPDATE ON {qualified} "
-            "FOR EACH ROW EXECUTE FUNCTION switchboard.owner_decision_immutable()",
+            "FOR EACH STATEMENT EXECUTE FUNCTION switchboard.owner_decision_immutable()",
             f"CREATE TRIGGER owner_decision_durable BEFORE DELETE OR TRUNCATE ON {qualified} "
             "FOR EACH STATEMENT EXECUTE FUNCTION switchboard.owner_decision_durable()",
         ]
