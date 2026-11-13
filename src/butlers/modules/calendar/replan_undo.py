@@ -114,8 +114,8 @@ def undo_card_args(pre_state: Mapping[str, Any], *, conflict_policy: str) -> dic
 
 #: The card's ``why``: true whether or not the move it guards ever lands.
 UNDO_CARD_WHY = (
-    "A goal moves Butlers-made blocks without asking (calendar replan exception); "
-    "this card undoes that move."
+    "A goal is moving this Butlers-made block without asking (calendar replan "
+    "exception). This card is your undo."
 )
 
 
