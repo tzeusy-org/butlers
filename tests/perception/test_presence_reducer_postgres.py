@@ -112,6 +112,8 @@ class FakePool:
         self.rows = []
 
     async def fetch(self, query, *args):
+        if "owner_presence_observations" in query:
+            return []
         return self.rows
 
     def set(self, state, at):

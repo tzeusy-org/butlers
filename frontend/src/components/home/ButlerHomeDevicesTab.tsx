@@ -30,6 +30,7 @@ import { DAY_MS, buildTimeSeries } from "@/lib/time-series";
 import { chartColor } from "@/lib/chart-colors";
 import { HomeAtmosphereLocationPanel } from "@/components/home/HomeAtmosphereLocationPanel";
 import { HomePlacesPanel } from "@/components/home/HomePlacesPanel";
+import { PresenceTimeline } from "@/components/home/PresenceTimeline.tsx";
 import { HomePresenceOwnerPanel } from "@/components/home/HomePresenceOwnerPanel";
 import { HomeSafetyWatchPanel } from "@/components/home/HomeSafetyWatchPanel";
 import { HomePersonMappingPanel } from "@/components/home/HomePersonMappingPanel";
@@ -629,6 +630,8 @@ export default function ButlerHomeDevicesTab() {
       <HomePlacesPanel />
 
       <HomePresenceOwnerPanel />
+
+      <PresenceTimeline />
 
       <Panel title="Person mappings" span={4} testId="home-person-mapping-card">
         <HomePersonMappingPanel />

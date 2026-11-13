@@ -207,7 +207,10 @@ confirmed side, or on 2 distinct qualifying observations, whichever is first. Di
 least 30 seconds apart, so two entities mirroring one signal count once. A
 qualifying Home Assistant observation is a fresh owner-entity `home` or `not_home`
 state; a qualifying OwnTracks outside fix has accuracy of at most 100 m and a distance
-beyond the radius plus the larger of the accuracy and 50 m. A fresh home SSID match
+beyond the radius plus the larger of the accuracy and 50 m, and a qualifying inside fix has
+accuracy of at most 100 m and a distance within the radius (the band between is no signal).
+OwnTracks reaches the reducer only through `public.owner_presence_observations`, which
+classifies inside the database and returns no coordinate, SSID or payload. A fresh home SSID match
 counts as an inside observation and so vetoes a leave. Enter is symmetric. Stale,
 unconfigured or unreadable input yields unknown and never an edge: a side established
 from an unknown prior is preceded by an explicit `unknown` assertion, so the database

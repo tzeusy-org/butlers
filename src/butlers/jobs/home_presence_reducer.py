@@ -104,6 +104,48 @@ def ha_observations(
     return found
 
 
+_FEED = "SELECT * FROM public.owner_presence_observations($1, $2, $3, $4)"
+_FEED_LIMIT = 500
+# The feed-off warning is logged once per process, not on every run.
+_feed_off_logged = False
+
+
+async def owntracks_observations(pool: Any, *, place_ref: UUID, now: datetime) -> list[Observation]:
+    """Typed OwnTracks observations from the connector-side feed, for one place.
+
+    The feed classifies fixes against the owner's live places inside the database and returns
+    no coordinate, SSID or payload. A missing or ungranted feed degrades to no observations
+    (Home Assistant carries presence alone); it never raises into the reducer run.
+    """
+    try:
+        rows = await pool.fetch(_FEED, now - OBSERVATION_FRESH, now, _FEED_LIMIT, place_ref)
+    except (asyncpg.UndefinedFunctionError, asyncpg.InsufficientPrivilegeError) as exc:
+        # Diagnosable but quiet: the OwnTracks path is off until the feed is installed and granted.
+        global _feed_off_logged
+        if not _feed_off_logged:
+            _feed_off_logged = True
+            logger.warning(
+                "presence reducer: OwnTracks feed off (%s); using Home Assistant alone",
+                type(exc).__name__,
+            )
+        return []
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError):
+        logger.warning("presence reducer: OwnTracks feed unavailable")
+        return []
+    found: list[Observation] = []
+    for row in rows:
+        if row["place_ref"] != place_ref or row["side"] not in ("inside", "outside"):
+            continue
+        stamp = row["observed_at"]
+        key = observation_key("ot", stamp.isoformat(), str(place_ref), row["side"])
+        found.append(
+            Observation(
+                stamp, row["side"], place_ref, "owntracks", key, ssid_match=bool(row["ssid_match"])
+            )
+        )
+    return found
+
+
 def _only_place(places: tuple[OwnerPlace, ...], kind: str) -> UUID | None:
     matches = [place.id for place in places if place.kind == kind]
     return matches[0] if len(matches) == 1 else None
@@ -250,7 +292,8 @@ async def run_presence_reducer(
     )
     observations = ha_observations(
         rows, owner_entity_ids=owner_entity_ids, place_ref=place_ref, now=now
-    ) + list(extra_observations or [])
+    ) + await owntracks_observations(pool, place_ref=place_ref, now=now)
+    observations += list(extra_observations or [])
     next_state, decisions = reduce(runtime.state, observations, now, place_ref=place_ref)
     published = 0
     try:

@@ -33,3 +33,34 @@ export async function putPresenceOwnerEntities(
   });
   return response.data;
 }
+
+export interface PresenceTransition {
+  id: string;
+  direction: "leave" | "enter";
+  place_ref: string | null;
+  at: string;
+  confirmed_at: string;
+  late: boolean;
+  retracted: boolean;
+  retraction_event_id: string | null;
+}
+
+/** The standard dashboard list envelope (not wrapped in `data`). */
+export interface PresenceTransitions {
+  items: PresenceTransition[];
+  next_cursor: string | null;
+  limit: number;
+}
+
+/**
+ * Confirmed owner leave/enter edges, newest first. 503 until the reader login is activated.
+ * An empty page with a cursor means the scan cap was hit before an edge was found.
+ */
+export async function getPresenceTransitions(
+  limit = 20,
+  cursor: string | null = null,
+): Promise<PresenceTransitions> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor !== null) params.set("cursor", cursor);
+  return apiFetch<PresenceTransitions>(`/home/presence/transitions?${params.toString()}`);
+}
