@@ -20,9 +20,11 @@ What the installer adds, and what stays closed:
   batch, in foreign-key order.
 * ``immutable_event`` still refuses every UPDATE and every DELETE, except
   one: a DELETE issued as ``perception_owner`` with the function's transaction-local marker set,
-  of an ``owner.place`` row (or its receipt) past the horizon. A caller cannot forge that:
-  ``perception_owner`` is NOLOGIN and no other function it owns issues a DELETE, so the trigger
-  also holds even if the purge function were wrong about a row's age or kind.
+  of an ``owner.place`` row (or its receipt) past the horizon. The marker is a
+  USERSET setting anyone can set, so it guards nothing by itself; it is defence in depth. The guarantee
+  is the ``current_user = 'perception_owner'`` clause: ``perception_owner`` is NOLOGIN and no other
+  function it owns issues a DELETE. The trigger also holds even if the purge function were wrong
+  about a row's age or kind.
 
 Nothing is scheduled and no connection for ``perception_retention`` exists: activating the purge is
 a separate owner act (a login or connection for that identity, a schedule, and
@@ -43,7 +45,7 @@ branch_labels = None
 depends_on = None
 
 _IMMUTABLE_EVENT_SHA = "a5fa96f360ac49d101e671df202939067d585f1eef649fe81b343199b0bc60c7"
-_PURGE_SHA = "ec09ff302d5e29d571fe57508a76a6fe9044d28e86755a02cf30b4f8170cb6bf"
+_PURGE_SHA = "89817ebc446cea897b9bf4d4a1b5877fc972e404f4d0bde7b78be5cc716048ef"
 _APPLIED_SQL = f"""
 SELECT (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE (n.nspname = 'perception_private' AND p.proname = 'immutable_event'

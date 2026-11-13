@@ -8787,14 +8787,26 @@ BEGIN
         -- Place transitions strictly older than the 400-day history horizon (the same bound
         -- perception_timeline enforces, on the same column). A retraction younger than the
         -- cutoff keeps its target: the foreign key would refuse the delete anyway.
-        SELECT COALESCE(array_agg(q.id),ARRAY[]::uuid[]) INTO ids FROM (
+        -- A dry run changes nothing, so it takes no row locks and cannot block a writer.
+        IF dry_run THEN
+            SELECT COALESCE(array_agg(q.id),ARRAY[]::uuid[]) INTO ids FROM (
+            SELECT e.id FROM public.timeline e
+            WHERE e.kind='owner.place' AND e.class='transition' AND e.operation='assert'
+                AND e.at<cutoff
+                AND NOT EXISTS (SELECT 1 FROM public.timeline r
+                    WHERE r.retracts_event_id=e.id AND r.at>=cutoff)
+            ORDER BY e.at,e.id LIMIT batch
+            ) q;
+        ELSE
+            SELECT COALESCE(array_agg(q.id),ARRAY[]::uuid[]) INTO ids FROM (
             SELECT e.id FROM public.timeline e
             WHERE e.kind='owner.place' AND e.class='transition' AND e.operation='assert'
                 AND e.at<cutoff
                 AND NOT EXISTS (SELECT 1 FROM public.timeline r
                     WHERE r.retracts_event_id=e.id AND r.at>=cutoff)
             ORDER BY e.at,e.id LIMIT batch FOR UPDATE OF e
-        ) q;
+            ) q;
+        END IF;
         n_events:=cardinality(ids);
         SELECT COALESCE(array_agg(r.id),ARRAY[]::uuid[]) INTO retractions
             FROM public.timeline r WHERE r.retracts_event_id=ANY(ids);
@@ -8808,7 +8820,10 @@ BEGIN
             GET DIAGNOSTICS n_events=ROW_COUNT;
             PERFORM set_config('perception.purge','off',true);
         ELSIF dry_run THEN
+            -- Counted from the same selection the real run deletes.
             n_retractions:=cardinality(retractions);
+            SELECT count(*) INTO n_receipts FROM perception_private.receipts
+                WHERE event_id=ANY(ids||retractions);
         END IF;
         RETURN jsonb_build_object('dry_run',dry_run,'events',n_events,
             'retractions',n_retractions,'receipts',n_receipts);
@@ -9084,7 +9099,7 @@ SELECT jsonb_build_object('tables',(SELECT jsonb_object_agg(name,value) FROM tab
         relations text[]:=ARRAY['perception_private.kinds','perception_private.sources','perception_private.source_refs','perception_private.suppression_refs','public.timeline','perception_private.receipts','public.situation_slots','public.owner_modes','public.perception_conditions','public.perception_suppressions'];
     BEGIN
         catalog:=perception_private.backup_catalog();
-        IF encode(sha256(convert_to(catalog::text,'UTF8')),'hex')<>'783a42b9adb366286219e0ecc10439baf46a0cb83c71cbf5cfbd526c7b244837'
+        IF encode(sha256(convert_to(catalog::text,'UTF8')),'hex')<>'a6de1390a642aec4e8b6b5a2a7f7ce07e00ecd45115e9cc2f5b04b3592c5f87f'
             OR (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
                 WHERE n.nspname='perception_private' AND c.relkind IN ('r','v','m','f','p'))<>5
             OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace

@@ -93,7 +93,7 @@ def test_old_transitions_their_retraction_and_receipts_are_purged(db):
 
     result = _purge(db)
 
-    assert result["dry_run"] is False and result["events"] >= 3 and result["retractions"] == 1
+    assert result["dry_run"] is False and result["events"] == 3 and result["retractions"] == 1
     assert not any(_exists(db, i) or _receipt(db, i) for i in ids)
     assert db.execute(text("SELECT count(*) FROM public.timeline")).scalar_one() == 0
 
@@ -134,6 +134,24 @@ def test_the_batch_limit_is_respected_oldest_first(db):
     assert [_exists(db, r["event_id"]) for r in rows] == [False, False, True]
     assert _purge(db, batch=2)["events"] == 1
     assert not _exists(db, rows[2]["event_id"])
+
+
+def test_a_dry_run_reports_exactly_what_the_real_run_deletes(db):
+    first = _old(db, "first", days=450, generation=0)
+    leave = _old(db, "leave", days=450, generation=1, minutes=1, outside=True)
+    _old(db, "enter", days=450, generation=2, minutes=9, retracts=leave["event_id"])
+    _old(db, "young", days=10, generation=3)
+    counts = db.execute(text("SELECT count(*) FROM perception_private.receipts")).scalar_one()
+
+    dry = _purge(db, dry=True)
+    assert (
+        db.execute(text("SELECT count(*) FROM perception_private.receipts")).scalar_one() == counts
+    )
+    real = _purge(db)
+
+    assert dry["receipts"] > 0
+    assert {**dry, "dry_run": False} == real
+    assert not _exists(db, first["event_id"])
 
 
 def test_a_dry_run_counts_and_changes_nothing(db):

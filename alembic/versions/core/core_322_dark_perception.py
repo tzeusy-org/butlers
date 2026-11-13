@@ -87,7 +87,7 @@ AND NOT EXISTS (SELECT 1 FROM (VALUES
 ('public','perception_bind','3802',
  'af5292263aaebc1826bc0ea73bcec5034327553db0240bf07177abb2ed5d2f64'),
 ('public','perception_purge_place_history','23 16',
- 'ec09ff302d5e29d571fe57508a76a6fe9044d28e86755a02cf30b4f8170cb6bf'),
+ '89817ebc446cea897b9bf4d4a1b5877fc972e404f4d0bde7b78be5cc716048ef'),
 ('public','perception_read','25 2950 1184',
  'e20ed96ebb3055f4dc4c05b85ae92e0259985c5b1c4e1438eac877d0b2252dc4'),
 ('public','perception_registry','',
