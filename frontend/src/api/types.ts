@@ -3583,6 +3583,12 @@ export interface ApprovalGoalLineage {
   depth: number;
   exposed: boolean;
   origin: "owner" | "obligation" | "third_party" | "staffer";
+  /** Why it was exposed (closed S1 cause); null when unknown. */
+  exposure_cause: string | null;
+  /** Whether a standing rule could ever match the call; explanation only. Null when unknown. */
+  rule_possible: boolean | null;
+  /** The labelled lines the Telegram card shows too, built once on the server. */
+  facts: { label: string; value: string }[];
 }
 
 /**
@@ -3715,6 +3721,8 @@ export interface ApprovalExecutionFailure {
 
 export interface ApprovalDetail {
   call_preview?: ApprovalCallPreview | null;
+  /** RFC 0038 lineage of a broker-parked effect; null for any other action. */
+  goal?: ApprovalGoalLineage | null;
   owner_delivery?: OwnerDeliveryCard | null;
   id: string;
   title: string;

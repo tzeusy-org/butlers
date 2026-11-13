@@ -181,6 +181,11 @@ class ApprovalAction(BaseModel):
     )
 
 
+class ApprovalLineageFact(BaseModel):
+    label: str
+    value: str
+
+
 class ApprovalGoalLineage(BaseModel):
     """The goal, invocation, depth, exposure and origin that parked an action."""
 
@@ -189,6 +194,12 @@ class ApprovalGoalLineage(BaseModel):
     depth: int
     exposed: bool
     origin: Literal["owner", "obligation", "third_party", "staffer"]
+    # Why it was exposed (closed S1 cause), null when unknown; and whether a standing rule could
+    # ever match the call (explanation only, never authority), null when unknown.
+    exposure_cause: str | None = None
+    rule_possible: bool | None = None
+    # The labelled lines both the dashboard and the Telegram card show, from one server builder.
+    facts: list[ApprovalLineageFact] = []
 
 
 ApprovalAction.model_rebuild()
@@ -223,6 +234,13 @@ class ApprovalDetail(BaseModel):
     reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
     proposed_action: dict[str, Any]
     call_preview: ApprovalCallPreview | None = None
+    goal: ApprovalGoalLineage | None = Field(
+        default=None,
+        description=(
+            "RFC 0038 goal lineage facts of a broker-parked effect, built server-side once for "
+            "the dashboard and the Telegram card; null for any other action."
+        ),
+    )
     status: str
     decided_by: str | None = None
     decided_at: datetime | None = None

@@ -54,6 +54,7 @@ from butlers.api.models.approval import (
     ApprovalExecutionFailure,
     ApprovalGatedTool,
     ApprovalGoalLineage,
+    ApprovalLineageFact,
     ApprovalMetrics,
     ApprovalRule,
     ApprovalRuleCreateRequest,
@@ -104,6 +105,7 @@ from butlers.modules.approvals.delivery_lifecycle import (
 )
 from butlers.modules.approvals.delivery_recovery import ApprovalDeliveryRepository
 from butlers.modules.approvals.goal_fence import GOAL_EFFECT_REQUIRES_BROKER, is_goal_effect
+from butlers.modules.approvals.lineage_facts import lineage_facts
 from butlers.modules.approvals.models import (
     ActionStatus,
     PendingAction,
@@ -701,7 +703,8 @@ async def _latest_execution_failure_code(conn: Any, action_id: UUID) -> str | No
 
 def _goal_lineage(action: PendingAction) -> ApprovalGoalLineage | None:
     """A broker-parked action's lineage; ``legacy`` and non-goal rows carry none."""
-    if action.goal_id is None or action.goal_invocation_id is None:
+    shown = lineage_facts(action)
+    if shown is None:
         return None
     return ApprovalGoalLineage(
         goal_id=str(action.goal_id),
@@ -709,6 +712,9 @@ def _goal_lineage(action: PendingAction) -> ApprovalGoalLineage | None:
         depth=action.goal_depth if action.goal_depth is not None else 0,
         exposed=bool(action.goal_exposed),
         origin=action.goal_origin,  # type: ignore[arg-type]  # approvals_020 CHECK
+        exposure_cause=shown.exposure_cause,
+        rule_possible=shown.rule_possible,
+        facts=[ApprovalLineageFact(label=f.label, value=f.value) for f in shown.facts],
     )
 
 
@@ -772,6 +778,7 @@ def _pending_action_to_detail(
         reversibility=action.reversibility,
         proposed_action=proposed_action,
         call_preview=dashboard_call_preview(action.tool_name, action.tool_args),
+        goal=_goal_lineage(action),
         status=action.status.value,
         decided_by=action.decided_by,
         decided_at=action.decided_at,

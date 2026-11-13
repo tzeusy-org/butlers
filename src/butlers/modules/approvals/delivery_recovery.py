@@ -377,7 +377,9 @@ class ApprovalDeliveryRepository:
             """
             SELECT p.presentation_mode, i.origin_butler,
                    pa.id, pa.tool_name, pa.requested_at, pa.expires_at,
-                   pa.why, pa.blast_radius, pa.reversibility, pa.tool_args, pa.origin
+                   pa.why, pa.blast_radius, pa.reversibility, pa.tool_args, pa.origin,
+                   pa.goal_id, pa.goal_invocation_id, pa.goal_depth, pa.goal_exposed,
+                   pa.goal_origin, pa.goal_exposure_cause, pa.goal_rule_possible
               FROM approval_delivery_presentations AS p
               JOIN approval_delivery_intents AS i ON i.id = p.intent_id
               JOIN pending_actions AS pa ON pa.id = i.action_id
@@ -410,6 +412,13 @@ class ApprovalDeliveryRepository:
                     "why": row["why"],
                     "blast_radius": row["blast_radius"],
                     "reversibility": row["reversibility"],
+                    "goal_id": row["goal_id"],
+                    "goal_invocation_id": row["goal_invocation_id"],
+                    "goal_depth": row["goal_depth"],
+                    "goal_exposed": row["goal_exposed"],
+                    "goal_origin": row["goal_origin"],
+                    "goal_exposure_cause": row["goal_exposure_cause"],
+                    "goal_rule_possible": row["goal_rule_possible"],
                 },
                 origin_butler=row["origin_butler"],
             )

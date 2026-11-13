@@ -3641,6 +3641,14 @@ async def test_list_actions_filters_by_goal_and_returns_its_lineage(app):
         "depth": 1,
         "exposed": True,
         "origin": "owner",
+        "exposure_cause": None,
+        "rule_possible": None,
+        "facts": [
+            {"label": "Goal", "value": f"{str(goal_id)[:8]} (sub-task)"},
+            {"label": "Origin", "value": "You started it"},
+            {"label": "Exposed by", "value": "Unknown"},
+            {"label": "Standing rule", "value": "Unknown"},
+        ],
     }
     [(count_sql, *count_args)] = [
         call.args for call in conn.fetchval.await_args_list if "COUNT(*)" in call.args[0]
@@ -3704,3 +3712,39 @@ async def test_detail_still_presents_by_default_after_a_status_read(app):
     assert status_read.json()["data"]["owner_delivery"] is None
     assert normal.json()["data"]["owner_delivery"]["approve_token"] == "od1:synthetic-approve"
     present.assert_awaited_once()
+
+
+async def test_detail_returns_the_server_built_goal_facts_and_null_for_other_actions(app):
+    """bu-jv1moa.26: the dossier route (not just the list row) carries the lineage facts."""
+    action_id, goal_id = uuid4(), uuid4()
+    row = {
+        **_make_action(),
+        "id": action_id,
+        "goal_id": goal_id,
+        "goal_invocation_id": uuid4(),
+        "goal_depth": 0,
+        "goal_exposed": True,
+        "goal_origin": "third_party",
+        "goal_exposure_cause": "read",
+        "goal_rule_possible": False,
+    }
+    app, _ = _app_with_mock_db(app, fetchrow_return=row)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        goal = (await client.get(f"/api/approvals/{action_id}")).json()["data"]["goal"]
+    assert goal["exposure_cause"] == "read" and goal["rule_possible"] is False
+    assert {f["label"]: f["value"] for f in goal["facts"]} == {
+        "Goal": f"{str(goal_id)[:8]} (lead)",
+        "Origin": "Something a third party sent started it",
+        "Exposed by": "Outside content it read",
+        "Standing rule": "No standing rule can match it; each one needs your approval",
+    }
+
+    plain_id = uuid4()
+    app, _ = _app_with_mock_db(app, fetchrow_return={**_make_action(), "id": plain_id})
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/approvals/{plain_id}")
+    assert resp.json()["data"]["goal"] is None
