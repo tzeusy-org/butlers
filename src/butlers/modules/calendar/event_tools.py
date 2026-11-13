@@ -7,8 +7,13 @@ from collections.abc import Callable
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
+from butlers.core.goal_lineage import conditional_for
 from butlers.core.tool_call_capture import get_current_runtime_session_id as _get_session_id
-from butlers.modules.calendar_approval import calendar_approval_args, calendar_approval_datetime
+from butlers.modules.calendar_approval import (
+    calendar_approval_args,
+    calendar_approval_datetime,
+    calendar_supplied_args,
+)
 
 from .constants import (
     MUTATION_STATUS_APPLIED,
@@ -28,6 +33,7 @@ from .models import (
     EventVisibility,
 )
 from .party import gate_calendar_party_mutation
+from .replan import REPLAN_MOVE, declined, movable, move_only, undo_receipt
 
 if TYPE_CHECKING:
     from . import CalendarModule
@@ -397,6 +403,15 @@ def register_event_tools(
         start_at = calendar_approval_datetime(start_at)
         end_at = calendar_approval_datetime(end_at)
         instance_start_at = calendar_approval_datetime(instance_start_at)
+        # RFC 0038 D13 replan exception: a broker-forwarded conditional move.
+        # Unmet, nothing is written and the broker parks the call as before.
+        condition = conditional_for("calendar_update_event")
+        replan = condition is not None
+        if replan and (
+            condition != REPLAN_MOVE
+            or not move_only(calendar_supplied_args("calendar_update_event", approval_args))
+        ):
+            return declined("not_a_move", event_id=event_id, calendar_id=calendar_id)
         if clear_entity_ids and entity_ids != []:
             raise ValueError("clear_entity_ids requires entity_ids=[]")
         if recurrence_scope != "series":
@@ -487,23 +502,42 @@ def register_event_tools(
                 exc,
                 exc_info=True,
             )
-            error_payload = _build_structured_error(
-                exc,
-                provider=provider.name,
-                calendar_id=resolved_calendar_id,
+            if replan:
+                existing_event = None
+            else:
+                error_payload = _build_structured_error(
+                    exc,
+                    provider=provider.name,
+                    calendar_id=resolved_calendar_id,
+                )
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_user_update",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_FAILED,
+                    action_payload=action_payload,
+                    action_result=error_payload,
+                    source_id=source_id,
+                    origin_ref=normalized_event_id,
+                    error=error_payload.get("error"),
+                )
+                return error_payload
+        if replan and (reason := movable(existing_event)) is not None:
+            # Checked against the provider's copy, never the model's arguments.
+            declined_result = declined(
+                reason, event_id=normalized_event_id, calendar_id=resolved_calendar_id
             )
             await module._finalize_workspace_mutation(
                 idempotency_key=idempotency_key,
                 action_type="workspace_user_update",
                 request_id=normalized_request_id,
-                action_status=MUTATION_STATUS_FAILED,
+                action_status=MUTATION_STATUS_NOOP,
                 action_payload=action_payload,
-                action_result=error_payload,
+                action_result=declined_result,
                 source_id=source_id,
                 origin_ref=normalized_event_id,
-                error=error_payload.get("error"),
             )
-            return error_payload
+            return declined_result
         if existing_event is None:
             not_found_result = {
                 "status": "not_found",
@@ -645,6 +679,22 @@ def register_event_tools(
                     error=error_payload.get("error"),
                 )
                 return error_payload
+            if replan and conflict_result["conflicts"]:
+                # A move onto anything else on the calendar is the owner's call.
+                declined_result = declined(
+                    "conflicts", event_id=normalized_event_id, calendar_id=resolved_calendar_id
+                )
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_user_update",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_NOOP,
+                    action_payload=action_payload,
+                    action_result=declined_result,
+                    source_id=source_id,
+                    origin_ref=normalized_event_id,
+                )
+                return declined_result
             if conflict_result["status"] == "conflict":
                 conflict_response = {
                     "status": "conflict",
@@ -786,6 +836,10 @@ def register_event_tools(
         # can reverse-apply an inverse calendar_update_event. It reuses the
         # already-fetched provider event plus its local projection links.
         result["pre_state"] = pre_state
+        if replan:
+            # The undo receipt: kept in the action log with the pre-image, and
+            # itself a move of the same marked block.
+            result["undo"] = undo_receipt(pre_state)
         await module._finalize_workspace_mutation(
             idempotency_key=idempotency_key,
             action_type="workspace_user_update",

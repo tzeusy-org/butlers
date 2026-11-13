@@ -616,6 +616,40 @@ class BrokerLedger:
         )
         return row is not None
 
+    async def begin_conditional(self, reservation: Reservation) -> bool:
+        """requested -> dispatched before a conditional call leaves the broker (D13).
+
+        Like any dispatch it commits its intent first, so a Stop while it is in
+        flight cannot cancel an effect the domain may be committing. False when
+        a Stop already cancelled it.
+        """
+        await self._lock_goal(reservation.principal.goal_id)
+        row = await self.connection.fetchrow(
+            "UPDATE switchboard.effects SET status = 'dispatched', updated_at = now() "
+            "WHERE goal_id = $1 AND id = $2 AND status = 'requested' RETURNING id",
+            reservation.principal.goal_id,
+            reservation.effect_id,
+        )
+        return row is not None
+
+    async def decline_conditional(self, reservation: Reservation) -> bool:
+        """dispatched -> requested: the domain declined and wrote nothing (D13).
+
+        The domain's affirmative decline is the evidence, as ``not_received`` is
+        for a retry. The effect returns to requested so it parks as it would have.
+        If the goal stopped meanwhile it is cancelled instead, and False returns.
+        """
+        goal = await self._lock_goal(reservation.principal.goal_id)
+        live = goal is not None and goal["status"] in ("running", "waiting")
+        row = await self.connection.fetchrow(
+            "UPDATE switchboard.effects SET status = $3, updated_at = now() "
+            "WHERE goal_id = $1 AND id = $2 AND status = 'dispatched' RETURNING id",
+            reservation.principal.goal_id,
+            reservation.effect_id,
+            "requested" if live else "cancelled",
+        )
+        return live and row is not None
+
     async def effect_capability(self, goal_id: UUID, effect_id: UUID) -> str | None:
         return await self.connection.fetchval(
             "SELECT capability FROM switchboard.effects WHERE goal_id = $1 AND id = $2",

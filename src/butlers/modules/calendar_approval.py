@@ -171,6 +171,16 @@ def calendar_approval_args(tool_name: str, **arguments: Any) -> dict[str, Any]:
     return json.loads(json.dumps(complete, default=_json_value, allow_nan=False))
 
 
+def calendar_supplied_args(tool_name: str, canonical: dict[str, Any]) -> dict[str, Any]:
+    """The canonical arguments that differ from the tool's defaults: what the call changes."""
+    _, defaults = _CALLS[tool_name]
+    return {
+        name: value
+        for name, value in canonical.items()
+        if name not in defaults or value != defaults[name]
+    }
+
+
 def bind_calendar_approval_calendar(
     approval_args: dict[str, Any], resolved_calendar_id: str
 ) -> dict[str, Any]:

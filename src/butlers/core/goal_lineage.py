@@ -78,14 +78,21 @@ class VerifiedLineage:
     effect_id: uuid.UUID | None = None
     approval_ref: str | None = None
     principal: str = "goal"
+    # A condition the domain checks at execution before it acts (RFC 0038 D13
+    # replan exception): unmet, it writes nothing and declines, and the broker
+    # parks the call. ``None`` for every unconditional call.
+    conditional: str | None = None
 
     def __post_init__(self) -> None:
         if self.principal == "goal":
             if self.goal_id is None or self.invocation_id is None:
                 raise ValueError("a goal lineage names its goal and invocation")
+            if self.conditional is not None and self.approval_ref is not None:
+                raise ValueError("an approved call is never conditional")
         elif self.principal == "dashboard":
             if (
-                self.origin != "owner"
+                self.conditional is not None
+                or self.origin != "owner"
                 or self.depth != 0
                 or self.exposed is not False
                 or self.goal_id is not None
@@ -113,6 +120,7 @@ class VerifiedLineage:
             effect_id=uuid.UUID(effect) if effect else None,
             approval_ref=payload.get("approval_ref"),
             principal=payload["principal"],
+            conditional=payload.get("conditional"),
         )
 
     def covers(self, tool_name: str, tool_args: dict[str, Any] | None) -> bool:
@@ -144,6 +152,18 @@ _enforced = False
 def current_lineage() -> VerifiedLineage | None:
     """The lineage bound for the running call, or ``None``."""
     return _current.get()
+
+
+def conditional_for(tool_name: str) -> str | None:
+    """The verified condition on the running call of ``tool_name``, or ``None``.
+
+    The verifier already checked the assertion's digest over this call's raw
+    wire arguments; the handler re-checks the arguments it was given itself.
+    """
+    lineage = _current.get()
+    if lineage is None or lineage.capability != tool_name:
+        return None
+    return lineage.conditional
 
 
 def approving_lineage(
@@ -333,6 +353,7 @@ __all__ = [
     "UNVERIFIED_CALL_REFUSAL",
     "VerifiedLineage",
     "approving_lineage",
+    "conditional_for",
     "current_lineage",
     "enforcement_enabled",
     "event_lineage",

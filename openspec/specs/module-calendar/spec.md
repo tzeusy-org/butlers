@@ -1076,6 +1076,20 @@ Existing `calendar.write`-guarded CRUD, recurrence-scoped mutation and programma
 - **THEN** the guarded path SHALL read current permission state again
 - **AND** existing request-id idempotency and approval behavior SHALL remain in force
 
+### Requirement: Conditional Replan Move
+
+A broker-forwarded `calendar_update_event` whose verified assertion names the `replan_move` condition (RFC 0038 D13 calendar replan exception, owner decision `bu-qlx055` q12 = B) SHALL move the event only if the provider's copy of it, read at execution, carries the `butler_generated` marker the server wrote when Butlers created it, has no attendees, is neither recurring nor all-day, and the new time overlaps no other event. The tool SHALL judge the event from provider state and never from the call's arguments, and SHALL bind the write to the etag it checked. Otherwise it SHALL write nothing and return `status: "replan_declined"` with a reason, so the broker parks the call as it would have. Events made before Butlers wrote the marker carry none and SHALL count as owner-created. Without the condition the tool's behaviour SHALL be unchanged, and `calendar_respond` SHALL keep `always_per_event`.
+
+#### Scenario: A Butlers-made owner-only block moves with an undo receipt
+- **WHEN** a conditional move targets a non-recurring event the provider reports as `butler_generated` with no attendees, and the new time is free
+- **THEN** the event SHALL move under the etag that was checked
+- **AND** the result SHALL carry the pre-image (`pre_state`) and an `undo` receipt naming the exact inverse `calendar_update_event` move
+
+#### Scenario: Anything else is declined before any write
+- **WHEN** the provider reports the event unmarked, with attendees, recurring or all-day, or the event cannot be read, or the new time overlaps another event, or the call changes anything other than the event's time
+- **THEN** the tool SHALL make no provider write
+- **AND** it SHALL return `status: "replan_declined"` with the reason
+
 ## Source References
 
 - Non-Negotiable Rule 1 (single-owner data sovereignty)
