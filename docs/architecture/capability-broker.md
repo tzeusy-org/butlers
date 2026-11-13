@@ -426,6 +426,25 @@ A `REPLAN` call is first sent to the domain as a conditional dispatch:
   receipt. That receipt is the pre-image (`pre_state`) and the exact inverse
   call (`undo`), which is itself a move of the same marked block. Both are kept
   in the calendar action log.
+- The owner's receipt (`modules/calendar/replan_undo.py`, bu-4c7nvp.1.12) is
+  one approvals card per goal and block, parked through the shared admission
+  path, so it reaches the owner on the existing approvals surfaces. Its call is
+  the inverse `calendar_update_event`, and approving it runs that call through
+  the approvals executor. The receipt lives in a `replan_undo` offer row in
+  `calendar_action_log`:
+  - The offer opens before the write and holds the pre-image. If the approvals
+    tables are missing, the move declines `undo_unavailable` before writing.
+  - A retry reuses the open offer, so the card undoes to the earliest pre-image.
+    A retry after a failed move that in fact committed reads the moved event,
+    and its own pre-image would be the new time.
+  - A write refused on the etag discards an offer that attempt opened.
+  - On commit the offer records the moved event's etag, and the card is parked
+    once. Further moves by the same goal while the card is pending only rebind
+    that etag.
+  - The approved undo is bound to that etag. If the event changed since the
+    move, it writes nothing and returns `status: "undo_declined"`. Its own
+    write is sent once, and a 412 also declines.
+  - The offer closes when the card leaves `pending`.
 - Unmet, including an unreadable or missing event, an overlap check that
   cannot be read, or a write the provider refuses on the etag (412, the event
   changed since the check): the tool writes nothing and returns

@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -35,6 +36,7 @@ from butlers.modules.calendar.replan import (
     move_only,
     undo_receipt,
 )
+from butlers.modules.calendar.replan_undo import UndoOffer, undo_card_args, undo_card_summary
 from butlers.testing.mcp import tool_fn
 from tests.modules.test_module_calendar import _make_event, _ProviderDouble
 
@@ -90,6 +92,71 @@ class _FailingWrite(_ProviderDouble):
         raise self._error
 
 
+class _FakeLedger:
+    """The undo ledger's contract in memory; ``ReplanUndoLedger`` is the SQL of it."""
+
+    def __init__(self) -> None:
+        self.offers: list[dict[str, Any]] = []
+        self.cards: dict[uuid.UUID, dict[str, Any]] = {}
+
+    async def available(self) -> bool:
+        return True
+
+    def _open(self, goal_id, event_id):
+        for offer in reversed(self.offers):
+            if (offer["goal_id"], offer["event_id"]) != (goal_id, event_id):
+                continue
+            if offer["action_id"] is None or self.cards[offer["action_id"]]["status"] == "pending":
+                return offer
+        return None
+
+    async def open(self, *, goal_id, event_id, calendar_id, pre_state) -> UndoOffer:
+        offer = self._open(goal_id, event_id)
+        if offer is not None:
+            return UndoOffer(offer["key"], dict(offer["pre_state"]), offer["action_id"], False)
+        key = f"offer-{len(self.offers)}"
+        self.offers.append(
+            {
+                "key": key,
+                "goal_id": goal_id,
+                "event_id": event_id,
+                "pre_state": dict(pre_state),
+                "action_id": None,
+                "post_move": None,
+            }
+        )
+        return UndoOffer(key, dict(pre_state), None, True)
+
+    async def discard(self, offer: UndoOffer) -> None:
+        if offer.created:
+            self.offers = [
+                o for o in self.offers if not (o["key"] == offer.key and o["action_id"] is None)
+            ]
+
+    async def commit(self, offer: UndoOffer, *, moved, conflict_policy) -> uuid.UUID:
+        stored = next(o for o in self.offers if o["key"] == offer.key)
+        if stored["action_id"] is None:
+            action_id = uuid.uuid4()
+            self.cards[action_id] = {
+                "tool_args": undo_card_args(stored["pre_state"], conflict_policy=conflict_policy),
+                "summary": undo_card_summary(stored["pre_state"], moved),
+                "status": "pending",
+            }
+            stored["action_id"] = action_id
+        stored["post_move"] = {
+            "etag": moved.get("etag"),
+            "start_at": moved["start_at"],
+            "end_at": moved["end_at"],
+        }
+        return stored["action_id"]
+
+    async def for_card(self, action_id):
+        for offer in self.offers:
+            if offer["action_id"] == action_id:
+                return {**offer, "action_id": str(action_id)}
+        return None
+
+
 async def _module(provider):
     mcp = FastMCP("calendar-replan-tests")
     mod = CalendarModule()
@@ -104,9 +171,13 @@ async def _module(provider):
     return mod, mcp
 
 
-async def _move(provider, args=MOVE, *, lineage=True):
+async def _move(provider, args=MOVE, *, lineage=True, ledger=None):
     mod, mcp = await _module(provider)
     with (
+        patch(
+            "butlers.modules.calendar.event_tools.replan_undo_ledger",
+            return_value=ledger if ledger is not None else _FakeLedger(),
+        ),
         patch(
             "butlers.modules.calendar.mutations.require_permission",
             new_callable=AsyncMock,
@@ -183,7 +254,9 @@ async def test_a_marked_attendee_free_block_moves_with_an_undo_receipt():
     # Bound to the etag the check read: a change in between fails the write.
     assert provider.update_calls[0]["patch"].etag == existing.etag
     assert result["pre_state"]["start_at"] == existing.start_at.isoformat()
-    assert result["undo"] == undo_receipt(result["pre_state"])
+    undo = dict(result["undo"])
+    assert uuid.UUID(undo.pop("action_id"))  # the owner's card (bu-4c7nvp.1.12)
+    assert undo == undo_receipt(result["pre_state"])
 
 
 @pytest.mark.parametrize(
