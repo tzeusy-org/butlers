@@ -1,7 +1,7 @@
 """Place transitions older than the 400-day history horizon may be purged (bu-dhloi1.350).
 
-Revision ID: core_332
-Revises: core_331
+Revision ID: core_333
+Revises: core_332
 Create Date: 2026-11-15 00:00:00.000000
 
 RFC 0038 keeps transition history for 400 days. Until now nothing could delete a perception
@@ -37,8 +37,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_332"
-down_revision = "core_331"
+revision = "core_333"
+down_revision = "core_332"
 branch_labels = None
 depends_on = None
 
