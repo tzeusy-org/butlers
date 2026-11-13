@@ -196,4 +196,31 @@ async def test_the_exposure_cause_is_stored_only_for_an_exposed_lineage(exposed,
         origin_butler="messenger",
     )
     [(sql, args)] = [w for w in writes if "goal_exposure_cause" in w[0]]
-    assert args[-1] == stored
+    assert args[-2] == stored
+
+
+@pytest.mark.parametrize(
+    ("allow", "tool", "possible"),
+    [(True, "notify", True), (False, "notify", False), (True, "relationship_assert_fact", False)],
+)
+async def test_rule_possible_is_the_brokers_answer_and_prepared_tools_never_qualify(
+    allow, tool, possible
+):
+    writes = []
+
+    class Connection(_Connection):
+        async def execute(self, sql, *args):
+            writes.append((sql, args))
+            return "UPDATE 1"
+
+    await park_goal_effect(
+        _Pool(Connection([])),
+        lineage=GoalLineage(uuid4(), uuid4(), 0, False, "owner", uuid4()),
+        tool_name=tool,
+        tool_args={"to": "x"},
+        allow_standing_rule=allow,
+        recipient_is_owner=False,
+        origin_butler="messenger",
+    )
+    [(sql, args)] = [w for w in writes if "goal_rule_possible" in w[0]]
+    assert args[-1] is possible

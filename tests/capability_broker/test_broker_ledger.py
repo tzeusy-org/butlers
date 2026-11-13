@@ -337,6 +337,7 @@ async def test_non_owner_send_parks_through_the_domain_with_exact_args_and_linea
         )
         assert (action["goal_exposed"], action["goal_origin"]) == (False, "owner")
         assert action["goal_exposure_cause"] is None  # unexposed: nothing to explain
+        assert action["goal_rule_possible"] is True  # a plain non-owner send may match a rule
 
 
 async def test_owner_created_rule_approves_at_park_and_the_stored_call_runs(broker_db_url):

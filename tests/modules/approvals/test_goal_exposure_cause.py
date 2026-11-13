@@ -38,6 +38,7 @@ def test_the_model_round_trips_the_cause_and_a_legacy_row_reads_unknown():
     row = {"goal_exposed": True, "goal_origin": "third_party", "goal_exposure_cause": "ingress"}
     action = PendingAction.from_row(_pending(**base, **row))
     assert action.to_dict()["goal"]["exposure_cause"] == "ingress"
+    assert action.to_dict()["goal"]["rule_possible"] is None  # nothing stamped: unknown
     legacy = PendingAction.from_row(_pending(**base, goal_exposed=True, goal_origin="owner"))
     assert legacy.goal_exposure_cause is None
 

@@ -136,6 +136,7 @@ class PendingAction:
     goal_exposed: bool | None = None
     goal_origin: str | None = None
     goal_exposure_cause: str | None = None
+    goal_rule_possible: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-safe dictionary."""
@@ -167,6 +168,7 @@ class PendingAction:
                 "exposed": self.goal_exposed,
                 "origin": self.goal_origin,
                 "exposure_cause": self.goal_exposure_cause,
+                "rule_possible": self.goal_rule_possible,
             }
         return d
 
@@ -225,6 +227,7 @@ class PendingAction:
             goal_exposed=_get("goal_exposed"),
             goal_origin=_get("goal_origin"),
             goal_exposure_cause=_get("goal_exposure_cause"),
+            goal_rule_possible=_get("goal_rule_possible"),
         )
 
 

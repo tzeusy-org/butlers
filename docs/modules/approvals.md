@@ -151,7 +151,7 @@ only by the capability broker's park path
 ([Capability Broker](../architecture/capability-broker.md)); `goal_origin` is
 separate from the producer `origin`, and `legacy` is reserved for actions
 created before the cutover. Approving an action whose lineage is exposed never
-counts toward standing-rule promotion. An exposed park also records `goal_exposure_cause`
+counts toward standing-rule promotion. A park also records `goal_rule_possible` (the broker's park-time "may a standing rule match" answer; explanation only) and, when exposed, `goal_exposure_cause`
 (migration `approvals_023`): the invocation's closed S1 `exposure_cause` (`ingress`, `read`,
 `child`, `inbox`, `recovery`, `legacy_unknown`), read by the broker under the goal lock. NULL means
 unknown (an unexposed lineage, or a row that recorded none); it never comes from the model or

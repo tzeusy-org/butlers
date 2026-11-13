@@ -83,10 +83,11 @@ def _exposed_eligible(
     return (recipient_is_owner and pinned(named)) or pinned(list(args))
 
 
-async def _set_lineage(connection, lineage: GoalLineage) -> None:
+async def _set_lineage(connection, lineage: GoalLineage, rule_possible: bool) -> None:
     await connection.execute(
         "UPDATE pending_actions SET goal_id = $2, goal_invocation_id = $3, goal_depth = $4, "
-        "goal_exposed = $5, goal_origin = $6, goal_exposure_cause = $7 WHERE id = $1",
+        "goal_exposed = $5, goal_origin = $6, goal_exposure_cause = $7, "
+        "goal_rule_possible = $8 WHERE id = $1",
         lineage.effect_id,
         lineage.goal_id,
         lineage.invocation_id,
@@ -94,6 +95,7 @@ async def _set_lineage(connection, lineage: GoalLineage) -> None:
         lineage.exposed,
         lineage.origin,
         lineage.exposure_cause if lineage.exposed else None,
+        rule_possible,
     )
 
 
@@ -111,6 +113,9 @@ async def park_goal_effect(
 ) -> GoalParkOutcome:
     """Park (or rule-approve) one goal effect with its lineage, atomically."""
     now = datetime.now(UTC)
+    # The broker's own park-time answer to "may a standing rule ever match this call". An
+    # explanation shown to the owner, never authority: admission below still judges the rule.
+    rule_possible = allow_standing_rule and tool_name not in RULE_PREPARED_TOOLS
     async with pool.acquire() as connection, connection.transaction():
         existing = await connection.fetchrow(
             "SELECT id, approval_rule_id FROM pending_actions WHERE id = $1", lineage.effect_id
@@ -139,12 +144,13 @@ async def park_goal_effect(
                     "WITH claimed AS (" + claim_rule_use_sql(rule_param=3, now_param=4) + ") "
                     "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at, "
                     "approval_rule_id, decided_by, decided_at, goal_id, goal_invocation_id, "
-                    "goal_depth, goal_exposed, goal_origin, goal_exposure_cause) "
+                    "goal_depth, goal_exposed, goal_origin, goal_exposure_cause, "
+                    "goal_rule_possible) "
                     # INSERT ... SELECT does not infer parameter types from the target.
                     "SELECT $1::uuid, $2::text, $5::jsonb, 'approved', $4::timestamptz, "
                     "claimed.id, 'rule:' || claimed.id::text, $4::timestamptz, $6::uuid, "
-                    "$7::uuid, $8::smallint, $9::boolean, $10::text, $11::text FROM claimed "
-                    "RETURNING id",
+                    "$7::uuid, $8::smallint, $9::boolean, $10::text, $11::text, $12::boolean "
+                    "FROM claimed RETURNING id",
                     lineage.effect_id,
                     tool_name,
                     rule_id,
@@ -156,6 +162,7 @@ async def park_goal_effect(
                     lineage.exposed,
                     lineage.origin,
                     lineage.exposure_cause if lineage.exposed else None,
+                    rule_possible,
                 )
                 if claimed is not None:
                     await record_approval_event(
@@ -180,7 +187,7 @@ async def park_goal_effect(
             origin_butler=origin_butler,
             deduplication_key=f"goal-effect:{lineage.effect_id}",
         )
-        await _set_lineage(connection, lineage)
+        await _set_lineage(connection, lineage, rule_possible)
     return GoalParkOutcome(lineage.effect_id)
 
 
