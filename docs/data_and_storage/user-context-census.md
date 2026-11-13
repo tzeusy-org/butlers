@@ -115,9 +115,19 @@ not exist fails the guard.
 | `roster/health/tests/test_clinical_retention.py::<module>` | Health typed records | clinical retention |
 <!-- /census -->
 
-`expect.*` routines (`chronicler.expectations`, `perception_expect_writer`,
-bu-xxfkhk): no feeder yet. Nothing on main publishes `expect.window`, so there is
-no replay or retention to pin until the publisher lands.
+Known gaps, recorded so they stay visible. Untested rows are existing behaviour
+with no pinning test (no test is added under the hardening stop); the others name
+missing behaviour and its owner.
+
+<!-- census:feeder_gaps -->
+| Reference | Gap | Status | Owner |
+| --- | --- | --- | --- |
+| `timeline-400-day-bound` | `public.perception_timeline` refuses a window longer than 400 days (`22023`) | untested | bu-dhloi1.21 |
+| `owntracks-fix-expiry` | OwnTracks raw fixes older than the configured retention are deleted (only purge failure and health are pinned) | untested | bu-dhloi1.21 |
+| `no-duplicate-life-record-source` | Finance, Travel and Health typed records never write perception or `public.user_context` (only the perception writer-role contract is pinned) | untested | bu-dhloi1.21 |
+| `place-transition-retention` | place transitions are purged after 400 days; no retention job exists | missing, activation prerequisite | bu-dhloi1.350 |
+| `expect-routine-replay` | `expect.*` routines (`chronicler.expectations`, `perception_expect_writer`, bu-xxfkhk): nothing on main publishes `expect.window`, so there is no replay or retention to pin | no feeder yet | bu-xxfkhk |
+<!-- /census -->
 
 ## Switch-time obligations
 

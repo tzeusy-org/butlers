@@ -143,6 +143,14 @@ def test_the_census_has_its_tables() -> None:
     assert {"user_context", "owner_zone", "feeder", "switch"} <= set(tables)
     # The durable receipt store is a named obligation, not an implied one.
     assert {"parity-receipt-store", "deletion-needs-receipts"} <= tables["switch"]
+    # Known feeder gaps stay visible rather than silently absent.
+    assert {
+        "timeline-400-day-bound",
+        "owntracks-fix-expiry",
+        "no-duplicate-life-record-source",
+        "place-transition-retention",
+        "expect-routine-replay",
+    } <= tables["feeder_gaps"]
 
 
 def test_every_user_context_reader_and_writer_has_exactly_one_row() -> None:
