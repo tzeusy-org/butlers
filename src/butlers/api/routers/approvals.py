@@ -778,6 +778,7 @@ def _pending_action_to_detail(
         reversibility=action.reversibility,
         proposed_action=proposed_action,
         call_preview=dashboard_call_preview(action.tool_name, action.tool_args),
+        goal=_goal_lineage(action),
         status=action.status.value,
         decided_by=action.decided_by,
         decided_at=action.decided_at,

@@ -739,8 +739,14 @@ function Dossier({
         </> : <p>Open only: an exact safe preview is unavailable. Approval is disabled.</p>}
       </section>
       {detail.goal ? (
-        <section aria-label="Goal lineage" className="mb-6" data-testid="approval-goal-lineage">
-          <h3 className="font-medium">Parked by a goal</h3>
+        <section
+          aria-labelledby="approval-goal-lineage-title"
+          className="mb-6"
+          data-testid="approval-goal-lineage"
+        >
+          <h3 id="approval-goal-lineage-title" className="font-medium">
+            Parked by a goal
+          </h3>
           <dl className="mt-1 grid grid-cols-1 gap-x-6 gap-y-1 text-sm sm:grid-cols-[max-content_1fr]">
             {detail.goal.facts.map((fact) => (
               <div key={fact.label} className="contents">

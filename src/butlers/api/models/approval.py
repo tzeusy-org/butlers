@@ -234,6 +234,13 @@ class ApprovalDetail(BaseModel):
     reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
     proposed_action: dict[str, Any]
     call_preview: ApprovalCallPreview | None = None
+    goal: ApprovalGoalLineage | None = Field(
+        default=None,
+        description=(
+            "RFC 0038 goal lineage facts of a broker-parked effect, built server-side once for "
+            "the dashboard and the Telegram card; null for any other action."
+        ),
+    )
     status: str
     decided_by: str | None = None
     decided_at: datetime | None = None

@@ -3721,6 +3721,8 @@ export interface ApprovalExecutionFailure {
 
 export interface ApprovalDetail {
   call_preview?: ApprovalCallPreview | null;
+  /** RFC 0038 lineage of a broker-parked effect; null for any other action. */
+  goal?: ApprovalGoalLineage | null;
   owner_delivery?: OwnerDeliveryCard | null;
   id: string;
   title: string;
