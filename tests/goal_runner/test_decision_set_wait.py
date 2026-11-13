@@ -12,6 +12,7 @@ goal tool stays dark with ``goal.decide_together``; the runner path is exercised
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -108,6 +109,38 @@ async def test_an_item_left_unticked_does_not_hold_the_wake(broker_db_url):
         await h.runner.supervise_once()
         await h.launched(2)
         assert (await h.w.effect(left))["status"] == "parked"
+
+
+async def test_a_left_item_approved_on_its_own_later_does_not_hold_the_wake(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal, _, proposed = await waiting_on_a_set(h, items=3)
+        left = proposed.items[2].effect_id
+        await decide(h, proposed, skip=(left,))
+        real = h.w.broker.execute_approved
+
+        async def left_unavailable(goal_id, effect_id, approval_ref, arguments):
+            if effect_id == left:
+                raise BrokerRefused(Reason.UNAVAILABLE)
+            return await real(goal_id, effect_id, approval_ref, arguments)
+
+        # The owner later approves the left item on its own; its dispatch is still pending.
+        h.w.broker.execute_approved = left_unavailable
+        await OwnerDecisions(h.w.broker, live=True).approve(goal, left, OWNER)
+        assert (await h.w.effect(left))["status"] == "approved"
+        await h.runner.supervise_once()
+        await h.launched(2)
+
+
+async def test_two_concurrent_sweeps_wake_a_decided_set_once(broker_db_url):
+    async with harness(broker_db_url) as h:
+        goal, _, proposed = await waiting_on_a_set(h)
+        await decide(h, proposed)
+        await asyncio.gather(h.runner.supervise_once(), h.runner.supervise_once())
+        await h.launched(2)
+        assert await h.w.owner.fetchval("SELECT count(*) FROM switchboard.wake_intents") == 1
+        assert (await envelope(h, goal))[1:3] == ("fired", 1)
+        await h.runner.supervise_once()
+        assert len(h.host.launches) == 2
 
 
 async def test_a_ticked_item_still_running_holds_the_wake(broker_db_url):

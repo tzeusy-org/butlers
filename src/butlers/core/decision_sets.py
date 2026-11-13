@@ -362,11 +362,17 @@ class DecisionSetLedger:
             return None
         if state == "expired":
             return "expired"
+        # An item the receipt left unticked is the owner's own later decision: even if it was
+        # approved since and is running, it does not hold the set's wake.
         if await self.connection.fetchval(
             "SELECT EXISTS (SELECT 1 FROM switchboard.decision_set_items i "
             "JOIN switchboard.effects e ON (e.goal_id, e.id) = (i.goal_id, i.effect_id) "
             "WHERE i.set_id = $1 AND i.set_version = $2 "
-            "AND e.status IN ('requested','approved','dispatched'))",
+            "AND e.status IN ('requested','approved','dispatched') "
+            "AND NOT EXISTS (SELECT 1 FROM switchboard.owner_decision_items d "
+            "JOIN switchboard.owner_decisions o ON o.id = d.decision_id "
+            "WHERE o.set_id = $1 AND o.set_version = $2 AND d.effect_id = i.effect_id "
+            "AND d.outcome = 'left'))",
             set_id,
             version,
         ):

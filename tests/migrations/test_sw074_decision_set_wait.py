@@ -98,14 +98,15 @@ async def _exercise(url):
             with pytest.raises(error):
                 await _envelope(runtime, goal, kind, set_id, version)
         await _envelope(runtime, goal, "decision_set", waited, 1)
-        # The binding is as immutable as the rest of the envelope.
-        with pytest.raises(asyncpg.PostgresError, match="immutable"):
-            await owner.execute(
-                "UPDATE switchboard.wait_envelopes SET decision_set_version = 1, "
-                "decision_set_id = $2 WHERE goal_id = $1",
-                goal,
-                foreign,
-            )
+        # The binding is as immutable as the rest of the envelope, for either role.
+        for pool in (runtime, owner):
+            with pytest.raises(asyncpg.PostgresError, match="immutable"):
+                await pool.execute(
+                    "UPDATE switchboard.wait_envelopes SET decision_set_version = 1, "
+                    "decision_set_id = $2 WHERE goal_id = $1",
+                    goal,
+                    foreign,
+                )
         await owner.execute(
             "UPDATE switchboard.wait_envelopes SET state = 'cancelled' WHERE goal_id = $1", goal
         )

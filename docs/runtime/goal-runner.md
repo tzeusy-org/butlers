@@ -879,8 +879,8 @@ Each `supervise_once` resolves these waits after the approval waits
 (`GoalRunner._resolve_decision_sets`, `DecisionSetLedger.wait_outcome` under the goal lock):
 
 - `decided`: the owner approved the version and no ticked item is still `requested`, `approved` or
-  `dispatched`. One successor summary lead wakes through the shared wake admission. An unticked
-  item stays `parked` and holds nothing.
+  `dispatched`. One successor summary lead wakes through the shared wake admission. An item the
+  receipt left unticked holds nothing, even once the owner approves it on its own later.
 - `rejected`: the owner rejected the version. The goal ends `partial`; nothing launches.
 - `stale` (N3): the version can no longer be decided. An open version one of whose items left
   `parked` (decided on its own, expired or cancelled by its domain) is cancelled in that sweep, so
