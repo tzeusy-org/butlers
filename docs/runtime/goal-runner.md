@@ -98,6 +98,7 @@ capability and never lists one. The runner serves these tools on the same per-go
 | `goal__wait_owner` | lead | End the lead and wait for the owner's answer to a delivered prompt (see below) |
 | `goal__wait_until` | lead (dark) | End the lead and wait on a predicate over this goal's own decisions and effects (see below); not listed or callable until goal events feed the evaluator |
 | `goal__plan` | lead | Record the plan as the goal's next version of goal-owned references (see below) |
+| `goal__decide_together` | lead (dark) | Group parked calls of this goal into one decision set for the owner (see below); not listed or callable until the owner's decision path lands |
 | `goal__inbox` | lead | Take the owner replies joined to this goal since the last call |
 | `goal__escalate` | lead | Hand the goal to a fresh lead on the next ladder tier |
 | `goal__return` | child | Return a result validated against the brief's `result_schema` |
@@ -793,6 +794,34 @@ in its own lineage, would leave the owner with silence. The sweep's last step
   `subject_mismatch` if it reached `redeem` as an approval).
 - Not wired: the HTTP route and Telegram buttons that carry a token to `decide`, and the production
   evidence reader that `admit` needs, belong to the cutover with the runner.
+
+## Decision sets (D13, M7, sw_072, dark)
+
+A lead can group calls of its goal that are already parked for the owner into one decision set,
+so the owner can decide them with one tap (bu-qlx055 = A, q3 and q11). The set grants nothing:
+each item is one parked effect, and an approved item still runs as its own stored call.
+
+- Producer: `goal.decide_together(effect_ids)` (`GoalRunner.decide_together`, then
+  `RunnerLedger.decide_together`, then `core/decision_sets.DecisionSetLedger.create`). Only a running
+  goal's lead may call it, with 2 to 16 distinct effects of this goal that are all still `parked`.
+  The tool is unlisted until the owner's decision path (the resolver, bu-4c7nvp.1.3 PR-B) lands.
+- Items (`decision_set_items`): the effect, a snapshot of its capability, stored-arguments digest
+  and recipient, and `explicit_only`, true for an `administer` capability taken from the live
+  catalog (a rule or schedule change is never pre-ticked; the resolver will accept it only as an
+  explicit tick). `item_digest` is SHA-256 over the canonical JSON of exactly those facts.
+- Versions (`decision_set_versions`): the lead epoch, the plan version (an empty v1 plan is
+  recorded if the goal has none), a set digest over the ordered item digests, and an expiry equal
+  to the budget deadline. The same membership returns the open version (a retry). A changed
+  membership supersedes the open version and appends the next version of the same set, so a card
+  or token bound to the old version is stale. A goal has at most one open version.
+- Read contract for the card consumer (bu-jv1moa.27): `DecisionSetLedger.read(set_id, version)`
+  (latest when no version) and `open_for_goal(goal_id)` return frozen `DecisionSet` /
+  `DecisionSetItem` values. The full stored call of an item comes from the existing approval preview
+  of its effect, not from a second copy here.
+- Guards (`sw_072`): items and set identities are append-only, a version changes only its state
+  (`open` to `superseded`, `cancelled` or `expired`), nothing is deletable, and `decided` is refused
+  until the resolver and its receipt land. The runtime role may read, insert and update a version's
+  state.
 
 ## Not yet delivered
 
