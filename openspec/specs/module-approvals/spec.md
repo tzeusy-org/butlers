@@ -913,9 +913,9 @@ SHALL refuse while any presentation carries a digest.
 ### Requirement: Decision Sets Are Shown Exactly and Decided Whole
 
 A goal's decision set (RFC 0038 M7) SHALL be shown to the owner version by version, and every
-decision SHALL be exact or refused whole. The path is dark: until `OWNER_DECISIONS_LIVE` is turned
-on and a resolver is wired, no decision is recorded, no card token is minted or sent, and the decision
-routes answer unavailable.
+decision SHALL be exact or refused whole. The path is dark: no card token is minted or sent until
+`OWNER_DECISIONS_LIVE` and the owner-delivery rollout are both on; until a resolver is wired, the
+decision routes answer unavailable and nothing is recorded.
 
 The owner view of one version SHALL read each item's exact stored call from its parked
 `pending_actions` row, only from the approvals pool of the item's capability domain (a copy in any
@@ -927,7 +927,9 @@ reason and no facts. One Open-only item, a version that is not `open`, an elapse
 set SHALL make the whole set not decidable, and the owner SHALL review each call on its own approval
 page. Each item SHALL carry the server's own verdict whether it belongs to the default selection
 (an exact plain item of a decidable set, never an `explicit_only` administer item), and the
-assistant's `why`, `blast_radius` and `reversibility` SHALL appear only as labelled claims.
+assistant's `why`, `blast_radius` and `reversibility` SHALL appear only as labelled claims. Today an
+administer item has no exact preview, so a set that contains one is Open-only as a whole; the
+`explicit_only` rules below apply when such an item is shown exactly.
 
 The Telegram card SHALL offer exactly Approve, Reject and Open. Approve SHALL decide the default
 selection and Reject SHALL reject every item; the selection SHALL NOT be carried in a token or
@@ -945,7 +947,9 @@ The dashboard SHALL post only the version, approve or reject, and the ticked ite
 the item digests it was shown; an `explicit_only` item SHALL be decided only when ticked by itself,
 and an unknown or duplicate item or a set that is not decidable SHALL be refused before the resolver.
 The page SHALL render the server's view and SHALL NOT compute decidability or the default selection.
-Refusals SHALL be closed reasons and SHALL decide nothing.
+The page SHALL offer ticks and Approve/Reject only when the server reports the set decidable and
+decisions live; otherwise it SHALL show the view with no decision controls. Refusals SHALL be closed
+reasons and SHALL decide nothing.
 
 #### Scenario: Foreign pool copy cannot supply a call
 
@@ -954,19 +958,24 @@ Refusals SHALL be closed reasons and SHALL decide nothing.
 
 #### Scenario: Approve decides the default selection
 
-- **WHEN** the owner taps Approve on a set card with two plain items and one administer item
-- **THEN** the two plain items are decided approved and the administer item is not
+- **WHEN** the owner taps Approve on a set card with two plain items and one `explicit_only` item shown exactly
+- **THEN** the two plain items are decided approved and the `explicit_only` item is not
 - **AND** if the set changed since the card was sent, nothing is decided and the reply says it changed since shown
 
-#### Scenario: Administer item needs its own tick
+#### Scenario: Explicit-only item needs its own tick
 
-- **WHEN** a set contains an `explicit_only` item
+- **WHEN** a set contains an `explicit_only` item that is shown exactly
 - **THEN** it is never pre-ticked and never decided by Approve, and the dashboard decides it only when the owner ticks it alone
 
 #### Scenario: Decision path is dark
 
 - **WHEN** `OWNER_DECISIONS_LIVE` or the owner-delivery rollout is off
-- **THEN** no card token is minted, no card is sent, and the decision routes answer unavailable with nothing recorded
+- **THEN** no card token is minted and no card is sent
+
+#### Scenario: No resolver is wired
+
+- **WHEN** no decision resolver is registered
+- **THEN** the decision routes answer unavailable with nothing recorded, and the page offers no decision controls
 
 #### Scenario: Ambiguous send is not repeated
 
