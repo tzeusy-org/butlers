@@ -134,6 +134,12 @@ class OwnerFailures(Protocol):
     async def sweep(self) -> int: ...
 
 
+class DecisionSetCardSweep(Protocol):
+    """The sweep step that presents and retracts decision-set cards (dark unless wired)."""
+
+    async def sweep(self) -> int: ...
+
+
 class GoalRunner:
     def __init__(
         self,
@@ -147,6 +153,7 @@ class GoalRunner:
         config: RunnerConfig | None = None,
         kernel: Kernel = call_model,
         owner_failures: OwnerFailures | None = None,
+        decision_set_cards: DecisionSetCardSweep | None = None,
     ):
         self.broker = broker
         self.host = host
@@ -157,6 +164,7 @@ class GoalRunner:
         self.config = config or RunnerConfig()
         self.kernel = kernel
         self.owner_failures = owner_failures
+        self.decision_set_cards = decision_set_cards
         self._tasks: set[asyncio.Task] = set()
         self._admit_failures: dict[UUID, int] = {}
 
@@ -977,6 +985,7 @@ class GoalRunner:
         # Wakes last: a fire that keeps failing must never starve the stages above.
         await self._resolve_approvals()
         await self._resolve_decision_sets()
+        await self._sweep_decision_set_cards()
         await self._admit_fires()
         await self._launch_wakes()
         await self._report_owner_failures()
@@ -989,6 +998,15 @@ class GoalRunner:
             logger.warning("goal runner owner decision re-drive unavailable")
         except Exception:
             logger.exception("goal runner owner decision re-drive failed")
+
+    async def _sweep_decision_set_cards(self) -> None:
+        """Present new decision-set cards and retract stale ones; never raises."""
+        if self.decision_set_cards is None:
+            return
+        try:
+            await self.decision_set_cards.sweep()
+        except Exception:
+            logger.exception("goal runner decision set card sweep failed")
 
     async def _report_owner_failures(self) -> None:
         """Tell the owner about requests that failed without any delivery; never raises."""

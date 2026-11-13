@@ -280,3 +280,29 @@ async def test_failed_paperwork_notice_backs_off_per_threshold(
     keys = [c.kwargs["dedup_key"] for c in boundary["ledger"].await_args_list]
     assert len(set(keys)) == 4 and all(k.startswith("paperwork_deadline_notify:") for k in keys)
     assert "bill.pdf" not in key
+
+
+async def test_a_prebuilt_envelope_is_sent_as_given_to_the_resolved_owner(boundary):
+    envelope = {
+        "schema_version": "notify.v1",
+        "origin_butler": "switchboard",
+        "delivery": {"intent": "approval_request", "message": "card", "recipient": "12345"},
+        "actions": [{"verb": "open_dashboard"}],
+    }
+    result = await owner_notify.send_owner_telegram_checked(
+        MagicMock(), origin_butler="switchboard", message="", log_context="t", envelope=envelope
+    )
+
+    assert (result.outcome, result.call_started) == ("delivered", True)
+    tool, args = boundary["client"].call_tool.await_args.args
+    assert (tool, args["notify_request"]) == ("deliver", envelope)
+
+
+async def test_an_envelope_for_another_recipient_is_refused_before_any_call(boundary):
+    envelope = {"delivery": {"recipient": "99999"}}
+    result = await owner_notify.send_owner_telegram_checked(
+        MagicMock(), origin_butler="switchboard", message="", log_context="t", envelope=envelope
+    )
+
+    assert (result.outcome, result.call_started) == ("failed", False)
+    boundary["client"].call_tool.assert_not_awaited()

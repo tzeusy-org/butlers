@@ -460,8 +460,22 @@ behind `OWNER_DECISIONS_LIVE`: the resolver refuses `unavailable`, and the app s
   failure lets a retry present again with fresh tokens. The listed default selection and the
   tokens' action digest come from the one view the caller read. An open-only card is sent with
   Open alone and mints nothing. Open links to `/decision-sets/<set id>` (self-link route key
-  `decision_set`), which carries the set id and nothing else. The caller that proposes a set and
-  triggers the send is not wired yet.
+  `decision_set`), which carries the set id and nothing else.
+- **The goal-runner trigger** (`goal_runner/decision_set_cards.py`, `DecisionSetCards`). A
+  collaborator the runner calls after resolving decision sets; a runner built without it never
+  runs it, and with it the sweep stays dark behind the same flag and rollout. Each sweep first
+  closes cards whose version left `open` (superseded or cancelled gives `cancelled`, expired gives
+  `expired`, decided closes with the verdict in `owner_decisions`, never the subject's), through
+  `close_for_authority`, so the Telegram connector's retraction drain lists them. It then checks
+  owner suppression *before* reading a view, presenting or minting, and sends at most
+  `SEND_LIMIT` decidable open versions, oldest first. Exactly-once per `(set_id, version)` is the
+  subject and presentation key: a replay, a restart or a second runner finds the card handed off.
+  A set whose view cannot be read is skipped. A set the card cannot offer a decision on is not
+  card-sent, because it has no exactly-once subject and each member effect already has its own
+  approval card. Known limits: a decidable set card currently sits beside one approval card per
+  parked item (a delivery-time skip is a separate follow-up), and the deliver result carries no
+  provider message id, so the connector records `provider_ref_missing` for the retraction until
+  the notify path returns one (stale taps are still refused).
 - **Dashboard page** (`/decision-sets/:setId`) renders the server view; `in_default_selection`,
   `decidable` and `exact` come from the server and the page never computes them. It posts only
   the ticks.

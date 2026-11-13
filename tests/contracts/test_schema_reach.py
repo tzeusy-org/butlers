@@ -1152,6 +1152,13 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         for relation in ("broker_refusals", "effects", "goals", "pending_asks")
     },
     **{
+        ("src/butlers/goal_runner/decision_set_cards.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: M7 decision-set card sweep over the Switchboard-owned set "
+            "versions and owner decision receipts, on the Switchboard pool (bu-jv1moa.75)"
+        )
+        for relation in ("decision_set_versions", "owner_decisions")
+    },
+    **{
         ("src/butlers/capability_broker/m7_report.py", f"switchboard.{relation}"): (
             "sanctioned:RFC-0038: M7 gate report, content-blind counts over the owner-only "
             "S1 measurements view and sw_058 stores (bu-4c7nvp.1.2)"

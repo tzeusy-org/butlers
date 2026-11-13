@@ -981,3 +981,15 @@ reasons and SHALL decide nothing.
 
 - **WHEN** a card's handoff result is unknown
 - **THEN** a retry sends nothing and mints no new token for that presentation
+
+#### Scenario: The trigger presents each version once and only when the owner may be reached
+
+- **WHEN** the goal runner sweeps open decidable set versions with the decision path and rollout on
+- **THEN** each `(set id, version)` is card-sent once across replays, restarts and concurrent runners
+- **AND** while the owner is suppressed no presentation, subject or token is created
+- **AND** a set whose card cannot offer a decision is not card-sent
+
+#### Scenario: A version that left open retracts its card
+
+- **WHEN** a version is superseded, cancelled, expired or decided on the dashboard
+- **THEN** its owner-delivery subject is closed, with a decided verdict read from the decision receipt, and its card is listed for retraction
