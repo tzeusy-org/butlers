@@ -148,6 +148,7 @@ OP GET /api/conversations/messages/search 19e9f0cdb7f0
 OP GET /api/conversations/{conversation_id} 617a3a919a5f
 OP GET /api/dashboard/briefing f41083e3f0c0
 OP GET /api/data/export/download/{export_id} 5669ed0c101b
+OP GET /api/decision-sets/{set_id} b41b7c8a201c
 OP GET /api/delegation/ledger 14558d8a87dc
 OP GET /api/delegation/ledger/{ledger_id} 0d96095bf87f
 OP GET /api/dispatch/attempts b422b61cb9fa
@@ -806,6 +807,7 @@ ROUTE APIRoute GET '/api/conversations/messages/search' name=search_messages op=
 ROUTE APIRoute GET '/api/conversations/{conversation_id}' name=get_conversation_by_id op=get_conversation_by_id_api_conversations__conversation_id__get tags=conversations schema=True
 ROUTE APIRoute GET '/api/dashboard/briefing' name=get_dashboard_briefing op=get_dashboard_briefing_api_dashboard_briefing_get tags=dashboard-briefing schema=True
 ROUTE APIRoute GET '/api/data/export/download/{export_id}' name=download_export op=download_export_api_data_export_download__export_id__get tags=data-ops schema=True
+ROUTE APIRoute GET '/api/decision-sets/{set_id}' name=get_decision_set op=get_decision_set_api_decision_sets__set_id__get tags=decision-sets schema=True
 ROUTE APIRoute GET '/api/delegation/ledger' name=list_delegation_ledger op=list_delegation_ledger_api_delegation_ledger_get tags=delegation schema=True
 ROUTE APIRoute GET '/api/delegation/ledger/{ledger_id}' name=get_delegation_ledger_entry op=get_delegation_ledger_entry_api_delegation_ledger__ledger_id__get tags=delegation schema=True
 ROUTE APIRoute GET '/api/dispatch/attempts' name=get_dispatch_attempts op=get_dispatch_attempts_api_dispatch_attempts_get tags=dispatch schema=True
@@ -1402,6 +1404,7 @@ SCHEMA ApiResponse_CorrectionPrompts_ 761ab055e049
 SCHEMA ApiResponse_DailyActivity_ 5ff1fba56e00
 SCHEMA ApiResponse_DatabaseFacts_ 5b3003f41a06
 SCHEMA ApiResponse_DeadlineRecord_ 8414759fac0f
+SCHEMA ApiResponse_DecisionSetView_ 9cfed7a127b1
 SCHEMA ApiResponse_DelegationLedgerEntry_ c05f59df6c01
 SCHEMA ApiResponse_DeliveryReplayResult_ 35f7e19f95b3
 SCHEMA ApiResponse_DeploymentFacts_ 70c81a700ac4
@@ -1837,6 +1840,9 @@ SCHEMA DayCloseRefreshRequest 66c97e5c2f96
 SCHEMA DayCloseRefreshResponse e62a91337299
 SCHEMA DayCloseStaleResponse 1cc39a379a81
 SCHEMA DeadlineRecord d0154fa0197f
+SCHEMA DecisionSetFact e6214bf25f8b
+SCHEMA DecisionSetItemView ca6386b84e36
+SCHEMA DecisionSetView 8aa02f62358a
 SCHEMA DelegationLedgerEntry 294a7fc8d140
 SCHEMA DeleteContactResponse c36333c1a42e
 SCHEMA DeleteCredentialsResponse dc301a9d0123
