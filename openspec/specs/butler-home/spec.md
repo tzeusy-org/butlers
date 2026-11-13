@@ -221,7 +221,7 @@ is republished every 5 minutes while fresh evidence holds so its slot stays fres
 `GET /api/home/presence/transitions` is the owner-only, read-only projection: confirmed
 leave/enter edges newest first (`limit` counts edges: the server scans past heartbeats, resets
 and retractions, up to a bounded number of timeline rows) with opaque place references, `late` and `retracted`
-flags and a cursor. It answers `503 PRESENCE_TIMELINE_UNAVAILABLE` until the private
+flags in the standard `Page` envelope (`items`, `next_cursor`, `limit`; an empty page with a cursor means the scan cap was hit before an edge was found). It answers `503 PRESENCE_TIMELINE_UNAVAILABLE` until the private
 perception reader login is activated. The reducer is released dark: no schedule, no
 `home.dots` profile and no login exist until the owner-authorized activation (and
 bu-dhloi1.21). Rollback disables the reducer and consumer and retains canonical history.

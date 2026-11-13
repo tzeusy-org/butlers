@@ -224,7 +224,7 @@ OP GET /api/home/entities 1207355eb45c
 OP GET /api/home/entities/{entity_id} 201db69dbe1b
 OP GET /api/home/maintenance 0b6e56c40750
 OP GET /api/home/places 3121184e9d2b
-OP GET /api/home/presence/transitions 7da09e44544c
+OP GET /api/home/presence/transitions 56303003e18f
 OP GET /api/home/safety-watch 022eebc6c393
 OP GET /api/home/settings/presence/owner-entities 1ed414543f3d
 OP GET /api/home/settings/thresholds 70f7d9fbd4d2
@@ -1458,7 +1458,6 @@ SCHEMA ApiResponse_OwnerPolicy_ aa8e8022e512
 SCHEMA ApiResponse_PermissionSetResponse_ bbc0b29c8c20
 SCHEMA ApiResponse_PermissionsMatrix_ 8dca22714444
 SCHEMA ApiResponse_PresenceOwnerEntitiesResponse_ 3bcdcedaa5ca
-SCHEMA ApiResponse_PresenceTransitionsResponse_ 509f65b7e18a
 SCHEMA ApiResponse_ProbeAllResponse_ c073da7d79c0
 SCHEMA ApiResponse_ProjectDetail_ 41bfd56c3e2e
 SCHEMA ApiResponse_ProjectionView_ 64e8b26cc857
@@ -2107,6 +2106,7 @@ SCHEMA Page_FleetCaseSummary_ 594f7698dd4e
 SCHEMA Page_IngestionEventSummary_ 307e0f0b28bc
 SCHEMA Page_MemoryGap_ 32385070b1b5
 SCHEMA Page_MessageSearchResult_ f178406171a6
+SCHEMA Page_PresenceTransition_ c96b51640a0b
 SCHEMA Page_StandingReplyTemplateDraft_ faa0b157de1e
 SCHEMA PaginatedResponse_AccountModel_ 3b10cb7bc9dc
 SCHEMA PaginatedResponse_ApprovalAction_ 4c86a90c7e09
@@ -2179,7 +2179,6 @@ SCHEMA PredicateTab b88253f822af
 SCHEMA PreferenceEntry 2a25de211be4
 SCHEMA PresenceOwnerEntitiesResponse 263a32cfdb98
 SCHEMA PresenceTransition 7e8d80940f9b
-SCHEMA PresenceTransitionsResponse d79e41d53cec
 SCHEMA PriorityContactAddRequest e05a70e06178
 SCHEMA PriorityContactAddResponse cb1bab04fc54
 SCHEMA PriorityContactEntry ded0024322ee

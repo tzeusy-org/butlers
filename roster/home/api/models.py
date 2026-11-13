@@ -472,13 +472,6 @@ class PresenceTransition(BaseModel):
     retraction_event_id: UUID | None = None
 
 
-class PresenceTransitionsResponse(BaseModel):
-    """A page of presence transitions, newest first, with the cursor for the next page."""
-
-    transitions: list[PresenceTransition]
-    next_before: UUID | None = None
-
-
 class OwnerPlaceResponse(BaseModel):
     """One registry row as the owner's dashboard editor sees it."""
 

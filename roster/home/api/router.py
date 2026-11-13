@@ -32,6 +32,7 @@ from butlers.api.models import (
     PaginationMeta,
 )
 from butlers.api.owner_control import require_dashboard_owner_control
+from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.core.audit import append as append_audit
 from butlers.core.audit_transaction import audit_transaction
 from butlers.core.state import decode_jsonb, state_set
@@ -78,7 +79,6 @@ OwnerPlaceResponse = _models.OwnerPlaceResponse
 PresenceOwnerEntitiesUpdate = _models.PresenceOwnerEntitiesUpdate
 PresenceOwnerEntitiesResponse = _models.PresenceOwnerEntitiesResponse
 PresenceTransition = _models.PresenceTransition
-PresenceTransitionsResponse = _models.PresenceTransitionsResponse
 
 logger = logging.getLogger(__name__)
 
@@ -2254,6 +2254,7 @@ _TRANSITIONS_UNAVAILABLE = (
     "The presence timeline is unavailable.",
 )
 _TRANSITIONS_WINDOW = timedelta(days=7)
+_TRANSITIONS_CURSOR_SCOPE = "home-presence-transitions"
 _TRANSITIONS_SCAN_PAGE = 100  # the timeline's largest page
 _TRANSITIONS_MAX_SCANS = 20  # bounds one request to 2000 timeline rows
 
@@ -2293,16 +2294,26 @@ def _edge(item: dict[str, Any]) -> PresenceTransition | None:
 
 @router.get(
     "/presence/transitions",
-    response_model=ApiResponse[PresenceTransitionsResponse],
-    responses={422: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+    response_model=Page[PresenceTransition],
+    responses={
+        400: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
 )
 async def get_presence_transitions(
     request: Request,
     _owner: str = Depends(require_dashboard_owner_control),
     limit: int = Query(20, ge=1, le=100),
-    before: UUID | None = Query(None),
+    cursor: str | None = Query(
+        None, description="Opaque cursor from the previous page's next_cursor."
+    ),
 ) -> Any:
     """Newest-first confirmed owner leave/enter edges for the last seven days."""
+    before: UUID | None = None
+    if cursor is not None:
+        (decoded,) = decode_cursor(cursor, (UUID,), scope=_TRANSITIONS_CURSOR_SCOPE)
+        before = decoded  # type: ignore[assignment]
     connection = None
     try:
         connection = await _open_presence_reader()
@@ -2311,7 +2322,7 @@ async def get_presence_transitions(
         now = datetime.now(UTC)
         store = PerceptionStore(connection)
         edges: list[PresenceTransition] = []
-        cursor = before
+        scan_cursor = before
         more = False
         # The timeline holds heartbeats, resets and retractions too, so `limit` counts edges:
         # scan pages until enough edges are found, the week is exhausted or the scan cap is hit.
@@ -2320,11 +2331,11 @@ async def get_presence_transitions(
                 since=now - _TRANSITIONS_WINDOW,
                 until=now,
                 kind="owner.place",
-                before=cursor,
+                before=scan_cursor,
                 limit=_TRANSITIONS_SCAN_PAGE,
             )
             for row in rows:
-                cursor = UUID(str(row["id"]))
+                scan_cursor = UUID(str(row["id"]))
                 edge = _edge(row)
                 if edge is not None:
                     edges.append(edge)
@@ -2343,8 +2354,14 @@ async def get_presence_transitions(
     finally:
         if connection is not None:
             await connection.close()
-    page = PresenceTransitionsResponse(transitions=edges, next_before=cursor if more else None)
+    # An empty page with a cursor is real: the scan cap was hit before any edge was found.
+    next_cursor = (
+        encode_cursor((scan_cursor,), scope=_TRANSITIONS_CURSOR_SCOPE)
+        if more and scan_cursor is not None
+        else None
+    )
+    page = Page[PresenceTransition](items=edges, next_cursor=next_cursor, limit=limit)
     return JSONResponse(
-        content=ApiResponse[PresenceTransitionsResponse](data=page).model_dump(mode="json"),
+        content=page.model_dump(mode="json"),
         headers={"Cache-Control": "no-store"},
     )

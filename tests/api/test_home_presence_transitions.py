@@ -141,12 +141,12 @@ async def test_only_confirmed_edges_are_projected_with_late_and_retraction_flags
     app = _app(seams, monkeypatch, reader)
     status, response, _ = await _raw(app, "GET", f"{_ROUTE}?limit=5", b"", _OWNER)
     assert status == 200 and reader.closed
-    page = response["data"]
-    assert [(t["direction"], t["late"], t["retracted"]) for t in page["transitions"]] == [
+    page = response
+    assert [(t["direction"], t["late"], t["retracted"]) for t in page["items"]] == [
         ("enter", False, False),
         ("leave", True, True),
     ]
-    assert page["next_before"] is None  # the whole week was scanned: nothing further
+    assert page["next_cursor"] is None  # the whole week was scanned: nothing further
     text = json.dumps(response)
     for leaked in ("secret-evidence", "label_sens", "writer", "evidence_refs", "lat", "lon"):
         assert leaked not in text.replace("late", "")
@@ -157,7 +157,7 @@ async def test_only_confirmed_edges_are_projected_with_late_and_retraction_flags
 async def test_short_page_has_no_cursor_and_bad_limit_is_refused(seams, monkeypatch) -> None:  # noqa: F811
     app = _app(seams, monkeypatch, FakeReader([_row(1, before="inside", after="outside")]))
     status, response, _ = await _raw(app, "GET", f"{_ROUTE}?limit=20", b"", _OWNER)
-    assert status == 200 and response["data"]["next_before"] is None
+    assert status == 200 and response["next_cursor"] is None
     status, _, _ = await _raw(app, "GET", f"{_ROUTE}?limit=101", b"", _OWNER)
     assert status == 422
 
@@ -173,20 +173,41 @@ async def test_heartbeats_do_not_hide_edges_and_the_cursor_continues(seams, monk
     reader = FakeReader(rows)
     app = _app(seams, monkeypatch, reader)
     status, response, _ = await _raw(app, "GET", f"{_ROUTE}?limit=2", b"", _OWNER)
-    page = response["data"]
-    assert status == 200 and len(page["transitions"]) == 2
-    assert page["next_before"] == page["transitions"][-1]["id"]
+    page = response
+    assert status == 200 and len(page["items"]) == 2
+    assert page["next_cursor"] is not None and page["limit"] == 2
     status, response, _ = await _raw(
-        app, "GET", f"{_ROUTE}?limit=2&before={page['next_before']}", b"", _OWNER
+        app, "GET", f"{_ROUTE}?limit=2&cursor={page['next_cursor']}", b"", _OWNER
     )
-    rest = response["data"]
-    assert [t["direction"] for t in rest["transitions"]] == ["leave", "enter"]
-    assert len(rest["transitions"]) == 2
+    rest = response
+    assert [t["direction"] for t in rest["items"]] == ["leave", "enter"]
+    assert len(rest["items"]) == 2
 
     status, response, _ = await _raw(
-        app, "GET", f"{_ROUTE}?limit=20&before={rest['next_before']}", b"", _OWNER
+        app, "GET", f"{_ROUTE}?limit=20&cursor={rest['next_cursor']}", b"", _OWNER
     )
-    tail = response["data"]
-    assert [t["direction"] for t in tail["transitions"]] == ["enter"] and tail[
-        "next_before"
-    ] is None
+    tail = response
+    assert [t["direction"] for t in tail["items"]] == ["enter"] and tail["next_cursor"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_scan_cap_with_no_edge_returns_empty_items_and_a_cursor(seams, monkeypatch) -> None:  # noqa: F811
+    # 2100 heartbeats newest first, an edge beyond the 20-page scan cap.
+    rows = [_row(n, before="inside", after="inside") for n in range(5000, 2900, -1)]
+    rows.append(_row(10, before="inside", after="outside"))
+    app = _app(seams, monkeypatch, FakeReader(rows))
+    status, page, _ = await _raw(app, "GET", f"{_ROUTE}?limit=5", b"", _OWNER)
+    assert status == 200 and page["items"] == [] and page["next_cursor"] is not None
+    status, page, _ = await _raw(
+        app, "GET", f"{_ROUTE}?limit=5&cursor={page['next_cursor']}", b"", _OWNER
+    )
+    assert [t["direction"] for t in page["items"]] == ["leave"] and page["next_cursor"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_forged_cursor_is_refused(seams, monkeypatch) -> None:  # noqa: F811
+    app = _app(seams, monkeypatch, FakeReader([]))
+    status, _, _ = await _raw(app, "GET", f"{_ROUTE}?cursor=garbage", b"", _OWNER)
+    assert status == 400
