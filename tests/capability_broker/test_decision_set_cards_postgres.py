@@ -134,6 +134,15 @@ async def _subjects(w) -> int:
     )
 
 
+async def _members(w) -> int:
+    return await w.owner.fetchval(
+        "SELECT count(*) FROM public.owner_delivery_subject_members m "
+        "JOIN public.owner_delivery_subjects s ON s.id = m.subject_id "
+        "WHERE s.kind = 'decision_set' AND s.source_ref LIKE ANY($1::text[])",
+        _refs(),
+    )
+
+
 async def _tokens(w) -> int:
     return await w.owner.fetchval(
         "SELECT count(*) FROM public.owner_delivery_tokens t "
@@ -496,9 +505,8 @@ async def test_the_old_version_alone_released_leaves_the_item_held_by_the_new_on
             "WHERE kind = 'decision_set' AND source_ref LIKE $1",
             f"{first.set_id}:%",
         )
-        assert (
-            sorted(r["state"] for r in subjects) == ["cancelled", "unknown"] or len(subjects) == 2
-        )
+        assert len(subjects) == 2
+        assert sum(r["state"] == "cancelled" for r in subjects) == 1
         # The superseded version's subject is closed; the live one still holds both items.
         assert await _held(w, effects) == [True, True]
 
@@ -510,10 +518,7 @@ async def test_no_hold_without_a_sent_card(broker_db_url):
         await (await _sweeper(w, Transport(), live=False)).sweep()
         await (await _sweeper(w, Transport(), rollout=False)).sweep()
         assert await _held(w, effects) == [False, False]
-        assert (
-            await w.owner.fetchval("SELECT count(*) FROM public.owner_delivery_subject_members")
-            >= 0
-        )
+        assert await _members(w) == 0
         failing = await _sweeper(w, Transport("failed"))
         await failing.sweep()
         assert await _held(w, effects) == [False, False]
@@ -598,7 +603,7 @@ async def test_the_member_table_is_append_only_and_narrowly_granted(broker_db_ur
         await _reset(w)
         await _set(w)
         await (await _sweeper(w, Transport())).sweep()
-        assert await w.owner.fetchval(f"SELECT count(*) FROM {table}") >= 2
+        assert await _members(w) == 2
         for statement in (
             f"UPDATE {table} SET member_ref = member_ref",
             f"DELETE FROM {table}",

@@ -117,7 +117,10 @@ CREATE TRIGGER owner_delivery_members_no_truncate BEFORE TRUNCATE
 def _grants_and_policy() -> None:
     # init-db.sql's default privileges hand every runtime role DML on new public tables, so the
     # table starts from nothing: only switchboard writes and reads it, and nobody updates it.
+    # The REVOKEs act on objects this migration owns, so they are never wrapped in a tolerant
+    # block; only a grant to a role this login cannot administer may be skipped, role by role.
     op.execute(f"REVOKE ALL PRIVILEGES ON TABLE {_TABLE} FROM PUBLIC")
+    op.execute(f"REVOKE ALL PRIVILEGES ON FUNCTION {_FUNCTION} FROM PUBLIC")
     op.execute(
         f"""
         DO $$
@@ -128,16 +131,17 @@ def _grants_and_policy() -> None:
             LOOP
                 EXECUTE format('REVOKE ALL PRIVILEGES ON TABLE {_TABLE} FROM %I', role_name);
             END LOOP;
-            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'butler_switchboard_rw') THEN
-                GRANT SELECT, INSERT ON TABLE {_TABLE} TO butler_switchboard_rw;
-            END IF;
-            REVOKE ALL PRIVILEGES ON FUNCTION {_FUNCTION} FROM PUBLIC;
             FOR role_name IN SELECT rolname FROM pg_roles
                 WHERE rolname LIKE 'butler\\_%\\_rw' ESCAPE '\\'
             LOOP
-                EXECUTE format('GRANT EXECUTE ON FUNCTION {_FUNCTION} TO %I', role_name);
+                BEGIN
+                    EXECUTE format('GRANT EXECUTE ON FUNCTION {_FUNCTION} TO %I', role_name);
+                    IF role_name = 'butler_switchboard_rw' THEN
+                        EXECUTE format('GRANT SELECT, INSERT ON TABLE {_TABLE} TO %I', role_name);
+                    END IF;
+                EXCEPTION WHEN insufficient_privilege THEN NULL;
+                END;
             END LOOP;
-        EXCEPTION WHEN insufficient_privilege THEN NULL;
         END $$
         """
     )
@@ -188,7 +192,7 @@ def upgrade() -> None:
     op.execute(_LOCK)
     # A schema migrated without the core ledger (core_317) has no subject to hold for.
     op.execute(
-        f"""
+        """
         DO $$
         BEGIN
             IF to_regclass('public.owner_delivery_subjects') IS NULL THEN

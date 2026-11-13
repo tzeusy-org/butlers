@@ -48,8 +48,18 @@ def test_upgrade_starts_from_nothing_then_grants_only_switchboard_select_and_ins
     sql = "\n".join(_run("upgrade", 1))
     assert "REVOKE ALL PRIVILEGES ON TABLE public.owner_delivery_subject_members FROM PUBLIC" in sql
     assert "GRANT SELECT, INSERT ON TABLE public.owner_delivery_subject_members" in sql
-    assert "TO butler_switchboard_rw" in sql
+    assert "IF role_name = 'butler_switchboard_rw'" in sql
     assert "UPDATE ON" not in sql and "DELETE ON" not in sql and "ALL ON" not in sql
+
+
+def test_the_public_revokes_are_not_inside_the_tolerant_grant_block() -> None:
+    statements = _run("upgrade", 1)
+    table = "REVOKE ALL PRIVILEGES ON TABLE public.owner_delivery_subject_members FROM PUBLIC"
+    function = "REVOKE ALL PRIVILEGES ON FUNCTION public.owner_delivery_item_held(text, text)"
+    assert table in statements and any(s.startswith(function) for s in statements)
+    tolerant = [s for s in statements if "EXCEPTION WHEN insufficient_privilege" in s]
+    assert len(tolerant) == 1 and "FROM PUBLIC" not in tolerant[0]
+    assert "BEGIN\n                    EXECUTE format('GRANT EXECUTE" in tolerant[0]
 
 
 def test_upgrade_enables_the_own_schema_policy_and_the_append_only_guards() -> None:
