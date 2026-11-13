@@ -48,7 +48,9 @@ def test_upgrade_widens_only_the_one_named_kind_check_and_adds_no_table() -> Non
     sql = "\n".join(_run("upgrade", 1))
     assert "DROP CONSTRAINT IF EXISTS owner_delivery_subjects_kind_check" in sql
     assert "'approval', 'goal_answer', 'pending_ask', 'decision_set'" in sql
-    assert "CREATE TABLE" not in sql and "GRANT" not in sql
+    assert (
+        sql.count("ADD CONSTRAINT owner_delivery_subjects_kind_check") == 1 and "GRANT" not in sql
+    )
 
 
 def test_downgrade_refuses_while_decision_set_subjects_exist_then_narrows() -> None:

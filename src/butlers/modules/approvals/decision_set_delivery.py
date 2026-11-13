@@ -16,9 +16,15 @@ under the goal lock:
 
 The resolver commits on its own connections, so the subject CAS in :func:`redeem_set_token` is
 serialised by the subject row lock alone (never the set's version row, which would deadlock
-with the resolver). If the resolver refuses, the CAS rolls back and the token stays redeemable;
-if the redeem transaction fails *after* the resolver committed, a retry is refused ``stale`` by
-the resolver (the set is already decided) and the subject is closed by the next dashboard read.
+with the resolver), and the dashboard's :func:`close_set_subject` cannot share the decision's
+transaction. The subject may therefore lag the decision:
+
+* if the resolver refuses, the redeem's CAS rolls back and the token stays redeemable;
+* if the redeem transaction fails after the resolver committed, the subject stays open until a
+  later close; a retry is refused ``stale`` by the resolver (the set is no longer ``open``);
+* if the dashboard's close fails, the failure is logged and the Telegram card stays until its
+  subject is closed; tapping it is still refused by the resolver's ``state = 'open'`` check, so a
+  lagging subject never decides a set twice.
 """
 
 from __future__ import annotations

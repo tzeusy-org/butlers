@@ -58,15 +58,15 @@ class Resolver:
         )
 
 
-@pytest.fixture
-async def pool(db) -> asyncpg.Pool:
-    pool = await db("core", "approvals", max_size=4)
-    if await pool.fetchval("SELECT count(*) FROM public.entities WHERE 'owner' = ANY(roles)") == 0:
-        await pool.execute(
+async def _owned(db) -> asyncpg.Pool:
+    """A kit-migrated core+approvals database with an owner entity."""
+    owned = await db("core", "approvals", max_size=4)
+    if await owned.fetchval("SELECT count(*) FROM public.entities WHERE 'owner' = ANY(roles)") == 0:
+        await owned.execute(
             "INSERT INTO public.entities (canonical_name, entity_type, roles) "
             "VALUES ('Synthetic owner', 'person', ARRAY['owner'])"
         )
-    return pool
+    return owned
 
 
 def _view(*pairs, expires=NOW + timedelta(days=3650)) -> SetView:
@@ -108,7 +108,8 @@ async def _subject_state(pool, view) -> str:
     )
 
 
-async def test_approve_decides_the_default_selection_recomputed_at_redeem(pool):
+async def test_approve_decides_the_default_selection_recomputed_at_redeem(db):
+    pool = await _owned(db)
     view = _two()
     presentation = await _present(pool, view)
     assert set(presentation.tokens) == {"approve", "reject"}
@@ -122,7 +123,8 @@ async def test_approve_decides_the_default_selection_recomputed_at_redeem(pool):
     assert await _subject_state(pool, view) == "decided"
 
 
-async def test_reject_rejects_every_item_with_explicit_only_in_its_own_map(pool):
+async def test_reject_rejects_every_item_with_explicit_only_in_its_own_map(db):
+    pool = await _owned(db)
     view = _two()
     presentation = await _present(pool, view)
     resolver = Resolver()
@@ -134,7 +136,8 @@ async def test_reject_rejects_every_item_with_explicit_only_in_its_own_map(pool)
     assert set(explicit) == {i.effect_id for i in view.items if i.explicit_only}
 
 
-async def test_a_replayed_token_answers_duplicate_and_decides_nothing_again(pool):
+async def test_a_replayed_token_answers_duplicate_and_decides_nothing_again(db):
+    pool = await _owned(db)
     view = _two()
     presentation = await _present(pool, view)
     resolver = Resolver()
@@ -144,7 +147,8 @@ async def test_a_replayed_token_answers_duplicate_and_decides_nothing_again(pool
     assert again.outcome == "duplicate" and len(resolver.calls) == 1
 
 
-async def test_a_set_that_changed_since_the_card_refuses_action_changed(pool):
+async def test_a_set_that_changed_since_the_card_refuses_action_changed(db):
+    pool = await _owned(db)
     view = _two()
     presentation = await _present(pool, view)
     resolver = Resolver()
@@ -160,7 +164,8 @@ async def test_a_set_that_changed_since_the_card_refuses_action_changed(pool):
     assert resolver.calls == [] and await _subject_state(pool, view) != "decided"
 
 
-async def test_a_token_for_the_other_action_or_a_dashboard_surface_is_refused(pool):
+async def test_a_token_for_the_other_action_or_a_dashboard_surface_is_refused(db):
+    pool = await _owned(db)
     view = _two()
     presentation = await _present(pool, view)
     resolver = Resolver()
@@ -181,7 +186,8 @@ async def test_a_token_for_the_other_action_or_a_dashboard_surface_is_refused(po
     assert resolver.calls == []
 
 
-async def test_a_token_is_refused_for_another_owner(pool):
+async def test_a_token_is_refused_for_another_owner(db):
+    pool = await _owned(db)
     view = _two()
     presentation = await _present(pool, view)
     resolver = Resolver()
@@ -197,7 +203,8 @@ async def test_a_token_is_refused_for_another_owner(pool):
     assert resolver.calls == []
 
 
-async def test_a_resolver_refusal_rolls_the_subject_back_and_keeps_the_token(pool):
+async def test_a_resolver_refusal_rolls_the_subject_back_and_keeps_the_token(db):
+    pool = await _owned(db)
     view = _two()
     presentation = await _present(pool, view)
     token = presentation.tokens["approve"]
@@ -209,7 +216,8 @@ async def test_a_resolver_refusal_rolls_the_subject_back_and_keeps_the_token(poo
     assert ok.outcome == "won"
 
 
-async def test_a_dashboard_decision_closes_the_subject_so_the_card_goes_stale(pool):
+async def test_a_dashboard_decision_closes_the_subject_so_the_card_goes_stale(db):
+    pool = await _owned(db)
     view = _two()
     presentation = await _present(pool, view)
     async with pool.acquire() as conn, conn.transaction():
@@ -220,7 +228,8 @@ async def test_a_dashboard_decision_closes_the_subject_so_the_card_goes_stale(po
     assert refused.outcome in ("refused", "duplicate") and resolver.calls == []
 
 
-async def test_a_set_with_nothing_a_card_may_approve_has_no_subject(pool):
+async def test_a_set_with_nothing_a_card_may_approve_has_no_subject(db):
+    pool = await _owned(db)
     view = _view((_item(0, explicit=True), SEND))
     async with pool.acquire() as conn, conn.transaction():
         with pytest.raises(od.OwnerDeliveryRefused) as refused:
@@ -239,20 +248,17 @@ async def _post(pool, monkeypatch, token, view, resolver, *, callback=True):
     from butlers.api.deps import get_db, get_mcp_manager
     from butlers.api.routers import owner_delivery as route
     from butlers.api.routers.decision_sets import get_decision_set_resolver
+    from butlers.testing.db_manager import db_manager
 
     app = FastAPI()
     app.include_router(route.router)
-
-    class _Db:
-        def pool(self, name):
-            return pool
 
     async def read(db_mgr, set_id, version, tracker):
         return pool, view
 
     monkeypatch.setattr(route, "read_set_view", read)
     monkeypatch.setattr(route, "_callback_authenticated", lambda request: callback)
-    app.dependency_overrides[get_db] = lambda: _Db()
+    app.dependency_overrides[get_db] = lambda: db_manager({"switchboard": pool})
     app.dependency_overrides[get_mcp_manager] = lambda: None
     app.dependency_overrides[get_decision_set_resolver] = lambda: resolver
     transport = httpx.ASGITransport(app=app)
@@ -264,7 +270,8 @@ async def _post(pool, monkeypatch, token, view, resolver, *, callback=True):
         )
 
 
-async def test_the_actions_route_decides_a_set_card_from_telegram(pool, monkeypatch):
+async def test_the_actions_route_decides_a_set_card_from_telegram(db, monkeypatch):
+    pool = await _owned(db)
     view = _two()
     presentation = await _present(pool, view)
     resolver = Resolver()
@@ -275,7 +282,8 @@ async def test_the_actions_route_decides_a_set_card_from_telegram(pool, monkeypa
     assert resolver.calls[0][4] == "approve" and resolver.calls[0][5].via == "telegram"
 
 
-async def test_the_actions_route_refuses_a_set_card_token_from_the_dashboard(pool, monkeypatch):
+async def test_the_actions_route_refuses_a_set_card_token_from_the_dashboard(db, monkeypatch):
+    pool = await _owned(db)
     view = _two()
     presentation = await _present(pool, view)
     resolver = Resolver()
@@ -286,7 +294,8 @@ async def test_the_actions_route_refuses_a_set_card_token_from_the_dashboard(poo
     assert response.json()["detail"]["reason"] == "action_unsupported" and resolver.calls == []
 
 
-async def test_the_actions_route_reports_a_changed_set_as_action_changed(pool, monkeypatch):
+async def test_the_actions_route_reports_a_changed_set_as_action_changed(db, monkeypatch):
+    pool = await _owned(db)
     view = _two()
     presentation = await _present(pool, view)
     resolver = Resolver()
@@ -296,7 +305,8 @@ async def test_the_actions_route_reports_a_changed_set_as_action_changed(pool, m
     assert response.json()["detail"]["reason"] == "action_changed" and resolver.calls == []
 
 
-async def test_the_actions_route_is_unavailable_while_no_resolver_is_wired(pool, monkeypatch):
+async def test_the_actions_route_is_unavailable_while_no_resolver_is_wired(db, monkeypatch):
+    pool = await _owned(db)
     view = _two()
     presentation = await _present(pool, view)
     response = await _post(pool, monkeypatch, presentation.tokens["approve"], view, None)
