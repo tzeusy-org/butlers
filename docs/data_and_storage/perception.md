@@ -131,6 +131,30 @@ ordinary identity or a differently owned private schema.
   expectations. None is enabled by these tables. Place history's 400-day policy
   does not extend raw-coordinate retention; no raw coordinate is accepted here.
 
+## Typed situation reads (dark, `.21`)
+
+`butlers.perception.situation` is the consumer surface for `situation.read` and
+`timeline.query`. It is dark: `perception.flags.SITUATION_READS_LIVE` is off,
+`situation_capabilities()` offers nothing, and no runtime role is granted a
+reader role. At activation, the runtime serving an owner-authenticated read needs
+`perception_owner_reader`; the runtime serving an exposed or third-party goal
+needs `perception_availability_reader`. That grant lands with the switch.
+
+- `situation_read(connection, audience=..., kind, subject, as_of)` first checks
+  that the connection's `current_user` is the audience's reader role, so an owner
+  connection can never serve an exposed caller.
+- The owner read returns one of the four states, with source, observed/fresh
+  instants, age, labels, generation and availability reason. A value is carried
+  exactly when the state is `known`; a value past its freshness reads `unknown`
+  with `stale_last_value`. Any malformed row fails closed.
+- The availability read is a fixed three-field projection: `state` (always
+  `unknown`), `busy_until` and `availability_reason` (`detail_restricted`). It
+  copies nothing else from the database, whatever the row holds.
+- `timeline_query` is owner-only and refuses another audience before any database
+  call. It returns typed entries with derived `retracted` and `late`, without the
+  writer, digest or event key, and defaults to `live=True`, which skips late and
+  retracted assertions.
+
 ## Complete private backup
 
 All ten durable relations and their exact fixed schema travel through
