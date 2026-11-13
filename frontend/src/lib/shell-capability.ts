@@ -196,6 +196,8 @@ const _SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] = [
   // command, or the /chat sidebar.
   { path: "/chat/:conversationId", label: "Conversation", keywords: ["chat", "conversation"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/ChatPage.tsx")), queryWarmup: dynamic("/chat/:conversationId", (id) => ({ queryKey: ["conversations", "by-id", id], queryFn: () => api.getConversationById(id), staleTime: DEFAULT_QUERY_STALE_TIME_MS })) },
   { path: "/ingestion/connectors/:connectorType/:endpointIdentity", label: "Connector detail", keywords: ["ingestion", "connector", "provider"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/ConnectorDetailPage.tsx")) },
+  // No query warmup: a card or link opens it, and it reads parked approval rows on demand.
+  { path: "/decision-sets/:setId", label: "Decision set", keywords: ["decision", "approval", "review"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/DecisionSetPage.tsx")) },
   { path: "/qa/patrols/:patrolId", label: "QA patrol detail", keywords: ["qa", "patrol"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/QaPatrolDetailPage.tsx")) },
   { path: "/qa/investigations/:attemptId", label: "QA investigation detail", keywords: ["qa", "investigation"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/QaInvestigationDetailPage.tsx")) },
 ];

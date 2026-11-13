@@ -1850,7 +1850,7 @@ SCHEMA DecisionSetDecisionRequest 1df717775a1d
 SCHEMA DecisionSetDecisionResult eac3a5931c9a
 SCHEMA DecisionSetFact e6214bf25f8b
 SCHEMA DecisionSetItemOutcome 93c4e52b7e0b
-SCHEMA DecisionSetItemView 2f77e45e040c
+SCHEMA DecisionSetItemView 5bb7609db242
 SCHEMA DecisionSetPick 5fcadcc02aeb
 SCHEMA DecisionSetView 8aa02f62358a
 SCHEMA DelegationLedgerEntry 294a7fc8d140

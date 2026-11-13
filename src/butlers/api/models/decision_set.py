@@ -21,6 +21,9 @@ class DecisionSetItemView(BaseModel):
     capability: str
     #: A rule or schedule change: decided only when ticked on its own, never inside "all".
     explicit_only: bool
+    #: Server verdict: this item is in the default selection Approve covers on a card (an exact
+    #: plain item of a decidable set). The dashboard pre-ticks exactly these and never computes it.
+    in_default_selection: bool = False
     #: Submitted back with a decision, with ``effect_id``, to bind it to what was shown.
     item_digest: str
     recipient_channel: str | None = None

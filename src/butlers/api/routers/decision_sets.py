@@ -30,6 +30,7 @@ from butlers.api.models.decision_set import (
 from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.routers.approvals import _find_named_approvals_pools
 from butlers.capability_broker.owner_decisions import OwnerContext, OwnerDecisionRefused
+from butlers.modules.approvals.decision_set_card import approve_selection
 from butlers.modules.approvals.decision_set_delivery import (
     Resolver,
     SelectionRefused,
@@ -43,13 +44,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/decision-sets", tags=["decision-sets"])
 
 
-def _item(item: ItemView) -> DecisionSetItemView:
+def _item(item: ItemView, *, default: bool) -> DecisionSetItemView:
     lineage = item.lineage
     return DecisionSetItemView(
         position=item.position,
         effect_id=str(item.effect_id),
         capability=item.capability,
         explicit_only=item.explicit_only,
+        in_default_selection=default,
         item_digest=item.item_digest,
         recipient_channel=item.recipient_channel,
         exact=item.exact,
@@ -73,6 +75,7 @@ def _item(item: ItemView) -> DecisionSetItemView:
 
 
 def _view(view: SetView) -> DecisionSetView:
+    chosen = approve_selection(view) or {}
     return DecisionSetView(
         set_id=str(view.set_id),
         version=view.version,
@@ -80,7 +83,7 @@ def _view(view: SetView) -> DecisionSetView:
         state=view.state,
         expires_at=view.expires_at,
         digest=view.digest,
-        items=[_item(item) for item in view.items],
+        items=[_item(item, default=item.effect_id in chosen) for item in view.items],
         decidable=view.decidable,
         reason=view.reason,  # type: ignore[arg-type]  # closed vocabulary
         unticked_outcome=view.unticked_outcome,

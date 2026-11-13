@@ -342,3 +342,47 @@ async def test_a_malformed_or_foreign_selection_decides_nothing(app, monkeypatch
 def test_the_decision_route_is_owner_guarded():
     [post] = [r for r in route.router.routes if getattr(r, "path", "").endswith("/decision")]
     assert require_dashboard_owner_control in [d.call for d in post.dependant.dependencies]
+
+
+async def test_the_server_marks_the_default_selection_and_never_an_explicit_only_item(
+    app, monkeypatch
+):
+    plain, effect = _shown()
+    admin_effect = uuid4()
+    digest = arguments_digest(ARGS)
+    admin = DecisionSetItem(
+        1,
+        admin_effect,
+        "messenger__notify",
+        digest,
+        None,
+        "telegram",
+        True,
+        item_digest(admin_effect, "messenger__notify", digest, None, "telegram", True),
+    )
+    shown = DecisionSet(
+        plain.set_id,
+        1,
+        GOAL,
+        1,
+        1,
+        uuid4(),
+        "d" * 64,
+        NOW + timedelta(hours=1),
+        "open",
+        (plain.items[0], admin),
+    )
+    rows = [_row(effect), _row(admin_effect)]
+    async with _client(app, monkeypatch, shown, [("messenger", _Pool(rows))]) as client:
+        app.dependency_overrides[get_db]().pool.return_value = _LedgerPool()
+        data = (await client.get(f"/api/decision-sets/{shown.set_id}")).json()["data"]
+    assert [i["in_default_selection"] for i in data["items"]] == [True, False]
+
+
+async def test_an_open_only_set_selects_nothing_by_default(app, monkeypatch):
+    shown, effect = _shown()
+    changed = _row(effect, {**ARGS, "message": "Different"})
+    async with _client(app, monkeypatch, shown, [("messenger", _Pool([changed]))]) as client:
+        app.dependency_overrides[get_db]().pool.return_value = _LedgerPool()
+        data = (await client.get(f"/api/decision-sets/{shown.set_id}")).json()["data"]
+    assert [i["in_default_selection"] for i in data["items"]] == [False]
