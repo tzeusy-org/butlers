@@ -64,9 +64,61 @@ def test_merge_is_canonical_and_an_owner_anchor_wins():
     lead_b = lead_requirement(f"inbox:{b}")
     assert merge([lead_b, lead_a], [owner_a]) == merge([owner_a], [lead_a, lead_b])
     assert merge([lead_a], [owner_a]) == (owner_a,)
-    too_many = [lead_requirement(f"effect:{uuid4()}") for _ in range(evidence.MAX_REQUIREMENTS + 1)]
+
+
+def _owner(n: int) -> list[Requirement]:
+    return [Requirement(f"effect:{uuid4()}", "committed", "owner") for _ in range(n)]
+
+
+def test_judge_never_raises_on_size():
+    # N1: owner anchors grow with every approval and reply; relied effects have no bound.
+    owner, relied = _owner(40), [str(uuid4()) for _ in range(30)]
+    verdict = judge("completed", owner, relied, _receipts())
+    assert verdict.final == "partial" and len(verdict.missing) == 70
+
+
+def test_persisted_evidence_is_capped_with_a_truncation_marker():
+    items = [{"ref": f"effect:{uuid4()}"} for _ in range(evidence.MAX_PERSISTED + 5)]
+    kept = evidence.persisted(items)
+    assert len(kept) == evidence.MAX_PERSISTED
+    assert kept[:-1] == items[: evidence.MAX_PERSISTED - 1]
+    assert kept[-1] == {"truncated": 6}
+    assert evidence.persisted(items[:3]) == items[:3]
+    exact = items[: evidence.MAX_PERSISTED]
+    assert evidence.persisted(exact) == exact
+
+
+def test_a_replan_is_never_refused_because_owner_anchors_grew():
+    kept = _owner(10)
+    derived = [*kept, *_owner(evidence.MAX_REQUIREMENTS + 20)]
+    recorded = evidence.plan_requirements((), derived, kept)
+    assert len(recorded) == evidence.MAX_REQUIREMENTS
+    assert set(kept) <= set(recorded)  # every kept owner anchor survives
+    assert all(req.anchor == "owner" for req in recorded)
+
+
+def test_lead_requirements_take_the_room_before_new_owner_anchors():
+    kept = _owner(5)
+    lead = [lead_requirement(f"effect:{uuid4()}") for _ in range(10)]
+    derived = [*kept, *_owner(evidence.MAX_REQUIREMENTS)]
+    recorded = evidence.plan_requirements(lead, derived, kept)
+    assert len(recorded) == evidence.MAX_REQUIREMENTS
+    assert set(kept) | set(lead) <= set(recorded)
+
+
+def test_only_lead_requirements_past_the_cap_are_refused():
+    kept = _owner(evidence.MAX_REQUIREMENTS - 2)
+    fits = [lead_requirement(f"effect:{uuid4()}") for _ in range(2)]
+    assert len(evidence.plan_requirements(fits, kept, kept)) == evidence.MAX_REQUIREMENTS
     with pytest.raises(RequirementError):
-        merge(too_many)
+        evidence.plan_requirements([*fits, lead_requirement(f"child:{uuid4()}")], kept, kept)
+    # A lead requirement an owner anchor already covers takes no room.
+    covered = Requirement(kept[0].ref, "committed", "lead")
+    assert evidence.plan_requirements([*fits, covered], kept, kept) == merge(kept, fits)
+    with pytest.raises(RequirementError):
+        evidence.plan_requirements(
+            [lead_requirement(f"effect:{uuid4()}") for _ in range(65)], (), ()
+        )
 
 
 def test_a_completed_claim_needs_every_proof_and_otherwise_ends_partial():

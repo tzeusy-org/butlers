@@ -1130,7 +1130,9 @@ class RunnerLedger:
         if live:
             kept = await self._kept_owner_anchors(principal.goal_id)
             try:
-                merged = evidence_rules.merge(
+                # Only the lead's own requirements past the bound refuse; growing owner
+                # anchors never do (the ones left out are derived again at settle).
+                merged = evidence_rules.plan_requirements(
                     lead, await self.owner_anchors(principal.goal_id), kept
                 )
             except evidence_rules.RequirementError:
@@ -1469,8 +1471,12 @@ class RunnerLedger:
                     "VALUES ($1, $2, $3::text::jsonb, $4::text::jsonb)",
                     goal_id,
                     final,
-                    json.dumps(evidence_rules.to_json(verdict.satisfied)),
-                    json.dumps([missing.to_json() for missing in verdict.missing]),
+                    # Capped to the column bounds with a truncation marker: the verdict
+                    # itself is judged in full and never fails on size.
+                    json.dumps(evidence_rules.persisted(evidence_rules.to_json(verdict.satisfied))),
+                    json.dumps(
+                        evidence_rules.persisted([missing.to_json() for missing in verdict.missing])
+                    ),
                 )
         await self.connection.execute(
             "UPDATE switchboard.goals SET status = $2, updated_at = now() WHERE id = $1",

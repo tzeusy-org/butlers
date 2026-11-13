@@ -33,7 +33,8 @@ from uuid import UUID
 
 EVIDENCE_COMPLETION_LIVE = False
 
-MAX_REQUIREMENTS = 64  # the sw_075 column bound
+MAX_REQUIREMENTS = 64  # the sw_075 goal_plans.requirements bound
+MAX_PERSISTED = 128  # the sw_075 goal_outcome_evidence satisfied/missing bound
 ANCHORS = ("owner", "lead")
 # Which evidence each reference kind can carry; the first is what a lead requirement asks for.
 EVIDENCE: Mapping[str, tuple[str, ...]] = {
@@ -101,17 +102,51 @@ def lead_requirement(ref: str) -> Requirement:
 
 
 def merge(*groups: Iterable[Requirement]) -> tuple[Requirement, ...]:
-    """One canonical, sorted list. The same proof required by owner and lead is owner-anchored."""
+    """One canonical, sorted list. The same proof required by owner and lead is owner-anchored.
+
+    Unbounded: owner anchors grow with every approval and reply, and a lead's relied effects
+    have no bound, so ``judge`` must never fail on size. Only what is stored is capped
+    (``plan_requirements``, ``persisted``).
+    """
     owned: dict[tuple[str, str], str] = {}
     for group in groups:
         for req in group:
             key = (req.ref, req.evidence)
             if owned.get(key) != "owner":
                 owned[key] = req.anchor
-    merged = tuple(sorted(Requirement(ref, ev, anchor) for (ref, ev), anchor in owned.items()))
-    if len(merged) > MAX_REQUIREMENTS:
+    return tuple(sorted(Requirement(ref, ev, anchor) for (ref, ev), anchor in owned.items()))
+
+
+def plan_requirements(
+    lead: Iterable[Requirement],
+    derived: Iterable[Requirement],
+    kept: Iterable[Requirement],
+) -> tuple[Requirement, ...]:
+    """What a plan version records, within the column bound (``MAX_REQUIREMENTS``).
+
+    Room goes first to the owner anchors the predecessor recorded (a version keeps every one),
+    then to the lead's own requirements, then to owner anchors derived since. Derived anchors
+    that do not fit are left out of the version only: ``judge`` derives them again at settle, so
+    nothing is lost. Only lead requirements past the bound are refused; growing owner anchors
+    never refuse a re-plan.
+    """
+    kept_owner = merge(kept)
+    owner_keys = {(req.ref, req.evidence) for req in merge(kept_owner, derived)}
+    lead_extra = [req for req in merge(lead) if (req.ref, req.evidence) not in owner_keys]
+    if len(kept_owner) + len(lead_extra) > MAX_REQUIREMENTS:
         raise RequirementError("too many requirements")
-    return merged
+    room = MAX_REQUIREMENTS - len(kept_owner) - len(lead_extra)
+    kept_keys = {(req.ref, req.evidence) for req in kept_owner}
+    new_owner = [req for req in merge(derived) if (req.ref, req.evidence) not in kept_keys]
+    return merge(kept_owner, lead_extra, new_owner[:room])
+
+
+def persisted(items: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """An evidence list within its column bound; past it, the last slot counts what was left out."""
+    if len(items) <= MAX_PERSISTED:
+        return list(items)
+    head = list(items[: MAX_PERSISTED - 1])
+    return [*head, {"truncated": len(items) - len(head)}]
 
 
 def to_json(requirements: Sequence[Requirement]) -> list[dict[str, str]]:

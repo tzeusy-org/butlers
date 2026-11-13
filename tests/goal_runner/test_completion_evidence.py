@@ -11,13 +11,16 @@ leaves them out, and can never be claimed by the lead.
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
 
 from butlers.capability_broker.contracts import BrokerRefused, Reason
 from butlers.capability_broker.owner_decisions import OwnerContext, OwnerDecisions
+from butlers.goal_runner import evidence
+from butlers.goal_runner.evidence import Requirement
+from butlers.goal_runner.ledger import RunnerLedger
 from tests.goal_runner.test_goal_runner import (
     NOTIFY,
     SEARCH,
@@ -186,3 +189,45 @@ async def test_live_a_lead_cannot_claim_an_owner_anchor_or_name_a_foreign_row(br
             assert not await h.w.owner.fetchval(
                 "SELECT count(*) FROM switchboard.goal_plans WHERE goal_id = $1", goal
             )
+
+
+def _owner_anchors(count: int) -> tuple[Requirement, ...]:
+    return tuple(Requirement(f"effect:{uuid4()}", "committed", "owner") for _ in range(count))
+
+
+async def test_live_owner_anchors_past_the_bound_never_refuse_a_replan(broker_db_url):
+    """N1: owner anchors grow with every approval and reply; a re-plan still records."""
+    grown = _owner_anchors(evidence.MAX_REQUIREMENTS + 10)
+    with patch(LIVE, True):
+        async with harness(broker_db_url) as h:
+            goal, lead = await _running(h)
+            with patch.object(RunnerLedger, "owner_anchors", AsyncMock(return_value=grown[:5])):
+                first = await h.runner.plan(goal, lead.token, [], [], [])
+            kept = await _requirements(h, goal, first)
+            with patch.object(RunnerLedger, "owner_anchors", AsyncMock(return_value=grown)):
+                own = await _parked(h, goal, lead.token, "x")
+                second = await h.runner.plan(
+                    goal, lead.token, [f"effect:{own}"], [], [], [f"effect:{own}"]
+                )
+            recorded = await _requirements(h, goal, second)
+            assert len(recorded) == evidence.MAX_REQUIREMENTS
+            assert all(item in recorded for item in kept)
+            assert {"ref": f"effect:{own}", "evidence": "committed", "anchor": "lead"} in recorded
+
+
+async def test_live_a_settle_past_the_evidence_bound_records_a_truncation_marker(broker_db_url):
+    """N1: the verdict is judged in full; only the persisted lists are capped."""
+    reply = Requirement(REPLY["ref"], REPLY["evidence"], REPLY["anchor"])
+    grown = (reply, *_owner_anchors(evidence.MAX_PERSISTED + 12))
+    with patch(LIVE, True):
+        async with harness(broker_db_url) as h:
+            goal, lead = await _running(h)
+            with patch.object(RunnerLedger, "owner_anchors", AsyncMock(return_value=grown)):
+                assert await _complete(h, goal, lead.token) == "partial"
+            recorded = await _evidence(h, goal)
+            assert recorded is not None
+            final, satisfied, missing = recorded
+            assert (final, satisfied) == ("partial", [REPLY])
+            assert len(missing) == evidence.MAX_PERSISTED
+            unproved = len(grown) - 1  # every synthetic anchor; the reply is proved
+            assert missing[-1] == {"truncated": unproved - (evidence.MAX_PERSISTED - 1)}

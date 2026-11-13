@@ -912,13 +912,23 @@ Behind `goal_runner/evidence.py` `EVIDENCE_COMPLETION_LIVE` (False), a goal whos
   every one its predecessor kept. `WaitLedger.append_plan` refuses a version that drops or changes
   one (`PlanRequirementDropped`), and the sw_075 trigger refuses it again. A lead requirement may
   be dropped.
+- Size never refuses what the owner caused (`evidence.plan_requirements`). Within the 64 a version
+  records, room goes first to the owner anchors its predecessor kept, then to the lead's own
+  requirements, then to owner anchors derived since. Derived anchors that do not fit are left out
+  of the version only, because the settle derives them again. Only lead requirements past the
+  bound refuse `goal.plan` (POLICY).
 - The settle resolution (`RunnerLedger.resolve`, then `_judge`, then `evidence.judge`, a pure
   predicate) evaluates the latest plan's requirements, the owner anchors derived now, and the
   lead's relied effects (each must commit). The reply checks and `delivery_failure` run first and
   are unchanged. A `completed` claim with any proof missing ends `partial`, and a `partial` or
   `failed` claim is never upgraded. The verdict is written once to `goal_outcome_evidence`
   (`satisfied`, and `missing` with the status each requirement found). That table is append-only:
-  REVOKE before GRANT, read and insert only, and a statement-level UPDATE guard.
+  REVOKE before GRANT, read and insert only, and a statement-level UPDATE guard. `judge` itself
+  is unbounded and never fails on size. Each stored list is capped at its column bound of 128
+  (`evidence.persisted`), and past it the last slot is `{"truncated": n}`.
+- Turning the flag back off after it has been on breaks `goal.plan` for goals that have
+  owner-anchored versions: dark, a new version records `[]`, which the sw_075 trigger refuses as a
+  dropped owner anchor.
 - Dark, no requirement is recorded (`goal.plan` refuses one POLICY, and its tool schema does not
   offer it), `resolve` is unchanged, and nothing is written to `goal_outcome_evidence`.
 - Flipping the flag changes completion for every goal that settles afterwards, including goals
