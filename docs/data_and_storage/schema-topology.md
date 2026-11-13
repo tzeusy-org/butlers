@@ -270,7 +270,12 @@ holds). Under RLS the runtime may only read terms and the generation and append
 holds. Durability and tighten-only triggers guard every role; `sw_060` admits a
 loosening (receipt action `loosen`) only under a `policy_loosen` dashboard
 step-up consumed in the same transaction; see the
-[capability broker](../architecture/capability-broker.md#owner-law-s1-bu-dhloi110). See
+[capability broker](../architecture/capability-broker.md#owner-law-s1-bu-dhloi110).
+`sw_076` adds the dark `switchboard.owner_mode_overlay`: one versioned row per
+owner-edited mode (duration, held classes, break-through senders). A loosening
+needs a `mode_loosen` step-up consumed in the same transaction; rows are never
+deleted, and the runtime role holds no privilege until activation (see
+[perception](perception.md#owner-modes-dark-21)). See
 [goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
 source keys, lock order, policy snapshots and actual verification obligations.
 

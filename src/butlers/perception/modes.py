@@ -21,8 +21,9 @@ before ``now`` refuses, and one that ends an active mode sooner is a loosening.
 Obligation kinds are a closed set; an unknown kind refuses rather than being held.
 A loosening's binding must equal the one re-derived from current state.
 Dark: ``flags.MODE_CONTROLS_LIVE`` is off and no route or tool calls this. The
-step-up kind ``mode_loosen`` is not yet in the trusted step-up catalog, so even a
-live call is refused by the store until that catalog change lands.
+trusted step-up catalog admits ``mode_loosen``; an edit's binding targets the
+exact resulting overlay state (``state_text``), which sw_076 re-derives, and
+``mode_overlay`` writes it in the same transaction as the step-up spend.
 """
 
 from __future__ import annotations
