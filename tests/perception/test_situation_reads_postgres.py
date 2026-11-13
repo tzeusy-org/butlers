@@ -19,7 +19,13 @@ from butlers.perception.situation import Audience, situation_read, timeline_quer
 from tests.perception.factories import AT, OWNER, request
 from tests.perception.test_perception_postgres import prepared_database
 
-pytestmark = [pytest.mark.integration, pytest.mark.db, pytest.mark.asyncio]
+# Async fixtures run on the session loop (asyncio_default_fixture_loop_scope), so the
+# tests must too, or the ``conn`` fixture's connection is driven from another loop.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.db,
+    pytest.mark.asyncio(loop_scope="session"),
+]
 
 
 @pytest.fixture(scope="module")
