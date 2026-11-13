@@ -15,6 +15,7 @@ import pytest
 
 from butlers.db import register_jsonb_codec
 from butlers.perception import EventRequest, PerceptionStore
+from butlers.perception.model import CATEGORIES
 from butlers.perception.situation import Audience, situation_read, timeline_query
 from tests.perception.factories import AT, OWNER, request
 from tests.perception.test_perception_postgres import prepared_database
@@ -67,7 +68,12 @@ async def test_the_owner_reads_the_place_and_the_exposed_caller_only_availabilit
         conn, audience=Audience.OWNER, kind="owner.place", subject=OWNER, as_of=AT
     )
     assert owner.state == "known" and owner.value["presence"] == "inside"
-    assert owner.source == "home.dots" and owner.labels["label_sens"] == ["location"]
+    assert owner.source == "home.dots"
+    # Until .6 label activation the writer joins world provenance and all six
+    # categories whatever the request says (RFC 0038 labels: unknown sensitivity is
+    # all six; perception_write in scripts/init-db.sql). The owner read carries that.
+    assert owner.labels["label_sens"] == sorted(CATEGORIES)
+    assert "world" in owner.labels["label_instr"] and "world" in owner.labels["label_data"]
 
     await _as(conn, "perception_availability_reader")
     exposed = await situation_read(
@@ -76,7 +82,9 @@ async def test_the_owner_reads_the_place_and_the_exposed_caller_only_availabilit
     shown = asdict(exposed)
     assert set(shown) == {"state", "busy_until", "availability_reason"}
     assert shown["state"] == "unknown" and shown["busy_until"] is None
-    assert "inside" not in json.dumps(shown, default=str)
+    rendered = json.dumps(shown, default=str)
+    assert "inside" not in rendered and "home.dots" not in rendered
+    assert not any(category in rendered for category in CATEGORIES)  # no owner label content
 
 
 async def test_past_freshness_the_owner_reads_unknown_with_the_stale_value(conn):
