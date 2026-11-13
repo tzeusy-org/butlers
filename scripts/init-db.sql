@@ -7103,7 +7103,7 @@ BEGIN
   OR (kind IN ('approve_with_rule','promotion') AND result->>'id' IS DISTINCT FROM target)
   OR (kind='contain' AND result->>'id' IS DISTINCT FROM result->>'rule_id')
   OR (kind='policy_loosen' AND result->>'rule_id' IS DISTINCT FROM split_part(target,':',1))
-  -- mode_loosen (bu-dhloi1.21): the overlay row the step-up bound, mode:new-version.
+  -- mode_loosen (bu-dhloi1.21): the overlay (sw_076) or entry (sw_077) row the step-up bound, mode:new-version.
   OR (kind='mode_loosen' AND (result->>'rule_id' !~ '^[a-z_]{1,32}:[1-9][0-9]{0,18}$'
       OR result->>'rule_id' IS DISTINCT FROM split_part(target,':',1)||':'||split_part(target,':',2)))
   THEN RETURN '{"state":"refused"}'; END IF;
