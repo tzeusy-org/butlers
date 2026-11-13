@@ -322,6 +322,17 @@ over-budget call, or an `administer` or protected or
 consequential tool. Register a preview with `register_preview(tool, renderer,
 effect_class=...)`; an unregistered tool is Open only by design.
 
+A communicating tool can instead declare `content_params` on its catalog descriptor
+(`core/tool_presentation_inventory.py`; optional, additive). The preview is then rebuilt from
+the descriptor's `recipient_params` plus `content_params` and nothing else: every non-empty
+stored argument must be one of them, every recipient and content value must be present and
+well-formed, and the tool must be `communicate`. A tool that declares it never falls back to the
+registry, so a failure there is Open only. Tools that do not declare it keep the registry. Only
+`telegram_edit_message_text` and `whatsapp_reply_to_message` declare it today. The published
+catalog carries `content_params` only for tools that declare it, so every other tool keeps its
+descriptor and catalog digest; the two declaring tools' digests (and so the fleet generation
+digest) change once, and goals admitted under the older digest are refused until republished.
+
 Each presented card records `args_digest` (SHA-256 of the canonical JSON of the
 stored call) on its `approval_delivery_presentations` row, written under the
 action's row lock when the handoff starts; the handoff does not start if the

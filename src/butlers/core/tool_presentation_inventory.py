@@ -58,6 +58,7 @@ def _declare(
     # Undeclared: no identifier is alias-free, so nothing narrows an owner term.
     alias_free = cast(tuple[str, ...], authorization.pop("alias_free_params", ()))
     depends_on = cast(tuple[str, ...], authorization.pop("depends_on", ()))
+    content_params = cast("tuple[str, ...] | None", authorization.pop("content_params", None))
     resolvers = MappingProxyType(
         dict(cast(Mapping[str, str], authorization.pop("alias_resolvers", {})))
     )
@@ -73,6 +74,7 @@ def _declare(
             alias_free_params=alias_free,
             categories=tuple(sorted(categories)),
             depends_on=depends_on,
+            content_params=content_params,
             alias_resolvers=resolvers,
             **authorization,
         )
@@ -5019,6 +5021,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        content_params=("text",),
         categories=ALL_CATEGORIES,
     ),
     *_declare(
@@ -5099,6 +5102,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        content_params=("text",),
         categories=ALL_CATEGORIES,
     ),
     *_declare(

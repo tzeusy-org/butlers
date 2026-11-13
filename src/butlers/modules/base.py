@@ -153,6 +153,7 @@ class ToolMeta:
     idempotency: Idempotency | None = None
     owner_authority: bool | None = None
     recipient_params: RecipientParameters | None = None
+    content_params: tuple[str, ...] | None = None
     read_stores: tuple[str, ...] = ()
     write_stores: tuple[str, ...] = ()
     unknown_output_source: bool = True

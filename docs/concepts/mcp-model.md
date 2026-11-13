@@ -190,6 +190,7 @@ conflicts with the inventory is refused rather than silently replaced.
 | `idempotency` | `none` or `key_required`; Calendar responses require their native request/command identity. |
 | `owner_authority` | Whether a write steers future sessions, such as an owner profile, preference or recovery policy. |
 | `recipient_params` | Frozen named selectors, unresolved inherited parties and the actual conditional owner default. |
+| `content_params` | Optional. The arguments that carry delivered content; with `recipient_params` they rebuild the exact call an approval card shows. Published only when declared. |
 
 Recipient selectors and resources can overlap. Calendar attendees identify
 parties; `calendar_id` selects a calendar. Email `to` and `thread_id` select

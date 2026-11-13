@@ -77,7 +77,12 @@ def publication(catalog: ToolCatalog, domain: str) -> dict:
     except ValueError:
         raise EvidenceRefused("catalog_unavailable") from None
     items = [
-        {field.name: plain(getattr(item, field.name)) for field in fields(ToolDescriptor)}
+        {
+            field.name: plain(getattr(item, field.name))
+            for field in fields(ToolDescriptor)
+            # Published only when declared, so undeclared tools keep their digest.
+            if field.name != "content_params" or item.content_params is not None
+        }
         for item in sorted(catalog.descriptors, key=lambda item: item.canonical_name)
     ]
     if any(item["llm_presentable"] and item["owner_domain"] != domain for item in items):
@@ -105,9 +110,9 @@ def decode_publication(value: object, domain: str) -> ToolCatalog:
         ):
             raise ValueError
         decoded = []
-        expected = {field.name for field in fields(ToolDescriptor)}
+        expected = {field.name for field in fields(ToolDescriptor)} - {"content_params"}
         for item in value["descriptors"]:
-            if type(item) is not dict or set(item) != expected:
+            if type(item) is not dict or set(item) not in (expected, expected | {"content_params"}):
                 raise ValueError
             if (
                 type(item["description"]) is not str
@@ -120,6 +125,7 @@ def decode_publication(value: object, domain: str) -> ToolCatalog:
                 raise ValueError
             kwargs = dict(item)
             for key in (
+                "content_params",
                 "resource_params",
                 "safety_args",
                 "read_stores",
@@ -128,7 +134,7 @@ def decode_publication(value: object, domain: str) -> ToolCatalog:
                 "categories",
                 "depends_on",
             ):
-                if kwargs[key] is not None:
+                if kwargs.get(key) is not None:
                     if type(kwargs[key]) is not list:
                         raise ValueError
                     kwargs[key] = tuple(kwargs[key])
@@ -156,7 +162,14 @@ def decode_publication(value: object, domain: str) -> ToolCatalog:
 def authorization_digest(catalog: ToolCatalog) -> str:
     return digest(
         [
-            {key: plain(getattr(item, key)) for key in AUTHORIZATION_FIELDS}
+            {
+                **{key: plain(getattr(item, key)) for key in AUTHORIZATION_FIELDS},
+                **(
+                    {"content_params": plain(item.content_params)}
+                    if item.content_params is not None
+                    else {}
+                ),
+            }
             for item in catalog.descriptors
         ]
     )
