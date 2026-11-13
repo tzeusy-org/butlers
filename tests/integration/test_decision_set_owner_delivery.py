@@ -312,3 +312,137 @@ async def test_the_actions_route_is_unavailable_while_no_resolver_is_wired(db, m
     response = await _post(pool, monkeypatch, presentation.tokens["approve"], view, None)
     assert response.status_code == 503
     assert await _subject_state(pool, view) != "decided"
+
+
+# -- sending the card -----------------------------------------------------------------------------
+
+
+class Transport:
+    def __init__(self, outcome="sent", *, boom=False) -> None:
+        self.envelopes: list[dict] = []
+        self.outcome, self.boom = outcome, boom
+
+    async def __call__(self, envelope):
+        from butlers.modules.approvals.decision_set_delivery import SendResult
+
+        self.envelopes.append(envelope)
+        if self.boom:
+            raise RuntimeError("provider timed out")
+        return SendResult(self.outcome, "55")
+
+
+async def _enable(pool, enabled: bool = True) -> None:
+    await pool.execute("UPDATE public.owner_delivery_rollout SET enabled = $1", enabled)
+
+
+async def _send(pool, view, transport, *, live=True):
+    from butlers.modules.approvals.decision_set_delivery import send_set_card
+
+    return await send_set_card(
+        pool,
+        view,
+        origin_butler="switchboard",
+        owner_recipient="9001",
+        transport=transport,
+        live=live,
+    )
+
+
+async def _rows(pool) -> int:
+    return await pool.fetchval("SELECT count(*) FROM public.owner_delivery_subjects")
+
+
+async def test_the_send_mints_and_sends_nothing_while_the_decision_path_is_off(db):
+    pool = await _owned(db)
+    await _enable(pool)
+    transport = Transport()
+    sent = await _send(pool, _two(), transport, live=False)
+    assert sent.status == "off" and transport.envelopes == [] and await _rows(pool) == 0
+
+
+async def test_the_send_mints_and_sends_nothing_while_the_rollout_is_off(db):
+    pool = await _owned(db)
+    await _enable(pool, False)
+    transport = Transport()
+    sent = await _send(pool, _two(), transport)
+    assert sent.status == "off" and transport.envelopes == [] and await _rows(pool) == 0
+
+
+async def test_the_module_default_is_the_dark_flag(db, monkeypatch):
+    from butlers.capability_broker import owner_decisions
+
+    pool = await _owned(db)
+    await _enable(pool)
+    monkeypatch.setattr(owner_decisions, "OWNER_DECISIONS_LIVE", False)
+    transport = Transport()
+    assert (await _send(pool, _two(), transport, live=None)).status == "off"
+    assert transport.envelopes == []
+
+
+async def test_a_decidable_set_is_sent_with_tokens_that_redeem_against_the_same_view(db):
+    pool = await _owned(db)
+    await _enable(pool)
+    view, transport = _two(), Transport()
+    sent = await _send(pool, view, transport)
+    assert (sent.status, sent.decision_offered) == ("sent", True)
+    [envelope] = transport.envelopes
+    buttons = {a["verb"]: a["callback_token"] for a in envelope["actions"] if "callback_token" in a}
+    assert set(buttons) == {"approve", "reject"}
+    resolver = Resolver()
+    redeemed = await _redeem(pool, buttons["approve"], view, resolver, action="approve")
+    assert redeemed.outcome == "won"
+    covered = [i.effect_id for i in view.items if not i.explicit_only]
+    assert list(resolver.calls[0][2]) == covered
+    assert "Approve covers: 1, 3" in envelope["delivery"]["message"]
+
+
+async def test_a_changed_view_refuses_the_tokens_the_card_was_sent_with(db):
+    pool = await _owned(db)
+    await _enable(pool)
+    view, transport = _two(), Transport()
+    await _send(pool, view, transport)
+    token = next(
+        a["callback_token"] for a in transport.envelopes[0]["actions"] if a["verb"] == "reject"
+    )
+    refused = await _redeem(
+        pool, token, replace(view, digest="f" * 64), Resolver(), action="reject"
+    )
+    assert (refused.outcome, refused.reason) == ("refused", "action_changed")
+
+
+async def test_an_open_only_set_is_sent_with_open_alone_and_mints_nothing(db):
+    pool = await _owned(db)
+    await _enable(pool)
+    view = build_set_view(_set(_item(0)), {}, now=NOW)
+    transport = Transport()
+    sent = await _send(pool, view, transport)
+    assert (sent.status, sent.decision_offered) == ("sent", False)
+    assert [a["verb"] for a in transport.envelopes[0]["actions"]] == ["open_dashboard"]
+    assert await _rows(pool) == 0
+
+
+async def test_an_ambiguous_send_is_never_resent_with_fresh_tokens(db):
+    pool = await _owned(db)
+    await _enable(pool)
+    view = _two()
+    first = Transport(boom=True)
+    assert (await _send(pool, view, first)).status == "unknown"
+    second = Transport()
+    again = await _send(pool, view, second)
+    assert again.status == "handed_off" and second.envelopes == []
+    assert await pool.fetchval("SELECT count(*) FROM public.owner_delivery_tokens") == 2
+
+
+async def test_a_provider_failure_lets_a_retry_present_again_with_fresh_tokens(db):
+    pool = await _owned(db)
+    await _enable(pool)
+    view = _two()
+    failed = Transport("failed")
+    assert (await _send(pool, view, failed)).status == "failed"
+    retry = Transport()
+    assert (await _send(pool, view, retry)).status == "sent"
+    old = {a["callback_token"] for a in failed.envelopes[0]["actions"] if "callback_token" in a}
+    new = {a["callback_token"] for a in retry.envelopes[0]["actions"] if "callback_token" in a}
+    assert old and new and old.isdisjoint(new)
+    refused = await _redeem(pool, sorted(old)[0], view, Resolver(), action="approve")
+    assert refused.outcome == "refused"

@@ -82,7 +82,12 @@ def test_approval_self_routes_are_registered():
     from butlers.tools.switchboard.notification.self_links import SELF_ROUTES
 
     for template in SELF_ROUTES.values():
-        assert_registered(template.format(action_id="11111111-1111-4111-8111-111111111111"))
+        assert_registered(
+            template.format(
+                action_id="11111111-1111-4111-8111-111111111111",
+                set_id="44444444-4444-4444-8444-444444444444",
+            )
+        )
 
 
 _READS_DASHBOARD_URL = re.compile(r"[\"']DASHBOARD_URL[\"']")

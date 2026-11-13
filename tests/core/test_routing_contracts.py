@@ -704,6 +704,38 @@ def test_ingest_control_accepts_only_known_automated_kinds():
             "/approvals/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
         ),
         ("https://dashboard.example.test/", "approvals_queue", {}, "/approvals"),
+        (
+            "https://dashboard.example.test",
+            "decision_set",
+            {"set_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+            "/decision-sets/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        ),
+        ("https://dashboard.example.test", "decision_set", {}, None),
+        ("https://dashboard.example.test", "decision_set", {"set_id": "not-a-uuid"}, None),
+        (
+            "https://dashboard.example.test",
+            "decision_set",
+            {"set_id": "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"},
+            None,
+        ),
+        (
+            "https://dashboard.example.test",
+            "decision_set",
+            {"action_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+            None,
+        ),
+        (
+            "https://dashboard.example.test",
+            "decision_set",
+            {"set_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "version": 1},
+            None,
+        ),
+        (
+            "https://dashboard.example.test",
+            "approval_detail",
+            {"set_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+            None,
+        ),
         ("https://dashboard.example.test:443", "approvals_queue", {}, "/approvals"),
         ("https://dashboard.example.test", "missing", {}, None),
         ("https://dashboard.example.test", "approval_detail", {"action_id": "not-a-uuid"}, None),
@@ -826,4 +858,8 @@ def test_self_route_registry_matches_actual_phone_entry_paths():
             assert "APPROVAL_ID" in constants
             uuid.UUID(constants["APPROVAL_ID"])
             route = route.replace("{action_id}", "${APPROVAL_ID}")
+        if "{set_id}" in route:
+            assert "DECISION_SET_ID" in constants
+            uuid.UUID(constants["DECISION_SET_ID"])
+            route = route.replace("{set_id}", "${DECISION_SET_ID}")
         assert route in actual, route

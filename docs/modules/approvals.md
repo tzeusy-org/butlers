@@ -453,4 +453,15 @@ behind `OWNER_DECISIONS_LIVE`: the resolver refuses `unavailable`, and the app s
   rechecks everything again. Refusals are `{"error": "decision_set_refused", "reason": ...}` with
   `resource` 404, `unavailable` 503 and everything else 409.
 
-Not yet wired (follow-up): sending the card through the delivery worker, and the dashboard card.
+- **Sending the card** (`send_set_card`). Nothing is minted or sent unless `OWNER_DECISIONS_LIVE`
+  and the owner-delivery rollout are both on. A card that offers a decision opens the subject and
+  presentation, marks the presentation handed off *before* the transport call (so a crash leaves
+  an honest `unknown` and a retry mints no fresh tokens), then settles the result; a provider
+  failure lets a retry present again with fresh tokens. The listed default selection and the
+  tokens' action digest come from the one view the caller read. An open-only card is sent with
+  Open alone and mints nothing. Open links to `/decision-sets/<set id>` (self-link route key
+  `decision_set`), which carries the set id and nothing else. The caller that proposes a set and
+  triggers the send is not wired yet.
+- **Dashboard page** (`/decision-sets/:setId`) renders the server view; `in_default_selection`,
+  `decidable` and `exact` come from the server and the page never computes them. It posts only
+  the ticks.

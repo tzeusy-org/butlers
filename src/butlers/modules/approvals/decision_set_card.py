@@ -13,8 +13,10 @@ and completely in one message offers Open only; nothing is truncated.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC
+from typing import Any
 from uuid import UUID
 
 from butlers.core.owner_delivery import digest_of
@@ -162,8 +164,50 @@ def _open_only(header: str, reason: str) -> SetCard:
     )
 
 
+def build_set_envelope(
+    view: SetView,
+    *,
+    origin_butler: str,
+    owner_recipient: str,
+    tokens: Mapping[str, str] | None,
+) -> dict[str, Any]:
+    """The owner-only ``approval_request`` envelope of one rendered set card.
+
+    Approve and Reject are attached only when this very view's card offers a decision *and* both
+    single-use tokens are held; the card text and the buttons come from the one ``view``, whose
+    digest the tokens were minted against. Open links to the set page by id alone: no selection,
+    call or digest travels in the link.
+    """
+    card = render_set_card(view)
+    actions: list[dict[str, Any]] = []
+    if card.offer_decision and tokens and tokens.get("approve") and tokens.get("reject"):
+        actions.extend({"verb": v, "callback_token": tokens[v]} for v in ("approve", "reject"))
+    actions.append(
+        {
+            "verb": "open_dashboard",
+            "reference": {
+                "kind": "self",
+                "route_key": "decision_set",
+                "params": {"set_id": str(view.set_id)},
+            },
+        }
+    )
+    return {
+        "schema_version": "notify.v1",
+        "origin_butler": origin_butler,
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "message": card.message,
+            "recipient": owner_recipient,
+        },
+        "actions": actions,
+    }
+
+
 __all__ = [
     "SetCard",
+    "build_set_envelope",
     "action_digest",
     "approve_selection",
     "reject_selection",
