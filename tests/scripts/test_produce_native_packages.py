@@ -233,6 +233,24 @@ def test_seed_or_artifact_drift_refuses_before_original_hook(assembly, change):
     assert not producer.OUTPUT.exists()
 
 
+def test_rebuilt_codex_binary_drift_from_reviewed_pin_is_recorded_not_refused(assembly):
+    # A non-reproducible local compile: new bytes, consistent with the producer's own
+    # provenance, but not the reviewed pin. It publishes and records both digests.
+    (assembly.code / "codex").write_bytes(b"locally rebuilt codex bytes")
+    rebuilt = producer.digest(assembly.code / "codex")
+    path = assembly.code / "provenance.json"
+    data = json.loads(path.read_text())
+    data["binary_sha256"] = rebuilt
+    path.write_text(json.dumps(data))
+    producer.build()
+    metadata = json.loads((producer.OUTPUT / "provenance.json").read_text())
+    assert metadata["codex_binary_sha256"] == rebuilt
+    reviewed = json.loads(assembly.manifest.read_text())["codex"]
+    assert metadata["reviewed_codex_binary_sha256"] == reviewed["binary_sha256"] != rebuilt
+    assert metadata["components"]["codex"] != metadata["reviewed_components"]["codex"]
+    assert metadata["components"]["claude"] == metadata["reviewed_components"]["claude"]
+
+
 def test_original_hook_failure_or_recipe_mutation_cannot_publish(assembly, monkeypatch):
     def failure(argv, **kwargs):
         raise subprocess.CalledProcessError(23, argv)

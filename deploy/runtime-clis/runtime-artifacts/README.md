@@ -53,9 +53,19 @@ complete producer output, including its original dependency graph and lifecycle
 results. Those external receipts, native conformance and image evidence remain
 separate from this reproducible manifest. The helper treats provenance as bound
 metadata, not executable instructions or a signature. Top-level shape, duplicate keys, nonfinite
-JSON, target/version population and component digests fail closed. The generated
-`provenance.json` has exactly `schema: butlers.runtime-artifacts/v1`, the SHA256 of
-the **exact reviewed input bytes**, and the same six component digests.
+JSON, target/version population and component digest shape fail closed. The generated
+`provenance.json` has exactly `schema: butlers.runtime-artifacts/v2`, the SHA256 of
+the **exact reviewed input bytes**, the six **observed** component tree digests
+(`components`), the reviewed pins (`reviewed_components`), and which components
+matched them (`matches_reviewed`).
+
+Locally built components (Codex compiled from source, npm/bun-assembled trees) are
+not bit-reproducible across hosts or runs, so `close` records drift from the
+reviewed pins (and prints it to stderr) instead of refusing; the dev redeploy
+builds these on the deploy host. `install` still binds to the observed digests in
+`provenance.json`: a closed tree changed after close, or a forged digest, refuses.
+`produce_native_packages.py` applies the same rule to the Codex binary and the
+claude/codex trees, while the Codex source tree and patch series stay enforced.
 
 ## Close
 

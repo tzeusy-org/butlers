@@ -224,7 +224,7 @@
         "sha256": "8f4afcfa0d4e8fb4cac9783030c8ca78a8c088e7562df10ceea988e89f032016"
       },
       "scripts/runtime_clis/produce_native_packages.py": {
-        "sha256": "0d2918dd5f445b3a3735a827d8ca42171aa034e2a1d40666170599a1b5ce83c1"
+        "sha256": "6f1a5f878c2f4d6a0c8ea4d7f01c81c47b4c46ff0d0f5d3c48357eeb925857c9"
       },
       "scripts/runtime_clis/produce_npm_artifact.py": {
         "sha256": "46cb73df1429c9cda156dc8bc85da9fdb051e8da14ca7ada585b4bcb25d5b0b3"
@@ -236,7 +236,7 @@
         "sha256": "aae14ccd2fbcfc3f3759f246af2f86c5cc3260ad155478270113bf693a8c218a"
       },
       "scripts/runtime_clis/runtime_artifacts.py": {
-        "sha256": "2c30297a31ccbbc071ea6d4c9b51e2b6cd6450ed716bf8ef05d90f42b0f54374"
+        "sha256": "f36b6cd78fcd5b108de7e80cb4d1ba799e00021714e58acc8db20f8abd69b294"
       }
     },
     "vendor_sources": {
