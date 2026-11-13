@@ -444,12 +444,18 @@ A `REPLAN` call is first sent to the domain as a conditional dispatch:
     whose summary then says nothing happened, and drops the offer. If the owner
     already decided the card, the offer stays so the undo still declines. Any
     other failure keeps the card: the move may have landed.
-  - On commit the offer records the moved event's etag.
+  - Right after the provider accepts the write, before audit or projection,
+    the offer records the moved event's etag. If that bind fails, the
+    intended times still bind the undo.
+  - A card past its `expires_at` closes its offer; the next move parks a new
+    card rather than reusing a dead one.
   - The approved undo writes only if the event is still the version the last
     landed move left, or sits at an unresolved attempt's intended times (an
     ambiguous failure that landed). Otherwise it writes nothing and returns
-    `status: "undo_declined"`, reason `changed_since_move` or `not_moved`.
-    Its own write is sent once, and a 412 also declines.
+    `status: "undo_declined"`, reason `changed_since_move` or `not_moved`,
+    with a fixed `error` text, so the approvals executor records a failed
+    execution, never an executed one. Its own write is sent once, and a 412
+    also declines.
   - The offer closes when the card leaves `pending`.
 - Unmet, including an unreadable or missing event, an overlap check that
   cannot be read, or a write the provider refuses on the etag (412, the event

@@ -19,8 +19,10 @@ the owner sees every move that might have landed.
 * A write the provider refused on the etag (412: nothing written) drops an offer
   that attempt opened and cancels its card, which then says nothing happened.
   Any other failure keeps the card, because the move may have landed.
-* On commit the offer records the moved event's etag and clears the intended
-  times: that attempt is resolved.
+* Right after the provider accepts the write, before any audit or projection,
+  the offer records the moved event's etag and clears the intended times: that
+  attempt is resolved. If that bind fails, the intended times still bind the
+  undo.
 * The undo is bound to the move: the event must still be the version the last
   landed move left (its recorded etag), or sit exactly at an unresolved
   attempt's intended times (an ambiguous failure that landed). Otherwise it declines
@@ -29,7 +31,11 @@ the owner sees every move that might have landed.
   ambiguous failure that did not, or approval before the write). Its own write
   is sent once, never retried.
 
-An offer closes when its card leaves ``pending``; the next move opens a new one.
+* A declined undo carries a fixed ``error`` text, so the approvals executor
+  records it as a failed execution, never as executed.
+
+An offer closes when its card leaves ``pending`` or expires; the next move opens
+a new one.
 """
 
 from __future__ import annotations
@@ -68,6 +74,7 @@ SELECT l.idempotency_key, l.action_result
    AND l.origin_ref = $2
    AND l.action_payload->>'goal_id' = $1
    AND p.status = 'pending'
+   AND (p.expires_at IS NULL OR p.expires_at > now())
  ORDER BY l.created_at DESC
  LIMIT 1
  FOR UPDATE OF l
@@ -105,12 +112,34 @@ def undo_card_args(pre_state: Mapping[str, Any], *, conflict_policy: str) -> dic
     )
 
 
-def undo_card_summary(pre_state: Mapping[str, Any], intended: Mapping[str, Any]) -> str:
+#: The card's ``why``: true whether or not the move it guards ever lands.
+UNDO_CARD_WHY = (
+    "A goal moves Butlers-made blocks without asking (calendar replan exception); "
+    "this card undoes that move."
+)
+
+
+def undo_card_summary(pre_state: Mapping[str, Any]) -> str:
+    """What approving does: true before and after the write, and on every reuse.
+
+    It names only the pre-image, never a target, since a reused card may guard a
+    later move than the one it was parked for.
+    """
     title = pre_state.get("title") or "a Butlers block"
-    return (
-        f"Butlers moved '{title}' from {pre_state['start_at']} to {intended['start_at']} "
-        "while replanning a goal. Approve to put it back."
-    )
+    return f"Undo a goal's replan move: approve to put '{title}' back at {pre_state['start_at']}."
+
+
+#: Fixed owner-facing text of an approved undo that wrote nothing, by reason. The
+#: approvals executor records a result carrying ``error`` as a failed execution, so
+#: the card never reads as executed when nothing moved.
+UNDO_DECLINED_TEXT: dict[str, str] = {
+    "changed_since_move": (
+        "Undo not applied: the event changed after the replan move, so nothing was moved back."
+    ),
+    "not_moved": (
+        "Undo not applied: the replan move never landed, so there was nothing to move back."
+    ),
+}
 
 
 def undo_card_refused_summary() -> str:
@@ -193,13 +222,10 @@ class ReplanUndoLedger:
                 action_id=action_id,
                 tool_name="calendar_update_event",
                 tool_args=undo_card_args(pre_state, conflict_policy=conflict_policy),
-                agent_summary=undo_card_summary(pre_state, intended),
+                agent_summary=undo_card_summary(pre_state),
                 requested_at=now,
                 expires_at=now + UNDO_CARD_TTL,
-                why=(
-                    "A goal moved this Butlers-made block without asking (calendar "
-                    "replan exception). This card is your undo."
-                ),
+                why=UNDO_CARD_WHY,
                 blast_radius="self",
                 reversibility="reversible",
                 origin_butler=self._butler_name,
@@ -306,6 +332,8 @@ __all__ = [
     "UNDO_ACTION_TYPE",
     "UNDO_CARD_TTL",
     "UNDO_DECLINED",
+    "UNDO_CARD_WHY",
+    "UNDO_DECLINED_TEXT",
     "ReplanUndoLedger",
     "UndoOffer",
     "replan_undo_ledger",

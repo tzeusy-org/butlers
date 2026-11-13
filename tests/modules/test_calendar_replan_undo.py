@@ -29,7 +29,7 @@ from butlers.modules.approvals.execution_context import (
 )
 from butlers.modules.calendar import CalendarRequestError
 from butlers.modules.calendar.replan import REPLAN_DECLINED
-from butlers.modules.calendar.replan_undo import UNDO_DECLINED
+from butlers.modules.calendar.replan_undo import UNDO_DECLINED, UNDO_DECLINED_TEXT
 from butlers.modules.calendar_approval import retire_legacy_calendar_approval_args
 from butlers.testing.mcp import tool_fn
 from tests.modules.test_calendar_replan import (
@@ -156,7 +156,7 @@ async def test_a_committed_move_parks_one_card_whose_call_is_the_inverse():
     assert card["tool_args"]["start_at"] == OLD_START.isoformat()
     assert card["tool_args"]["end_at"] == OLD_END.isoformat()
     assert card["tool_args"]["calendar_id"] == "primary"
-    assert "Approve to put it back" in card["summary"]
+    assert "approve to put" in card["summary"]
 
 
 async def test_a_second_move_by_the_same_goal_keeps_the_one_card():
@@ -264,6 +264,83 @@ async def test_after_an_ambiguous_failure_that_never_landed_the_undo_declines_no
     assert result["status"] == UNDO_DECLINED
     assert result["reason"] == "not_moved"
     assert len(provider.update_calls) == writes
+
+
+async def test_the_move_is_bound_before_audit_and_projection():
+    provider, ledger = _MovingProvider(event=_block(etag='"v0"')), _FakeLedger()
+    mod, mcp = await _module(provider)
+    bound_at_audit: list[int] = []
+
+    async def audit(*_args, **_kwargs):
+        bound_at_audit.append(ledger.commit_calls)
+
+    lineage = replace(_lineage(MOVE), goal_id=uuid.uuid4())
+    with (
+        _tool_patches(mod, ledger),
+        patch.object(mod, "_emit_calendar_audit", side_effect=audit),
+        lineage_scope(lineage),
+    ):
+        await (await tool_fn(mcp, "calendar_update_event"))(**MOVE)
+    assert bound_at_audit == [1]
+
+
+async def test_a_failed_bind_leaves_the_undo_bound_by_the_intended_times():
+    provider, ledger = _MovingProvider(event=_block(etag='"v0"')), _FakeLedger()
+    ledger.commit_error = RuntimeError("database went away")
+    result = await _replan_move(provider, ledger, goal_id=uuid.uuid4())
+    assert result["status"] == "updated"  # the move landed; the card already exists
+    card_id, _ = _card(ledger)
+    undone = await _approve(provider, ledger, card_id)
+    assert undone["status"] == "updated"
+    assert provider._event.start_at == OLD_START
+
+
+async def test_an_expired_card_is_not_reused_by_a_later_move():
+    provider, ledger = _MovingProvider(event=_block(etag='"v0"')), _FakeLedger()
+    goal = uuid.uuid4()
+    await _replan_move(provider, ledger, goal_id=goal)
+    (first,) = ledger.cards.values()
+    first["expires_at"] = datetime(2000, 1, 1, tzinfo=UTC)  # past the 7-day TTL
+    later = {
+        **MOVE,
+        "start_at": datetime(2026, 2, 20, 18, 0, tzinfo=UTC),
+        "end_at": datetime(2026, 2, 20, 19, 0, tzinfo=UTC),
+    }
+    await _replan_move(provider, ledger, goal_id=goal, args=later)
+    assert len(ledger.cards) == 2
+    fresh = [c for c in ledger.cards.values() if c is not first]
+    assert fresh[0]["status"] == "pending"
+    assert fresh[0]["tool_args"]["start_at"] == NEW_START.isoformat()
+
+
+async def test_the_card_text_is_true_before_and_after_the_write():
+    provider, ledger = _MovingProvider(event=_block(etag='"v0"')), _FakeLedger()
+    goal = uuid.uuid4()
+    await _replan_move(provider, ledger, goal_id=goal)
+    later = {
+        **MOVE,
+        "start_at": datetime(2026, 2, 20, 18, 0, tzinfo=UTC),
+        "end_at": datetime(2026, 2, 20, 19, 0, tzinfo=UTC),
+    }
+    await _replan_move(provider, ledger, goal_id=goal, args=later)  # reuses the card
+    _, card = _card(ledger)
+    assert card["summary"] == (
+        f"Undo a goal's replan move: approve to put 'BUTLER: Gym' back at {OLD_START.isoformat()}."
+    )
+    assert NEW_START.isoformat() not in card["summary"]  # never a target that can go stale
+    for text in (card["summary"], card["why"]):
+        assert "moved" not in text  # never claims a move that may not have landed
+
+
+async def test_a_declined_undo_reads_as_not_executed():
+    provider, ledger = _MovingProvider(event=_block(etag='"v0"')), _FakeLedger()
+    await _replan_move(provider, ledger, goal_id=uuid.uuid4())
+    provider.edit(location="Gym B")
+    card_id, _ = _card(ledger)
+    result = await _approve(provider, ledger, card_id)
+    assert result["status"] == UNDO_DECLINED
+    # The approvals executor records a result carrying ``error`` as a failed execution.
+    assert result["error"] == UNDO_DECLINED_TEXT["changed_since_move"]
 
 
 async def test_a_refused_retry_keeps_the_undo_of_the_move_that_landed():

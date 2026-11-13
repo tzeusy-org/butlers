@@ -1102,6 +1102,7 @@ A broker-forwarded `calendar_update_event` whose verified assertion names the `r
 - **THEN** exactly one pending approvals card per goal and event SHALL already carry the inverse `calendar_update_event` as its call, reaching the owner on the existing approvals surfaces
 - **AND** that card SHALL return the block to the earliest pre-image the goal recorded for the event, so a retry after a failed move that in fact committed still undoes to where the block started
 - **AND** when the card cannot be parked the move SHALL write nothing and decline with reason `undo_unavailable`
+- **AND** a card past its expiry SHALL NOT be reused; the next move SHALL park a new one
 
 #### Scenario: A refused move cancels its card
 - **WHEN** the provider refuses the move's write on the etag (412)
@@ -1111,6 +1112,7 @@ A broker-forwarded `calendar_update_event` whose verified assertion names the `r
 #### Scenario: The undo is bound to the move
 - **WHEN** the owner approves the undo card and the event changed since the move, or the move never landed
 - **THEN** the tool SHALL write nothing and return `status: "undo_declined"` with reason `changed_since_move` or `not_moved`
+- **AND** the approvals record SHALL show a failed execution, never an executed one
 - **AND** the undo's write SHALL be etag-bound, sent exactly once, and a 412 SHALL also decline
 
 ## Source References

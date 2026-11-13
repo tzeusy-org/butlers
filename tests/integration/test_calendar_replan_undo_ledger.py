@@ -10,15 +10,20 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from unittest.mock import AsyncMock
 from urllib.parse import urlparse
 
 import pytest
 
 from butlers.db import Database
+from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.calendar.replan_undo import (
+    UNDO_DECLINED,
+    UNDO_DECLINED_TEXT,
     ReplanUndoLedger,
     undo_card_args,
     undo_card_refused_summary,
+    undo_card_summary,
 )
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -87,8 +92,11 @@ async def test_open_parks_one_card_and_keeps_the_earliest_pre_image(ledger):
     assert first.created and not again.created
     assert again.key == first.key and again.pre_state == PRE
     assert again.action_id == first.action_id
-    rows = await pool.fetch("SELECT id, tool_name, tool_args, status FROM pending_actions")
+    rows = await pool.fetch(
+        "SELECT id, tool_name, tool_args, status, agent_summary FROM pending_actions"
+    )
     assert len(rows) == 1
+    assert rows[0]["agent_summary"] == undo_card_summary(PRE)
     assert rows[0]["id"] == first.action_id and rows[0]["status"] == "pending"
     assert rows[0]["tool_name"] == "calendar_update_event"
     assert rows[0]["tool_args"] == undo_card_args(PRE, conflict_policy="suggest")
@@ -120,10 +128,65 @@ async def test_a_resolved_card_closes_its_offer(ledger):
     assert fresh.created and fresh.key != offer.key and fresh.action_id != offer.action_id
 
 
+async def test_an_expired_card_closes_its_offer(ledger):
+    store, pool = ledger
+    goal = uuid.uuid4()
+    offer = await _open(store, goal)
+    await pool.execute(
+        "UPDATE pending_actions SET expires_at = now() - interval '1 second' WHERE id = $1",
+        offer.action_id,
+    )
+    fresh = await _open(store, goal)
+    assert fresh.created and fresh.action_id != offer.action_id
+
+
+async def test_a_declined_undo_is_recorded_failed_not_executed(ledger):
+    store, pool = ledger
+    offer = await _open(store, uuid.uuid4())
+    await pool.execute(
+        "UPDATE pending_actions SET status = 'approved', decided_by = 'human:owner', "
+        "decided_at = now() WHERE id = $1",
+        offer.action_id,
+    )
+    stored = await pool.fetchval(
+        "SELECT tool_args FROM pending_actions WHERE id = $1", offer.action_id
+    )
+    declined = {
+        "status": UNDO_DECLINED,
+        "reason": "not_moved",
+        "error": UNDO_DECLINED_TEXT["not_moved"],
+    }
+    result = await execute_approved_action(
+        pool=pool,
+        action_id=offer.action_id,
+        tool_name="calendar_update_event",
+        tool_args=stored,
+        tool_fn=AsyncMock(return_value=declined),
+        origin_butler="messenger",
+    )
+    assert result.success is False
+    assert result.error == UNDO_DECLINED_TEXT["not_moved"]
+    status = "SELECT status FROM pending_actions WHERE id = $1"
+    assert await pool.fetchval(status, offer.action_id) != "executed"
+    reason = await pool.fetchval(
+        "SELECT reason FROM approval_events WHERE action_id = $1 "
+        "AND event_type = 'action_execution_failed'",
+        offer.action_id,
+    )
+    assert reason == UNDO_DECLINED_TEXT["not_moved"]
+
+
 async def test_discard_cancels_the_card_it_opened_and_says_nothing_happened(ledger):
     store, pool = ledger
     offer = await _open(store, uuid.uuid4())
     await store.discard(offer)
+    # The approvals transition path, with its event, not a raw status write.
+    cancelled = await pool.fetchval(
+        "SELECT count(*) FROM approval_events WHERE action_id = $1 AND actor = $2",
+        offer.action_id,
+        "system:replan_undo",
+    )
+    assert cancelled == 1
     row = await pool.fetchrow(
         "SELECT status, agent_summary FROM pending_actions WHERE id = $1", offer.action_id
     )

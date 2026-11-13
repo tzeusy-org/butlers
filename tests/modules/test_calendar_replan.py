@@ -37,6 +37,8 @@ from butlers.modules.calendar.replan import (
     undo_receipt,
 )
 from butlers.modules.calendar.replan_undo import (
+    UNDO_CARD_TTL,
+    UNDO_CARD_WHY,
     UndoOffer,
     undo_card_args,
     undo_card_refused_summary,
@@ -104,6 +106,8 @@ class _FakeLedger:
         self.offers: list[dict[str, Any]] = []
         self.cards: dict[uuid.UUID, dict[str, Any]] = {}
         self.park_error: Exception | None = None
+        self.commit_error: BaseException | None = None
+        self.commit_calls = 0
 
     async def available(self) -> bool:
         return True
@@ -112,7 +116,8 @@ class _FakeLedger:
         for offer in reversed(self.offers):
             if (offer["goal_id"], offer["event_id"]) != (goal_id, event_id):
                 continue
-            if offer["action_id"] is None or self.cards[offer["action_id"]]["status"] == "pending":
+            card = self.cards[offer["action_id"]]
+            if card["status"] == "pending" and card["expires_at"] > datetime.now(UTC):
                 return offer
         return None
 
@@ -128,8 +133,10 @@ class _FakeLedger:
         key, action_id = f"offer-{len(self.offers)}", uuid.uuid4()
         self.cards[action_id] = {
             "tool_args": undo_card_args(pre_state, conflict_policy=conflict_policy),
-            "summary": undo_card_summary(pre_state, intended),
+            "summary": undo_card_summary(pre_state),
+            "why": UNDO_CARD_WHY,
             "status": "pending",
+            "expires_at": datetime.now(UTC) + UNDO_CARD_TTL,
         }
         self.offers.append(
             {
@@ -154,6 +161,9 @@ class _FakeLedger:
             card.update(status="cancelled", summary=undo_card_refused_summary())
 
     async def commit(self, offer: UndoOffer, *, moved) -> uuid.UUID:
+        self.commit_calls += 1
+        if self.commit_error is not None:
+            raise self.commit_error
         stored = next(o for o in self.offers if o["key"] == offer.key)
         stored["post_move"] = {
             "etag": moved.get("etag"),

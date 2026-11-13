@@ -35,7 +35,7 @@ from .models import (
 )
 from .party import gate_calendar_party_mutation
 from .replan import REPLAN_MOVE, declined, movable, move_only, undo_receipt
-from .replan_undo import UNDO_DECLINED, replan_undo_ledger, undo_refusal
+from .replan_undo import UNDO_DECLINED, UNDO_DECLINED_TEXT, replan_undo_ledger, undo_refusal
 
 if TYPE_CHECKING:
     from . import CalendarModule
@@ -578,9 +578,12 @@ def register_event_tools(
 
         async def decline_undo(reason: str) -> dict[str, Any]:
             """An approved undo that wrote nothing: the event is not what the move left."""
+            # ``error`` makes the approvals executor record a failed execution, so the
+            # owner's card never reads as executed when nothing moved.
             undo_declined = {
                 "status": UNDO_DECLINED,
                 "reason": reason,
+                "error": UNDO_DECLINED_TEXT[reason],
                 "event_id": normalized_event_id,
                 "calendar_id": resolved_calendar_id,
             }
@@ -887,6 +890,17 @@ def register_event_tools(
                 # plain one: the forwarder records any plain result as a committed effect.
                 raise exc
             return error_payload
+        if replan and replan_ledger is not None and undo_offer_opened is not None:
+            # Bind the card to the version the move left before anything else can fail.
+            # A failed bind leaves it unbound; the intended times then bind the undo.
+            try:
+                await replan_ledger.commit(undo_offer_opened, moved=module._event_to_payload(event))
+            except Exception:
+                logger.warning(
+                    "calendar replan undo could not record the moved etag (event_id=%s)",
+                    normalized_event_id,
+                    exc_info=True,
+                )
         # Annotate updated event with authorship and body.
         session_id_str = _get_session_id()
         event = event.model_copy(
@@ -921,12 +935,10 @@ def register_event_tools(
         # already-fetched provider event plus its local projection links.
         result["pre_state"] = pre_state
         if replan and replan_ledger is not None and undo_offer_opened is not None:
-            # The owner's receipt, parked before the write: bind it to the version the move
-            # left, so an approved undo never moves back over a later change.
-            card_id = await replan_ledger.commit(undo_offer_opened, moved=result["event"])
+            # The owner's receipt, parked before the write and bound right after it.
             result["undo"] = {
                 **undo_receipt(undo_offer_opened.pre_state),
-                "action_id": str(card_id),
+                "action_id": str(undo_offer_opened.action_id),
             }
         await module._finalize_workspace_mutation(
             idempotency_key=idempotency_key,
