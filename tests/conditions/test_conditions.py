@@ -657,6 +657,22 @@ class TestLabels:
         await evaluator.cancel("c", now=NOW)
         assert len(store.receipts) >= 4 and {r.label for r in store.receipts} == {LABEL}
 
+    async def test_reregistering_with_a_different_label_refuses(self, evaluator):
+        await register(evaluator, DECISION)
+        wider = LABEL.join(Label.unknown())
+        with pytest.raises(RegistrationRefused):
+            await register(evaluator, DECISION, label=wider)
+        narrower = Label(frozenset({"owner"}), frozenset({"owner"}), frozenset())
+        with pytest.raises(RegistrationRefused):
+            await register(evaluator, DECISION, label=narrower)
+
+    async def test_reregistering_with_the_same_label_is_a_retry(self, evaluator):
+        first = await register(evaluator, DECISION)
+        again = await register(
+            evaluator, DECISION, label=Label(LABEL.instr, LABEL.data, LABEL.sens)
+        )
+        assert again.instance == first.instance
+
 
 #: Provenance a producer can stamp on its events (bu-dhloi1.305 PR5a).
 OWNER = Label.owner()
@@ -740,18 +756,30 @@ class TestLabelledEvidence:
         assert out.intent is not None and out.intent.label == self.FIRE
         assert out.receipt.label == self.FIRE
 
-    async def test_reregistering_with_a_different_label_refuses(self, evaluator):
-        await register(evaluator, DECISION)
-        wider = LABEL.join(Label.unknown())
-        with pytest.raises(RegistrationRefused):
-            await register(evaluator, DECISION, label=wider)
-        narrower = Label(frozenset({"owner"}), frozenset({"owner"}), frozenset())
-        with pytest.raises(RegistrationRefused):
-            await register(evaluator, DECISION, label=narrower)
+    # N1: a clock that completes a predicate whose data leaves latched earlier must not launder
+    # them. all(owner_input, at(T)) fed a tainted reply before T fires at T on the clock.
+    LATER = NOW + timedelta(minutes=31)
+    INPUT_AT = {"tag": "all", "children": [INPUT, AT]}
 
-    async def test_reregistering_with_the_same_label_is_a_retry(self, evaluator):
-        first = await register(evaluator, DECISION)
-        again = await register(
-            evaluator, DECISION, label=Label(LABEL.instr, LABEL.data, LABEL.sens)
-        )
-        assert again.instance == first.instance
+    async def test_a_clock_fire_over_a_latched_data_leaf_joins_the_unknown_label(self, evaluator):
+        await register(evaluator, self.INPUT_AT)
+        assert (await evaluator.evaluate("c1", [input_ev(label=TAINTED)], now=NOW)).intent is None
+        out = await evaluator.evaluate("c1", [], now=self.LATER)
+        assert out.intent is not None and out.intent.reason.startswith("fired:clock")
+        assert out.intent.label == self.FIRE and out.receipt.label == self.FIRE
+
+    @pytest.mark.parametrize("held", [OWNER, TAINTED], ids=["owner", "tainted"])
+    async def test_a_clock_fire_joins_the_batch_events_holding_its_data_leaves(
+        self, evaluator, held
+    ):
+        await register(evaluator, self.INPUT_AT)
+        await evaluator.evaluate("c1", [input_ev(label=held)], now=NOW)
+        out = await evaluator.evaluate("c1", [input_ev(label=held)], now=self.LATER)
+        assert out.intent is not None and out.intent.reason.startswith("fired:clock")
+        assert out.intent.label == LABEL.join(held)
+
+    async def test_a_clock_fire_with_no_true_data_leaf_keeps_the_registered_label(self, evaluator):
+        either = {"tag": "any", "children": [INPUT, AT]}
+        await register(evaluator, either)
+        out = await evaluator.evaluate("c1", [], now=self.LATER)
+        assert out.intent is not None and out.intent.label == LABEL

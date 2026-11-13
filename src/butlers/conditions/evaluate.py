@@ -103,8 +103,9 @@ class Advance:
     changed: bool
     reason: str
     trigger: UUID | None = None  # the fire-event UUID when this advance fired
-    # An event fire's evidence: the labels of the events holding its true leaves, or None
-    # when any true leaf is held by no labelled event of this batch (missing provenance).
+    # A fire's evidence: the labels of this batch's events holding its true data leaves, or
+    # None when any true data leaf is held by no labelled event of the batch (missing
+    # provenance). A clock fire with no true data leaf has the empty evidence ``()``.
     evidence: tuple[Label, ...] | None = None
 
 
@@ -146,6 +147,7 @@ def advance(
         expired = replace(inst, state=State.EXPIRED, version=inst.version + 1)
         return Advance(expired, True, "expired")
     leaf_list = list(leaves(inst.predicate))
+    events = list(events)
     values = dict(inst.leaves)
     cursors = dict(inst.cursors)
     trigger: UUID | None = None
@@ -161,6 +163,14 @@ def advance(
             for leaf in leaf_list
         ):
             reason = "fired:clock_late"
+        # The clock completed it, but data leaves latched earlier hold it too (bu-dhloi1.305
+        # N1): they need the same evidence an event fire does, so an earlier batch's taint is
+        # never laundered by the clock. A clock fire on clock leaves alone joins nothing.
+        if any(values[leaf.path] is Tri.TRUE and leaf.tag != "at" for leaf in leaf_list):
+            eligible = [ev for ev in events if _eligible(inst, ev, now)]
+            evidence = _evidence(leaf_list, values, eligible, now)
+        else:
+            evidence = ()
     else:
         eligible = [ev for ev in events if _eligible(inst, ev, now)]
         for ev in sorted(eligible, key=lambda e: (e.position, e.id)):

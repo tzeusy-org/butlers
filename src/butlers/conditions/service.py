@@ -133,6 +133,8 @@ def check_registration(
 #: Fires caused by registration-snapshot or event data. Their provenance is what the producer
 #: stamped (bu-dhloi1.305 PR5a); S1 makes missing provenance the unknown label.
 _DATA_FIRES = frozenset({"fired:registration", "fired:event"})
+#: Fires the clock completed. Any data leaf that also holds them carries its own evidence.
+_CLOCK_FIRES = frozenset({"fired:clock", "fired:clock_late"})
 
 
 def _outcome_label(inst: Instance, reason: str, evidence: tuple[Label, ...] | None = None) -> Label:
@@ -141,9 +143,11 @@ def _outcome_label(inst: Instance, reason: str, evidence: tuple[Label, ...] | No
     A data-caused fire joins its evidence: the labels of the labelled snapshot or of the
     events holding its true leaves. With no evidence (an unlabelled producer, or a true leaf no
     labelled event of the firing batch holds) it joins the unknown label and fails closed. A
-    clock fire conveys no source data and keeps the registered label. Never narrower.
+    clock fire joins the evidence of any true data leaf the same way (``advance`` gives it the
+    empty evidence when only clock leaves hold it, so it keeps the registered label). A receipt
+    of no fire keeps the registered label. Never narrower.
     """
-    if reason not in _DATA_FIRES:
+    if reason not in _DATA_FIRES | _CLOCK_FIRES:
         return inst.label
     label = inst.label
     for joined in (Label.unknown(),) if evidence is None else evidence:
@@ -366,6 +370,7 @@ class ConditionEvaluator:
             adv = advance(seeded, [], snapshot.now, unmeasurable=snapshot.unmeasurable)
             if adv.changed:
                 new, trigger, reason = adv.instance, adv.trigger, adv.reason
+                evidence = adv.evidence
             elif leaves != dict(stored.leaves):
                 new = replace(seeded, version=stored.version + 1)
                 trigger, reason = None, "pending"

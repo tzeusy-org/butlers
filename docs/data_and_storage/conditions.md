@@ -37,8 +37,12 @@ consumes `ConditionEvaluator.consume_fire`; it never evaluates predicates itself
   each true non-clock leaf (`ConditionEvent.label`); a registration fire's is `Snapshot.label`.
   A true leaf held by no event, or by an unlabelled one, and an unlabelled snapshot join the
   unknown label (`{world}` in I and D, all six categories in C): S1 makes missing provenance
-  unknown, so an unlabelled producer's fire is labelled as before. A clock (`at`) fire conveys
-  no source data and carries the registered label alone. No fire is ever narrower.
+  unknown, so an unlabelled producer's fire is labelled as before. A clock (`at`) fire whose
+  only true leaves are clock leaves conveys no source data and carries the registered label
+  alone. A clock fire that also needs a data leaf latched earlier joins that leaf's evidence
+  the same way, from the batch's events, else `unknown`, so the clock never launders an earlier
+  batch's taint (`all(owner_input, at(T))` fed a forwarded reply fires exposed at T). No fire
+  is ever narrower.
   The runner joins the intent's label into the epoch and inbox row it creates. In PostgreSQL the
   label is CHECK-validated (`public.condition_label_valid`) and immutable once written, and a
   receipt or fire intent whose label does not cover its instance's is refused (23514, an
