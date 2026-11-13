@@ -172,6 +172,9 @@ class ModeOverlayWriter:
         ) as exc:
             # An unavailable trusted interface never falls back to an unconfirmed write.
             raise ModeStepUpRequired("dashboard step-up unavailable") from exc
+        except asyncpg.UniqueViolationError as exc:
+            # A concurrent first edit inserted the mode's row: this edit is stale.
+            raise ModeConflict("mode version changed") from exc
 
     async def _write(self, owner_action_id: UUID, profile: ModeProfile, version: int) -> None:
         duration = None if profile.duration is None else profile.duration // timedelta(seconds=1)

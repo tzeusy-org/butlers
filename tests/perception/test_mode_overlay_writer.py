@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from uuid import UUID
 
+import asyncpg
 import pytest
 
 from butlers.core.dashboard_stepup import DashboardStepUpProof, dashboard_stepup_proof
@@ -162,3 +163,14 @@ async def test_an_unretained_result_fails_the_transaction(live, proof):
     conn = _Conn(consume=("admitted", "refused"))
     with pytest.raises(RuntimeError):
         await ModeOverlayWriter(conn).edit(ACTION, EditHolds("sick", frozenset()), 0)
+
+
+async def test_a_concurrent_first_edit_is_a_conflict(live):
+    class _Raced(_Conn):
+        async def execute(self, query, *args):
+            raise asyncpg.UniqueViolationError("duplicate key value")
+
+    with pytest.raises(ModeConflict):
+        await ModeOverlayWriter(_Raced()).edit(
+            ACTION, EditHolds("focus", frozenset({"proactive"})), 0
+        )

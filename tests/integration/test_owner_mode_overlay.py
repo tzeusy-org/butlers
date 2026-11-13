@@ -16,7 +16,7 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
-from butlers.core.dashboard_stepup import consume_stepup, dashboard_stepup_proof
+from butlers.core.dashboard_stepup import StepUpBinding, consume_stepup, dashboard_stepup_proof
 from butlers.perception import flags
 from butlers.perception.mode_overlay import (
     ModeConflict,
@@ -191,7 +191,10 @@ async def test_the_database_refuses_a_loosening_its_step_up_did_not_bind(authori
     assert (await _profile(pool, "sick"))[1] == 0
 
 
-@pytest.mark.parametrize("rule_id", ["sick:2", "focus:1", "sick", str(uuid4())])
+# Literal values only: every xdist worker must collect the same test IDs.
+@pytest.mark.parametrize(
+    "rule_id", ["sick:2", "focus:1", "sick", "0e9c3f8a-5b1d-4c2e-9f7a-3d6b8e1c2a40"]
+)
 async def test_the_finish_rule_binds_the_result_to_the_overlay_target(authority, rule_id):
     pool = authority[0]
     change = EditHolds("sick", frozenset())
@@ -213,5 +216,114 @@ async def test_the_finish_rule_binds_the_result_to_the_overlay_target(authority,
                 connection, "finish", binding, {**result, "rule_id": "sick:1"}
             )
             assert done == {"state": "completed"}
+    finally:
+        dashboard_stepup_proof.reset(token)
+
+
+# -- the trigger's own checks, with owner SQL that bypasses the writer ---------------
+
+# The exact resulting state ``EditHolds("sick", frozenset())`` binds at version 1.
+_EXACT_SICK = (
+    "INSERT INTO switchboard.owner_mode_overlay (mode, version, holds, break_through, "
+    "owner_action_id) VALUES ('sick', 1, '{}', '{}', $1)"
+)
+
+
+async def _admitted(authority, change, action):
+    """A proof and its binding for ``change`` at version 0."""
+    proof = await _proof(authority, change, action, 0)
+    async with authority[0].acquire() as connection:
+        binding = await overlay_binding(
+            connection, change, owner_action_id=action, expected_version=0
+        )
+    return proof, binding
+
+
+async def test_a_step_up_admitted_in_another_transaction_binds_nothing(authority):
+    pool = authority[0]
+    action = uuid4()
+    proof, binding = await _admitted(authority, EditHolds("sick", frozenset()), action)
+    token = dashboard_stepup_proof.set(proof)
+    try:
+        async with pool.acquire() as connection:
+            # Admitted and committed, never finished.
+            async with connection.transaction():
+                assert await consume_stepup(connection, "begin", binding) == {"state": "admitted"}
+            # A later transaction writing exactly the bound state is still refused.
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                async with connection.transaction():
+                    await connection.execute(_EXACT_SICK, action)
+    finally:
+        dashboard_stepup_proof.reset(token)
+    assert await pool.fetchval(
+        "SELECT consumed_tx IS NOT NULL AND result IS NULL FROM dashboard_stepup.bindings "
+        "WHERE kind = $1",
+        MODE_LOOSEN_KIND,
+    )
+    assert (await _profile(pool, "sick"))[1] == 0
+
+
+async def test_a_finished_step_up_binds_no_further_write(authority):
+    pool = authority[0]
+    action = uuid4()
+    proof, binding = await _admitted(authority, EditHolds("sick", frozenset()), action)
+    token = dashboard_stepup_proof.set(proof)
+    try:
+        async with pool.acquire() as connection:
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                async with connection.transaction():
+                    assert await consume_stepup(connection, "begin", binding) == {
+                        "state": "admitted"
+                    }
+                    result = {
+                        "version": 1,
+                        "kind": MODE_LOOSEN_KIND,
+                        "id": str(action),
+                        "rule_id": "sick:1",
+                    }
+                    assert await consume_stepup(connection, "finish", binding, result) == {
+                        "state": "completed"
+                    }
+                    # The receipt is retained: the same transaction can no longer spend it.
+                    await connection.execute(_EXACT_SICK, action)
+    finally:
+        dashboard_stepup_proof.reset(token)
+    assert (await _profile(pool, "sick"))[1] == 0
+
+
+_APPROVAL_ID = "5b7e2c1a-8d4f-4a6b-9c3e-1f2a3b4c5d6e"
+_RULE_ID = "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f"
+
+
+@pytest.mark.parametrize(
+    ("kind", "target", "rule_id"),
+    [
+        # Only the UUID check stops this one: approve_with_rule binds id, not rule_id.
+        ("approve_with_rule", _APPROVAL_ID, "x:1"),
+        # rule_id equals the target's first field, so again only the UUID check stops it.
+        ("policy_loosen", "x:1:never:none", "x"),
+        ("policy_loosen", "x:1:never:none", "x:1"),
+    ],
+)
+async def test_the_rule_id_exemption_is_mode_loosen_alone(authority, kind, target, rule_id):
+    pool = authority[0]
+    namespace = await pool.fetchval("SELECT current_database() || ':' || current_schema()")
+    binding = StepUpBinding(kind, target, "a" * 64, "b" * 64, namespace)
+    proof = await signed_binding_proof(authority, binding)
+    token = dashboard_stepup_proof.set(proof)
+    result = {"version": 1, "kind": kind, "id": _APPROVAL_ID}
+    try:
+        async with pool.acquire() as connection, connection.transaction():
+            assert await consume_stepup(connection, "begin", binding) == {"state": "admitted"}
+            refused = await consume_stepup(
+                connection, "finish", binding, {**result, "rule_id": rule_id}
+            )
+            assert refused == {"state": "refused"}
+            if kind == "approve_with_rule":
+                # Positive control: the same finish with a UUID rule_id completes.
+                done = await consume_stepup(
+                    connection, "finish", binding, {**result, "rule_id": _RULE_ID}
+                )
+                assert done == {"state": "completed"}
     finally:
         dashboard_stepup_proof.reset(token)
