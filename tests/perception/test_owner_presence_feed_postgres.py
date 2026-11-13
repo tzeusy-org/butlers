@@ -12,6 +12,7 @@ import asyncpg
 import pytest
 from sqlalchemy import create_engine
 
+from butlers.jobs import home_presence_reducer as reducer_module
 from butlers.jobs.home_presence_reducer import owntracks_observations
 from butlers.perception.presence import gps_inside, gps_outside
 from butlers.testing.migration import (
@@ -220,16 +221,18 @@ async def test_the_adapter_turns_the_feed_into_opaque_typed_observations(dsn):
         assert await owntracks_observations(conn, place_ref=uuid.uuid4(), now=NOW) == []
 
 
-async def test_a_refused_or_missing_feed_degrades_to_no_observations(dsn, caplog):
+async def test_a_refused_or_missing_feed_degrades_to_no_observations(dsn, caplog, monkeypatch):
+    monkeypatch.setattr(reducer_module, "_feed_off_logged", False)
     async with session(dsn) as conn:
         home = await place(conn)
         await point(conn, 900, 15)
-        savepoint = conn.transaction()
-        await savepoint.start()
-        await conn.execute("SET LOCAL ROLE butler_travel_rw")
-        assert await owntracks_observations(conn, place_ref=home, now=NOW) == []
-        await savepoint.rollback()
-    assert "OwnTracks feed off (InsufficientPrivilegeError)" in caplog.text
+        for _ in range(2):  # a second refused run must not log again
+            savepoint = conn.transaction()
+            await savepoint.start()
+            await conn.execute("SET LOCAL ROLE butler_travel_rw")
+            assert await owntracks_observations(conn, place_ref=home, now=NOW) == []
+            await savepoint.rollback()
+    assert caplog.text.count("OwnTracks feed off (InsufficientPrivilegeError)") == 1
 
 
 async def test_a_busy_window_keeps_the_newest_fixes_and_only_the_requested_place(dsn):

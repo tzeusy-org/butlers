@@ -6,7 +6,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { PresenceTimeline } from "@/components/home/PresenceTimeline.tsx";
@@ -15,6 +15,8 @@ const HOME = "33333333-3333-4333-8333-333333333333";
 
 const server = vi.hoisted(() => ({
   transitions: [] as unknown[],
+  nextCursor: null as string | null,
+  paths: [] as string[],
   failure: null as null | { code: string; status: number },
 }));
 
@@ -26,11 +28,14 @@ vi.mock("@/api/client.ts", async () => {
       if (path === "/home/places") {
         return { data: [{ id: "33333333-3333-4333-8333-333333333333", label: "Flat" }] };
       }
-      expect(path).toBe("/home/presence/transitions?limit=20");
+      server.paths.push(path);
       if (server.failure) {
         throw new actual.ApiError(server.failure.code, "no", server.failure.status);
       }
-      return { data: { transitions: server.transitions, next_before: null } };
+      if (path.includes("cursor=")) {
+        return { items: [edge(40, { direction: "enter" })], next_cursor: null, limit: 20 };
+      }
+      return { items: server.transitions, next_cursor: server.nextCursor, limit: 20 };
     }),
   };
 });
@@ -59,6 +64,8 @@ const edge = (n: number, over: Record<string, unknown>) => ({
 describe("PresenceTimeline", () => {
   beforeEach(() => {
     server.transitions = [];
+    server.nextCursor = null;
+    server.paths = [];
     server.failure = null;
   });
   afterEach(cleanup);
@@ -103,6 +110,18 @@ describe("PresenceTimeline", () => {
       /isn't switched on yet/,
     );
     expect(screen.queryByTestId("presence-timeline-error")).toBeNull();
+  });
+
+  it("does not claim an empty week when the scan cap hit; it offers to look further back", async () => {
+    server.nextCursor = "opaque-cursor";
+    renderTimeline();
+    const more = await screen.findByTestId("presence-timeline-more");
+    expect(more.textContent).toContain("No arrivals or departures found in recent history");
+    expect(screen.queryByTestId("presence-timeline-empty")).toBeNull();
+    fireEvent.click(within(more).getByText("Look further back"));
+    const list = await screen.findByTestId("presence-timeline-list");
+    expect(within(list).getAllByTestId("presence-transition")).toHaveLength(1);
+    expect(server.paths.some((path) => path.includes("cursor=opaque-cursor"))).toBe(true);
   });
 
   it("shows a plain error for any other failure", async () => {

@@ -45,13 +45,22 @@ export interface PresenceTransition {
   retraction_event_id: string | null;
 }
 
+/** The standard dashboard list envelope (not wrapped in `data`). */
 export interface PresenceTransitions {
-  transitions: PresenceTransition[];
-  next_before: string | null;
+  items: PresenceTransition[];
+  next_cursor: string | null;
+  limit: number;
 }
 
-/** Confirmed owner leave/enter edges, newest first. 503 until the reader login is activated. */
-export async function getPresenceTransitions(limit = 20): Promise<PresenceTransitions> {
-  const route = `/home/presence/transitions?limit=${limit}`;
-  return (await apiFetch<Envelope<PresenceTransitions>>(route)).data;
+/**
+ * Confirmed owner leave/enter edges, newest first. 503 until the reader login is activated.
+ * An empty page with a cursor means the scan cap was hit before an edge was found.
+ */
+export async function getPresenceTransitions(
+  limit = 20,
+  cursor: string | null = null,
+): Promise<PresenceTransitions> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor !== null) params.set("cursor", cursor);
+  return apiFetch<PresenceTransitions>(`/home/presence/transitions?${params.toString()}`);
 }

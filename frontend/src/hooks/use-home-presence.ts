@@ -35,10 +35,10 @@ export function useSavePresenceOwnerEntities() {
 
 export const presenceTransitionsKey = ["home", "presence", "transitions"] as const;
 
-export function usePresenceTransitions() {
+export function usePresenceTransitions(cursor: string | null = null) {
   return useQuery<PresenceTransitions>({
-    queryKey: presenceTransitionsKey,
-    queryFn: () => getPresenceTransitions(),
+    queryKey: [...presenceTransitionsKey, cursor],
+    queryFn: () => getPresenceTransitions(20, cursor),
     retry: false,
     refetchInterval: POLL_BUS_RECONCILE_MS,
   });

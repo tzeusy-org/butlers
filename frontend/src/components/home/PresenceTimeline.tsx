@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import { ApiError } from "@/api/client.ts";
 import type { PresenceTransition } from "@/api/home-presence.ts";
 import { usePresenceTransitions } from "@/hooks/use-home-presence.ts";
@@ -52,7 +54,8 @@ function Row({ transition, labels }: { transition: PresenceTransition; labels: M
  * reader is not yet switched on the panel says so quietly instead of showing an error.
  */
 export function PresenceTimeline() {
-  const timeline = usePresenceTransitions();
+  const [cursor, setCursor] = useState<string | null>(null);
+  const timeline = usePresenceTransitions(cursor);
   const places = useOwnerPlaces();
   const labels = new Map(
     places.data === undefined ? [] : places.data.map((place) => [place.id, place.label] as const),
@@ -78,14 +81,28 @@ export function PresenceTimeline() {
             Couldn&apos;t load arrivals and departures.
           </p>
         ) : null}
-        {timeline.data && timeline.data.transitions.length === 0 ? (
+        {timeline.data && timeline.data.items.length === 0 && timeline.data.next_cursor === null ? (
           <p className="text-sm text-muted-foreground" data-testid="presence-timeline-empty">
             No confirmed arrivals or departures in the last week.
           </p>
         ) : null}
-        {timeline.data && timeline.data.transitions.length > 0 ? (
+        {timeline.data && timeline.data.items.length === 0 && timeline.data.next_cursor !== null ? (
+          <div className="space-y-2" data-testid="presence-timeline-more">
+            <p className="text-sm text-muted-foreground">
+              No arrivals or departures found in recent history.
+            </p>
+            <button
+              type="button"
+              className="text-sm underline"
+              onClick={() => setCursor(timeline.data?.next_cursor ?? null)}
+            >
+              Look further back
+            </button>
+          </div>
+        ) : null}
+        {timeline.data && timeline.data.items.length > 0 ? (
           <ul className="divide-y divide-border" data-testid="presence-timeline-list">
-            {timeline.data.transitions.map((transition) => (
+            {timeline.data.items.map((transition) => (
               <Row key={transition.id} transition={transition} labels={labels} />
             ))}
           </ul>

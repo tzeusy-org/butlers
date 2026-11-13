@@ -106,6 +106,8 @@ def ha_observations(
 
 _FEED = "SELECT * FROM public.owner_presence_observations($1, $2, $3, $4)"
 _FEED_LIMIT = 500
+# The feed-off warning is logged once per process, not on every run.
+_feed_off_logged = False
 
 
 async def owntracks_observations(pool: Any, *, place_ref: UUID, now: datetime) -> list[Observation]:
@@ -119,10 +121,13 @@ async def owntracks_observations(pool: Any, *, place_ref: UUID, now: datetime) -
         rows = await pool.fetch(_FEED, now - OBSERVATION_FRESH, now, _FEED_LIMIT, place_ref)
     except (asyncpg.UndefinedFunctionError, asyncpg.InsufficientPrivilegeError) as exc:
         # Diagnosable but quiet: the OwnTracks path is off until the feed is installed and granted.
-        logger.warning(
-            "presence reducer: OwnTracks feed off (%s); using Home Assistant alone",
-            type(exc).__name__,
-        )
+        global _feed_off_logged
+        if not _feed_off_logged:
+            _feed_off_logged = True
+            logger.warning(
+                "presence reducer: OwnTracks feed off (%s); using Home Assistant alone",
+                type(exc).__name__,
+            )
         return []
     except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError):
         logger.warning("presence reducer: OwnTracks feed unavailable")
