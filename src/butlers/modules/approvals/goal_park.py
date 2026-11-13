@@ -46,6 +46,8 @@ class GoalLineage:
     exposed: bool
     origin: str
     effect_id: uuid.UUID
+    # The invocation's S1 exposure cause, read by the broker under the goal lock.
+    exposure_cause: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,13 +86,14 @@ def _exposed_eligible(
 async def _set_lineage(connection, lineage: GoalLineage) -> None:
     await connection.execute(
         "UPDATE pending_actions SET goal_id = $2, goal_invocation_id = $3, goal_depth = $4, "
-        "goal_exposed = $5, goal_origin = $6 WHERE id = $1",
+        "goal_exposed = $5, goal_origin = $6, goal_exposure_cause = $7 WHERE id = $1",
         lineage.effect_id,
         lineage.goal_id,
         lineage.invocation_id,
         lineage.depth,
         lineage.exposed,
         lineage.origin,
+        lineage.exposure_cause if lineage.exposed else None,
     )
 
 
@@ -136,11 +139,12 @@ async def park_goal_effect(
                     "WITH claimed AS (" + claim_rule_use_sql(rule_param=3, now_param=4) + ") "
                     "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at, "
                     "approval_rule_id, decided_by, decided_at, goal_id, goal_invocation_id, "
-                    "goal_depth, goal_exposed, goal_origin) "
+                    "goal_depth, goal_exposed, goal_origin, goal_exposure_cause) "
                     # INSERT ... SELECT does not infer parameter types from the target.
                     "SELECT $1::uuid, $2::text, $5::jsonb, 'approved', $4::timestamptz, "
                     "claimed.id, 'rule:' || claimed.id::text, $4::timestamptz, $6::uuid, "
-                    "$7::uuid, $8::smallint, $9::boolean, $10::text FROM claimed RETURNING id",
+                    "$7::uuid, $8::smallint, $9::boolean, $10::text, $11::text FROM claimed "
+                    "RETURNING id",
                     lineage.effect_id,
                     tool_name,
                     rule_id,
@@ -151,6 +155,7 @@ async def park_goal_effect(
                     lineage.depth,
                     lineage.exposed,
                     lineage.origin,
+                    lineage.exposure_cause if lineage.exposed else None,
                 )
                 if claimed is not None:
                     await record_approval_event(

@@ -173,3 +173,27 @@ async def test_cancel_is_scoped_to_the_goals_own_approval_refs(monkeypatch):
     goal, ref = uuid4(), uuid4()
     await domains.ApprovalsParking({"messenger": "pool"}).cancel("messenger", goal, [str(ref)])
     assert calls == [("pool", goal, [ref])]
+
+
+@pytest.mark.parametrize(
+    ("exposed", "cause", "stored"), [(True, "read", "read"), (False, "read", None)]
+)
+async def test_the_exposure_cause_is_stored_only_for_an_exposed_lineage(exposed, cause, stored):
+    writes = []
+
+    class Connection(_Connection):
+        async def execute(self, sql, *args):
+            writes.append((sql, args))
+            return "UPDATE 1"
+
+    await park_goal_effect(
+        _Pool(Connection([])),
+        lineage=GoalLineage(uuid4(), uuid4(), 0, exposed, "owner", uuid4(), cause),
+        tool_name="notify",
+        tool_args={"to": "x"},
+        allow_standing_rule=False,
+        recipient_is_owner=False,
+        origin_butler="messenger",
+    )
+    [(sql, args)] = [w for w in writes if "goal_exposure_cause" in w[0]]
+    assert args[-1] == stored

@@ -102,6 +102,9 @@ class Principal:
     grants: tuple[Grant, ...]
     # The invocation's S1 label as read under the goal lock.
     label: Label
+    # Why the invocation first became exposed (closed S1 enum), read under the goal lock.
+    # None: unexposed, or a row that never recorded one.
+    exposure_cause: str | None = None
 
     def grant_for(self, capability: str) -> Grant | None:
         return next((g for g in self.grants if g.capability == capability), None)

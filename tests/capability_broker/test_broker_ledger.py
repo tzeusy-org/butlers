@@ -336,6 +336,7 @@ async def test_non_owner_send_parks_through_the_domain_with_exact_args_and_linea
             0,
         )
         assert (action["goal_exposed"], action["goal_origin"]) == (False, "owner")
+        assert action["goal_exposure_cause"] is None  # unexposed: nothing to explain
 
 
 async def test_owner_created_rule_approves_at_park_and_the_stored_call_runs(broker_db_url):
@@ -1127,6 +1128,21 @@ async def test_a_replacement_lead_inherits_its_predecessor_and_parks(broker_db_u
         assert (row["exposed"], row["exposure_cause"]) == (True, "recovery")
         result = await w.broker.call(goal, replacement_token, SEND.identity, _owner_send("hi"))
         assert result.status == "parked"
+        # The park record carries the ledger's cause, read under the goal lock.
+        action = await w.action(result.effect_id)
+        assert (action["goal_exposed"], action["goal_exposure_cause"]) == (True, "recovery")
+
+
+async def test_a_read_that_exposed_the_invocation_is_stamped_on_its_later_park(broker_db_url):
+    async with world(broker_db_url) as w:
+        grants = (_grant(UNTRUSTED), _grant(SEND))
+        goal = await w.goal(*grants)
+        _, token = await w.invocation(goal, *grants)
+        await w.broker.call(goal, token, UNTRUSTED.identity, {})
+        result = await w.broker.call(goal, token, SEND.identity, _owner_send("hi"))
+        assert result.status == "parked"
+        action = await w.action(result.effect_id)
+        assert (action["goal_exposed"], action["goal_exposure_cause"]) == (True, "read")
 
 
 async def test_categories_survive_park_approval_and_an_owner_edit(broker_db_url):
