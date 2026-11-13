@@ -833,9 +833,11 @@ The RFC 0023 `presentation_key` and the HMAC callback token SHALL be unchanged.
 When the parked action carries RFC 0038 goal lineage, the card and the dashboard approval detail
 SHALL show the same authoritative lineage lines, built once from the broker's park record and never
 from caller prose, model claims or call arguments: the goal, the origin, who exposed it (the
-invocation's closed `exposure_cause`, recorded by the broker at park time under the goal lock) and
+invocation's closed `exposure_cause`, read under the goal lock when the call was reserved and
+written with the park record) and
 whether a standing rule could ever match (the broker's park-time `rule_possible`, explanation only).
-A fact the park record did not capture SHALL read "Unknown". These lines explain and SHALL NOT
+An exposure cause or standing-rule answer the park record did not capture SHALL read "Unknown";
+a record without goal, invocation, origin or exposure shows no lineage lines. These lines explain and SHALL NOT
 authorize: admission and rule matching never read them.
 
 A communicating tool whose catalog descriptor declares `content_params` (optional and additive)
@@ -898,9 +900,9 @@ SHALL refuse while any presentation carries a digest.
 - **WHEN** a tool declares `content_params` and the stored call has an extra non-empty argument, a missing or malformed recipient or content value, or is not a `communicate` tool
 - **THEN** the card offers Open only and the registry preview is not used instead
 
-#### Scenario: Registry or lineage unusable
+#### Scenario: Exact call unavailable
 
-- **WHEN** no preview is registered, the catalog descriptor cannot be read, a value is oversize or unshowable, or the stored call no longer matches the presented digest
+- **WHEN** no preview is registered, a declared catalog preview fails, a value is oversize or unshowable, or the stored call no longer matches the presented digest
 - **THEN** the card offers Open only and nothing executes from it
 
 #### Scenario: Stored call changed after presentation
