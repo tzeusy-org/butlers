@@ -643,6 +643,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{qualified}>",
     ): "dynamic-local: owning migration's loop over its fixed owner-policy table tuple (bu-dhloi1.10); not a foreign-schema exception",
     (
+        "roster/switchboard/migrations/072_decision_sets.py",
+        "<dynamic:{qualified}>",
+    ): "dynamic-local: owning migration's loop over its fixed decision-set table tuple (bu-4c7nvp.1.3); not a foreign-schema exception",
+    (
         "roster/switchboard/tests/test_identity_injection.py",
         "relationship.entity_facts",
     ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
@@ -1076,6 +1080,21 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
             "goal_runner/ledger.py (bu-dhloi1.305)"
         )
         for relation in ("goal_epochs", "goal_label_start")
+    },
+    **{
+        ("src/butlers/core/decision_sets.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: D13/M7 decision sets (sw_072) over the Switchboard-owned goal "
+            "ledger; qualified SQL allocated to core/decision_sets.py (bu-4c7nvp.1.3)"
+        )
+        for relation in (
+            "budgets",
+            "decision_set_items",
+            "decision_set_versions",
+            "decision_sets",
+            "effects",
+            "goals",
+            "invocations",
+        )
     },
     **{
         ("src/butlers/goal_runner/owner_failure.py", f"switchboard.{relation}"): (

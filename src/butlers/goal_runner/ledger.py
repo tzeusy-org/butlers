@@ -34,6 +34,7 @@ from butlers.conditions.evaluate import combine, initial_leaves
 from butlers.conditions.predicate import digest as predicate_digest
 from butlers.conditions.predicate import sources as predicate_sources
 from butlers.conditions.sql import ConnectionConditionStore
+from butlers.core.decision_sets import DecisionSet, DecisionSetLedger, DecisionSetRefused
 from butlers.core.goal_admission import Grant, decode_grants, digest, encode_grants, intersect
 from butlers.core.goal_labels import Label, LabelRefused
 from butlers.core.goal_waiting import WaitLedger
@@ -82,6 +83,7 @@ _PLAN_REF_ROWS = {
     "child": "SELECT id::text FROM switchboard.invocations "
     "WHERE goal_id = $1 AND depth = 1 AND id = ANY($2)",
 }
+_SET_REFUSALS = {"goal": Reason.GOAL, "resource": Reason.RESOURCE, "policy": Reason.POLICY}
 
 
 def _check_own(goal_id: UUID, predicate: dict, effects: list[OwnEffect]) -> None:
@@ -1116,6 +1118,31 @@ class RunnerLedger:
         if version is None:
             raise BrokerRefused(Reason.GOAL)
         return version
+
+    async def decide_together(
+        self, principal: Principal, effect_ids: tuple[UUID, ...], catalog: Catalog
+    ) -> DecisionSet | BrokerRefused:
+        """``goal.decide_together``: group parked calls into one decision set (M7, D13).
+
+        Only a running goal's lead groups calls. Each capability's selection class comes from
+        the live catalog, never the caller: an ``administer`` item is explicit-only. The set
+        grants nothing; each item stays an individually parked, digest-bound call.
+        """
+        goal = await self.lock(principal.goal_id)
+        if goal is None or goal["status"] != "running":
+            raise BrokerRefused(Reason.GOAL)
+        if principal.depth != 0:
+            raise BrokerRefused(Reason.CAPABILITY)
+        exhausted = await self.broker.charge_call(principal)
+        if exhausted is not None:
+            return exhausted
+        classes = {c.identity: c.effect_class == "administer" for c in catalog.capabilities}
+        try:
+            return await DecisionSetLedger(self.connection).create(
+                principal.goal_id, principal.invocation_id, effect_ids, classes
+            )
+        except DecisionSetRefused as refused:
+            raise BrokerRefused(_SET_REFUSALS[refused.reason]) from None
 
     async def approval_waits(self) -> list[UUID]:
         """Waiting goals whose open approval envelope is bound to a parked effect (to sync)."""

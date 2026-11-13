@@ -2,8 +2,8 @@
 
 They are not domain capabilities. The lead holds ``goal.delegate``,
 ``goal.await``, ``goal.stop_child``, ``goal.complete``, ``goal.wait_approval``,
-``goal.wait_owner``, ``goal.wait_until``, ``goal.wait_again``, ``goal.plan``, ``goal.escalate``
-and ``goal.inbox``;
+``goal.wait_owner``, ``goal.wait_until``, ``goal.wait_again``, ``goal.plan``, ``goal.escalate``,
+``goal.decide_together`` (dark) and ``goal.inbox``;
 a child holds only ``goal.return``. Each is listed by the calling invocation's
 depth, read from its ledger row under the goal lock, and each handler checks
 that depth again in its own transaction, so a child can neither list nor call
@@ -27,6 +27,7 @@ from uuid import UUID
 
 from butlers.capability_broker.contracts import BrokerRefused, Reason
 from butlers.capability_broker.service import Broker
+from butlers.core.decision_sets import MAX_SET_ITEMS, MIN_SET_ITEMS
 
 from .context_search import TOOL as CONTEXT_SEARCH
 from .context_search import ContextSearch
@@ -48,7 +49,13 @@ _OPTIONAL = frozenset({CONTEXT_SEARCH, GUIDANCE_SEARCH, GUIDANCE_LOAD})
 # (CAPABILITY); the runner and ledger paths exist and are tested directly. Flip with the feed.
 # goal.wait_again re-arms a fired goal.wait_until envelope, so it goes live with it.
 WAIT_UNTIL_LIVE = False
-_DARK = frozenset() if WAIT_UNTIL_LIVE else frozenset({"goal__wait_until", "goal__wait_again"})
+# goal.decide_together (M7 decision sets, bu-4c7nvp.1.3) stays dark until the owner's decision
+# path, the resolver of PR-B, can decide a set; a set nobody can decide would only strand calls.
+DECIDE_TOGETHER_LIVE = False
+_DARK = frozenset(
+    ({"goal__wait_until", "goal__wait_again"} if not WAIT_UNTIL_LIVE else set())
+    | ({"goal__decide_together"} if not DECIDE_TOGETHER_LIVE else set())
+)
 
 _UUID = {"type": "string", "format": "uuid"}
 
@@ -126,6 +133,28 @@ _TOOLS = (
             "type": "object",
             "properties": {"effect_id": _UUID},
             "required": ["effect_id"],
+            "additionalProperties": False,
+        },
+    ),
+    GoalTool(
+        "goal__decide_together",
+        (0,),
+        "Group calls of this goal that are parked for the owner's approval into one decision "
+        "set, so the owner sees every exact call and recipient together and decides them in one "
+        "place. Each call keeps its own approval; the set grants nothing. Calling again with "
+        "different calls replaces the open set with a new version.",
+        {
+            "type": "object",
+            "properties": {
+                "effect_ids": {
+                    "type": "array",
+                    "items": _UUID,
+                    "minItems": MIN_SET_ITEMS,
+                    "maxItems": MAX_SET_ITEMS,
+                    "uniqueItems": True,
+                }
+            },
+            "required": ["effect_ids"],
             "additionalProperties": False,
         },
     ),
@@ -297,6 +326,7 @@ class GoalTools:
             "goal__stop_child": self._stop_child,
             "goal__complete": self._complete,
             "goal__wait_approval": self._wait_approval,
+            "goal__decide_together": self._decide_together,
             "goal__wait_owner": self._wait_owner,
             "goal__wait_until": self._wait_until,
             "goal__wait_again": self._wait_again,
@@ -354,6 +384,16 @@ class GoalTools:
     async def _wait_approval(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
         args = _closed(arguments, {"effect_id"}, {"effect_id"})
         return {"status": await self.runner.wait_approval(goal_id, token, args["effect_id"])}
+
+    async def _decide_together(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
+        args = _closed(arguments, {"effect_ids"}, {"effect_ids"})
+        proposed = await self.runner.decide_together(goal_id, token, args["effect_ids"])
+        return {
+            "status": "proposed",
+            "set_id": str(proposed.set_id),
+            "version": proposed.version,
+            "items": len(proposed.items),
+        }
 
     async def _wait_owner(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
         args = _closed(arguments, {"effect_id"}, {"effect_id"})

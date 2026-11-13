@@ -35,6 +35,7 @@ from butlers.conditions import (
     PredicateError,
 )
 from butlers.conditions.sql import PostgresConditionStore
+from butlers.core.decision_sets import DecisionSet
 from butlers.core.goal_labels import Label
 from butlers.core.goal_wake import WakeAdmission, WakeResult
 from butlers.core.model_call import AttemptOutcome, AttemptSink, CallSpec, Candidate, call_model
@@ -681,6 +682,30 @@ class GoalRunner:
                 raise version
             span.set_attribute("plan_version", version)
             return version
+
+    async def decide_together(self, goal_id: UUID, token: str, effect_ids: Any) -> DecisionSet:
+        """``goal.decide_together`` (M7, D13): group parked calls into one decision set.
+
+        Dark: the tool is unlisted until the owner's decision path (the resolver) lands.
+        """
+        if type(effect_ids) is not list:
+            raise BrokerRefused(Reason.POLICY)
+        effects = _uuid_list(effect_ids)
+        with _tracer.start_as_current_span(
+            "goal.decide_together", record_exception=False, set_status_on_exception=False
+        ) as span:
+            span.set_attribute("goal_id", str(goal_id))
+            async with self.broker._transaction() as broker_ledger:
+                principal = await broker_ledger.authenticate(goal_id, token)
+                span.set_attribute("invocation_id", str(principal.invocation_id))
+                catalog = await self.broker._live_catalog.load(broker_ledger.connection)
+                proposed = await RunnerLedger(broker_ledger.connection).decide_together(
+                    principal, effects, catalog
+                )
+            if isinstance(proposed, BrokerRefused):
+                raise proposed
+            span.set_attribute("decision_set", f"{proposed.set_id}:{proposed.version}")
+            return proposed
 
     async def _wait_on(self, goal_id: UUID, token: str, effect_id: Any, tool: str) -> str:
         effect = _uuid(effect_id)
