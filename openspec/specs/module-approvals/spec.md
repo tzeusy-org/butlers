@@ -909,3 +909,66 @@ SHALL refuse while any presentation carries a digest.
 
 - **WHEN** the stored `tool_args` change after a card was presented and the owner taps Approve
 - **THEN** nothing executes, the action stays pending, and the reply says the call changed since shown
+
+### Requirement: Decision Sets Are Shown Exactly and Decided Whole
+
+A goal's decision set (RFC 0038 M7) SHALL be shown to the owner version by version, and every
+decision SHALL be exact or refused whole. The path is dark: until `OWNER_DECISIONS_LIVE` is turned
+on and a resolver is wired, no decision is recorded, no card token is minted or sent, and the decision
+routes answer unavailable.
+
+The owner view of one version SHALL read each item's exact stored call from its parked
+`pending_actions` row, only from the approvals pool of the item's capability domain (a copy in any
+other pool SHALL be ignored, and an id found in two pools SHALL make that item changed), SHALL
+recompute the item's argument digest, and SHALL rebuild the call through the exact-call preview. An
+item whose row is missing or unreadable, no longer pending, belongs to another goal, names another
+tool, changed since parking, or has no complete exact preview SHALL be Open-only with a closed
+reason and no facts. One Open-only item, a version that is not `open`, an elapsed set or an empty
+set SHALL make the whole set not decidable, and the owner SHALL review each call on its own approval
+page. Each item SHALL carry the server's own verdict whether it belongs to the default selection
+(an exact plain item of a decidable set, never an `explicit_only` administer item), and the
+assistant's `why`, `blast_radius` and `reversibility` SHALL appear only as labelled claims.
+
+The Telegram card SHALL offer exactly Approve, Reject and Open. Approve SHALL decide the default
+selection and Reject SHALL reject every item; the selection SHALL NOT be carried in a token or
+callback but recomputed from the set at redeem time and bound by the token's action digest, so a
+changed version or item refuses `action_changed`. The card SHALL name the items Approve covers, the
+items that need the owner's own tick on the dashboard, and what an unticked item comes to, worded
+from the producer's `UNTICKED_OUTCOME`. A set that cannot be shown exactly and completely in one
+message SHALL offer Open only and mint no token. A Telegram token SHALL be redeemable only from the
+connector, and a decision from the dashboard SHALL close the set's owner-delivery subject so the
+card's tokens go stale; the resolver's open-state check SHALL still refuse a stale tap if that close
+lags. Sending the card SHALL mark the presentation handed off before the provider call, so an
+ambiguous result is never resent with fresh tokens.
+
+The dashboard SHALL post only the version, approve or reject, and the ticked items' effect ids with
+the item digests it was shown; an `explicit_only` item SHALL be decided only when ticked by itself,
+and an unknown or duplicate item or a set that is not decidable SHALL be refused before the resolver.
+The page SHALL render the server's view and SHALL NOT compute decidability or the default selection.
+Refusals SHALL be closed reasons and SHALL decide nothing.
+
+#### Scenario: Foreign pool copy cannot supply a call
+
+- **WHEN** an item's effect id exists only in an approvals pool other than its capability's domain pool
+- **THEN** the item is Open-only as missing and shows no facts or lineage
+
+#### Scenario: Approve decides the default selection
+
+- **WHEN** the owner taps Approve on a set card with two plain items and one administer item
+- **THEN** the two plain items are decided approved and the administer item is not
+- **AND** if the set changed since the card was sent, nothing is decided and the reply says it changed since shown
+
+#### Scenario: Administer item needs its own tick
+
+- **WHEN** a set contains an `explicit_only` item
+- **THEN** it is never pre-ticked and never decided by Approve, and the dashboard decides it only when the owner ticks it alone
+
+#### Scenario: Decision path is dark
+
+- **WHEN** `OWNER_DECISIONS_LIVE` or the owner-delivery rollout is off
+- **THEN** no card token is minted, no card is sent, and the decision routes answer unavailable with nothing recorded
+
+#### Scenario: Ambiguous send is not repeated
+
+- **WHEN** a card's handoff result is unknown
+- **THEN** a retry sends nothing and mints no new token for that presentation
