@@ -439,6 +439,28 @@ async def begin_send(conn: Any, presentation_id: UUID) -> bool:
     return str(tag).endswith(" 1")
 
 
+async def hold_members(conn: Any, subject_id: UUID, members: Sequence[tuple[str, str]]) -> None:
+    """Record the ``(member schema, member ref)`` items a live card covers (core_332).
+
+    A domain's approval delivery worker holds an item's own card while a live card for the
+    subject covers it (``owner_delivery_item_held``). Rows are append-only and idempotent; the
+    hold ends with the subject's state or the presentation's, never by deleting a row.
+    """
+    if not members:
+        return
+    await conn.execute(
+        "INSERT INTO public.owner_delivery_subject_members "
+        "(subject_id, owning_schema, member_schema, member_ref) "
+        "SELECT s.id, s.owning_schema, m.schema, m.ref "
+        "FROM public.owner_delivery_subjects s, "
+        "unnest($2::text[], $3::text[]) AS m(schema, ref) WHERE s.id = $1 "
+        "ON CONFLICT DO NOTHING",
+        subject_id,
+        [schema for schema, _ in members],
+        [ref for _, ref in members],
+    )
+
+
 async def record_send(
     conn: Any,
     presentation_id: UUID,

@@ -993,3 +993,11 @@ reasons and SHALL decide nothing.
 
 - **WHEN** a version is superseded, cancelled, expired or decided on the dashboard
 - **THEN** its owner-delivery subject is closed, with a decided verdict read from the decision receipt, and its card is listed for retraction
+
+#### Scenario: A live set card holds its items' individual cards
+
+- **WHEN** a set card is handed off (sent or unknown) and the set is still unresolved
+- **THEN** each covered item's own approval card is not claimed for delivery, and its presentation is left unchanged
+- **AND** when the set resolves or its card is proven failed, an item that is still pending has its own card delivered again
+- **AND** an item covered by two live set cards is released only when both resolve
+- **AND** with no set card handed off nothing is held
