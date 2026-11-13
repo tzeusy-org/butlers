@@ -1093,6 +1093,7 @@ A broker-forwarded `calendar_update_event` whose verified assertion names the `r
 #### Scenario: Provider write errors are never a plain result
 - **WHEN** the provider refuses a conditional move's etag-bound write with 412 Precondition Failed
 - **THEN** the tool SHALL return `status: "replan_declined"` with reason `changed_since_check`
+- **AND** the etag-bound write SHALL be sent exactly once, never through the generic rate-limit retry, so a 412 cannot answer a retry of its own committed first attempt
 - **WHEN** the provider write fails in any other way under the condition
 - **THEN** the tool SHALL end the call as an error result, never a plain result the broker would record as committed
 

@@ -179,6 +179,7 @@ class _GoogleProvider(CalendarProvider):
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
+        rate_limit_retry: bool = True,
     ) -> dict[str, Any]:
         response = await self._request_with_bearer(
             method=method,
@@ -186,6 +187,7 @@ class _GoogleProvider(CalendarProvider):
             params=params,
             json_body=json_body,
             extra_headers=extra_headers,
+            rate_limit_retry=rate_limit_retry,
         )
 
         if response.status_code < 200 or response.status_code >= 300:
@@ -216,6 +218,7 @@ class _GoogleProvider(CalendarProvider):
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
+        rate_limit_retry: bool = True,
     ) -> httpx.Response:
         normalized_path = path if path.startswith("/") else f"/{path}"
         url = f"{GOOGLE_CALENDAR_API_BASE_URL}{normalized_path}"
@@ -240,10 +243,13 @@ class _GoogleProvider(CalendarProvider):
             )
 
         # Rate-limit retry: honour Retry-After header on 429, exponential backoff on 503
-        # (spec section 14.2).
+        # (spec section 14.2). A single-attempt caller gets the first answer: a 503 may
+        # follow a committed write, and a retry would misreport it.
         retry = 0
         while (
-            response.status_code in RATE_LIMIT_RETRY_STATUS_CODES and retry < RATE_LIMIT_MAX_RETRIES
+            rate_limit_retry
+            and response.status_code in RATE_LIMIT_RETRY_STATUS_CODES
+            and retry < RATE_LIMIT_MAX_RETRIES
         ):
             backoff = RATE_LIMIT_BASE_BACKOFF_SECONDS * (2**retry)
             # For 429 responses, respect the Retry-After header when present.
@@ -592,6 +598,7 @@ class _GoogleProvider(CalendarProvider):
             f"/calendars/{normalized_calendar_id}/events/{encoded_event_id}",
             json_body=body,
             extra_headers=extra_headers,
+            rate_limit_retry=not patch.single_attempt,
         )
 
         fallback_tz = patch.timezone or self._config.timezone

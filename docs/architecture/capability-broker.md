@@ -430,7 +430,11 @@ A `REPLAN` call is first sent to the domain as a conditional dispatch:
   cannot be read, or a write the provider refuses on the etag (412, the event
   changed since the check): the tool writes nothing and returns
   `status: "replan_declined"` with a reason. The forwarder maps that,
-  for a conditional call only, to a `declined` receipt.
+  for a conditional call only, to a `declined` receipt. The etag-bound write is
+  sent once, never through the generic 429/503 retry
+  (`CalendarEventUpdate.single_attempt`). A retry could see 412 for its own
+  committed first attempt, so with one attempt a 412 can only mean the event
+  changed before the write, and a 503 stays an error.
   `BrokerLedger.decline_conditional` returns the effect to `requested`, and the
   broker parks it exactly as `RULE_ELIGIBLE` would. If the goal stopped
   meanwhile, the effect is cancelled instead and the call is refused `goal`.

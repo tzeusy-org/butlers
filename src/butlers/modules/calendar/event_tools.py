@@ -749,6 +749,9 @@ def register_event_tools(
             private_metadata=private_metadata,
             entity_ids=entity_ids,
             etag=existing_event.etag,
+            # A conditional move's etag-bound write is sent once, so a 412 can only mean the
+            # event changed before it; a 503 stays an error, never a decline.
+            single_attempt=replan,
         )
         pre_state_entity_ids = await module._fetch_pre_state_entity_ids(
             source_id=source_id,
