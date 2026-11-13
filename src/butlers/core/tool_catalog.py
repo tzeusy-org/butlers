@@ -565,7 +565,8 @@ def _authorization_problems(descriptor: ToolDescriptor) -> list[str]:
         or not content
         or any(not isinstance(arg, str) or not arg.strip() for arg in content)
         or len(content) != len(set(content))
-        or any(arg not in properties for arg in content)
+        or not isinstance(properties, Mapping)
+        or any(arg not in properties.keys() for arg in content)
         or (
             isinstance(recipients, RecipientParameters)
             and set(content) & set(recipients.argument_names)

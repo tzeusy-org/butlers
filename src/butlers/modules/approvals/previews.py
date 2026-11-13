@@ -185,19 +185,17 @@ def _catalog_preview(tool_name: str, descriptor: Any, tool_args: Any) -> CallPre
         if descriptor.effect_class not in _CATALOG_PREVIEW_EFFECT_CLASSES:
             return None
         recipients = descriptor.recipient_params
-        recipient_names = tuple(getattr(recipients, "argument_names", ()) or ())
-        content_names = tuple(descriptor.content_params or ())
+        recipient_names: tuple[str, ...] = tuple(getattr(recipients, "argument_names", None) or ())
+        content_names: tuple[str, ...] = tuple(descriptor.content_params or ())
         if not recipient_names or not content_names:
             raise PreviewError("descriptor does not name both recipients and content")
         # Every non-empty argument must be one the descriptor names, and so shown.
         _reject_unshown(tool_args, frozenset(recipient_names) | frozenset(content_names))
+        # Every declared recipient and content argument must be present and well-formed.
         facts = [
             PreviewFact(_label(name), _catalog_value(tool_args, name, content=False))
             for name in recipient_names
-            if name in tool_args
         ]
-        if not facts or facts[0].label == _label("message_id") and len(facts) == 1:
-            raise PreviewError("no recipient is shown")
         facts += [
             PreviewFact(_label(name), _catalog_value(tool_args, name, content=True))
             for name in content_names
