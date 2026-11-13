@@ -32,12 +32,14 @@ Supported tables
 [B] connectors.filtered_events            — monthly partitions older than N months
 [C] public.insight_candidates             — delivered/filtered rows after 90 days
 [D] public.secret_probe_log               — rows older than 90 days
+[E] public.timeline (owner.place)         — transitions older than 400 days (dark, bu-dhloi1.350)
 
 See docs/operations/data-retention.md for policy rationale.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import UTC, datetime, timedelta
@@ -490,3 +492,59 @@ async def prune_secret_probe_log(
     deleted = int(result.split()[-1])
     logger.info("secret_probe_log prune: deleted=%d (of %d candidates)", deleted, candidates)
     return {"candidates": candidates, "deleted": deleted, "dry_run": False, "enabled": True}
+
+
+# ---------------------------------------------------------------------------
+# [E] public.timeline owner.place transitions — 400-day history horizon (bu-dhloi1.350)
+# ---------------------------------------------------------------------------
+
+
+async def prune_place_transitions(
+    conn: Any,
+    *,
+    enabled: bool = False,
+    dry_run: bool = True,
+    batch_limit: int = 500,
+) -> dict[str, Any]:
+    """Purge ``owner.place`` transitions older than 400 days through the one sanctioned path.
+
+    ``conn`` must be authenticated as the ``perception_retention`` identity; its only privilege is
+    EXECUTE on ``public.perception_purge_place_history``, which owns the age rule, the batch bound
+    and the foreign-key order. Nothing here is scheduled or wired: with ``enabled`` false or
+    ``perception.flags.PLACE_RETENTION_LIVE`` off the DB is never touched. A real delete needs
+    ``enabled=True`` and ``dry_run=False``; a dry run only counts.
+
+    Returns ``{"enabled", "dry_run", "events", "retractions", "receipts"}``.
+    """
+    from butlers.perception import flags
+
+    if isinstance(batch_limit, bool) or not isinstance(batch_limit, int):
+        raise ValueError("place transition batch_limit must be an integer")
+    if not (enabled and flags.PLACE_RETENTION_LIVE):
+        return {
+            "enabled": False,
+            "dry_run": dry_run,
+            "events": 0,
+            "retractions": 0,
+            "receipts": 0,
+        }
+    raw = await conn.fetchval(
+        "SELECT public.perception_purge_place_history($1, $2)", batch_limit, dry_run
+    )
+    counts = json.loads(raw) if isinstance(raw, str) else dict(raw)
+    result = {
+        "enabled": True,
+        "dry_run": dry_run,
+        "events": counts["events"],
+        "retractions": counts["retractions"],
+        "receipts": counts["receipts"],
+    }
+    logger.info(
+        "place transition prune: dry_run=%s events=%d retractions=%d receipts=%d batch_limit=%d",
+        dry_run,
+        result["events"],
+        result["retractions"],
+        result["receipts"],
+        batch_limit,
+    )
+    return result

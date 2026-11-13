@@ -24,3 +24,8 @@ MODE_PROJECTION_LIVE = False
 
 #: The legacy ``user_context`` signals are compared with perception (shadow parity).
 LEGACY_PARITY_LIVE = False
+
+#: ``prune_place_transitions`` may count or delete ``owner.place`` history older than the 400-day
+#: horizon. Activation also needs a connection for the ``perception_retention`` identity and a
+#: schedule; neither exists, so this stays off until the owner switches it on.
+PLACE_RETENTION_LIVE = False

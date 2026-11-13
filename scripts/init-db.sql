@@ -8058,7 +8058,7 @@ BEGIN
     FOREACH r IN ARRAY ARRAY['perception_owner','perception_owner_reader',
         'perception_availability_reader','perception_dots_writer','perception_context_writer',
         'perception_health_writer','perception_expect_writer','perception_sensing_writer',
-        'perception_attention_writer'] LOOP
+        'perception_attention_writer','perception_retention'] LOOP
         IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname=r) THEN
             EXECUTE format('CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION',r);
         END IF;
@@ -8435,7 +8435,24 @@ BEGIN
 
     CREATE OR REPLACE FUNCTION perception_private.immutable_event() RETURNS trigger
     LANGUAGE plpgsql SET search_path=pg_catalog,pg_temp AS $immutable$
-    BEGIN RAISE EXCEPTION 'perception history is immutable' USING ERRCODE='23514'; END $immutable$;
+    DECLARE sanctioned boolean:=false;
+    BEGIN
+        -- The one sanctioned delete: public.perception_purge_place_history, running as its
+        -- owner with its transaction-local marker, on an owner.place row past the 400-day
+        -- history horizon. Everything else, for every role, still refuses.
+        IF TG_OP='DELETE' AND current_user='perception_owner'
+            AND COALESCE(current_setting('perception.purge',true),'')='on' THEN
+            IF TG_TABLE_NAME='timeline' THEN
+                sanctioned:=OLD.kind='owner.place' AND OLD.at<clock_timestamp()-interval '400 days';
+            ELSIF TG_TABLE_NAME='receipts' THEN
+                SELECT EXISTS (SELECT 1 FROM public.timeline t WHERE t.id=OLD.event_id
+                    AND t.kind='owner.place' AND t.at<clock_timestamp()-interval '400 days')
+                    INTO sanctioned;
+            END IF;
+        END IF;
+        IF sanctioned THEN RETURN OLD; END IF;
+        RAISE EXCEPTION 'perception history is immutable' USING ERRCODE='23514';
+    END $immutable$;
     DROP TRIGGER IF EXISTS perception_history_immutable ON public.timeline;
     CREATE TRIGGER perception_history_immutable BEFORE UPDATE OR DELETE ON public.timeline
         FOR EACH ROW EXECUTE FUNCTION perception_private.immutable_event();
@@ -8754,6 +8771,49 @@ BEGIN
         RETURN result;
     END $query$;
 
+    CREATE OR REPLACE FUNCTION public.perception_purge_place_history(batch integer,dry_run boolean)
+    RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path=pg_catalog,pg_temp AS $purge$
+    DECLARE actor name:=COALESCE(NULLIF(current_setting('role',true),'none'),session_user)::name;
+        cutoff timestamptz:=clock_timestamp()-interval '400 days';
+        ids uuid[]; retractions uuid[]; n_events integer; n_retractions integer:=0; n_receipts integer:=0;
+    BEGIN
+        IF actor<>'perception_retention' THEN
+            RAISE EXCEPTION 'perception retention identity required' USING ERRCODE='42501';
+        END IF;
+        IF batch IS NULL OR batch NOT BETWEEN 1 AND 10000 OR dry_run IS NULL THEN
+            RAISE EXCEPTION 'bounded perception retention batch required' USING ERRCODE='22023';
+        END IF;
+        -- Place transitions strictly older than the 400-day history horizon (the same bound
+        -- perception_timeline enforces, on the same column). A retraction younger than the
+        -- cutoff keeps its target: the foreign key would refuse the delete anyway.
+        SELECT COALESCE(array_agg(q.id),ARRAY[]::uuid[]) INTO ids FROM (
+            SELECT e.id FROM public.timeline e
+            WHERE e.kind='owner.place' AND e.class='transition' AND e.operation='assert'
+                AND e.at<cutoff
+                AND NOT EXISTS (SELECT 1 FROM public.timeline r
+                    WHERE r.retracts_event_id=e.id AND r.at>=cutoff)
+            ORDER BY e.at,e.id LIMIT batch FOR UPDATE OF e
+        ) q;
+        n_events:=cardinality(ids);
+        SELECT COALESCE(array_agg(r.id),ARRAY[]::uuid[]) INTO retractions
+            FROM public.timeline r WHERE r.retracts_event_id=ANY(ids);
+        IF NOT dry_run AND n_events>0 THEN
+            PERFORM set_config('perception.purge','on',true);
+            DELETE FROM perception_private.receipts WHERE event_id=ANY(ids||retractions);
+            GET DIAGNOSTICS n_receipts=ROW_COUNT;
+            DELETE FROM public.timeline WHERE id=ANY(retractions);
+            GET DIAGNOSTICS n_retractions=ROW_COUNT;
+            DELETE FROM public.timeline WHERE id=ANY(ids);
+            GET DIAGNOSTICS n_events=ROW_COUNT;
+            PERFORM set_config('perception.purge','off',true);
+        ELSIF dry_run THEN
+            n_retractions:=cardinality(retractions);
+        END IF;
+        RETURN jsonb_build_object('dry_run',dry_run,'events',n_events,
+            'retractions',n_retractions,'receipts',n_receipts);
+    END $purge$;
+
     CREATE OR REPLACE FUNCTION perception_private.valid_predicate(p jsonb,depth integer DEFAULT 0)
     RETURNS boolean LANGUAGE plpgsql STABLE SET search_path=pg_catalog,pg_temp AS $predicate$
     DECLARE fields text[]; child jsonb;
@@ -8896,7 +8956,7 @@ BEGIN
     -- migration identities, even when bootstrap re-widens public-table ACLs.
     FOR f IN SELECT p.oid::regprocedure FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
         WHERE n.nspname='perception_private' OR n.nspname='public'
-        AND p.proname=ANY(ARRAY['perception_write','perception_read','perception_timeline','perception_bind','perception_registry']) LOOP
+        AND p.proname=ANY(ARRAY['perception_write','perception_read','perception_timeline','perception_bind','perception_registry','perception_purge_place_history']) LOOP
         EXECUTE format('ALTER FUNCTION %s OWNER TO perception_owner',f);
         EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',f);
         FOR r IN SELECT rolname FROM pg_roles WHERE oid IN (
@@ -8915,6 +8975,8 @@ BEGIN
         TO perception_owner_reader,perception_availability_reader;
     GRANT EXECUTE ON FUNCTION public.perception_timeline(timestamptz,timestamptz,text,uuid,uuid,integer,boolean)
         TO perception_owner_reader;
+    GRANT EXECUTE ON FUNCTION public.perception_purge_place_history(integer,boolean)
+        TO perception_retention;
 
 
     -- PERCEPTION_BACKUP_BEGIN
@@ -9006,7 +9068,7 @@ WITH tables AS (
  ) AS value FROM tables t LEFT JOIN pg_class c ON c.oid=to_regclass(t.name)
 ), functions AS (
  SELECT p.oid,p.oid::regprocedure::text AS name, jsonb_build_object('definition',pg_get_functiondef(p.oid),'owner',pg_get_userbyid(p.proowner),'config',p.proconfig,'acl',(SELECT jsonb_agg(jsonb_build_array(CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END,a.privilege_type,a.is_grantable) ORDER BY CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END COLLATE "C",a.privilege_type COLLATE "C") FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a)) AS value
- FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE (n.nspname='perception_private' AND p.proname<>'backup_catalog') OR n.nspname='public' AND p.proname IN ('perception_write','perception_read','perception_timeline','perception_bind','perception_registry')
+ FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE (n.nspname='perception_private' AND p.proname<>'backup_catalog') OR n.nspname='public' AND p.proname IN ('perception_write','perception_read','perception_timeline','perception_bind','perception_registry','perception_purge_place_history')
 )
 SELECT jsonb_build_object('tables',(SELECT jsonb_object_agg(name,value) FROM table_catalog),'functions',(SELECT jsonb_object_agg(name,value) FROM functions));
     $perception_catalog$;
@@ -9022,7 +9084,7 @@ SELECT jsonb_build_object('tables',(SELECT jsonb_object_agg(name,value) FROM tab
         relations text[]:=ARRAY['perception_private.kinds','perception_private.sources','perception_private.source_refs','perception_private.suppression_refs','public.timeline','perception_private.receipts','public.situation_slots','public.owner_modes','public.perception_conditions','public.perception_suppressions'];
     BEGIN
         catalog:=perception_private.backup_catalog();
-        IF encode(sha256(convert_to(catalog::text,'UTF8')),'hex')<>'79abf9426ebbbee6474720af462b44e8c6a984fc3cf286b33c9183e6c65a3007'
+        IF encode(sha256(convert_to(catalog::text,'UTF8')),'hex')<>'783a42b9adb366286219e0ecc10439baf46a0cb83c71cbf5cfbd526c7b244837'
             OR (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
                 WHERE n.nspname='perception_private' AND c.relkind IN ('r','v','m','f','p'))<>5
             OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
@@ -9062,7 +9124,7 @@ $ddl$,relation_name,relation_name);
         FOR item IN SELECT p.*,p.oid::regprocedure::text AS signature FROM pg_proc p
             JOIN pg_namespace n ON n.oid=p.pronamespace
             WHERE n.nspname='perception_private' OR n.nspname='public' AND p.proname IN
-                ('perception_write','perception_read','perception_timeline','perception_bind','perception_registry')
+                ('perception_write','perception_read','perception_timeline','perception_bind','perception_registry','perception_purge_place_history')
             ORDER BY p.oid::regprocedure::text LOOP
             IF item.proowner<>'perception_owner'::regrole THEN
                 RAISE EXCEPTION 'perception function owner mismatch'; END IF;

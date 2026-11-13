@@ -26,7 +26,7 @@ SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='perception_owner'
 AND NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname IN
     ('perception_owner_reader','perception_availability_reader','perception_dots_writer',
      'perception_context_writer','perception_health_writer','perception_expect_writer',
-     'perception_sensing_writer','perception_attention_writer') AND
+     'perception_sensing_writer','perception_attention_writer','perception_retention') AND
     (r.rolinherit OR r.rolsuper OR r.rolbypassrls OR r.rolcreatedb
      OR r.rolcreaterole OR r.rolreplication
      -- A superuser has effective membership without a pg_auth_members edge.
@@ -58,7 +58,8 @@ AND NOT EXISTS (
     SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
     WHERE (n.nspname='perception_private' OR n.nspname='public'
         AND p.proname IN ('perception_write','perception_read',
-            'perception_timeline','perception_bind','perception_registry'))
+            'perception_timeline','perception_bind','perception_registry',
+            'perception_purge_place_history'))
     AND (p.proowner<>'perception_owner'::regrole
         OR p.proconfig IS DISTINCT FROM CASE WHEN n.nspname='perception_private'
             AND p.proname='backup_catalog' THEN
@@ -72,11 +73,11 @@ AND (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname='perception_private')=6
 AND NOT EXISTS (SELECT 1 FROM (VALUES
 ('perception_private','backup_catalog','',
- '53706967a0c035eb59818bac76b0d31a42e13b5841ecaf2002e1ad52938595df'),
+ 'dede4837b5c48aea0d45995dead811132df69639115940d30bd673f4f3df7a36'),
 ('perception_private','canonical_json','3802',
  'b7f838abba7be235551748ebacde47f00614a2995b682c0c9ae38176e43788ca'),
 ('perception_private','immutable_event','',
- 'ea89eaf74f44d44b24d0f398ba0c44039d8d86ef72a2787b165d05f0dd99c83f'),
+ 'a5fa96f360ac49d101e671df202939067d585f1eef649fe81b343199b0bc60c7'),
 ('perception_private','instant','3802',
  'cab107ea46cd9b46865e4269b6179659841234cbf4712aa7bd7aadf389032c15'),
 ('perception_private','valid_predicate','3802 23',
@@ -85,6 +86,8 @@ AND NOT EXISTS (SELECT 1 FROM (VALUES
  'd6234350324359400b437d4635c07ba6c6da8728945da935c2cb41fd4170a05a'),
 ('public','perception_bind','3802',
  'af5292263aaebc1826bc0ea73bcec5034327553db0240bf07177abb2ed5d2f64'),
+('public','perception_purge_place_history','23 16',
+ 'ec09ff302d5e29d571fe57508a76a6fe9044d28e86755a02cf30b4f8170cb6bf'),
 ('public','perception_read','25 2950 1184',
  'e20ed96ebb3055f4dc4c05b85ae92e0259985c5b1c4e1438eac877d0b2252dc4'),
 ('public','perception_registry','',
@@ -424,6 +427,8 @@ AND NOT EXISTS(SELECT 1 FROM (VALUES
  '[["perception_owner","EXECUTE",false]]'::jsonb),
 ('public','perception_bind',true,'v','plpgsql',3802,
  '[["perception_attention_writer","EXECUTE",false],["perception_context_writer","EXECUTE",false],["perception_owner","EXECUTE",false]]'::jsonb),
+('public','perception_purge_place_history',true,'v','plpgsql',3802,
+ '[["perception_owner","EXECUTE",false],["perception_retention","EXECUTE",false]]'::jsonb),
 ('public','perception_read',true,'s','plpgsql',3802,
  '[["perception_availability_reader","EXECUTE",false],["perception_owner","EXECUTE",false],["perception_owner_reader","EXECUTE",false]]'::jsonb),
 ('public','perception_registry',true,'s','plpgsql',3802,

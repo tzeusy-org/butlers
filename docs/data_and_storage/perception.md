@@ -129,7 +129,12 @@ ordinary identity or a differently owned private schema.
   place hysteresis; `.21` owns clock/activity/mode projection and all live reader
   switches; `.14` owns dependency health and the confirmed routine feeder owns
   expectations. None is enabled by these tables. Place history's 400-day policy
-  does not extend raw-coordinate retention; no raw coordinate is accepted here.
+  does not extend raw-coordinate retention; no raw coordinate is accepted here. The policy is
+  enforced by one dark purge, `public.perception_purge_place_history` (only the
+  `perception_retention` identity may execute it; see
+  [data retention](../operations/data-retention.md)). The immutable trigger permits a delete
+  only as `perception_owner` inside that function, for an `owner.place` row older than 400
+  days (by `at`), or a receipt of one.
 
 ## Typed situation reads (dark, `.21`)
 
