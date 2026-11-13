@@ -403,3 +403,20 @@ For example, a calendar owner can load actions with `enabled=false` and
 module behavior while giving guest invitations the same-owner approval path.
 A producer flag and the descriptive catalog marker grant no execution authority:
 only an authenticated owner decision and exact stored-call executor context do.
+
+## Decision set read view (dark)
+
+`GET /api/decision-sets/{set_id}[?version=]` (owner only) and
+`modules/approvals/decision_set_view.py` show one decision set version (`core/decision_sets.py`)
+as the owner will be asked to decide it. A set stores only each item's capability, stored-argument
+digest and recipient, so the view reads each item's exact call from its parked `pending_actions`
+row (read only from the approvals pool of the item's capability domain, as the broker parked it; a copy in any other pool is ignored and an id found in two pools is `changed`), recomputes the argument digest and
+rebuilds the call through the S1 or catalog preview. The item then carries the rebuilt facts and
+the broker's lineage facts (`lineage_facts`). An item whose row is missing, unreadable (pool
+failure, named in `meta.sources_degraded`), no longer pending, owned by another goal, changed since
+parking, or without a complete exact preview is `exact: false` with a closed `reason` and no
+facts; one such item, a version that is not `open` or an elapsed set makes the whole set not
+`decidable` and the owner reviews each call on its approval page. The view grants nothing and
+never accepts arguments: deciding goes through `DecisionSetResolver.decide`, which rechecks every
+row and digest under the goal lock. `unticked_outcome` is the producer's `UNTICKED_OUTCOME`, so the
+card words what happens to an unticked item from that value alone.
