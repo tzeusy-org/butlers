@@ -9,6 +9,7 @@ durable action that cannot be replayed after human approval.
 from __future__ import annotations
 
 import ast
+import inspect
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,10 +23,13 @@ from butlers.daemon import ButlerDaemon
 from butlers.modules.approvals.command_contracts import (
     EXECUTABLE_DIRECT_COMMANDS,
     NON_MESSENGER_PRODUCER_INVENTORY,
+    REPLAN_UNDO_COMMAND,
     ApprovalCommandContractError,
     validate_owner_command_registry,
 )
 from butlers.modules.approvals.module import ApprovalsConfig, ApprovalsModule
+from butlers.modules.calendar import CalendarConfig, CalendarModule
+from butlers.modules.calendar.replan_undo import undo_card_args
 from butlers.modules.memory import MemoryModule, MemoryModuleConfig
 from butlers.modules.registry import default_registry
 from butlers.testing.approval_parking_fake import record_pending_action
@@ -409,6 +413,67 @@ async def test_daemon_startup_rejects_variadic_declared_handler() -> None:
         await daemon._apply_approval_gates()
 
 
+async def _calendar_hosting_daemon(butler: str) -> ButlerDaemon:
+    """A real calendar-hosting daemon: registered Calendar tools, then gate wiring."""
+    config = load_config(_REPO_ROOT / "roster" / butler)
+    daemon = ButlerDaemon(_REPO_ROOT / "roster" / butler, db=MockDB())
+    daemon.config = config
+    daemon.mcp = FastMCP(butler)
+    daemon._modules = [CalendarModule(), ApprovalsModule()]
+    daemon._module_configs = {
+        "calendar": CalendarConfig(**config.modules["calendar"]),
+        "approvals": ApprovalsConfig(**config.modules.get("approvals", {})),
+    }
+    await daemon._register_module_tools()
+    return daemon
+
+
+@pytest.mark.parametrize("butler", ["general", "travel"])
+async def test_replan_undo_command_validates_on_every_calendar_hosting_butler(butler) -> None:
+    """The undo card's command is the registered Calendar tool, exact keywords and order."""
+    daemon = await _calendar_hosting_daemon(butler)
+    await validate_owner_command_registry(daemon.mcp, butler)
+    tool = await daemon.mcp.get_tool("calendar_update_event")
+    assert tuple(inspect.signature(tool.fn).parameters) == REPLAN_UNDO_COMMAND.argument_names
+    await daemon._apply_approval_gates()  # the real startup path validates it too
+    tool = await daemon.mcp.get_tool("calendar_update_event")
+    assert tuple(inspect.signature(tool.fn).parameters) == REPLAN_UNDO_COMMAND.argument_names
+
+
+async def test_replan_undo_command_rejects_a_drifted_calendar_handler_on_any_butler() -> None:
+    mcp = FastMCP("travel-signature-drift")
+
+    @mcp.tool()
+    async def calendar_update_event(event_id: str, start_at: str) -> dict[str, Any]:
+        return {"event_id": event_id, "start_at": start_at}
+
+    with pytest.raises(ApprovalCommandContractError, match="calendar_update_event"):
+        await validate_owner_command_registry(mcp, "travel")
+
+
+async def test_a_butler_without_calendar_does_not_validate_the_undo_command() -> None:
+    """Only a butler that loads Calendar can park the undo card."""
+    mcp = FastMCP("home-no-calendar")
+    await validate_owner_command_registry(mcp, "home")
+
+
+def test_the_parked_undo_card_is_exactly_the_declared_command() -> None:
+    pre_state = {
+        "event_id": "evt-1",
+        "calendar_id": "primary",
+        "title": "BUTLER: Gym",
+        "start_at": "2026-02-20T14:00:00+00:00",
+        "end_at": "2026-02-20T15:00:00+00:00",
+        "timezone": "UTC",
+    }
+    args = undo_card_args(pre_state, conflict_policy="suggest")
+    assert set(args) == set(REPLAN_UNDO_COMMAND.argument_names)
+    parked = REPLAN_UNDO_COMMAND.materialize(args)
+    assert parked == args and tuple(parked) == REPLAN_UNDO_COMMAND.argument_names
+    with pytest.raises(ApprovalCommandContractError, match="unexpected"):
+        REPLAN_UNDO_COMMAND.materialize({**args, "send_updates": "all"})
+
+
 def test_switchboard_disconnect_marks_the_full_resource_identity_critical() -> None:
     """A standing rule cannot blanket-approve a different connector identity."""
     metadata = SwitchboardModule().tool_metadata()["connector_disconnect"]
@@ -434,6 +499,7 @@ def test_non_messenger_direct_park_sites_stay_declared() -> None:
     """New direct producers must join the inventory before they can park actions."""
     declared_sources = {command.producer_source for command in EXECUTABLE_DIRECT_COMMANDS}
     expected_inventory = {
+        "calendar_update_event",  # the replan undo card (REPLAN_UNDO_COMMAND)
         "connector_disconnect",
         "connector_rotate_token",
         "memory_reclassify",

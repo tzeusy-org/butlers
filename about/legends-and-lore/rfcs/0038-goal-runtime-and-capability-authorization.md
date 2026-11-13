@@ -941,6 +941,20 @@ the marker existed count as owner-created. `calendar_respond` keeps
 to the rest of the calendar: an event created in the new slot between the
 overlap check and the write is not caught, and the undo receipt is the remedy.
 
+The owner sees that receipt as one approvals card per goal and block, on the
+existing approvals surfaces; approving it runs the inverse move through the
+approvals executor. The card is parked, in the same transaction that records
+the pre-image, before the write, so every move that might land has one; if it
+cannot be parked, nothing is written. Right after the provider accepts the
+write, the card is bound to the version the move left. A write the provider
+refuses moves a card that attempt opened out of pending as the system, and it
+then says nothing happened; any other failure keeps it. An expired card is
+closed, so a later move parks a new one. The card returns the block to the
+earliest pre-image the goal recorded for it, so a retry after a failed move that
+in fact committed still undoes to where the block started. The undo is bound to
+the move: if the event changed since, or the move never landed, it writes
+nothing and the card records a failed execution, not an executed one.
+
 A Stop-cancelled parked effect takes a new approvals status,
 `cancelled`. At the switch, `pending_actions` created before cutover remain
 executable by the approvals executor and are recorded with goal origin

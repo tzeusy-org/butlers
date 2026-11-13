@@ -153,6 +153,12 @@ def _json_value(value: Any) -> Any:
     raise TypeError("Unsupported calendar approval argument")
 
 
+def calendar_call_argument_names(tool_name: str) -> tuple[str, ...]:
+    """The tool's complete public argument names, in signature order."""
+    required, defaults = _CALLS[tool_name]
+    return (*required, *defaults)
+
+
 def calendar_approval_args(tool_name: str, **arguments: Any) -> dict[str, Any]:
     """Bind the complete public call, defaults and ISO datetimes included.
 

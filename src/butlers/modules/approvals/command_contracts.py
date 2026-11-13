@@ -19,6 +19,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from butlers.modules.calendar_approval import calendar_call_argument_names
+
 
 class ApprovalCommandContractError(ValueError):
     """Raised when a direct approval command is not safely executable."""
@@ -82,6 +84,20 @@ MEMORY_RECLASSIFY_COMMAND = ExecutableApprovalCommand(
     ),
 )
 
+#: ``owner_butler`` of a command a shared module registers on every butler that loads
+#: it. Each such butler validates the command when the tool is registered there.
+ANY_HOSTING_BUTLER = "*"
+
+#: The owner's undo of a calendar replan move (RFC 0038 D13, bu-4c7nvp.1.12): an
+#: approvals card whose call is the inverse ``calendar_update_event``, parked by
+#: whichever butler ran the move and replayed there by the calendar approval path.
+REPLAN_UNDO_COMMAND = ExecutableApprovalCommand(
+    name="calendar_update_event",
+    owner_butler=ANY_HOSTING_BUTLER,
+    argument_names=calendar_call_argument_names("calendar_update_event"),
+    producer_source=("src/butlers/modules/calendar/replan_undo.py", "open"),
+)
+
 CONNECTOR_ROTATE_TOKEN_PRODUCER = NonReplayableApprovalProducer(
     name="connector_rotate_token",
     owner_butler="switchboard",
@@ -97,6 +113,7 @@ CONNECTOR_ROTATE_TOKEN_PRODUCER = NonReplayableApprovalProducer(
 EXECUTABLE_DIRECT_COMMANDS: tuple[ExecutableApprovalCommand, ...] = (
     CONNECTOR_DISCONNECT_COMMAND,
     MEMORY_RECLASSIFY_COMMAND,
+    REPLAN_UNDO_COMMAND,
 )
 
 NON_MESSENGER_PRODUCER_INVENTORY: tuple[
@@ -105,6 +122,7 @@ NON_MESSENGER_PRODUCER_INVENTORY: tuple[
     CONNECTOR_DISCONNECT_COMMAND,
     CONNECTOR_ROTATE_TOKEN_PRODUCER,
     MEMORY_RECLASSIFY_COMMAND,
+    REPLAN_UNDO_COMMAND,
 )
 
 
@@ -126,10 +144,13 @@ async def _get_registered_tool(mcp: Any, tool_name: str) -> Any | None:
 async def validate_owner_command_registry(mcp: Any, owner_butler: str) -> None:
     """Fail startup when a declared command drifts from its owner MCP surface."""
     for command in EXECUTABLE_DIRECT_COMMANDS:
-        if command.owner_butler != owner_butler:
+        shared = command.owner_butler == ANY_HOSTING_BUTLER
+        if not shared and command.owner_butler != owner_butler:
             continue
 
         tool = await _get_registered_tool(mcp, command.name)
+        if tool is None and shared:
+            continue  # this butler does not load the module, so it cannot park the command
         if tool is None:
             raise ApprovalCommandContractError(
                 f"Declared approval command {command.name!r} is not registered on "
@@ -169,6 +190,7 @@ async def validate_owner_command_registry(mcp: Any, owner_butler: str) -> None:
 
 
 __all__ = [
+    "ANY_HOSTING_BUTLER",
     "ApprovalCommandContractError",
     "CONNECTOR_DISCONNECT_COMMAND",
     "CONNECTOR_ROTATE_TOKEN_PRODUCER",
@@ -177,5 +199,6 @@ __all__ = [
     "MEMORY_RECLASSIFY_COMMAND",
     "NON_MESSENGER_PRODUCER_INVENTORY",
     "NonReplayableApprovalProducer",
+    "REPLAN_UNDO_COMMAND",
     "validate_owner_command_registry",
 ]

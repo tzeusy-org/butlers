@@ -426,6 +426,37 @@ A `REPLAN` call is first sent to the domain as a conditional dispatch:
   receipt. That receipt is the pre-image (`pre_state`) and the exact inverse
   call (`undo`), which is itself a move of the same marked block. Both are kept
   in the calendar action log.
+- The owner's receipt (`modules/calendar/replan_undo.py`, bu-4c7nvp.1.12) is
+  one approvals card per goal and block, parked through the shared admission
+  path, so it reaches the owner on the existing approvals surfaces. Its call is
+  the inverse `calendar_update_event`, and approving it runs that call through
+  the approvals executor. The receipt lives in a `replan_undo` offer row in
+  `calendar_action_log`:
+  - Fail-closed: before the write, one transaction opens the offer (pre-image
+    and intended times) and parks the card. If the approvals tables are
+    missing or the card cannot be parked, the move declines
+    `undo_unavailable` and writes nothing.
+  - A retry, or a further move by the same goal while the card is pending,
+    reuses the offer and its card, so the card undoes to the earliest
+    pre-image. A retry after a failed move that in fact committed reads the
+    moved event, and its own pre-image would be the new time.
+  - A write refused on the etag (412) cancels the card that attempt opened,
+    whose summary then says nothing happened, and drops the offer. If the owner
+    already decided the card, the offer stays so the undo still declines. Any
+    other failure keeps the card: the move may have landed.
+  - Right after the provider accepts the write, before audit or projection,
+    the offer records the moved event's etag. If that bind fails, the
+    intended times still bind the undo.
+  - A card past its `expires_at` closes its offer; the next move parks a new
+    card rather than reusing a dead one.
+  - The approved undo writes only if the event is still the version the last
+    landed move left, or sits at an unresolved attempt's intended times (an
+    ambiguous failure that landed). Otherwise it writes nothing and returns
+    `status: "undo_declined"`, reason `changed_since_move` or `not_moved`,
+    with a fixed `error` text, so the approvals executor records a failed
+    execution, never an executed one. Its own write is sent once, and a 412
+    also declines.
+  - The offer closes when the card leaves `pending`.
 - Unmet, including an unreadable or missing event, an overlap check that
   cannot be read, or a write the provider refuses on the etag (412, the event
   changed since the check): the tool writes nothing and returns

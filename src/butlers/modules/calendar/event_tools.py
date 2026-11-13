@@ -7,8 +7,9 @@ from collections.abc import Callable
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from butlers.core.goal_lineage import conditional_for
+from butlers.core.goal_lineage import conditional_for, current_lineage
 from butlers.core.tool_call_capture import get_current_runtime_session_id as _get_session_id
+from butlers.modules.approvals.execution_context import get_approval_execution_context
 from butlers.modules.calendar_approval import (
     calendar_approval_args,
     calendar_approval_datetime,
@@ -34,6 +35,7 @@ from .models import (
 )
 from .party import gate_calendar_party_mutation
 from .replan import REPLAN_MOVE, declined, movable, move_only, undo_receipt
+from .replan_undo import UNDO_DECLINED, UNDO_DECLINED_TEXT, replan_undo_ledger, undo_refusal
 
 if TYPE_CHECKING:
     from . import CalendarModule
@@ -562,6 +564,45 @@ def register_event_tools(
             )
             return not_found_result
 
+        # The owner's approved undo of a replan move (bu-4c7nvp.1.12): bound to the
+        # version the move left, so a block changed since is never moved back over.
+        undo_ledger = None if replan else replan_undo_ledger(module)
+        undo_offer = None
+        if undo_ledger is not None:
+            approval = get_approval_execution_context(
+                tool_name="calendar_update_event", tool_args=overlap_args
+            )
+            if approval is not None:
+                undo_offer = await undo_ledger.for_card(approval.action_id)
+        undo = undo_offer is not None
+
+        async def decline_undo(reason: str) -> dict[str, Any]:
+            """An approved undo that wrote nothing: the event is not what the move left."""
+            # ``error`` makes the approvals executor record a failed execution, so the
+            # owner's card never reads as executed when nothing moved.
+            undo_declined = {
+                "status": UNDO_DECLINED,
+                "reason": reason,
+                "error": UNDO_DECLINED_TEXT[reason],
+                "event_id": normalized_event_id,
+                "calendar_id": resolved_calendar_id,
+            }
+            await module._finalize_workspace_mutation(
+                idempotency_key=idempotency_key,
+                action_type="workspace_user_update",
+                request_id=normalized_request_id,
+                action_status=MUTATION_STATUS_NOOP,
+                action_payload=action_payload,
+                action_result=undo_declined,
+                source_id=source_id,
+                origin_ref=normalized_event_id,
+            )
+            return undo_declined
+
+        undo_refused = undo_refusal(undo_offer, existing_event) if undo_offer else None
+        if undo_refused is not None:
+            return await decline_undo(undo_refused)
+
         party_gate = await gate_calendar_party_mutation(
             module,
             tool_name="calendar_update_event",
@@ -749,9 +790,9 @@ def register_event_tools(
             private_metadata=private_metadata,
             entity_ids=entity_ids,
             etag=existing_event.etag,
-            # A conditional move's etag-bound write is sent once, so a 412 can only mean the
-            # event changed before it; a 503 stays an error, never a decline.
-            single_attempt=replan,
+            # A conditional move's (or its undo's) etag-bound write is sent once, so a 412
+            # can only mean the event changed before it; a 503 stays an error.
+            single_attempt=replan or undo,
         )
         pre_state_entity_ids = await module._fetch_pre_state_entity_ids(
             source_id=source_id,
@@ -763,6 +804,39 @@ def register_event_tools(
             resolved_calendar_id,
             entity_ids=pre_state_entity_ids,
         )
+        undo_offer_opened = None
+        replan_ledger = None
+        if replan:
+            # The owner's receipt must exist before the move may skip a park.
+            replan_ledger = replan_undo_ledger(module)
+            lineage = current_lineage()
+            goal_id = lineage.goal_id if lineage is not None else None
+            if replan_ledger is None or goal_id is None or not await replan_ledger.available():
+                return await decline("undo_unavailable")
+            # Fail-closed: the owner's card is parked before the write, so any move that
+            # might land has its undo; no card, no write. The earliest pre-image this goal
+            # recorded for the event wins: a retry after a failed-but-committed move reads
+            # the moved event (#5767 review N3).
+            intended = {
+                "start_at": (start_at or existing_event.start_at).isoformat(),
+                "end_at": (end_at or existing_event.end_at).isoformat(),
+            }
+            try:
+                undo_offer_opened = await replan_ledger.open(
+                    goal_id=goal_id,
+                    event_id=normalized_event_id,
+                    calendar_id=resolved_calendar_id,
+                    pre_state=pre_state,
+                    intended=intended,
+                    conflict_policy=resolved_conflict_policy,
+                )
+            except Exception:
+                logger.warning(
+                    "calendar replan undo card could not be parked (event_id=%s)",
+                    normalized_event_id,
+                    exc_info=True,
+                )
+                return await decline("undo_unavailable")
         try:
             event = await provider.update_event(
                 calendar_id=resolved_calendar_id,
@@ -777,10 +851,17 @@ def register_event_tools(
                 exc,
                 exc_info=True,
             )
-            if replan and isinstance(exc, CalendarRequestError) and exc.status_code == 412:
+            refused = isinstance(exc, CalendarRequestError) and exc.status_code == 412
+            if replan and refused:
                 # The etag-bound write was refused: the event changed since the check, and
-                # nothing was written. The broker parks it.
+                # nothing was written. The broker parks it; the card this attempt opened is
+                # cancelled as "nothing happened" and no pre-image is kept. Any other
+                # failure keeps the card: the move may have landed.
+                if replan_ledger is not None and undo_offer_opened is not None:
+                    await replan_ledger.discard(undo_offer_opened)
                 return await decline("changed_since_check")
+            if undo and refused:
+                return await decline_undo("changed_since_move")
             error_payload = _build_structured_error(
                 exc,
                 provider=provider.name,
@@ -809,6 +890,17 @@ def register_event_tools(
                 # plain one: the forwarder records any plain result as a committed effect.
                 raise exc
             return error_payload
+        if replan and replan_ledger is not None and undo_offer_opened is not None:
+            # Bind the card to the version the move left before anything else can fail.
+            # A failed bind leaves it unbound; the intended times then bind the undo.
+            try:
+                await replan_ledger.commit(undo_offer_opened, moved=module._event_to_payload(event))
+            except Exception:
+                logger.warning(
+                    "calendar replan undo could not record the moved etag (event_id=%s)",
+                    normalized_event_id,
+                    exc_info=True,
+                )
         # Annotate updated event with authorship and body.
         session_id_str = _get_session_id()
         event = event.model_copy(
@@ -842,10 +934,12 @@ def register_event_tools(
         # can reverse-apply an inverse calendar_update_event. It reuses the
         # already-fetched provider event plus its local projection links.
         result["pre_state"] = pre_state
-        if replan:
-            # The undo receipt: kept in the action log with the pre-image, and
-            # itself a move of the same marked block.
-            result["undo"] = undo_receipt(pre_state)
+        if replan and replan_ledger is not None and undo_offer_opened is not None:
+            # The owner's receipt, parked before the write and bound right after it.
+            result["undo"] = {
+                **undo_receipt(undo_offer_opened.pre_state),
+                "action_id": str(undo_offer_opened.action_id),
+            }
         await module._finalize_workspace_mutation(
             idempotency_key=idempotency_key,
             action_type="workspace_user_update",
