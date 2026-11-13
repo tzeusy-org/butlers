@@ -15,3 +15,6 @@ NOW_LIVE = False
 
 #: Owner-local time follows the owner clock instead of the legacy settings zone.
 OWNER_CLOCK_LIVE = False
+
+#: Owner mode controls (enter, exit and edit a mode) accept changes.
+MODE_CONTROLS_LIVE = False

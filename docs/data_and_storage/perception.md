@@ -208,6 +208,29 @@ writes `owner.clock`, and no consumer has switched.
   `context.clock` profile needs its owner subject, a finite freshness maximum,
   its evidence sources and one registered evidence reference per clock basis.
 
+## Owner modes (dark, `.21`)
+
+`butlers.perception.modes` holds the owner mode rules recorded in bu-u33sb7.
+It is dark: `perception.flags.MODE_CONTROLS_LIVE` is off, and no route or tool
+calls it.
+
+- The modes are the eight git IDs. Display aliases resolve to them; any other
+  name refuses. "In flight" is a posture that only travel carries, never a mode.
+- Only the owner enters a mode; an inferred entry refuses, and there is no
+  automatic entry rule (M7 owns those).
+- `classify_change` says whether a change tightens or loosens. Exit, a shorter
+  duration, fewer held classes or more break-through senders loosen; a mixed
+  edit counts as loosening. `authorize_mode_change` passes a tightening and
+  spends one dashboard step-up of kind `mode_loosen` for a loosening.
+- Defaults: sick holds proactive items except medication, safety, bills due
+  within 48 hours and replies to people. Safety and medication are pinned, so no
+  mode may hold them. Only owner-declared or owner-confirmed travel arms the
+  absence plan. The brief follows the wake signal, never before 06:00, else
+  09:30.
+- Not yet live: `mode_loosen` is not in the trusted step-up catalog, so the
+  store refuses it, and owner edits to a mode's holds and break-through senders
+  have no storage. Both land in a separate change.
+
 ## Complete private backup
 
 All ten durable relations and their exact fixed schema travel through
