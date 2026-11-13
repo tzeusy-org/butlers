@@ -220,8 +220,17 @@ calls it.
   automatic entry rule (M7 owns those).
 - `classify_change` says whether a change tightens or loosens. Exit, a shorter
   duration, fewer held classes or more break-through senders loosen; a mixed
-  edit counts as loosening. `authorize_mode_change` passes a tightening and
-  spends one dashboard step-up of kind `mode_loosen` for a loosening.
+  edit counts as loosening. An entry is judged against `now` and the mode's
+  active entry: one ending at or before `now` refuses, and one that ends an
+  active mode sooner (or at all, when it is open-ended) loosens.
+- `authorize_mode_change` passes a tightening and spends one dashboard step-up
+  of kind `mode_loosen` for a loosening. It re-derives the binding from the
+  owner action, expected version, namespace, current profile and active entry,
+  and refuses any binding that differs. An edit's target binds its resulting
+  state (`state_text`: `duration|holds|senders`).
+- Obligation kinds are closed (`medication`, `safety`, `reply`, `bill`,
+  `proactive`); an unknown kind refuses, so a misnamed medication or safety
+  item is never held. A profile carrying a pinned class refuses in `held_by`.
 - Defaults: sick holds proactive items except medication, safety, bills due
   within 48 hours and replies to people. Safety and medication are pinned, so no
   mode may hold them. Only owner-declared or owner-confirmed travel arms the

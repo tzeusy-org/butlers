@@ -16,6 +16,10 @@ RFC 0038 S3.1 and owner decision bu-u33sb7 (choices A, recorded 2026-10-20):
   goes at 09:30.
 
 No automatic entry rule exists here (M7 owns those); an inferred entry refuses.
+An entry is judged against ``now`` and the mode's active entry: one ending at or
+before ``now`` refuses, and one that ends an active mode sooner is a loosening.
+Obligation kinds are a closed set; an unknown kind refuses rather than being held.
+A loosening's binding must equal the one re-derived from current state.
 Dark: ``flags.MODE_CONTROLS_LIVE`` is off and no route or tool calls this. The
 step-up kind ``mode_loosen`` is not yet in the trusted step-up catalog, so even a
 live call is refused by the store until that catalog change lands.
@@ -116,8 +120,15 @@ DEFAULT_PROFILES: dict[str, ModeProfile] = {
 }
 
 
+#: The closed obligation kinds a producer may name. An unknown kind refuses, so a
+#: misspelled medication or safety item can never fall through to a held class.
+OBLIGATION_KINDS = frozenset({"medication", "safety", "reply", "bill", "proactive"})
+
+
 def classify_obligation(kind: str, *, due_at: datetime | None, now: datetime) -> str:
-    """The obligation class a mode's holds are judged against."""
+    """The obligation class a mode's holds are judged against; unknown kinds refuse."""
+    if kind not in OBLIGATION_KINDS:
+        raise ValueError("unknown obligation kind")
     if kind == "medication":
         return "medication"
     if kind == "safety":
@@ -130,6 +141,9 @@ def classify_obligation(kind: str, *, due_at: datetime | None, now: datetime) ->
 
 
 def held_by(profile: ModeProfile, obligation_class: str) -> bool:
+    """Does the profile hold this class? A profile holding a pinned class refuses."""
+    if profile.holds & PINNED:
+        raise ValueError("no mode may hold safety or medication")
     return obligation_class not in PINNED and obligation_class in profile.holds
 
 
@@ -196,15 +210,62 @@ def _longer(a: timedelta | None, b: timedelta | None) -> bool:
     return b is not None and a > b
 
 
-def classify_change(change: ModeChange, profiles: Mapping[str, ModeProfile]) -> Verdict:
-    """Whether a change tightens, loosens or leaves the mode as it is."""
+class _Unset:
+    """Marks an argument an entry must be classified against but was not given."""
+
+
+UNSET = _Unset()
+OverlayEdit = EditHolds | EditBreakThrough | EditDuration
+#: Most break-through senders one mode may admit; the overlay store enforces it too.
+MAX_BREAK_THROUGH = 64
+_SEPARATORS = (",", "|")
+
+
+def _ends_earlier(new: datetime | None, current: datetime | None) -> bool:
+    """Does an entry ending at ``new`` end before one ending at ``current``?"""
+    if new is None:
+        return False
+    return current is None or new < current
+
+
+def _classify_entry(
+    change: Enter, *, now: datetime | None, active: ModeEntry | None | _Unset
+) -> Verdict:
+    if change.cause not in OWNER_CAUSES:
+        raise ValueError("only the owner enters a mode; no automatic entry rule")
+    if now is None or isinstance(active, _Unset):
+        raise ValueError("an entry is classified against now and the active entry")
+    if change.until is not None and change.until <= now:
+        raise ValueError("an entry must end after now")
+    if active is None:
+        return "tighten"
+    if active.mode != change.mode:
+        raise ValueError("the active entry is another mode's")
+    if change.until == active.until:
+        return "none"
+    # Ending an active mode sooner is an early exit: a loosening.
+    return "loosen" if _ends_earlier(change.until, active.until) else "tighten"
+
+
+def classify_change(
+    change: ModeChange,
+    profiles: Mapping[str, ModeProfile],
+    *,
+    now: datetime | None = None,
+    active: ModeEntry | None | _Unset = UNSET,
+) -> Verdict:
+    """Whether a change tightens, loosens or leaves the mode as it is.
+
+    An ``Enter`` needs ``now`` and the mode's active entry (``None`` when the
+    mode is not active): an entry ending at or before ``now`` refuses, and an
+    entry on an active mode that ends sooner (or ends at all, when the active
+    entry is open-ended) is a loosening.
+    """
     if mode_id(change.mode) != change.mode:
         raise ValueError("wire mode ID required")
     current = profiles[change.mode]
     if isinstance(change, Enter):
-        if change.cause not in OWNER_CAUSES:
-            raise ValueError("only the owner enters a mode; no automatic entry rule")
-        return "tighten"
+        return _classify_entry(change, now=now, active=active)
     if isinstance(change, Exit):
         return "loosen"
     if isinstance(change, EditHolds):
@@ -224,6 +285,52 @@ def classify_change(change: ModeChange, profiles: Mapping[str, ModeProfile]) -> 
     raise ValueError("unknown mode change")
 
 
+def _seconds(duration: timedelta | None) -> int | None:
+    if duration is None:
+        return None
+    seconds = duration // timedelta(seconds=1)
+    if seconds <= 0 or timedelta(seconds=seconds) != duration:
+        raise ValueError("a mode duration is a positive whole number of seconds")
+    return seconds
+
+
+def apply_edit(change: ModeChange, profile: ModeProfile) -> ModeProfile:
+    """The profile an owner edit produces; anything the overlay cannot store refuses."""
+    if not isinstance(change, OverlayEdit):
+        raise ValueError("only an edit of duration, holds or break-through applies")
+    if change.mode != profile.mode:
+        raise ValueError("the edit names another mode")
+    if isinstance(change, EditHolds):
+        if not change.holds <= OBLIGATION_CLASSES or change.holds & PINNED:
+            raise ValueError("safety and medication cannot be held")
+        return ModeProfile(profile.mode, profile.duration, change.holds, profile.break_through)
+    if isinstance(change, EditBreakThrough):
+        if len(change.senders) > MAX_BREAK_THROUGH or any(
+            not isinstance(s, str) or not s or any(c in s for c in _SEPARATORS)
+            for s in change.senders
+        ):
+            raise ValueError("break-through senders are bounded, non-empty references")
+        return ModeProfile(profile.mode, profile.duration, profile.holds, change.senders)
+    _seconds(change.duration)
+    return ModeProfile(profile.mode, change.duration, profile.holds, profile.break_through)
+
+
+def state_text(profile: ModeProfile) -> str:
+    """The canonical overlay state the overlay store re-derives from a stored row.
+
+    ``duration|holds|senders``: whole seconds or ``none``, then each set sorted
+    by code point and comma-joined.
+    """
+    seconds = _seconds(profile.duration)
+    return "|".join(
+        [
+            "none" if seconds is None else str(seconds),
+            ",".join(sorted(profile.holds)),
+            ",".join(sorted(profile.break_through)),
+        ]
+    )
+
+
 # -- step-up on loosening ------------------------------------------------------------
 
 
@@ -239,7 +346,21 @@ def _change_body(change: ModeChange) -> dict[str, Any]:
         body["senders"] = sorted(change.senders)
     elif isinstance(change, EditDuration):
         body["duration_s"] = None if change.duration is None else change.duration.total_seconds()
+    elif isinstance(change, Enter):
+        body["until"] = None if change.until is None else _iso(change.until)
+        body["cause"] = change.cause
     return body
+
+
+def _entry_body(active: ModeEntry | None | _Unset) -> dict[str, Any] | None:
+    if active is None or isinstance(active, _Unset):
+        return None
+    return {
+        "mode": active.mode,
+        "since": _iso(active.since),
+        "until": None if active.until is None else _iso(active.until),
+        "cause": active.cause,
+    }
 
 
 def _profile_body(profile: ModeProfile) -> dict[str, Any]:
@@ -251,8 +372,14 @@ def _profile_body(profile: ModeProfile) -> dict[str, Any]:
     }
 
 
-def _target(change: ModeChange, version: int) -> str:
-    return f"{change.mode}:{version}:{_digest(_change_body(change))[:16]}"
+def _target_digest(change: ModeChange, profiles: Mapping[str, ModeProfile]) -> str:
+    # An edit binds the exact state it produces, which the overlay store
+    # re-derives from the row; an entry or exit binds the change itself.
+    if isinstance(change, OverlayEdit):
+        return hashlib.sha256(
+            state_text(apply_edit(change, profiles[change.mode])).encode()
+        ).hexdigest()[:16]
+    return _digest(_change_body(change))[:16]
 
 
 def mode_binding(
@@ -262,14 +389,20 @@ def mode_binding(
     owner_action_id: UUID,
     expected_version: int,
     namespace: str,
+    now: datetime | None = None,
+    active: ModeEntry | None | _Unset = UNSET,
 ) -> StepUpBinding:
     """The exact loosening a ``mode_loosen`` step-up confirms.
 
-    The request binds the owner action, the change and the expected version; the
-    action also binds the mode's current parameters, so a confirmation cannot be
-    spent after the mode changed under it.
+    The request binds the owner action, the change and the expected version. The
+    target is ``mode:new-version:digest16`` (for an edit, over the resulting
+    state). The action also binds the mode's current parameters and, for an
+    entry or exit, its active entry, so a confirmation cannot be spent after
+    the mode changed under it.
     """
-    if classify_change(change, profiles) != "loosen":
+    if type(expected_version) is not int or expected_version < 0:
+        raise ValueError("expected_version")
+    if classify_change(change, profiles, now=now, active=active) != "loosen":
         raise ValueError("only a loosening takes a step-up")
     request = {
         "kind": MODE_LOOSEN_KIND,
@@ -279,20 +412,16 @@ def mode_binding(
         "expected_version": expected_version,
         **_change_body(change),
     }
+    state: list[Any] = [request, _profile_body(profiles[change.mode])]
+    if not isinstance(change, OverlayEdit):
+        state.append(_entry_body(active))
     return StepUpBinding(
         MODE_LOOSEN_KIND,
-        _target(change, expected_version + 1),
+        f"{change.mode}:{expected_version + 1}:{_target_digest(change, profiles)}",
         _digest(request),
-        _digest([request, _profile_body(profiles[change.mode])]),
+        _digest(state),
         namespace,
     )
-
-
-def _binds(binding: StepUpBinding, change: ModeChange) -> bool:
-    if binding.kind != MODE_LOOSEN_KIND:
-        return False
-    mode, _, rest = binding.target.partition(":")
-    return mode == change.mode and rest.endswith(":" + _digest(_change_body(change))[:16])
 
 
 async def authorize_mode_change(
@@ -301,20 +430,37 @@ async def authorize_mode_change(
     profiles: Mapping[str, ModeProfile],
     *,
     binding: StepUpBinding | None,
+    owner_action_id: UUID,
+    expected_version: int,
+    namespace: str,
+    now: datetime | None = None,
+    active: ModeEntry | None | _Unset = UNSET,
 ) -> Verdict:
     """Admit a mode change: a tightening passes; a loosening spends one step-up.
 
-    Called inside the transaction that writes the change; the writer records the
-    step-up receipt (``consume_stepup(..., "finish", ...)``) with the write.
+    The loosening's binding must equal the one re-derived here from the current
+    profiles, active entry, expected version and namespace; nothing the caller
+    passes is trusted on its own. Called inside the transaction that writes the
+    change; the writer records the step-up receipt
+    (``consume_stepup(..., "finish", ...)``) with the write.
     """
     if not flags.MODE_CONTROLS_LIVE:
         raise ModeControlsDark("mode controls are dark")
-    verdict = classify_change(change, profiles)
+    verdict = classify_change(change, profiles, now=now, active=active)
     if verdict != "loosen":
         return verdict
-    if dashboard_stepup_proof.get() is None or binding is None or not _binds(binding, change):
+    expected = mode_binding(
+        change,
+        profiles,
+        owner_action_id=owner_action_id,
+        expected_version=expected_version,
+        namespace=namespace,
+        now=now,
+        active=active,
+    )
+    if dashboard_stepup_proof.get() is None or binding != expected:
         raise ModeStepUpRequired("loosening a mode needs dashboard step-up")
-    admission = await consume_stepup(connection, "begin", binding)
+    admission = await consume_stepup(connection, "begin", expected)
     if admission.get("state") != "admitted":
         raise ModeStepUpRequired("dashboard step-up not admitted")
     return verdict
