@@ -76,7 +76,8 @@ Blind:
   - some unreadable: `known/degraded`;
   - all readable: `known/available`;
   - no group or no declared entity: `unconfigured`.
-- Blind means `unmeasurable` or `unavailable`.
+- Blind means `unmeasurable` or `unavailable`. `degraded` (some entities unreadable) is not blind, because each unreadable entity is already unknown in its own producer and stays visible there.
+- The blind dwell is the owner's `blind_after_minutes`. There is no code constant.
 - The blind condition needs the away premise and `blind_after_minutes` of continuous blindness. Continuity comes from the slot's own transition time, not from run counts.
 - Blind runs never resolve by omission. Blindness is reported as "cannot see", never as clear.
 
@@ -114,6 +115,7 @@ Quiet hours:
 
 Retraction and removal:
 - Removing a declaration, or clearing its duration, resolves as `watch_removed` on the next complete healthy run.
+- Editing a `departure_watch` row while away keeps no arming snapshot: the next run re-evaluates the item against the edited row. A condition the edit no longer supports resolves as `watch_removed`; a newly supported one opens under the same absence fingerprint.
 - Turning the feature flag off stops runs and leaves open conditions as they are. They are not resolved, because the facts did not change.
 
 Message text:

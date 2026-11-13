@@ -29,7 +29,7 @@ Home SHALL write the canonical `home.sensing` slot for its configured sensing gr
 - state `unmeasurable` when the lease is missing, in error or expired;
 - `unconfigured` when there is no sensing group or no declared entity.
 
-While the owner is confirmed away, a blind sensing state (`unavailable` or `unmeasurable`) that has persisted for the owner's blind dwell SHALL open one `home:sensing-blind` condition per absence. Blindness MUST NOT resolve, downgrade or imply clearing any other condition, and MUST NOT be reported as all clear.
+While the owner is confirmed away, a blind sensing state (`unavailable` or `unmeasurable`) that has persisted for the owner-configured `blind_after_minutes` SHALL open one `home:sensing-blind` condition per absence. There is no code-set dwell. `degraded` is not blind: each unreadable entity is already reported as unknown by its own producer. Blindness MUST NOT resolve, downgrade or imply clearing any other condition, and MUST NOT be reported as all clear.
 
 ID: REQ-home-deterministic-jobs-003
 Source: RFC 0038 S3 situation registry (home.sensing row); home-deterministic-jobs "HA Source Health Guard for Snapshot Readers"; REQ-event-response-contract-003 and 005
@@ -92,6 +92,11 @@ Scope: v1-mandatory
 - **WHEN** the item reads secure, the owner's return is confirmed, or the leave edge is retracted
 - **THEN** the condition SHALL resolve with reason `secured`, `owner_returned` or `premise_retracted`, and SHALL send no message
 
+#### Scenario: Editing the watch while away takes effect on the next run
+- **WHEN** the owner changes an item's secure states or away duration while away
+- **THEN** the next run SHALL re-evaluate the item against the edited row, with no arming snapshot kept
+- **AND** an open condition the edited row no longer supports SHALL resolve as `watch_removed`, and a newly supported one SHALL open under the same absence fingerprint
+
 #### Scenario: A new absence is a new condition
 - **WHEN** the owner returns and later leaves again with the same item open
 - **THEN** a new condition SHALL open for the new leave edge after its own duration, and the earlier episode SHALL stay resolved
@@ -102,7 +107,7 @@ The away-door and blind producers SHALL treat the owner as away only when all of
 - the latest confirmed `owner.place` transition is a leave that is neither late nor retracted;
 - the slot and that transition agree.
 
-They SHALL read both through the private owner perception reader that the departure card uses. They MUST NOT infer presence from Home Assistant entities, modes or any other source. Otherwise the premise is `unknown` (slot unknown, stale or unmeasurable; reader unavailable; or slot and transition disagree). In that case no away condition SHALL open, and none SHALL resolve except through the item's own secure reading.
+They SHALL read both through the private owner perception reader that the departure card uses. They MUST NOT infer presence from Home Assistant entities, modes or any other source. Hosting or a house-sitter does not change "away" in this version; mode-aware holds belong to bu-dhloi1.21. Otherwise the premise is `unknown` (slot unknown, stale or unmeasurable; reader unavailable; or slot and transition disagree). In that case no away condition SHALL open, and none SHALL resolve except through the item's own secure reading.
 
 ID: REQ-home-deterministic-jobs-006
 Source: RFC 0038 S3 situation registry (owner.place row); bu-jv1moa.17 presence reducer; heart-and-soul/vision.md Rule 4
