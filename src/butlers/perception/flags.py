@@ -21,3 +21,6 @@ MODE_CONTROLS_LIVE = False
 
 #: The owner's active mode entries are projected into ``owner.mode``.
 MODE_PROJECTION_LIVE = False
+
+#: The legacy ``user_context`` signals are compared with perception (shadow parity).
+LEGACY_PARITY_LIVE = False

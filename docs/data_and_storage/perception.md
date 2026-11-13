@@ -285,6 +285,17 @@ calls it.
   fresh. No role gets a write policy: owner writes run on the dashboard's owner
   connection (the table owner, outside RLS). sw_078 grants nothing.
 
+## Legacy context bus retirement (dark, `.21`)
+
+`public.user_context` retires only after every reader and writer has a named
+successor or deferred owner and stored parity receipts agree. The census and its
+guard are in [user-context-census.md](user-context-census.md).
+`butlers.perception.legacy_parity` compares the legacy signals with
+`owner.activity`, `owner.place` (place class only) and `owner.suppression` and
+returns content-blind receipts. It is dark (`perception.flags.LEGACY_PARITY_LIVE`),
+reads perception as `perception_owner_reader` exactly as `/now` does, and adds
+no role or grant.
+
 ## Complete private backup
 
 All ten durable relations and their exact fixed schema travel through
