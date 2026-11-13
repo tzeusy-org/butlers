@@ -1046,13 +1046,13 @@
   },
   "current_public": "773d1d81b8112a951776db56241eaf6988717263",
   "counts": {
-    "direct": 94,
-    "direct_files": 41,
-    "container": 116,
+    "direct": 96,
+    "direct_files": 42,
+    "container": 118,
     "supplementary": 44,
     "all_categories": {
       "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 64,
-      "NON_NAME_ENUM_OR_MODULE": 29,
+      "NON_NAME_ENUM_OR_MODULE": 31,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 38,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 9,
@@ -1060,7 +1060,7 @@
     },
     "direct_categories": {
       "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 46,
-      "NON_NAME_ENUM_OR_MODULE": 5,
+      "NON_NAME_ENUM_OR_MODULE": 7,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 3,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 24,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 8,
@@ -5065,6 +5065,48 @@
       ],
       "baseline_ids": [],
       "public_source_commit": "19b7974260"
+    },
+    {
+      "id": "6ddf5dbdb1ca969124e542c25117caab3e8bae6cc9301917dd123f9f672fbb10",
+      "path": "src/butlers/perception/modes.py",
+      "symbol": "posture",
+      "kind": "compare",
+      "expression": "'travel' in active",
+      "occurrence": 1,
+      "line": 92,
+      "direct": true,
+      "container": true,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Only the closed owner-mode ID travel carries the in-flight posture; travel is a mode enum value, not the travel butler or a roster authority.",
+      "reason": "RFC0038 S3.1 owner.mode registry and owner decision bu-u33sb7, introduced dark by bu-dhloi1.21; no routing, authority or host policy is selected by the mode ID.",
+      "citations": [
+        {
+          "path": "openspec/specs/context-bus/spec.md",
+          "requirement": "Signal Vocabulary"
+        }
+      ],
+      "baseline_ids": []
+    },
+    {
+      "id": "0c6159a4b6b3efe51a00188cc8afb702a97bd0c4d05de5ac9eb3f88bfbd7b4a0",
+      "path": "src/butlers/perception/modes.py",
+      "symbol": "arms_absence",
+      "kind": "compare",
+      "expression": "entry.mode == 'travel'",
+      "occurrence": 1,
+      "line": 146,
+      "direct": true,
+      "container": true,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Only owner-declared or owner-confirmed travel mode arms the absence plan; travel is the closed owner-mode enum value, not the travel butler or host policy.",
+      "reason": "RFC0038 S3.1 owner.mode registry and owner decision bu-u33sb7, introduced dark by bu-dhloi1.21; no routing, authority or host policy is selected by the mode ID.",
+      "citations": [
+        {
+          "path": "openspec/specs/context-bus/spec.md",
+          "requirement": "Signal Vocabulary"
+        }
+      ],
+      "baseline_ids": []
     }
   ],
   "retired": [
