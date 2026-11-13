@@ -83,6 +83,7 @@ _CORE_EXPORTS = (
     ("butlers.api.routers.projections", "router"),
     ("butlers.api.routers.permissions", "router"),
     ("butlers.api.routers.owner_policy", "router"),
+    ("butlers.api.routers.owner_modes", "router"),
     ("butlers.api.routers.settings_console", "router"),
     ("butlers.api.routers.data_ops", "router"),
     ("butlers.api.routers.delegation", "router"),

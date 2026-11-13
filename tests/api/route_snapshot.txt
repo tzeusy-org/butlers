@@ -288,6 +288,7 @@ OP GET /api/oauth/status f2436c91e07f
 OP GET /api/oauth/{provider}/callback 76631af49c4f
 OP GET /api/oauth/{provider}/start 82205231aab0
 OP GET /api/owner-delivery/retractions 145836752671
+OP GET /api/owner-modes 5ea7297d41d9
 OP GET /api/owner-policy 4a70812b80db
 OP GET /api/owner-policy/holds 825404277021
 OP GET /api/permissions 09f11c49a328
@@ -553,6 +554,10 @@ OP POST /api/notifications/{notification_id}/escalate 968f63b9f6db
 OP POST /api/notifications/{notification_id}/retry 8b66dd930f06
 OP POST /api/owner-delivery/actions 23c2e3072294
 OP POST /api/owner-delivery/retractions/{presentation_id} 6a146e9fc239
+OP POST /api/owner-modes/step-up/options 6fa008478869
+OP POST /api/owner-modes/{mode}/edit 2273945808ca
+OP POST /api/owner-modes/{mode}/enter 99d68ab761c4
+OP POST /api/owner-modes/{mode}/exit aaa7fdea607b
 OP POST /api/owner-policy/step-up/options 0544807c7640
 OP POST /api/owner-policy/terms c8d698c97040
 OP POST /api/owner-policy/terms/{term_id}/loosen a97524d5ed92
@@ -936,6 +941,7 @@ ROUTE APIRoute GET '/api/oauth/status' name=oauth_status op=oauth_status_api_oau
 ROUTE APIRoute GET '/api/oauth/{provider}/callback' name=oauth_provider_callback op=oauth_provider_callback_api_oauth__provider__callback_get tags=oauth schema=True
 ROUTE APIRoute GET '/api/oauth/{provider}/start' name=oauth_provider_start op=oauth_provider_start_api_oauth__provider__start_get tags=oauth schema=True
 ROUTE APIRoute GET '/api/owner-delivery/retractions' name=list_owner_delivery_retractions op=list_owner_delivery_retractions_api_owner_delivery_retractions_get tags=owner-delivery schema=True
+ROUTE APIRoute GET '/api/owner-modes' name=get_owner_modes op=get_owner_modes_api_owner_modes_get tags=owner-modes schema=True
 ROUTE APIRoute GET '/api/owner-policy' name=get_owner_policy op=get_owner_policy_api_owner_policy_get tags=owner-policy schema=True
 ROUTE APIRoute GET '/api/owner-policy/holds' name=list_owner_policy_holds op=list_owner_policy_holds_api_owner_policy_holds_get tags=owner-policy schema=True
 ROUTE APIRoute GET '/api/permissions' name=get_permissions_matrix op=get_permissions_matrix_api_permissions_get tags=permissions schema=True
@@ -1199,6 +1205,10 @@ ROUTE APIRoute POST '/api/notifications/{notification_id}/escalate' name=escalat
 ROUTE APIRoute POST '/api/notifications/{notification_id}/retry' name=retry_notification op=retry_notification_api_notifications__notification_id__retry_post tags=notifications schema=True
 ROUTE APIRoute POST '/api/owner-delivery/actions' name=redeem_owner_action op=redeem_owner_action_api_owner_delivery_actions_post tags=owner-delivery schema=True
 ROUTE APIRoute POST '/api/owner-delivery/retractions/{presentation_id}' name=report_owner_delivery_retraction op=report_owner_delivery_retraction_api_owner_delivery_retractions__presentation_id__post tags=owner-delivery schema=True
+ROUTE APIRoute POST '/api/owner-modes/step-up/options' name=owner_modes_stepup_options op=owner_modes_stepup_options_api_owner_modes_step_up_options_post tags=owner-modes schema=True
+ROUTE APIRoute POST '/api/owner-modes/{mode}/edit' name=edit_owner_mode op=edit_owner_mode_api_owner_modes__mode__edit_post tags=owner-modes schema=True
+ROUTE APIRoute POST '/api/owner-modes/{mode}/enter' name=enter_owner_mode op=enter_owner_mode_api_owner_modes__mode__enter_post tags=owner-modes schema=True
+ROUTE APIRoute POST '/api/owner-modes/{mode}/exit' name=exit_owner_mode op=exit_owner_mode_api_owner_modes__mode__exit_post tags=owner-modes schema=True
 ROUTE APIRoute POST '/api/owner-policy/step-up/options' name=owner_policy_stepup_options op=owner_policy_stepup_options_api_owner_policy_step_up_options_post tags=owner-policy schema=True
 ROUTE APIRoute POST '/api/owner-policy/terms' name=create_owner_policy_term op=create_owner_policy_term_api_owner_policy_terms_post tags=owner-policy schema=True
 ROUTE APIRoute POST '/api/owner-policy/terms/{term_id}/loosen' name=loosen_owner_policy_term op=loosen_owner_policy_term_api_owner_policy_terms__term_id__loosen_post tags=owner-policy schema=True
@@ -1461,6 +1471,8 @@ SCHEMA ApiResponse_NotificationActionResult_ 03fbc4da9faf
 SCHEMA ApiResponse_NotificationStats_ 39a37b28535f
 SCHEMA ApiResponse_NotificationSummary_ f93c713fd366
 SCHEMA ApiResponse_NowCardModel_ cfb39311b5d5
+SCHEMA ApiResponse_OwnerModeReceipt_ 12ed95a13484
+SCHEMA ApiResponse_OwnerModes_ bd6c7c5b94e4
 SCHEMA ApiResponse_OwnerPlaceResponse_ 42593605fbe9
 SCHEMA ApiResponse_OwnerPolicyReceipt_ 85846d7c600f
 SCHEMA ApiResponse_OwnerPolicy_ aa8e8022e512
@@ -2107,6 +2119,17 @@ SCHEMA OwnerDeliveryRetraction b83839dbad06
 SCHEMA OwnerDeliveryRetractionReport 086e02926afd
 SCHEMA OwnerEntityInfoResponse d596c1058f5d
 SCHEMA OwnerLawReceipt 66c0392973e2
+SCHEMA OwnerModeEdit ad6661ae1102
+SCHEMA OwnerModeEditOptions 3a1e7e2543f9
+SCHEMA OwnerModeEnter 9822b7d9b3e4
+SCHEMA OwnerModeEnterOptions 80074aa983ce
+SCHEMA OwnerModeEntry 4d736b283e1c
+SCHEMA OwnerModeExit 2a85a8c28f6a
+SCHEMA OwnerModeExitOptions 55ff3bdfc7c7
+SCHEMA OwnerModeProfile c68dce60e1d3
+SCHEMA OwnerModeReceipt 9fa227e25d6e
+SCHEMA OwnerModeState 684ed47fa0fa
+SCHEMA OwnerModes 85b7838a9655
 SCHEMA OwnerPlaceResponse 9ed0de620fd9
 SCHEMA OwnerPolicy 246d7cfda1e9
 SCHEMA OwnerPolicyHold 09266498299d

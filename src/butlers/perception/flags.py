@@ -16,7 +16,8 @@ NOW_LIVE = False
 #: Owner-local time follows the owner clock instead of the legacy settings zone.
 OWNER_CLOCK_LIVE = False
 
-#: Owner mode controls (enter, exit and edit a mode) accept changes.
+#: Owner mode controls (enter, exit and edit a mode) accept changes, and the dashboard
+#: ``/api/owner-modes`` routes answer instead of 404.
 MODE_CONTROLS_LIVE = False
 
 #: The owner's active mode entries are projected into ``owner.mode``.

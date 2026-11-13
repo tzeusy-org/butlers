@@ -18,8 +18,9 @@ enforces the same rule on any owner SQL that bypasses this writer.
 Only owner causes are written; nothing here infers an entry. The ``owner.mode``
 projection of the active entries is a separate writer on its own identity.
 
-Dark: ``flags.MODE_CONTROLS_LIVE`` is off, no route or tool calls this, and the
-runtime role has no privilege on the table.
+Dark: ``flags.MODE_CONTROLS_LIVE`` is off, only the dark dashboard
+``/api/owner-modes`` routes call this, and the runtime role has no privilege
+on the table.
 """
 
 from __future__ import annotations
