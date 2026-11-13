@@ -54,6 +54,7 @@ async def send_owner_telegram_checked(
     message: str,
     log_context: str,
     dedup_key: str | None = None,
+    envelope: dict[str, Any] | None = None,
 ) -> OwnerNotifyResult:
     """Send ``message`` to the owner's Telegram chat and return the recorded outcome.
 
@@ -61,6 +62,10 @@ async def send_owner_telegram_checked(
     ``call_started`` is False when the outcome was decided before any provider call
     (suppressed, no recipient, no client): nothing can have been delivered. A ``failed``
     outcome with ``call_started`` True is ambiguous, because the provider may have delivered.
+
+    ``envelope`` is a prebuilt ``notify.v1`` request (a card with actions) sent in place of
+    ``message``. Its recipient must be the owner's resolved chat: a mismatch is a ``failed``
+    send decided before any provider call.
     """
 
     async def _record(outcome: str, reason: str | None = None, ref: Any = None) -> None:
@@ -89,16 +94,22 @@ async def send_owner_telegram_checked(
     if client is None:
         await _record(FAILED, "switchboard_client_unavailable")
         return OwnerNotifyResult(FAILED, False)
-    notify_request = {
-        "schema_version": "notify.v1",
-        "origin_butler": origin_butler,
-        "delivery": {
-            "intent": "send",
-            "channel": "telegram",
-            "message": message,
-            "recipient": recipient,
-        },
-    }
+    if envelope is not None:
+        if (envelope.get("delivery") or {}).get("recipient") != recipient:
+            await _record(FAILED, "recipient_mismatch")
+            return OwnerNotifyResult(FAILED, False)
+        notify_request = envelope
+    else:
+        notify_request = {
+            "schema_version": "notify.v1",
+            "origin_butler": origin_butler,
+            "delivery": {
+                "intent": "send",
+                "channel": "telegram",
+                "message": message,
+                "recipient": recipient,
+            },
+        }
     try:
         result = await asyncio.wait_for(
             client.call_tool(
