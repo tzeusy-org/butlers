@@ -63,6 +63,8 @@ def test_the_held_function_is_pinned_and_executable_by_runtime_roles_only() -> N
     sql = "\n".join(_run("upgrade", 1))
     assert "SECURITY DEFINER SET search_path = pg_catalog, pg_temp" in sql
     assert "REVOKE ALL PRIVILEGES ON FUNCTION" in sql and "GRANT EXECUTE ON FUNCTION" in sql
+    assert sql.index("REVOKE ALL PRIVILEGES ON FUNCTION") < sql.index("GRANT EXECUTE ON FUNCTION")
+    assert "FROM PUBLIC" in sql.split("REVOKE ALL PRIVILEGES ON FUNCTION", 1)[1].split(";", 1)[0]
 
 
 def test_downgrade_refuses_while_members_exist_then_drops() -> None:

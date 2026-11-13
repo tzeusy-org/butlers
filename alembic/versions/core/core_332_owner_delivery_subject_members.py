@@ -19,6 +19,10 @@ presentation stays ``ready`` or ``retry_wait`` and is claimed again once the sub
   answers one boolean (pinned ``search_path``, schema-qualified names, EXECUTE only to the butler
   runtime roles). It answers *held* only for a live telegram presentation of the subject's current
   generation, whose subject is unresolved.
+* EXECUTE is revoked from PUBLIC first (Postgres grants it by default), then granted by a loop over
+  the ``butler_%_rw`` roles that exist when this migration runs. A butler role created later needs
+  the grant re-applied (the core chain re-runs it per schema, and ``scripts/init-db.sql`` default
+  privileges do not cover functions).
 * Inserts are fenced to an unresolved subject and to the subject's own schema.
 
 The core chain runs once per butler schema over these shared objects: every statement is

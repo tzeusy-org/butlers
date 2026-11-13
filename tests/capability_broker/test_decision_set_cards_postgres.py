@@ -574,6 +574,27 @@ async def test_the_member_table_is_append_only_and_narrowly_granted(broker_db_ur
                 role,
             )
             assert can_ask is True, role
+        public_can = await w.owner.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pg_proc p, aclexplode(p.proacl) a "
+            "WHERE p.oid = 'public.owner_delivery_item_held(text, text)'::regprocedure "
+            "AND a.grantee = 0)"
+        )
+        assert public_can is False
+        # No role outside the butler runtime roles (PUBLIC included) may ask.
+        strangers = await w.owner.fetch(
+            "SELECT rolname FROM pg_roles WHERE rolname NOT LIKE 'butler\\_%\\_rw' "
+            "AND NOT rolsuper AND rolname NOT LIKE 'pg\\_%' "
+            "AND NOT EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles b ON b.oid = m.roleid "
+            "WHERE m.member = pg_roles.oid AND b.rolname LIKE 'butler\\_%\\_rw') "
+            "AND oid <> (SELECT proowner FROM pg_proc "
+            "WHERE oid = 'public.owner_delivery_item_held(text, text)'::regprocedure)"
+        )
+        for row in strangers:
+            assert not await w.owner.fetchval(
+                "SELECT has_function_privilege($1, "
+                "'public.owner_delivery_item_held(text, text)', 'EXECUTE')",
+                row["rolname"],
+            ), row["rolname"]
         await _reset(w)
         await _set(w)
         await (await _sweeper(w, Transport())).sweep()
