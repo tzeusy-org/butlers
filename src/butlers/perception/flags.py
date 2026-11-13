@@ -9,3 +9,6 @@ from __future__ import annotations
 
 #: ``situation.read`` and ``timeline.query`` are offered as capabilities.
 SITUATION_READS_LIVE = False
+
+#: The owner's deterministic ``/now`` card is served (dashboard ``GET /api/now``).
+NOW_LIVE = False

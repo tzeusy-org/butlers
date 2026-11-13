@@ -155,6 +155,27 @@ needs `perception_availability_reader`. That grant lands with the switch.
   writer, digest or event key, and defaults to `live=True`, which skips late and
   retracted assertions.
 
+## The /now card (dark, `.21`)
+
+`butlers.perception.now` renders the owner's `/now` card from owner reads of
+`owner.place`, `owner.activity`, `owner.mode`, `owner.clock` and
+`owner.suppression`, with no model. `render_now` is pure and `render_text` gives
+the plain-text form a chat reply would use. The dashboard serves it at
+`GET /api/now` (owner-authenticated), which answers 404 while
+`perception.flags.NOW_LIVE` is off.
+
+- Every state renders. A missing, malformed or unrenderable read is "Unknown
+  (unreadable)"; a known read past `fresh_until` renders as stale. The card is
+  `all_current` only when every signal is known and fresh.
+- Place is coarse: "At a known place" or "Elsewhere". No place, locality,
+  evidence or record reference reaches the card.
+- When live, the route reads on a fresh `BUTLERS_PERCEPTION_READER_DSN`
+  connection and switches to `perception_owner_reader` with `SET LOCAL ROLE`
+  inside one transaction. At activation that login role needs membership of
+  `perception_owner_reader` (and not of `perception_availability_reader`).
+- There is no Telegram `/now` command yet: the Telegram connector has no
+  slash-command path, so wiring one is separate connector work.
+
 ## Complete private backup
 
 All ten durable relations and their exact fixed schema travel through
