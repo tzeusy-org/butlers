@@ -51,9 +51,9 @@ TIMED_DAILY_CAP = 6
 #: through quiet hours (never through dnd or sleeping).
 PRESENCE_EDGE_FRESHNESS = timedelta(minutes=15)
 
-#: Premise probes whose truth is a confirmed owner presence edge. The probe
-#: itself is registered in ``premises.PREMISE_PROBES`` by its producer; until it
-#: is, the premise reads unknown and the candidate holds.
+#: Premise probes whose truth is a confirmed owner presence edge. Each is
+#: registered in ``premises.PREMISE_PROBES`` by its producer (the Home
+#: departure card, ``butlers.jobs.home_departure``).
 PRESENCE_EDGE_PROBES: frozenset[tuple[str, str]] = frozenset({("home", "departure_still_open")})
 
 #: A timed claim older than this is swept (see the module docstring).

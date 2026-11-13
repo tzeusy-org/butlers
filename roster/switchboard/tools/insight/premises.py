@@ -18,6 +18,7 @@ is no LLM in this path.
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
@@ -68,10 +69,25 @@ async def _health_medication_refill_still_due(
     return None if due is None else bool(due)
 
 
+async def _home_departure_still_open(pool: asyncpg.Pool, args: Mapping[str, Any]) -> bool | None:
+    """True while the departure card is open and unchanged; False once closed or changed.
+
+    None when the edge id is malformed or the definer answers unknown (no card, or no recheck
+    within three minutes).  bu-jv1moa.8: the timed lane holds an unknown departure card.
+    """
+    try:
+        edge_event_id = uuid.UUID(str(args.get("edge_event_id")))
+    except ValueError:
+        return None
+    still_open = await pool.fetchval("SELECT public.resolve_home_departure($1)", edge_event_id)
+    return None if still_open is None else bool(still_open)
+
+
 #: ``(butler, probe)`` -> probe. A butler adopts premises by registering here.
 PREMISE_PROBES: dict[tuple[str, str], ProbeFn] = {
     ("finance", "bill_still_pending"): _finance_bill_still_pending,
     ("health", "medication_refill_still_due"): _health_medication_refill_still_due,
+    ("home", "departure_still_open"): _home_departure_still_open,
 }
 
 

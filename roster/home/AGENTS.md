@@ -94,6 +94,13 @@ create, resolve or mute these alerts from a session, and never infer a safety ro
 entity's name. The owner declares sensors on the dashboard (Home, Devices, Safety sensors). If
 Home Assistant is unreachable the sentinel resolves nothing, so an open leak alert stays open.
 
+### Departure card (deterministic, no model, dark)
+
+`home_departure_watch` queues one read-only timed card when the owner leaves with something in
+`home.departure_watch` not secure. It runs in code (`src/butlers/jobs/home_departure.py`), is not
+scheduled yet, and has no tool or skill: do not try to send, edit or suppress a departure card
+from a session, and do not offer to fix what it lists.
+
 ## HA Event Response Patterns
 
 For HA event classification, safety, environmental-drift, automation-failure,

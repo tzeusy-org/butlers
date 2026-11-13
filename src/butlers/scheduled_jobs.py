@@ -1661,6 +1661,16 @@ async def _run_home_safety_sentinel_job(
     return await run_safety_sentinel(pool, job_args)
 
 
+async def _run_home_departure_watch_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Queue one read-only timed departure card per confirmed leave edge (dark, unscheduled)."""
+    from butlers.jobs.home_departure import run_departure_watch
+
+    return await run_departure_watch(pool, job_args)
+
+
 _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
     "device_health_check": _run_home_device_health_check_job,
     "environment_report": _run_home_environment_report_job,
@@ -1670,6 +1680,7 @@ _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "atmosphere_feed_refresh": _run_home_atmosphere_feed_refresh_job,
     "atmosphere_preconditioning": _run_home_atmosphere_preconditioning_job,
     "home_safety_sentinel": _run_home_safety_sentinel_job,
+    "home_departure_watch": _run_home_departure_watch_job,
 }
 
 
