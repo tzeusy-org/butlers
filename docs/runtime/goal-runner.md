@@ -809,8 +809,8 @@ each item is one parked effect, and an approved item still runs as its own store
   and recipient, and `explicit_only`, true for an `administer` capability taken from the live
   catalog (a rule or schedule change is never pre-ticked; the resolver will accept it only as an
   explicit tick). `item_digest` is SHA-256 over the canonical JSON of exactly those facts.
-- Versions (`decision_set_versions`): the lead epoch, the plan version (an empty v1 plan is
-  recorded if the goal has none), a set digest over the ordered item digests, and an expiry equal
+- Versions (`decision_set_versions`): the lead epoch, the plan version (when the goal has no plan,
+  `create` appends an empty plan, so `goals.plan_version` moves from NULL to 1), a set digest over the ordered item digests, and an expiry equal
   to the budget deadline. The same membership returns the open version (a retry). A changed
   membership supersedes the open version and appends the next version of the same set, so a card
   or token bound to the old version is stale. A goal has at most one open version.
@@ -818,8 +818,10 @@ each item is one parked effect, and an approved item still runs as its own store
   (latest when no version) and `open_for_goal(goal_id)` return frozen `DecisionSet` /
   `DecisionSetItem` values. The full stored call of an item comes from the existing approval preview
   of its effect, not from a second copy here.
-- Guards (`sw_072`): items and set identities are append-only, a version changes only its state
-  (`open` to `superseded`, `cancelled` or `expired`), nothing is deletable, and `decided` is refused
+- Guards (`sw_072`): items and set identities are append-only, a version is inserted `open` and
+  changes only its state (`open` to `superseded`, `cancelled` or `expired`), a deferred constraint
+  trigger checks at commit that each version holds exactly `item_count` items (so a committed
+  version's membership is fixed), nothing is deletable, and `decided` is refused
   until the resolver and its receipt land. The runtime role may read, insert and update a version's
   state.
 

@@ -24,8 +24,10 @@ Three tables:
   exactly those facts. ``explicit_only`` marks an item the owner must tick on its own (an
   ``administer`` capability: a rule or schedule change is never pre-ticked, bu-qlx055 q3).
 
-Items and set identities are append-only; a version may change only its state, along
-``open -> superseded | cancelled | expired``. Nothing can reach ``decided`` yet: the owner's
+Items and set identities are append-only; a version is inserted ``open`` and may change only its
+state, along ``open -> superseded | cancelled | expired``. A version's membership is fixed by the
+transaction that creates it: a deferred constraint trigger checks at commit that every version
+holds exactly ``item_count`` items, so no later insert can add an item to a committed version. Nothing can reach ``decided`` yet: the owner's
 decision path and its receipt arrive with the resolver (PR-B), which replaces this guard.
 Nothing is deletable. The Switchboard runtime role may read and insert, and may update only a
 version's state; the guard refuses anything else.
@@ -122,6 +124,49 @@ def upgrade() -> None:
         BEGIN
             RAISE EXCEPTION 'Decision sets are durable' USING ERRCODE = 'insufficient_privilege';
         END $$;
+        -- A version is born open; only the guarded state transitions move it on.
+        CREATE FUNCTION switchboard.decision_set_born_open()
+        RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+            IF NEW.state IS DISTINCT FROM 'open' THEN
+                RAISE EXCEPTION 'A decision set version is inserted open';
+            END IF;
+            RETURN NEW;
+        END $$;
+        -- At commit, every version holds exactly item_count items: a version's membership is
+        -- fixed by the transaction that created it, and no later insert can add to it.
+        CREATE FUNCTION switchboard.decision_set_membership()
+        RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        DECLARE
+            target_set UUID := NEW.set_id;
+            target_version BIGINT;
+            expected BIGINT;
+            actual BIGINT;
+        BEGIN
+            IF TG_TABLE_NAME = 'decision_set_versions' THEN
+                target_version := NEW.version;
+            ELSE
+                target_version := NEW.set_version;
+            END IF;
+            SELECT item_count INTO expected FROM switchboard.decision_set_versions
+             WHERE set_id = target_set AND version = target_version;
+            SELECT count(*) INTO actual FROM switchboard.decision_set_items
+             WHERE set_id = target_set AND set_version = target_version;
+            IF expected IS DISTINCT FROM actual THEN
+                RAISE EXCEPTION 'A decision set version holds exactly its item_count items';
+            END IF;
+            RETURN NULL;
+        END $$;
+        CREATE TRIGGER decision_set_born_open BEFORE INSERT ON switchboard.decision_set_versions
+            FOR EACH ROW EXECUTE FUNCTION switchboard.decision_set_born_open();
+        CREATE CONSTRAINT TRIGGER decision_set_membership
+            AFTER INSERT ON switchboard.decision_set_versions
+            DEFERRABLE INITIALLY DEFERRED
+            FOR EACH ROW EXECUTE FUNCTION switchboard.decision_set_membership();
+        CREATE CONSTRAINT TRIGGER decision_set_membership
+            AFTER INSERT ON switchboard.decision_set_items
+            DEFERRABLE INITIALLY DEFERRED
+            FOR EACH ROW EXECUTE FUNCTION switchboard.decision_set_membership();
     """)
     statements = []
     for table in _TABLES:
@@ -162,4 +207,6 @@ def downgrade() -> None:
         DROP TABLE IF EXISTS switchboard.decision_sets;
         DROP FUNCTION IF EXISTS switchboard.decision_set_immutable();
         DROP FUNCTION IF EXISTS switchboard.decision_set_durable();
+        DROP FUNCTION IF EXISTS switchboard.decision_set_born_open();
+        DROP FUNCTION IF EXISTS switchboard.decision_set_membership();
     """)

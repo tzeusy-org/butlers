@@ -3,7 +3,9 @@
 Real PostgreSQL. The runtime role may read and insert sets, versions and items, and may move an
 open version to superseded, cancelled or expired. It can neither edit a version's membership
 facts or an item, nor reach ``decided`` (that path arrives with the resolver), nor delete
-anything. One goal holds at most one open version. The downgrade refuses while a set exists.
+anything. A version is inserted open, and its membership is fixed at commit: it holds exactly
+``item_count`` items, and no later insert adds one. One goal holds at most one open version. The
+downgrade refuses while a set exists.
 """
 
 import asyncio
@@ -48,7 +50,9 @@ async def _goal(url):
         return goal, lead, plan, (first, second)
 
 
-async def _insert_set(runtime, goal, lead, plan, effects, *, version=1, set_id=None):
+async def _insert_set(
+    runtime, goal, lead, plan, effects, *, version=1, set_id=None, item_count=None
+):
     set_id = set_id or uuid4()
     async with runtime.acquire() as connection, connection.transaction():
         if version == 1:
@@ -64,7 +68,7 @@ async def _insert_set(runtime, goal, lead, plan, effects, *, version=1, set_id=N
             goal,
             plan,
             lead,
-            len(effects),
+            len(effects) if item_count is None else item_count,
             DIGEST,
         )
         for position, effect_id in enumerate(effects):
@@ -126,6 +130,35 @@ async def _exercise(url):
         )
         # With the first superseded, the next version of the same set may open.
         await _insert_set(runtime, goal, lead, plan, effects, version=2, set_id=set_id)
+
+        # D1: a committed version's membership is fixed, open or superseded.
+        _, third = await effect(owner, goal)
+        add_item = (
+            "INSERT INTO switchboard.decision_set_items (set_id, set_version, position, "
+            "goal_id, effect_id, capability, args_digest, explicit_only, item_digest) "
+            "VALUES ($1, $2, 5, $3, $4, 'general__notify', 'args', false, $5)"
+        )
+        # D2: a version is inserted open, never directly in a later state.
+        born_late = (
+            "INSERT INTO switchboard.decision_set_versions (set_id, version, goal_id, epoch, "
+            "plan_version, created_by, item_count, digest, expires_at, state) "
+            "VALUES ($1, 9, $2, 0, $3, $4, 2, $5, now() + interval '1 hour', 'superseded')"
+        )
+        for pool in (runtime, owner):
+            for version in (1, 2):
+                assert await _refused(pool, add_item, set_id, version, goal, third, DIGEST)
+            with pytest.raises(asyncpg.PostgresError, match="inserted open"):
+                await pool.execute(born_late, set_id, goal, plan, lead, DIGEST)
+        await runtime.execute(
+            "UPDATE switchboard.decision_set_versions SET state = 'superseded' "
+            "WHERE set_id = $1 AND version = 2",
+            set_id,
+        )
+        # D1: a version holds exactly its item_count items when its transaction commits.
+        with pytest.raises(asyncpg.PostgresError, match="item_count"):
+            await _insert_set(
+                runtime, goal, lead, plan, effects, version=3, set_id=set_id, item_count=3
+            )
 
         # A one-item set is refused: grouping needs at least two calls.
         with pytest.raises(asyncpg.CheckViolationError):
