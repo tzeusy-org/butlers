@@ -910,7 +910,9 @@ Scope: v1-mandatory
 Approval notification producers SHALL emit an `open_dashboard` action with
 `reference: {kind: "self", route_key, params}` instead of a raw `dashboard_url`.
 The fixed Python route registry SHALL contain `approval_detail` with exactly one
-canonical UUID `action_id` parameter and `approvals_queue` with no parameters.
+canonical UUID `action_id` parameter, `approvals_queue` with no parameters and
+`decision_set` with exactly one canonical UUID `set_id` parameter and no other (no
+version, selection, digest or call content).
 Self references SHALL NOT expire. Callback actions SHALL retain their signed
 callback tokens and SHALL NOT carry link URLs or self references.
 
@@ -938,6 +940,11 @@ using only letters, digits, `.`, `_` and `-`; a trailing slash is normalised
 away. Empty, `.`/`..`, percent-encoded or otherwise special segments, and any
 query or fragment, SHALL make the origin unsafe. This requirement does not
 authorize general model-supplied URLs, research links or login actions.
+
+#### Scenario: Decision set card opens its set page by id alone
+- **WHEN** an admitted owner notification carries `decision_set` with its canonical UUID `set_id`
+- **THEN** delivery constructs `/decision-sets/<set_id>` at the configured origin and Messenger independently reconstructs it
+- **AND** a reference with a missing, non-canonical or extra parameter, or a `set_id` under another route key, resolves to no link
 
 #### Scenario: Approval detail becomes a fixed dashboard button
 - **WHEN** an admitted owner approval notification carries `approval_detail`

@@ -29,7 +29,13 @@ SELF_ROUTES: Mapping[str, str] = MappingProxyType(
     {
         "approval_detail": "/approvals/{action_id}",
         "approvals_queue": "/approvals",
+        # A decision set card opens its own page by id alone: no selection or call in the URL.
+        "decision_set": "/decision-sets/{set_id}",
     }
+)
+# Routes that take exactly one canonical UUID parameter, by route key.
+_ID_ROUTES: Mapping[str, str] = MappingProxyType(
+    {"approval_detail": "action_id", "decision_set": "set_id"}
 )
 _UNVERIFIED = "[link not verified]"
 _HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z", re.ASCII)
@@ -94,19 +100,20 @@ def _resolve(reference: SelfLinkReferenceV1) -> dict[str, Any] | None:
     template = SELF_ROUTES.get(reference.route_key)
     if origin is None or template is None:
         return None
-    if reference.route_key == "approval_detail":
-        if set(reference.params) != {"action_id"}:
+    if reference.route_key in _ID_ROUTES:
+        param = _ID_ROUTES[reference.route_key]
+        if set(reference.params) != {param}:
             return None
-        action_id = reference.params["action_id"]
-        if not isinstance(action_id, str):
+        raw_id = reference.params[param]
+        if not isinstance(raw_id, str):
             return None
         try:
-            canonical = str(UUID(action_id))
+            canonical = str(UUID(raw_id))
         except ValueError:
             return None
-        if canonical != action_id:
+        if canonical != raw_id:
             return None
-        path = template.format(action_id=canonical)
+        path = template.format(**{param: canonical})
     elif reference.params:
         return None
     else:

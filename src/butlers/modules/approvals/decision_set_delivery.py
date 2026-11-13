@@ -29,16 +29,20 @@ transaction. The subject may therefore lag the decision:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any, Protocol
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
+from typing import Any, Literal, Protocol
 from uuid import UUID
 
+from butlers.capability_broker import owner_decisions
 from butlers.capability_broker.owner_decisions import OwnerContext, SetDecision
 from butlers.core import owner_delivery as od
 from butlers.modules.approvals.decision_set_card import (
     action_digest,
     approve_selection,
+    build_set_envelope,
     reject_selection,
+    render_set_card,
 )
 from butlers.modules.approvals.decision_set_view import SetView
 
@@ -96,6 +100,85 @@ async def present_set_card(conn: Any, view: SetView, *, owner_recipient: str) ->
         actions=SET_CARD_ACTIONS,
         expires_at=view.expires_at,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class SendResult:
+    """What the notify transport reports for one handed-off card."""
+
+    outcome: Literal["sent", "failed", "unknown"]
+    provider_ref: str | None = None
+
+
+#: Hands one ``notify.v1`` envelope to the owner's channel.
+Transport = Callable[[dict[str, Any]], Awaitable[SendResult]]
+
+
+@dataclass(frozen=True, slots=True)
+class CardSend:
+    """The outcome of :func:`send_set_card`.
+
+    ``off``: nothing was minted or sent (the decision path or the owner-delivery rollout is off).
+    ``handed_off``: the card was already handed to its provider, so nothing was sent again.
+    Otherwise the transport's own outcome. ``decision_offered`` is whether the card carried
+    Approve and Reject (an open-only card is sent with Open alone and mints no token).
+    """
+
+    status: Literal["off", "handed_off", "sent", "failed", "unknown"]
+    decision_offered: bool = False
+
+
+async def send_set_card(
+    pool: Any,
+    view: SetView,
+    *,
+    origin_butler: str,
+    owner_recipient: str,
+    transport: Transport,
+    live: bool | None = None,
+) -> CardSend:
+    """Send one set's Telegram card, minting tokens only for a card that offers a decision.
+
+    Dark: with ``OWNER_DECISIONS_LIVE`` off, or the owner-delivery rollout off, nothing is minted
+    and nothing is sent. The card text, the default selection it lists and the tokens' action
+    digest all come from the one ``view`` passed in (read once by the caller). The presentation
+    is marked handed off *before* the transport call, so a crash leaves an honest ``unknown``
+    and a retry never mints fresh tokens for a card that may already be out.
+    """
+    if not (owner_decisions.OWNER_DECISIONS_LIVE if live is None else live):
+        return CardSend("off")
+    async with pool.acquire() as conn:
+        if not await od.rollout_enabled(conn):
+            return CardSend("off")
+    if not render_set_card(view).offer_decision:
+        envelope = build_set_envelope(
+            view, origin_butler=origin_butler, owner_recipient=owner_recipient, tokens=None
+        )
+        result = await _hand_off(transport, envelope)
+        return CardSend(result.outcome, decision_offered=False)
+    async with pool.acquire() as conn, conn.transaction():
+        presentation = await present_set_card(conn, view, owner_recipient=owner_recipient)
+        if not presentation.tokens or not await od.begin_send(conn, presentation.id):
+            return CardSend("handed_off", decision_offered=True)
+    envelope = build_set_envelope(
+        view,
+        origin_butler=origin_butler,
+        owner_recipient=owner_recipient,
+        tokens=presentation.tokens,
+    )
+    result = await _hand_off(transport, envelope)
+    async with pool.acquire() as conn, conn.transaction():
+        await od.record_send(
+            conn, presentation.id, outcome=result.outcome, provider_ref=result.provider_ref
+        )
+    return CardSend(result.outcome, decision_offered=True)
+
+
+async def _hand_off(transport: Transport, envelope: dict[str, Any]) -> SendResult:
+    try:
+        return await transport(envelope)
+    except Exception:  # noqa: BLE001 - an unreported provider result is ambiguous, never a failure
+        return SendResult("unknown")
 
 
 def _summary(decision: SetDecision) -> dict[str, Any]:
@@ -214,6 +297,10 @@ async def close_set_subject(
 
 __all__ = [
     "SET_CARD_ACTIONS",
+    "CardSend",
+    "SendResult",
+    "Transport",
+    "send_set_card",
     "Resolver",
     "SelectionRefused",
     "close_set_subject",

@@ -130,3 +130,50 @@ def test_a_set_that_is_not_decidable_is_open_only():
     card = render_set_card(build_set_view(_set(a), {}, now=NOW))
     assert not card.offer_decision
     assert "Approve and Reject are not offered" in card.message
+
+
+# -- the notify envelope --------------------------------------------------------------------------
+
+TOKENS = {"approve": "od1:" + "A" * 43, "reject": "od1:" + "B" * 43}
+
+
+def _envelope(view, tokens=TOKENS):
+    from butlers.modules.approvals.decision_set_card import build_set_envelope
+
+    return build_set_envelope(
+        view, origin_butler="switchboard", owner_recipient="9001", tokens=tokens
+    )
+
+
+def test_the_envelope_carries_the_card_the_tokens_and_a_set_id_only_link():
+    a, b = _item(0), _item(1, OTHER)
+    view = _built((a, SEND), (b, OTHER))
+    envelope = _envelope(view)
+    assert envelope["delivery"]["message"] == render_set_card(view).message
+    assert envelope["delivery"]["intent"] == "approval_request"
+    verbs = [(x["verb"], x.get("callback_token")) for x in envelope["actions"]]
+    assert verbs == [
+        ("approve", TOKENS["approve"]),
+        ("reject", TOKENS["reject"]),
+        ("open_dashboard", None),
+    ]
+    link = envelope["actions"][-1]["reference"]
+    assert link == {
+        "kind": "self",
+        "route_key": "decision_set",
+        "params": {"set_id": str(view.set_id)},
+    }
+
+
+def test_an_open_only_card_gets_no_decision_buttons_even_if_tokens_are_supplied():
+    view = build_set_view(_set(_item(0)), {}, now=NOW)
+    verbs = [x["verb"] for x in _envelope(view)["actions"]]
+    assert verbs == ["open_dashboard"]
+
+
+def test_one_missing_token_means_neither_button_is_attached():
+    view = _built((_item(0), SEND))
+    assert [x["verb"] for x in _envelope(view, {"approve": TOKENS["approve"]})["actions"]] == [
+        "open_dashboard"
+    ]
+    assert [x["verb"] for x in _envelope(view, None)["actions"]] == ["open_dashboard"]
