@@ -908,15 +908,19 @@ Behind `goal_runner/evidence.py` `EVIDENCE_COMPLETION_LIVE` (False), a goal whos
 - Owner anchors come only from server facts (`RunnerLedger.owner_anchors`): the reply an
   owner-message goal owes, each effect with an approving owner decision receipt, and each owner
   reply that joined the goal. The lead names only its own (`lead`) requirements through
-  `goal.plan`'s `requirements`. A new plan version records every owner anchor derived so far and
-  every one its predecessor kept. `WaitLedger.append_plan` refuses a version that drops or changes
+  `goal.plan`'s `requirements`. A new plan version records every owner anchor its predecessor
+  kept, plus newly derived ones within the reserve below. `WaitLedger.append_plan` refuses a version that drops or changes
   one (`PlanRequirementDropped`), and the sw_075 trigger refuses it again. A lead requirement may
   be dropped.
-- Size never refuses what the owner caused (`evidence.plan_requirements`). Within the 64 a version
-  records, room goes first to the owner anchors its predecessor kept, then to the lead's own
-  requirements, then to owner anchors derived since. Derived anchors that do not fit are left out
-  of the version only, because the settle derives them again. Only lead requirements past the
-  bound refuse `goal.plan` (POLICY).
+- Size never refuses what the owner caused (`evidence.plan_requirements`). A version records at
+  most 64 requirements. Because every kept owner anchor is kept forever, recorded owner anchors
+  stop at a reserve of 32 (`OWNER_ANCHOR_RESERVE`): a newly derived anchor is recorded only
+  while kept plus new stays within it, and only after the lead's own requirements fit. The lead
+  therefore has a budget of at least 32 in every version. A legacy version already past the
+  reserve keeps all its owner anchors and records no new ones. Derived anchors left out are left
+  out of the version only, because the settle derives them again. Only lead requirements past
+  the remaining budget (64 minus the kept owner anchors) refuse `goal.plan` (POLICY). The
+  `RequirementError` behind it states that budget; the refusal itself stays the closed reason.
 - The settle resolution (`RunnerLedger.resolve`, then `_judge`, then `evidence.judge`, a pure
   predicate) evaluates the latest plan's requirements, the owner anchors derived now, and the
   lead's relied effects (each must commit). The reply checks and `delivery_failure` run first and

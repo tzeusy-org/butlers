@@ -34,6 +34,8 @@ from uuid import UUID
 EVIDENCE_COMPLETION_LIVE = False
 
 MAX_REQUIREMENTS = 64  # the sw_075 goal_plans.requirements bound
+# Recorded owner anchors stop growing here, so every version leaves the lead at least half.
+OWNER_ANCHOR_RESERVE = MAX_REQUIREMENTS // 2
 MAX_PERSISTED = 128  # the sw_075 goal_outcome_evidence satisfied/missing bound
 ANCHORS = ("owner", "lead")
 # Which evidence each reference kind can carry; the first is what a lead requirement asks for.
@@ -124,18 +126,25 @@ def plan_requirements(
 ) -> tuple[Requirement, ...]:
     """What a plan version records, within the column bound (``MAX_REQUIREMENTS``).
 
-    Room goes first to the owner anchors the predecessor recorded (a version keeps every one),
-    then to the lead's own requirements, then to owner anchors derived since. Derived anchors
-    that do not fit are left out of the version only: ``judge`` derives them again at settle, so
-    nothing is lost. Only lead requirements past the bound are refused; growing owner anchors
-    never refuse a re-plan.
+    A version keeps every owner anchor its predecessor recorded (the sw_075 superset rule), so
+    recorded owner anchors are capped at ``OWNER_ANCHOR_RESERVE``: newly derived anchors are
+    recorded only while kept plus new stays within it. That leaves the lead a budget of at
+    least ``MAX_REQUIREMENTS - OWNER_ANCHOR_RESERVE`` in every version. A legacy predecessor
+    already past the reserve keeps all its anchors and gains none. Derived anchors left out are
+    left out of the version only: ``judge`` derives them again at settle, so nothing is lost.
+    Only lead requirements past the remaining budget are refused; growing owner anchors never
+    refuse a re-plan.
     """
     kept_owner = merge(kept)
     owner_keys = {(req.ref, req.evidence) for req in merge(kept_owner, derived)}
     lead_extra = [req for req in merge(lead) if (req.ref, req.evidence) not in owner_keys]
-    if len(kept_owner) + len(lead_extra) > MAX_REQUIREMENTS:
-        raise RequirementError("too many requirements")
-    room = MAX_REQUIREMENTS - len(kept_owner) - len(lead_extra)
+    budget = MAX_REQUIREMENTS - len(kept_owner)
+    if len(lead_extra) > budget:
+        raise RequirementError(f"too many requirements: the lead may add at most {budget}")
+    room = min(
+        max(OWNER_ANCHOR_RESERVE - len(kept_owner), 0),
+        budget - len(lead_extra),
+    )
     kept_keys = {(req.ref, req.evidence) for req in kept_owner}
     new_owner = [req for req in merge(derived) if (req.ref, req.evidence) not in kept_keys]
     return merge(kept_owner, lead_extra, new_owner[:room])

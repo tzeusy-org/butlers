@@ -1130,8 +1130,9 @@ class RunnerLedger:
         if live:
             kept = await self._kept_owner_anchors(principal.goal_id)
             try:
-                # Only the lead's own requirements past the bound refuse; growing owner
-                # anchors never do (the ones left out are derived again at settle).
+                # Only the lead's own requirements past its budget refuse; growing owner
+                # anchors never do (recorded ones stop at the reserve, the rest are derived
+                # again at settle).
                 merged = evidence_rules.plan_requirements(
                     lead, await self.owner_anchors(principal.goal_id), kept
                 )

@@ -92,16 +92,17 @@ def test_a_replan_is_never_refused_because_owner_anchors_grew():
     kept = _owner(10)
     derived = [*kept, *_owner(evidence.MAX_REQUIREMENTS + 20)]
     recorded = evidence.plan_requirements((), derived, kept)
-    assert len(recorded) == evidence.MAX_REQUIREMENTS
+    assert len(recorded) == evidence.OWNER_ANCHOR_RESERVE  # new anchors fill only the reserve
     assert set(kept) <= set(recorded)  # every kept owner anchor survives
     assert all(req.anchor == "owner" for req in recorded)
 
 
 def test_lead_requirements_take_the_room_before_new_owner_anchors():
     kept = _owner(5)
-    lead = [lead_requirement(f"effect:{uuid4()}") for _ in range(10)]
+    lead = _leads(40)
     derived = [*kept, *_owner(evidence.MAX_REQUIREMENTS)]
     recorded = evidence.plan_requirements(lead, derived, kept)
+    # The reserve would allow 27 new anchors; the lead's 40 leave room for only 19.
     assert len(recorded) == evidence.MAX_REQUIREMENTS
     assert set(kept) | set(lead) <= set(recorded)
 
@@ -119,6 +120,42 @@ def test_only_lead_requirements_past_the_cap_are_refused():
         evidence.plan_requirements(
             [lead_requirement(f"effect:{uuid4()}") for _ in range(65)], (), ()
         )
+
+
+def _leads(n: int) -> list[Requirement]:
+    return [lead_requirement(f"effect:{uuid4()}") for _ in range(n)]
+
+
+def _next_version(lead, derived, previous) -> tuple[Requirement, ...]:
+    kept = [req for req in previous if req.anchor == "owner"]
+    return evidence.plan_requirements(lead, derived, kept)
+
+
+def test_owner_anchors_recorded_for_free_never_crowd_out_a_later_lead():
+    # N4: v1 has 10 lead requirements and 100 derived anchors; v2's lead adds one more.
+    derived = _owner(100)
+    v1 = evidence.plan_requirements(_leads(10), derived, ())
+    v2 = _next_version(_leads(11), derived, v1)
+    assert sum(req.anchor == "lead" for req in v2) == 11
+    assert {req for req in v1 if req.anchor == "owner"} <= set(v2)
+
+
+def test_a_lead_budget_of_half_the_bound_survives_any_owner_history():
+    derived = _owner(evidence.MAX_REQUIREMENTS + 6)
+    v1 = evidence.plan_requirements((), derived, ())
+    assert len(v1) == evidence.OWNER_ANCHOR_RESERVE
+    v2 = _next_version(_leads(evidence.MAX_REQUIREMENTS // 2), derived, v1)
+    assert len(v2) == evidence.MAX_REQUIREMENTS
+
+
+def test_legacy_kept_anchors_past_the_reserve_are_all_kept_and_none_added():
+    kept = _owner(evidence.OWNER_ANCHOR_RESERVE + 8)
+    recorded = evidence.plan_requirements(_leads(3), [*kept, *_owner(20)], kept)
+    assert set(kept) <= set(recorded)
+    assert len(recorded) == len(kept) + 3
+    budget = evidence.MAX_REQUIREMENTS - len(kept)
+    with pytest.raises(RequirementError, match=f"at most {budget}"):
+        evidence.plan_requirements(_leads(budget + 1), kept, kept)
 
 
 def test_a_completed_claim_needs_every_proof_and_otherwise_ends_partial():

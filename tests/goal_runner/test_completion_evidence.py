@@ -210,7 +210,8 @@ async def test_live_owner_anchors_past_the_bound_never_refuse_a_replan(broker_db
                     goal, lead.token, [f"effect:{own}"], [], [], [f"effect:{own}"]
                 )
             recorded = await _requirements(h, goal, second)
-            assert len(recorded) == evidence.MAX_REQUIREMENTS
+            owner = [item for item in recorded if item["anchor"] == "owner"]
+            assert len(owner) == evidence.OWNER_ANCHOR_RESERVE  # N4: the reserve, not the bound
             assert all(item in recorded for item in kept)
             assert {"ref": f"effect:{own}", "evidence": "committed", "anchor": "lead"} in recorded
 
