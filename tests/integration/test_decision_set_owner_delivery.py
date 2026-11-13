@@ -446,3 +446,52 @@ async def test_a_provider_failure_lets_a_retry_present_again_with_fresh_tokens(d
     assert old and new and old.isdisjoint(new)
     refused = await _redeem(pool, sorted(old)[0], view, Resolver(), action="approve")
     assert refused.outcome == "refused"
+
+
+async def test_the_presentation_is_handed_off_before_the_transport_is_called(db):
+    pool = await _owned(db)
+    await _enable(pool)
+    seen: list[str] = []
+
+    async def transport(envelope):
+        # Read while the provider call is in flight: the handoff must already be committed.
+        seen.append(await pool.fetchval("SELECT state FROM public.owner_delivery_presentations"))
+        from butlers.modules.approvals.decision_set_delivery import SendResult
+
+        return SendResult("sent", "55")
+
+    assert (await _send(pool, _two(), transport)).status == "sent"
+    assert seen == ["unknown"]
+
+
+async def test_a_cancelled_send_is_never_resent_with_fresh_tokens(db):
+    import asyncio
+
+    pool = await _owned(db)
+    await _enable(pool)
+    view = _two()
+
+    async def cancelled(envelope):
+        # A BaseException the transport guard does not swallow: the call dies mid-flight.
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await _send(pool, view, cancelled)
+    retry = Transport()
+    again = await _send(pool, view, retry)
+    assert again.status == "handed_off" and retry.envelopes == []
+    assert await pool.fetchval("SELECT count(*) FROM public.owner_delivery_tokens") == 2
+
+
+async def test_a_decidable_set_whose_card_is_open_only_mints_nothing(db):
+    pool = await _owned(db)
+    await _enable(pool)
+    args = [{**SEND, "message": f"{i} " + "x" * 900} for i in range(8)]
+    view = _view(*((_item(i, a), a) for i, a in enumerate(args)))
+    assert view.decidable  # the set itself may be decided; only this card cannot carry it
+    transport = Transport()
+    sent = await _send(pool, view, transport)
+    assert (sent.status, sent.decision_offered) == ("sent", False)
+    assert [a["verb"] for a in transport.envelopes[0]["actions"]] == ["open_dashboard"]
+    assert await _rows(pool) == 0
+    assert await pool.fetchval("SELECT count(*) FROM public.owner_delivery_tokens") == 0
