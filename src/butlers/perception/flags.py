@@ -18,3 +18,6 @@ OWNER_CLOCK_LIVE = False
 
 #: Owner mode controls (enter, exit and edit a mode) accept changes.
 MODE_CONTROLS_LIVE = False
+
+#: The owner's active mode entries are projected into ``owner.mode``.
+MODE_PROJECTION_LIVE = False
