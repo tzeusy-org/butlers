@@ -391,6 +391,30 @@ async def test_the_card_is_sent_once_and_a_changed_home_withdraws_it(db, live, n
 @_docker
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
+async def test_a_card_whose_lines_changed_is_closed_with_a_content_blind_reason(db, live) -> None:
+    pool = await _home_pool(db)
+    await _seed(pool, door="on")
+    leave = _now_edge("leave", 3)
+    await _run(pool, [leave])
+    await _set_state(pool, _LIGHT.entity_id, "on")
+
+    result = await _run(pool, [leave])
+    again = await _run(pool, [leave])
+
+    row = await pool.fetchrow(
+        "SELECT state, closed_reason, to_jsonb(c)::text AS raw "
+        "FROM departure_cards c WHERE edge_event_id = $1",
+        leave.id,
+    )
+    assert (result["closed"], again["rechecked"]) == (1, 0)
+    assert (row["state"], row["closed_reason"]) == ("closed", "withdrawn_changed")
+    assert "Front door" not in row["raw"] and "Garage light" not in row["raw"]
+    assert await _resolve(pool, leave) is False
+
+
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 async def test_the_switchboard_reads_only_the_class_and_a_stale_card_is_unknown(db, live) -> None:
     pool = await _home_pool(db)
     await _seed(pool, door="on")

@@ -51,6 +51,8 @@ no roster schedule) until an owner-approved activation turns it on together with
 - **THEN** it SHALL answer true only for an open card rechecked within three minutes whose lines are
   unchanged since it was queued, false for a closed or changed card (the candidate is withdrawn
   unsent), and unknown otherwise (the candidate holds and expires at the end of its window)
+- **AND** a recheck that finds the lines changed SHALL close the card with the content-blind reason
+  `withdrawn_changed`, so a card that never arrived is explainable without storing its lines
 - **AND** the function SHALL be SECURITY DEFINER with a pinned `search_path`, SHALL return only that
   class, and SHALL be executable by `butler_switchboard_rw` and not by PUBLIC
 

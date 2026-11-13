@@ -298,18 +298,23 @@ async def run_departure_watch(
     lines = await _current_lines(pool, watch, now)
     fingerprint = card_fingerprint(lines)
     known = {
-        r["edge_event_id"]: r["state"]
+        r["edge_event_id"]: (r["state"], r["proposed_fingerprint"])
         for r in await pool.fetch(
-            "SELECT edge_event_id, state FROM departure_cards WHERE edge_event_id = ANY($1)",
+            "SELECT edge_event_id, state, proposed_fingerprint FROM departure_cards "
+            "WHERE edge_event_id = ANY($1)",
             [e.id for e in leaves],
         )
     }
     for leave in leaves:
         reason: str | None = closure(leave, edges) or (None if lines else "all_secure")
+        if reason is None and leave.id in known and known[leave.id][1] != fingerprint:
+            # The queued text no longer matches: the definer withdraws it, and the evidence row
+            # says so without recording either version of the lines.
+            reason = "withdrawn_changed"
         state = "closed" if reason else "open"
         counts["closed"] += int(reason is not None)
         if leave.id in known:
-            if known[leave.id] == "open":
+            if known[leave.id][0] == "open":
                 counts["rechecked"] += 1
                 await pool.execute(
                     "UPDATE departure_cards SET state = $2, closed_reason = $3, "

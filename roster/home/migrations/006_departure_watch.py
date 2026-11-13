@@ -11,7 +11,8 @@ unreadable entity, is listed on the card.
 
 ``departure_cards`` is the evidence for one confirmed leave edge, rechecked every minute by
 ``butlers.jobs.home_departure``: ``open`` while the card still says what it said when it was
-queued, ``closed`` with a reason once it must not be sent.  The Switchboard reads it only
+queued, ``closed`` with a reason once it must not be sent (``withdrawn_changed`` when the lines
+changed after it was queued; the row never stores the lines themselves).  The Switchboard reads it only
 through ``public.resolve_home_departure`` (core_335), which answers open, closed or unknown.
 """
 
@@ -51,7 +52,7 @@ def upgrade() -> None:
                                  CONSTRAINT ck_departure_cards_reason
                                  CHECK (closed_reason IN
                                         ('retracted', 'late', 'reentered', 'all_secure',
-                                         'not_queued')),
+                                         'not_queued', 'withdrawn_changed')),
             proposed_fingerprint TEXT,
             fingerprint          TEXT,
             checked_at           TIMESTAMPTZ NOT NULL,

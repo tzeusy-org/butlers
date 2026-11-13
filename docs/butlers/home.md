@@ -157,7 +157,8 @@ entity, the label to use and the states that count as secure (`off`, `closed`, `
   missing or unavailable entity gives "<label>: cannot see"; neither ever reads as secure;
 - every run rechecks open cards, and the Switchboard asks `public.resolve_home_departure`
   (core_335) before sending: a closed card, or one whose lines changed since it was queued, is
-  withdrawn unsent; a card not rechecked for three minutes holds.
+  withdrawn unsent; a card not rechecked for three minutes holds. A changed card's evidence row
+  closes as `withdrawn_changed`, which records why it never arrived but not what it said.
 
 The card names things only by the owner's labels, never Home Assistant's `friendly_name`, and has
 no buttons, no Home Assistant service call and no prepared action. Fixes, arrival cards and an

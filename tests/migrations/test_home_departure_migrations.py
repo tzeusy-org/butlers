@@ -60,6 +60,14 @@ def test_the_definer_is_pinned_and_public_execute_is_revoked_on_its_own() -> Non
     assert "REVOKE ALL ON FUNCTION public.resolve_home_departure(uuid) FROM PUBLIC" in statements
 
 
+@pytest.mark.unit
+def test_a_changed_card_has_a_content_blind_closed_reason() -> None:
+    cards = next(
+        s for s in _statements(_load(_HOME_006, "h006"), "upgrade") if "departure_cards (" in s
+    )
+    assert "'withdrawn_changed'" in cards
+
+
 @_docker
 @pytest.mark.integration
 async def test_departure_tables_constrain_labels_states_and_downgrade(
