@@ -17,6 +17,13 @@
       "phone_walk": "covered"
     },
     {
+      "name": "decision set card",
+      "pattern": "/decision-sets/[0-9a-f-]{36}",
+      "example": "/decision-sets/44444444-4444-4444-8444-444444444444",
+      "payload_selector": "button:has-text('Approve')",
+      "phone_walk": "covered"
+    },
+    {
       "name": "secrets passport",
       "pattern": "/secrets\\?focus=[A-Za-z0-9%._-]+",
       "example": "/secrets?focus=u%3Agoogle",

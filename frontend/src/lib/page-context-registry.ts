@@ -97,6 +97,7 @@ export const PAGE_CONTEXT_REGISTRY: Record<string, PageContextDescriptor> = {
   "/memory/rules/:ruleId": SNAPSHOT("Rule detail"),
   "/memory/episodes/:episodeId": SNAPSHOT("Episode detail"),
   "/approvals/:id": SNAPSHOT("Approval detail"),
+  "/decision-sets/:setId": SNAPSHOT("Decision set"),
   "/ingestion/connectors/:connectorType/:endpointIdentity": SNAPSHOT("Connector detail"),
   "/qa/patrols/:patrolId": SNAPSHOT("QA patrol detail"),
   "/qa/investigations/:attemptId": SNAPSHOT("QA investigation detail"),
