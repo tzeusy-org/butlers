@@ -570,7 +570,7 @@ async def test_a_lasting_broker_refusal_ends_the_approval_instead_of_redriving_i
 
 
 async def test_a_domain_call_changed_after_parking_never_dispatches(broker_db_url):
-    """C3a: the domain's stored call must match the receipt's digest, or it is cancelled."""
+    """C3b: the domain's stored call must match the receipt's digest, or it is cancelled."""
     async with world(broker_db_url) as w:
         goal, _, (effect, _) = await _parked(w)
         changed = {**(await w.action(effect))["tool_args"], "message": "something else"}
