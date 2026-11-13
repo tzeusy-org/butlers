@@ -176,11 +176,9 @@ async def test_a_hostile_search_path_cannot_shadow_the_places(dsn):
         await point(conn, 10, 10)
         # A session-level shadow of the places table, ahead of public on the search path.
         await conn.execute(
-            "CREATE TEMP TABLE owner_places (id uuid, radius_m int, lat float8, lon float8,"
-            " ssids text[], paused bool, deleted_at timestamptz)"
-        )
-        await conn.execute(
-            "INSERT INTO pg_temp.owner_places VALUES (gen_random_uuid(), 50, 1, 1, '{}', false, NULL)"
+            "SELECT gen_random_uuid() AS id, 50 AS radius_m, 1::float8 AS lat, 1::float8 AS lon,"
+            " '{}'::text[] AS ssids, false AS paused, NULL::timestamptz AS deleted_at"
+            " INTO TEMP owner_places"
         )
         await conn.execute("SET LOCAL search_path = pg_temp, public")
         rows = await feed(conn, home)
