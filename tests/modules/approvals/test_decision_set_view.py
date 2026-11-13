@@ -244,3 +244,16 @@ async def test_a_missing_or_failed_domain_pool_is_unavailable_not_missing(monkey
         monkeypatch, _set(item), [("messenger", _Pool(fail=True))], on_pool_failure=named.append
     )
     assert [i.reason for i in down.items] == ["unavailable"] and named == ["messenger"]
+
+
+def test_the_assistants_words_are_claims_apart_from_the_facts_and_empty_when_open_only():
+    a = _item(0)
+    row = {**_row(a.effect_id), "why": "Owner asked", "blast_radius": "  ", "reversibility": "none"}
+    exact = _view(_set(a), [row]).items[0]
+    assert [(c.label, c.value) for c in exact.claims] == [
+        ("Why", "Owner asked"),
+        ("Reversibility", "none"),
+    ]
+    assert all(c.value not in {f.value for f in exact.facts} for c in exact.claims)
+    gone = _view(_set(a), []).items[0]
+    assert gone.claims == ()

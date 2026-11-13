@@ -44,8 +44,8 @@ SURFACES: Final = frozenset({"dashboard", "telegram"})
 ACTIONS: Final = frozenset({"approve", "reject", "ack"})
 DECISIONS: Final = frozenset({"approve", "reject"})
 #: Subject kinds whose authority takes approve/reject through its own ``decide`` callback.
-DECIDABLE_KINDS: Final = frozenset({"approval", "pending_ask"})
-SUBJECT_KINDS: Final = frozenset({"approval", "goal_answer", "pending_ask"})
+DECIDABLE_KINDS: Final = frozenset({"approval", "pending_ask", "decision_set"})
+SUBJECT_KINDS: Final = frozenset({"approval", "goal_answer", "pending_ask", "decision_set"})
 RESOLVED: Final = frozenset({"decided", "cancelled", "expired"})
 RETRACTION_MAX_FAILED_ATTEMPTS: Final = 5
 RETRACTION_RETRY_AFTER_S: Final = 900

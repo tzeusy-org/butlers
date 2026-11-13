@@ -420,3 +420,37 @@ facts; one such item, a version that is not `open` or an elapsed set makes the w
 never accepts arguments: deciding goes through `DecisionSetResolver.decide`, which rechecks every
 row and digest under the goal lock. `unticked_outcome` is the producer's `UNTICKED_OUTCOME`, so the
 card words what happens to an unticked item from that value alone.
+
+Each item also carries `claims`: the assistant's own `why`, `blast_radius` and `reversibility`,
+labelled as claims apart from the server facts.
+
+## Decision set cards and decisions (dark)
+
+A set is decided from two places, both through `DecisionSetResolver.decide`, and both stay dark
+behind `OWNER_DECISIONS_LIVE`: the resolver refuses `unavailable`, and the app serves no resolver
+(`app.state.decision_set_resolver`) until the path is wired, so both routes answer 503.
+
+- **Telegram** (`decision_set_card.py`, `decision_set_delivery.py`). The card offers exactly
+  Approve, Reject and Open; there is no tick state and no toggle callback. Approve decides the
+  *default selection*: every exact plain item, never an `explicit_only` (administer) item. Reject
+  rejects every item. The card names the items Approve covers, the ones that need their own tick
+  on the dashboard, and what the rest come to, worded from `UNTICKED_OUTCOME`. It shows each
+  item's exact call as server facts and the assistant's words under "Assistant says (claims, not
+  verified)", every untrusted value in an inert code span. A set that cannot be shown exactly and
+  completely in one message offers Open only and mints no token.
+- **The `od1` subject** is kind `decision_set` (`core_331` widens the subject-kind CHECK; no new
+  table), `source_ref = "<set id>:<version>"`, bound to the set digest and the card's default
+  selection (`action_digest`). The selection is never carried in a token or callback: redeem
+  recomputes it from the freshly read set, and any change (another version, an item that stopped
+  being exact) refuses `action_changed`. A decision from the dashboard closes the subject, so a
+  card still in Telegram is retracted and its tokens go stale. Redeem is Telegram only; the
+  subject CAS is serialised by the subject row lock, never the set's version row (the resolver
+  commits on its own connections).
+- **Dashboard** (`POST /api/decision-sets/{set_id}/decision`, owner only). The body is the version,
+  `approve` or `reject`, and the ticked items as effect id plus the `item_digest` shown. It carries
+  no call content. An `explicit_only` item is decided only when ticked by itself; an unknown item,
+  a duplicate, or a set that is not `decidable` refuses before the resolver, and the resolver
+  rechecks everything again. Refusals are `{"error": "decision_set_refused", "reason": ...}` with
+  `resource` 404, `unavailable` 503 and everything else 409.
+
+Not yet wired (follow-up): sending the card through the delivery worker, and the dashboard card.

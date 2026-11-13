@@ -30,6 +30,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request
 from opentelemetry import metrics
 from pydantic import BaseModel, Field
 
+from butlers.api.degraded import DegradedSources
 from butlers.api.deps import Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import ApiResponse
 from butlers.api.models.approval import ApprovalAction, DisplayedApprovalCall
@@ -40,7 +41,15 @@ from butlers.api.routers.approvals import (
     approve_owning_action,
     deny_owning_action,
 )
+from butlers.api.routers.decision_sets import (
+    DecisionSetDecisionResult,
+    DecisionSetItemOutcome,
+    get_decision_set_resolver,
+    read_set_view,
+)
+from butlers.capability_broker.owner_decisions import OwnerContext, OwnerDecisionRefused
 from butlers.core import owner_delivery
+from butlers.modules.approvals.decision_set_delivery import Resolver, redeem_set_token
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +112,106 @@ async def _locate(db_mgr: Any, verifier: str) -> tuple[str, Any, Any] | None:
     return None
 
 
+async def _locate_set(db_mgr: Any, verifier: str) -> Any | None:
+    """The token row of a decision set card; sets live in the Switchboard's schema."""
+    try:
+        pool = db_mgr.pool("switchboard")
+        return await pool.fetchrow(
+            "SELECT t.action, s.kind, s.source_ref FROM public.owner_delivery_tokens t "
+            "JOIN public.owner_delivery_subjects s ON s.id = t.subject_id "
+            "WHERE t.verifier = $1 AND t.owning_schema = current_schema() "
+            "AND s.kind = 'decision_set'",
+            verifier,
+        )
+    except Exception:  # an absent pool or a pre-core_331 schema holds no set token
+        return None
+
+
+async def _redeem_set_card(
+    db_mgr: Any,
+    request: OwnerDeliveryActionRequest,
+    token_row: Any,
+    *,
+    callback: bool,
+    actor_id: str,
+    resolver: Resolver | None,
+) -> ApiResponse[DecisionSetDecisionResult]:
+    """Decide a set through its Telegram card token.
+
+    Telegram only: per-item ticks are the dashboard submit route, which takes no token. The
+    selection Approve or Reject stands for is recomputed from the set here, never read from the
+    request, and must match the digest the token was minted for.
+    """
+    if not callback or token_row["action"] not in ("approve", "reject"):
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "owner_delivery_refused", "reason": "action_unsupported"},
+        )
+    if resolver is None:
+        raise HTTPException(
+            status_code=503, detail={"error": "decision_set_refused", "reason": "unavailable"}
+        )
+    try:
+        raw_id, _, raw_version = token_row["source_ref"].partition(":")
+        set_id, version = UUID(raw_id), int(raw_version)
+    except ValueError:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "owner_delivery_refused", "reason": "subject_unavailable"},
+        ) from None
+    tracker = DegradedSources(logger)
+    pool, view = await read_set_view(db_mgr, set_id, version, tracker)
+    if view is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "owner_delivery_refused", "reason": "subject_unavailable"},
+        )
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            owner = await owner_delivery.owner_entity_id(conn)
+            if owner is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": "owner_delivery_refused", "reason": "owner_unavailable"},
+                )
+            redeemed = await redeem_set_token(
+                conn,
+                request.token,
+                view=view,
+                resolver=resolver,
+                expected_action=token_row["action"],
+                owner_entity=owner,
+                owner=OwnerContext(actor_id, "telegram"),
+            )
+    except OwnerDecisionRefused as refused:
+        status = (
+            404 if refused.reason == "resource" else 503 if refused.reason == "unavailable" else 409
+        )
+        raise HTTPException(
+            status_code=status,
+            detail={"error": "decision_set_refused", "reason": refused.reason},
+        ) from None
+    except owner_delivery.OwnerDeliveryRefused as refused:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "owner_delivery_refused", "reason": refused.reason},
+        ) from None
+    if redeemed.outcome == "refused":
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "owner_delivery_refused", "reason": redeemed.reason},
+        )
+    outcomes = redeemed.result.get("outcomes", [])
+    return ApiResponse(
+        data=DecisionSetDecisionResult(
+            status="approved" if token_row["action"] == "approve" else "rejected",
+            set_id=str(set_id),
+            version=version,
+            outcomes=[DecisionSetItemOutcome(**o) for o in outcomes],
+        )
+    )
+
+
 @router.post("/actions")
 async def redeem_owner_action(
     http_request: Request,
@@ -111,7 +220,8 @@ async def redeem_owner_action(
     db_mgr: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
     callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
-) -> ApiResponse[ApprovalAction]:
+    set_resolver: Resolver | None = Depends(get_decision_set_resolver),
+) -> ApiResponse[ApprovalAction] | ApiResponse[DecisionSetDecisionResult]:
     """Decide one owner card through its single-use token."""
     callback = _callback_authenticated(http_request)
     actor_id = _decision_actor_id(callback_actor, callback_authenticated=callback)
@@ -125,6 +235,16 @@ async def redeem_owner_action(
     if verifier is None:
         raise HTTPException(
             status_code=409, detail={"error": "owner_delivery_refused", "reason": "token_malformed"}
+        )
+    set_row = await _locate_set(db_mgr, verifier)
+    if set_row is not None:
+        return await _redeem_set_card(
+            db_mgr,
+            request,
+            set_row,
+            callback=callback,
+            actor_id=actor_id,
+            resolver=set_resolver,
         )
     located = await _locate(db_mgr, verifier)
     if located is None:

@@ -52,6 +52,9 @@ class ItemView:
     title: str | None
     facts: tuple[PreviewFact, ...]
     lineage: LineageFacts | None
+    #: The assistant's own words about the call (why, blast radius, reversibility): claims, never
+    #: facts, shown under their own label. Empty for an ``open_only`` item.
+    claims: tuple[PreviewFact, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +142,15 @@ def item_view(
         title=preview["title"],
         facts=tuple(PreviewFact(f["label"], f["value"]) for f in preview["facts"]),
         lineage=lineage_facts(action),
+        claims=tuple(
+            PreviewFact(label, value)
+            for label, value in (
+                ("Why", action.why),
+                ("Blast radius", action.blast_radius),
+                ("Reversibility", action.reversibility),
+            )
+            if isinstance(value, str) and value.strip()
+        ),
     )
 
 

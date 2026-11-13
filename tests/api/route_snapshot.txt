@@ -506,6 +506,7 @@ OP POST /api/connectors/spotify/oauth/start 70c6cb18c5d0
 OP POST /api/connectors/whatsapp/disconnect 77e1145ada70
 OP POST /api/connectors/whatsapp/pair/start b67b234f192b
 OP POST /api/data/export ef7048daaa86
+OP POST /api/decision-sets/{set_id}/decision fe17f9b5cafe
 OP POST /api/domain-events/deliveries/{delivery_id}/replay b5bac8bd9638
 OP POST /api/education/curriculum-requests 74c92c7ab429
 OP POST /api/finance/transactions/bulk 2ff008c7eb69
@@ -550,7 +551,7 @@ OP POST /api/memory/rules/{rule_id}/endorse 9d85f99576fc
 OP POST /api/notifications/ack-failed 5338c3b3047a
 OP POST /api/notifications/{notification_id}/escalate 968f63b9f6db
 OP POST /api/notifications/{notification_id}/retry 8b66dd930f06
-OP POST /api/owner-delivery/actions c376574bf6e6
+OP POST /api/owner-delivery/actions 23c2e3072294
 OP POST /api/owner-delivery/retractions/{presentation_id} 6a146e9fc239
 OP POST /api/owner-policy/step-up/options 0544807c7640
 OP POST /api/owner-policy/terms c8d698c97040
@@ -1155,6 +1156,7 @@ ROUTE APIRoute POST '/api/connectors/spotify/oauth/start' name=start_spotify_oau
 ROUTE APIRoute POST '/api/connectors/whatsapp/disconnect' name=disconnect_whatsapp op=disconnect_whatsapp_api_connectors_whatsapp_disconnect_post tags=whatsapp schema=True
 ROUTE APIRoute POST '/api/connectors/whatsapp/pair/start' name=start_whatsapp_pairing op=start_whatsapp_pairing_api_connectors_whatsapp_pair_start_post tags=whatsapp schema=True
 ROUTE APIRoute POST '/api/data/export' name=export_data op=export_data_api_data_export_post tags=data-ops schema=True
+ROUTE APIRoute POST '/api/decision-sets/{set_id}/decision' name=decide_decision_set op=decide_decision_set_api_decision_sets__set_id__decision_post tags=decision-sets schema=True
 ROUTE APIRoute POST '/api/domain-events/deliveries/{delivery_id}/replay' name=replay_domain_event_delivery op=replay_domain_event_delivery_api_domain_events_deliveries__delivery_id__replay_post tags=domain-events schema=True
 ROUTE APIRoute POST '/api/education/curriculum-requests' name=submit_curriculum_request op=submit_curriculum_request_api_education_curriculum_requests_post tags=education schema=True
 ROUTE APIRoute POST '/api/finance/transactions/bulk' name=bulk_ingest_transactions op=bulk_ingest_transactions_api_finance_transactions_bulk_post tags=finance schema=True
@@ -1406,6 +1408,7 @@ SCHEMA ApiResponse_CorrectionPrompts_ 761ab055e049
 SCHEMA ApiResponse_DailyActivity_ 5ff1fba56e00
 SCHEMA ApiResponse_DatabaseFacts_ 5b3003f41a06
 SCHEMA ApiResponse_DeadlineRecord_ 8414759fac0f
+SCHEMA ApiResponse_DecisionSetDecisionResult_ 9ce18e403eca
 SCHEMA ApiResponse_DecisionSetView_ 9cfed7a127b1
 SCHEMA ApiResponse_DelegationLedgerEntry_ c05f59df6c01
 SCHEMA ApiResponse_DeliveryReplayResult_ 35f7e19f95b3
@@ -1843,8 +1846,12 @@ SCHEMA DayCloseRefreshRequest 66c97e5c2f96
 SCHEMA DayCloseRefreshResponse e62a91337299
 SCHEMA DayCloseStaleResponse 1cc39a379a81
 SCHEMA DeadlineRecord d0154fa0197f
+SCHEMA DecisionSetDecisionRequest 1df717775a1d
+SCHEMA DecisionSetDecisionResult eac3a5931c9a
 SCHEMA DecisionSetFact e6214bf25f8b
-SCHEMA DecisionSetItemView ca6386b84e36
+SCHEMA DecisionSetItemOutcome 93c4e52b7e0b
+SCHEMA DecisionSetItemView 2f77e45e040c
+SCHEMA DecisionSetPick 5fcadcc02aeb
 SCHEMA DecisionSetView 8aa02f62358a
 SCHEMA DelegationLedgerEntry 294a7fc8d140
 SCHEMA DeleteContactResponse c36333c1a42e
