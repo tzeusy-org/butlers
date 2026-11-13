@@ -150,3 +150,97 @@ def test_model_text_in_the_stored_row_cannot_change_the_facts():
     view = _view(_set(a), [row])
     assert view.items[0].lineage is not None
     assert (view.items[0].lineage.origin, view.items[0].lineage.exposed) == ("third_party", True)
+
+
+def test_an_empty_set_is_never_decidable():
+    view = _view(_set(), [])
+    assert view.items == () and not view.decidable and view.reason == "items"
+
+
+def test_a_nested_capability_name_never_matches_the_parked_tool():
+    item = _item(0, capability="messenger__evil__notify")
+    view = _view(_set(item), [_row(item.effect_id)])
+    assert [(i.exact, i.reason) for i in view.items] == [(False, "changed")]
+
+
+# -- the row is read only from the pool of the capability's domain ------------------------------
+
+
+class _Pool:
+    def __init__(self, rows=(), *, fail=False):
+        self.rows, self.fail = list(rows), fail
+
+    def acquire(self):
+        pool = self
+
+        class _Conn:
+            async def fetch(self, sql, wanted):
+                if pool.fail:
+                    raise RuntimeError("down")
+                return [r for r in pool.rows if r["id"] in wanted]
+
+        class _Ctx:
+            async def __aenter__(self):
+                return _Conn()
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Ctx()
+
+
+class _Ledger:
+    def __init__(self, shown):
+        self.shown = shown
+
+    def acquire(self):
+        return _Pool().acquire()
+
+
+async def _load(monkeypatch, shown, pools, **kw):
+    from butlers.modules.approvals import decision_set_view as module
+
+    async def read(self, set_id, version=None):
+        return shown
+
+    monkeypatch.setattr(module.DecisionSetLedger, "read", read)
+    return await module.load_set_view(
+        shown.set_id, None, ledger_pool=_Ledger(shown), action_pools=pools, now=NOW, **kw
+    )
+
+
+@pytest.mark.parametrize("foreign_first", [True, False])
+async def test_a_copy_in_a_foreign_pool_is_never_a_source(monkeypatch, foreign_first):
+    item = _item(0)
+    row = _row(item.effect_id)
+    pools = [("messenger", _Pool()), ("other", _Pool([row]))]
+    view = await _load(monkeypatch, _set(item), pools[::1] if foreign_first else pools[::-1])
+    assert [(i.exact, i.reason) for i in view.items] == [(False, "missing")]
+    assert view.items[0].lineage is None and not view.decidable
+
+
+@pytest.mark.parametrize("foreign_first", [True, False])
+async def test_an_id_in_two_pools_is_ambiguous_and_open_only(monkeypatch, foreign_first):
+    item = _item(0)
+    row = _row(item.effect_id)
+    pools = [("messenger", _Pool([row])), ("other", _Pool([{**row, "goal_origin": "owner"}]))]
+    view = await _load(monkeypatch, _set(item), pools if foreign_first else pools[::-1])
+    assert [(i.exact, i.reason) for i in view.items] == [(False, "changed")]
+
+
+async def test_the_real_row_in_its_domain_pool_is_exact_whatever_other_pools_hold(monkeypatch):
+    item = _item(0)
+    pools = [("messenger", _Pool([_row(item.effect_id)])), ("other", _Pool())]
+    view = await _load(monkeypatch, _set(item), pools)
+    assert view.decidable and view.items[0].lineage.origin == "third_party"
+
+
+async def test_a_missing_or_failed_domain_pool_is_unavailable_not_missing(monkeypatch):
+    item = _item(0)
+    absent = await _load(monkeypatch, _set(item), [("other", _Pool([_row(item.effect_id)]))])
+    assert [i.reason for i in absent.items] == ["unavailable"]
+    named: list[str] = []
+    down = await _load(
+        monkeypatch, _set(item), [("messenger", _Pool(fail=True))], on_pool_failure=named.append
+    )
+    assert [i.reason for i in down.items] == ["unavailable"] and named == ["messenger"]

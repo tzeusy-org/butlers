@@ -120,7 +120,7 @@ async def test_an_exact_set_is_returned_with_facts_digests_and_degraded_meta_abs
     app, monkeypatch
 ):
     shown, effect = _shown()
-    async with _client(app, monkeypatch, shown, [("general", _Pool([_row(effect)]))]) as client:
+    async with _client(app, monkeypatch, shown, [("messenger", _Pool([_row(effect)]))]) as client:
         app.dependency_overrides[get_db]().pool.return_value = _LedgerPool()
         response = await client.get(f"/api/decision-sets/{shown.set_id}")
     assert response.status_code == 200
@@ -139,7 +139,7 @@ async def test_an_exact_set_is_returned_with_facts_digests_and_degraded_meta_abs
 async def test_a_changed_call_is_open_only_and_the_set_not_decidable(app, monkeypatch):
     shown, effect = _shown()
     changed = _row(effect, {**ARGS, "message": "Something else"})
-    async with _client(app, monkeypatch, shown, [("general", _Pool([changed]))]) as client:
+    async with _client(app, monkeypatch, shown, [("messenger", _Pool([changed]))]) as client:
         app.dependency_overrides[get_db]().pool.return_value = _LedgerPool()
         data = (await client.get(f"/api/decision-sets/{shown.set_id}")).json()["data"]
     assert data["decidable"] is False and data["reason"] == "items"
@@ -151,11 +151,11 @@ async def test_an_unreadable_pool_is_named_in_degraded_meta_and_items_are_unavai
     app, monkeypatch
 ):
     shown, effect = _shown()
-    pools = [("general", _Pool(fail=True))]
+    pools = [("messenger", _Pool(fail=True))]
     async with _client(app, monkeypatch, shown, pools) as client:
         app.dependency_overrides[get_db]().pool.return_value = _LedgerPool()
         body = (await client.get(f"/api/decision-sets/{shown.set_id}")).json()
-    assert body["meta"]["sources_degraded"] == ["general"]
+    assert body["meta"]["sources_degraded"] == ["messenger"]
     assert body["data"]["items"][0]["reason"] == "unavailable"
     assert body["data"]["decidable"] is False
 

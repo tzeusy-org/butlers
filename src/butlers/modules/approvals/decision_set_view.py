@@ -20,7 +20,7 @@ every row and digest again under the goal lock.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -95,8 +95,15 @@ def item_view(
     row: Mapping[str, Any] | None,
     *,
     unavailable: bool = False,
+    ambiguous: bool = False,
 ) -> ItemView:
-    """One item against its parked action row; any doubt is ``open_only``."""
+    """One item against its parked action row; any doubt is ``open_only``.
+
+    ``ambiguous``: the effect id was found in more than one approvals pool, so no single row can
+    be trusted as the parked call.
+    """
+    if ambiguous:
+        return _open_only(item, "changed")
     if row is None:
         return _open_only(item, "unavailable" if unavailable else "missing")
     try:
@@ -105,7 +112,10 @@ def item_view(
         return _open_only(item, "changed")
     if action.id != item.effect_id or action.status is not ActionStatus.PENDING:
         return _open_only(item, "not_pending")
-    if action.goal_id != goal_id or not item.capability.endswith(f"__{action.tool_name}"):
+    # The capability is ``<domain>__<tool>``; the tool must be exactly the parked action's, so a
+    # nested name (``messenger__evil__notify``) never matches ``notify``.
+    _, _, tool = item.capability.partition("__")
+    if action.goal_id != goal_id or tool != action.tool_name:
         return _open_only(item, "changed")
     try:
         if arguments_digest(action.tool_args) != item.args_digest:
@@ -138,10 +148,18 @@ def build_set_view(
     *,
     now: datetime,
     unavailable: bool = False,
+    unavailable_effects: Collection[UUID] = (),
+    ambiguous: Collection[UUID] = (),
 ) -> SetView:
     """The whole version: per-item views plus whether a decision may be offered at all."""
     items = tuple(
-        item_view(item, shown.goal_id, rows.get(item.effect_id), unavailable=unavailable)
+        item_view(
+            item,
+            shown.goal_id,
+            rows.get(item.effect_id),
+            unavailable=unavailable or item.effect_id in unavailable_effects,
+            ambiguous=item.effect_id in ambiguous,
+        )
         for item in shown.items
     )
     if shown.state != "open":
@@ -186,8 +204,10 @@ async def load_set_view(
     if shown is None:
         return None
     wanted = [item.effect_id for item in shown.items]
-    rows: dict[UUID, Mapping[str, Any]] = {}
-    failed = False
+    domain_of = {item.effect_id: item.capability.partition("__")[0] for item in shown.items}
+    pools = dict(action_pools)
+    seen: dict[UUID, list[tuple[str, Mapping[str, Any]]]] = {}
+    failed: set[str] = set()
     for name, pool in action_pools:
         try:
             async with pool.acquire() as connection:
@@ -195,12 +215,33 @@ async def load_set_view(
                     "SELECT * FROM pending_actions WHERE id = ANY($1::uuid[])", wanted
                 )
         except Exception:  # noqa: BLE001 - one unreadable pool must not hide the others
-            failed = True
+            failed.add(name)
             if on_pool_failure is not None:
                 on_pool_failure(name)
             continue
-        rows.update({row["id"]: row for row in found})
-    return build_set_view(shown, rows, now=now, unavailable=failed)
+        for row in found:
+            seen.setdefault(row["id"], []).append((name, row))
+    # An item is read only from the pool of its capability's domain (the pool the broker parked it
+    # in). A copy anywhere else is never a source; an id in more than one pool is ambiguous.
+    rows: dict[UUID, Mapping[str, Any]] = {}
+    ambiguous: set[UUID] = set()
+    unavailable_effects: set[UUID] = set()
+    for effect_id, domain in domain_of.items():
+        if domain not in pools or domain in failed:
+            unavailable_effects.add(effect_id)
+            continue
+        hits = seen.get(effect_id, [])
+        if len(hits) > 1:
+            ambiguous.add(effect_id)
+        elif hits and hits[0][0] == domain:
+            rows[effect_id] = hits[0][1]
+    return build_set_view(
+        shown,
+        rows,
+        now=now,
+        unavailable_effects=unavailable_effects,
+        ambiguous=ambiguous,
+    )
 
 
 __all__ = [

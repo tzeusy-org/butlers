@@ -6,7 +6,7 @@ parked ``pending_actions`` rows through the same loader the API uses. No row is 
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -27,6 +27,7 @@ pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 
+PINNED = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
 CLASSES = {NOTIFY.identity: False, RULES.identity: True}
 
 
@@ -49,12 +50,16 @@ async def _parked_set(w, texts=("one", "two")):
 
 
 async def _view(w, proposed, **kw):
+    # Pin the instant from the set itself (a minute before it elapses), never the live clock.
+    async with w.owner.acquire() as connection:
+        shown = await DecisionSetLedger(connection).read(proposed.set_id, proposed.version)
+    assert shown is not None
     return await load_set_view(
         proposed.set_id,
         proposed.version,
         ledger_pool=w.owner,
-        action_pools=[("domain", w.domain)],
-        now=datetime.now(UTC),
+        action_pools=[("messenger", w.domain)],
+        now=shown.expires_at - timedelta(minutes=1),
         **kw,
     )
 
@@ -115,11 +120,11 @@ async def test_an_unreadable_pool_marks_items_unavailable_and_is_named(broker_db
             proposed.set_id,
             proposed.version,
             ledger_pool=w.owner,
-            action_pools=[("down", Down())],
-            now=datetime.now(UTC),
+            action_pools=[("messenger", Down())],
+            now=PINNED,
             on_pool_failure=named.append,
         )
-        assert view is not None and named == ["down"]
+        assert view is not None and named == ["messenger"]
         assert {i.reason for i in view.items} == {"unavailable"} and not view.decidable
 
 
@@ -140,8 +145,6 @@ async def test_a_superseded_version_is_shown_but_never_decidable_and_unknown_is_
         new = await _view(w, second)
         assert new is not None and new.decidable
         assert (
-            await load_set_view(
-                uuid4(), None, ledger_pool=w.owner, action_pools=[], now=datetime.now(UTC)
-            )
+            await load_set_view(uuid4(), None, ledger_pool=w.owner, action_pools=[], now=PINNED)
             is None
         )

@@ -399,7 +399,7 @@ only an authenticated owner decision and exact stored-call executor context do.
 `modules/approvals/decision_set_view.py` show one decision set version (`core/decision_sets.py`)
 as the owner will be asked to decide it. A set stores only each item's capability, stored-argument
 digest and recipient, so the view reads each item's exact call from its parked `pending_actions`
-row (the same approvals pool finder the dashboard uses), recomputes the argument digest and
+row (read only from the approvals pool of the item's capability domain, as the broker parked it; a copy in any other pool is ignored and an id found in two pools is `changed`), recomputes the argument digest and
 rebuilds the call through the S1 or catalog preview. The item then carries the rebuilt facts and
 the broker's lineage facts (`lineage_facts`). An item whose row is missing, unreadable (pool
 failure, named in `meta.sources_degraded`), no longer pending, owned by another goal, changed since
