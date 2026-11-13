@@ -5019,6 +5019,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        content_params=("text",),
         categories=ALL_CATEGORIES,
     ),
     *_declare(
@@ -5099,6 +5100,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        content_params=("text",),
         categories=ALL_CATEGORIES,
     ),
     *_declare(

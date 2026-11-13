@@ -119,6 +119,9 @@ class ToolMetadata(Protocol):
     idempotency: Idempotency | None = None
     owner_authority: bool | None = None
     recipient_params: RecipientParameters | None = None
+    # RFC 0038 D19 (optional, additive): the arguments that carry the content a call delivers.
+    # With recipient_params they let an approval card rebuild the exact stored call.
+    content_params: tuple[str, ...] | None = None
     read_stores: tuple[str, ...] = ()
     write_stores: tuple[str, ...] = ()
     unknown_output_source: bool = True
@@ -199,6 +202,9 @@ class ToolPresentation:
     idempotency: Idempotency | None = None
     owner_authority: bool | None = None
     recipient_params: RecipientParameters | None = None
+    # RFC 0038 D19 (optional, additive): the arguments that carry the content a call delivers.
+    # With recipient_params they let an approval card rebuild the exact stored call.
+    content_params: tuple[str, ...] | None = None
     read_stores: tuple[str, ...] = ()
     write_stores: tuple[str, ...] = ()
     unknown_output_source: bool = True
@@ -286,6 +292,9 @@ class ToolDescriptor:
     idempotency: Idempotency | None = None
     owner_authority: bool | None = None
     recipient_params: RecipientParameters | None = None
+    # RFC 0038 D19 (optional, additive): the arguments that carry the content a call delivers.
+    # With recipient_params they let an approval card rebuild the exact stored call.
+    content_params: tuple[str, ...] | None = None
     read_stores: tuple[str, ...] = ()
     write_stores: tuple[str, ...] = ()
     unknown_output_source: bool = True
@@ -550,6 +559,19 @@ def _authorization_problems(descriptor: ToolDescriptor) -> list[str]:
         recipients.argument_names or recipients.undeterminable or recipients.default_owner_condition
     ):
         problems.append("recipient_params")
+    content = descriptor.content_params
+    if content is not None and (
+        not isinstance(content, tuple)
+        or not content
+        or any(not isinstance(arg, str) or not arg.strip() for arg in content)
+        or len(content) != len(set(content))
+        or any(arg not in properties for arg in content)
+        or (
+            isinstance(recipients, RecipientParameters)
+            and set(content) & set(recipients.argument_names)
+        )
+    ):
+        problems.append("content_params")
     return problems
 
 
@@ -704,6 +726,7 @@ async def build_tool_catalog(
                 alias_resolvers=MappingProxyType(
                     dict(getattr(declared, "alias_resolvers", None) or {})
                 ),
+                content_params=getattr(declared, "content_params", None),
                 read_stores=tuple(getattr(declared, "read_stores", ())),
                 write_stores=tuple(getattr(declared, "write_stores", ())),
                 unknown_output_source=getattr(declared, "unknown_output_source", True),
@@ -735,6 +758,12 @@ async def build_tool_catalog(
                 "read_stores": descriptor.read_stores,
                 "write_stores": descriptor.write_stores,
                 "unknown_output_source": descriptor.unknown_output_source,
+                # Published only when declared, so undeclared tools keep their digest.
+                **(
+                    {"content_params": descriptor.content_params}
+                    if descriptor.content_params is not None
+                    else {}
+                ),
             }
         )
         for descriptor in descriptors

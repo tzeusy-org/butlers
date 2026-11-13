@@ -35,7 +35,13 @@ async def test_final_registry_maps_exact_metadata_without_owner_authority():
         original,
         descriptors=(item,),
         generation_digest=generation(
-            [{f.name: plain(getattr(item, f.name)) for f in fields(item)}]
+            [
+                {
+                    f.name: plain(getattr(item, f.name))
+                    for f in fields(item)
+                    if f.name != "content_params" or item.content_params is not None
+                }
+            ]
         ),
     )
     await CatalogPublisher(Pool(store, "health"), "health").publish(native)
