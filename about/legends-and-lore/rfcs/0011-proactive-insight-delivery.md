@@ -330,7 +330,17 @@ The scheduler flush (`_tick_deferred_notification_pass`, `src/butlers/core/sched
 
 ### Urgent Sub-Cycle
 
-The Switchboard schedule `insight-urgent-subcycle` (`30 * * * *`) runs `delivery_cycle(urgent_only=True)` with the same production `notify_fn` as the daily job. In this mode selection starts from `priority >= URGENT_PRIORITY_THRESHOLD`, the quiet-hours and context-bus consult is skipped (urgent always bypasses both), the daily budget cap does not apply, and end-of-cycle maintenance (cleanup, auto-off) is left to the daily cycle. Verbosity `off` still applies. Each row's own `status` transition to `delivered` is the double-send guard across both cycles.
+The Switchboard schedule `insight-urgent-subcycle` (`30 * * * *`) runs `delivery_cycle(urgent_only=True)` with the same production `notify_fn` as the daily job. In this mode selection starts from `priority >= URGENT_PRIORITY_THRESHOLD`, the quiet-hours and context-bus consult is skipped (urgent always bypasses both), the daily budget cap does not apply, and end-of-cycle maintenance (cleanup, auto-off) is left to the daily cycle. Verbosity `off` still applies. The shared delivery claim (see Timed Lane) is the double-send guard across every cycle.
+
+### Timed Lane
+
+A timed candidate is delivered between deliver_after and expires_at or not at all; dnd and sleeping always hold it; quiet hours do not hold a candidate whose premise is a confirmed presence edge under 15 minutes old.
+
+A producer opts in with `lane='timed'` and a `deliver_after` before `expires_at`; one timed candidate exists per `dedup_key`, and a repeat proposal is a no-op. The timed sub-cycle (`insight_timed_subcycle`) sends each due candidate standalone, never in a digest, and the digest and urgent cycles never select one. It applies the verbosity opt-out, expiry, premise re-check, cooldowns and budget like the digest, with three differences: an unknown premise holds the candidate rather than sending it "as of"; the dnd and sleeping holds have no max-hold cap; and a presence edge counts as confirmed only while its premise probe answers true and its `confirmed_at` is under 15 minutes old. A timed send spends one slot of the owner's configured budget for the UTC day (all lanes), and the timed lane sends at most six a day.
+
+Every delivery worker (digest, urgent and timed) claims the candidates it is about to send with one compare-and-set on `claim_id`, all or none, and writes the final disposition only while it holds that claim. The budget count and the claim run under one advisory lock. A worker commits `attempt_started_at` before calling the transport. If a timed claim goes stale and `attempt_started_at` is set, the send may have happened, so the candidate expires as `delivery_ambiguous` and is never resent. A raised transport error or a terminal partial Telegram result is handled the same way. If `attempt_started_at` is unset, or the transport explicitly refused, the claim is released for a retry. A stale digest claim is released for a retry, as before the claim existed (at least once).
+
+The lane ships dark (`TIMED_INSIGHTS_LIVE` off, no schedule). While dark, timed proposals are refused and the sub-cycle does nothing.
 
 ### Attention Ledger
 
@@ -419,3 +429,4 @@ Each amendment is folded into the Design sections above; this log records when t
 - **Amendment 5 (2026-07-19) — Durable Routine Owner-Default Notify Holds.** See Notify-Path Holds and Coalescing. Change: `openspec/changes/park-owner-default-notifications`.
 - **Amendment 6 (2026-07-19) — Consolidated Owner Attention Policy.** `public.approvals_policy` became the single quiet-hours authority; `insight_settings` lost its quiet-hour columns (see Quiet Hours and Owner Attention Policy). Change: `openspec/changes/consolidate-owner-attention-policy`.
 - **Amendment 7 (2026-09-16) — Reversible Per-Category Insight Shaping.** Replaced the aggregate adaptive-budget reduction with category-local weights and made expiry transactional with its ledger row (see Adaptive Delivery Shaping; Delivery Cycle Execution). Change: `openspec/changes/insight-feedback-expiry`.
+- **Amendment 8 (2026-11-14) — Timed Lane and Shared Delivery Claim.** Added the dark timed lane, with its delivery window and holds, and the claim every delivery worker takes before sending. The claim closes a double send between overlapping cycles (see Timed Lane; Urgent Sub-Cycle). Change: `openspec/changes/insight-timed-lane`.

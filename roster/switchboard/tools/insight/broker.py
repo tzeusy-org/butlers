@@ -54,8 +54,15 @@ _PARTIAL_INSIGHTS = PartialDeliveryLatch()
 VALID_STATUSES = frozenset({"pending", "delivered", "expired", "filtered", "withdrawn"})
 TERMINAL_STATUSES = frozenset({"delivered", "expired", "filtered", "withdrawn"})
 VALID_FEEDBACK_VERDICTS = frozenset({"useful", "not_now", "never"})
-_BLOCKED_BY_REASONS = frozenset({"budget", "cooldown", "held_by", "dedup"})
+_BLOCKED_BY_REASONS = frozenset({"budget", "cooldown", "held_by", "dedup", "premise_unknown"})
 _NEXT_REGULAR_CYCLE = timedelta(days=1)
+INSIGHT_LANES = frozenset({"digest", "timed"})
+# A digest claim older than this is released for a retry (at-least-once, as
+# before the claim existed). Far longer than one send; see delivery_cycle.
+DIGEST_STALE_CLAIM_AFTER = timedelta(minutes=30)
+# Every delivery worker serialises its budget count and claim on this lock, so
+# a digest and a timed send cannot both take the last slot.
+_DELIVERY_CLAIM_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:insight:claim', 0))"
 
 # Default cooldown periods by priority range (days)
 _DEFAULT_COOLDOWN_BY_PRIORITY: list[tuple[range, int]] = [
@@ -116,6 +123,40 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
             premise JSONB,
             delivery_ref JSONB
         )
+    """)
+    # bu-jv1moa.8: mirrors alembic/versions/core/core_334_insight_timed_lane.py.
+    await pool.execute("""
+        ALTER TABLE insight_candidates
+            ADD COLUMN IF NOT EXISTS lane TEXT NOT NULL DEFAULT 'digest',
+            ADD COLUMN IF NOT EXISTS deliver_after TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS claim_id UUID,
+            ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS attempt_started_at TIMESTAMPTZ
+    """)
+    await pool.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'chk_insight_candidates_lane'
+            ) THEN
+                ALTER TABLE insight_candidates ADD CONSTRAINT chk_insight_candidates_lane
+                    CHECK (lane IN ('digest', 'timed'));
+            END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'chk_insight_candidates_timed_window'
+            ) THEN
+                ALTER TABLE insight_candidates ADD CONSTRAINT chk_insight_candidates_timed_window
+                    CHECK (
+                        (lane = 'timed') = (deliver_after IS NOT NULL)
+                        AND (deliver_after IS NULL OR deliver_after < expires_at)
+                    );
+            END IF;
+        END
+        $$
+    """)
+    await pool.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_insight_candidates_timed_dedup
+        ON insight_candidates (dedup_key) WHERE lane = 'timed'
     """)
     # bu-q7vx1q.5: mirrors alembic/versions/core/core_255_insight_premise_binding.py as
     # amended by core_312 (no candidate foreign key; terminal 'orphaned').
@@ -250,11 +291,20 @@ async def propose_insight_candidate(
     prepared_action_id: Any | None = None,
     premise: dict | None = None,
     now: datetime | None = None,
+    lane: str = "digest",
+    deliver_after: datetime | None = None,
 ) -> dict[str, str]:
     """Validate and insert an insight candidate into the staging table.
 
     Parameters
     ----------
+    lane / deliver_after:
+        bu-jv1moa.8: ``"timed"`` queues a candidate the timed sub-cycle sends on
+        its own between ``deliver_after`` and ``expires_at``, or not at all
+        (RFC 0011 Amendment 8). Refused while ``timed.TIMED_INSIGHTS_LIVE`` is
+        off. A second timed proposal for the same ``dedup_key`` returns
+        ``{"status": "duplicate"}`` and changes nothing. The default
+        ``"digest"`` behaves exactly as before.
     premise:
         bu-q7vx1q.5: the typed fact this insight asserts (see
         ``butlers.core.insight_premise``). The delivery cycle re-checks it
@@ -326,6 +376,25 @@ async def propose_insight_candidate(
     if expires_dt <= reference_now:
         return {"status": "error", "reason": "expires_at must be in the future"}
 
+    # --- Lane validation (bu-jv1moa.8) ---
+    if lane not in INSIGHT_LANES:
+        return {"status": "error", "reason": "lane must be 'digest' or 'timed'"}
+    if lane == "digest" and deliver_after is not None:
+        return {"status": "error", "reason": "deliver_after is only valid for the timed lane"}
+    deliver_after_dt: datetime | None = None
+    if lane == "timed":
+        if deliver_after is None:
+            return {"status": "error", "reason": "deliver_after is required for the timed lane"}
+        deliver_after_dt = deliver_after
+        if deliver_after_dt.tzinfo is None:
+            deliver_after_dt = deliver_after_dt.replace(tzinfo=UTC)
+        if deliver_after_dt >= expires_dt:
+            return {"status": "error", "reason": "deliver_after must be before expires_at"}
+        from . import timed
+
+        if not timed.TIMED_INSIGHTS_LIVE:
+            return {"status": "error", "reason": "the timed lane is not live"}
+
     # --- Premise validation ---
     try:
         premise = normalize_premise(premise)
@@ -348,15 +417,19 @@ async def propose_insight_candidate(
         return {"status": "filtered", "reason": "verbosity is off"}
 
     # --- Insert candidate ---
-    taint = taint_insert(12)
+    # A timed candidate is one per canonical edge: a replayed proposal for the
+    # same dedup_key is a no-op, never a second send.
+    taint = taint_insert(14)
+    conflict = "ON CONFLICT (dedup_key) WHERE lane = 'timed' DO NOTHING" if lane == "timed" else ""
     candidate_id = await pool.fetchval(
         f"""
         INSERT INTO insight_candidates
             (origin_butler, priority, category, dedup_key, cooldown_days,
              expires_at, message, channel, metadata, status, prepared_action_id,
-             premise{taint.columns})
+             premise, lane, deliver_after{taint.columns})
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, 'pending', $10,
-                $11::jsonb{taint.placeholders})
+                $11::jsonb, $12, $13{taint.placeholders})
+        {conflict}
         RETURNING id
         """,
         origin_butler,
@@ -370,8 +443,12 @@ async def propose_insight_candidate(
         metadata,
         prepared_action_id,
         premise,
+        lane,
+        deliver_after_dt,
         *taint.values,
     )
+    if candidate_id is None:
+        return {"status": "duplicate", "reason": "a timed candidate for this edge already exists"}
     if isinstance(candidate_id, uuid.UUID):
         from butlers.core.attention_urgency import remember_candidate_origin
 
@@ -487,6 +564,9 @@ async def record_insight_feedback(
 async def expire_candidates(pool: asyncpg.Pool, *, now: datetime | None = None) -> int:
     """Mark stale candidates expired and record one honest ledger row each.
 
+    A claimed candidate is left to its claim holder (or to the stale-claim
+    sweep): its send may be in flight, so "expired" could be a lie.
+
     Returns the number of candidates expired.
     """
     if now is None:
@@ -497,7 +577,7 @@ async def expire_candidates(pool: asyncpg.Pool, *, now: datetime | None = None) 
                 """
                 UPDATE insight_candidates
                 SET status = 'expired'
-                WHERE status = 'pending' AND expires_at <= $1
+                WHERE status = 'pending' AND claim_id IS NULL AND expires_at <= $1
                 RETURNING id, origin_butler, priority, dedup_key, channel, metadata
                 """,
                 now,
@@ -2349,6 +2429,111 @@ async def _pending_fold_lines(pool: asyncpg.Pool) -> list[tuple[Any, str]]:
     ]
 
 
+# ---------------------------------------------------------------------------
+# Shared delivery claim (bu-jv1moa.8)
+# ---------------------------------------------------------------------------
+#
+# Every delivery worker -- the digest cycle, the urgent sub-cycle and the timed
+# sub-cycle -- claims the candidates it is about to send with one row-level
+# compare-and-set before calling the transport, and writes the final
+# disposition only while it still holds that claim. Before this, selection read
+# ``status = 'pending'`` and the delivered UPDATE had no status guard, so two
+# overlapping cycles could both send one candidate.
+
+
+class _ClaimContended(Exception):
+    """Another worker holds one of the candidates; roll the whole claim back."""
+
+
+def _utc_day(now: datetime) -> tuple[datetime, datetime]:
+    start = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    return start, start + timedelta(days=1)
+
+
+async def sends_today(
+    conn: asyncpg.Pool | asyncpg.Connection, *, now: datetime, lane: str | None = None
+) -> int:
+    """Count today's (UTC) delivered candidates plus in-flight claims, optionally per lane."""
+    start, end = _utc_day(now)
+    count = await conn.fetchval(
+        """
+        SELECT count(*) FROM insight_candidates
+        WHERE ($3::text IS NULL OR lane = $3)
+          AND (
+            (status = 'delivered' AND delivered_at >= $1 AND delivered_at < $2)
+            OR (status = 'pending' AND claim_id IS NOT NULL)
+          )
+        """,
+        start,
+        end,
+        lane,
+    )
+    return int(count or 0)
+
+
+async def claim_for_delivery(
+    pool: asyncpg.Pool,
+    candidate_ids: list[str],
+    *,
+    now: datetime,
+    budget_check: Any | None = None,
+) -> tuple[uuid.UUID | None, str | None]:
+    """Claim every candidate in ``candidate_ids`` or none of them.
+
+    Returns ``(claim_id, None)`` on success, or ``(None, reason)``:
+    ``claim_contended`` when another worker holds (or already settled) one of
+    them, or the reason ``budget_check(conn)`` returned. The budget check and
+    the claim run under one advisory lock, so two workers cannot both count the
+    same last slot.
+    """
+    claim_id = uuid.uuid4()
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(_DELIVERY_CLAIM_LOCK)
+            if budget_check is not None and (reason := await budget_check(conn)):
+                return None, reason
+            rows = await conn.fetch(
+                """
+                UPDATE insight_candidates SET claim_id = $1, claimed_at = $2
+                WHERE id = ANY($3::uuid[]) AND status = 'pending' AND claim_id IS NULL
+                RETURNING id
+                """,
+                claim_id,
+                now,
+                candidate_ids,
+            )
+            if len(rows) != len(set(candidate_ids)):
+                raise _ClaimContended
+    except _ClaimContended:
+        return None, "claim_contended"
+    return claim_id, None
+
+
+async def mark_attempt_started(pool: asyncpg.Pool, claim_id: uuid.UUID, now: datetime) -> None:
+    """Commit "the transport may now be called" for a claim, before calling it.
+
+    A stale claim with this set may have been sent; one without it never was.
+    """
+    await pool.execute(
+        "UPDATE insight_candidates SET attempt_started_at = $2 WHERE claim_id = $1",
+        claim_id,
+        now,
+    )
+
+
+async def _release_stale_digest_claims(pool: asyncpg.Pool, *, now: datetime) -> None:
+    """Release digest claims whose holder died; the digest keeps at-least-once retry."""
+    await pool.execute(
+        """
+        UPDATE insight_candidates
+        SET claim_id = NULL, claimed_at = NULL, attempt_started_at = NULL
+        WHERE lane = 'digest' AND status = 'pending' AND claim_id IS NOT NULL
+          AND claimed_at <= $1
+        """,
+        now - DIGEST_STALE_CLAIM_AFTER,
+    )
+
+
 async def delivery_cycle(
     pool: asyncpg.Pool,
     *,
@@ -2490,7 +2675,7 @@ async def delivery_cycle(
             await pool.execute(
                 """
                 UPDATE insight_candidates SET status = 'filtered'
-                WHERE status = 'pending' AND priority >= $1
+                WHERE status = 'pending' AND claim_id IS NULL AND priority >= $1
                 """,
                 URGENT_PRIORITY_THRESHOLD,
             )
@@ -2499,7 +2684,7 @@ async def delivery_cycle(
             await pool.execute(
                 """
                 UPDATE insight_candidates SET status = 'filtered'
-                WHERE status = 'pending'
+                WHERE status = 'pending' AND claim_id IS NULL
                 """
             )
         result["skipped"] = True
@@ -2536,6 +2721,10 @@ async def delivery_cycle(
             metadata=metadata,
         )
 
+    # bu-jv1moa.8: a digest claim whose holder died returns to pending (the
+    # digest's retry semantics are unchanged; the timed lane sweeps its own).
+    await _release_stale_digest_claims(pool, now=now)
+
     # Step 2: Expire candidates. Runs unconditionally — expiry bookkeeping
     # must not stall just because this cycle is (or may be) suppressed.
     expired = await expire_candidates(pool, now=now)
@@ -2548,9 +2737,12 @@ async def delivery_cycle(
         pool, now=now, urgent_only=False, finance_warning_reader=finance_warning_reader
     )
 
-    # Priority remains a ranking signal, never an authorization selector.
+    # Priority remains a ranking signal, never an authorization selector. A
+    # timed candidate belongs to the timed sub-cycle alone, and a claimed one
+    # to its claim holder.
     rows = await pool.fetch(
         "SELECT id FROM insight_candidates WHERE status = 'pending' "
+        "AND lane = 'digest' AND claim_id IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     )
     pending_ids = [str(row["id"]) for row in rows]
@@ -2641,7 +2833,12 @@ async def delivery_cycle(
     if urgent_only:
         effective_budget = len(eligible_ids)
     else:
-        effective_budget = await compute_effective_budget(pool, settings, now=now)
+        # bu-jv1moa.8: a timed send today already spent one of these slots.
+        effective_budget = max(
+            0,
+            await compute_effective_budget(pool, settings, now=now)
+            - await sends_today(pool, now=now, lane="timed"),
+        )
     result["effective_budget"] = effective_budget
 
     if effective_budget == 0:
@@ -2868,6 +3065,25 @@ async def delivery_cycle(
                 delivery_message += "\n\nUnverified Finance report: " + stamp
                 result["delivery_message"] = delivery_message
 
+    # bu-jv1moa.8: claim every selected candidate or none before the transport.
+    # An overlapping cycle that selected the same row loses here and sends
+    # nothing; the routine cycle also re-counts timed sends under the claim
+    # lock so a timed send that landed since step 5 cannot be overspent.
+    async def _timed_budget_check(conn: asyncpg.Connection) -> str | None:
+        spare = configured_budget - await sends_today(conn, now=now, lane="timed")
+        return "budget_raced" if len(selected_ids) > spare else None
+
+    claim_id, claim_refusal = await claim_for_delivery(
+        pool,
+        selected_ids,
+        now=dispatch_now,
+        budget_check=None if urgent_only else _timed_budget_check,
+    )
+    if claim_id is None:
+        result.update(skipped=True, reason=claim_refusal, delivery_message=None)
+        return result
+    await mark_attempt_started(pool, claim_id, dispatch_now)
+
     # notify_fn is guaranteed non-None here (None case returns early above)
     deliver_success = True
     notify_result: Any = None
@@ -2912,10 +3128,11 @@ async def delivery_cycle(
                     """
                     UPDATE insight_candidates
                     SET status = 'delivered', delivered_at = $1, delivery_attempt_count = 0
-                    WHERE id = ANY($2::uuid[])
+                    WHERE id = ANY($2::uuid[]) AND claim_id = $3
                     """,
                     delivered_at,
                     selected_ids,
+                    claim_id,
                 )
 
                 # Step 8: Record cooldowns
@@ -2987,15 +3204,18 @@ async def delivery_cycle(
         if terminal_metadata := terminal_telegram_metadata(notify_result):
             await settle_terminal_insights(selected_ids, terminal_metadata)
             result.update(terminal_metadata)
-        # Delivery failed — increment attempt counter; filter candidates that have
-        # reached the 3-consecutive-failure threshold
+        # Delivery failed — increment attempt counter and release this cycle's
+        # claim so a later cycle can retry; filter candidates that have reached
+        # the 3-consecutive-failure threshold
         await pool.execute(
             """
             UPDATE insight_candidates
-            SET delivery_attempt_count = delivery_attempt_count + 1
-            WHERE id = ANY($1::uuid[])
+            SET delivery_attempt_count = delivery_attempt_count + 1,
+                claim_id = NULL, claimed_at = NULL, attempt_started_at = NULL
+            WHERE id = ANY($1::uuid[]) AND claim_id = $2
             """,
             selected_ids,
+            claim_id,
         )
         # Filter candidates that have now failed 3 or more times; record the
         # delivery failure in metadata so callers can discriminate this path.

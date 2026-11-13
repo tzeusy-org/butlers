@@ -18,6 +18,7 @@ resolve_owner_entity_info() are all mocked.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -552,6 +553,17 @@ class TestBrokerChannelSelectionInNotifyMetadata:
                 "butlers.tools.switchboard.insight.broker.check_total_disengagement_auto_off",
                 new=AsyncMock(return_value=False),
             ),
+            # The shared claim is proven against real rows in
+            # tests/modules/test_insight_timed_lane.py; this mock pool cannot hold one.
+            patch(
+                "butlers.tools.switchboard.insight.broker.sends_today",
+                new=AsyncMock(return_value=0),
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker.claim_for_delivery",
+                new=AsyncMock(return_value=(uuid.UUID(int=7), None)),
+            ),
+            patch("butlers.tools.switchboard.insight.broker.mark_attempt_started", new=AsyncMock()),
         ):
 
             async def mock_fetch(query: str, *args: Any) -> list:
@@ -658,6 +670,10 @@ async def test_actual_insight_cycle_quarantines_partial_through_failed_terminal_
             "_pending_fold_lines": [],
             "cleanup_old_rows": None,
             "check_total_disengagement_auto_off": False,
+            "sends_today": 0,
+            "claim_for_delivery": (uuid.UUID(int=7), None),
+            "mark_attempt_started": None,
+            "_release_stale_digest_claims": None,
         }
         for name, value in values.items():
             stack.enter_context(patch.object(broker, name, AsyncMock(return_value=value)))
@@ -828,6 +844,9 @@ async def test_real_delivery_cycle_rechecks_finance_after_format_and_preserves_u
         "cleanup_old_rows": None,
         "check_total_disengagement_auto_off": False,
         "record_attention_event": None,
+        "sends_today": 0,
+        "claim_for_delivery": (UUID(int=7), None),
+        "mark_attempt_started": None,
     }
     with ExitStack() as stack:
         for name, value in replacements.items():
