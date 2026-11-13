@@ -830,6 +830,21 @@ over-budget call, and any tool whose effect class is `administer` or protected o
 consequential actuation. The budget SHALL be measured in UTF-16 code units.
 The RFC 0023 `presentation_key` and the HMAC callback token SHALL be unchanged.
 
+When the parked action carries RFC 0038 goal lineage, the card and the dashboard approval detail
+SHALL show the same authoritative lineage lines, built once from the broker's park record and never
+from caller prose, model claims or call arguments: the goal, the origin, who exposed it (the
+invocation's closed `exposure_cause`, recorded by the broker at park time under the goal lock) and
+whether a standing rule could ever match (the broker's park-time `rule_possible`, explanation only).
+A fact the park record did not capture SHALL read "Unknown". These lines explain and SHALL NOT
+authorize: admission and rule matching never read them.
+
+A communicating tool whose catalog descriptor declares `content_params` (optional and additive)
+SHALL have its exact call rebuilt from the descriptor's `recipient_params` plus `content_params`
+and nothing else, in preference to the preview registry. Every non-empty stored argument SHALL be
+one of them, every recipient and content value SHALL be present and well-formed, and the tool SHALL
+be `communicate`; a tool that declares it SHALL NOT fall back to the registry. A tool that does not
+declare it keeps the registry preview unchanged.
+
 Each presentation SHALL record `args_digest`, the SHA-256 of the canonical JSON
 (sorted keys, no whitespace) of the stored `tool_args` it rendered, under the
 pending action's row lock when the handoff starts. If the stored call no longer
@@ -865,6 +880,28 @@ SHALL refuse while any presentation carries a digest.
 - **THEN** Telegram and dashboard previews show all three exact stored arguments through the shared registry
 - **AND** a Telegram card that passes the existing safety and fit checks offers Approve, Reject and Open
 - **AND** missing or malformed arguments or unknown reaction kwargs, including empty future arguments, offer Open only
+
+#### Scenario: Goal-parked card shows authoritative lineage
+
+- **WHEN** an action parked by the capability broker for a goal invocation exposed to third-party data is rendered on the card and on the dashboard detail
+- **THEN** both show the same goal, origin, exposed-by and standing-rule lines from the broker's park record
+- **AND** a fact the record did not capture reads "Unknown", and no line is taken from the model's explanation or the call arguments
+
+#### Scenario: Catalog content parameters give the complete exact call
+
+- **WHEN** a `communicate` tool declares `content_params` and is parked with every recipient and content argument present
+- **THEN** the card and the dashboard show each recipient and content value from the stored arguments
+- **AND** Approve, Reject and Open are offered if the call passes the safety and fit checks
+
+#### Scenario: Declared content parameters that cannot be satisfied
+
+- **WHEN** a tool declares `content_params` and the stored call has an extra non-empty argument, a missing or malformed recipient or content value, or is not a `communicate` tool
+- **THEN** the card offers Open only and the registry preview is not used instead
+
+#### Scenario: Registry or lineage unusable
+
+- **WHEN** no preview is registered, the catalog descriptor cannot be read, a value is oversize or unshowable, or the stored call no longer matches the presented digest
+- **THEN** the card offers Open only and nothing executes from it
 
 #### Scenario: Stored call changed after presentation
 
