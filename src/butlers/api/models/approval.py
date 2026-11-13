@@ -181,6 +181,11 @@ class ApprovalAction(BaseModel):
     )
 
 
+class ApprovalLineageFact(BaseModel):
+    label: str
+    value: str
+
+
 class ApprovalGoalLineage(BaseModel):
     """The goal, invocation, depth, exposure and origin that parked an action."""
 
@@ -189,6 +194,12 @@ class ApprovalGoalLineage(BaseModel):
     depth: int
     exposed: bool
     origin: Literal["owner", "obligation", "third_party", "staffer"]
+    # Why it was exposed (closed S1 cause), null when unknown; and whether a standing rule could
+    # ever match the call (explanation only, never authority), null when unknown.
+    exposure_cause: str | None = None
+    rule_possible: bool | None = None
+    # The labelled lines both the dashboard and the Telegram card show, from one server builder.
+    facts: list[ApprovalLineageFact] = []
 
 
 ApprovalAction.model_rebuild()

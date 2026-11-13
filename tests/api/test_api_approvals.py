@@ -3641,6 +3641,14 @@ async def test_list_actions_filters_by_goal_and_returns_its_lineage(app):
         "depth": 1,
         "exposed": True,
         "origin": "owner",
+        "exposure_cause": None,
+        "rule_possible": None,
+        "facts": [
+            {"label": "Goal", "value": f"{str(goal_id)[:8]} (sub-task)"},
+            {"label": "Origin", "value": "You started it"},
+            {"label": "Exposed by", "value": "Unknown"},
+            {"label": "Standing rule", "value": "Unknown"},
+        ],
     }
     [(count_sql, *count_args)] = [
         call.args for call in conn.fetchval.await_args_list if "COUNT(*)" in call.args[0]

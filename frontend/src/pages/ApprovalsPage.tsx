@@ -738,6 +738,19 @@ function Dossier({
           </div>)}
         </> : <p>Open only: an exact safe preview is unavailable. Approval is disabled.</p>}
       </section>
+      {detail.goal ? (
+        <section aria-label="Goal lineage" className="mb-6" data-testid="approval-goal-lineage">
+          <h3 className="font-medium">Parked by a goal</h3>
+          <dl className="mt-1 grid grid-cols-1 gap-x-6 gap-y-1 text-sm sm:grid-cols-[max-content_1fr]">
+            {detail.goal.facts.map((fact) => (
+              <div key={fact.label} className="contents">
+                <dt className="text-muted-foreground">{fact.label}</dt>
+                <dd className="whitespace-pre-wrap break-words">{fact.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      ) : null}
       {/* Floating decision cluster — a zero-height sticky overlay so it floats
           over the top-right corner without reserving flow space (the body is
           not pushed down). Stays pinned on scroll; the wrapper is click-through

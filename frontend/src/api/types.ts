@@ -3583,6 +3583,12 @@ export interface ApprovalGoalLineage {
   depth: number;
   exposed: boolean;
   origin: "owner" | "obligation" | "third_party" | "staffer";
+  /** Why it was exposed (closed S1 cause); null when unknown. */
+  exposure_cause: string | null;
+  /** Whether a standing rule could ever match the call; explanation only. Null when unknown. */
+  rule_possible: boolean | null;
+  /** The labelled lines the Telegram card shows too, built once on the server. */
+  facts: { label: string; value: string }[];
 }
 
 /**

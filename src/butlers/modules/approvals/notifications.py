@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from butlers.core.approval_callbacks import mint_approval_callback_token
+from butlers.modules.approvals.lineage_facts import lineage_facts
 from butlers.modules.approvals.previews import defang_urls, resolve_call_preview
 
 
@@ -129,8 +130,18 @@ def render_approval_card(
     lineage = f"Started by: {_dossier_value(started_by)} butler"
     if action.get("origin") == "prepared":
         lineage += " (prepared action, not an owner push)"
+    goal = lineage_facts(action)
+    goal_lines = (
+        (
+            "Parked by a goal (server record):",
+            *(f"  {f.label}: {_span(f.value)}" for f in goal.facts),
+        )
+        if goal is not None
+        else ()
+    )
     tail = (
         lineage,
+        *goal_lines,
         "Assistant says (claims, not verified):",
         f"  Why: {_claim_span(action.get('why'))}",
         f"  Blast radius: {_claim_span(action.get('blast_radius'))}",

@@ -157,6 +157,11 @@ counts toward standing-rule promotion. A park also records `goal_rule_possible` 
 unknown (an unexposed lineage, or a row that recorded none); it never comes from the model or
 the call arguments.
 
+Both owner surfaces show the same lineage lines, built once by `lineage_facts` from that park record: the
+Telegram card ("Parked by a goal") and the dashboard approval detail (`goal.facts` on
+`ApprovalGoalLineage`). The lines are a closed vocabulary (goal, origin, exposed by, standing rule), never
+model claims or call arguments; an unrecorded fact reads "Unknown". They explain and never authorize.
+
 The owner decides a goal action on the usual surfaces (dashboard approve, the
 module `approve_action` tool, `operations.approve_action`): the decision is
 recorded and the result carries `execution_code: goal_effect_requires_broker`,

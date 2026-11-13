@@ -888,6 +888,44 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
     }
   });
 
+  it("shows the server-built goal lineage lines, and none for an action no goal parked", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1", "send_email")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({
+        ...(await makePendingDetail("a1")).data,
+        goal: {
+          goal_id: "11111111-1111-4111-8111-111111111111",
+          invocation_id: "22222222-2222-4222-8222-222222222222",
+          depth: 0,
+          exposed: true,
+          origin: "third_party",
+          exposure_cause: "read",
+          rule_possible: false,
+          facts: [
+            { label: "Goal", value: "11111111 (lead)" },
+            { label: "Exposed by", value: "Outside content it read" },
+          ],
+        },
+      }) as AnyMock,
+    );
+    renderPage();
+    await flushUntil(() => container.querySelector('[data-testid="approval-goal-lineage"]') !== null);
+    const lineage = container.querySelector('[data-testid="approval-goal-lineage"]');
+    expect(lineage?.textContent).toContain("Exposed by");
+    expect(lineage?.textContent).toContain("Outside content it read");
+
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({ ...(await makePendingDetail("a1")).data, goal: null }) as AnyMock,
+    );
+    await act(async () => {
+      await qc.invalidateQueries({ queryKey: ["approvals", "detail"] });
+      await flush();
+    });
+    expect(container.querySelector('[data-testid="approval-goal-lineage"]')).toBeNull();
+  });
+
   it("renders the dossier push-failed alert when the selected approval's push failed", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
       makeApiResponse([

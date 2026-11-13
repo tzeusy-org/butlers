@@ -1588,7 +1588,8 @@ SCHEMA ApprovalDetail 9db7e276b414
 SCHEMA ApprovalEvidence a6d1fa38cb99
 SCHEMA ApprovalExecutionFailure 5428028e4931
 SCHEMA ApprovalGatedTool 8fe8094e04a0
-SCHEMA ApprovalGoalLineage bce6af8bb80c
+SCHEMA ApprovalGoalLineage 6c8ce19e17e6
+SCHEMA ApprovalLineageFact c2c76481c0ac
 SCHEMA ApprovalMetrics d6a47dc8fcc0
 SCHEMA ApprovalRule ca3e4799063b
 SCHEMA ApprovalRuleCreateRequest 5534967545b6

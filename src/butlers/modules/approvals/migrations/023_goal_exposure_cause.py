@@ -9,9 +9,10 @@ invocation's ``exposure_cause`` on the Switchboard goal ledger, which a butler
 schema cannot read. The capability broker reads it under the goal lock and
 stamps it on the park record, so every reader sees the same server-held fact.
 
-``goal_rule_possible`` is the broker's park-time answer to "may a standing rule ever match this
-call" (park-only grants, ``always_per_event`` tools, exposure limits and rule-prepared tools are
-false). It explains; it never authorizes. NULL on a pre-stamp or legacy row.
+``goal_rule_possible`` is the broker's park-time verdict (``Decision.allow_standing_rule`` and
+the tool is not rule-prepared), kept so the owner can be told whether a standing rule could ever
+match the call. It is display-only and never feeds authorization: admission still judges each
+rule on its own. NULL on a pre-stamp or legacy row.
 
 ``goal_exposure_cause`` is the closed S1 enum (``butlers.core.goal_labels``).
 NULL means unknown: a pre-stamp or legacy row, or an unexposed lineage.
