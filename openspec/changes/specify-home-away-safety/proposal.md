@@ -17,14 +17,14 @@ well", which is the failure the sentinel was built to avoid.
   - `home:freezer`;
   - `home:away-door`.
   - Each has no model, no Home Assistant service call and no prepared action.
-- Specify the `home.sensing` situation projection that RFC 0038 already registers but nothing writes. The blind condition consumes that projection; it is not a second health store.
+- Specify the `home.sensing` situation projection that RFC 0038 already registers but nothing writes, for one sensing group per installation registered by a privileged act. The blind condition is judged per declared role (each life-safety role, freezer, away doors), so losing every sensor of one role is reported even while other roles still read. It is not a second health store.
 - The away premise is the canonical `owner.place` slot and timeline from the presence reducer (.17), read through the same owner reader the departure card (.8) uses. There is no second presence inference.
 - Every threshold is an explicit owner-confirmed value on a declaration row:
   - freezer maximum, hysteresis and dwell;
   - open-door duration;
   - blind dwell.
 - A missing value means `unconfigured`, and nothing alerts. The `home:thresholds:*` default-fallback rule does not apply.
-- Delivery is routine, through `_send_notify`. A quiet-hours suppression is held by the ledger retry and never lost. Breaking quiet hours for any of these producers is a pending owner prerequisite (design.md, P1), tied to bu-dhloi1.3. It is not assumed.
+- Delivery is routine, through `_send_notify`. A first send suppressed by quiet hours is held by the ledger retry and never lost; an escalation rung that falls inside quiet hours is skipped, as the ledger works today. Breaking quiet hours for any of these producers is a pending owner prerequisite (design.md, P1), tied to bu-dhloi1.3. It is not assumed.
 - Split with the departure card:
   - .8 sends one card at departure.
   - `home:away-door` is the continuing condition for the rest of the absence.
@@ -44,7 +44,8 @@ None.
 
 Future owners:
 
-- the Home deterministic job module and Home migrations (`temperature_watch`, a `departure_watch` column, an away-safety settings row);
+- the Home deterministic job module and Home migrations (`temperature_watch`, a `departure_watch` column, an away-safety settings row, streak state);
+- `_send_notify`, which must return its delivery outcome;
 - owner-only Home API routes;
 - the Home dashboard Devices panels;
 - a `home.sensing` writer login.
