@@ -44,7 +44,7 @@ _REFUSAL_REASONS = (
     "stale_generation",
     "admit_error",
 )
-_LAUNCHING_KINDS = ("conditions", "owner_answer", "approval")
+_LAUNCHING_KINDS = ("conditions", "owner_answer", "approval", "decision_set")
 
 
 @dataclass(frozen=True, slots=True)

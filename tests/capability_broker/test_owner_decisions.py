@@ -443,6 +443,8 @@ async def test_a_superseded_version_or_moved_plan_or_epoch_is_stale(broker_db_ur
         async with w.owner.acquire() as connection, connection.transaction():
             # A changed premise is the goal's next plan version.
             await WaitLedger(connection).append_plan(goal, 0, ["m2"], [], [])
+        # The plan's move superseded the open set in its own transaction (sw_074).
+        assert await _state(w, second) == "superseded"
         assert await decide(second) == "stale"
 
         third = await _propose(w, goal, lead, effects[1:])
@@ -451,6 +453,7 @@ async def test_a_superseded_version_or_moved_plan_or_epoch_is_stale(broker_db_ur
             "UPDATE switchboard.invocations SET status = 'failed' WHERE id = $1", lead
         )
         await w.invocation(goal, _grant(NOTIFY), _grant(RULES), epoch=1)
+        assert await _state(w, third) == "superseded"
         assert await decide(third) == "stale"
         assert w.forwarder.calls == []
 

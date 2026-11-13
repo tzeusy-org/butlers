@@ -1178,6 +1178,89 @@ class RunnerLedger:
             return None
         return row["envelope_id"], row["effect_id"], row["status"], row["instance_id"]
 
+    async def wait_decision_set(
+        self, principal: Principal, set_id: UUID
+    ) -> list[UUID] | BrokerRefused:
+        """``goal.wait_decision_set``: the lead ends and the goal waits on one decision set.
+
+        The set's latest version must be this goal's, open, proposed at this lead's epoch under
+        the goal's current plan, with every item still parked (else RESOURCE). Live children
+        are stopped, the lead returns, and the goal waits in a ``decision_set`` envelope bound
+        to that exact version; ``decision_set_outcome`` resolves it.
+        """
+        goal = await self.lock(principal.goal_id)
+        if goal is None or goal["status"] != "running":
+            raise BrokerRefused(Reason.GOAL)
+        if principal.depth != 0:
+            raise BrokerRefused(Reason.CAPABILITY)
+        epoch = await self.connection.fetchval(
+            "SELECT lead_epoch FROM switchboard.invocations WHERE goal_id = $1 AND id = $2",
+            principal.goal_id,
+            principal.invocation_id,
+        )
+        shown = await DecisionSetLedger(self.connection).waitable(principal.goal_id, set_id, epoch)
+        if shown is None:
+            raise BrokerRefused(Reason.RESOURCE)
+        exhausted = await self.broker.charge_call(principal)
+        if exhausted is not None:
+            return exhausted
+        children = await self._end_live(principal.goal_id, "stopped", "goal_ended", depth=1)
+        await self.end(principal.goal_id, principal.invocation_id, "returned", "completed")
+        opened = await WaitLedger(self.connection).open_decision_set(
+            principal.goal_id, epoch, shown.set_id, shown.version, shown.expires_at
+        )
+        if opened is None:
+            raise BrokerRefused(Reason.UNAVAILABLE)
+        await self.connection.execute(
+            "UPDATE switchboard.goals SET status = 'waiting', updated_at = now() WHERE id = $1",
+            principal.goal_id,
+        )
+        return children
+
+    async def decision_set_waits(self) -> list[UUID]:
+        """Waiting goals with an open decision-set envelope (to resolve)."""
+        rows = await self.connection.fetch(
+            "SELECT g.id FROM switchboard.goals g WHERE g.status = 'waiting' AND EXISTS "
+            "(SELECT 1 FROM switchboard.wait_envelopes e WHERE e.goal_id = g.id "
+            "AND e.kind = 'decision_set' AND e.state = 'open') ORDER BY g.id"
+        )
+        return [row["id"] for row in rows]
+
+    async def decision_set_outcome(
+        self, goal_id: UUID
+    ) -> tuple[UUID, UUID, int, str, str | None] | None:
+        """``(envelope_id, set_id, version, outcome, instance_id)`` once the waited set resolved.
+
+        Under the goal lock; ``outcome`` is ``DecisionSetLedger.wait_outcome``'s (``decided``,
+        ``rejected``, ``stale`` or ``expired``), None while the version is still pending or the
+        goal no longer waits. A stale open version is cancelled in this transaction (N3).
+        """
+        goal = await self.lock(goal_id)
+        if goal is None or goal["status"] != "waiting":
+            return None
+        env = await self.connection.fetchrow(
+            "SELECT e.id, e.decision_set_id, e.decision_set_version, "
+            "g.condition_instance_ids[1] AS instance_id FROM switchboard.wait_envelopes e "
+            "LEFT JOIN switchboard.wait_generations g ON (g.goal_id, g.envelope_id, g.generation) "
+            "= (e.goal_id, e.id, e.generation) "
+            "WHERE e.goal_id = $1 AND e.kind = 'decision_set' AND e.state = 'open'",
+            goal_id,
+        )
+        if env is None:
+            return None
+        outcome = await DecisionSetLedger(self.connection).wait_outcome(
+            env["decision_set_id"], env["decision_set_version"]
+        )
+        if outcome is None:
+            return None
+        return (
+            env["id"],
+            env["decision_set_id"],
+            env["decision_set_version"],
+            outcome,
+            env["instance_id"],
+        )
+
     async def expired_waits(self) -> list[UUID]:
         """Waiting goals whose open envelope passed its deadline without firing (S2.2)."""
         rows = await self.connection.fetch(
@@ -1225,6 +1308,8 @@ class RunnerLedger:
 
         A decline, a domain expiry or a cancel ends ``partial``; a wake refused because the
         envelope's deadline passed ends ``failed``. An envelope already closed stays as it is.
+        A decision-set wait ends the same way (a rejected set ``partial``, an expired one
+        ``failed``).
         """
         if final not in ("partial", "failed"):
             raise ValueError("an approval wait ends partial or failed")

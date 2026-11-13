@@ -99,6 +99,7 @@ capability and never lists one. The runner serves these tools on the same per-go
 | `goal__wait_until` | lead (dark) | End the lead and wait on a predicate over this goal's own decisions and effects (see below); not listed or callable until goal events feed the evaluator |
 | `goal__plan` | lead | Record the plan as the goal's next version of goal-owned references (see below) |
 | `goal__decide_together` | lead (dark) | Group parked calls of this goal into one decision set for the owner (see below); not listed or callable until the owner's decision path lands |
+| `goal__wait_decision_set` | lead (dark) | End the lead and wait on the owner's decision of one decision set (see below); dark with `goal__decide_together` |
 | `goal__inbox` | lead | Take the owner replies joined to this goal since the last call |
 | `goal__escalate` | lead | Hand the goal to a fresh lead on the next ladder tier |
 | `goal__return` | child | Return a result validated against the brief's `result_schema` |
@@ -857,9 +858,43 @@ parked for its own later decision (Q3 = B, `UNTICKED_OUTCOME`; pending owner con
 value). Callers pass a verified `OwnerContext`; the od1 `decision_set` token kind, its redemption
 and the card belong to bu-jv1moa.27. The whole path is dark behind `OWNER_DECISIONS_LIVE` (False):
 every entry point, the single-item approval included, refuses `unavailable` and records, mirrors
-and dispatches nothing, and the re-drive is a no-op. No caller is wired yet, and the set's wait and
-wake are the next slice. When `DECIDE_TOGETHER_LIVE` flips, `goal__decide_together` joins the child
+and dispatches nothing, and the re-drive is a no-op. No caller is wired yet. When
+`DECIDE_TOGETHER_LIVE` flips, `goal__decide_together` and `goal__wait_decision_set` join the child
 list-and-call test.
+
+### Waiting on a decision set (D13, S2.2, sw_074, dark)
+
+`goal__wait_decision_set {set_id}` (`GoalRunner.wait_decision_set`, then
+`RunnerLedger.wait_decision_set`) is for a lead that proposed a set and has nothing else to do. The
+set's latest version must be this goal's, `open`, proposed at the lead's epoch under the goal's
+current plan version, with every item still `parked` (else `resource_outside_grant`; a child is
+refused `capability_not_granted`). Live children are stopped, the lead returns, and the goal waits
+in a `decision_set` envelope bound by foreign key to that exact version
+(`wait_envelopes.decision_set_id`, `decision_set_version`; instance
+`decision_set:<set>:<version>`). It ends with the set's expiry or the budget deadline, one wake,
+and the waiting lead's grant ∩ the ceiling as its snapshot. The tool is dark with
+`goal__decide_together`.
+
+Each `supervise_once` resolves these waits after the approval waits
+(`GoalRunner._resolve_decision_sets`, `DecisionSetLedger.wait_outcome` under the goal lock):
+
+- `decided`: the owner approved the version and no ticked item is still `requested`, `approved` or
+  `dispatched`. One successor summary lead wakes through the shared wake admission. An item the
+  receipt left unticked holds nothing, even once the owner approves it on its own later.
+- `rejected`: the owner rejected the version. The goal ends `partial`; nothing launches.
+- `stale` (N3): the version can no longer be decided. An open version one of whose items left
+  `parked` (decided on its own, expired or cancelled by its domain) is cancelled in that sweep, so
+  the owner can no longer decide it, and the successor wakes once that item settled to see what
+  changed.
+- `expired`: the version passed its expiry; the goal ends `failed`.
+
+A wake that cannot be admitted (refused for any reason but Stop, or unmapped) ends the goal
+`failed`, as an approval wake does. Stop cancels the envelope and the version (sw_073 trigger).
+
+`sw_074` also makes a set's binding durable: in the transaction that moves the goal, a changed
+`goals.plan_version` supersedes the open version proposed under another plan version, and a new
+`goal_epochs` row supersedes one proposed at an earlier epoch (a recovery, an escalation or a
+wake). A set proposed again after such a move is a new set, not the next version of the old one.
 
 ## Not yet delivered
 

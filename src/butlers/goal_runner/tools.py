@@ -3,7 +3,7 @@
 They are not domain capabilities. The lead holds ``goal.delegate``,
 ``goal.await``, ``goal.stop_child``, ``goal.complete``, ``goal.wait_approval``,
 ``goal.wait_owner``, ``goal.wait_until``, ``goal.wait_again``, ``goal.plan``, ``goal.escalate``,
-``goal.decide_together`` (dark) and ``goal.inbox``;
+``goal.decide_together`` and ``goal.wait_decision_set`` (both dark) and ``goal.inbox``;
 a child holds only ``goal.return``. Each is listed by the calling invocation's
 depth, read from its ledger row under the goal lock, and each handler checks
 that depth again in its own transaction, so a child can neither list nor call
@@ -51,11 +51,11 @@ _OPTIONAL = frozenset({CONTEXT_SEARCH, GUIDANCE_SEARCH, GUIDANCE_LOAD})
 WAIT_UNTIL_LIVE = False
 # goal.decide_together (M7 decision sets, bu-4c7nvp.1.3) stays dark until the owner can reach
 # the resolver (the card and its od1 token, bu-jv1moa.27); a set nobody can decide would only
-# strand calls.
+# strand calls. goal.wait_decision_set waits on such a set, so it goes live with it.
 DECIDE_TOGETHER_LIVE = False
 _DARK = frozenset(
     ({"goal__wait_until", "goal__wait_again"} if not WAIT_UNTIL_LIVE else set())
-    | ({"goal__decide_together"} if not DECIDE_TOGETHER_LIVE else set())
+    | ({"goal__decide_together", "goal__wait_decision_set"} if not DECIDE_TOGETHER_LIVE else set())
 )
 
 _UUID = {"type": "string", "format": "uuid"}
@@ -156,6 +156,20 @@ _TOOLS = (
                 }
             },
             "required": ["effect_ids"],
+            "additionalProperties": False,
+        },
+    ),
+    GoalTool(
+        "goal__wait_decision_set",
+        (0,),
+        "End your turn and wait for the owner's decision on the decision set you proposed with "
+        "goal__decide_together. A successor continues the goal once the owner decided it and "
+        "the approved calls have run, or once the set went stale (a call in it was decided on "
+        "its own); a rejection ends the goal.",
+        {
+            "type": "object",
+            "properties": {"set_id": _UUID},
+            "required": ["set_id"],
             "additionalProperties": False,
         },
     ),
@@ -328,6 +342,7 @@ class GoalTools:
             "goal__complete": self._complete,
             "goal__wait_approval": self._wait_approval,
             "goal__decide_together": self._decide_together,
+            "goal__wait_decision_set": self._wait_decision_set,
             "goal__wait_owner": self._wait_owner,
             "goal__wait_until": self._wait_until,
             "goal__wait_again": self._wait_again,
@@ -395,6 +410,10 @@ class GoalTools:
             "version": proposed.version,
             "items": len(proposed.items),
         }
+
+    async def _wait_decision_set(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
+        args = _closed(arguments, {"set_id"}, {"set_id"})
+        return {"status": await self.runner.wait_decision_set(goal_id, token, args["set_id"])}
 
     async def _wait_owner(self, goal_id: UUID, token: str, arguments: Any) -> dict[str, Any]:
         args = _closed(arguments, {"effect_id"}, {"effect_id"})
