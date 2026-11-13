@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import get_args
 
 import httpx
 import pytest
@@ -42,6 +44,7 @@ class _Ledger:
         self.overlay: dict[str, dict] = {}
         self.issued: dict[str, tuple] = {}
         self.consumed: list[tuple] = []
+        self.finish_state: str | None = None  # forces the finish receipt's state
 
     # connection interface -------------------------------------------------------
 
@@ -61,7 +64,7 @@ class _Ledger:
             admitted = session == SESSION and self.issued.get(nonce) == binding
             if phase == "begin":
                 return {"state": "admitted" if admitted else "refused"}
-            return {"state": "completed" if admitted else "refused"}
+            return {"state": self.finish_state or ("completed" if admitted else "refused")}
         raise AssertionError(f"unexpected fetchval {sql}")
 
     async def fetchrow(self, sql, mode):
@@ -103,13 +106,14 @@ class _Pool:
         yield self.ledger
 
 
-class _Db:
-    def __init__(self, ledger):
-        self.ledger = ledger
+def _db(ledger):
+    """The dashboard Db dependency, serving only the switchboard pool."""
 
-    def pool(self, name):
+    def switchboard_pool(name):
         assert name == "switchboard"
-        return _Pool(self.ledger)
+        return _Pool(ledger)
+
+    return SimpleNamespace(pool=switchboard_pool)
 
 
 class _AuthService:
@@ -173,7 +177,7 @@ def ledger():
 def live(monkeypatch, ledger):
     monkeypatch.setattr(flags, "MODE_CONTROLS_LIVE", True)
     service = _AuthService(ledger)
-    return _app(_Db(ledger), service=service), service
+    return _app(_db(ledger), service=service), service
 
 
 def _enter(until=None, *, version=0, action=ACTION, cause="owner_declared"):
@@ -443,6 +447,45 @@ async def test_options_then_a_later_spend_uses_the_same_binding(live, ledger):
     assert ledger.entries["travel"]["exited_at"] == T0 + timedelta(seconds=7)
 
 
+@pytest.mark.parametrize(
+    ("enter_first", "path", "change", "body"),
+    [
+        (
+            True,
+            "/api/owner-modes/travel/exit",
+            {"change": "exit", "mode": "travel"},
+            {"owner_action_id": ACTION_2, "expected_version": 1},
+        ),
+        (
+            False,
+            "/api/owner-modes/sick/edit",
+            {"change": "edit", "mode": "sick"},
+            {"owner_action_id": ACTION_2, "expected_version": 0, "holds": []},
+        ),
+    ],
+    ids=["entry-writer", "overlay-writer"],
+)
+async def test_an_unretained_step_up_receipt_is_unavailable_not_a_500(
+    live, ledger, enter_first, path, change, body
+):
+    app, _ = live
+    async with _client(app) as client:
+        if enter_first:
+            await client.post("/api/owner-modes/travel/enter", json=_enter(T0 + timedelta(days=1)))
+        await client.post("/api/owner-modes/step-up/options", json={**change, **body})
+        ledger.finish_state = "refused"
+        spent = await client.post(path, json=body, headers={"x-dashboard-step-up": NONCE})
+    assert spent.status_code == 503
+    assert spent.json()["detail"]["error"] == "owner_mode_unavailable"
+
+
+def test_the_wire_mode_ids_match_the_perception_modes():
+    from butlers.api.models.owner_modes import ModeId
+    from butlers.perception.model import MODES
+
+    assert set(get_args(ModeId)) == MODES
+
+
 async def test_shortening_an_entry_binds_the_same_target_across_the_clock(live, ledger):
     app, service = live
     shorter = _enter(T0 + timedelta(hours=2), version=1, action=ACTION_2)
@@ -530,7 +573,7 @@ async def test_options_for_a_stale_version_is_a_conflict(live, body):
 async def test_options_with_no_auth_service_is_unavailable(monkeypatch, ledger):
     monkeypatch.setattr(flags, "MODE_CONTROLS_LIVE", True)
     ledger.overlay["sick"] = None
-    app = _app(_Db(ledger), service=None)
+    app = _app(_db(ledger), service=None)
     async with _client(app) as client:
         response = await client.post(
             "/api/owner-modes/step-up/options",

@@ -196,7 +196,7 @@ class ModeEntryWriter:
                         },
                     )
                     if retained.get("state") != "completed":
-                        raise RuntimeError("Step-up receipt unavailable")
+                        raise ModeOverlayUnavailable("Step-up receipt unavailable")
                 return {**receipt, "version": version + 1}
         except (
             asyncpg.InvalidSchemaNameError,
