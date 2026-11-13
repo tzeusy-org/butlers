@@ -11,6 +11,12 @@ both directions: a new reference without a row fails, and a row whose reference
 is gone fails. A row key is `path::enclosing function` (`<module>` for a
 module-level reference). Docstrings are not references.
 
+The guard is lexical. For `user_context` it matches `public.user_context`, the
+bare `"user_context"` key, unqualified SQL (`FROM`, `JOIN`, `INTO`, `UPDATE` or
+`TABLE user_context`) and `butlers.context_bus` imports. A reference made
+through `getattr`, `importlib` or a re-export is not seen, so retiring the
+table also needs a deliberate search for those, not only a green guard.
+
 ## Shadow parity
 
 `butlers.perception.legacy_parity` compares the legacy signals with the
@@ -67,9 +73,14 @@ table.
 
 ## Hardcoded owner zones
 
-Every site below is switch-time, with no code until `OWNER_CLOCK_LIVE`. At the
+These sites are switch-time, with no code until `OWNER_CLOCK_LIVE`. At the
 switch each reads the owner-local time basis (`perception.clock.owner_time_basis`)
-instead of the literal.
+instead of the hardcoded zone. The guard finds three spellings in `src/` and
+`roster/` (tests and migrations excluded): the `"Asia/Singapore"` literal, a
+fixed `timezone(timedelta(hours=8))` offset, and any use of the briefing's
+`SGT` constant or its `today_sgt` helper (by name, as `briefing.SGT`, or
+imported). A bare `timedelta(hours=8)` is a duration, not a zone, and is not
+matched.
 
 <!-- census:owner_zone -->
 | Reference | Use | Owner | Status |
@@ -91,6 +102,41 @@ instead of the literal.
 | `src/butlers/chronicler/storage.py::create_declared_routine` | stored routine zone default | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
 | `src/butlers/chronicler/storage.py::upsert_daily_rollup` | stored rollup zone default | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
 | `src/butlers/chronicler/storage.py::upsert_mined_routine` | stored routine zone default | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
+| `src/butlers/jobs/briefing.py::<module>` | `SGT = timezone(timedelta(hours=8))`, the fixed-offset owner zone every briefing, overlay, prep and debrief job uses | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
+| `src/butlers/jobs/briefing.py::today_sgt` | today's date in fixed UTC+8 | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
+| `src/butlers/jobs/briefing.py::owner_briefing_zone` | `SGT` fallback when no owner zone is saved | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
+| `src/butlers/jobs/briefing.py::collect_briefing_contributions` | briefing date (`today_sgt`) for the combined briefing key | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; the date is part of the contribution and combined keys, so the switch changes key identity for the switch day |
+| `src/butlers/jobs/briefing.py::run_health_briefing_contribution` | contribution date (`today_sgt`) | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; contribution key identity |
+| `src/butlers/jobs/briefing.py::run_finance_briefing_contribution` | contribution date (`today_sgt`) | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; contribution key identity |
+| `src/butlers/jobs/briefing.py::run_relationship_briefing_contribution` | contribution date (`today_sgt`) | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; contribution key identity |
+| `src/butlers/jobs/briefing.py::run_travel_briefing_contribution` | contribution date (`today_sgt`) | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; contribution key identity |
+| `src/butlers/jobs/briefing.py::run_education_briefing_contribution` | contribution date and the SGT-midnight window | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; contribution key identity |
+| `src/butlers/jobs/briefing.py::run_home_briefing_contribution` | contribution date (`today_sgt`) | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; contribution key identity |
+| `src/butlers/jobs/briefing.py::run_lifestyle_briefing_contribution` | contribution date and the SGT-midnight window | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; contribution key identity |
+| `src/butlers/jobs/calendar_overlay.py::<module>` | imports `SGT` and `today_sgt` | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
+| `src/butlers/jobs/calendar_overlay.py::_sgt_date_str` | buckets a timestamp onto its UTC+8 calendar date | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; the date is the overlay key |
+| `src/butlers/jobs/calendar_overlay.py::run_finance_calendar_overlay_contribution` | overlay date (`today_sgt`) | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; overlay key identity |
+| `src/butlers/jobs/calendar_overlay.py::run_travel_calendar_overlay_contribution` | overlay date and the SGT-midnight window | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; overlay key identity |
+| `src/butlers/jobs/calendar_overlay.py::run_relationship_calendar_overlay_contribution` | overlay date, SGT-midnight window and trigger bucketing | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; overlay key identity |
+| `src/butlers/jobs/calendar_overlay.py::run_health_calendar_overlay_contribution` | overlay date and the SGT-midnight window | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; overlay key identity |
+| `src/butlers/jobs/calendar_prep.py::<module>` | imports `SGT` and `today_sgt` | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
+| `src/butlers/jobs/calendar_prep.py::run_relationship_calendar_prep_contribution` | prep date and the SGT-midnight window | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
+| `src/butlers/jobs/calendar_prep.py::run_email_calendar_prep_contribution` | prep date and the SGT-midnight window | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
+| `src/butlers/jobs/meeting_debrief.py::<module>` | imports `SGT` | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
+| `src/butlers/jobs/meeting_debrief.py::_propose_batch` | the debrief `dedup_key` carries the UTC+8 date | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; changing the zone changes dedup identity, so a debrief proposed before the switch on that local day can be proposed again after it |
+<!-- /census -->
+
+The frontend has its own zone defaults. The guard scans `frontend/src` (tests
+excluded) for a quoted `"Asia/Singapore"` outside comments, one row per file.
+
+<!-- census:owner_zone_frontend -->
+| Reference | Use | Owner | Status |
+| --- | --- | --- | --- |
+| `frontend/src/components/ui/timezone-context.tsx` | `DEFAULT_TZ` for the app timezone provider | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
+| `frontend/src/lib/tz-format.ts` | `DEFAULT_TZ` for timestamp formatting | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
+| `frontend/src/hooks/use-time-window.ts` | `OWNER_TZ_DEFAULT` for time windows | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
+| `frontend/src/components/overview/model.ts` | overview owner zone fallback | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
+| `frontend/src/components/qa/utils.ts` | QA detected-time default zone | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
 <!-- /census -->
 
 ## Feeder replay and retention
