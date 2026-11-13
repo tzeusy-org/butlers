@@ -176,6 +176,35 @@ the plain-text form a chat reply would use. The dashboard serves it at
 - There is no Telegram `/now` command yet: the Telegram connector has no
   slash-command path, so wiring one is separate connector work.
 
+## The owner clock (dark, `.21`)
+
+`butlers.perception.clock` holds the owner-clock policy and the owner-local time
+basis. Everything is pure and takes an injected instant. It is dark:
+`perception.flags.OWNER_CLOCK_LIVE` is off, nothing schedules the reducer or
+writes `owner.clock`, and no consumer has switched.
+
+- `reduce_clock` switches automatically only on a phone fix in a new zone, with
+  a notice and an undo. An unconfirmed booking or flight asks once per booking
+  and never switches; an owner-confirmed booking switches
+  (`owner_confirmed_booking`); an owner-set zone holds against phone fixes until
+  the owner clears it. Undo reverts an automatic switch and holds that phone
+  zone off for 24 hours. With no evidence the clock is the home zone, else UTC
+  (`utc_fallback`); no zone is hardcoded.
+- `brief_due` gives once-a-day idempotence on the owner-local date: the key is
+  the local date at the tick, and a watermark (the last key sent) stops a
+  repeat after a westward jump, a DST repeated hour or an undo. A missed tick
+  catches up later the same local day. A watermark later than the UTC date plus
+  one day is no real local date and is ignored, so it cannot suppress the brief
+  forever.
+- `clock_parity` is the shadow-parity receipt: legacy zone (the saved
+  `settings.general` zone, else the `Asia/Singapore` fallback the briefing
+  uses) against the clock zone and basis, with both local dates. While dark,
+  `owner_time_basis` returns the legacy zone and always yields the receipt.
+- `clock_event` builds the `owner.clock` record for the `context.clock` source.
+  At activation the writer needs `perception_context_writer`, and the
+  `context.clock` profile needs its owner subject, a finite freshness maximum,
+  its evidence sources and one registered evidence reference per clock basis.
+
 ## Complete private backup
 
 All ten durable relations and their exact fixed schema travel through

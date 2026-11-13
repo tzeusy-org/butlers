@@ -12,3 +12,6 @@ SITUATION_READS_LIVE = False
 
 #: The owner's deterministic ``/now`` card is served (dashboard ``GET /api/now``).
 NOW_LIVE = False
+
+#: Owner-local time follows the owner clock instead of the legacy settings zone.
+OWNER_CLOCK_LIVE = False
