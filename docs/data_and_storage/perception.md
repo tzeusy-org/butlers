@@ -246,8 +246,23 @@ calls it.
   retained result's `rule_id` to `mode:new-version`, so a step-up is never spent
   on another edit or a stale version. The table's trigger enforces the same rule
   on any owner SQL; no row is deleted; the runtime role has no privilege.
-- Entering and leaving a mode are the `owner.mode` projection, not the overlay;
-  their writer is a later change.
+- Entering and leaving a mode live in `switchboard.owner_mode_entries`
+  (sw_077): one row per entered mode, keyed by mode and versioned, holding its
+  start, scheduled end (or open-ended), owner cause and exit. A mode never
+  entered is at version 0. An entry is active until it is exited or its end is
+  reached; one ending exactly at `now` has ended (`modes.active_entry`, the same
+  rule as SQL `owner_mode_entry_active`), and an ended entry is passed on as
+  None, so exiting it refuses and re-entering starts a fresh entry.
+  `butlers.perception.mode_entries.ModeEntryWriter` judges every change on the
+  database's `now()` read in its own transaction, the clock the trigger reads.
+  Entering or extending is written with no step-up; exiting, or ending an
+  active entry sooner, only in the transaction that admits a `mode_loosen`
+  step-up whose target is `mode:new-version:digest16` over the resulting
+  entry (`modes.entry_text`: `entry|since|until|cause|open-or-exited`, instants
+  in epoch microseconds). The `entry|` prefix keeps entry targets apart from
+  overlay targets. Only owner causes are stored; nothing infers an entry.
+- The `owner.mode` projection of the active entries is a later change, on the
+  `perception_context_writer` identity behind its own flag.
 
 ## Complete private backup
 

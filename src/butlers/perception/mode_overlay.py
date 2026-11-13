@@ -3,8 +3,8 @@
 ``switchboard.owner_mode_overlay`` (sw_076) holds one versioned row per mode
 the owner has edited; a mode without a row has its recorded default
 (``modes.DEFAULT_PROFILES``) at version 0. Only edits live here: duration, held
-classes and break-through senders. Entering and leaving a mode is the
-``owner.mode`` projection, not this table.
+classes and break-through senders. Entering and leaving a mode live in
+``switchboard.owner_mode_entries`` (``mode_entries``), not this table.
 
 A tightening is written with no step-up. A loosening is written only in the
 transaction that admits a ``mode_loosen`` dashboard step-up bound to the exact

@@ -91,7 +91,12 @@ through `butlers.core.dashboard_stepup.consume_stepup`:
   target is `mode:version:digest16` over the resulting overlay state, which
   sw_076's overlay trigger requires a step-up consumed in the same transaction
   to match; its retained result's `rule_id` must be `mode:version`, the same
-  overlay row. It has no dashboard route yet and stays dark.
+  overlay row. An exit or early end (`perception.mode_entries.entry_binding`)
+  binds the same way, with its target over the resulting entry state
+  (`entry|...`, re-derived by sw_077's entries trigger). The `entry|` prefix
+  keeps the two target families apart, so a step-up confirmed for an overlay
+  edit never admits an entry change, nor the reverse. Neither has a dashboard
+  route yet; both stay dark.
 
 A future Vouch owner can reuse the neutral
 `DashboardStepUpProof`/`StepUpBinding` projection, the restricted service's
