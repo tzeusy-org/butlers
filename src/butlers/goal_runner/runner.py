@@ -27,6 +27,7 @@ from uuid import NAMESPACE_OID, UUID, uuid5
 from opentelemetry import trace
 
 from butlers.capability_broker.contracts import BrokerRefused, Reason
+from butlers.capability_broker.owner_decisions import OwnerDecisions
 from butlers.capability_broker.service import Broker
 from butlers.conditions import (
     ConditionEvaluator,
@@ -686,7 +687,7 @@ class GoalRunner:
     async def decide_together(self, goal_id: UUID, token: str, effect_ids: Any) -> DecisionSet:
         """``goal.decide_together`` (M7, D13): group parked calls into one decision set.
 
-        Dark: the tool is unlisted until the owner's decision path (the resolver) lands.
+        Dark: the tool is unlisted until the owner can reach the resolver (bu-jv1moa.27).
         """
         if type(effect_ids) is not list:
             raise BrokerRefused(Reason.POLICY)
@@ -873,11 +874,22 @@ class GoalRunner:
             async with self._txn() as ledger:
                 await ledger.resolve(goal_id)
         await self._expire_waits()
+        # Before approval waits resolve: an interrupted owner approval dispatches first.
+        await self._redrive_owner_decisions()
         # Wakes last: a fire that keeps failing must never starve the stages above.
         await self._resolve_approvals()
         await self._admit_fires()
         await self._launch_wakes()
         await self._report_owner_failures()
+
+    async def _redrive_owner_decisions(self) -> None:
+        """Finish owner decisions a crash interrupted after their receipt; never raises."""
+        try:
+            await OwnerDecisions(self.broker).redrive()
+        except BrokerRefused:
+            logger.warning("goal runner owner decision re-drive unavailable")
+        except Exception:
+            logger.exception("goal runner owner decision re-drive failed")
 
     async def _report_owner_failures(self) -> None:
         """Tell the owner about requests that failed without any delivery; never raises."""
