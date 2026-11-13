@@ -30,6 +30,8 @@ class DecisionSetItemView(BaseModel):
     title: str | None = None
     facts: list[DecisionSetFact] = Field(default_factory=list)
     lineage: ApprovalGoalLineage | None = None
+    #: The assistant's own words (why, blast radius, reversibility): claims, not verified facts.
+    claims: list[DecisionSetFact] = Field(default_factory=list)
 
 
 class DecisionSetView(BaseModel):
