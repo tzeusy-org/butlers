@@ -27,6 +27,9 @@ their digests. An unticked item stays parked for its own later decision (Q3 = B,
 ``UNTICKED_OUTCOME``). A rule or schedule change (``explicit_only``) is decided only through the
 explicit field, never inside an "all" selection (Q4).
 
+The whole path is dark behind ``OWNER_DECISIONS_LIVE`` (False): no entry point records,
+mirrors or dispatches anything until it flips, and the re-drive is a no-op.
+
 Callers are trusted control-plane wiring that has already verified the owner (bu-jv1moa.27 owns
 the od1 token kind, its redemption and the card); this module does no token work and is never
 reachable from a session.
@@ -52,6 +55,10 @@ from .contracts import BrokerRefused, Reason
 
 logger = logging.getLogger(__name__)
 
+# Dark until the owner can reach it (bu-jv1moa.27) and the goal runtime cuts over: while False,
+# no owner decision is recorded, mirrored or dispatched through this path, single item or set,
+# and the re-drive is a no-op. Tests construct ``OwnerDecisions(..., live=True)``.
+OWNER_DECISIONS_LIVE = False
 # Q3 = B (pending owner confirmation): an item the owner did not tick stays parked under its
 # own expiry. Switching to A (reject the unticked) is this one value.
 UNTICKED_OUTCOME = "left"
@@ -69,7 +76,8 @@ class OwnerDecisionRefused(Exception):
 
     ``resource`` (no such goal, effect or set), ``goal`` (the goal is not live), ``stale`` (the
     shown version, plan, epoch or item no longer holds, or it was already decided), ``expired``
-    (the set's window elapsed) or ``policy`` (the selection is not exactly the shown items).
+    (the set's window elapsed), ``policy`` (the selection is not exactly the shown items) or
+    ``unavailable`` (the path is dark, ``OWNER_DECISIONS_LIVE``).
     """
 
     def __init__(self, reason: str) -> None:
@@ -263,8 +271,15 @@ async def _current_bindings(connection: Any, goal_id: UUID) -> tuple[Any, Any]:
 class OwnerDecisions:
     """The shared approve-and-dispatch path; one instance per trusted caller."""
 
-    def __init__(self, broker: Any) -> None:
+    def __init__(self, broker: Any, *, live: bool | None = None) -> None:
         self.broker = broker
+        self.live = OWNER_DECISIONS_LIVE if live is None else live
+
+    def require_live(self) -> None:
+        """Refuse ``unavailable`` while the path is dark; nothing is recorded or dispatched."""
+        if not self.live:
+            raise OwnerDecisionRefused("unavailable")
+        self.broker._require_available()
 
     async def approve(self, goal_id: UUID, effect_id: UUID, owner: OwnerContext) -> ItemOutcome:
         """The owner approved one parked effect: record, mirror, dispatch its stored call."""
@@ -277,7 +292,7 @@ class OwnerDecisions:
     async def _decide_one(
         self, goal_id: UUID, effect_id: UUID, owner: OwnerContext, decision: str
     ) -> ItemOutcome:
-        self.broker._require_available()
+        self.require_live()
         async with self.broker._transaction() as ledger:
             recorded = await self._record_one(ledger, goal_id, effect_id, owner, decision)
         if isinstance(recorded, OwnerDecisionRefused):
@@ -330,6 +345,7 @@ class OwnerDecisions:
 
     async def drive(self, decided: _Decided) -> ItemOutcome:
         """Steps 2 and 3 for one effect a committed receipt decided. Idempotent."""
+        self.require_live()
         domains = self.broker._live_domains
         mirrored = await domains.decide(
             _domain(decided.capability),
@@ -380,8 +396,11 @@ class OwnerDecisions:
         """Finish decisions a crash interrupted after their receipt; returns how many were driven.
 
         Approved effects never reserved for dispatch go through steps 2 and 3 again; rejections
-        whose domain action is still pending are mirrored again. Neither can re-dispatch.
+        whose domain action is still pending are mirrored again. Neither can re-dispatch. Dark
+        (``OWNER_DECISIONS_LIVE``), it does nothing: no receipt can exist.
         """
+        if not self.live:
+            return 0
         self.broker._require_available()
         async with self.broker._transaction() as ledger:
             receipts = OwnerDecisionLedger(ledger.connection)
@@ -448,8 +467,8 @@ class DecisionSetResolver:
         item whose mirror or dispatch fails is reported and left to the re-drive; it never stops
         the other items.
         """
+        self.decisions.require_live()
         broker = self.decisions.broker
-        broker._require_available()
         async with broker._transaction() as ledger:
             shown = await DecisionSetLedger(ledger.connection).read(set_id, version)
         if shown is None:

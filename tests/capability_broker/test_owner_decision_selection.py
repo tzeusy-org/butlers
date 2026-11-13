@@ -13,9 +13,12 @@ from uuid import uuid4
 import pytest
 
 from butlers.capability_broker.owner_decisions import (
+    OWNER_DECISIONS_LIVE,
     UNTICKED_OUTCOME,
+    DecisionSetResolver,
     OwnerContext,
     OwnerDecisionRefused,
+    OwnerDecisions,
     plan_outcomes,
 )
 from butlers.core.decision_sets import DecisionSetItem
@@ -81,3 +84,27 @@ def test_an_owner_context_names_who_decided_and_through_what():
     for decided_by, via in (("", "telegram"), ("owner", ""), (None, "x")):
         with pytest.raises(ValueError):
             OwnerContext(decided_by, via)  # type: ignore[arg-type]
+
+
+class _Untouchable:
+    """A broker that fails the test if the dark path touches it at all."""
+
+    def __getattr__(self, name):
+        raise AssertionError(f"dark owner decision path touched broker.{name}")
+
+
+async def test_every_entry_point_is_dark_by_default_and_touches_nothing():
+    assert OWNER_DECISIONS_LIVE is False
+    dark = OwnerDecisions(_Untouchable())
+    owner = OwnerContext("owner:entity", "telegram")
+    for attempt in (
+        dark.approve(uuid4(), uuid4(), owner),
+        dark.reject(uuid4(), uuid4(), owner),
+        DecisionSetResolver(dark).decide(uuid4(), 1, {uuid4(): "a" * 64}, {}, "approve", owner),
+    ):
+        with pytest.raises(OwnerDecisionRefused) as refused:
+            await attempt
+        assert refused.value.reason == "unavailable"
+    with pytest.raises(OwnerDecisionRefused):
+        dark.require_live()
+    assert await dark.redrive() == 0

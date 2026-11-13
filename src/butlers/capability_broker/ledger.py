@@ -808,12 +808,7 @@ class BrokerLedger:
             goal_id,
             list(_CANCELLABLE),
         )
-        # S2.2: a Stop cancels the goal's pending decisions, its open decision set included.
-        await self.connection.execute(
-            "UPDATE switchboard.decision_set_versions SET state = 'cancelled', "
-            "updated_at = clock_timestamp() WHERE goal_id = $1 AND state = 'open'",
-            goal_id,
-        )
+        # The goal's open decision set was cancelled when it stopped (sw_073 trigger).
         return [(r["capability"], r["approval_ref"]) for r in rows if r["approval_ref"]]
 
     async def void_approved(self, goal_id: UUID, effect_id: UUID, status: str) -> bool:

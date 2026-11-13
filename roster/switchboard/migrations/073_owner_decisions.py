@@ -22,8 +22,9 @@ Two tables:
   stays parked for its own later decision). An effect carries at most one deciding item.
 
 Both tables are append-only and nothing is deletable. The sw_072 guard is replaced so that a set
-version reaches ``decided`` only when a receipt names it. The downgrade refuses while any
-receipt exists, and restores the sw_072 guard.
+version reaches ``decided`` only when a receipt names it. A goal that ends (a Stop or any
+terminal status) cancels its open set version in the same transaction, by trigger, whichever path
+ended it. The downgrade refuses while any receipt exists, and restores the sw_072 guard.
 """
 
 from alembic import op
@@ -116,6 +117,20 @@ def upgrade() -> None:
         BEGIN
             RAISE EXCEPTION 'Owner decisions are durable' USING ERRCODE = 'insufficient_privilege';
         END $$;
+        -- S2.2: a goal that ends (a Stop or any terminal status) cancels its open decision set
+        -- in the same transaction, whichever path ended it.
+        CREATE FUNCTION switchboard.decision_set_goal_ended()
+        RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+            UPDATE switchboard.decision_set_versions
+               SET state = 'cancelled', updated_at = clock_timestamp()
+             WHERE goal_id = NEW.id AND state = 'open';
+            RETURN NULL;
+        END $$;
+        CREATE TRIGGER decision_set_goal_ended AFTER UPDATE OF status ON switchboard.goals
+            FOR EACH ROW WHEN (OLD.status IS DISTINCT FROM NEW.status AND NEW.status IN (
+                'completed','partial','failed','stopped','budget_exhausted'))
+            EXECUTE FUNCTION switchboard.decision_set_goal_ended();
     """)
     statements = []
     for table in _TABLES:
@@ -145,6 +160,8 @@ def downgrade() -> None:
                 RAISE EXCEPTION 'Cannot discard owner decisions';
             END IF;
         END $$;
+        DROP TRIGGER IF EXISTS decision_set_goal_ended ON switchboard.goals;
+        DROP FUNCTION IF EXISTS switchboard.decision_set_goal_ended();
         DROP TABLE IF EXISTS switchboard.owner_decision_items;
         DROP TABLE IF EXISTS switchboard.owner_decisions;
         DROP FUNCTION IF EXISTS switchboard.owner_decision_immutable();

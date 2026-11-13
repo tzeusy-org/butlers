@@ -108,7 +108,7 @@ async def test_an_owner_approval_runs_the_stored_call_once_through_the_shared_pa
     async with world(broker_db_url) as w:
         goal, _, (effect, _) = await _parked(w)
         stored = (await w.action(effect))["tool_args"]
-        outcome = await OwnerDecisions(w.broker).approve(goal, effect, OWNER_CTX)
+        outcome = await OwnerDecisions(w.broker, live=True).approve(goal, effect, OWNER_CTX)
         assert (outcome.outcome, outcome.status) == ("approved", "committed")
         assert len(w.forwarder.calls) == 1 and w.forwarder.calls[0][1] == stored
         assert (await w.effect(effect))["status"] == "committed"
@@ -118,18 +118,18 @@ async def test_an_owner_approval_runs_the_stored_call_once_through_the_shared_pa
         assert tuple(receipt) == ("owner:test", "test", None, "approved")
 
         # A repeated approval decides nothing and never re-dispatches.
-        again = await _refusal(OwnerDecisions(w.broker).approve(goal, effect, OWNER_CTX))
+        again = await _refusal(OwnerDecisions(w.broker, live=True).approve(goal, effect, OWNER_CTX))
         assert again == "stale" and len(w.forwarder.calls) == 1
 
 
 async def test_an_owner_rejection_ends_the_effect_and_its_domain_action(broker_db_url):
     async with world(broker_db_url) as w:
         goal, _, (effect, _) = await _parked(w)
-        outcome = await OwnerDecisions(w.broker).reject(goal, effect, OWNER_CTX)
+        outcome = await OwnerDecisions(w.broker, live=True).reject(goal, effect, OWNER_CTX)
         assert (outcome.outcome, outcome.status) == ("rejected", "rejected")
         assert (await w.effect(effect))["status"] == "rejected"
         assert (await w.action(effect))["status"] == "rejected"
-        late = await _refusal(OwnerDecisions(w.broker).approve(goal, effect, OWNER_CTX))
+        late = await _refusal(OwnerDecisions(w.broker, live=True).approve(goal, effect, OWNER_CTX))
         assert late == "stale" and w.forwarder.calls == []
 
 
@@ -140,7 +140,7 @@ async def test_an_elapsed_domain_action_voids_the_approval_without_dispatch(brok
             "UPDATE pending_actions SET expires_at = now() - interval '1 minute' WHERE id = $1",
             effect,
         )
-        outcome = await OwnerDecisions(w.broker).approve(goal, effect, OWNER_CTX)
+        outcome = await OwnerDecisions(w.broker, live=True).approve(goal, effect, OWNER_CTX)
         assert (outcome.outcome, outcome.status) == ("approved", "expired")
         assert (await w.effect(effect))["status"] == "expired"
         assert (await w.action(effect))["status"] == "expired"
@@ -151,7 +151,7 @@ async def test_unknown_or_foreign_effects_and_ended_goals_are_refused(broker_db_
     async with world(broker_db_url) as w:
         goal, _, (effect, _) = await _parked(w)
         other, _, _ = await _parked(w)
-        decisions = OwnerDecisions(w.broker)
+        decisions = OwnerDecisions(w.broker, live=True)
         assert await _refusal(decisions.approve(goal, uuid4(), OWNER_CTX)) == "resource"
         assert await _refusal(decisions.approve(other, effect, OWNER_CTX)) == "resource"
         with pytest.raises(ValueError):
@@ -172,17 +172,17 @@ async def test_a_crash_before_the_domain_mirror_is_redriven_once(broker_db_url):
 
         domains.decide = crash
         with pytest.raises(ConnectionError):
-            await OwnerDecisions(w.broker).approve(goal, effect, OWNER_CTX)
+            await OwnerDecisions(w.broker, live=True).approve(goal, effect, OWNER_CTX)
         # The receipt and the approval committed; nothing reached the domain or dispatched.
         assert (await w.effect(effect))["status"] == "approved"
         assert (await w.action(effect))["status"] == "pending"
         assert w.forwarder.calls == []
 
         domains.decide = real
-        assert await OwnerDecisions(w.broker).redrive() == 1
+        assert await OwnerDecisions(w.broker, live=True).redrive() == 1
         assert (await w.effect(effect))["status"] == "committed"
         assert (await w.action(effect))["status"] == "executed"
-        assert await OwnerDecisions(w.broker).redrive() == 0
+        assert await OwnerDecisions(w.broker, live=True).redrive() == 0
         assert len(w.forwarder.calls) == 1
 
 
@@ -196,24 +196,87 @@ async def test_a_crash_between_the_domain_mirror_and_dispatch_is_redriven_once(b
 
         w.broker.execute_approved = crash
         with pytest.raises(ConnectionError):
-            await OwnerDecisions(w.broker).approve(goal, effect, OWNER_CTX)
+            await OwnerDecisions(w.broker, live=True).approve(goal, effect, OWNER_CTX)
         assert (await w.effect(effect))["status"] == "approved"
         assert (await w.action(effect))["status"] == "approved"
 
         w.broker.execute_approved = real
-        assert await OwnerDecisions(w.broker).redrive() == 1
-        assert await OwnerDecisions(w.broker).redrive() == 0
+        assert await OwnerDecisions(w.broker, live=True).redrive() == 1
+        assert await OwnerDecisions(w.broker, live=True).redrive() == 0
         assert len(w.forwarder.calls) == 1
         assert (await w.effect(effect))["status"] == "committed"
+
+
+@pytest.mark.parametrize("ended", ["expired", "cancelled", "rejected"])
+async def test_a_domain_action_that_already_ended_never_dispatches(broker_db_url, ended):
+    """approved -> expired | cancelled | rejected: the domain ended its action first."""
+    async with world(broker_db_url) as w:
+        goal, _, (effect, _) = await _parked(w)
+        await w.domain.execute(
+            "UPDATE pending_actions SET status = $2 WHERE id = $1", effect, ended
+        )
+        outcome = await OwnerDecisions(w.broker, live=True).approve(goal, effect, OWNER_CTX)
+        assert (outcome.outcome, outcome.status) == ("approved", ended)
+        assert (await w.effect(effect))["status"] == ended
+        assert (await w.action(effect))["status"] == ended
+        assert await OwnerDecisions(w.broker, live=True).redrive() == 0
+        assert w.forwarder.calls == []
+
+
+@pytest.mark.parametrize("crash_at", ["mirror", "dispatch"])
+async def test_two_concurrent_sweeps_dispatch_an_interrupted_approval_once(broker_db_url, crash_at):
+    async with world(broker_db_url) as w:
+        goal, _, (effect, _) = await _parked(w)
+        domains, broker = w.broker.domains, w.broker
+        target, name = (domains, "decide") if crash_at == "mirror" else (broker, "execute_approved")
+        real = getattr(target, name)
+
+        async def crash(*args, **kwargs):
+            raise ConnectionError("process died")
+
+        setattr(target, name, crash)
+        with pytest.raises(ConnectionError):
+            await OwnerDecisions(w.broker, live=True).approve(goal, effect, OWNER_CTX)
+        setattr(target, name, real)
+        assert w.forwarder.calls == []
+
+        await asyncio.gather(
+            OwnerDecisions(w.broker, live=True).redrive(),
+            OwnerDecisions(w.broker, live=True).redrive(),
+        )
+        assert len(w.forwarder.calls) == 1
+        assert (await w.effect(effect))["status"] == "committed"
+        assert (await w.action(effect))["status"] == "executed"
+        assert await OwnerDecisions(w.broker, live=True).redrive() == 0
+        assert len(w.forwarder.calls) == 1
+
+
+async def test_the_path_is_dark_by_default(broker_db_url):
+    async with world(broker_db_url) as w:
+        goal, lead, effects = await _parked(w)
+        dark = OwnerDecisions(w.broker)
+        assert await _refusal(dark.approve(goal, effects[0], OWNER_CTX)) == "unavailable"
+        assert await _refusal(dark.reject(goal, effects[0], OWNER_CTX)) == "unavailable"
+        proposed = await _propose(w, goal, lead, effects)
+        refused = await _refusal(
+            DecisionSetResolver(dark).decide(
+                proposed.set_id, proposed.version, _picks(proposed), {}, "approve", OWNER_CTX
+            )
+        )
+        assert refused == "unavailable"
+        assert await dark.redrive() == 0
+        assert await w.owner.fetchval("SELECT count(*) FROM switchboard.owner_decisions") == 0
+        assert [(await w.effect(e))["status"] for e in effects] == ["parked", "parked"]
+        assert w.forwarder.calls == []
 
 
 async def test_a_dispatched_effect_is_never_redriven(broker_db_url):
     async with world(broker_db_url) as w:
         goal, _, (effect, _) = await _parked(w)
         w.forwarder.receipt = TimeoutError()
-        outcome = await OwnerDecisions(w.broker).approve(goal, effect, OWNER_CTX)
+        outcome = await OwnerDecisions(w.broker, live=True).approve(goal, effect, OWNER_CTX)
         assert outcome.status == "unknown"
-        assert await OwnerDecisions(w.broker).redrive() == 0
+        assert await OwnerDecisions(w.broker, live=True).redrive() == 0
         assert len(w.forwarder.calls) == 1
 
 
@@ -228,13 +291,13 @@ async def test_a_crashed_rejection_mirror_is_redriven(broker_db_url):
 
         domains.decide = crash
         with pytest.raises(ConnectionError):
-            await OwnerDecisions(w.broker).reject(goal, effect, OWNER_CTX)
+            await OwnerDecisions(w.broker, live=True).reject(goal, effect, OWNER_CTX)
         assert (await w.effect(effect))["status"] == "rejected"
         assert (await w.action(effect))["status"] == "pending"
         domains.decide = real
-        assert await OwnerDecisions(w.broker).redrive() == 1
+        assert await OwnerDecisions(w.broker, live=True).redrive() == 1
         assert (await w.action(effect))["status"] == "rejected"
-        assert await OwnerDecisions(w.broker).redrive() == 0
+        assert await OwnerDecisions(w.broker, live=True).redrive() == 0
 
 
 # -- decision sets: the resolver ------------------------------------------------------------
@@ -244,7 +307,7 @@ async def test_approve_all_runs_every_ticked_item_and_decides_the_version(broker
     async with world(broker_db_url) as w:
         goal, lead, effects = await _parked(w, notes=2, rules=1)
         proposed = await _propose(w, goal, lead, effects)
-        resolver = DecisionSetResolver(OwnerDecisions(w.broker))
+        resolver = DecisionSetResolver(OwnerDecisions(w.broker, live=True))
         decided = await resolver.decide(
             proposed.set_id,
             proposed.version,
@@ -272,7 +335,7 @@ async def test_a_rule_change_is_never_decided_inside_an_all_selection(broker_db_
         goal, lead, effects = await _parked(w, notes=2, rules=1)
         proposed = await _propose(w, goal, lead, effects)
         everything = {item.effect_id: item.item_digest for item in proposed.items}
-        resolver = DecisionSetResolver(OwnerDecisions(w.broker))
+        resolver = DecisionSetResolver(OwnerDecisions(w.broker, live=True))
         refused = await _refusal(
             resolver.decide(proposed.set_id, proposed.version, everything, {}, "approve", OWNER_CTX)
         )
@@ -294,7 +357,7 @@ async def test_an_unticked_item_stays_parked_for_its_own_later_decision(broker_d
         goal, lead, effects = await _parked(w, notes=3)
         proposed = await _propose(w, goal, lead, effects)
         left = effects[2]
-        decisions = OwnerDecisions(w.broker)
+        decisions = OwnerDecisions(w.broker, live=True)
         decided = await DecisionSetResolver(decisions).decide(
             proposed.set_id,
             proposed.version,
@@ -319,7 +382,7 @@ async def test_a_set_rejection_rejects_only_the_ticked_items(broker_db_url):
     async with world(broker_db_url) as w:
         goal, lead, effects = await _parked(w, notes=3)
         proposed = await _propose(w, goal, lead, effects)
-        decided = await DecisionSetResolver(OwnerDecisions(w.broker)).decide(
+        decided = await DecisionSetResolver(OwnerDecisions(w.broker, live=True)).decide(
             proposed.set_id,
             proposed.version,
             _picks(proposed, skip=(effects[2],)),
@@ -342,7 +405,7 @@ async def test_a_changed_or_unknown_item_or_empty_selection_refuses_the_whole_de
     async with world(broker_db_url) as w:
         goal, lead, effects = await _parked(w, notes=2)
         proposed = await _propose(w, goal, lead, effects)
-        resolver = DecisionSetResolver(OwnerDecisions(w.broker))
+        resolver = DecisionSetResolver(OwnerDecisions(w.broker, live=True))
 
         async def decide(selected):
             return await _refusal(
@@ -356,7 +419,7 @@ async def test_a_changed_or_unknown_item_or_empty_selection_refuses_the_whole_de
         assert await decide({**_picks(proposed), uuid4(): "0" * 64}) == "policy"
         assert await decide({}) == "policy"
         # One item decided on its own since the set was shown: the set is stale as a whole.
-        await OwnerDecisions(w.broker).reject(goal, effects[0], OWNER_CTX)
+        await OwnerDecisions(w.broker, live=True).reject(goal, effects[0], OWNER_CTX)
         assert await decide(_picks(proposed)) == "stale"
         assert (await w.effect(effects[1]))["status"] == "parked"
         assert w.forwarder.calls == []
@@ -367,7 +430,7 @@ async def test_a_superseded_version_or_moved_plan_or_epoch_is_stale(broker_db_ur
         goal, lead, effects = await _parked(w, notes=3)
         first = await _propose(w, goal, lead, effects[:2])
         second = await _propose(w, goal, lead, effects)
-        resolver = DecisionSetResolver(OwnerDecisions(w.broker))
+        resolver = DecisionSetResolver(OwnerDecisions(w.broker, live=True))
 
         async def decide(proposed):
             return await _refusal(
@@ -397,9 +460,17 @@ async def test_stop_cancels_the_open_set_and_an_elapsed_set_expires(broker_db_ur
         goal, lead, effects = await _parked(w, notes=2)
         proposed = await _propose(w, goal, lead, effects)
         await w.owner.execute("UPDATE switchboard.goals SET status = 'stopped' WHERE id = $1", goal)
-        await w.broker.cancel_parked(goal)
+        # The Stop's own transaction cancelled the open set (sw_073 trigger).
         assert await _state(w, proposed) == "cancelled"
-        resolver = DecisionSetResolver(OwnerDecisions(w.broker))
+        await w.broker.cancel_parked(goal)
+        # Any terminal status does the same, whichever path ends the goal.
+        ended_goal, ended_lead, ended_effects = await _parked(w, notes=2)
+        ended = await _propose(w, ended_goal, ended_lead, ended_effects)
+        await w.owner.execute(
+            "UPDATE switchboard.goals SET status = 'budget_exhausted' WHERE id = $1", ended_goal
+        )
+        assert await _state(w, ended) == "cancelled"
+        resolver = DecisionSetResolver(OwnerDecisions(w.broker, live=True))
         refused = await _refusal(
             resolver.decide(
                 proposed.set_id, proposed.version, _picks(proposed), {}, "approve", OWNER_CTX
@@ -428,7 +499,7 @@ async def test_two_racing_set_decisions_dispatch_each_item_once(broker_db_url):
     async with world(broker_db_url) as w:
         goal, lead, effects = await _parked(w, notes=2)
         proposed = await _propose(w, goal, lead, effects)
-        resolver = DecisionSetResolver(OwnerDecisions(w.broker))
+        resolver = DecisionSetResolver(OwnerDecisions(w.broker, live=True))
         outcomes = await asyncio.gather(
             *(
                 resolver.decide(
@@ -457,7 +528,7 @@ async def test_a_broker_refusal_of_one_item_does_not_stop_the_others(broker_db_u
             return await real(goal_id, effect_id, approval_ref, arguments)
 
         w.broker.execute_approved = first_refused
-        decided = await DecisionSetResolver(OwnerDecisions(w.broker)).decide(
+        decided = await DecisionSetResolver(OwnerDecisions(w.broker, live=True)).decide(
             proposed.set_id, proposed.version, _picks(proposed), {}, "approve", OWNER_CTX
         )
         assert [(o.status, o.reason) for o in decided.outcomes] == [

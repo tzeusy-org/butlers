@@ -816,7 +816,8 @@ each item is one parked effect, and an approved item still runs as its own store
   or token bound to the old version is stale. A goal has at most one open version.
 - Read contract for the card consumer (bu-jv1moa.27): `DecisionSetLedger.read(set_id, version)`
   (latest when no version) and `open_for_goal(goal_id)` return frozen `DecisionSet` /
-  `DecisionSetItem` values. The full stored call of an item comes from the existing approval preview
+  `DecisionSetItem` values. `read(set_id)` is not goal-scoped: the consumer must check the returned
+  `goal_id` against the goal it is rendering or redeeming for. The full stored call of an item comes from the existing approval preview
   of its effect, not from a second copy here.
 - Guards (`sw_072`, `sw_073`): items and set identities are append-only, a version is inserted
   `open` and changes only its state (`open` to `superseded`, `cancelled`, `expired` or `decided`),
@@ -854,8 +855,11 @@ for a goal that is not running or waiting, `policy` for a selection that is not 
 change is never decided inside an "all" selection). An unticked item is recorded `left` and stays
 parked for its own later decision (Q3 = B, `UNTICKED_OUTCOME`; pending owner confirmation, A is one
 value). Callers pass a verified `OwnerContext`; the od1 `decision_set` token kind, its redemption
-and the card belong to bu-jv1moa.27. No caller is wired yet, and the set's wait and wake are the
-next slice.
+and the card belong to bu-jv1moa.27. The whole path is dark behind `OWNER_DECISIONS_LIVE` (False):
+every entry point, the single-item approval included, refuses `unavailable` and records, mirrors
+and dispatches nothing, and the re-drive is a no-op. No caller is wired yet, and the set's wait and
+wake are the next slice. When `DECIDE_TOGETHER_LIVE` flips, `goal__decide_together` joins the child
+list-and-call test.
 
 ## Not yet delivered
 

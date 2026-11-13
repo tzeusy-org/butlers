@@ -3,8 +3,8 @@
 Real PostgreSQL. The runtime role may read and insert receipts and their items, never edit or
 delete one. An effect carries at most one approving or rejecting owner decision; an item left
 unticked (``left``) decides nothing, so it may appear in later receipts. A set version reaches
-``decided`` only when a receipt names that exact version. The downgrade refuses while a receipt
-exists.
+``decided`` only when a receipt names that exact version. A goal that ends cancels its open set.
+The downgrade refuses while a receipt exists.
 """
 
 import asyncio
@@ -95,6 +95,17 @@ async def _exercise(url):
             await _receipt(runtime, goal, [], decision="maybe")
         with pytest.raises(asyncpg.CheckViolationError):
             await _receipt(runtime, goal, [(uuid4(), "edited")])
+
+        # A goal that ends cancels its open set in the same transaction.
+        other = await _insert_set(runtime, goal, lead, plan, effects)
+        await runtime.execute(
+            "UPDATE switchboard.goals SET status = 'failed', updated_at = now() WHERE id = $1",
+            goal,
+        )
+        state = await runtime.fetchval(
+            "SELECT state FROM switchboard.decision_set_versions WHERE set_id = $1", other
+        )
+        assert state == "cancelled"
 
         for pool in (runtime, owner):
             for query in (

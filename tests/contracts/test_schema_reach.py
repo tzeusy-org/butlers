@@ -1115,13 +1115,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
             "owner_decisions",
         )
     },
-    (
-        "src/butlers/capability_broker/ledger.py",
-        "switchboard.decision_set_versions",
-    ): (
-        "sanctioned:RFC-0038: S2.2 a Stop cancels the goal's open decision set (sw_072); "
-        "qualified SQL allocated to capability_broker/ledger.py (bu-4c7nvp.1.3)"
-    ),
     **{
         ("src/butlers/goal_runner/owner_failure.py", f"switchboard.{relation}"): (
             "sanctioned:RFC-0038: S6 owner failure cause line (sw_068) over the Switchboard-owned "
