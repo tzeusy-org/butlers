@@ -278,6 +278,7 @@ OP GET /api/memory/rules/{rule_id} 96c6aabf74fc
 OP GET /api/memory/stats 9b941fbf472e
 OP GET /api/notifications a1c83448ee75
 OP GET /api/notifications/stats f35021b74ded
+OP GET /api/now e52c42b2e47a
 OP GET /api/oauth/google/accounts 0d6f2ec4aba7
 OP GET /api/oauth/google/accounts/{account_id}/status 5365735899d0
 OP GET /api/oauth/google/callback 4b076612fbc0
@@ -924,6 +925,7 @@ ROUTE APIRoute GET '/api/memory/rules/{rule_id}' name=get_rule op=get_rule_api_m
 ROUTE APIRoute GET '/api/memory/stats' name=get_memory_stats op=get_memory_stats_api_memory_stats_get tags=memory schema=True
 ROUTE APIRoute GET '/api/notifications' name=list_notifications op=list_notifications_api_notifications_get tags=notifications schema=True
 ROUTE APIRoute GET '/api/notifications/stats' name=notification_stats op=notification_stats_api_notifications_stats_get tags=notifications schema=True
+ROUTE APIRoute GET '/api/now' name=get_now op=get_now_api_now_get tags=now schema=True
 ROUTE APIRoute GET '/api/oauth/google/accounts' name=list_google_accounts_endpoint op=list_google_accounts_endpoint_api_oauth_google_accounts_get tags=oauth schema=True
 ROUTE APIRoute GET '/api/oauth/google/accounts/{account_id}/status' name=get_google_account_status op=get_google_account_status_api_oauth_google_accounts__account_id__status_get tags=oauth schema=True
 ROUTE APIRoute GET '/api/oauth/google/callback' name=oauth_google_callback op=oauth_google_callback_api_oauth_google_callback_get tags=oauth schema=True
@@ -1455,6 +1457,7 @@ SCHEMA ApiResponse_ModuleRuntimeStateResponse_ 95044d5a70c4
 SCHEMA ApiResponse_NotificationActionResult_ 03fbc4da9faf
 SCHEMA ApiResponse_NotificationStats_ 39a37b28535f
 SCHEMA ApiResponse_NotificationSummary_ f93c713fd366
+SCHEMA ApiResponse_NowCardModel_ cfb39311b5d5
 SCHEMA ApiResponse_OwnerPlaceResponse_ 42593605fbe9
 SCHEMA ApiResponse_OwnerPolicyReceipt_ 85846d7c600f
 SCHEMA ApiResponse_OwnerPolicy_ aa8e8022e512
@@ -2071,6 +2074,8 @@ SCHEMA NotificationActionResult 9e98bb47766a
 SCHEMA NotificationListResponse 76b1537a9bef
 SCHEMA NotificationStats 87332b2cb7d9
 SCHEMA NotificationSummary 2aeec4c7da8c
+SCHEMA NowCardModel 92dd2004cf88
+SCHEMA NowLineModel 37ff9f1ae277
 SCHEMA NutritionDailyAverage 92f5354bf6dd
 SCHEMA NutritionSummaryResponse 2b1b68a0cd85
 SCHEMA OAuthCredentialState 20eeca9cdb20
