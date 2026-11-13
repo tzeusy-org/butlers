@@ -27,6 +27,7 @@ def test_the_check_admits_exactly_the_closed_s1_causes(monkeypatch):
     monkeypatch.setattr(migration, "op", SimpleNamespace(execute=statements.append))
     migration.upgrade()
     [sql] = statements
+    assert migration._CAUSES == ", ".join(f"'{c}'" for c in EXPOSURE_CAUSES)
     for cause in EXPOSURE_CAUSES:
         assert f"'{cause}'" in sql
     assert "goal_exposed IS TRUE" in sql  # a cause never rides an unexposed lineage

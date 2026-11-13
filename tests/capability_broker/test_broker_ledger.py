@@ -361,6 +361,23 @@ async def test_owner_created_rule_approves_at_park_and_the_stored_call_runs(brok
         action = await w.action(result.effect_id)
         assert action["status"] == "executed"
         assert action["execution_result"]["receipt_ref"] == "receipt-1"
+        # The rule-approved INSERT keeps the park-time verdict too.
+        assert (action["goal_exposure_cause"], action["goal_rule_possible"]) == (None, True)
+
+
+async def test_a_pre_stamp_row_reads_unknown_for_cause_and_rule_possible(broker_db_url):
+    async with world(broker_db_url) as w:
+        goal = await w.goal(_grant(NOTIFY))
+        _, token = await w.invocation(goal, _grant(NOTIFY))
+        args = {"entity_id": str(uuid4()), "message": "hi", "channel": "telegram"}
+        result = await w.broker.call(goal, token, NOTIFY.identity, args)
+        await w.domain.execute(
+            "UPDATE pending_actions SET goal_exposure_cause = NULL, goal_rule_possible = NULL "
+            "WHERE id = $1",
+            result.effect_id,
+        )
+        action = await w.action(result.effect_id)
+        assert (action["goal_exposure_cause"], action["goal_rule_possible"]) == (None, None)
 
 
 async def test_exposed_invocation_cannot_use_a_free_text_rule(broker_db_url):
