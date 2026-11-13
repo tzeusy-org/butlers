@@ -22,6 +22,7 @@ const server = vi.hoisted(() => ({
   failure: null as null | { code: string; status: number },
   posts: [] as { path: string; body: Record<string, unknown> }[],
   postFailure: null as null | { status: number; detail: unknown },
+  afterPost: null as null | (() => void),
   reads: 0,
 }));
 
@@ -32,6 +33,7 @@ vi.mock("@/api/client.ts", async () => {
     apiFetch: vi.fn(async (path: string, init?: { method?: string; body?: string }) => {
       if (init?.method === "POST") {
         server.posts.push({ path, body: JSON.parse(init.body ?? "{}") });
+        server.afterPost?.();
         if (server.postFailure) {
           throw new actual.ApiError("http_409", "refused", server.postFailure.status, server.postFailure.detail);
         }
@@ -80,6 +82,7 @@ function setView(items: unknown[], over: Record<string, unknown> = {}) {
     digest: "d".repeat(64),
     items,
     decidable: true,
+    decisions_live: true,
     reason: null,
     unticked_outcome: "left",
     ...over,
@@ -104,6 +107,7 @@ beforeEach(() => {
   server.failure = null;
   server.posts = [];
   server.postFailure = null;
+  server.afterPost = null;
   server.reads = 0;
 });
 afterEach(cleanup);
@@ -219,5 +223,52 @@ describe("DecisionSetPage", () => {
     server.failure = { code: "x", status };
     renderPage();
     await screen.findByText(expected);
+  });
+
+  it("renders no ticks and no buttons while deciding is not switched on", async () => {
+    server.view = setView(
+      [item(0, E1), item(1, E2)],
+      { decisions_live: false },
+    );
+    renderPage();
+    await screen.findByText(/2 calls waiting/);
+    expect(screen.getByText(/Deciding sets is not switched on/)).toBeTruthy();
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: /ticked/ })).toBeNull();
+    // The server's facts are still readable.
+    expect(screen.getByText("Hello 0")).toBeTruthy();
+  });
+
+  it("resets the ticks for a re-read version and posts only the items it renders", async () => {
+    const v2 = setView([item(1, E2, { item_digest: "9".repeat(64) }), item(3, "44444444-4444-4444-8444-444444444444")], {
+      version: 2,
+      digest: "e".repeat(64),
+    });
+    server.view = setView([item(0, E1), item(1, E2)]);
+    server.postFailure = { status: 409, detail: { error: "decision_set_refused", reason: "stale" } };
+    server.afterPost = () => {
+      server.view = v2;
+    };
+    renderPage();
+    await screen.findByText(/2 calls waiting/);
+    // The owner unticks the second item of version 1, then submits and is refused as stale.
+    fireEvent.click(tick(/Send message 2/));
+    fireEvent.click(screen.getByRole("button", { name: "Approve 1 ticked" }));
+    await screen.findByText(/changed while you were reviewing it/);
+    // Version 2 shows both of its items ticked again, whatever the owner had unticked in version 1.
+    await waitFor(() => expect(screen.getAllByRole("checkbox")).toHaveLength(2));
+    expect(tick(/Send message 2/).getAttribute("aria-checked")).toBe("true");
+    expect(tick(/Send message 4/).getAttribute("aria-checked")).toBe("true");
+    server.postFailure = null;
+    fireEvent.click(screen.getByRole("button", { name: "Approve 2 ticked" }));
+    await screen.findByText("Approved.");
+    expect(server.posts[1].body).toEqual({
+      version: 2,
+      decision: "approve",
+      selected: [
+        { effect_id: E2, item_digest: "9".repeat(64) },
+        { effect_id: "44444444-4444-4444-8444-444444444444", item_digest: "3".repeat(64) },
+      ],
+    });
   });
 });

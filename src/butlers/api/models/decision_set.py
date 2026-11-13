@@ -48,6 +48,9 @@ class DecisionSetView(BaseModel):
     items: list[DecisionSetItemView]
     decidable: bool
     reason: Literal["state", "expired", "items"] | None = None
+    #: Whether a resolver is registered, so a decision can be recorded at all. Dark: false until the
+    #: path is wired, and then the page offers no ticks or buttons.
+    decisions_live: bool = False
     #: What an unticked item comes to (the producer's ``UNTICKED_OUTCOME``): ``left`` stays
     #: parked for its own decision, ``rejected`` is rejected. The UI words it from this value.
     unticked_outcome: str

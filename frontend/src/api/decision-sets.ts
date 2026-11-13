@@ -51,6 +51,8 @@ export interface DecisionSet {
   items: DecisionSetItem[];
   decidable: boolean;
   reason: "state" | "expired" | "items" | null;
+  /** Whether deciding is switched on (a resolver is registered). When false, offer no decision. */
+  decisions_live: boolean;
   /** What an unticked item comes to (`left` or `rejected`). */
   unticked_outcome: string;
 }

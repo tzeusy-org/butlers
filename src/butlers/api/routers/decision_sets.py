@@ -74,7 +74,7 @@ def _item(item: ItemView, *, default: bool) -> DecisionSetItemView:
     )
 
 
-def _view(view: SetView) -> DecisionSetView:
+def _view(view: SetView, *, live: bool) -> DecisionSetView:
     chosen = approve_selection(view) or {}
     return DecisionSetView(
         set_id=str(view.set_id),
@@ -86,6 +86,7 @@ def _view(view: SetView) -> DecisionSetView:
         items=[_item(item, default=item.effect_id in chosen) for item in view.items],
         decidable=view.decidable,
         reason=view.reason,  # type: ignore[arg-type]  # closed vocabulary
+        decisions_live=live,
         unticked_outcome=view.unticked_outcome,
     )
 
@@ -136,6 +137,7 @@ async def get_decision_set(
     *,
     db_mgr: Db,
     _owner: Annotated[str, Depends(require_dashboard_owner_control)],
+    resolver: Annotated[Resolver | None, Depends(get_decision_set_resolver)],
     version: Annotated[int | None, Query(ge=1)] = None,
 ) -> ApiResponse[DecisionSetView]:
     """One decision set version as the owner is shown it."""
@@ -145,7 +147,7 @@ async def get_decision_set(
         raise HTTPException(status_code=404, detail="Decision set not found")
     # ApiMeta allows the fleet-wide additive ``sources_degraded`` key (response-conventions).
     meta = ApiMeta.model_validate({"sources_degraded": tracker.names} if tracker.failed else {})
-    return ApiResponse(data=_view(view), meta=meta)
+    return ApiResponse(data=_view(view, live=resolver is not None), meta=meta)
 
 
 class DecisionSetPick(BaseModel):

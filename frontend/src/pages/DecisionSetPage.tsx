@@ -4,7 +4,6 @@ import { Link, useParams } from "react-router";
 import { decisionRefusalReason } from "@/api/decision-sets.ts";
 import type { DecisionSet, DecisionSetItem, DecisionSetVerdict } from "@/api/decision-sets.ts";
 import { ApiError } from "@/api/client.ts";
-import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Time } from "@/components/ui/time";
@@ -76,23 +75,29 @@ function ItemCard({
   ticked,
   onToggle,
   disabled,
+  live,
 }: {
   item: DecisionSetItem;
   ticked: boolean;
   onToggle: () => void;
   disabled: boolean;
+  /** Deciding is switched on; when it is not, no tick is rendered at all. */
+  live: boolean;
 }) {
   const titleId = `decision-item-${item.effect_id}`;
   return (
     <li className="rounded border p-3" aria-labelledby={titleId}>
       <div className="flex items-start gap-3">
-        <Checkbox
-          id={`tick-${item.effect_id}`}
-          aria-labelledby={titleId}
-          checked={ticked}
-          disabled={disabled || !item.exact}
-          onCheckedChange={onToggle}
-        />
+        {live && (
+          <Checkbox
+            id={`tick-${item.effect_id}`}
+            aria-labelledby={titleId}
+            className="h-11 w-11 md:h-4 md:w-4"
+            checked={ticked}
+            disabled={disabled || !item.exact}
+            onCheckedChange={onToggle}
+          />
+        )}
         <div className="min-w-0 flex-1">
           <h3 id={titleId} className="font-medium">
             {item.position + 1}. {item.exact && item.title ? item.title : "Cannot be shown here"}
@@ -147,7 +152,12 @@ export default function DecisionSetPage() {
     const status = query.error instanceof ApiError ? query.error.status : null;
     return (
       <div className="space-y-4">
-        <Breadcrumbs items={[{ label: "Approvals", href: "/approvals" }, { label: "Decision set" }]} />
+        <Link
+          to="/approvals"
+          className="inline-flex min-h-11 items-center text-sm underline"
+        >
+          Approvals
+        </Link>
         <p role="alert" className="text-sm">
           {status === 404
             ? "Decision set not found."
@@ -175,12 +185,17 @@ export default function DecisionSetPage() {
 
   const refusal = decide.error ? decisionRefusalReason(decide.error) : null;
   const decided = decide.data;
-  const canDecide = set.decidable && !decided;
+  const canDecide = set.decidable && set.decisions_live && !decided;
   const count = ticks.size;
 
   return (
     <div className="space-y-4">
-      <Breadcrumbs items={[{ label: "Approvals", href: "/approvals" }, { label: "Decision set" }]} />
+      <Link
+          to="/approvals"
+          className="inline-flex min-h-11 items-center text-sm underline"
+        >
+          Approvals
+        </Link>
       <h1 id="decision-set-title" className="text-lg font-semibold">
         Decision set: {set.items.length} call{set.items.length === 1 ? "" : "s"} waiting
       </h1>
@@ -193,6 +208,12 @@ export default function DecisionSetPage() {
           Some approvals could not be read: {query.data.sourcesDegraded.join(", ")}.
         </p>
       ) : null}
+
+      {set.decidable && !set.decisions_live && (
+        <p role="status" className="text-sm">
+          Deciding sets is not switched on. Review each call on its approval page.
+        </p>
+      )}
 
       {!set.decidable && (
         <p role="status" className="text-sm">
@@ -209,6 +230,7 @@ export default function DecisionSetPage() {
             ticked={ticks.has(item.effect_id)}
             onToggle={() => toggle(item.effect_id)}
             disabled={!canDecide || decide.isPending}
+            live={set.decisions_live}
           />
         ))}
       </ul>

@@ -386,3 +386,17 @@ async def test_an_open_only_set_selects_nothing_by_default(app, monkeypatch):
         app.dependency_overrides[get_db]().pool.return_value = _LedgerPool()
         data = (await client.get(f"/api/decision-sets/{shown.set_id}")).json()["data"]
     assert [i["in_default_selection"] for i in data["items"]] == [False]
+
+
+async def test_the_view_says_whether_deciding_is_switched_on_from_the_resolver(app, monkeypatch):
+    from butlers.api.routers.decision_sets import get_decision_set_resolver
+
+    shown, effect = _shown()
+    async with _client(app, monkeypatch, shown, [("messenger", _Pool([_row(effect)]))]) as client:
+        app.dependency_overrides[get_db]().pool.return_value = _LedgerPool()
+        dark = (await client.get(f"/api/decision-sets/{shown.set_id}")).json()["data"]
+        app.dependency_overrides[get_decision_set_resolver] = lambda: _Resolver()
+        live = (await client.get(f"/api/decision-sets/{shown.set_id}")).json()["data"]
+    assert (dark["decisions_live"], live["decisions_live"]) == (False, True)
+    # The set itself is still decidable on its own terms; liveness is a separate verdict.
+    assert dark["decidable"] is True and live["decidable"] is True
