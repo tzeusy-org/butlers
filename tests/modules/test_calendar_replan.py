@@ -36,7 +36,12 @@ from butlers.modules.calendar.replan import (
     move_only,
     undo_receipt,
 )
-from butlers.modules.calendar.replan_undo import UndoOffer, undo_card_args, undo_card_summary
+from butlers.modules.calendar.replan_undo import (
+    UndoOffer,
+    undo_card_args,
+    undo_card_refused_summary,
+    undo_card_summary,
+)
 from butlers.testing.mcp import tool_fn
 from tests.modules.test_module_calendar import _make_event, _ProviderDouble
 
@@ -98,6 +103,7 @@ class _FakeLedger:
     def __init__(self) -> None:
         self.offers: list[dict[str, Any]] = []
         self.cards: dict[uuid.UUID, dict[str, Any]] = {}
+        self.park_error: Exception | None = None
 
     async def available(self) -> bool:
         return True
@@ -110,44 +116,51 @@ class _FakeLedger:
                 return offer
         return None
 
-    async def open(self, *, goal_id, event_id, calendar_id, pre_state) -> UndoOffer:
+    async def open(
+        self, *, goal_id, event_id, calendar_id, pre_state, intended, conflict_policy
+    ) -> UndoOffer:
         offer = self._open(goal_id, event_id)
         if offer is not None:
+            offer.update(intended=dict(intended))  # the last landed move's etag stays
             return UndoOffer(offer["key"], dict(offer["pre_state"]), offer["action_id"], False)
-        key = f"offer-{len(self.offers)}"
+        if self.park_error is not None:
+            raise self.park_error  # the one transaction rolls back: no offer, no card
+        key, action_id = f"offer-{len(self.offers)}", uuid.uuid4()
+        self.cards[action_id] = {
+            "tool_args": undo_card_args(pre_state, conflict_policy=conflict_policy),
+            "summary": undo_card_summary(pre_state, intended),
+            "status": "pending",
+        }
         self.offers.append(
             {
                 "key": key,
                 "goal_id": goal_id,
                 "event_id": event_id,
                 "pre_state": dict(pre_state),
-                "action_id": None,
+                "action_id": action_id,
+                "intended": dict(intended),
                 "post_move": None,
             }
         )
-        return UndoOffer(key, dict(pre_state), None, True)
+        return UndoOffer(key, dict(pre_state), action_id, True)
 
     async def discard(self, offer: UndoOffer) -> None:
-        if offer.created:
-            self.offers = [
-                o for o in self.offers if not (o["key"] == offer.key and o["action_id"] is None)
-            ]
+        card = self.cards[offer.action_id]
+        if not offer.created:
+            next(o for o in self.offers if o["key"] == offer.key)["intended"] = None
+        elif card["status"] == "pending":
+            # An owner who already decided the card keeps the offer, so the undo declines.
+            self.offers = [o for o in self.offers if o["key"] != offer.key]
+            card.update(status="cancelled", summary=undo_card_refused_summary())
 
-    async def commit(self, offer: UndoOffer, *, moved, conflict_policy) -> uuid.UUID:
+    async def commit(self, offer: UndoOffer, *, moved) -> uuid.UUID:
         stored = next(o for o in self.offers if o["key"] == offer.key)
-        if stored["action_id"] is None:
-            action_id = uuid.uuid4()
-            self.cards[action_id] = {
-                "tool_args": undo_card_args(stored["pre_state"], conflict_policy=conflict_policy),
-                "summary": undo_card_summary(stored["pre_state"], moved),
-                "status": "pending",
-            }
-            stored["action_id"] = action_id
         stored["post_move"] = {
             "etag": moved.get("etag"),
             "start_at": moved["start_at"],
             "end_at": moved["end_at"],
         }
+        stored["intended"] = None  # the attempt is resolved
         return stored["action_id"]
 
     async def for_card(self, action_id):

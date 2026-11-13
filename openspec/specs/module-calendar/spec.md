@@ -1097,16 +1097,21 @@ A broker-forwarded `calendar_update_event` whose verified assertion names the `r
 - **WHEN** the provider write fails in any other way under the condition
 - **THEN** the tool SHALL end the call as an error result, never a plain result the broker would record as committed
 
-#### Scenario: Every committed move leaves the owner one undo card
-- **WHEN** a conditional move commits
-- **THEN** exactly one pending approvals card per goal and event SHALL carry the inverse `calendar_update_event` as its call, reaching the owner on the existing approvals surfaces
+#### Scenario: Every move that might land leaves the owner one undo card
+- **WHEN** a conditional move is about to write
+- **THEN** exactly one pending approvals card per goal and event SHALL already carry the inverse `calendar_update_event` as its call, reaching the owner on the existing approvals surfaces
 - **AND** that card SHALL return the block to the earliest pre-image the goal recorded for the event, so a retry after a failed move that in fact committed still undoes to where the block started
-- **AND** when the approvals tables are unavailable the move SHALL write nothing and decline with reason `undo_unavailable`
+- **AND** when the card cannot be parked the move SHALL write nothing and decline with reason `undo_unavailable`
 
-#### Scenario: The undo is bound to the version the move left
-- **WHEN** the owner approves the undo card and the event changed since the move
-- **THEN** the tool SHALL write nothing and return `status: "undo_declined"` with reason `changed_since_move`
-- **AND** the undo's write SHALL be bound to the moved event's etag, sent exactly once, and a 412 SHALL also decline
+#### Scenario: A refused move cancels its card
+- **WHEN** the provider refuses the move's write on the etag (412)
+- **THEN** a card that attempt opened SHALL be cancelled with a summary saying nothing happened
+- **AND** after any other write failure the card SHALL remain
+
+#### Scenario: The undo is bound to the move
+- **WHEN** the owner approves the undo card and the event changed since the move, or the move never landed
+- **THEN** the tool SHALL write nothing and return `status: "undo_declined"` with reason `changed_since_move` or `not_moved`
+- **AND** the undo's write SHALL be etag-bound, sent exactly once, and a 412 SHALL also decline
 
 ## Source References
 

@@ -432,18 +432,24 @@ A `REPLAN` call is first sent to the domain as a conditional dispatch:
   the inverse `calendar_update_event`, and approving it runs that call through
   the approvals executor. The receipt lives in a `replan_undo` offer row in
   `calendar_action_log`:
-  - The offer opens before the write and holds the pre-image. If the approvals
-    tables are missing, the move declines `undo_unavailable` before writing.
-  - A retry reuses the open offer, so the card undoes to the earliest pre-image.
-    A retry after a failed move that in fact committed reads the moved event,
-    and its own pre-image would be the new time.
-  - A write refused on the etag discards an offer that attempt opened.
-  - On commit the offer records the moved event's etag, and the card is parked
-    once. Further moves by the same goal while the card is pending only rebind
-    that etag.
-  - The approved undo is bound to that etag. If the event changed since the
-    move, it writes nothing and returns `status: "undo_declined"`. Its own
-    write is sent once, and a 412 also declines.
+  - Fail-closed: before the write, one transaction opens the offer (pre-image
+    and intended times) and parks the card. If the approvals tables are
+    missing or the card cannot be parked, the move declines
+    `undo_unavailable` and writes nothing.
+  - A retry, or a further move by the same goal while the card is pending,
+    reuses the offer and its card, so the card undoes to the earliest
+    pre-image. A retry after a failed move that in fact committed reads the
+    moved event, and its own pre-image would be the new time.
+  - A write refused on the etag (412) cancels the card that attempt opened,
+    whose summary then says nothing happened, and drops the offer. If the owner
+    already decided the card, the offer stays so the undo still declines. Any
+    other failure keeps the card: the move may have landed.
+  - On commit the offer records the moved event's etag.
+  - The approved undo writes only if the event is still the version the last
+    landed move left, or sits at an unresolved attempt's intended times (an
+    ambiguous failure that landed). Otherwise it writes nothing and returns
+    `status: "undo_declined"`, reason `changed_since_move` or `not_moved`.
+    Its own write is sent once, and a 412 also declines.
   - The offer closes when the card leaves `pending`.
 - Unmet, including an unreadable or missing event, an overlap check that
   cannot be read, or a write the provider refuses on the etag (412, the event

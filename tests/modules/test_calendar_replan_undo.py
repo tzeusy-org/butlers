@@ -1,10 +1,11 @@
 """The owner's undo for a calendar replan move (RFC 0038 D13, bu-4c7nvp.1.12).
 
-Every committed replan move leaves exactly one approvals card whose call is the
-inverse move. The card's pre-image is the earliest one the goal recorded for
-that event, so a retry after a failed-but-committed move still puts the block
-back where it started. The approved undo is bound to the etag the move left and
-declines, writing nothing, when the event changed since.
+Every replan move that might land leaves exactly one approvals card whose call is
+the inverse move, parked before the write (fail-closed). The card's pre-image is
+the earliest one the goal recorded for that event, so a retry after a
+failed-but-committed move still puts the block back where it started. The
+approved undo is bound to the move and declines, writing nothing, when the event
+changed since (``changed_since_move``) or the move never landed (``not_moved``).
 """
 
 from __future__ import annotations
@@ -55,6 +56,8 @@ class _MovingProvider(_ProviderDouble):
         self.fail_after_write = fail_after_write
         self.refuse: Exception | None = None
         self._version = 0
+        self.ledger: _FakeLedger | None = None
+        self.cards_at_write: list[int] = []
 
     def edit(self, **changes):
         """The owner (or anyone) changes the event outside Butlers."""
@@ -63,6 +66,8 @@ class _MovingProvider(_ProviderDouble):
 
     async def update_event(self, *, calendar_id, event_id, patch):
         self.update_calls.append({"calendar_id": calendar_id, "event_id": event_id, "patch": patch})
+        if self.ledger is not None:
+            self.cards_at_write.append(len(self.ledger.cards))
         if self.refuse is not None:
             raise self.refuse
         self.edit(start_at=patch.start_at, end_at=patch.end_at)
@@ -186,7 +191,7 @@ async def test_a_retry_after_a_failed_but_committed_move_undoes_to_the_true_pre_
     ledger, goal = _FakeLedger(), uuid.uuid4()
     with pytest.raises(CalendarRequestError):
         await _replan_move(provider, ledger, goal_id=goal)
-    assert ledger.cards == {}  # the failed attempt parks no card
+    assert len(ledger.cards) == 1  # fail-closed: the card was parked before the write
     # The retry reads the already-moved event: its own pre-image is the new time.
     result = await _replan_move(provider, ledger, goal_id=goal)
     assert result["status"] == "updated"
@@ -201,6 +206,107 @@ async def test_a_refused_write_leaves_no_pre_image_behind():
     result = await _replan_move(provider, ledger, goal_id=uuid.uuid4())
     assert result["reason"] == "changed_since_check"
     assert ledger.offers == []
+
+
+# -- fail-closed order: the card exists before the write ---------------------------
+
+
+async def test_the_card_is_parked_before_the_write():
+    provider, ledger = _MovingProvider(event=_block(etag='"v0"')), _FakeLedger()
+    provider.ledger = ledger
+    await _replan_move(provider, ledger, goal_id=uuid.uuid4())
+    assert provider.cards_at_write == [1]
+
+
+async def test_a_card_that_cannot_be_parked_means_no_write():
+    provider, ledger = _MovingProvider(event=_block(etag='"v0"')), _FakeLedger()
+    ledger.park_error = RuntimeError("approvals admission unavailable")
+    result = await _replan_move(provider, ledger, goal_id=uuid.uuid4())
+    assert result["status"] == REPLAN_DECLINED
+    assert result["reason"] == "undo_unavailable"
+    assert provider.update_calls == []
+    assert ledger.cards == {} and ledger.offers == []
+
+
+async def test_a_412_cancels_the_card_it_opened_and_says_nothing_happened():
+    provider, ledger = _MovingProvider(event=_block(etag='"v0"')), _FakeLedger()
+    provider.refuse = CalendarRequestError(status_code=412, message="Precondition Failed")
+    await _replan_move(provider, ledger, goal_id=uuid.uuid4())
+    _, card = _card(ledger)
+    assert card["status"] == "cancelled"
+    assert card["summary"].startswith("Nothing happened")
+
+
+async def test_after_an_ambiguous_failure_that_landed_the_undo_works():
+    error = CalendarRequestError(status_code=503, message="backend error")
+    provider = _MovingProvider(event=_block(etag='"v0"'), fail_after_write=error)
+    ledger = _FakeLedger()
+    with pytest.raises(CalendarRequestError):
+        await _replan_move(provider, ledger, goal_id=uuid.uuid4())
+    assert provider._event.start_at == NEW_START  # the write did land
+    card_id, _ = _card(ledger)
+    result = await _approve(provider, ledger, card_id)
+    assert result["status"] == "updated"
+    assert provider._event.start_at == OLD_START
+    assert provider.update_calls[-1]["patch"].single_attempt is True
+
+
+async def test_after_an_ambiguous_failure_that_never_landed_the_undo_declines_not_moved():
+    # Also the window case: the owner approves before the write lands.
+    provider, ledger = _MovingProvider(event=_block(etag='"v0"')), _FakeLedger()
+    provider.refuse = CalendarRequestError(status_code=503, message="backend error")
+    with pytest.raises(CalendarRequestError):
+        await _replan_move(provider, ledger, goal_id=uuid.uuid4())
+    provider.refuse = None
+    writes = len(provider.update_calls)
+    card_id, _ = _card(ledger)
+    result = await _approve(provider, ledger, card_id)
+    assert result["status"] == UNDO_DECLINED
+    assert result["reason"] == "not_moved"
+    assert len(provider.update_calls) == writes
+
+
+async def test_a_refused_retry_keeps_the_undo_of_the_move_that_landed():
+    provider, ledger = _MovingProvider(event=_block(etag='"v0"')), _FakeLedger()
+    goal = uuid.uuid4()
+    await _replan_move(provider, ledger, goal_id=goal)  # lands at NEW_START
+    provider.refuse = CalendarRequestError(status_code=412, message="Precondition Failed")
+    later = {
+        **MOVE,
+        "start_at": datetime(2026, 2, 20, 18, 0, tzinfo=UTC),
+        "end_at": datetime(2026, 2, 20, 19, 0, tzinfo=UTC),
+    }
+    await _replan_move(provider, ledger, goal_id=goal, args=later)
+    provider.refuse = None
+    card_id, card = _card(ledger)
+    assert card["status"] == "pending"  # the reused card is not cancelled
+    result = await _approve(provider, ledger, card_id)
+    assert result["status"] == "updated"
+    assert provider._event.start_at == OLD_START
+
+
+async def test_a_card_the_owner_decided_before_the_412_still_declines_not_moved():
+    provider, ledger = _MovingProvider(event=_block(etag='"v0"')), _FakeLedger()
+    provider.refuse = CalendarRequestError(status_code=412, message="Precondition Failed")
+    provider.ledger = ledger
+
+    original = provider.update_event
+
+    async def approve_then_write(**kwargs):
+        for card in ledger.cards.values():
+            card["status"] = "approved"  # the owner approves inside the window
+        return await original(**kwargs)
+
+    provider.update_event = approve_then_write  # type: ignore[method-assign]
+    await _replan_move(provider, ledger, goal_id=uuid.uuid4())
+    provider.refuse = None
+    provider.update_event = original  # type: ignore[method-assign]
+    writes = len(provider.update_calls)
+    card_id, _ = _card(ledger)
+    result = await _approve(provider, ledger, card_id)
+    assert result["status"] == UNDO_DECLINED
+    assert result["reason"] == "not_moved"
+    assert len(provider.update_calls) == writes
 
 
 # -- the undo itself ---------------------------------------------------------------

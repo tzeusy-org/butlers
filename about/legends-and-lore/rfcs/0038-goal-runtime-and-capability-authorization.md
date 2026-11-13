@@ -943,11 +943,14 @@ overlap check and the write is not caught, and the undo receipt is the remedy.
 
 The owner sees that receipt as one approvals card per goal and block, on the
 existing approvals surfaces; approving it runs the inverse move through the
-approvals executor. No move skips its park unless that card can be recorded.
-The card returns the block to the earliest pre-image the goal recorded for it,
-so a retry after a failed move that in fact committed still undoes to where the
-block started. The undo is bound to the version the move left: if the event
-changed since, it writes nothing and says so.
+approvals executor. The card is parked before the write, so every move that
+might land has one; if it cannot be parked, nothing is written. A write the
+provider refuses cancels a card that attempt opened, which then says nothing
+happened; any other failure keeps it. The card returns the block to the earliest
+pre-image the goal recorded for it, so a retry after a failed move that in fact
+committed still undoes to where the block started. The undo is bound to the
+move: if the event changed since, or the move never landed, it writes nothing
+and says so.
 
 A Stop-cancelled parked effect takes a new approvals status,
 `cancelled`. At the switch, `pending_actions` created before cutover remain
