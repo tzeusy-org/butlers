@@ -203,7 +203,8 @@ notify, or actuate. Raw locations stay in connector-owned stores; Home never rea
 
 Named constants, not runtime configuration: a side change opens a candidate on its first
 qualifying observation and is confirmed after 3 minutes with no fresh observation of the
-confirmed side, or on 2 distinct qualifying observations, whichever is first. A
+confirmed side, or on 2 distinct qualifying observations, whichever is first. Distinct means observed at
+least 30 seconds apart, so two entities mirroring one signal count once. A
 qualifying Home Assistant observation is a fresh owner-entity `home` or `not_home`
 state; a qualifying OwnTracks outside fix has accuracy of at most 100 m and a distance
 beyond the radius plus the larger of the accuracy and 50 m. A fresh home SSID match
@@ -233,6 +234,13 @@ Scope: v1-mandatory
 - **WHEN** the reducer has no confirmed state and a confirmed outside signal arrives
 - **THEN** it writes `unknown` and then the outside assertion, and the timeline row
   records an unknown prior state, not a leave
+
+#### Scenario: A stale carried state is never a prior
+
+- **WHEN** the carried side is older than the observation freshness window, or input was
+  unreadable in between
+- **THEN** the reducer forgets it, and the next confirmed side is an establish over an
+  explicit unknown, not a leave or enter
 
 #### Scenario: Quick return retracts the leave
 

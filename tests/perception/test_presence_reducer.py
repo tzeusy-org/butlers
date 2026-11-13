@@ -6,6 +6,7 @@ from uuid import UUID
 from butlers.perception.presence import (
     CONFIRM_AFTER,
     HEARTBEAT,
+    MIN_FIX_SPACING,
     OBSERVATION_FRESH,
     RETRACT_WINDOW,
     Observation,
@@ -170,3 +171,49 @@ def test_heartbeat_holds_on_an_unchanged_fresh_observation_until_it_goes_stale()
     assert beat.action == "heartbeat" and beat.observed_at == T0
     state, decisions = run(state, same, T0 + OBSERVATION_FRESH + timedelta(seconds=1))
     assert decisions == [] and state.side is None  # the observation went stale: unknown
+
+
+def test_a_stale_carried_side_is_not_a_prior_after_a_long_gap():
+    state, _ = inside_state()
+    later = T0 + timedelta(hours=4)
+    fixes = [
+        obs(later - timedelta(minutes=2), "outside", "o1"),
+        obs(later - timedelta(minutes=1), "outside", "o2"),
+    ]
+    state, decisions = run(state, fixes, later)
+    (decision,) = decisions
+    assert decision.action == "establish" and decision.reset_first
+
+
+def test_a_side_that_ages_out_in_the_same_run_is_not_a_prior():
+    state, _ = inside_state()
+    now = T0 + OBSERVATION_FRESH + timedelta(minutes=1)
+    fixes = [
+        obs(now - timedelta(seconds=40), "outside", "p1"),
+        obs(now - timedelta(seconds=5), "outside", "p2"),
+    ]
+    state, decisions = run(state, [obs(T0, "inside")] + fixes, now)
+    (decision,) = decisions
+    assert decision.action == "establish" and decision.reset_first
+
+
+def test_two_entities_mirroring_one_signal_are_one_fix_not_two():
+    state, _ = inside_state()
+    first = T0 + timedelta(minutes=10)
+    mirrored = [
+        obs(first, "outside", "person"),
+        obs(first + timedelta(seconds=2), "outside", "tracker"),
+    ]
+    state, decisions = run(state, mirrored, first + timedelta(seconds=3))
+    assert decisions == [] and len(state.candidate.counted) == 1
+    state, decisions = run(state, [], first + CONFIRM_AFTER)
+    (decision,) = decisions  # confirmed by the quiet period, not by the mirror
+    assert decision.action == "leave" and decision.confirmed_at == first + CONFIRM_AFTER
+
+
+def test_a_second_fix_at_a_later_time_still_confirms_early():
+    state, _ = inside_state()
+    first = T0 + timedelta(minutes=10)
+    later = first + MIN_FIX_SPACING
+    state, (decision,) = run(state, [obs(first, "outside", "a"), obs(later, "outside", "b")], later)
+    assert decision.action == "leave" and decision.confirmed_at == later

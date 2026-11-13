@@ -114,7 +114,7 @@ Home Assistant input is the owner entities' `home`/`not_home` rows in `ha_entity
 by `ha_source_health`; the OwnTracks input is a connector-owned typed feed that a later slice
 supplies (Home has no read on `connectors.owntracks_points` and never will). Confirmed leave/enter
 transitions are written to the canonical `owner.place` slot and timeline as source `home.dots`; no
-presence tables exist. Thresholds are named constants (3 minute quiet period, 2 distinct fixes,
+presence tables exist. Thresholds are named constants (3 minute quiet period, 2 distinct fixes at least 30 seconds apart,
 100 m accuracy ceiling, 50 m margin floor, 10 minute retraction window, 5 minute heartbeat).
 Reducer state lives in memory, so a restart makes the next confirmed side an `establish` preceded
 by an `unknown` assertion, never a fabricated leave. A restart therefore costs one confirmation

@@ -211,6 +211,12 @@ async def _owner_subject(pool: Any) -> UUID | None:
     return rows[0]["id"] if len(rows) == 1 else None
 
 
+def _silent(runtime: PresenceRuntime, outcome: Outcome) -> dict[str, Any]:
+    """Input trouble: forget the carried side so a later confirmation cannot be an edge from it."""
+    runtime.state = PresenceState(cursor=runtime.state.cursor, seen=runtime.state.seen)
+    return {"outcome": outcome}
+
+
 async def run_presence_reducer(
     pool: Any,
     store: Any,
@@ -228,16 +234,16 @@ async def run_presence_reducer(
     try:
         await _require_ha_source_healthy(pool)
     except HASourceUnmeasurableError:
-        return {"outcome": "unmeasurable"}
+        return _silent(runtime, "unmeasurable")
     owner_entity_ids = await _load_owner_presence_entity_ids(pool)
     if owner_entity_ids is None:
-        return {"outcome": "unconfigured"}
+        return _silent(runtime, "unconfigured")
     place_ref = home_place(await load_active_owner_places(pool))
     if place_ref is None:
-        return {"outcome": "no_home"}
+        return _silent(runtime, "no_home")
     subject = await _owner_subject(pool)
     if subject is None:
-        return {"outcome": "no_owner"}
+        return _silent(runtime, "no_owner")
     rows = await pool.fetch(
         "SELECT entity_id, state, last_updated FROM ha_entity_snapshot WHERE entity_id = ANY($1)",
         list(owner_entity_ids),

@@ -265,26 +265,82 @@ async def test_a_delayed_confirmation_is_marked_late(dsn, home):
         assert all(r["id"] != leave["id"] for r in live)
 
 
-async def test_input_trouble_writes_nothing(dsn, home, monkeypatch):
+async def test_input_trouble_writes_nothing_and_forgets_the_carried_side(dsn, home, monkeypatch):
     async with session(dsn) as conn:
         store = await as_role(conn, "perception_dots_writer")
         runtime = PresenceRuntime()
+        await tick(home, store, runtime, "home", NOW, NOW)
+        await tick(home, store, runtime, "home", NOW, NOW + CONFIRM_AFTER)
+        assert runtime.state.side == "inside"
+        _, before = await history(conn)
+        store = await as_role(conn, "perception_dots_writer")
 
         async def blind(pool):
             raise adapter.HASourceUnmeasurableError("blind", last_success_at=None)
 
         monkeypatch.setattr(adapter, "_require_ha_source_healthy", blind)
-        assert await tick(home, store, runtime, "home", NOW, NOW) == {"outcome": "unmeasurable"}
+        later = NOW + timedelta(minutes=20)
+        out = await tick(home, store, runtime, "home", later, later)
+        assert out == {"outcome": "unmeasurable"}
+        assert runtime.state.side is None  # forgotten, not carried across the gap
+
+        async def healthy(pool):
+            return None
+
+        monkeypatch.setattr(adapter, "_require_ha_source_healthy", healthy)
+        out_at = later + timedelta(minutes=2)
+        await tick(home, store, runtime, "not_home", out_at, out_at)
+        await tick(home, store, runtime, "not_home", out_at, out_at + CONFIRM_AFTER)
+        _, rows = await history(conn)
+        assert len(rows) > len(before)
+        outside = [
+            r
+            for r in rows
+            if r["operation"] == "assert" and (r["to_value"] or {}).get("presence") == "outside"
+        ]
+        # Establish over an unknown prior, never a leave from the stale inside.
+        assert len(outside) == 1 and outside[0]["from_state"] == "unknown"
 
         async def none(pool):
             return None
 
-        monkeypatch.setattr(adapter, "_require_ha_source_healthy", lambda pool: none(pool))
         monkeypatch.setattr(adapter, "_load_owner_presence_entity_ids", none)
+        runtime.state = PresenceState(side="inside", place_ref=HOME, last_agree=NOW)
         assert await tick(home, store, runtime, "home", NOW, NOW) == {"outcome": "unconfigured"}
-        assert runtime.state == PresenceState()
+        assert runtime.state.side is None
+
+
+async def test_the_fifteen_minute_late_boundary_is_exclusive_at_this_seam(dsn, home):
+    async with session(dsn) as conn:
+        store = await as_role(conn, "perception_dots_writer")
+        runtime = PresenceRuntime()
+        await tick(home, store, runtime, "home", NOW, NOW)
+        await tick(home, store, runtime, "home", NOW, NOW + CONFIRM_AFTER)
+        leave_at = NOW + timedelta(minutes=10)
+        # Delivered exactly 15:00 after it happened: not late. One second more: late.
+        await tick(home, store, runtime, "not_home", leave_at, leave_at + timedelta(minutes=15))
         _, rows = await history(conn)
-        assert rows == []
+        leave = next(r for r in rows if (r["to_value"] or {}).get("presence") == "outside")
+        assert leave["late"] is False
+        store = await as_role(conn, "perception_dots_writer")
+        other = PresenceRuntime()
+        await tick(home, store, other, "home", NOW, NOW)
+        await tick(home, store, other, "home", NOW, NOW + CONFIRM_AFTER)
+        second_leave = NOW + timedelta(hours=1)
+        await tick(
+            home,
+            store,
+            other,
+            "not_home",
+            second_leave,
+            second_leave + timedelta(minutes=15, seconds=1),
+        )
+        _, rows = await history(conn)
+        outside = sorted(
+            (r for r in rows if (r["to_value"] or {}).get("presence") == "outside"),
+            key=lambda r: r["at"],
+        )
+        assert [r["late"] for r in outside] == [False, True]
 
 
 async def test_a_refused_publish_does_not_advance_state(dsn, home):

@@ -39,6 +39,9 @@ Side = Literal["inside", "outside"]
 SOURCE = "home.dots"
 CONFIRM_AFTER = timedelta(minutes=3)
 CONFIRM_FIXES = 2
+#: A fix counts as a further distinct fix only when observed at least this long after the previous
+#: counted one, so two entities mirroring one signal (a person and its tracker) are one fix.
+MIN_FIX_SPACING = timedelta(seconds=30)
 RETRACT_WINDOW = timedelta(minutes=10)
 #: Observations older than this are stale: they neither open nor hold a state.
 OBSERVATION_FRESH = timedelta(minutes=30)
@@ -81,7 +84,7 @@ class Observation:
 class Candidate:
     side: Side
     first_at: datetime
-    keys: tuple[str, ...]
+    counted: tuple[datetime, ...]  # observation times of the distinct fixes counted so far
     evidence: tuple[str, ...]
 
 
@@ -153,6 +156,12 @@ def reduce(
     """
     if state.place_ref is not None and state.place_ref != place_ref:
         state = PresenceState()
+    if state.side is not None and (
+        state.last_agree is None or now - state.last_agree > OBSERVATION_FRESH
+    ):
+        # The carried side went stale before this run: it is not a prior any more, so nothing
+        # confirmed below can be a leave or enter from it.
+        state = PresenceState(cursor=state.cursor, seen=state.seen)
     fresh = [
         o
         for o in observations
@@ -175,12 +184,13 @@ def reduce(
             continue
         cand = state.candidate
         if cand is None or cand.side != side:
-            cand = Candidate(side, obs.observed_at, (obs.key,), (obs.evidence,))
-        elif obs.key not in cand.keys:
+            cand = Candidate(side, obs.observed_at, (obs.observed_at,), (obs.evidence,))
+        else:
+            counted = cand.counted
+            if obs.observed_at - counted[-1] >= MIN_FIX_SPACING:
+                counted = (*counted, obs.observed_at)
             cand = replace(
-                cand,
-                keys=(*cand.keys, obs.key),
-                evidence=tuple(sorted({*cand.evidence, obs.evidence})),
+                cand, counted=counted, evidence=tuple(sorted({*cand.evidence, obs.evidence}))
             )
         state = replace(state, candidate=cand)
 
@@ -228,7 +238,7 @@ def _ready(cand: Candidate, now: datetime) -> bool:
     An agreeing observation clears the candidate during the fold, so a surviving candidate
     has had none since it opened.
     """
-    return len(cand.keys) >= CONFIRM_FIXES or now - cand.first_at >= CONFIRM_AFTER
+    return len(cand.counted) >= CONFIRM_FIXES or now - cand.first_at >= CONFIRM_AFTER
 
 
 def _confirm(
