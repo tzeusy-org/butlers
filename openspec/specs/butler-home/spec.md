@@ -219,7 +219,8 @@ compare-and-swap make replay and concurrent delivery one transition. A confirmed
 is republished every 5 minutes while fresh evidence holds so its slot stays fresh.
 
 `GET /api/home/presence/transitions` is the owner-only, read-only projection: confirmed
-leave/enter edges newest first with opaque place references, `late` and `retracted`
+leave/enter edges newest first (`limit` counts edges: the server scans past heartbeats, resets
+and retractions, up to a bounded number of timeline rows) with opaque place references, `late` and `retracted`
 flags and a cursor. It answers `503 PRESENCE_TIMELINE_UNAVAILABLE` until the private
 perception reader login is activated. The reducer is released dark: no schedule, no
 `home.dots` profile and no login exist until the owner-authorized activation (and

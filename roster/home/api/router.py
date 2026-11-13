@@ -2254,6 +2254,8 @@ _TRANSITIONS_UNAVAILABLE = (
     "The presence timeline is unavailable.",
 )
 _TRANSITIONS_WINDOW = timedelta(days=7)
+_TRANSITIONS_SCAN_PAGE = 100  # the timeline's largest page
+_TRANSITIONS_MAX_SCANS = 20  # bounds one request to 2000 timeline rows
 
 
 async def _open_presence_reader() -> Any | None:
@@ -2307,24 +2309,41 @@ async def get_presence_transitions(
         if connection is None:
             return _place_error(_TRANSITIONS_UNAVAILABLE)
         now = datetime.now(UTC)
-        rows = await PerceptionStore(connection).timeline(
-            since=now - _TRANSITIONS_WINDOW,
-            until=now,
-            kind="owner.place",
-            before=before,
-            limit=limit,
-        )
+        store = PerceptionStore(connection)
+        edges: list[PresenceTransition] = []
+        cursor = before
+        more = False
+        # The timeline holds heartbeats, resets and retractions too, so `limit` counts edges:
+        # scan pages until enough edges are found, the week is exhausted or the scan cap is hit.
+        for _ in range(_TRANSITIONS_MAX_SCANS):
+            rows = await store.timeline(
+                since=now - _TRANSITIONS_WINDOW,
+                until=now,
+                kind="owner.place",
+                before=cursor,
+                limit=_TRANSITIONS_SCAN_PAGE,
+            )
+            for row in rows:
+                cursor = UUID(str(row["id"]))
+                edge = _edge(row)
+                if edge is not None:
+                    edges.append(edge)
+                    if len(edges) == limit:
+                        more = True
+                        break
+            if len(edges) == limit:
+                break
+            if len(rows) < _TRANSITIONS_SCAN_PAGE:
+                break
+        else:
+            more = True
     except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
         logger.error("presence timeline read failed: database unavailable")
         return _place_error(_TRANSITIONS_UNAVAILABLE)
     finally:
         if connection is not None:
             await connection.close()
-    edges = [edge for edge in map(_edge, rows) if edge is not None]
-    page = PresenceTransitionsResponse(
-        transitions=edges,
-        next_before=UUID(str(rows[-1]["id"])) if len(rows) == limit else None,
-    )
+    page = PresenceTransitionsResponse(transitions=edges, next_before=cursor if more else None)
     return JSONResponse(
         content=ApiResponse[PresenceTransitionsResponse](data=page).model_dump(mode="json"),
         headers={"Cache-Control": "no-store"},

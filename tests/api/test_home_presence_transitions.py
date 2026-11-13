@@ -7,6 +7,7 @@ the one seam, replaced by a fake connection that returns canonical timeline rows
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -23,6 +24,7 @@ from tests.api.test_home_owner_places import (
 
 _ROUTE = "/api/home/presence/transitions"
 _OWNER = [(b"x-api-key", _OWNER_KEY.encode())]
+_BASE = datetime(2026, 11, 13, 0, 0, tzinfo=UTC)
 _HOME = "33333333-3333-4333-8333-333333333333"
 
 
@@ -38,8 +40,8 @@ def _row(n, *, before, after, operation="assert", klass="transition", **extra):
         "class": klass,
         "from_value": value(before),
         "to_value": value(after),
-        "at": f"2026-11-13T09:{n:02d}:00+00:00",
-        "confirmed_at": f"2026-11-13T09:{n:02d}:30+00:00",
+        "at": (_BASE + timedelta(minutes=n)).isoformat(),
+        "confirmed_at": (_BASE + timedelta(minutes=n, seconds=30)).isoformat(),
         "late": False,
         "retracted": False,
         "retraction_event_id": None,
@@ -58,8 +60,14 @@ class FakeReader:
         self.calls = []
 
     async def fetchval(self, query, *args):
+        # perception_timeline(since, until, kind, subject, before, limit, live), newest first.
         self.calls.append(args)
-        return self.rows
+        before, limit = args[4], args[5]
+        rows = self.rows
+        if before is not None:
+            ids = [str(r["id"]) for r in rows]
+            rows = rows[ids.index(str(before)) + 1 :]
+        return rows[:limit]
 
     async def close(self):
         self.closed = True
@@ -138,7 +146,7 @@ async def test_only_confirmed_edges_are_projected_with_late_and_retraction_flags
         ("enter", False, False),
         ("leave", True, True),
     ]
-    assert page["next_before"] == rows[-1]["id"]
+    assert page["next_before"] is None  # the whole week was scanned: nothing further
     text = json.dumps(response)
     for leaked in ("secret-evidence", "label_sens", "writer", "evidence_refs", "lat", "lon"):
         assert leaked not in text.replace("late", "")
@@ -152,3 +160,33 @@ async def test_short_page_has_no_cursor_and_bad_limit_is_refused(seams, monkeypa
     assert status == 200 and response["data"]["next_before"] is None
     status, _, _ = await _raw(app, "GET", f"{_ROUTE}?limit=101", b"", _OWNER)
     assert status == 422
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_heartbeats_do_not_hide_edges_and_the_cursor_continues(seams, monkeypatch) -> None:  # noqa: F811
+    # Newest first: 250 heartbeats, then 3 edges, then more heartbeats and 2 older edges.
+    rows = [_row(n, before="inside", after="inside") for n in range(1000, 1250)]
+    rows += [_row(n, before="inside", after="outside") for n in range(900, 903)]
+    rows += [_row(n, before="inside", after="inside") for n in range(800, 900)]
+    rows += [_row(n, before="outside", after="inside") for n in range(700, 702)]
+    reader = FakeReader(rows)
+    app = _app(seams, monkeypatch, reader)
+    status, response, _ = await _raw(app, "GET", f"{_ROUTE}?limit=2", b"", _OWNER)
+    page = response["data"]
+    assert status == 200 and len(page["transitions"]) == 2
+    assert page["next_before"] == page["transitions"][-1]["id"]
+    status, response, _ = await _raw(
+        app, "GET", f"{_ROUTE}?limit=2&before={page['next_before']}", b"", _OWNER
+    )
+    rest = response["data"]
+    assert [t["direction"] for t in rest["transitions"]] == ["leave", "enter"]
+    assert len(rest["transitions"]) == 2
+
+    status, response, _ = await _raw(
+        app, "GET", f"{_ROUTE}?limit=20&before={rest['next_before']}", b"", _OWNER
+    )
+    tail = response["data"]
+    assert [t["direction"] for t in tail["transitions"]] == ["enter"] and tail[
+        "next_before"
+    ] is None
