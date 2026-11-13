@@ -40,6 +40,7 @@ from butlers.core.goal_labels import Label, LabelRefused
 from butlers.core.goal_waiting import WaitLedger
 from butlers.core.goal_wake import WakeAdmission
 
+from . import evidence as evidence_rules
 from .contracts import (
     GoalBudgetView,
     GoalEnded,
@@ -1072,6 +1073,7 @@ class RunnerLedger:
         premise: tuple[str, ...],
         evidence: tuple[str, ...],
         steps: tuple[str, ...],
+        requirements: tuple[str, ...] = (),
     ) -> int | BrokerRefused:
         """``goal.plan``: record the lead's plan as the goal's next version (RFC 0038 S2).
 
@@ -1079,14 +1081,26 @@ class RunnerLedger:
         RESOURCE and nothing is recorded. Identical content keeps the current version (a retry);
         changed content appends the next version with its predecessor, so the version an open
         or fired wait bound stays as it was approved. The version records the lead's epoch.
+
+        With completion evidence live (PR-C), ``requirements`` names the lead's own requirements
+        (``effect:``/``child:``/``inbox:`` refs of this goal) and the version also records every
+        owner anchor the server derives (``owner_anchors``) and every one its predecessor kept.
+        Dark, any requirement is refused POLICY and the version records none.
         """
         goal = await self.lock(principal.goal_id)
         if goal is None or goal["status"] != "running":
             raise BrokerRefused(Reason.GOAL)
         if principal.depth != 0:
             raise BrokerRefused(Reason.CAPABILITY)
+        live = evidence_rules.EVIDENCE_COMPLETION_LIVE
+        if requirements and not live:
+            raise BrokerRefused(Reason.POLICY)
+        try:
+            lead = [evidence_rules.lead_requirement(ref) for ref in requirements]
+        except evidence_rules.RequirementError:
+            raise BrokerRefused(Reason.POLICY) from None
         named: dict[str, set[str]] = {}
-        for ref in (*premise, *evidence, *steps):
+        for ref in (*premise, *evidence, *steps, *requirements):
             kind, _, ident = ref.partition(":")
             named.setdefault(kind, set()).add(ident)
         for kind, idents in named.items():
@@ -1112,12 +1126,70 @@ class RunnerLedger:
             principal.goal_id,
             principal.invocation_id,
         )
+        recorded = None
+        if live:
+            kept = await self._kept_owner_anchors(principal.goal_id)
+            try:
+                # Only the lead's own requirements past its budget refuse; growing owner
+                # anchors never do (recorded ones stop at the reserve, the rest are derived
+                # again at settle).
+                merged = evidence_rules.plan_requirements(
+                    lead, await self.owner_anchors(principal.goal_id), kept
+                )
+            except evidence_rules.RequirementError:
+                raise BrokerRefused(Reason.POLICY) from None
+            recorded = evidence_rules.to_json(merged)
         version = await WaitLedger(self.connection).append_plan(
-            principal.goal_id, epoch, premise, evidence, steps
+            principal.goal_id, epoch, premise, evidence, steps, recorded
         )
         if version is None:
             raise BrokerRefused(Reason.GOAL)
         return version
+
+    async def owner_anchors(self, goal_id: UUID) -> tuple[evidence_rules.Requirement, ...]:
+        """The owner-anchored requirements the server derives from its own facts (PR-C).
+
+        Never model text: the reply an owner-origin goal owes (D11), each effect the owner
+        approved (an owner decision receipt), and each owner reply that reached the goal. Every
+        source is durable, so the set only grows.
+        """
+        goal = await self.connection.fetchrow(
+            "SELECT origin, source_kind FROM switchboard.goals WHERE id = $1", goal_id
+        )
+        anchors: list[evidence_rules.Requirement] = []
+        if goal is not None and goal["origin"] == "owner" and goal["source_kind"] == "message":
+            anchors.append(
+                evidence_rules.Requirement(evidence_rules.REPLY, "owner_delivered", "owner")
+            )
+        approved = await self.connection.fetch(
+            "SELECT effect_id FROM switchboard.owner_decision_items "
+            "WHERE goal_id = $1 AND outcome = 'approved'",
+            goal_id,
+        )
+        anchors += [
+            evidence_rules.Requirement(f"effect:{row['effect_id']}", "committed", "owner")
+            for row in approved
+        ]
+        replies = await self.connection.fetch(
+            "SELECT id FROM switchboard.goal_inbox "
+            "WHERE goal_id = $1 AND input_kind = 'owner_reply'",
+            goal_id,
+        )
+        anchors += [
+            evidence_rules.Requirement(f"inbox:{row['id']}", "consumed", "owner") for row in replies
+        ]
+        return tuple(anchors)
+
+    async def _kept_owner_anchors(self, goal_id: UUID) -> tuple[evidence_rules.Requirement, ...]:
+        """The owner anchors the goal's latest plan version recorded (a later one keeps them)."""
+        recorded = await self.connection.fetchval(
+            "SELECT p.requirements::text FROM switchboard.goal_plans p "
+            "JOIN switchboard.goals g ON (g.id, g.plan_version) = (p.goal_id, p.version) "
+            "WHERE g.id = $1",
+            goal_id,
+        )
+        kept = evidence_rules.from_json(json.loads(recorded or "[]"))
+        return tuple(req for req in kept if req.anchor == "owner")
 
     async def decide_together(
         self, principal: Principal, effect_ids: tuple[UUID, ...], catalog: Catalog
@@ -1362,7 +1434,8 @@ class RunnerLedger:
         if not await WaitLedger(self.connection).fire_settle(goal_id):
             return None
         row = await self.connection.fetchrow(
-            "SELECT o.outcome, o.reply_effect_id, g.source_kind, e.status AS reply_status "
+            "SELECT o.outcome, o.reply_effect_id, o.relied_effects, g.source_kind, "
+            "e.status AS reply_status "
             "FROM switchboard.goal_outcomes o JOIN switchboard.goals g ON g.id = o.goal_id "
             "LEFT JOIN switchboard.effects e "
             "ON (e.goal_id, e.id) = (o.goal_id, o.reply_effect_id) WHERE o.goal_id = $1",
@@ -1380,6 +1453,11 @@ class RunnerLedger:
                     final, failure = "partial", "reply_not_owner_delivery"
                 elif row["reply_status"] != "committed":
                     final, failure = "partial", "reply_not_committed"
+            # Dark (PR-C): with completion evidence live, receipts decide, not the lead's claim.
+            verdict = None
+            if evidence_rules.EVIDENCE_COMPLETION_LIVE:
+                verdict = await self._judge(goal_id, final, row)
+                final = verdict.final
             await self.connection.execute(
                 "UPDATE switchboard.goal_outcomes SET final_status = $2, delivery_failure = $3, "
                 "resolved_at = clock_timestamp() WHERE goal_id = $1",
@@ -1387,12 +1465,75 @@ class RunnerLedger:
                 final,
                 failure,
             )
+            if verdict is not None:
+                await self.connection.execute(
+                    "INSERT INTO switchboard.goal_outcome_evidence "
+                    "(goal_id, final_status, satisfied, missing) "
+                    "VALUES ($1, $2, $3::text::jsonb, $4::text::jsonb)",
+                    goal_id,
+                    final,
+                    # Capped to the column bounds with a truncation marker: the verdict
+                    # itself is judged in full and never fails on size.
+                    json.dumps(evidence_rules.persisted(evidence_rules.to_json(verdict.satisfied))),
+                    json.dumps(
+                        evidence_rules.persisted([missing.to_json() for missing in verdict.missing])
+                    ),
+                )
         await self.connection.execute(
             "UPDATE switchboard.goals SET status = $2, updated_at = now() WHERE id = $1",
             goal_id,
             final,
         )
         return final
+
+    async def _judge(self, goal_id: UUID, outcome: str, row: Any) -> evidence_rules.Verdict:
+        """Read the goal's receipts and apply ``evidence.judge`` (PR-C), under the goal lock.
+
+        The requirements are the latest plan version's plus every owner anchor derived now (a
+        decision may have landed after the last plan); the lead's relied effects must commit.
+        """
+        recorded = await self.connection.fetchval(
+            "SELECT p.requirements::text FROM switchboard.goal_plans p "
+            "JOIN switchboard.goals g ON (g.id, g.plan_version) = (p.goal_id, p.version) "
+            "WHERE g.id = $1",
+            goal_id,
+        )
+        requirements = evidence_rules.merge(
+            evidence_rules.from_json(json.loads(recorded or "[]")),
+            await self.owner_anchors(goal_id),
+        )
+        owner = await live_owner(self.connection)
+        effects = await self.connection.fetch(
+            "SELECT id::text AS id, status, recipient_entity FROM switchboard.effects "
+            "WHERE goal_id = $1",
+            goal_id,
+        )
+        children = await self.connection.fetch(
+            "SELECT id::text AS id, status FROM switchboard.invocations "
+            "WHERE goal_id = $1 AND depth = 1",
+            goal_id,
+        )
+        consumed = await self.connection.fetch(
+            "SELECT id::text AS id FROM switchboard.goal_inbox "
+            "WHERE goal_id = $1 AND consumed_at IS NOT NULL",
+            goal_id,
+        )
+        statuses = {e["id"]: e["status"] for e in effects}
+        delivered = frozenset(
+            e["id"] for e in effects if owner is not None and e["recipient_entity"] == owner
+        )
+        reply = row["reply_effect_id"]
+        receipts = evidence_rules.Receipts(
+            effects=statuses,
+            owner_delivered=delivered,
+            children={c["id"]: c["status"] for c in children},
+            consumed=frozenset(c["id"] for c in consumed),
+            reply_delivered=reply is not None
+            and statuses.get(str(reply)) == "committed"
+            and str(reply) in delivered,
+        )
+        relied = [str(effect) for effect in row["relied_effects"] or ()]
+        return evidence_rules.judge(outcome, requirements, relied, receipts)
 
     # -- Stop, fencing and recovery (D14) -------------------------------------
 

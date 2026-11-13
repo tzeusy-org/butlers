@@ -668,9 +668,26 @@ class GoalRunner:
         self._terminate_later(principal.invocation_id)
         return "waiting"
 
-    async def plan(self, goal_id: UUID, token: str, premise: Any, evidence: Any, steps: Any) -> int:
-        """``goal.plan`` (RFC 0038 S2): record the lead's plan as the goal's next version."""
-        refs = (plan_refs(premise), plan_refs(evidence), plan_refs(steps))
+    async def plan(
+        self,
+        goal_id: UUID,
+        token: str,
+        premise: Any,
+        evidence: Any,
+        steps: Any,
+        requirements: Any = None,
+    ) -> int:
+        """``goal.plan`` (RFC 0038 S2): record the lead's plan as the goal's next version.
+
+        ``requirements`` (PR-C) are the lead's completion requirements; dark, the tool does not
+        offer them and the ledger refuses any.
+        """
+        refs = (
+            plan_refs(premise),
+            plan_refs(evidence),
+            plan_refs(steps),
+            () if requirements is None else plan_refs(requirements),
+        )
         with _tracer.start_as_current_span(
             "goal.plan", record_exception=False, set_status_on_exception=False
         ) as span:

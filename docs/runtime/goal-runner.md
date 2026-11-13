@@ -896,6 +896,49 @@ A wake that cannot be admitted (refused for any reason but Stop, or unmapped) en
 `goal_epochs` row supersedes one proposed at an earlier epoch (a recovery, an escalation or a
 wake). A set proposed again after such a move is a new set, not the next version of the old one.
 
+## Evidence-based completion (D11, D13, sw_075, dark)
+
+Behind `goal_runner/evidence.py` `EVIDENCE_COMPLETION_LIVE` (False), a goal whose lead claimed
+`completed` settles `completed` only when receipts prove what it requires; otherwise `partial`.
+
+- Requirements (`goal_plans.requirements`, at most 64): `{ref, evidence, anchor}`, where `ref` is
+  `effect:<id>` (`committed` or `owner_delivered`), `child:<id>` (`returned`), `inbox:<id>`
+  (`consumed`) or `reply` (`owner_delivered`). They are folded into the plan digest only when
+  present, so a version recorded without them keeps its digest.
+- Owner anchors come only from server facts (`RunnerLedger.owner_anchors`): the reply an
+  owner-message goal owes, each effect with an approving owner decision receipt, and each owner
+  reply that joined the goal. The lead names only its own (`lead`) requirements through
+  `goal.plan`'s `requirements`. A new plan version records every owner anchor its predecessor
+  kept, plus newly derived ones within the reserve below. `WaitLedger.append_plan` refuses a version that drops or changes
+  one (`PlanRequirementDropped`), and the sw_075 trigger refuses it again. A lead requirement may
+  be dropped.
+- Size never refuses what the owner caused (`evidence.plan_requirements`). A version records at
+  most 64 requirements. Because every kept owner anchor is kept forever, recorded owner anchors
+  stop at a reserve of 32 (`OWNER_ANCHOR_RESERVE`): a newly derived anchor is recorded only
+  while kept plus new stays within it, and only after the lead's own requirements fit. The lead
+  therefore has a budget of at least 32 in every version. A legacy version already past the
+  reserve keeps all its owner anchors and records no new ones. Derived anchors left out are left
+  out of the version only, because the settle derives them again. Only lead requirements past
+  the remaining budget (64 minus the kept owner anchors) refuse `goal.plan` (POLICY). The
+  `RequirementError` behind it states that budget; the refusal itself stays the closed reason.
+- The settle resolution (`RunnerLedger.resolve`, then `_judge`, then `evidence.judge`, a pure
+  predicate) evaluates the latest plan's requirements, the owner anchors derived now, and the
+  lead's relied effects (each must commit). The reply checks and `delivery_failure` run first and
+  are unchanged. A `completed` claim with any proof missing ends `partial`, and a `partial` or
+  `failed` claim is never upgraded. The verdict is written once to `goal_outcome_evidence`
+  (`satisfied`, and `missing` with the status each requirement found). That table is append-only:
+  REVOKE before GRANT, read and insert only, and a statement-level UPDATE guard. `judge` itself
+  is unbounded and never fails on size. Each stored list is capped at its column bound of 128
+  (`evidence.persisted`), and past it the last slot is `{"truncated": n}`.
+- Turning the flag back off after it has been on breaks `goal.plan` for goals that have
+  owner-anchored versions: dark, a new version records `[]`, which the sw_075 trigger refuses as a
+  dropped owner anchor.
+- Dark, no requirement is recorded (`goal.plan` refuses one POLICY, and its tool schema does not
+  offer it), `resolve` is unchanged, and nothing is written to `goal_outcome_evidence`.
+- Flipping the flag changes completion for every goal that settles afterwards, including goals
+  already running: a relied effect that did not commit, an owner-approved effect that did not
+  commit, or an unread owner reply then ends the goal `partial`.
+
 ## Not yet delivered
 
 - The per-domain `ContextSource` adapters (a domain's memory and facts).

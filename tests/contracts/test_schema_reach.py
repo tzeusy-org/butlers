@@ -1101,6 +1101,15 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         )
     },
     **{
+        ("src/butlers/goal_runner/ledger.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: D11/D13 evidence-based completion (sw_075) reads owner "
+            "decision receipts and records the settled goal's evidence over the "
+            "Switchboard-owned goal ledger; qualified SQL allocated to goal_runner/ledger.py "
+            "(bu-4c7nvp.1.3)"
+        )
+        for relation in ("goal_outcome_evidence", "owner_decision_items")
+    },
+    **{
         ("src/butlers/core/decision_sets.py", f"switchboard.{relation}"): (
             "sanctioned:RFC-0038: D13/S2.2 a decision-set wait reads its version's owner "
             "decision receipt (sw_073) over the Switchboard-owned goal ledger; qualified SQL "
