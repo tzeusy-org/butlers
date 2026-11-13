@@ -277,6 +277,13 @@ calls it.
   generation conflict is written again once at the store's generation. The
   projection must be written again by its end, which is the activation's
   scheduling step.
+- Both mode tables enable row-level security, and sw_078 adds the read policies
+  activation needs, so activation is grants only: `perception_context_writer`
+  reads the entries, and `butler_switchboard_rw` reads the entries and the
+  overlay, each only as itself. Without a policy, a granted reader would see
+  zero rows with no error, and the projector would publish an empty mode set as
+  fresh. No role gets a write policy: owner writes run on the dashboard's owner
+  connection (the table owner, outside RLS). sw_078 grants nothing.
 
 ## Complete private backup
 

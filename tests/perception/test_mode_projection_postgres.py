@@ -2,10 +2,11 @@
 
 Real migrated core + Switchboard ledger under the repository's privileged test
 bootstrap. Everything runs in one transaction that is rolled back, including
-the activation grants this exercises (schema usage, SELECT and an RLS read
-policy on ``switchboard.owner_mode_entries`` for ``perception_context_writer``,
-and the ``context.mode`` source profile), so nothing persists and no runtime
-identity gains a privilege outside the test.
+the activation grants this exercises (schema usage and SELECT on
+``switchboard.owner_mode_entries`` for ``perception_context_writer``, and the
+``context.mode`` source profile), so nothing persists and no runtime identity
+gains a privilege outside the test. The RLS read policy is sw_078's own: a
+projector that read zero rows would publish an empty mode set as fresh.
 """
 
 from __future__ import annotations
@@ -97,14 +98,11 @@ async def _exercise(url):
         # Without the activation grants the context writer cannot read the entries.
         with pytest.raises(ModeProjectionUnavailable):
             await _as(conn, "perception_context_writer", projector.project)
-        # Activation grants, rolled back with the transaction.
+        # Activation is grants only, rolled back with the transaction: the read
+        # policy is sw_078's, so no policy is created here.
         await conn.execute("GRANT USAGE ON SCHEMA switchboard TO perception_context_writer")
         await conn.execute(
             "GRANT SELECT ON switchboard.owner_mode_entries TO perception_context_writer"
-        )
-        await conn.execute(
-            "CREATE POLICY owner_mode_entries_projection ON switchboard.owner_mode_entries "
-            "FOR SELECT TO perception_context_writer USING (true)"
         )
         # The context.mode profile is still unconfigured: the store refuses.
         with pytest.raises(ModeProjectionUnconfigured):
