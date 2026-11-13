@@ -274,7 +274,6 @@ async def run_departure_watch(
     if not DEPARTURE_CARD_LIVE:
         return {"status": "dark"}
     now = now or datetime.now(UTC)
-    await pool.execute("DELETE FROM departure_cards WHERE confirmed_at < $1", now - CARD_RETENTION)
     watch = await load_watch(pool)
     if not watch:
         return {"status": "no_watch"}
@@ -285,6 +284,8 @@ async def run_departure_watch(
         edges = None
     if edges is None:
         return {"status": "reader_unavailable"}
+    # Retention runs only after a successful read: without the reader the job changes no card.
+    await pool.execute("DELETE FROM departure_cards WHERE confirmed_at < $1", now - CARD_RETENTION)
 
     leaves = [
         e

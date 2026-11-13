@@ -218,6 +218,32 @@ async def test_dark_switch_reads_and_writes_nothing() -> None:
     assert pool.method_calls == []
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("failure", ["unset", "raises"])
+async def test_reader_unavailable_changes_no_card(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Spec: without the reader the job SHALL NOT queue, close or change any card (retention too)."""
+    monkeypatch.setattr(home_departure, "DEPARTURE_CARD_LIVE", True)
+    pool = MagicMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            {"entity_id": _DOOR.entity_id, "owner_label": "Front door", "secure_states": ["off"]}
+        ]
+    )
+    pool.execute = AsyncMock()
+    pool.fetchval = AsyncMock()
+    read_edges = (
+        AsyncMock(return_value=None) if failure == "unset" else AsyncMock(side_effect=OSError)
+    )
+
+    result = await run_departure_watch(pool, None, read_edges=read_edges, now=_NOW)
+
+    assert result == {"status": "reader_unavailable"}
+    pool.execute.assert_not_awaited()
+    pool.fetchval.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Real Postgres: the job, the definer and the timed lane end to end
 # ---------------------------------------------------------------------------
