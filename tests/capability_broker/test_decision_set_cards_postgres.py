@@ -43,7 +43,10 @@ OWNER_CTX = OwnerContext(decided_by="owner:test", via="test")
 
 
 class Transport:
-    def __init__(self, outcome: str = "sent", raises: bool = False) -> None:
+    def __init__(
+        self, outcome: str = "sent", raises: bool = False, provider_ref: str | None = None
+    ) -> None:
+        self.provider_ref = provider_ref
         self.outcome = outcome
         self.raises = raises
         self.envelopes: list[dict] = []
@@ -52,7 +55,7 @@ class Transport:
         self.envelopes.append(envelope)
         if self.raises:
             raise RuntimeError("provider timed out")
-        return SendResult(self.outcome)  # type: ignore[arg-type]
+        return SendResult(self.outcome, self.provider_ref)  # type: ignore[arg-type]
 
 
 async def _none(*_args, **_kwargs):
@@ -632,3 +635,18 @@ async def test_a_member_is_minted_only_at_an_unresolved_subject(broker_db_url):
                 "WHERE source_ref = $1",
                 f"{proposed.set_id}:{proposed.version}",
             )
+
+
+async def test_a_sent_card_records_the_provider_message_id_so_it_can_be_retracted(broker_db_url):
+    async with world(broker_db_url) as w:
+        await _reset(w)
+        proposed, _ = await _set(w)
+        sweep = await _sweeper(w, Transport(provider_ref="4242"))
+        assert await sweep.sweep() == 1
+        await w.owner.execute(
+            "UPDATE switchboard.decision_set_versions SET state = 'cancelled' WHERE set_id = $1",
+            proposed.set_id,
+        )
+        await sweep.sweep()
+        [target] = await _retractions(w)
+        assert target.provider_ref == "4242"
