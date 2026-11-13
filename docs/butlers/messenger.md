@@ -55,7 +55,8 @@ for the current contract.
 
 Approval cards carry typed self references, not raw dashboard URLs. The fixed
 server registry maps `approval_detail` (canonical UUID `action_id`) to
-`/approvals/<action_id>` and `approvals_queue` (no parameters) to `/approvals`.
+`/approvals/<action_id>`, `approvals_queue` (no parameters) to `/approvals`, and
+`decision_set` (canonical UUID `set_id`, nothing else) to `/decision-sets/<set_id>`.
 Switchboard resolves these references using the configured HTTPS `DASHBOARD_URL`
 origin. Messenger independently resolves them again; a wire URL, host, label,
 provenance string or claimed server flag is never link authority. Valid controls
