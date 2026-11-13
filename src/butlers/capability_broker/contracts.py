@@ -139,6 +139,8 @@ class Capability:
     recipient_params: RecipientParameters
     resource_params: tuple[str, ...] = ()
     selection_bound: frozenset[str] = frozenset()
+    # Two resource params scoped as one pair (core.resource_pairs), never as separate sets.
+    resource_pair: tuple[str, str] | None = None
     # Resource params whose identifiers have no alias; only these can narrow
     # an owner-law term (any other narrowing selects every call).
     alias_free_params: frozenset[str] = frozenset()
@@ -183,6 +185,7 @@ class Capability:
             selection_bound=frozenset(
                 name for name, bound in (descriptor.selection_bound or {}).items() if bound
             ),
+            resource_pair=getattr(descriptor, "resource_pair", None),
             alias_free_params=frozenset(getattr(descriptor, "alias_free_params", None) or ()),
             alias_resolvers=tuple(
                 sorted(dict(getattr(descriptor, "alias_resolvers", None) or {}).items())

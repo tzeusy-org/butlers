@@ -59,6 +59,7 @@ def _declare(
     alias_free = cast(tuple[str, ...], authorization.pop("alias_free_params", ()))
     depends_on = cast(tuple[str, ...], authorization.pop("depends_on", ()))
     content_params = cast("tuple[str, ...] | None", authorization.pop("content_params", None))
+    resource_pair = cast("tuple[str, str] | None", authorization.pop("resource_pair", None))
     resolvers = MappingProxyType(
         dict(cast(Mapping[str, str], authorization.pop("alias_resolvers", {})))
     )
@@ -75,6 +76,7 @@ def _declare(
             categories=tuple(sorted(categories)),
             depends_on=depends_on,
             content_params=content_params,
+            resource_pair=resource_pair,
             alias_resolvers=resolvers,
             **authorization,
         )
@@ -1153,8 +1155,11 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("message_id", "attachment_id"),
-        # Not D7 owner selections: the tool itself admits only the lazy refs of
-        # the calling session's routed request (bu-jv1moa.59).
+        # The grant scopes the two as one (message, attachment) pair, so one admitted ref can
+        # never be recombined with another's id (bu-jv1moa.64). A grant without a pair scope
+        # cannot call it; today the tool itself still admits only the routed request's refs.
+        resource_pair=("message_id", "attachment_id"),
+        # Not D7 owner selections.
         selection_bound={"message_id": False, "attachment_id": False},
         safety_args=(),
         idempotency="none",

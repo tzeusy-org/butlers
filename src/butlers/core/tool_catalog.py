@@ -122,6 +122,9 @@ class ToolMetadata(Protocol):
     # RFC 0038 D19 (optional, additive): the arguments that carry the content a call delivers.
     # With recipient_params they let an approval card rebuild the exact stored call.
     content_params: tuple[str, ...] | None = None
+    # An optional composite scope: these two resource_params are scoped as one pair (never
+    # as a cross product of their separate sets). See ``capability_broker.pairs``.
+    resource_pair: tuple[str, str] | None = None
     read_stores: tuple[str, ...] = ()
     write_stores: tuple[str, ...] = ()
     unknown_output_source: bool = True
@@ -205,6 +208,9 @@ class ToolPresentation:
     # RFC 0038 D19 (optional, additive): the arguments that carry the content a call delivers.
     # With recipient_params they let an approval card rebuild the exact stored call.
     content_params: tuple[str, ...] | None = None
+    # An optional composite scope: these two resource_params are scoped as one pair (never
+    # as a cross product of their separate sets). See ``capability_broker.pairs``.
+    resource_pair: tuple[str, str] | None = None
     read_stores: tuple[str, ...] = ()
     write_stores: tuple[str, ...] = ()
     unknown_output_source: bool = True
@@ -295,6 +301,9 @@ class ToolDescriptor:
     # RFC 0038 D19 (optional, additive): the arguments that carry the content a call delivers.
     # With recipient_params they let an approval card rebuild the exact stored call.
     content_params: tuple[str, ...] | None = None
+    # An optional composite scope: these two resource_params are scoped as one pair (never
+    # as a cross product of their separate sets). See ``capability_broker.pairs``.
+    resource_pair: tuple[str, str] | None = None
     read_stores: tuple[str, ...] = ()
     write_stores: tuple[str, ...] = ()
     unknown_output_source: bool = True
@@ -573,6 +582,17 @@ def _authorization_problems(descriptor: ToolDescriptor) -> list[str]:
         )
     ):
         problems.append("content_params")
+    pair = descriptor.resource_pair
+    if pair is not None and (
+        not isinstance(pair, tuple)
+        or len(pair) != 2
+        or pair[0] == pair[1]
+        or not isinstance(resource_params, tuple)
+        or not isinstance(selection, Mapping)
+        or any(not isinstance(arg, str) or arg not in resource_params for arg in pair)
+        or any(selection.get(arg) for arg in pair)
+    ):
+        problems.append("resource_pair")
     return problems
 
 
@@ -728,6 +748,7 @@ async def build_tool_catalog(
                     dict(getattr(declared, "alias_resolvers", None) or {})
                 ),
                 content_params=getattr(declared, "content_params", None),
+                resource_pair=getattr(declared, "resource_pair", None),
                 read_stores=tuple(getattr(declared, "read_stores", ())),
                 write_stores=tuple(getattr(declared, "write_stores", ())),
                 unknown_output_source=getattr(declared, "unknown_output_source", True),
@@ -763,6 +784,11 @@ async def build_tool_catalog(
                 **(
                     {"content_params": descriptor.content_params}
                     if descriptor.content_params is not None
+                    else {}
+                ),
+                **(
+                    {"resource_pair": descriptor.resource_pair}
+                    if descriptor.resource_pair is not None
                     else {}
                 ),
             }

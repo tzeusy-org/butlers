@@ -191,6 +191,7 @@ conflicts with the inventory is refused rather than silently replaced.
 | `owner_authority` | Whether a write steers future sessions, such as an owner profile, preference or recovery policy. |
 | `recipient_params` | Frozen named selectors, unresolved inherited parties and the actual conditional owner default. |
 | `content_params` | Optional. The arguments that carry delivered content; with `recipient_params` they rebuild the exact call an approval card shows. Published only when declared. |
+| `resource_pair` | Optional (bu-jv1moa.64). Two `resource_params` names (neither selection-bound) that a grant scopes as one pair, never as two independent sets: the broker checks the call's `(first, second)` against the grant's pair scope, encoded length-prefixed as `<len(first)>:<first><second>` under the synthetic key `first+second` (`butlers.core.resource_pairs`). A grant with no pair scope has an empty scope: the capability is neither listed nor callable. Published only when declared, so undeclared tools keep their catalog digest. Declared today: `attachment_materialize` `(message_id, attachment_id)`; admission does not issue the scope yet, so the tool stays dark. |
 
 Recipient selectors and resources can overlap. Calendar attendees identify
 parties; `calendar_id` selects a calendar. Email `to` and `thread_id` select

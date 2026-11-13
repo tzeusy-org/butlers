@@ -28,6 +28,9 @@ from butlers.core.tool_catalog import (
 )
 from butlers.core.tool_presentation_inventory import STORE_WRITERS
 
+#: Published only when declared, so undeclared tools keep their digest.
+OPTIONAL_FIELDS = frozenset({"content_params", "resource_pair"})
+
 LEASE_SECONDS = 90
 RENEW_SECONDS = 30
 TRANSACTION_SECONDS = 5
@@ -81,7 +84,7 @@ def publication(catalog: ToolCatalog, domain: str) -> dict:
             field.name: plain(getattr(item, field.name))
             for field in fields(ToolDescriptor)
             # Published only when declared, so undeclared tools keep their digest.
-            if field.name != "content_params" or item.content_params is not None
+            if field.name not in OPTIONAL_FIELDS or getattr(item, field.name) is not None
         }
         for item in sorted(catalog.descriptors, key=lambda item: item.canonical_name)
     ]
@@ -110,9 +113,9 @@ def decode_publication(value: object, domain: str) -> ToolCatalog:
         ):
             raise ValueError
         decoded = []
-        expected = {field.name for field in fields(ToolDescriptor)} - {"content_params"}
+        expected = {field.name for field in fields(ToolDescriptor)} - OPTIONAL_FIELDS
         for item in value["descriptors"]:
-            if type(item) is not dict or set(item) not in (expected, expected | {"content_params"}):
+            if type(item) is not dict or not expected <= set(item) <= expected | OPTIONAL_FIELDS:
                 raise ValueError
             if (
                 type(item["description"]) is not str
@@ -126,6 +129,7 @@ def decode_publication(value: object, domain: str) -> ToolCatalog:
             kwargs = dict(item)
             for key in (
                 "content_params",
+                "resource_pair",
                 "resource_params",
                 "safety_args",
                 "read_stores",
@@ -164,11 +168,11 @@ def authorization_digest(catalog: ToolCatalog) -> str:
         [
             {
                 **{key: plain(getattr(item, key)) for key in AUTHORIZATION_FIELDS},
-                **(
-                    {"content_params": plain(item.content_params)}
-                    if item.content_params is not None
-                    else {}
-                ),
+                **{
+                    name: plain(getattr(item, name))
+                    for name in OPTIONAL_FIELDS
+                    if getattr(item, name) is not None
+                },
             }
             for item in catalog.descriptors
         ]
