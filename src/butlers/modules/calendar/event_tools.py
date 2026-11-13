@@ -24,7 +24,7 @@ from .constants import (
     CalendarConflictPolicy,
     logger,
 )
-from .errors import CalendarAuthError, _build_structured_error
+from .errors import CalendarAuthError, CalendarRequestError, _build_structured_error
 from .models import (
     CalendarEventCreate,
     CalendarEventUpdate,
@@ -522,8 +522,9 @@ def register_event_tools(
                     error=error_payload.get("error"),
                 )
                 return error_payload
-        if replan and (reason := movable(existing_event)) is not None:
-            # Checked against the provider's copy, never the model's arguments.
+
+        async def decline(reason: str) -> dict[str, Any]:
+            """A conditional move that wrote nothing: recorded as a no-op, then parked."""
             declined_result = declined(
                 reason, event_id=normalized_event_id, calendar_id=resolved_calendar_id
             )
@@ -538,6 +539,10 @@ def register_event_tools(
                 origin_ref=normalized_event_id,
             )
             return declined_result
+
+        if replan and (reason := movable(existing_event)) is not None:
+            # Checked against the provider's copy, never the model's arguments.
+            return await decline(reason)
         if existing_event is None:
             not_found_result = {
                 "status": "not_found",
@@ -662,6 +667,9 @@ def register_event_tools(
                     exc,
                     exc_info=True,
                 )
+                if replan:
+                    # Nothing was written: a slot that cannot be checked is the owner's call.
+                    return await decline("conflict_check_unavailable")
                 error_payload = _build_structured_error(
                     exc,
                     provider=provider.name,
@@ -681,20 +689,7 @@ def register_event_tools(
                 return error_payload
             if replan and conflict_result["conflicts"]:
                 # A move onto anything else on the calendar is the owner's call.
-                declined_result = declined(
-                    "conflicts", event_id=normalized_event_id, calendar_id=resolved_calendar_id
-                )
-                await module._finalize_workspace_mutation(
-                    idempotency_key=idempotency_key,
-                    action_type="workspace_user_update",
-                    request_id=normalized_request_id,
-                    action_status=MUTATION_STATUS_NOOP,
-                    action_payload=action_payload,
-                    action_result=declined_result,
-                    source_id=source_id,
-                    origin_ref=normalized_event_id,
-                )
-                return declined_result
+                return await decline("conflicts")
             if conflict_result["status"] == "conflict":
                 conflict_response = {
                     "status": "conflict",
@@ -754,6 +749,9 @@ def register_event_tools(
             private_metadata=private_metadata,
             entity_ids=entity_ids,
             etag=existing_event.etag,
+            # A conditional move's etag-bound write is sent once, so a 412 can only mean the
+            # event changed before it; a 503 stays an error, never a decline.
+            single_attempt=replan,
         )
         pre_state_entity_ids = await module._fetch_pre_state_entity_ids(
             source_id=source_id,
@@ -779,6 +777,10 @@ def register_event_tools(
                 exc,
                 exc_info=True,
             )
+            if replan and isinstance(exc, CalendarRequestError) and exc.status_code == 412:
+                # The etag-bound write was refused: the event changed since the check, and
+                # nothing was written. The broker parks it.
+                return await decline("changed_since_check")
             error_payload = _build_structured_error(
                 exc,
                 provider=provider.name,
@@ -802,6 +804,10 @@ def register_event_tools(
                 origin_ref=normalized_event_id,
                 error=error_payload.get("error"),
             )
+            if replan:
+                # A conditional move answers committed, declined or an error result, never a
+                # plain one: the forwarder records any plain result as a committed effect.
+                raise exc
             return error_payload
         # Annotate updated event with authorship and body.
         session_id_str = _get_session_id()

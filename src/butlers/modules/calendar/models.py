@@ -427,6 +427,9 @@ class CalendarEventUpdate(BaseModel):
     entity_ids: list[uuid.UUID] | None = None
     # Etag from the existing event for optimistic concurrency (sent as If-Match header).
     etag: str | None = None
+    # One attempt, never the generic 429/503 retry: a retried etag-bound PATCH can see 412
+    # for its own committed first attempt (the conditional replan move, RFC 0038 D13).
+    single_attempt: bool = False
 
     @field_validator("timezone")
     @classmethod

@@ -13,12 +13,21 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from fastmcp import FastMCP
 
 from butlers.core.capability_json import arguments_digest
 from butlers.core.goal_lineage import VerifiedLineage, lineage_scope
-from butlers.modules.calendar import AttendeeInfo, CalendarAuthError, CalendarModule
+from butlers.modules.calendar import (
+    AttendeeInfo,
+    CalendarAuthError,
+    CalendarConfig,
+    CalendarModule,
+    CalendarRequestError,
+    _GoogleOAuthCredentials,
+    _GoogleProvider,
+)
 from butlers.modules.calendar.replan import (
     REPLAN_DECLINED,
     REPLAN_MOVE,
@@ -61,6 +70,24 @@ def _lineage(args, *, conditional=REPLAN_MOVE) -> VerifiedLineage:
 class _FailingGet(_ProviderDouble):
     async def get_event(self, *, calendar_id, event_id):
         raise CalendarAuthError("provider unavailable")
+
+
+class _FailingConflictCheck(_ProviderDouble):
+    async def find_conflicts(self, *, calendar_id, candidate):
+        raise CalendarAuthError("free/busy unavailable")
+
+    async def get_free_busy(self, *, calendar_ids, start_at, end_at, timezone=None):
+        raise CalendarAuthError("free/busy unavailable")
+
+
+class _FailingWrite(_ProviderDouble):
+    def __init__(self, error: Exception, **kwargs):
+        super().__init__(**kwargs)
+        self._error = error
+
+    async def update_event(self, *, calendar_id, event_id, patch):
+        self.update_calls.append({"calendar_id": calendar_id, "event_id": event_id})
+        raise self._error
 
 
 async def _module(provider):
@@ -231,3 +258,93 @@ async def test_calendar_respond_stays_always_per_event():
     ):
         meta = mod.tool_metadata()["calendar_respond"]
     assert meta.approval_policy == {"mode": "always_per_event"}
+
+
+# -- provider errors after the fetch (bu-4c7nvp.1.13) ----------------------------
+
+
+async def test_a_failed_conflict_check_declines():
+    provider = _FailingConflictCheck(event=_block())
+    result = await _move(provider)
+    assert result["status"] == REPLAN_DECLINED
+    assert result["reason"] == "conflict_check_unavailable"
+    assert provider.update_calls == []
+
+
+async def test_a_failed_precondition_on_the_write_declines():
+    # The provider refused the etag-bound write: the event changed since the check.
+    error = CalendarRequestError(status_code=412, message="Precondition Failed")
+    provider = _FailingWrite(error, event=_block())
+    result = await _move(provider)
+    assert result["status"] == REPLAN_DECLINED
+    assert result["reason"] == "changed_since_check"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        CalendarRequestError(status_code=500, message="backend error"),
+        CalendarRequestError(status_code=403, message="forbidden"),
+        CalendarAuthError("connection reset after send"),
+    ],
+)
+async def test_any_other_write_error_is_a_tool_error_never_a_result(error):
+    # A plain result would be recorded as a committed effect; an error result is not.
+    provider = _FailingWrite(error, event=_block())
+    with pytest.raises(CalendarAuthError):
+        await _move(provider)
+
+
+class _GoogleWrite(_ProviderDouble):
+    """Checks against the double, writes through the real Google provider's request path."""
+
+    def __init__(self, statuses: list[int], **kwargs):
+        super().__init__(**kwargs)
+        self.patches: list[httpx.Request] = []
+        replies = iter(statuses)
+
+        async def _handler(request: httpx.Request) -> httpx.Response:
+            self.patches.append(request)
+            status = next(replies)
+            return httpx.Response(status, json={"error": {"message": str(status)}})
+
+        self._google = _GoogleProvider(
+            CalendarConfig(provider="google", timezone="UTC"),
+            _GoogleOAuthCredentials(client_id="c", client_secret="s", refresh_token="r"),
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(_handler)),
+        )
+        self._google._oauth.get_access_token = AsyncMock(return_value="token")
+
+    async def update_event(self, *, calendar_id, event_id, patch):
+        return await self._google.update_event(
+            calendar_id=calendar_id, event_id=event_id, patch=patch
+        )
+
+
+async def test_a_conditional_write_is_sent_once_so_a_412_only_means_changed_before():
+    # N1: a 503 may follow a committed write; a generic retry with the same If-Match then
+    # sees 412 and would decline a move that was written. One attempt: the 503 is an error.
+    provider = _GoogleWrite([503, 412], event=_block(etag='"snapshot-a"'))
+    with (
+        patch("butlers.modules.calendar.google.asyncio.sleep", new_callable=AsyncMock),
+        pytest.raises(CalendarRequestError) as raised,
+    ):
+        await _move(provider)
+    assert raised.value.status_code == 503
+    assert len(provider.patches) == 1
+    assert provider.patches[0].headers["If-Match"] == '"snapshot-a"'
+
+
+async def test_an_unconditional_write_keeps_the_rate_limit_retry():
+    provider = _GoogleWrite([503, 412], event=_block(etag='"snapshot-a"'))
+    with patch("butlers.modules.calendar.google.asyncio.sleep", new_callable=AsyncMock):
+        result = await _move(provider, lineage=False)
+    assert result["status"] == "error"
+    assert len(provider.patches) == 2
+
+
+async def test_without_the_condition_a_write_error_is_still_the_structured_result():
+    error = CalendarRequestError(status_code=500, message="backend error")
+    provider = _FailingWrite(error, event=_block())
+    result = await _move(provider, lineage=False)
+    assert result["status"] == "error"

@@ -218,6 +218,9 @@ async def _domain(signer, seen: list):
     async def calendar_update_event(event_id: str, start_at: str) -> dict[str, Any]:
         condition = goal_lineage.conditional_for("calendar_update_event")
         seen.append(condition)
+        if event_id == "boom":
+            # A write error after the send, as the calendar tool re-raises it (bu-4c7nvp.1.13).
+            raise RuntimeError("provider write failed")
         if condition is not None:
             return calendar_replan.declined(
                 "not_butler_created", event_id=event_id, calendar_id="primary"
@@ -267,3 +270,16 @@ async def test_the_same_text_from_an_unconditional_call_is_just_a_result():
         )
     assert seen == [None]
     assert receipt.status == "committed"
+
+
+async def test_a_write_error_under_the_condition_is_a_failed_receipt_never_committed():
+    signer = AssertionSigner("k1", Ed25519PrivateKey.generate())
+    seen: list = []
+    boom = {**MOVE, "event_id": "boom"}
+    reserved = Reservation(principal(), UPDATE, REPLAN, uuid4(), uuid4(), arguments_digest(boom))
+    async with _domain(signer, seen) as forwarder:
+        receipt = await forwarder.dispatch(
+            reserved, boom, _assertion(signer, reserved, REPLAN_MOVE), idempotency_key=None
+        )
+    assert seen == [REPLAN_MOVE]
+    assert receipt.status == "failed"
