@@ -18,12 +18,16 @@ RFC 0038 S3.1 and owner decision bu-u33sb7 (choices A, recorded 2026-10-20):
 No automatic entry rule exists here (M7 owns those); an inferred entry refuses.
 An entry is judged against ``now`` and the mode's active entry: one ending at or
 before ``now`` refuses, and one that ends an active mode sooner is a loosening.
+An exit is judged against the active entry; an ended entry is passed as None,
+so there is nothing to exit.
 Obligation kinds are a closed set; an unknown kind refuses rather than being held.
 A loosening's binding must equal the one re-derived from current state.
 Dark: ``flags.MODE_CONTROLS_LIVE`` is off and no route or tool calls this. The
 trusted step-up catalog admits ``mode_loosen``; an edit's binding targets the
 exact resulting overlay state (``state_text``), which sw_076 re-derives, and
-``mode_overlay`` writes it in the same transaction as the step-up spend.
+``mode_overlay`` writes it in the same transaction as the step-up spend. An
+entry or exit binds the exact resulting entry (``entry_text``), which sw_077
+re-derives, and ``mode_entries`` writes it the same way.
 """
 
 from __future__ import annotations
@@ -260,7 +264,8 @@ def classify_change(
     An ``Enter`` needs ``now`` and the mode's active entry (``None`` when the
     mode is not active): an entry ending at or before ``now`` refuses, and an
     entry on an active mode that ends sooner (or ends at all, when the active
-    entry is open-ended) is a loosening.
+    entry is open-ended) is a loosening. An ``Exit`` needs the mode's active
+    entry; with none (``None``) there is nothing to exit, and it refuses.
     """
     if mode_id(change.mode) != change.mode:
         raise ValueError("wire mode ID required")
@@ -268,6 +273,12 @@ def classify_change(
     if isinstance(change, Enter):
         return _classify_entry(change, now=now, active=active)
     if isinstance(change, Exit):
+        if isinstance(active, _Unset):
+            raise ValueError("an exit is classified against the active entry")
+        if active is None:
+            raise ValueError("no active entry to exit")
+        if active.mode != change.mode:
+            raise ValueError("the active entry is another mode's")
         return "loosen"
     if isinstance(change, EditHolds):
         if not change.holds <= OBLIGATION_CLASSES or change.holds & PINNED:
@@ -332,6 +343,71 @@ def state_text(profile: ModeProfile) -> str:
     )
 
 
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _micros(value: datetime) -> int:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("an aware instant is required")
+    return (value - _EPOCH) // timedelta(microseconds=1)
+
+
+def active_entry(mode: str, row: Mapping[str, Any] | None, now: datetime) -> ModeEntry | None:
+    """A stored entry row as the mode's active entry, or None once it has ended.
+
+    An entry is active until the owner exits it or its scheduled end is reached:
+    one ending exactly at ``now`` has ended. sw_077's
+    ``owner_mode_entry_active`` is the same rule in SQL.
+    """
+    if row is None or row["exited_at"] is not None:
+        return None
+    if row["until"] is not None and row["until"] <= now:
+        return None
+    return ModeEntry(mode, row["since"], row["until"], row["cause"])
+
+
+def resulting_entry(
+    change: Enter | Exit, *, now: datetime | None, active: ModeEntry | None
+) -> tuple[ModeEntry, bool]:
+    """The entry an Enter or Exit leaves, and whether it is exited.
+
+    Entering an inactive mode starts a fresh entry at ``now``. Entering an
+    active mode keeps its start and takes the new end and cause. Exiting keeps
+    the active entry as it was, exited.
+    """
+    if isinstance(change, Exit):
+        if active is None:
+            raise ValueError("no active entry to exit")
+        return active, True
+    if active is None:
+        if now is None:
+            raise ValueError("a fresh entry starts at now")
+        return ModeEntry(change.mode, now, change.until, change.cause), False
+    return ModeEntry(change.mode, active.since, change.until, change.cause), False
+
+
+def entry_text(entry: ModeEntry, *, exited: bool) -> str:
+    """The canonical entry state the entry store re-derives from a stored row.
+
+    ``entry|since|until|cause|open-or-exited``: instants as whole microseconds
+    since the Unix epoch, an open-ended entry's end as ``none``. The exit
+    instant itself is not bound (the writer stamps the database's ``now``),
+    only that the entry is exited. The ``entry|`` prefix keeps it apart from
+    every overlay state, so an entry target never matches an overlay target.
+    """
+    if entry.cause not in OWNER_CAUSES:
+        raise ValueError("only the owner enters a mode")
+    return "|".join(
+        [
+            "entry",
+            str(_micros(entry.since)),
+            "none" if entry.until is None else str(_micros(entry.until)),
+            entry.cause,
+            "exited" if exited else "open",
+        ]
+    )
+
+
 # -- step-up on loosening ------------------------------------------------------------
 
 
@@ -373,14 +449,23 @@ def _profile_body(profile: ModeProfile) -> dict[str, Any]:
     }
 
 
-def _target_digest(change: ModeChange, profiles: Mapping[str, ModeProfile]) -> str:
-    # An edit binds the exact state it produces, which the overlay store
-    # re-derives from the row; an entry or exit binds the change itself.
+def _target_digest(
+    change: ModeChange,
+    profiles: Mapping[str, ModeProfile],
+    *,
+    now: datetime | None,
+    active: ModeEntry | None | _Unset,
+) -> str:
+    # Each binds the exact state it produces, which its store re-derives from
+    # the row: an edit the overlay state, an entry or exit the entry state.
     if isinstance(change, OverlayEdit):
-        return hashlib.sha256(
-            state_text(apply_edit(change, profiles[change.mode])).encode()
-        ).hexdigest()[:16]
-    return _digest(_change_body(change))[:16]
+        text = state_text(apply_edit(change, profiles[change.mode]))
+    else:
+        if isinstance(active, _Unset):
+            raise ValueError("an entry or exit is bound to the active entry")
+        entry, exited = resulting_entry(change, now=now, active=active)
+        text = entry_text(entry, exited=exited)
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
 def mode_binding(
@@ -396,8 +481,9 @@ def mode_binding(
     """The exact loosening a ``mode_loosen`` step-up confirms.
 
     The request binds the owner action, the change and the expected version. The
-    target is ``mode:new-version:digest16`` (for an edit, over the resulting
-    state). The action also binds the mode's current parameters and, for an
+    target is ``mode:new-version:digest16`` over the resulting state: the
+    overlay state for an edit, the entry state for an entry or exit. The action
+    also binds the mode's current parameters and, for an
     entry or exit, its active entry, so a confirmation cannot be spent after
     the mode changed under it.
     """
@@ -418,7 +504,8 @@ def mode_binding(
         state.append(_entry_body(active))
     return StepUpBinding(
         MODE_LOOSEN_KIND,
-        f"{change.mode}:{expected_version + 1}:{_target_digest(change, profiles)}",
+        f"{change.mode}:{expected_version + 1}:"
+        f"{_target_digest(change, profiles, now=now, active=active)}",
         _digest(request),
         _digest(state),
         namespace,
@@ -532,14 +619,17 @@ __all__ = [
     "ModeProfile",
     "ModeStepUpRequired",
     "Posture",
+    "active_entry",
     "arms_absence",
     "authorize_mode_change",
     "classify_change",
     "classify_obligation",
+    "entry_text",
     "held_by",
     "mode_binding",
     "mode_event",
     "mode_id",
     "posture",
+    "resulting_entry",
     "wake_brief_time",
 ]

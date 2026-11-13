@@ -275,7 +275,11 @@ step-up consumed in the same transaction; see the
 owner-edited mode (duration, held classes, break-through senders). A loosening
 needs a `mode_loosen` step-up consumed in the same transaction; rows are never
 deleted, and the runtime role holds no privilege until activation (see
-[perception](perception.md#owner-modes-dark-21)). See
+[perception](perception.md#owner-modes-dark-21)). `sw_077` adds the dark
+`switchboard.owner_mode_entries` on the same pattern: one versioned row per
+entered mode (start, scheduled end, owner cause, exit). Exiting or ending an
+active entry sooner needs a `mode_loosen` step-up consumed in the same
+transaction; entering or extending does not. See
 [goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
 source keys, lock order, policy snapshots and actual verification obligations.
 

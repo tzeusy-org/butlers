@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta, timezone
 from uuid import UUID
 
 import pytest
@@ -25,6 +25,7 @@ from butlers.perception.modes import (
     DEFAULT_PROFILES,
     MODE_LOOSEN_KIND,
     PINNED,
+    UNSET,
     EditBreakThrough,
     EditDuration,
     EditHolds,
@@ -34,11 +35,13 @@ from butlers.perception.modes import (
     ModeEntry,
     ModeProfile,
     ModeStepUpRequired,
+    active_entry,
     apply_edit,
     arms_absence,
     authorize_mode_change,
     classify_change,
     classify_obligation,
+    entry_text,
     held_by,
     mode_binding,
     mode_event,
@@ -188,7 +191,6 @@ def _profiles(**overrides):
 @pytest.mark.parametrize(
     ("change", "expected"),
     [
-        (Exit("focus"), "loosen"),
         (EditHolds("sick", frozenset({"proactive"})), "none"),
         (EditHolds("focus", frozenset({"proactive"})), "tighten"),
         (EditHolds("sick", frozenset()), "loosen"),
@@ -278,6 +280,21 @@ def test_an_entry_is_never_classified_without_now_and_the_active_entry():
         classify_change(change, DEFAULT_PROFILES, now=NOW, active=other)
 
 
+def _active(mode, until=NOW + timedelta(hours=8)):
+    return ModeEntry(mode, NOW - timedelta(hours=1), until, "owner_declared")
+
+
+def test_an_exit_of_the_active_entry_is_a_loosening():
+    assert classify_change(Exit("focus"), DEFAULT_PROFILES, active=_active("focus")) == "loosen"
+
+
+def test_an_exit_needs_an_active_entry_of_its_own_mode():
+    # An ended or expired entry is passed as None: there is nothing to exit.
+    for active in (UNSET, None, _active("sick")):
+        with pytest.raises(ValueError):
+            classify_change(Exit("focus"), DEFAULT_PROFILES, active=active)
+
+
 # -- step-up on loosening only ---------------------------------------------------------
 
 
@@ -346,8 +363,9 @@ async def test_a_tightening_passes_without_any_step_up(live):
 async def test_a_loosening_without_a_proof_is_refused_before_the_store(live):
     conn = _Conn()
     change = Exit("focus")
+    active = _active("focus")
     with pytest.raises(ModeStepUpRequired):
-        await _authorize(conn, change, _binding(change))
+        await _authorize(conn, change, _binding(change, active=active), active=active)
     assert conn.calls == []
 
 
@@ -364,17 +382,22 @@ async def test_a_loosening_spends_one_admitted_step_up(live, proof):
 
 async def test_a_refused_step_up_refuses_the_loosening(live, proof):
     change = Exit("sick")
+    active = _active("sick")
     with pytest.raises(ModeStepUpRequired):
-        await _authorize(_Conn(state="refused"), change, _binding(change))
+        await _authorize(
+            _Conn(state="refused"), change, _binding(change, active=active), active=active
+        )
 
 
 async def test_a_loosening_needs_its_own_binding(live, proof):
     change = Exit("sick")
+    sick = _active("sick")
     conn = _Conn()
     with pytest.raises(ModeStepUpRequired):
-        await _authorize(conn, change, None)
+        await _authorize(conn, change, None, active=sick)
+    focus = _binding(Exit("focus"), active=_active("focus"))
     with pytest.raises(ModeStepUpRequired):
-        await _authorize(conn, change, _binding(Exit("focus")))
+        await _authorize(conn, change, focus, active=sick)
     assert conn.calls == []
 
 
@@ -425,12 +448,13 @@ async def test_an_early_exit_by_entry_needs_a_step_up_bound_to_the_active_entry(
 
 
 def test_the_binding_is_exact_to_the_change_and_version():
-    a = _binding(Exit("focus"))
+    focus = _active("focus")
+    a = _binding(Exit("focus"), active=focus)
     assert a.kind == MODE_LOOSEN_KIND and a.namespace == NAMESPACE
     assert a.target.startswith("focus:5:") and len(a.target) <= 128
-    assert a == _binding(Exit("focus"))
-    assert a.request_digest != _binding(Exit("sick")).request_digest
-    later = _binding(Exit("focus"), version=5)
+    assert a == _binding(Exit("focus"), active=focus)
+    assert a.request_digest != _binding(Exit("sick"), active=_active("sick")).request_digest
+    later = _binding(Exit("focus"), version=5, active=focus)
     assert later.action_digest != a.action_digest
 
 
@@ -478,6 +502,88 @@ def test_an_edit_target_binds_the_resulting_state_and_new_version():
 def test_an_edit_the_overlay_cannot_store_exactly_refuses(change):
     with pytest.raises(ValueError):
         apply_edit(change, DEFAULT_PROFILES["focus"])
+
+
+# -- the entry state an Enter or Exit target binds ------------------------------------
+
+SINCE = datetime(2026, 5, 4, 7, 0, 0, 123456, tzinfo=UTC)
+SINCE_US = "1777878000123456"
+
+
+def test_the_entry_text_is_the_canonical_entry_state():
+    finite = ModeEntry("asleep", SINCE, SINCE + timedelta(hours=8), "owner_confirmed")
+    assert entry_text(finite, exited=False) == (
+        f"entry|{SINCE_US}|{int(SINCE_US) + 8 * 3600 * 10**6}|owner_confirmed|open"
+    )
+    open_ended = ModeEntry("asleep", SINCE, None, "owner_declared")
+    assert entry_text(open_ended, exited=True) == f"entry|{SINCE_US}|none|owner_declared|exited"
+    # The zone an instant is given in does not change it.
+    shifted = ModeEntry(
+        "asleep", SINCE.astimezone(timezone(timedelta(hours=9))), None, "owner_declared"
+    )
+    assert entry_text(shifted, exited=True) == entry_text(open_ended, exited=True)
+
+
+def test_an_entry_text_never_reads_as_an_overlay_state():
+    text = entry_text(ModeEntry("focus", SINCE, None, "owner_declared"), exited=False)
+    assert text.startswith("entry|")
+    for profile in DEFAULT_PROFILES.values():
+        assert not state_text(profile).startswith("entry")
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        ModeEntry("focus", SINCE.replace(tzinfo=None), None, "owner_declared"),
+        ModeEntry("focus", SINCE, None, "inferred"),
+    ],
+)
+def test_an_entry_text_refuses_a_naive_instant_or_a_non_owner_cause(entry):
+    with pytest.raises(ValueError):
+        entry_text(entry, exited=False)
+
+
+def _entry_target(mode, version, entry, *, exited):
+    digest = hashlib.sha256(entry_text(entry, exited=exited).encode()).hexdigest()[:16]
+    return f"{mode}:{version}:{digest}"
+
+
+def test_an_exit_target_binds_the_exited_active_entry_and_new_version():
+    focus = _active("focus")
+    assert _binding(Exit("focus"), active=focus).target == _entry_target(
+        "focus", 5, focus, exited=True
+    )
+
+
+def test_an_early_end_target_binds_the_shortened_entry_and_new_version():
+    active = _entry(NOW + timedelta(hours=8))
+    shorten = Enter("asleep", until=NOW + timedelta(hours=1), cause="owner_confirmed")
+    resulting = ModeEntry("asleep", active.since, shorten.until, "owner_confirmed")
+    binding = _binding(shorten, now=NOW, active=active)
+    assert binding.target == _entry_target("asleep", 5, resulting, exited=False)
+
+
+@pytest.mark.parametrize(
+    ("until", "exited_at", "active"),
+    [
+        (None, None, True),
+        (NOW + timedelta(microseconds=1), None, True),
+        # An entry ending exactly now has ended: it is passed as None.
+        (NOW, None, False),
+        (NOW - timedelta(hours=1), None, False),
+        (None, NOW - timedelta(minutes=5), False),
+    ],
+)
+def test_an_ended_entry_is_no_active_entry(until, exited_at, active):
+    row = {
+        "since": NOW - timedelta(hours=2),
+        "until": until,
+        "cause": "owner_declared",
+        "exited_at": exited_at,
+    }
+    expected = ModeEntry("focus", row["since"], until, "owner_declared") if active else None
+    assert active_entry("focus", row, NOW) == expected
+    assert active_entry("focus", None, NOW) is None
 
 
 def test_only_edits_apply_to_the_overlay():
