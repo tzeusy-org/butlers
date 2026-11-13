@@ -152,12 +152,9 @@ export default function DecisionSetPage() {
     const status = query.error instanceof ApiError ? query.error.status : null;
     return (
       <div className="space-y-4">
-        <Link
-          to="/approvals"
-          className="inline-flex min-h-11 items-center text-sm underline"
-        >
-          Approvals
-        </Link>
+        <Link to="/approvals" className="inline-flex min-h-11 items-center text-sm underline">
+        Approvals
+      </Link>
         <p role="alert" className="text-sm">
           {status === 404
             ? "Decision set not found."
