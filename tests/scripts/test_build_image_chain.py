@@ -256,6 +256,48 @@ def test_loaded_application_identity_holds_under_both_image_stores(
     assert {variant["image_id"] for variant in result["variants"].values()} == {_CONFIG}
 
 
+def test_identity_refusal_reports_digest_evidence_only(recipe, tmp_path):
+    """A runner-shape mismatch must be diagnosable from the job log alone."""
+    project, contexts, revision, helpers, events = recipe
+    commands = Commands(
+        loaded={
+            "Id": _FOREIGN,
+            "Descriptor": {"mediaType": _INDEX, "digest": _FOREIGN, "size": 856},
+            "RepoDigests": ["butlers-app@" + _FOREIGN],
+            "Config": {"Env": ["TOKEN=not-a-digest"]},
+            "Os": "linux",
+            "Architecture": "amd64",
+            "Variant": "TOKEN=also-not-a-digest",
+        }
+    )
+    work, output = tmp_path / "work", tmp_path / "output"
+    work.mkdir()
+    with pytest.raises(ValueError) as refusal:
+        producer.build(project, contexts, work, output, revision, helpers, commands)
+    message = str(refusal.value)
+    assert message.startswith("loaded application identity differs from Buildx output: ")
+    evidence = json.loads(message.split(": ", 1)[1])
+    assert evidence == {
+        "buildx": {
+            "keys": ["containerimage.config.digest", "containerimage.digest"],
+            "containerimage.config.digest": _CONFIG,
+            "containerimage.digest": _MANIFEST,
+            "containerimage.descriptor": None,
+        },
+        "inspect": [
+            {
+                "Id": _FOREIGN,
+                "Descriptor": {"mediaType": _INDEX, "digest": _FOREIGN, "size": 856},
+                "RepoDigests": ["butlers-app@" + _FOREIGN],
+                "Os": "linux",
+                "Architecture": "amd64",
+                "Variant": "<unexpected str>",
+            }
+        ],
+    }
+    assert "not-a-digest" not in message
+
+
 @pytest.mark.parametrize("drift", ["source", "runtime", "verification", "context-link", "revision"])
 def test_context_or_revision_mismatch_refuses_before_registry_with_healthy_companion(
     recipe, tmp_path, drift
