@@ -67,7 +67,12 @@ def _ready(row: asyncpg.Record) -> dict[str, Any]:
 
 
 def _routed_refs(routing_context: dict[str, Any] | None) -> set[tuple[str, str]]:
-    """The lazy ``(message_id, attachment_id)`` refs of the routed request."""
+    """The lazy ``(message_id, attachment_id)`` refs of the routed request.
+
+    Read through ``lazy_attachment_refs``, as admission does, so a ref whose id is empty or over
+    ``MAX_ID_LENGTH`` (1024) is not a ref here either: the legacy session path refuses it too
+    (``attachment_not_in_request``). Dev ids are at most 426 characters.
+    """
     return set(lazy_attachment_refs((routing_context or {}).get("attachments")))
 
 
