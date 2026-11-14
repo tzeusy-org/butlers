@@ -25,6 +25,8 @@ def fake_run(argv):
         return "Filesystem Size Used Avail\n/dev/root 70G 69G 1G\n"
     if argv[:2] == ["docker", "system"]:
         return "Images 3 1GB\n"
+    if "prune" in argv:
+        return "Total reclaimed space: 40GB\n"
     return DU
 
 
@@ -58,7 +60,10 @@ def test_below_the_floor_it_annotates_freezes_snapshots_then_terminates(tmp_path
         tmp_path,
         floor_mb=3072,
         free_mb=lambda: 100,
-        run=lambda argv: (events.append("du") if argv[0] == "sudo" else None, fake_run(argv))[1],
+        run=lambda argv: (
+            events.append("du" if argv[0] == "sudo" else "prune" if "prune" in argv else "run"),
+            fake_run(argv),
+        )[1],
         send=lambda pid, sig: events.append(("send", pid, sig)) or True,
         sleep=lambda _s: None,
         alive=lambda _pid: True,
@@ -69,10 +74,65 @@ def test_below_the_floor_it_annotates_freezes_snapshots_then_terminates(tmp_path
     kinds = [e if isinstance(e, str) else e[2] if e[0] == "send" else e for e in events]
     error = next(i for i, e in enumerate(events) if "::error title=root disk floor" in str(e))
     stop = events.index(("send", 4242, signal.SIGSTOP))
+    prune = events.index("prune")
     first_du = events.index("du")
     term = events.index(("send", 4242, signal.SIGTERM))
     cont = events.index(("send", 4242, signal.SIGCONT))
-    assert error < stop < first_du < term < cont, kinds
+    # Freezing the client cannot stop buildkit inside dockerd, so the cache is pruned too.
+    assert error < stop < prune < first_du < term < cont, kinds
+    assert "Total reclaimed space: 40GB" in next(tmp_path.glob("snapshot-*.txt")).read_text()
+
+
+def test_a_failing_prune_is_recorded_and_the_stop_goes_on(tmp_path):
+    sent = []
+
+    def run(argv):
+        if "prune" in argv:
+            raise OSError("docker gone")
+        return fake_run(argv)
+
+    code = wd.watch(
+        4242,
+        tmp_path,
+        floor_mb=3072,
+        free_mb=lambda: 100,
+        run=run,
+        send=lambda pid, sig: sent.append(sig) or True,
+        sleep=lambda _s: None,
+        alive=lambda _pid: True,
+        emit=lambda _line: None,
+    )
+    assert code == 3
+    assert sent == [signal.SIGSTOP, signal.SIGTERM, signal.SIGCONT]
+    assert "prune failed: OSError" in next(tmp_path.glob("snapshot-*.txt")).read_text()
+
+
+def test_each_sample_records_memory_beside_disk(tmp_path):
+    ticks = iter(range(0, 1000, 200))
+    alive = iter([True, False])
+    wd.watch(
+        1,
+        tmp_path,
+        free_mb=lambda: 40000,
+        memory=lambda: (812, 0),
+        run=fake_run,
+        send=lambda _pid, _sig: True,
+        sleep=lambda _s: None,
+        now=lambda: float(next(ticks)),
+        alive=lambda _pid: next(alive),
+        emit=lambda _line: None,
+    )
+    first = (tmp_path / "disk-sampler.log").read_text().splitlines()[0]
+    assert first.endswith("root_free_mb=40000 mem_available_mb=812 swap_free_mb=0")
+
+
+def test_memory_reads_available_and_swap_from_meminfo(tmp_path):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(
+        "MemTotal:       16000000 kB\nMemAvailable:    2048000 kB\nSwapFree:         102400 kB\n"
+    )
+    assert wd.memory_mb(meminfo) == (2000, 100)
+    assert wd.memory_mb(tmp_path / "absent") == (-1, -1)
 
 
 def test_a_failing_snapshot_still_terminates_and_resumes_the_producer(tmp_path):

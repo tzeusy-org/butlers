@@ -50,6 +50,8 @@ class SyntheticCommands:
             payload.unlink()
         elif argv[0] == "tar":
             return subprocess.check_output(argv, cwd=cwd, text=True)
+        elif argv[:3] == ["docker", "buildx", "prune"]:
+            return "Total: 0B\n"
         elif "close" in argv:
             destination = Path(argv[argv.index("--output") + 1])
             destination.mkdir()
@@ -178,6 +180,47 @@ def test_whole_context_publication_waits_for_every_producer_and_exact_runtime_ma
     extracts = [argv for argv, _cwd, _timeout in commands.calls if argv[0] == "tar"]
     assert len(extracts) == 10
     assert all("--no-same-owner" in argv for argv in extracts)
+
+
+def test_pruning_drops_each_producers_build_cache_once_its_context_is_extracted(project, tmp_path):
+    commands = SyntheticCommands()
+    producer.produce(
+        project, tmp_path / "work", tmp_path / "output", commands, prune_build_cache=True
+    )
+    kinds = []
+    for argv, _cwd, _timeout in commands.calls:
+        if argv[:3] == ["docker", "buildx", "build"]:
+            kinds.append("build")
+        elif argv[0] == "tar":
+            kinds.append("extract")
+        elif argv[:3] == ["docker", "buildx", "prune"]:
+            assert argv[3:] == ["--builder", "default", "--all", "--force"]
+            kinds.append("prune")
+    # No later producer reads an earlier one's cache: each takes the extracted context dirs.
+    assert kinds == ["build", "extract", "prune"] * 10
+
+
+def test_without_the_flag_no_cache_is_pruned(project, tmp_path):
+    commands = SyntheticCommands()
+    producer.produce(project, tmp_path / "work", tmp_path / "output", commands)
+    assert not [argv for argv, _cwd, _timeout in commands.calls if "prune" in argv]
+
+
+@pytest.mark.parametrize(("extra", "expected"), [([], False), (["--prune-build-cache"], True)])
+def test_the_command_line_passes_the_prune_flag(monkeypatch, tmp_path, extra, expected):
+    seen = {}
+
+    def fake_produce(project, work, output, commands=None, *, prune_build_cache=False):
+        seen["prune"] = prune_build_cache
+        return {}
+
+    monkeypatch.setattr(producer, "produce", fake_produce)
+    argv = ["produce_image_contexts.py"]
+    for name in ("project", "work", "output"):
+        argv += ["--" + name, str(tmp_path / name)]
+    monkeypatch.setattr(sys, "argv", argv + extra)
+    producer.main()
+    assert seen == {"prune": expected}
 
 
 @pytest.mark.parametrize("kind", ["overlap", "existing", "link"])

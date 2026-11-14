@@ -2,9 +2,13 @@
 
 Run 43545970763 (and 43532052607 before it) died with ``No space left on device`` while the
 image-context producer ran, and a dead runner loses its logs. This watchdog runs beside the
-producer: it samples free space on ``/`` and, below a floor, writes a snapshot to ``--out`` (on
-the larger ``/mnt`` disk), then terminates the producer's process group so the step fails
-cleanly and the always() steps that follow can upload the evidence.
+producer: it samples free space on ``/`` (and available memory) and, below a floor, freezes the
+producer, prunes docker's build cache (buildkit runs inside dockerd, so freezing the client does
+not stop its writes), writes a snapshot to ``--out``, then terminates the producer's process
+group so the step fails cleanly and the always() steps that follow can upload the evidence.
+
+The hosted runner has one disk: ``/mnt`` is a directory on ``/`` (run 43554266906 reported both
+as ``/ 145G``), so ``--out`` shares the disk being watched and the snapshot is kept small.
 
 Run it as ``python3 -u`` (its stdout is a pipe, so unbuffered output is what survives a
 SIGTERM). Everything it writes lands under ``--out``; stdout carries only sparse ``::notice::`` and
@@ -29,6 +33,7 @@ SAMPLE_EVERY_S = 120.0
 LOW_WARNING_MB = 15000
 MAX_LOW_WARNINGS = 3
 TOP_N = 20
+PRUNE = ("docker", "buildx", "prune", "--builder", "default", "--all", "--force")
 
 Runner = Callable[[Sequence[str]], str]
 
@@ -53,6 +58,21 @@ def root_free_mb(path: str = "/") -> int:
     return shutil.disk_usage(path).free // (1024 * 1024)
 
 
+def memory_mb(meminfo: Path = Path("/proc/meminfo")) -> tuple[int, int]:
+    """``(MemAvailable, SwapFree)`` in MB, or ``(-1, -1)`` when unreadable."""
+    try:
+        text = meminfo.read_text()
+    except OSError:
+        return (-1, -1)
+    values = {}
+    for line in text.splitlines():
+        key, _, rest = line.partition(":")
+        number = rest.split()[0] if rest.split() else ""
+        if number.isdigit():
+            values[key] = int(number) // 1024
+    return (values.get("MemAvailable", -1), values.get("SwapFree", -1))
+
+
 def top_consumers(du_output: str, count: int) -> list[tuple[int, str]]:
     """The largest ``(kilobytes, path)`` rows of ``du -k`` output, largest first."""
     rows: list[tuple[int, str]] = []
@@ -64,7 +84,7 @@ def top_consumers(du_output: str, count: int) -> list[tuple[int, str]]:
     return rows[:count]
 
 
-def snapshot(out: Path, run: Runner = run_command, *, reason: str) -> Path:
+def snapshot(out: Path, run: Runner = run_command, *, reason: str, extra: str = "") -> Path:
     """Write one evidence file under *out* and fsync it; returns its path."""
     out.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%H%M%S", time.gmtime())
@@ -72,6 +92,7 @@ def snapshot(out: Path, run: Runner = run_command, *, reason: str) -> Path:
     root_du = run(["sudo", "timeout", "100", "du", "-xk", "--max-depth=2", "/"])
     sections = [
         f"reason: {reason}",
+        *([extra] if extra else []),
         "df -h /:\n" + run(["df", "-h", "/"]),
         "top of / (KiB):\n"
         + "".join(f"{size}\t{path}\n" for size, path in top_consumers(root_du, TOP_N)),
@@ -116,6 +137,7 @@ def watch(
     floor_mb: int = DEFAULT_FLOOR_MB,
     interval_s: float = DEFAULT_INTERVAL_S,
     free_mb: Callable[[], int] = root_free_mb,
+    memory: Callable[[], tuple[int, int]] = memory_mb,
     run: Runner = run_command,
     send: Callable[[int, int], bool] = signal_group,
     sleep: Callable[[float], None] = time.sleep,
@@ -133,13 +155,23 @@ def watch(
     while is_alive(pid):
         free = free_mb()
         if free < floor_mb:
-            # Annotate first (a SIGTERM must not race it), freeze the producer so / stops
-            # filling while the slow du passes run, snapshot, then stop it for good. SIGCONT
-            # delivers the pending SIGTERM to a stopped group.
+            # Annotate first (a SIGTERM must not race it), freeze the producer, prune the build
+            # cache (buildkit lives in dockerd, so the freeze alone does not stop / filling),
+            # snapshot, then stop it for good. SIGCONT delivers the pending SIGTERM to a
+            # stopped group.
             emit(f"::error title=root disk floor::/ down to {free} MB; stopping the producer")
             send(pid, signal.SIGSTOP)
             try:
-                path = snapshot(out, run, reason=f"/ has {free} MB free, floor {floor_mb} MB")
+                try:
+                    pruned = "build cache prune:\n" + run(list(PRUNE))
+                except Exception as exc:  # best effort: the stop must go on
+                    pruned = f"build cache prune failed: {type(exc).__name__}"
+                path = snapshot(
+                    out,
+                    run,
+                    reason=f"/ has {free} MB free, floor {floor_mb} MB",
+                    extra=pruned,
+                )
             finally:
                 # A failing snapshot must never leave the producer frozen.
                 send(pid, signal.SIGTERM)
@@ -147,7 +179,11 @@ def watch(
             emit(f"::notice title=root disk snapshot::{path}")
             return 3
         if now() >= next_sample:
-            line = f"disk {time.strftime('%H:%M:%S', time.gmtime())} root_free_mb={free}"
+            available, swap = memory()
+            line = (
+                f"disk {time.strftime('%H:%M:%S', time.gmtime())} root_free_mb={free}"
+                f" mem_available_mb={available} swap_free_mb={swap}"
+            )
             with log.open("a") as handle:
                 handle.write(line + "\n")
                 handle.write(run(["docker", "system", "df"]))

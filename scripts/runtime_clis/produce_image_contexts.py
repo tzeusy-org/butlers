@@ -243,22 +243,37 @@ def builds() -> tuple[Build, ...]:
     )
 
 
-def produce(project: Path, work: Path, output: Path, commands: Runner | None = None) -> dict:
+def produce(
+    project: Path,
+    work: Path,
+    output: Path,
+    commands: Runner | None = None,
+    *,
+    prune_build_cache: bool = False,
+) -> dict:
+    """Produce every context; ``prune_build_cache`` drops each finished producer's build cache.
+
+    No producer reads another's cache (each later build takes the extracted context
+    directories), so pruning after each extract only frees disk. The nightly runner needs it:
+    the finished producers' cache filled its single root disk (run 43554266906).
+    """
     checked_paths(project, work, output)
     work.mkdir(mode=0o755)
     commands = commands or Commands(project, work)
     if isinstance(commands, Commands):
         try:
             with commands.boundary.owner_signals():
-                return _produce(project, work, output, commands)
+                return _produce(project, work, output, commands, prune_build_cache)
         except commands.boundary.OwnerSignal as interrupted:
             signal.signal(interrupted.number, signal.SIG_DFL)
             os.kill(os.getpid(), interrupted.number)
             raise SystemExit(128 + interrupted.number) from None
-    return _produce(project, work, output, commands)
+    return _produce(project, work, output, commands, prune_build_cache)
 
 
-def _produce(project: Path, work: Path, output: Path, commands: Runner) -> dict:
+def _produce(
+    project: Path, work: Path, output: Path, commands: Runner, prune_build_cache: bool
+) -> dict:
     source = work / "source"
     identity = freeze(project, source, commands)
     write_json(work / "source-inputs.json", identity)
@@ -353,6 +368,11 @@ def _produce(project: Path, work: Path, output: Path, commands: Runner) -> dict:
             tarball.unlink()
             if not any((stage / build.name).iterdir()):
                 raise ValueError("producer did not export its complete context")
+            if prune_build_cache:
+                commands.run(
+                    ["docker", "buildx", "prune", "--builder", "default", "--all", "--force"],
+                    cwd=source,
+                )
         components = {
             "node": stage / "toolchains/components/node",
             "uv": stage / "toolchains/components/uv",
@@ -404,10 +424,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("project", "work", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
-    args = parser.parse_args()
-    print(
-        json.dumps(produce(args.project.absolute(), args.work.absolute(), args.output.absolute()))
+    parser.add_argument(
+        "--prune-build-cache",
+        action="store_true",
+        help="drop each producer's build cache once its context is extracted",
     )
+    args = parser.parse_args()
+    result = produce(
+        args.project.absolute(),
+        args.work.absolute(),
+        args.output.absolute(),
+        prune_build_cache=args.prune_build_cache,
+    )
+    print(json.dumps(result))
 
 
 if __name__ == "__main__":
