@@ -261,6 +261,25 @@ _REPLAY_WIDENED: dict[str, RelationGrant] = {
         {_SWITCHBOARD: frozenset({"SELECT", "INSERT"})},
         "migration: append-only member mirror; Switchboard SELECT and INSERT only",
     ),
+    "public_suffix_rules": _replay_widened(
+        _NONE,
+        {},
+        "migration: vendored Public Suffix List snapshot; read only through the definer functions",
+    ),
+    "vendor_doors": _replay_widened(
+        _NONE,
+        {},
+        "migration: written only by definer functions; the dashboard capability role reads it",
+    ),
+    "vendor_doors_current": _replay_widened(
+        _NONE,
+        {
+            "butler_finance_rw": frozenset({"SELECT"}),
+            _SWITCHBOARD: frozenset({"SELECT"}),
+            "butler_messenger_rw": frozenset({"SELECT"}),
+        },
+        "migration: confirmed doors of the live owner; Finance, Switchboard, Messenger read",
+    ),
     "owner_places": _replay_widened(
         _NONE,
         {_CONCIERGE: _DML, "butler_chronicler_rw": _SELECT, "butler_travel_rw": _SELECT},

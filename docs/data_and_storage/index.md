@@ -9,3 +9,4 @@
 - [State Store](state-store.md) — KV JSONB state store design
 - [Blob Storage](blob-storage.md) — attachment and file storage
 - [Credential Store](credential-store.md) — CLI auth token persistence
+- [Vendor Doors](vendor-doors.md) — owner-confirmed vendor-door registry, authority functions, registrable domain (dark)
