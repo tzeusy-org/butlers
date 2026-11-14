@@ -56,6 +56,9 @@ _ACTIVE_MODEL_SETTINGS_DELTA = (
 #:   module that reaches the signer --- through ``activated_signer_snapshot``
 #:   only, for a capability bound to one butler, tool and argument digest.
 #:   Proven below.
+#: * the public MCP host (RFC 0039 D7, bu-y66o00.6), which verifies the Worker's
+#:   assertion through the codec under its own header profile and parses its own
+#:   non-secret keyring; it never reaches a signer, client or activation.  Proven below.
 _PERMITTED_IMPORTERS = {
     Path("src/butlers/core/runtime_probe_control"),
     Path("src/butlers/daemon.py"),
@@ -65,6 +68,8 @@ _PERMITTED_IMPORTERS = {
     Path("src/butlers/capability_broker/verification.py"),
     Path("src/butlers/core/service_plane/dashboard_route.py"),
     Path("src/butlers/core/service_plane/dashboard_client.py"),
+    Path("src/butlers/capability_host/assertion.py"),
+    Path("src/butlers/capability_host/config.py"),
 }
 
 
@@ -170,6 +175,32 @@ def test_assertion_verification_only_borrows_the_verifier_keyring_codec() -> Non
         f"{_PACKAGE}.keys.RuntimeProbeControlKeyError",
         f"{_PACKAGE}.keys.VerifierKeyring",
         f"{_PACKAGE}.keys.load_verifier_keyring",
+    }
+
+
+def test_the_public_mcp_host_only_borrows_the_verifier_codec() -> None:
+    """RFC 0039 D7: verify-only codec pieces and the keyring parser; no signer, no client."""
+    from butlers.capability_host import assertion, config
+
+    control_imports = {
+        name
+        for module in (assertion, config)
+        for name in _imported_modules(Path(module.__file__).read_text())
+        if name.startswith(_PACKAGE)
+    }
+    assert control_imports == {
+        f"{_PACKAGE}.capability",
+        f"{_PACKAGE}.capability.ASSERTION_HEADER",
+        f"{_PACKAGE}.capability.CapabilityRejected",
+        f"{_PACKAGE}.capability.b64u_decode",
+        f"{_PACKAGE}.capability.b64u_encode",
+        f"{_PACKAGE}.capability.check_issued_under",
+        f"{_PACKAGE}.capability.strict_object",
+        f"{_PACKAGE}.capability.verify_signature",
+        f"{_PACKAGE}.keys",
+        f"{_PACKAGE}.keys.RuntimeProbeControlKeyError",
+        f"{_PACKAGE}.keys.VerifierKeyring",
+        f"{_PACKAGE}.keys.parse_verifier_keyring_document",
     }
 
 
