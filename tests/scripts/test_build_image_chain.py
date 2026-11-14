@@ -282,7 +282,9 @@ def test_nightly_consumes_closed_contexts_before_unchanged_installed_export():
     )
     assert '"data-root": "/mnt/docker"' in move and "IMAGE_SCRATCH=/mnt/butlers-image" in move
     assert "IMAGE_SCRATCH=${RUNNER_TEMP}" in move  # the small-/mnt fallback
-    assert "docker system df" in context  # the disk sampler that shows where space went
+    # The watchdog beside the producer snapshots to /mnt and stops it below a floor on /.
+    assert "scripts/nightly_disk_watchdog.py watch" in context and "setsid python3" in context
+    assert "--floor-mb 3072" in context and "--pid" in context
     stop = next(
         step
         for step in steps
@@ -303,10 +305,10 @@ def test_nightly_consumes_closed_contexts_before_unchanged_installed_export():
     assert names.index("Keep docker and image scratch on the larger /mnt disk") > names.index(
         start["name"]
     )
-    assert "disk-sampler.log" in context and "::notice title=disk sample" in context
-    assert "::warning title=root disk low" in context
+    assert "disk-watchdog" in context and 'wait "${producer}"' in context
     upload = next(step for step in steps if step.get("name") == "Upload the disk sampler log")
-    assert upload["if"] == "always()" and "disk-sampler.log" in upload["with"]["path"]
+    assert upload["if"] == "always()" and "disk-watchdog" in upload["with"]["path"]
+    assert "nightly_disk_watchdog.py summarize" in stop["run"]
     assert "butlers-base:latest" not in context + chain
     row = next(
         row

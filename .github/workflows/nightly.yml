@@ -360,43 +360,26 @@ jobs:
 
       - name: Produce complete closed image contexts
         run: |
-          # Sample disk use so a repeat shows where the space went. A runner that dies loses its
-          # logs, so each sample also lands in a file on /mnt (uploaded by an always() step) and
-          # every tenth sample or any low-root reading becomes a ::notice::/::warning:: annotation
-          # (annotations are stored as they stream; GitHub caps them, hence the sparse cadence).
-          log="${IMAGE_SCRATCH}/disk-sampler.log"
-          (
-            n=0
-            warned=0
-            while true; do
-              line="disk $(date -u +%H:%M:%S) $(df -h --output=target,used,avail / /mnt | tail -n +2 | tr -s ' ' | tr '\n' ';')"
-              echo "${line}" | tee -a "${log}"
-              docker system df 2>/dev/null | tr -s ' ' | sed 's/^/docker: /' | tee -a "${log}"
-              if [ $((n % 10)) -eq 0 ]; then
-                echo "::notice title=disk sample ${n}::${line}"
-              fi
-              if [ $((n % 5)) -eq 0 ]; then
-                {
-                  echo "root top-level $(date -u +%H:%M:%S):"
-                  sudo timeout 120 du -xk --max-depth=2 / 2>/dev/null | sort -n | tail -8
-                } | tee -a "${log}"
-              fi
-              root_avail_mb=$(df --output=avail -BM / | tail -1 | tr -dc '0-9')
-              if [ "${root_avail_mb}" -lt 15000 ] && [ "${warned}" -lt 3 ]; then
-                warned=$((warned + 1))
-                echo "::warning title=root disk low::${line}; $(sudo timeout 60 du -xk --max-depth=2 / 2>/dev/null | sort -n | tail -5 | tr '\n' ';')"
-              fi
-              n=$((n + 1))
-              sleep 120
-            done
-          ) &
-          sampler=$!
-          echo "${sampler}" > "${RUNNER_TEMP}/disk-sampler.pid"
-          trap 'kill "${sampler}" 2>/dev/null || true' EXIT
-          python3 -I -B scripts/runtime_clis/produce_image_contexts.py \
+          # The producer runs in its own process group beside a watchdog (scripts/
+          # nightly_disk_watchdog.py). Below a free-space floor on / the watchdog writes a snapshot
+          # to /mnt and stops the producer, so the step fails cleanly while the runner can still
+          # upload evidence; a runner that dies loses its logs (runs 43532052607, 43545970763).
+          # The watchdog also samples to /mnt every two minutes and annotates sparsely.
+          watch_dir="${IMAGE_SCRATCH}/disk-watchdog"
+          mkdir -p "${watch_dir}"
+          setsid python3 -I -B scripts/runtime_clis/produce_image_contexts.py \
             --project "${GITHUB_WORKSPACE}" \
             --work "${IMAGE_SCRATCH}/image-context-work-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --output "${IMAGE_SCRATCH}/image-contexts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            --output "${IMAGE_SCRATCH}/image-contexts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" &
+          producer=$!
+          python3 -I -B scripts/nightly_disk_watchdog.py watch \
+            --pid "${producer}" --out "${watch_dir}" --floor-mb 3072 --interval 10 &
+          watchdog=$!
+          echo "${watchdog}" > "${RUNNER_TEMP}/disk-sampler.pid"
+          status=0
+          wait "${producer}" || status=$?
+          kill "${watchdog}" 2>/dev/null || true
+          exit "${status}"
 
       - name: Stop the disk sampler and show the final disk state
         if: always()
@@ -406,13 +389,14 @@ jobs:
           fi
           df -h / /mnt || true
           docker system df || true
+          python3 -I -B scripts/nightly_disk_watchdog.py summarize --out "${IMAGE_SCRATCH}/disk-watchdog" || true
 
       - name: Upload the disk sampler log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: image-disk-sampler-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.IMAGE_SCRATCH }}/disk-sampler.log
+          path: ${{ env.IMAGE_SCRATCH }}/disk-watchdog/
           if-no-files-found: ignore
 
       - name: Build butlers-app exact image
