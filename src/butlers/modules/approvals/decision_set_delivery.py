@@ -160,6 +160,12 @@ async def send_set_card(
         presentation = await present_set_card(conn, view, owner_recipient=owner_recipient)
         if not presentation.tokens or not await od.begin_send(conn, presentation.id):
             return CardSend("handed_off", decision_offered=True)
+        # Same transaction as the handoff mark: each item's own card waits while this one is live.
+        await od.hold_members(
+            conn,
+            presentation.subject_id,
+            [(item.capability.partition("__")[0], str(item.effect_id)) for item in view.items],
+        )
     envelope = build_set_envelope(
         view,
         origin_butler=origin_butler,

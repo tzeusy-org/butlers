@@ -472,10 +472,23 @@ behind `OWNER_DECISIONS_LIVE`: the resolver refuses `unavailable`, and the app s
   subject and presentation key: a replay, a restart or a second runner finds the card handed off.
   A set whose view cannot be read is skipped. A set the card cannot offer a decision on is not
   card-sent, because it has no exactly-once subject and each member effect already has its own
-  approval card. Known limits: a decidable set card currently sits beside one approval card per
-  parked item (a delivery-time skip is a separate follow-up), and the deliver result carries no
+  approval card. Known limits: the deliver result carries no
   provider message id, so the connector records `provider_ref_missing` for the retraction until
   the notify path returns one (stale taps are still refused).
+- **Held individual cards** (core_332, bu-jv1moa.80). When a set card is handed off, `send_set_card`
+  records its items in the append-only `public.owner_delivery_subject_members` in the same
+  transaction as `begin_send`. The approval delivery worker of each item's domain skips an
+  action in `claim_next` while `public.owner_delivery_item_held(schema, action id)` is true: a
+  live telegram presentation (`sent` or `unknown`, current generation) of an unresolved subject
+  covers it. A digest is claimed only while some member is pending and not held, and its count
+  leaves held members out. A hold changes no state, so the individual presentation is simply
+  claimed again once the subject resolves (left, cancelled, superseded, expired) or the card is
+  proven failed; decided items are no longer pending. A claimed or handed-off presentation is never
+  held, so recovery and reconciliation do not wait. An item covered by two live set cards is held
+  until both close. The table is SELECT/INSERT for `butler_switchboard_rw` only; the domain worker
+  asks the SECURITY DEFINER function, which answers one boolean. A card claimed before the hold
+  commits still goes out: a documented duplicate, never a lost card. Before core_332 the worker
+  runs the previous query. The dark path has no rows, so nothing is held.
 - **Dashboard page** (`/decision-sets/:setId`) renders the server view; `in_default_selection`,
   `decidable` and `exact` come from the server and the page never computes them. It posts only
   the ticks.

@@ -97,6 +97,10 @@ def _updated_rows(command_tag: str) -> int:
         return 0
 
 
+#: True while a live decision-set card covers the action, so its own card waits (core_332).
+_HELD = "public.owner_delivery_item_held(current_schema(), {action}::text)"
+
+
 class ApprovalDeliveryRepository:
     """Fenced writes restricted to approval delivery tables in the local schema."""
 
@@ -108,6 +112,29 @@ class ApprovalDeliveryRepository:
         # Digest of the stored call each fenced claim last rendered; consumed by
         # mark_handoff_started so the persisted digest is the one the card showed.
         self._rendered_digests: dict[tuple[Any, int, int], str] = {}
+        self._holds: bool | None = None
+
+    async def _not_held(self, action: str, *, fresh_only: bool = False) -> str:
+        """The SQL conjunct that skips an action a live set card covers; empty before core_332.
+
+        A hold changes no state: the presentation stays ``ready`` or ``retry_wait`` and is claimed
+        again once the set card's subject resolves or the card fails. ``fresh_only`` leaves a
+        claimed or handed-off presentation alone: recovering or reconciling an in-flight handoff
+        must never wait on a hold.
+        """
+        if self._holds is None:
+            self._holds = bool(
+                await self._pool.fetchval(
+                    "SELECT to_regprocedure('public.owner_delivery_item_held(text, text)') "
+                    "IS NOT NULL"
+                )
+            )
+        if not self._holds:
+            return ""
+        held = _HELD.format(action=action)
+        if fresh_only:
+            return f"AND (p.state NOT IN ('ready', 'retry_wait') OR NOT {held})"
+        return f"AND NOT {held}"
 
     async def authorize_transport(
         self, claim: DeliveryClaim, *, owning_schema: str
@@ -294,8 +321,9 @@ class ApprovalDeliveryRepository:
     async def claim_next(self) -> DeliveryClaim | None:
         """Atomically claim one due/recoverable generation with SKIP LOCKED."""
         token = uuid.uuid4()
+        direct_free = await self._not_held("i.action_id", fresh_only=True)
         row = await self._pool.fetchrow(
-            """
+            f"""
             WITH candidate AS (
                 SELECT p.id, p.state AS previous_state
                   FROM approval_delivery_presentations AS p
@@ -315,6 +343,7 @@ class ApprovalDeliveryRepository:
                             WHERE i.id = p.intent_id
                               AND pa.status = 'pending'
                               AND (pa.expires_at IS NULL OR pa.expires_at > clock_timestamp())
+                              {direct_free}
                        ))
                        OR
                        (p.cohort_id IS NOT NULL AND EXISTS (
@@ -326,6 +355,7 @@ class ApprovalDeliveryRepository:
                               AND m.eligible
                               AND pa.status = 'pending'
                               AND (pa.expires_at IS NULL OR pa.expires_at > clock_timestamp())
+                              {direct_free}
                        ))
                    )
                  ORDER BY
@@ -422,12 +452,14 @@ class ApprovalDeliveryRepository:
                 },
                 origin_butler=row["origin_butler"],
             )
+        counted_free = await self._not_held("i.action_id")
         row = await self._pool.fetchrow(
-            """
+            f"""
             SELECT c.owning_schema,
                    count(*) FILTER (
                        WHERE m.eligible AND pa.status = 'pending'
                          AND (pa.expires_at IS NULL OR pa.expires_at > clock_timestamp())
+                         {counted_free}
                    )::integer AS pending_count
               FROM approval_delivery_presentations AS p
               JOIN approval_delivery_cohorts AS c ON c.id = p.cohort_id
@@ -801,12 +833,30 @@ class ApprovalDeliveryRepository:
 
     async def backlog_snapshot(self) -> DeliveryBacklogSnapshot:
         """Return safe derived due, lease, ambiguity, and stuck truth."""
+        # A direct presentation held for a live set card is waiting by design, not due or stuck.
+        held = "false"
+        if await self._not_held("i.action_id"):
+            direct = _HELD.format(action="i.action_id")
+            member = """
+                FROM approval_delivery_cohort_members AS m
+                JOIN approval_delivery_intents AS i ON i.id = m.intent_id
+                JOIN pending_actions AS pa ON pa.id = i.action_id
+               WHERE m.cohort_id = p.cohort_id AND m.eligible AND pa.status = 'pending'
+                 AND (pa.expires_at IS NULL OR pa.expires_at > clock_timestamp())"""
+            # A digest is held when it has pending members and every one of them is held.
+            held = (
+                f"(p.intent_id IS NOT NULL AND {direct}) OR "
+                f"(p.cohort_id IS NOT NULL AND EXISTS (SELECT 1 {member} "
+                f"AND {_HELD.format(action='i.action_id')}) "
+                f"AND NOT EXISTS (SELECT 1 {member} "
+                f"AND NOT {_HELD.format(action='i.action_id')}))"
+            )
         row = await self._pool.fetchrow(
-            """
+            f"""
             SELECT
                 count(*) FILTER (
                     WHERE state IN ('ready', 'retry_wait')
-                      AND next_attempt_at <= clock_timestamp()
+                      AND next_attempt_at <= clock_timestamp() AND NOT held
                 )::integer AS due_count,
                 count(*) FILTER (WHERE state = 'retry_wait')::integer AS retry_wait_count,
                 count(*) FILTER (
@@ -818,17 +868,22 @@ class ApprovalDeliveryRepository:
                     WHERE state = 'ambiguous'
                        OR (state IN ('claimed', 'handoff_started')
                            AND claim_expires_at <= clock_timestamp())
-                       OR (state IN ('ready', 'retry_wait')
+                       OR (state IN ('ready', 'retry_wait') AND NOT held
                            AND next_attempt_at <= clock_timestamp()
                                - make_interval(secs => $1))
                 )::integer AS stuck_count,
                 EXTRACT(EPOCH FROM (
                     clock_timestamp() - min(next_attempt_at) FILTER (
                         WHERE state IN ('ready', 'retry_wait')
-                          AND next_attempt_at <= clock_timestamp()
+                          AND next_attempt_at <= clock_timestamp() AND NOT held
                     )
                 ))::double precision AS oldest_due_age_seconds
-              FROM approval_delivery_presentations
+              FROM (
+                  SELECT p.state, p.next_attempt_at, p.claim_expires_at,
+                         COALESCE({held}, false) AS held
+                    FROM approval_delivery_presentations AS p
+                    LEFT JOIN approval_delivery_intents AS i ON i.id = p.intent_id
+              ) AS presentations
             """,
             float(_STUCK_SLO_SECONDS),
         )
