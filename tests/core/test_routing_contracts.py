@@ -863,3 +863,150 @@ def test_self_route_registry_matches_actual_phone_entry_paths():
             uuid.UUID(constants["DECISION_SET_ID"])
             route = route.replace("{set_id}", "${DECISION_SET_ID}")
         assert route in actual, route
+
+
+# --- vendor-door actions (bu-jv1moa.40 PR4b-1) -----------------------------------------------
+
+_DOOR_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+_DOOR_REF = {"kind": "door", "door_id": _DOOR_ID, "version": 4, "slots": {"order": "A-1"}}
+
+
+def _door_request(intent: str = "send", **overrides):
+    delivery = {
+        "intent": intent,
+        "channel": "telegram",
+        "recipient": "12345",
+        "message": "Your plan renews soon.",
+    }
+    if intent == "reply":
+        delivery.pop("recipient")
+    request = {
+        "schema_version": "notify.v1",
+        "origin_butler": "finance",
+        "delivery": delivery,
+        "actions": [{"verb": "open_door", "reference": dict(_DOOR_REF)}],
+    }
+    request.update(overrides)
+    return request
+
+
+@pytest.mark.parametrize("intent", ["send", "insight"])
+def test_a_door_action_is_valid_alone_on_send_and_insight(intent):
+    request = parse_notify_request(_door_request(intent))
+    assert [a.verb for a in request.actions] == ["open_door"]
+    assert request.actions[0].reference.door_id == uuid.UUID(_DOOR_ID)
+
+
+@pytest.mark.parametrize("intent", ["reply", "react", "approval_request"])
+def test_a_door_action_is_refused_on_every_other_intent(intent):
+    payload = _door_request(intent)
+    if intent == "react":
+        payload["delivery"]["emoji"] = "x"
+        payload["request_context"] = {
+            "source_channel": "telegram",
+            "source_endpoint_identity": "e",
+            "source_sender_identity": "s",
+            "source_thread_identity": "t",
+        }
+    with pytest.raises(ValidationError):
+        parse_notify_request(payload)
+
+
+def test_only_one_door_action_and_nothing_beside_it():
+    two = _door_request()
+    two["actions"].append({"verb": "open_door", "reference": dict(_DOOR_REF)})
+    with pytest.raises(ValidationError, match="only action"):
+        parse_notify_request(two)
+    mixed = _door_request()
+    mixed["actions"].append(
+        {
+            "verb": "open_dashboard",
+            "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+        }
+    )
+    with pytest.raises(ValidationError, match="only action"):
+        parse_notify_request(mixed)
+
+
+@pytest.mark.parametrize(
+    "extra", [{"url": "https://x.example.com"}, {"host": "x.example.com"}, {"label": "x"}]
+)
+def test_a_door_action_carries_no_url_host_or_label(extra):
+    payload = _door_request()
+    payload["actions"][0]["reference"].update(extra)
+    with pytest.raises(ValidationError):
+        parse_notify_request(payload)
+    payload = _door_request()
+    payload["actions"][0].update(extra)
+    with pytest.raises(ValidationError):
+        parse_notify_request(payload)
+
+
+def test_a_door_action_is_refused_under_inert_links():
+    with pytest.raises(ValidationError, match="inert links"):
+        parse_notify_request(_door_request(render_links_inert=True))
+
+
+def _resolved_door_payload():
+    payload = _door_request()
+    payload["actions"] = [
+        {
+            "verb": "open_link",
+            "reference": dict(_DOOR_REF),
+            "label": "Open example.com (vendor_door)",
+            "url": "https://shop.example.com/orders/A-1/cancel",
+            "host": "example.com",
+            "provenance": "vendor_door",
+        }
+    ]
+    return payload
+
+
+def test_a_producer_can_never_submit_a_resolved_door_link():
+    with pytest.raises(ValidationError, match="server delivery output"):
+        parse_notify_request(_resolved_door_payload())
+
+
+def test_the_synchronous_pass_never_keeps_a_door_link_and_says_so():
+    from butlers.tools.switchboard.notification.self_links import resolve_self_links
+
+    request = parse_notify_request(_door_request())
+    resolved = resolve_self_links(request)
+    assert resolved.actions is None
+    assert resolved.delivery.message == "Your plan renews soon.\n[link not verified]"
+    assert resolve_self_links(resolved) == resolved  # idempotent: the marker is not doubled
+    assert request.delivery.message == "Your plan renews soon."
+
+
+def test_a_delivered_door_link_is_re_derived_and_degrades_without_a_registry_read():
+    from butlers.tools.switchboard.notification.self_links import parse_delivered_notify_request
+
+    delivered = parse_delivered_notify_request(_resolved_door_payload())
+    assert delivered.actions is None
+    assert delivered.delivery.message.endswith("[link not verified]")
+    assert "shop.example.com" not in delivered.model_dump_json()
+
+
+def test_approval_request_actions_are_unchanged():
+    approval = {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "recipient": "12345",
+            "message": "Approval needed",
+        },
+        "actions": [
+            {"verb": "approve", "callback_token": "tok-a"},
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            },
+        ],
+    }
+    parsed = parse_notify_request(approval)
+    assert [a.verb for a in parsed.actions] == ["approve", "open_dashboard"]
+    approval["actions"].append({"verb": "open_door", "reference": dict(_DOOR_REF)})
+    with pytest.raises(ValidationError, match="send and insight"):
+        parse_notify_request(approval)

@@ -19,7 +19,9 @@ from uuid import UUID
 from butlers.tools.switchboard.contracts import (
     _RESOLVED_LINK_CONTEXT,
     NotifyRequestV1,
+    OpenDoorActionV1,
     SelfLinkReferenceV1,
+    _ResolvedDoorLinkV1,
     _ResolvedOpenLinkV1,
     parse_notify_request,
 )
@@ -147,7 +149,14 @@ def resolve_self_links(request: NotifyRequestV1) -> NotifyRequestV1:
         return request
     payload = request.model_dump(mode="json", exclude_none=True)
     unresolved = False
+    door_indexes: list[int] = []
     for index, action in enumerate(request.actions):
+        if isinstance(action, (OpenDoorActionV1, _ResolvedDoorLinkV1)):
+            # A door needs a registry read, which this synchronous pass cannot make. It never
+            # keeps a link: the action is dropped and the text says the link is not verified.
+            door_indexes.append(index)
+            unresolved = True
+            continue
         if action.verb not in ("open_dashboard", "open_link"):
             continue
         resolved = _resolve(action.reference)
@@ -161,6 +170,12 @@ def resolve_self_links(request: NotifyRequestV1) -> NotifyRequestV1:
             unresolved = True
         else:
             payload["actions"][index] = resolved
+    if door_indexes:
+        kept = [a for i, a in enumerate(payload["actions"]) if i not in door_indexes]
+        if kept:
+            payload["actions"] = kept
+        else:
+            del payload["actions"]
     if unresolved and _UNVERIFIED not in payload["delivery"]["message"]:
         payload["delivery"]["message"] += "\n" + _UNVERIFIED
     return NotifyRequestV1.model_validate(payload, context=_RESOLVED_LINK_CONTEXT)
@@ -179,11 +194,19 @@ def parse_delivered_notify_request(payload: Mapping[str, Any]) -> NotifyRequestV
         actions = []
         for action in public["actions"]:
             if isinstance(action, dict) and action.get("verb") == "open_link":
-                resolved = _ResolvedOpenLinkV1.model_validate(action)
-                action = {
-                    "verb": "open_dashboard",
-                    "reference": resolved.reference.model_dump(mode="json"),
-                }
+                reference = action.get("reference")
+                if isinstance(reference, dict) and reference.get("kind") == "door":
+                    door = _ResolvedDoorLinkV1.model_validate(action)
+                    action = {
+                        "verb": "open_door",
+                        "reference": door.reference.model_dump(mode="json"),
+                    }
+                else:
+                    resolved = _ResolvedOpenLinkV1.model_validate(action)
+                    action = {
+                        "verb": "open_dashboard",
+                        "reference": resolved.reference.model_dump(mode="json"),
+                    }
             actions.append(action)
         public["actions"] = actions
     return resolve_self_links(parse_notify_request(public))
