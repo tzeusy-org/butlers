@@ -26,12 +26,13 @@ from typing import Any
 
 import asyncpg
 
-from butlers.core.resource_pairs import lazy_attachment_refs
+from butlers.core.goal_lineage import current_lineage
+from butlers.core.resource_pairs import MAX_ID_LENGTH, lazy_attachment_refs
 from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
 
 DEFAULT_WAIT_S = 20.0
 DEFAULT_POLL_S = 0.5
-_MAX_ID_CHARS = 512
+_MAX_ID_CHARS = MAX_ID_LENGTH  # the same bound admission applies to a scoped ref
 
 _SELECT = """
     SELECT fetched, blob_ref, fetch_error, filename, media_type, size_bytes
@@ -70,6 +71,36 @@ def _routed_refs(routing_context: dict[str, Any] | None) -> set[tuple[str, str]]
     return set(lazy_attachment_refs((routing_context or {}).get("attachments")))
 
 
+TOOL_NAME = "attachment_materialize"
+
+
+def _may_materialize(message_id: str, attachment_id: str) -> bool:
+    """Whether the calling context is authorized to fetch exactly this ref.
+
+    A broker-forwarded call carries a ``VerifiedLineage``, bound only by the domain's assertion
+    verifier (``capability_broker.verification``) after it checks the signature, audience,
+    expiry, capability and replay, and the ``args_digest`` over the raw wire arguments. The
+    broker has already checked the call's ``(message_id, attachment_id)`` against the grant's
+    pair scope before it signed, so the lineage here must cover exactly this tool and these
+    arguments, and be a goal call (the dashboard principal is not scope-checked by the broker). A
+    lineage that does not is refused; it never falls back to a session, so a
+    verified call for other arguments cannot borrow a routing context.
+
+    With no lineage (the Switchboard session path before the RFC 0038 cutover) the ref must be
+    one of the runtime session's routed request.
+    """
+    if not (isinstance(message_id, str) and isinstance(attachment_id, str)):
+        return False
+    lineage = current_lineage()
+    if lineage is not None:
+        # Only a goal call is scope-checked by the broker; the dashboard principal never is.
+        return lineage.principal == "goal" and lineage.covers(
+            TOOL_NAME, {"message_id": message_id, "attachment_id": attachment_id}
+        )
+    routed = _routed_refs(get_current_runtime_session_routing_context())
+    return (message_id, attachment_id) in routed
+
+
 async def materialize_routed_attachment(
     pool: asyncpg.Pool,
     message_id: str,
@@ -78,17 +109,13 @@ async def materialize_routed_attachment(
     wait_s: float = DEFAULT_WAIT_S,
     poll_s: float = DEFAULT_POLL_S,
 ) -> dict[str, Any]:
-    """``attachment_materialize`` for a ref of the calling session's routed request only.
+    """``attachment_materialize`` for a ref this call is authorized to fetch only.
 
-    The session is the runtime session bound to this tool call; a call with no
-    bound session, or one whose request has no such lazy ref, is refused.
+    Authorization is ``_may_materialize``: a verified broker lineage covering these exact
+    arguments, or, without one, a ref of the calling runtime session's routed request. Any other
+    call is refused before the database is touched.
     """
-    routed = _routed_refs(get_current_runtime_session_routing_context())
-    if not (
-        isinstance(message_id, str)
-        and isinstance(attachment_id, str)
-        and (message_id, attachment_id) in routed
-    ):
+    if not _may_materialize(message_id, attachment_id):
         return {
             "status": "refused",
             "reason": "attachment_not_in_request",
