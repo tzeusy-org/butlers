@@ -195,6 +195,17 @@ terminal-status rows older than `ttl_days` (default 90).
 `ttl_days < 90` raises `ValueError`.
 `job_args = {enabled = true, dry_run = false, ttl_days = 90}`.
 
+**[E] `prune_place_transitions`** (dark, bu-dhloi1.350) — purges perception `owner.place`
+transitions whose `at` is older than 400 days (RFC 0038), with each one's retraction and
+receipts. It is a library job, **not registered on any schedule**, and does nothing unless
+`enabled=True` *and* `butlers.perception.flags.PLACE_RETENTION_LIVE` is on; `dry_run` defaults
+to true and only counts. Its one database call is
+`public.perception_purge_place_history(batch, dry_run)`, executable only by the
+`perception_retention` identity (no table grants). The immutable trigger still refuses every
+other delete, and re-checks kind and age on each row it lets through. Other kinds, younger
+rows, and a transition whose retraction is still inside the horizon are never touched.
+Activation needs a `perception_retention` connection, a schedule entry, and the flag.
+
 ## Controlled Switchboard drain
 
 The [controlled retention runbook](controlled-retention-drain.md) separates the

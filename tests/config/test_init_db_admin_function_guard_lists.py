@@ -86,6 +86,7 @@ _CATALOG_FUNCTION_NAMES = frozenset(
         "perception_timeline",
         "perception_bind",
         "perception_registry",
+        "perception_purge_place_history",
     }
 )
 _CATALOG_FUNCTION_READERS = {
