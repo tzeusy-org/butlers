@@ -17,6 +17,7 @@ import asyncpg
 import pytest
 
 from butlers.jobs import home as home_jobs
+from butlers.jobs import home_away_safety as away
 from butlers.jobs import home_safety
 from butlers.jobs.home_safety import SensorReading, WatchEntry, classify, run_safety_sentinel
 from butlers.testing.db import open_pool
@@ -86,6 +87,57 @@ async def test_a_row_without_last_changed_falls_back_to_last_updated(
 
     assert readings[_LEAK.entity_id].since == _NOW - timedelta(minutes=5)
     assert classify(_LEAK, readings[_LEAK.entity_id], _NOW) == "alarm"
+
+
+_DOOR = away.Door("binary_sensor.front_door", "Front door", ("off",), 45)
+
+
+async def _door_reading(last_changed: datetime | None, last_updated: datetime) -> away.Reading:
+    pool = MagicMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            {
+                "entity_id": _DOOR.entity_id,
+                "state": "on",
+                "unit": None,
+                "last_changed": last_changed,
+                "last_updated": last_updated,
+            }
+        ]
+    )
+    return (await away._read_snapshot(pool, [_DOOR.entity_id]))[_DOOR.entity_id]
+
+
+@pytest.mark.unit
+async def test_the_away_door_duration_counts_from_last_changed_not_an_attribute_update() -> None:
+    """bu-jv1moa.87: a door open for an hour stays due when an attribute updated seconds ago."""
+    reading = await _door_reading(_NOW - timedelta(hours=1), _NOW - timedelta(seconds=10))
+    state = away.door_state(
+        _DOOR, reading, leave_at=_NOW - timedelta(hours=2), lease_healthy=True, now=_NOW
+    )
+
+    assert state == ("due", _NOW - timedelta(hours=1))
+
+
+@pytest.mark.unit
+async def test_the_away_door_duration_never_starts_before_the_leave() -> None:
+    reading = await _door_reading(_NOW - timedelta(hours=3), _NOW)
+    state = away.door_state(
+        _DOOR, reading, leave_at=_NOW - timedelta(minutes=44), lease_healthy=True, now=_NOW
+    )
+
+    assert state == ("open", _NOW - timedelta(minutes=44))
+
+
+@pytest.mark.unit
+async def test_an_away_door_without_last_changed_is_unknown_not_open() -> None:
+    """Unlike the safety sentinel, no fallback to last_updated: unknown is never a duration."""
+    reading = await _door_reading(None, _NOW - timedelta(hours=1))
+    state = away.door_state(
+        _DOOR, reading, leave_at=_NOW - timedelta(hours=2), lease_healthy=True, now=_NOW
+    )
+
+    assert state == ("unknown", None)
 
 
 def _migration_sql(direction: str) -> list[str]:

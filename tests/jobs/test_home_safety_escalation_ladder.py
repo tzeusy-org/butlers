@@ -35,6 +35,37 @@ def test_a_live_alarm_resends_after_15_minutes_1_hour_4_hours_then_daily() -> No
     ]
 
 
+def test_away_safety_opts_into_its_own_ladder_one_hour_then_4_hours_then_daily() -> None:
+    """bu-jv1moa.87: the away sources' cadence is a per-call opt-in, open-relative."""
+    from butlers.jobs import home_away_safety as away
+
+    assert away.INITIAL_GRACE_SECONDS == 3600
+    assert [away.ESCALATION_ADVANCE[level] for level in ("L0", "L1", "L2", "L3")] == [
+        ("L1", timedelta(hours=4)),
+        ("L2", timedelta(hours=24)),
+        ("L3", timedelta(hours=24)),
+        ("L3", timedelta(hours=24)),
+    ]
+    assert away.MARKERS == ("notified_at", "rung_due_at", "rung_notified_at")
+
+
+def test_the_away_opt_in_leaves_home_safety_and_every_other_source_unchanged() -> None:
+    """bu-jv1moa.87 AC 6, pinned once: the ledger default and home:safety keep their ladders."""
+    from butlers.core import condition_ledger
+    from butlers.jobs import home_away_safety as away
+
+    assert condition_ledger.ESCALATION_ADVANCE == {
+        "L0": ("L1", timedelta(days=1)),
+        "L1": ("L2", timedelta(days=3)),
+        "L2": ("L3", timedelta(days=7)),
+        "L3": ("L3", timedelta(days=7)),
+    }
+    assert home_safety.SAFETY_SOURCE == "home:safety"
+    assert home_safety.SAFETY_SOURCE not in away.SOURCES
+    assert away.ESCALATION_ADVANCE is not condition_ledger.ESCALATION_ADVANCE
+    assert away.ESCALATION_ADVANCE is not ESCALATION_ADVANCE
+
+
 async def test_every_safety_ledger_write_uses_the_ladder_and_keeps_the_delivery_marker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
