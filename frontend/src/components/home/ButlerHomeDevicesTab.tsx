@@ -34,6 +34,7 @@ import { PresenceTimeline } from "@/components/home/PresenceTimeline.tsx";
 import { HomePresenceOwnerPanel } from "@/components/home/HomePresenceOwnerPanel";
 import { HomeSafetyWatchPanel } from "@/components/home/HomeSafetyWatchPanel";
 import { HomeAwaySafetyPanel } from "@/components/home/HomeAwaySafetyPanel";
+import { HomeDepartureFixesPanel } from "@/components/home/HomeDepartureFixesPanel";
 import { HomePersonMappingPanel } from "@/components/home/HomePersonMappingPanel";
 import {
   useHomeSnapshotStatus,
@@ -627,6 +628,8 @@ export default function ButlerHomeDevicesTab() {
       <HomeAtmosphereLocationPanel />
 
       <HomeSafetyWatchPanel />
+
+      <HomeDepartureFixesPanel />
 
       <HomeAwaySafetyPanel />
 

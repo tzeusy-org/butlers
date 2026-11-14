@@ -195,8 +195,8 @@ pair does not allow.
   `cancelled`. An unreadable timeline leaves it pending. A receipt is never edited, and no text
   says a fix was undone, reverted or restored.
 
-It is dark: `DEPARTURE_FIX_LIVE` is off and nothing is scheduled. The dashboard panel is part of
-this slice's follow-up.
+It is dark: `DEPARTURE_FIX_LIVE` is off and nothing is scheduled. The owner declares fixes in the
+Home, Devices, "Departure fixes" panel; approval happens on Approvals.
 
 ## Away safety (dark)
 
