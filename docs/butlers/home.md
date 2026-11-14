@@ -191,6 +191,20 @@ tool, skill or session control for these alerts. It is dark: `HOME_AWAY_SAFETY_L
 no roster schedules the job. Requirement: `home-deterministic-jobs` spec delta in
 `openspec/changes/specify-home-away-safety/`.
 
+### Prepared-action status
+
+`butlers.jobs.home_prepared_status.prepared_action_status` answers, for a parked Home action, one of
+`awaiting_approval`, `approved_not_run`, `succeeded`, `unverified`, `failed`, `rejected`,
+`cancelled`, `expired`, `abandoned` or `unknown` (bu-jv1moa.114, REQ-home-deterministic-jobs-011).
+The actuation receipt decides the executed case (an `attempting` receipt reads `unverified`, never
+success); a system withdrawal by `system:home-departure-fix` reads `cancelled`; a missing or
+unclassifiable row reads `unknown`. The answer carries no arguments, target or reason. The
+Switchboard reaches the same mapping through `public.resolve_home_action_status` (core_337,
+SECURITY DEFINER, executable by `butler_switchboard_rw` only) and the premise probe
+`("home", "fix_status_unchanged")`, which is true while the status a card showed is unchanged and
+holds on `unknown`. Nothing consumes it yet: fixes and the arrival card are bu-jv1moa.115 and
+bu-jv1moa.116.
+
 ## Proposed realtime feature specifications
 
 The shared [event-response contract](../../openspec/changes/specify-realtime-feature-contracts/specs/event-response-contract/spec.md)
