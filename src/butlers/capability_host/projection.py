@@ -86,8 +86,18 @@ def judge(status: ProjectionStatus, shipped: Manifest) -> Verdict:
     return Verdict("projection_apply_pending" if pending else None, change)
 
 
-async def canary_probe(conn: asyncpg.Connection, manifest: Manifest, canaries: tuple[str, ...]):
-    """Whether any published view row holds a canary value (D15 projection probe)."""
+async def canary_probe(
+    conn: asyncpg.Connection,
+    manifest: Manifest,
+    canaries: tuple[str, ...],
+    *,
+    query_timeout: float,
+) -> bool:
+    """Whether any published view row holds a canary value (D15 projection probe).
+
+    ``query_timeout`` is the client-side bound per view query; it must match the server-side
+    ``statement_timeout`` the caller set, or the pool's ``command_timeout`` cuts the scan short.
+    """
     if not canaries:
         return False
     for table in manifest.tables:
@@ -96,6 +106,7 @@ async def canary_probe(conn: asyncpg.Connection, manifest: Manifest, canaries: t
             f"SELECT EXISTS(SELECT 1 FROM {view} v, unnest($1::text[]) c "
             "WHERE strpos(v::text, c) > 0)",
             list(canaries),
+            timeout=query_timeout,
         )
         if hit:
             return True

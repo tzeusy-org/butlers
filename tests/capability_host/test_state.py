@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -19,11 +19,13 @@ from butlers.capability_host.config import (
     parse_canaries,
     parse_disabled_domains,
 )
+from butlers.capability_host.host import PROBE_TIMEOUT_S
 from butlers.capability_host.projection import ProjectionStatus, judge
 from butlers.knowledge_read.core import DOMAINS
 from butlers.knowledge_read.manifest import Manifest, ManifestError, decode_applied_manifest
 from tests.capability_host.helpers import (
     MANIFEST,
+    NOW,
     Env,
     Projection,
     default_fake_tools,
@@ -409,3 +411,49 @@ async def test_a_failed_probe_is_retried_by_the_next_call(env: Env):
     env.projection.fail = None
     assert error_code(await env.tool("entity_lookup")) is None
     assert _probes(env) == len(MANIFEST.tables)
+
+
+async def test_probe_queries_carry_the_probe_timeout_not_the_pool_default(env: Env):
+    """The pool's 10 s command_timeout would cut a 30 s statement_timeout short."""
+    assert error_code(await env.tool("entity_lookup")) is None
+    assert env.projection.probe_timeouts == [PROBE_TIMEOUT_S] * len(MANIFEST.tables)
+    assert f"SET LOCAL statement_timeout = '{PROBE_TIMEOUT_S}s'" in env.projection.queries
+
+
+async def test_a_probed_projection_takes_no_lock_and_no_probe_transaction(env: Env):
+    assert error_code(await env.tool("entity_lookup")) is None
+    env.projection.queries.clear()
+    env.host._probe_lock = _RefusingLock()  # type: ignore[assignment]
+    assert error_code(await env.tool("entity_lookup")) is None
+    assert not any("statement_timeout" in q for q in env.projection.queries)
+    assert _probes(env) == 0
+
+
+async def test_an_apply_landing_after_the_probe_is_unavailable_then_reprobed(env: Env):
+    later = datetime.fromtimestamp(NOW - 60, UTC)
+
+    def apply_lands(projection: Projection) -> None:
+        projection.after_probe = None
+        projection.applied = {**(projection.applied or {}), "applied_at": later}
+
+    env.projection.after_probe = apply_lands
+    result = await env.tool("entity_lookup")
+    assert error_code(result) == "unavailable"
+    assert result["result"]["structuredContent"]["error"]["retryable"] is True
+    assert error_code(await env.tool("entity_lookup")) is None  # the new apply is probed
+    assert _probes(env) == 2 * len(MANIFEST.tables)
+
+
+async def test_a_cancelled_unlocked_status_read_falls_back_to_the_probe_timeout(env: Env):
+    """The fast-path status read runs under the role's 2 s budget; a cancel there still probes."""
+    env.projection.fail_once = asyncpg.QueryCanceledError("canceling statement")
+    assert error_code(await env.tool("entity_lookup")) is None
+    assert _probes(env) == len(MANIFEST.tables)
+
+
+class _RefusingLock:
+    async def __aenter__(self):
+        raise AssertionError("the probe lock was taken on a matching marker")
+
+    async def __aexit__(self, *_exc):
+        return False
