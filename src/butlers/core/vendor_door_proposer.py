@@ -194,3 +194,58 @@ async def propose_for_session(
     if result.get("reason"):
         out["reason"] = result["reason"]
     return out
+
+
+FINANCE_ROLE = "butler_finance_rw"
+
+
+def template_from_url(url: str | None) -> str | None:
+    """An https URL as a slot-free door template (query and fragment dropped), or None."""
+    if not isinstance(url, str):
+        return None
+    candidate = url.strip()
+    if not candidate.lower().startswith("https://") or len(candidate) > 2048:
+        return None
+    parts = urlsplit(candidate)
+    if not parts.netloc or not parts.path or parts.path == "/":
+        return None
+    return f"https://{parts.netloc.lower()}{parts.path}"
+
+
+async def propose_extracted_link(
+    conn: _Connection,
+    *,
+    url: str | None,
+    subscription_id: uuid.UUID,
+    kind: str = "cancel",
+) -> dict[str, Any]:
+    """Record a Finance-extracted cancellation link as an inert proposal; never a door.
+
+    Finance has no ingestion event to bind to (its origin is ``extracted``, derived by the
+    database from ``butler_finance_rw``), so the owner's dashboard review is the only gate.
+    Best effort: a refusal or database error never fails the subscription write, and the role
+    is restored to what it was before the call either way. Dark behind ``VENDOR_DOORS_LIVE``.
+    """
+    if not flag.VENDOR_DOORS_LIVE:
+        return {"outcome": "refused", "reason": "dark"}
+    template = template_from_url(url)
+    if template is None:
+        return _refused("template")
+    previous = await conn.fetchval("SELECT current_setting('role')")
+    try:
+        async with conn.transaction():  # a savepoint: a failure rolls the role back with it
+            await conn.execute(f"SET LOCAL ROLE {FINANCE_ROLE}")
+            raw = await conn.fetchval(
+                "SELECT public.vendor_door_propose($1, $2, $3, $4, $5, $6)",
+                kind,
+                template,
+                {},
+                None,
+                None,
+                {"subscription_id": str(subscription_id), "column": "cancellation_url"},
+            )
+    except Exception:
+        return _refused("unavailable")
+    finally:
+        await conn.execute("SELECT set_config('role', $1, true)", previous)
+    return json.loads(raw) if isinstance(raw, str) else dict(raw)

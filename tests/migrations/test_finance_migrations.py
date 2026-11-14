@@ -1074,3 +1074,123 @@ async def test_field_claims_actual_runtime_role_two_writers_and_independent_comm
                 )
     finally:
         await runtime.close()
+
+
+# ---------------------------------------------------------------------------
+# finance_021 — vendor-door backfill (bu-jv1moa.40 D5)
+# ---------------------------------------------------------------------------
+
+_MIGRATION_021 = _FINANCE_MIGRATIONS / "021_vendor_door_backfill.py"
+_DOOR_OWNER = "00000000-0000-4000-8000-0000000000b1"
+
+
+@pytest.fixture
+async def door_pool(db):
+    pool = await _finance_at(db, "finance_020")
+    await pool.execute(
+        "INSERT INTO public.entities(id, canonical_name, entity_type, roles) "
+        "VALUES ($1::uuid, 'Owner', 'person', ARRAY['owner'])",
+        _DOOR_OWNER,
+    )
+    return pool
+
+
+async def _sub(pool, service: str, url: str | None, source: str) -> str:
+    row = await pool.fetchrow(
+        "INSERT INTO subscriptions (service, amount, currency, frequency, next_renewal, status,"
+        " cancellation_url, cancellation_url_source) "
+        "VALUES ($1, 1, 'USD', 'monthly', '2026-12-01', 'active', $2, $3) RETURNING id",
+        service,
+        url,
+        source,
+    )
+    return str(row["id"])
+
+
+async def _doors(pool) -> dict[str, asyncpg.Record]:
+    rows = await pool.fetch("SELECT * FROM public.vendor_doors")
+    return {r["lineage"]["subscription_id"]: r for r in rows}
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestVendorDoorBackfillMigration:
+    @pytest.mark.integration
+    async def test_owner_clean_link_is_confirmed_and_everything_else_is_inert(
+        self, door_pool: asyncpg.Pool
+    ) -> None:
+        pool = door_pool
+        owner = await _sub(pool, "A", "https://shop.example.com/cancel?token=1#x", "owner")
+        bad_owner = await _sub(pool, "B", "https://shop.example.com/a/../b", "owner")
+        extracted = await _sub(pool, "C", "https://other.example.org/cancel", "extracted")
+        plain = await _sub(pool, "D", "http://insecure.example.net/cancel", "owner")
+        empty = await _sub(pool, "E", None, "extracted")
+        await _apply(pool, load_migration(_MIGRATION_021, "finance_021"), "upgrade")
+
+        doors = await _doors(pool)
+        assert set(doors) == {owner, bad_owner, extracted}  # http and null have no row
+        a = doors[owner]
+        assert (a["status"], a["origin"], a["tier"]) == ("confirmed", "legacy_owner_set", "exempt")
+        assert a["template"] == "https://shop.example.com/cancel"
+        assert a["expires_at"] is None and a["confirmed_at"] is not None
+        b = doors[bad_owner]
+        assert (b["status"], b["origin"]) == ("proposed", "legacy_owner_set")
+        assert b["lineage"]["rule_problem"] == "dot_segment"
+        c = doors[extracted]
+        assert (c["status"], c["origin"], c["tier"]) == ("proposed", "extracted", "extracted")
+        assert c["expires_at"] is not None
+        assert plain not in doors and empty not in doors
+
+    @pytest.mark.integration
+    async def test_rerun_adds_nothing_and_touches_no_subscription_column(
+        self, door_pool: asyncpg.Pool
+    ) -> None:
+        pool = door_pool
+        await _sub(pool, "A", "https://shop.example.com/cancel", "owner")
+        await _sub(pool, "C", "https://other.example.org/cancel", "extracted")
+        before = [dict(r) for r in await pool.fetch("SELECT * FROM subscriptions ORDER BY id")]
+        mod = load_migration(_MIGRATION_021, "finance_021")
+        await _apply(pool, mod, "upgrade")
+        first = await pool.fetchval("SELECT count(*) FROM public.vendor_doors")
+        await _apply(pool, mod, "upgrade")
+        assert await pool.fetchval("SELECT count(*) FROM public.vendor_doors") == first == 2
+        after = [dict(r) for r in await pool.fetch("SELECT * FROM subscriptions ORDER BY id")]
+        assert after == before
+
+    @pytest.mark.integration
+    async def test_a_rejected_row_is_not_recreated_and_downgrade_keeps_rows(
+        self, door_pool: asyncpg.Pool
+    ) -> None:
+        pool = door_pool
+        sub = await _sub(pool, "C", "https://other.example.org/cancel", "extracted")
+        mod = load_migration(_MIGRATION_021, "finance_021")
+        await _apply(pool, mod, "upgrade")
+        await pool.execute(
+            "UPDATE public.vendor_doors SET status='rejected', expires_at=NULL "
+            "WHERE lineage->>'subscription_id' = $1",
+            sub,
+        )
+        await _apply(pool, mod, "upgrade")
+        await _apply(pool, mod, "downgrade")
+        rows = await pool.fetch("SELECT status FROM public.vendor_doors")
+        assert [r["status"] for r in rows] == ["rejected"]
+
+    @pytest.mark.integration
+    async def test_an_owner_link_wins_a_template_shared_with_an_extracted_one(
+        self, door_pool: asyncpg.Pool
+    ) -> None:
+        pool = door_pool
+        await _sub(pool, "X1", "https://shop.example.com/cancel", "extracted")
+        owner = await _sub(pool, "X2", "https://shop.example.com/cancel?a=1", "owner")
+        await _sub(pool, "X3", "https://shop.example.com/cancel#z", "extracted")
+        await _apply(pool, load_migration(_MIGRATION_021, "finance_021"), "upgrade")
+        rows = await pool.fetch("SELECT status, lineage FROM public.vendor_doors")
+        assert [(r["status"], r["lineage"]["subscription_id"]) for r in rows] == [
+            ("confirmed", owner)
+        ]
+
+    @pytest.mark.integration
+    async def test_no_owner_entity_is_a_no_op(self, db) -> None:
+        pool = await _finance_at(db, "finance_020")
+        await _sub(pool, "C", "https://other.example.org/cancel", "extracted")
+        await _apply(pool, load_migration(_MIGRATION_021, "finance_021"), "upgrade")
+        assert await pool.fetchval("SELECT count(*) FROM public.vendor_doors") == 0

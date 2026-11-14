@@ -5615,6 +5615,40 @@
       "resolver": null,
       "sites": [],
       "workloads": []
+    },
+    "src/butlers/core/vendor_door_proposer.py::template_from_url::url::66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8": {
+      "class": "reference",
+      "observed": {
+        "authorities": [],
+        "config": null,
+        "count": 2,
+        "kind": "url",
+        "path": "src/butlers/core/vendor_door_proposer.py",
+        "scope": "template_from_url",
+        "sha256": "66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8"
+      },
+      "reason": "URL-template parsing and matching against a stored event's text (regex, urlsplit and https:// prefix checks); vendor_door_proposer makes no network call, nothing dials it.",
+      "resolver": null,
+      "sites": [],
+      "workloads": []
+    },
+    "roster/finance/migrations/021_vendor_door_backfill.py::<module>::url::2b4326c4d1caf839fa35c8eb0419b959fad9c9ef94b349a7997cf52e85b67273": {
+      "class": "reference",
+      "observed": {
+        "authorities": [
+          "%:443"
+        ],
+        "config": null,
+        "count": 1,
+        "kind": "url",
+        "path": "roster/finance/migrations/021_vendor_door_backfill.py",
+        "scope": "<module>",
+        "sha256": "2b4326c4d1caf839fa35c8eb0419b959fad9c9ef94b349a7997cf52e85b67273"
+      },
+      "reason": "SQL LIKE 'https://%' filter in an alembic data migration that backfills vendor-door proposals from stored subscription links; the discovered authority %:443 is the LIKE wildcard, not a host, and nothing dials it.",
+      "resolver": null,
+      "sites": [],
+      "workloads": []
     }
   },
   "local_resolvers": {

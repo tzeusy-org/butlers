@@ -154,6 +154,12 @@ async def test_the_event_text_is_read_by_the_passed_event_id(live):
     assert conn.calls[-1][1][3] == other
 
 
+def test_a_slot_never_stands_for_an_empty_segment():
+    assert not proposer.template_in_event(
+        "https://shop.example.com/a/{x}/cancel", "https://shop.example.com/a//cancel"
+    )
+
+
 async def test_slot_may_stand_for_exactly_one_segment():
     text = "https://shop.example.com/a/b/c/cancel"
     assert not proposer.template_in_event("https://shop.example.com/a/{x}/cancel", text)
@@ -309,3 +315,104 @@ def test_the_switchboard_reader_binds_only_ingested_events_and_core_holds_no_swi
     assert "public.ingestion_events AS e WHERE e.id = m.id" in tools
     core = (ROOT / "src/butlers/core/vendor_door_proposer.py").read_text()
     assert "switchboard." not in core.replace("butlers.tools.switchboard", "")
+
+
+# --- the Finance extracted path ------------------------------------------------------------
+
+SUB = uuid.uuid4()
+
+
+class _RoleConn(FakeConn):
+    def __init__(self, fail=False):
+        super().__init__(None)
+        self.fail = fail
+        self.role = "none"
+        self.begun = 0
+
+    def transaction(self, **_):
+        return self
+
+    async def __aenter__(self):
+        self.saved = self.role
+        self.begun += 1
+        return self
+
+    async def __aexit__(self, exc_type, *rest):
+        if exc_type is not None:
+            self.role = self.saved  # a savepoint rollback discards SET LOCAL
+        return False
+
+    async def execute(self, sql, *args):
+        self.executed.append(sql)
+        if sql.startswith("SET LOCAL ROLE"):
+            self.role = sql.rsplit(" ", 1)[1]
+        elif sql.startswith("SELECT set_config('role'"):
+            self.role = args[0]
+
+    async def fetchval(self, sql, *args):
+        if "current_setting" in sql:
+            return self.role
+        self.calls.append((sql, args))
+        if self.fail:
+            raise RuntimeError("db down")
+        return {"outcome": "stored", "tier": "extracted"}
+
+
+@pytest.mark.parametrize(
+    ("url", "template"),
+    [
+        ("https://Shop.Example.com/cancel?token=abc#frag", "https://shop.example.com/cancel"),
+        ("http://shop.example.com/cancel", None),
+        ("https://shop.example.com", None),
+        ("https://shop.example.com/", None),
+        ("ftp://shop.example.com/x", None),
+        (None, None),
+        ("not a url", None),
+    ],
+)
+def test_template_from_url(url, template):
+    assert proposer.template_from_url(url) == template
+
+
+async def test_extracted_link_is_dark_by_default():
+    conn = _RoleConn()
+    out = await proposer.propose_extracted_link(
+        cast(Any, conn), url="https://shop.example.com/cancel", subscription_id=SUB
+    )
+    assert out["reason"] == "dark" and conn.executed == [] and conn.calls == []
+
+
+async def test_extracted_link_proposes_under_the_finance_role_with_no_claims(live):
+    conn = _RoleConn()
+    out = await proposer.propose_extracted_link(
+        cast(Any, conn), url="https://shop.example.com/cancel?x=1", subscription_id=SUB
+    )
+    assert out["outcome"] == "stored"
+    assert "SET LOCAL ROLE butler_finance_rw" in conn.executed
+    args = conn.calls[-1][1]
+    assert args == (
+        "cancel",
+        "https://shop.example.com/cancel",
+        {},
+        None,
+        None,
+        {"subscription_id": str(SUB), "column": "cancellation_url"},
+    )
+    assert conn.role == "none"
+
+
+async def test_extracted_link_failure_never_raises_and_restores_the_role(live):
+    conn = _RoleConn(fail=True)
+    out = await proposer.propose_extracted_link(
+        cast(Any, conn), url="https://shop.example.com/cancel", subscription_id=SUB
+    )
+    assert out == {"outcome": "refused", "reason": "unavailable"}
+    assert conn.role == "none"
+
+
+async def test_a_non_https_link_is_not_proposed(live):
+    conn = _RoleConn()
+    out = await proposer.propose_extracted_link(
+        cast(Any, conn), url="http://shop.example.com/cancel", subscription_id=SUB
+    )
+    assert out["reason"] == "template" and conn.calls == []
