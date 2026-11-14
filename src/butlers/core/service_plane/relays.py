@@ -46,6 +46,9 @@ class RelayRefused(Exception):
 
 
 Dispatch = Callable[[str, str, dict[str, Any]], Awaitable[Any]]
+#: A read the serving Switchboard answers itself from its own schema, with the
+#: validated arguments. It has no MCP tool, so nothing but this relay reaches it.
+LocalRead = Callable[[BaseModel], Awaitable[Any]]
 #: Builds the (target butler, target args) pair from the authenticated caller
 #: and the validated request, or raises ``RelayRefused``. It may read
 #: (the memory catalog relay looks up the pointer's owner) before it picks.
@@ -80,6 +83,10 @@ class RelayEndpoint:
     #: Deliver to a target whose registry heartbeat is stale (the QA relay's
     #: existing behaviour: error reports must still reach a lagging QA).
     allow_stale: bool = False
+    #: Switchboard answers this relay itself (its only target is ``switchboard``).
+    #: There is no MCP tool behind it, so no model session and no direct MCP
+    #: caller can reach the read; ``target_tool`` only names it.
+    local: LocalRead | None = None
 
 
 def target_is_llm_presentable(tool: str) -> bool:
@@ -103,12 +110,17 @@ async def relay_call(
         raise RelayRefused("caller_unauthenticated")
     if caller not in endpoint.allowed_callers:
         raise RelayRefused("caller_not_allowed")
-    if target_is_llm_presentable(endpoint.target_tool):
+    if endpoint.local is not None:
+        if endpoint.target_butlers != frozenset({"switchboard"}):
+            raise RelayRefused("target_not_allowed")
+    elif target_is_llm_presentable(endpoint.target_tool):
         raise RelayRefused("target_llm_presentable")
     try:
         validated = endpoint.args_model.model_validate(dict(args))
     except ValidationError:
         raise RelayRefused("args_invalid") from None
+    if endpoint.local is not None:
+        return await endpoint.local(validated)
     if endpoint.prepare is None and len(endpoint.target_butlers) != 1:
         raise RelayRefused("target_not_allowed")
     prepare = endpoint.prepare or _single_target(endpoint)

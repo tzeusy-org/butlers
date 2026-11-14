@@ -1046,20 +1046,20 @@
   },
   "current_public": "773d1d81b8112a951776db56241eaf6988717263",
   "counts": {
-    "direct": 96,
+    "direct": 97,
     "direct_files": 42,
-    "container": 118,
+    "container": 120,
     "supplementary": 45,
     "all_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 64,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 65,
       "NON_NAME_ENUM_OR_MODULE": 32,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
-      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 38,
+      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 39,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 9,
       "SCHEMA_OWNERSHIP": 14
     },
     "direct_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 46,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 47,
       "NON_NAME_ENUM_OR_MODULE": 7,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 3,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 24,
@@ -5128,6 +5128,50 @@
         }
       ],
       "baseline_ids": []
+    },
+    {
+      "id": "58b2457624ad63876a13e1c86bf1699acf3decad8fc0a3212a3f0f23dc48c512",
+      "path": "src/butlers/core/service_plane/registry.py",
+      "symbol": "build_relays",
+      "kind": "compare",
+      "expression": "c.daemon == 'relationship'",
+      "occurrence": 1,
+      "line": 243,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "The owner_chat.spans relay admits only the (butlers-up, relationship) pair: the canonical Relationship daemon is the one consumer of the owner-chat span projection (REQ-butler-switchboard-011, change add-owner-chat-commitment-candidates).",
+      "reason": "bu-jv1moa.11 RFC 0038 D7 dark named relay (BUTLERS_SERVICE_PLANE_AUTH, default off). The daemon name only narrows an allowlist under an authenticated workload. No host policy is introduced.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "878d20a386"
+    },
+    {
+      "id": "0ca6492caa8ae37926f53a71ddbea2fac6a39c6c51c8314e8c40d4da6eb2b9ef",
+      "path": "src/butlers/core/service_plane/relays.py",
+      "symbol": "relay_call",
+      "kind": "compare",
+      "expression": "endpoint.target_butlers != frozenset({'switchboard'})",
+      "occurrence": 1,
+      "line": 114,
+      "direct": false,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "A local relay is answered in-process by the serving Switchboard from its own schema, so its only permitted target is canonical Switchboard; anything else is refused.",
+      "reason": "bu-jv1moa.11 RFC 0038 D7 local relay (owner_chat.spans); same canonical Switchboard relay host as ButlerDaemon._build_service_relay_route. No host policy is introduced.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "878d20a386"
     }
   ],
   "retired": [

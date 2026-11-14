@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import dataclasses
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -31,7 +33,10 @@ from butlers.core.service_plane.registry import (
     FLEET_CASE_RECORD_LINK,
     MEDICATION_TRAVEL_SNAPSHOT,
     MEMORY_CATALOG_FETCH,
+    OWNER_CHAT_SPANS,
     QA_REPORT_FINDING,
+    OwnerChatSpansArgs,
+    _owner_chat_local,
     build_relays,
     roster_daemons,
     roster_module_daemons,
@@ -40,6 +45,7 @@ from butlers.core.service_plane.relays import (
     RelayEndpoint,
     RelayRefused,
     ServiceCaller,
+    relay_call,
     target_is_llm_presentable,
 )
 from butlers.core.service_plane.workload_identity import (
@@ -47,6 +53,7 @@ from butlers.core.service_plane.workload_identity import (
     RELAY_AUDIENCE,
     VerifierUnavailable,
 )
+from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_BY_NAME
 from tests.core.test_service_plane_workload_identity import _claims, _token, _verifier
 
 _CONTRACTS = load_contract_registry()
@@ -725,6 +732,202 @@ def test_without_a_catalog_reader_no_catalog_fetch_relay_is_served() -> None:
     assert MEMORY_CATALOG_FETCH not in build_relays(
         roster_daemons(), _CONTRACTS, memory_daemons={"health"}
     )
+
+
+class _OwnerChatRead:
+    """Switchboard's own owner-chat read, as the relay calls it."""
+
+    def __init__(self) -> None:
+        self.reads: list[tuple[Any, Any]] = []
+
+    async def __call__(self, after_received_at: Any, after_inbox_id: Any) -> dict[str, Any]:
+        self.reads.append((after_received_at, after_inbox_id))
+        return {"spans": [], "cursor": None, "more": False}
+
+
+def _owner_chat_relays(read: _OwnerChatRead):
+    return build_relays(roster_daemons(), _CONTRACTS, owner_chat_spans=read)
+
+
+_CURSOR = {
+    "after_received_at": "2026-11-14T12:00:00+00:00",
+    "after_inbox_id": "01936a00-0000-7000-8000-000000000001",
+}
+
+
+@pytest.mark.parametrize("body", [{}, _CURSOR], ids=["first-page", "with-cursor"])
+async def test_relationship_reads_owner_chat_spans_from_switchboard_itself(
+    tmp_path: Path, body: dict[str, Any]
+) -> None:
+    """REQ-butler-switchboard-011: answered in-process; no MCP target is dispatched."""
+    read = _OwnerChatRead()
+    harness = _Harness(relays=_owner_chat_relays(read))
+
+    result = await harness.call(
+        OWNER_CHAT_SPANS, body, tmp_path, daemon="relationship", token=_up_token()
+    )
+
+    assert result == {"spans": [], "cursor": None, "more": False}
+    assert len(read.reads) == 1
+    assert harness.calls == []
+
+
+@pytest.mark.parametrize(
+    ("body", "daemon", "token", "code"),
+    [
+        ({}, "health", _up_token(), "caller_not_allowed"),
+        ({}, "switchboard", _up_token(), "caller_not_allowed"),
+        ({}, "relationship", _token(_claims(aud=[RELAY_AUDIENCE])), "caller_not_allowed"),
+        ({}, "relationship", _up_token(DELIVERY_AUDIENCE), "caller_unauthenticated"),
+        (
+            {"after_received_at": _CURSOR["after_received_at"]},
+            "relationship",
+            _up_token(),
+            "args_invalid",
+        ),
+        (
+            {**_CURSOR, "after_received_at": "2026-11-14T12:00:00"},
+            "relationship",
+            _up_token(),
+            "args_invalid",
+        ),
+        ({"limit": 5000}, "relationship", _up_token(), "args_invalid"),
+        ({"channel": "email"}, "relationship", _up_token(), "args_invalid"),
+    ],
+    ids=[
+        "other-domain-daemon",
+        "switchboard-name-from-butlers-up",
+        "control-workload",
+        "unauthenticated",
+        "half-cursor",
+        "naive-cursor-time",
+        "caller-chosen-limit",
+        "caller-chosen-channel",
+    ],
+)
+async def test_owner_chat_spans_refuse_before_any_row_is_read(
+    tmp_path: Path, body: dict[str, Any], daemon: str, token: str, code: str
+) -> None:
+    read = _OwnerChatRead()
+    harness = _Harness(relays=_owner_chat_relays(read))
+
+    with pytest.raises(RelayRefused) as refused:
+        await harness.call(OWNER_CHAT_SPANS, body, tmp_path, daemon=daemon, token=token)
+
+    assert refused.value.code == code
+    assert read.reads == []
+    assert harness.calls == []
+
+
+def test_owner_chat_spans_have_no_mcp_tool_and_admit_only_relationship() -> None:
+    endpoint = _owner_chat_relays(_OwnerChatRead())[OWNER_CHAT_SPANS]
+
+    assert endpoint.target_butlers == frozenset({"switchboard"})
+    assert endpoint.local is not None
+    assert endpoint.allowed_callers == frozenset({ServiceCaller("butlers-up", "relationship")})
+    # No tool of that name is declared anywhere, so no session or MCP client can call it.
+    assert endpoint.target_tool not in TOOL_PRESENTATION_BY_NAME
+
+
+def _decorated_function_names(root: Path) -> set[str]:
+    names: set[str] = set()
+    for path in root.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.decorator_list:
+                names.add(node.name)
+    return names
+
+
+def test_no_mcp_tool_carries_the_owner_chat_relays_name() -> None:
+    """A model session lists only registered MCP tools; none is registered under this name.
+
+    Switchboard's tools and the shared core and module tools are all registered as
+    decorated closures, so a tool of that name would be a decorated function here.
+    """
+    target = _owner_chat_relays(_OwnerChatRead())[OWNER_CHAT_SPANS].target_tool
+    repo = Path(__file__).resolve().parents[2]
+    switchboard = _decorated_function_names(repo / "roster" / "switchboard" / "modules")
+    shared = _decorated_function_names(repo / "src" / "butlers")
+
+    assert {"route", "deliver"} <= switchboard  # the scan sees Switchboard's real tools
+    assert target not in switchboard | shared
+
+
+async def test_a_local_relay_that_lost_its_reader_never_reaches_the_mcp_path() -> None:
+    """Mutant pin: without its in-process read the relay must refuse, not dispatch."""
+    read = _OwnerChatRead()
+    endpoint = dataclasses.replace(_owner_chat_relays(read)[OWNER_CHAT_SPANS], local=None)
+    dispatched: list[tuple[str, str]] = []
+
+    async def dispatch(butler: str, tool: str, args: dict[str, Any]) -> Any:
+        dispatched.append((butler, tool))
+        return {}
+
+    with pytest.raises(RelayRefused) as refused:
+        await relay_call(endpoint, ServiceCaller("butlers-up", "relationship"), {}, dispatch)
+
+    assert refused.value.code == "target_llm_presentable"
+    assert dispatched == []
+    assert read.reads == []
+
+
+async def test_an_unknown_relay_name_is_refused_before_any_read(tmp_path: Path) -> None:
+    read = _OwnerChatRead()
+    harness = _Harness(relays=_owner_chat_relays(read))
+
+    with pytest.raises(RelayRefused) as refused:
+        await harness.call(
+            "owner_chat.spans_all", {}, tmp_path, daemon="relationship", token=_up_token()
+        )
+
+    assert refused.value.code == "unknown_relay"
+    assert read.reads == []
+    assert harness.calls == []
+
+
+def test_without_switchboards_reader_no_owner_chat_relay_is_served() -> None:
+    assert OWNER_CHAT_SPANS not in _RELAYS
+
+
+async def test_a_local_relay_is_refused_unless_switchboard_is_its_only_target() -> None:
+    read = _OwnerChatRead()
+    endpoint = RelayEndpoint(
+        name="x.local",
+        target_butlers=frozenset({"health"}),
+        target_tool="x",
+        args_model=OwnerChatSpansArgs,
+        allowed_callers=frozenset({ServiceCaller("butlers-up", "relationship")}),
+        local=_owner_chat_local(read),
+    )
+
+    async def dispatch(butler: str, tool: str, args: dict[str, Any]) -> Any:
+        raise AssertionError("dispatched")
+
+    with pytest.raises(RelayRefused) as refused:
+        await relay_call(endpoint, ServiceCaller("butlers-up", "relationship"), {}, dispatch)
+
+    assert refused.value.code == "target_not_allowed"
+    assert read.reads == []
+
+
+async def test_switchboards_wired_reader_runs_the_roster_projection() -> None:
+    """The wiring resolves Switchboard's roster projection and reads through the pool."""
+    from butlers.core.service_plane.wiring import owner_chat_spans_reader
+
+    class _Pool:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        async def fetch(self, sql: str, *args: Any) -> list[Any]:
+            self.queries.append(sql)
+            return []
+
+    pool = _Pool()
+    page = await owner_chat_spans_reader(pool)(None, None)
+
+    assert page == {"spans": [], "cursor": None, "more": False}
+    assert len(pool.queries) == 1
+    assert "switchboard.message_inbox" in pool.queries[0]
 
 
 def test_the_relay_url_is_on_the_switchboard_service_listener() -> None:

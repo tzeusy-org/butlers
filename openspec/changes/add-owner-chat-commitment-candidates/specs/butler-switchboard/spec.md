@@ -7,8 +7,9 @@ The Switchboard SHALL provide one fixed, read-only, deterministic projection ove
 only on the authenticated service-plane endpoint bound to the Relationship daemon, and never
 LLM-presentable. A returned span SHALL satisfy all of: source channel `whatsapp_user_client` or
 `telegram_user_client`; stored `chat_type` private and `participant_count` at most 2; entry
-`is_from_me` explicitly true and `forwarded` explicitly false (REQ-connector-base-spec-013); entry
-`is_new` true; the entry's `sender_identity` equal to the envelope's stored owner sender identity
+`is_from_me` explicitly true and `forwarded` explicitly false (REQ-connector-base-spec-013); for
+WhatsApp, entry `from_history` explicitly false, and for Telegram, entry `via_bot` explicitly
+false; entry `is_new` true; the entry's `sender_identity` equal to the envelope's stored owner sender identity
 whenever that identity is present; and a source event time no more than 14 days old. Each span
 SHALL carry the source channel, endpoint identity, chat identity, the single non-owner
 counterparty channel identity, the provider message id, the source event time, the ingestion
@@ -18,6 +19,24 @@ application before the inbox insert commits, the projection SHALL exclude every 
 `received_at` is less than 60 seconds before the database's current time, so a slow ingest
 transaction commits before the cursor can pass its position. The projection SHALL take no other argument, SHALL
 write nothing, and SHALL report unavailability as an error, never as an empty complete page.
+Only batched `conversation_history` envelopes carry history entries. Single-message user-client
+envelopes (Telegram backfill, ingest retry and the fallback when a chat id cannot be read) carry
+none, so the projection SHALL NOT return their messages in S1; that coverage gap is explicit, not
+a qualifying rule. The same holds for these cases, which the projection SHALL exclude rather than
+guess:
+
+- A WhatsApp batch holding only the owner's own entries names no counterparty, so no single
+  counterparty identity is present and no span is returned. A peer fact from the bridge is
+  follow-up bu-jv1moa.93.
+- A WhatsApp history-sync replay can carry text that any linked device sent, a past bridge
+  device's sends included. Live delivery never returns the bridge's own sends to it, because
+  whatsmeow does not encrypt a send for its own device and dispatches no local event for it.
+  Only an entry the bridge marked live therefore counts.
+- A Telegram message sent via an inline bot is posted under the owner's account but written by
+  the bot.
+
+One case stays indistinguishable from owner typing and is accepted: a Telegram copy sent without
+its author ("forward without author") carries no forward header.
 
 ID: REQ-butler-switchboard-011
 Source: about/heart-and-soul/vision.md non-negotiable 3 (cross-domain access MCP-only through the control plane); RFC 0038 D2 and D7; bu-jv1moa.11
@@ -34,6 +53,17 @@ Scope: v1-reserved
 
 - **WHEN** an entry comes from a group chat, or claims `is_from_me: true` while its sender
   identity differs from the stored owner sender identity
+- **THEN** the projection does not return it
+
+#### Scenario: An owner-only WhatsApp batch is excluded, not guessed
+
+- **WHEN** a stored WhatsApp batch for a private chat holds only the owner's entries
+- **THEN** the projection returns no span from it, because no counterparty identity is present
+
+#### Scenario: Text the owner may not have typed is excluded
+
+- **WHEN** a WhatsApp entry is a history-sync replay or carries no live marker, or a Telegram
+  entry was sent via an inline bot or carries no `via_bot` fact
 - **THEN** the projection does not return it
 
 #### Scenario: Any other caller is refused

@@ -152,13 +152,15 @@ removing readers or propagation.
 
 ### Per-entry authorship facts in conversation history
 
-The WhatsApp and Telegram user clients put two boolean transport facts on each
+The WhatsApp and Telegram user clients put boolean transport facts on each
 `payload.raw.conversation_history` entry (REQ-connector-base-spec-013):
 
 | Fact | WhatsApp | Telegram user client |
 | --- | --- | --- |
 | `is_from_me` | the bridge's `raw.is_from_me` (whatsmeow `IsFromMe`) | Telethon `Message.out` |
-| `forwarded` | the bridge's `content.is_forwarded` (set only on a forward, so a content mapping without it is `false`) | `Message.fwd_from is not None` |
+| `forwarded` | the bridge's `content.is_forwarded`, set only on a forward, so a content mapping without it is `false`. The bridge reads the forward flag from text, media, location, contact, poll and group-invite messages | `Message.fwd_from is not None` |
+| `from_history` | the bridge's `raw.from_history`: `true` for a history-sync replay, `false` for live delivery | not carried |
+| `via_bot` | not carried | `Message.via_bot_id is not None` |
 
 A fact the provider object does not carry is omitted, never guessed; consumers that need it treat
 the entry as not qualifying. An entry's `text` is only that message's own text, and a reply names
@@ -169,6 +171,24 @@ Only batched envelopes carry `conversation_history`. Single-message Telegram env
 ingest retry, and the fallback when a chat id cannot be read) and the unused WhatsApp
 single-event normalizer carry no history entries, so these facts, and anything that reads them
 such as owner-chat commitment candidates, never cover those messages.
+
+Owner-chat commitment candidates (REQ-butler-switchboard-011) also leave out these cases rather
+than guess at them:
+
+- **WhatsApp owner-only batch.** A batch holding only the owner's own entries names no
+  counterparty, so it yields no span. A bridge peer fact is follow-up bu-jv1moa.93.
+- **WhatsApp history sync.** A history replay can carry text that any linked device sent,
+  including a past bridge device's sends. Live delivery never echoes the bridge's own sends:
+  whatsmeow skips its own device when it encrypts a send (`send.go`,
+  `encryptMessageForDevices`) and dispatches no local event for it. So only `from_history: false`
+  entries count, and entries from an older bridge that sends no marker do not. This assumes one
+  bridge per WhatsApp account: two live-linked bridges would each receive the other's sends as
+  live `is_from_me` messages.
+- **Telegram via an inline bot.** The bot's output is posted under the owner's account but the
+  bot wrote it, so `via_bot: true` entries do not count.
+- **Telegram forward without author.** A copy sent without its author carries no `fwd_from`, so it
+  reads as owner-typed. This gap is accepted. No butler sends from the owner's Telegram account
+  (bu-bup68v), so the account's outgoing messages are the owner's own.
 
 ## Checkpoint Persistence
 

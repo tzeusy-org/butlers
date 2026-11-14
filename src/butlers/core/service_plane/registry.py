@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import tomllib
 from collections.abc import Awaitable, Callable, Iterable, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from butlers.core.domain_event_contracts import DomainEventContractRegistry
 from butlers.core.service_plane.relays import RelayEndpoint, RelayRefused, ServiceCaller
@@ -34,11 +35,15 @@ FLEET_CASE_CLOSE = "fleet_case.close"
 FLEET_CASE_PROPOSE_POSTURE = "fleet_case.propose_posture"
 FLEET_CASE_RECORD_LINK = "fleet_case.record_link"
 MEMORY_CATALOG_FETCH = "memory.catalog_fetch"
+OWNER_CHAT_SPANS = "owner_chat.spans"
 
 #: Reads one live, visible ``public.memory_catalog`` row by its source pointer:
 #: ``(source_schema, source_table, source_id)`` to a row with ``source_butler``
 #: and ``memory_type``, or ``None``.
 CatalogPointer = Callable[[str, str, UUID], Awaitable[Mapping[str, Any] | None]]
+#: One page of owner-chat spans after an optional ``(received_at, inbox id)``
+#: cursor, read by Switchboard from its own inbox (REQ-butler-switchboard-011).
+OwnerChatSpans = Callable[[datetime | None, UUID | None], Awaitable[Mapping[str, Any]]]
 
 
 class _Strict(BaseModel):
@@ -104,6 +109,27 @@ class MemoryCatalogFetchArgs(_Strict):
     source_schema: str = Field(min_length=1)
     source_table: Literal["facts", "rules"]
     source_id: UUID
+
+
+class OwnerChatSpansArgs(_Strict):
+    """Only the cursor: both values or neither. The caller chooses nothing else."""
+
+    after_received_at: AwareDatetime | None = None
+    after_inbox_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _whole_cursor(self) -> OwnerChatSpansArgs:
+        if (self.after_received_at is None) != (self.after_inbox_id is None):
+            raise ValueError("cursor_incomplete")
+        return self
+
+
+def _owner_chat_local(read: OwnerChatSpans):
+    async def local(validated: BaseModel) -> Mapping[str, Any]:
+        cursor = OwnerChatSpansArgs.model_validate(validated.model_dump())
+        return await read(cursor.after_received_at, cursor.after_inbox_id)
+
+    return local
 
 
 #: Each Switchboard fleet-case write: relay name, its schema, the service twin.
@@ -191,6 +217,7 @@ def build_relays(
     contacts_daemons: Iterable[str] = (),
     memory_daemons: Iterable[str] = (),
     catalog_pointer: CatalogPointer | None = None,
+    owner_chat_spans: OwnerChatSpans | None = None,
 ) -> Mapping[str, RelayEndpoint]:
     """The relay registry for a roster and its domain-event contracts.
 
@@ -198,8 +225,28 @@ def build_relays(
     may reach Relationship's Contacts ingress. ``memory_daemons`` host the
     Memory module; ``catalog_pointer`` reads ``public.memory_catalog`` for the
     memory catalog relay, which is served only when it is given.
+    ``owner_chat_spans`` is Switchboard's own owner-chat read; the
+    ``owner_chat.spans`` relay is served only when it is given, and only the
+    Relationship daemon may call it.
     """
     callers = _domain_callers(daemons)
+    owner_chat_relays = (
+        {
+            # REQ-butler-switchboard-011: answered by Switchboard itself, with no
+            # MCP tool behind it, so no model session or direct MCP caller can
+            # reach the owner's message text.
+            OWNER_CHAT_SPANS: RelayEndpoint(
+                name=OWNER_CHAT_SPANS,
+                target_butlers=frozenset({"switchboard"}),
+                target_tool="owner_chat_spans",
+                args_model=OwnerChatSpansArgs,
+                allowed_callers=frozenset(c for c in callers if c.daemon == "relationship"),
+                local=_owner_chat_local(owner_chat_spans),
+            )
+        }
+        if owner_chat_spans is not None
+        else {}
+    )
     memory_relays = (
         {
             # A cross-butler catalog dereference. The caller has already applied
@@ -240,6 +287,7 @@ def build_relays(
     return {
         **fleet_case_relays,
         **memory_relays,
+        **owner_chat_relays,
         QA_REPORT_FINDING: RelayEndpoint(
             name=QA_REPORT_FINDING,
             target_butlers=frozenset({"qa"}),

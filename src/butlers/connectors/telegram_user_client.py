@@ -172,9 +172,10 @@ def _transport_facts(message: Any) -> dict[str, bool]:
     """Per-entry authorship and forward facts (REQ-connector-base-spec-013).
 
     ``is_from_me`` is Telethon's ``Message.out`` and ``forwarded`` is whether
-    ``Message.fwd_from`` is set. A fact the message object does not carry (attribute
-    absent, or ``out`` not a boolean) is omitted rather than guessed. Transport only:
-    nothing here classifies the message.
+    ``Message.fwd_from`` is set. ``via_bot`` is whether ``Message.via_bot_id`` is set: an
+    inline bot wrote the text, though it is posted under the sender's account. A fact
+    the message object does not carry (attribute absent, or ``out`` not a boolean) is
+    omitted rather than guessed. Transport only: nothing here classifies the message.
     """
     facts: dict[str, bool] = {}
     out = getattr(message, "out", None)
@@ -182,6 +183,8 @@ def _transport_facts(message: Any) -> dict[str, bool]:
         facts["is_from_me"] = out
     if hasattr(message, "fwd_from"):
         facts["forwarded"] = message.fwd_from is not None
+    if hasattr(message, "via_bot_id"):
+        facts["via_bot"] = message.via_bot_id is not None
     return facts
 
 

@@ -2144,6 +2144,36 @@ def test_history_entries_carry_authorship_and_forward_facts(
     assert "forwarded" not in history["m-odd"]
 
 
+def test_batch_history_carries_the_bridge_history_marker(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    """raw.from_history: the bridge marks history-sync replays; older bridges omit it."""
+
+    def _event(message_id: str, raw: dict[str, object]) -> dict[str, object]:
+        return {
+            "message_id": message_id,
+            "chat_jid": "chat-1",
+            "sender_jid": "owner@s.whatsapp.net",
+            "type": "text",
+            "content": {"text": "I'll send it tomorrow"},
+            "raw": raw,
+        }
+
+    events = [
+        _event("m-live", {"is_from_me": True, "from_history": False}),
+        _event("m-history", {"is_from_me": True, "from_history": True}),
+        _event("m-old-bridge", {"is_from_me": True}),
+        _event("m-odd", {"is_from_me": True, "from_history": "false"}),
+    ]
+    envelope = connector._build_batch_envelope("chat-1", events, "batch-history")
+    history = {e["message_id"]: e for e in envelope["payload"]["raw"]["conversation_history"]}
+
+    assert history["m-live"]["from_history"] is False
+    assert history["m-history"]["from_history"] is True
+    assert "from_history" not in history["m-old-bridge"]
+    assert "from_history" not in history["m-odd"]
+
+
 def test_descriptor_identity_preserves_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
     from butlers.connectors import whatsapp_user_client as module
 
