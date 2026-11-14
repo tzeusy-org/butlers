@@ -13,7 +13,9 @@ the owner's timezone, and SHALL take the counterparty only from the chat's singl
 channel identity, resolved through the Relationship channel-identity resolver, never from a
 capitalised name in the text. The counterparty SHALL be a known contact: it resolves to a live
 entity that is neither the owner nor marked unidentified. A candidate SHALL carry
-`direction: "owner_to_other"`, the detector's `kind`, `confidence` and `marker`, an action
+`direction: "owner_to_other"`, the detector's `kind` and `confidence`, the detector marker as a
+fixed category from a closed set (never the matched text, which in the relay forms carries a
+third party's name; a form with no category SHALL be refused), an action
 description of at most 120 characters, the optional deadline, the commitment fingerprint, the
 source channel, the source event time, an immutable source evidence reference (the ingestion
 event id and the provider message id) and an untrusted-origin taint stamp. The store SHALL NOT

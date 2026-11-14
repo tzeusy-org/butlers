@@ -46,7 +46,9 @@ Source baseline: `origin/main` at `61334a9b3`. Every path and symbol below was r
 `id`, `source_key` (sha256 of channel, endpoint, chat, provider message id, direction),
 `state` (`pending`, `carded`, `tracked`, `done`, `ignored`, `superseded`, `lapsed`), `kind`,
 `direction`, `counterparty_entity_id`, `action_description` (at most 120 characters),
-`deadline`, `confidence`, `marker`, `fingerprint`, `channel`, `evidence_ref`
+`deadline`, `confidence`, `marker` (a closed category: `first_person_will`,
+`first_person_going_to`, `first_person_obligation`, `relay_told`, `relay_promised`; never the
+matched text, which can carry a third party's name), `fingerprint`, `channel`, `evidence_ref`
 (`{ingestion_event_id, provider_message_id}`), `taint` (`untrusted_origin`), `event_time`,
 `lapse_at` (`event_time + 14 days`), `card_snapshot` (rendered question, card spans, recipient
 binding, timeout fixed once; written before the first card request), `confirm_id`,

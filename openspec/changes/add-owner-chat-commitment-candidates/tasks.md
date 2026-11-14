@@ -67,21 +67,27 @@ dispatch packet for bu-jv1moa.11.
 
 ## 3. Relationship reducer and store (REQ-commitment-lifecycle-011, -012, -015)
 
-- [ ] 3.1 Next Relationship migration: `relationship.commitment_candidates` per design.md
+- [x] 3.1 Next Relationship migration: `relationship.commitment_candidates` per design.md
   (unique `source_key`, partial unique non-terminal `fingerprint`), plus the sink receipt keyed
   by `confirm_id`; downgrade drops both.
-- [ ] 3.2 Deterministic job `commitment_candidate_scan` (`dispatch_mode="job"`, every 10 minutes)
+- [x] 3.2 Deterministic job `commitment_candidate_scan` (`dispatch_mode="job"`, every 10 minutes)
   in `roster/relationship/jobs/`: page the projection, resolve the counterparty with
   `resolve_contact_by_channel`, run `detect_commitment` with `now` = event time in
   `resolve_general_timezone`, apply the negatives and dedupe, commit candidates, then write the
   cursor; skip entirely while the signed-confirm composition is absent; lapse and purge sweep in
-  the same job.
-- [ ] 3.3 Tests: new `roster/relationship/tests/test_commitment_candidates_db.py` on migrated
+  the same job. Done 2026-11-14: dark behind `COMMITMENT_CANDIDATES_LIVE` (no span read, no
+  cursor write) and registered without a schedule; lapse and purge run on every run so the
+  14-day retention holds while dark or after a rollback.
+- [x] 3.3 Tests: new `roster/relationship/tests/test_commitment_candidates_db.py` on migrated
   PostgreSQL fed by real projection pages: one attributed candidate for a verified promise; no
   candidate for group, counterparty, forwarded, missing-fact, unresolved, unidentified, owner,
   hedged, over-long, old and active-fingerprint cases; replay, crash-before-cursor and two
   concurrent runs converge; deadline anchored to event time; lapse at 14 days is silent;
   terminal rows hold no content; tombstones purge; no candidate column holds the message text.
+  Done 2026-11-14 in `tests/integration/test_owner_chat_commitment_candidates.py`, not the
+  roster path: it stages both the Switchboard and the Relationship schema, which a roster test
+  may not reach. Unidentified, owner, over-long, old and event-time deadline cases are pinned
+  without a database in `roster/relationship/tests/test_commitment_candidates.py`.
 
 ## 4. Card and sink (REQ-commitment-lifecycle-013, -014)
 

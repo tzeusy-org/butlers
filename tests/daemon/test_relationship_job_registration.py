@@ -168,3 +168,33 @@ async def test_owner_address_geocoding_is_an_hourly_job(monkeypatch: pytest.Monk
 
     assert await handler("pool", None) == {"status": "ok"}
     assert calls == {"pool": "pool"}
+
+
+@pytest.mark.asyncio
+async def test_commitment_candidate_scan_is_registered_dark_and_unscheduled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """bu-jv1moa.11: registered, not scheduled, and dark until the confirm switch."""
+    from butlers.roster_imports import roster_module
+    from butlers.scheduled_jobs import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+
+    assert not [
+        s
+        for s in _load_relationship_schedules()
+        if s.get("job_name") == "commitment_candidate_scan"
+    ]
+    candidates = roster_module("relationship", "tools/commitment_candidates")
+    assert candidates.COMMITMENT_CANDIDATES_LIVE is False
+
+    calls: dict[str, Any] = {}
+
+    async def fake_scan(pool: Any, *, read_spans: Any, live: bool) -> dict[str, Any]:
+        calls.update(pool=pool, live=live, read_spans=read_spans)
+        return {"status": "skipped"}
+
+    monkeypatch.setattr(candidates, "scan", fake_scan)
+    handler = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY["relationship"]["commitment_candidate_scan"]
+    pool: Any = object()
+
+    assert await handler(pool, None) == {"status": "skipped"}
+    assert calls["pool"] is pool and calls["live"] is False and callable(calls["read_spans"])
