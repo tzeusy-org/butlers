@@ -325,17 +325,29 @@ async def apply_disposition(pool: asyncpg.Pool, confirm_id: UUID, ref: str, valu
             )
         if outcome != "tracked":
             fingerprint = None
-        await conn.execute(
+        written = await conn.fetchval(
             """
             INSERT INTO relationship.commitment_candidate_receipts
                 (confirm_id, candidate_id, outcome, commitment_fingerprint)
             VALUES ($1, $2, $3, $4)
+            ON CONFLICT (confirm_id) DO NOTHING
+            RETURNING 1
             """,
             confirm_id,
             candidate_id,
             outcome,
             fingerprint,
         )
+        if written is None:
+            # A concurrent replay of the same confirm_id committed first. It held the
+            # candidate lock, so this one saw a terminal row and wrote nothing else;
+            # the stored receipt is the answer.
+            stored = await conn.fetchrow(
+                "SELECT outcome, commitment_fingerprint FROM "
+                "relationship.commitment_candidate_receipts WHERE confirm_id = $1",
+                confirm_id,
+            )
+            return _receipt(stored["outcome"], stored["commitment_fingerprint"])
     return _receipt(outcome, fingerprint)
 
 

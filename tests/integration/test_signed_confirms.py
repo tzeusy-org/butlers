@@ -846,3 +846,29 @@ async def test_owner_chat_four_promises_across_owner_midnight_each_get_one_card(
 
     assert await step() == {"carded": 4}
     assert await _cards_sent(admin) == 4
+
+
+async def test_owner_chat_concurrent_replays_of_one_confirm_return_one_receipt(confirms):
+    """Two sink calls with one confirm_id race past the receipt read; neither raises."""
+    admin, role_pool = confirms
+    source, _, step = _candidate_harness(admin, role_pool)
+    sam = await _person(admin)
+    candidate = await _candidate(admin, sam, "send you the deck")
+    await step()
+    row = await _row(admin, candidate)
+
+    first, second = await asyncio.gather(
+        source.apply(row["confirm_id"], str(candidate), "track"),
+        source.apply(row["confirm_id"], str(candidate), "track"),
+    )
+
+    expected = {"status": "applied", "outcome": "tracked", "fingerprint": row["fingerprint"]}
+    assert first == second == expected
+    assert (
+        await admin.fetchval(
+            "SELECT count(*) FROM public.owner_conditions WHERE source=$1 AND fingerprint=$2",
+            _CC_SOURCE,
+            row["fingerprint"],
+        )
+        == 1
+    )
