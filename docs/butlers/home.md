@@ -60,6 +60,13 @@ Assistant source that has gone quiet, never clears an open alarm. The sentinel i
 Assistant service. Code: `src/butlers/jobs/home_safety.py`; requirement: `home-deterministic-jobs`
 spec, "Home Safety Sentinel Job".
 
+Not shipped: a "home sensing blind" condition while the owner is away, a freezer-temperature
+alarm and a door left open while away. They are specified, not implemented, in
+[specify-home-away-safety](../../openspec/changes/specify-home-away-safety/proposal.md).
+- Thresholds are the owner's own values; a missing one means the watch is unconfigured and silent.
+- Blindness never reads as all clear.
+- Whether any of the three may break quiet hours is an open owner decision.
+
 ## Private person mappings
 
 The dashboard's **Devices → Person mappings** form, behind dashboard owner-auth, is the only
