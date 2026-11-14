@@ -199,6 +199,54 @@ owner leaves a job). A `resolved` row is never re-queried until its text changes
 ids, statuses and providers, httpx's own request log line is suppressed for these calls (its URL
 contains the address), and the job returns counts only.
 
+## Owner-chat commitment candidates
+
+Promises the owner makes in their own one-to-one WhatsApp and Telegram chats become
+**candidates**, which the owner answers on a signed confirm card (bu-jv1moa.11; openspec change
+`add-owner-chat-commitment-candidates`, REQ-commitment-lifecycle-011 to -017). A candidate is
+not a commitment. Only the owner's Track tap creates one; the card and its sink are a later
+slice. The routed extraction path (REQ-commitment-lifecycle-007) is unchanged.
+
+**Dark.** `COMMITMENT_CANDIDATES_LIVE` in `roster/relationship/tools/commitment_candidates.py`
+is `False` until the signed-confirm composition is installed (bu-atc3xi). The job
+`commitment_candidate_scan` is registered but has no schedule in `butler.toml`. While dark a
+run reads no spans and writes no cursor; lapse and purge still run.
+
+**Producing a candidate.** The deterministic, model-free job reads pages from Switchboard's
+`owner_chat.spans` relay as `relationship` (see `docs/architecture/service-plane.md`). The
+relay returns only the owner's own unforwarded messages from private chats, with the single
+counterparty identity. For each one the job:
+
+1. skips a message whose `source_key` (SHA-256 of channel, endpoint, chat, provider message id
+   and direction) already has a row or tombstone;
+2. resolves the counterparty with `resolve_contact_by_channel`. It must be a live entity that
+   is neither the owner nor unidentified;
+3. runs `detect_commitment` with `now` set to the message's event time in the owner's timezone,
+   so relative deadlines anchor to the message, not to processing time;
+4. refuses an action longer than 120 characters (it is never truncated);
+5. writes nothing when an active commitment or a live candidate already has the fingerprint.
+
+The cursor (`state` key `commitment_candidates:cursor`, the projection's
+`(received_at, inbox_id)`) is written only after a page's candidates commit. A replay, a crash
+before the cursor write, or two concurrent runs therefore converge on one candidate per message.
+Any relay or database failure stops the run without moving the cursor.
+
+**`relationship.commitment_candidates`** (rel_042) stores the detected action, deadline, kind,
+confidence, marker, fingerprint, counterparty entity, channel, the evidence reference
+(`ingestion_event_id`, `provider_message_id`) and the `untrusted_origin` taint. It never stores
+the message text. Its states are `pending`, `carded`, `tracked`, `done`, `ignored`, `superseded`
+and `lapsed`. A CHECK makes every terminal row a content-free tombstone: source key, state,
+timestamps, `confirm_id`, and the commitment fingerprint only when tracked.
+`relationship.commitment_candidate_receipts` (keyed by `confirm_id`) is for the sink.
+
+**Lapse and retention.** A live candidate lapses silently at `event_time + 14 days`; nothing is
+sent to the owner. Tombstones are deleted once their event is more than 14 days old. The
+projection never returns older events, so a deleted tombstone cannot be re-proposed.
+
+**Known gap.** Single-message envelopes (Telegram backfill, ingest retry, chat-id fallback)
+carry no per-entry authorship facts. Owner messages that arrive that way never become
+candidates.
+
 ## Entity life-graph reads
 
 Two owner-only reads back the entity page's "what do I owe them, when did we last meet" doors

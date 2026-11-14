@@ -4370,3 +4370,28 @@ def _stamp_checkpoint(db_pool: asyncpg.Pool) -> None:  # pragma: no cover
         loop.create_task(_write())
     except RuntimeError:
         pass  # No running loop in sync context (e.g. tests that call synchronously)
+
+
+async def run_commitment_candidate_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Owner-chat commitment candidates (bu-jv1moa.11, REQ-commitment-lifecycle-011).
+
+    Deterministic and model-free. Lapse and purge always run; spans are read through
+    Switchboard's ``owner_chat.spans`` relay only once the signed-confirm composition
+    is live (``COMMITMENT_CANDIDATES_LIVE``). The result holds counts only.
+    """
+    from pathlib import Path
+
+    from butlers.config import load_config
+    from butlers.roster_imports import roster_module
+
+    candidates = roster_module("relationship", "tools/commitment_candidates")
+
+    def switchboard_url() -> str | None:
+        # The same configured value the daemon's Switchboard client is built from.
+        return load_config(Path(__file__).resolve().parents[1]).switchboard_url
+
+    return await candidates.scan(
+        db_pool,
+        read_spans=candidates.relay_span_reader(switchboard_url),
+        live=candidates.COMMITMENT_CANDIDATES_LIVE,
+    )

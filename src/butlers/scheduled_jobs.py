@@ -1283,6 +1283,18 @@ async def _run_relationship_interaction_sync_job(
     return await mod.run_interaction_sync(pool)
 
 
+async def _run_relationship_commitment_candidate_scan_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Owner-chat commitment candidates (bu-jv1moa.11); dark until the confirm switch."""
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("relationship")
+    return await mod.run_commitment_candidate_scan(pool)
+
+
 async def _run_relationship_loan_cost_claim_backfill_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2221,6 +2233,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "episodic_predicate_curation": _run_relationship_episodic_predicate_curation_job,
             "email_identity_enrichment": _run_relationship_email_identity_enrichment_job,
             "relationship_geocode_owner_addresses": (_run_relationship_geocode_owner_addresses_job),
+            "commitment_candidate_scan": _run_relationship_commitment_candidate_scan_job,
             # contact_info_reconciler retired (bu-e2ja9 / core_115): table dropped.
             **_retention_pruner_job_handlers("relationship"),
             "prepared_action_orphan_sweep": _run_prepared_action_orphan_sweep_job,
