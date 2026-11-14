@@ -191,6 +191,33 @@ tool, skill or session control for these alerts. It is dark: `HOME_AWAY_SAFETY_L
 no roster schedules the job. Requirement: `home-deterministic-jobs` spec delta in
 `openspec/changes/specify-home-away-safety/`.
 
+### Arrival card
+
+When the owner gets home after an absence of at least 30 minutes for which Home had something to say
+(a departure card, a Home condition that opened or resolved during the absence, or a parked fix),
+the zero-LLM `home_arrival_watch` job queues one read-only card on the timed insight lane
+(bu-jv1moa.116, REQ-home-deterministic-jobs-010). It is dark: `ARRIVAL_CARD_LIVE` is off and no
+roster schedules it.
+
+- Window: deliverable from the enter edge's confirmation + 2 minutes to + 30 minutes, dedup
+  `home:arrival:<edge id>`, routine priority, premise probe `("home", "arrival_card_current")`. The
+  lane treats it as a confirmed presence edge, so quiet hours yield to it for 15 minutes; `dnd` and
+  `sleeping` still hold it.
+- Lines: conditions named by their source family ("Freezer temperature", "Door or window left
+  open") with the recorded open and resolve times and resolution reason (never the condition's own
+  text); departure-watch items still not secure, or "cannot see", by the owner's labels; each fix
+  with its resolver status. An absence that had a departure card where nothing changed says
+  that nothing Home tracks changed and that Home only tracks what the owner declared.
+- Nothing is queued for a retracted or late enter, one followed by another leave, an absence under 30
+  minutes, or one with nothing to report; each decision is recorded once in `home.arrival_cards`
+  (kept 7 days). Every run rechecks open cards: one whose lines changed is closed
+  `withdrawn_changed`, and `public.resolve_home_arrival` (core_338) makes the Switchboard
+  withdraw it unsent or hold it when not rechecked for three minutes.
+- No Home Assistant call, button, prepared action, `friendly_name` or coordinate. Nothing is
+  inferred from Home Assistant history; Home-source outage stretches are not recorded, so only
+  the current lease and any `home:sensing-blind` condition appear. Fix lines come from an injected
+  reader that the departure-fix slice (bu-jv1moa.115) supplies; until then none appear.
+
 ### Prepared-action status
 
 `butlers.jobs.home_prepared_status.prepared_action_status` answers, for a parked Home action, one of

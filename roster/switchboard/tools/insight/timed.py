@@ -53,8 +53,11 @@ PRESENCE_EDGE_FRESHNESS = timedelta(minutes=15)
 
 #: Premise probes whose truth is a confirmed owner presence edge. Each is
 #: registered in ``premises.PREMISE_PROBES`` by its producer (the Home
-#: departure card, ``butlers.jobs.home_departure``).
-PRESENCE_EDGE_PROBES: frozenset[tuple[str, str]] = frozenset({("home", "departure_still_open")})
+#: departure card, ``butlers.jobs.home_departure``, and the arrival card,
+#: ``butlers.jobs.home_arrival``).
+PRESENCE_EDGE_PROBES: frozenset[tuple[str, str]] = frozenset(
+    {("home", "departure_still_open"), ("home", "arrival_card_current")}
+)
 
 #: A timed claim older than this is swept (see the module docstring).
 TIMED_STALE_CLAIM_AFTER = timedelta(minutes=10)
