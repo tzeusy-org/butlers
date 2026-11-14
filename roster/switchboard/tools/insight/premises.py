@@ -25,6 +25,7 @@ from typing import Any
 import asyncpg
 
 from butlers.core.insight_premise import PREMISE_KIND_OWNER_CONDITION, PREMISE_KIND_PROBE
+from butlers.jobs.home_prepared_status import STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -83,11 +84,31 @@ async def _home_departure_still_open(pool: asyncpg.Pool, args: Mapping[str, Any]
     return None if still_open is None else bool(still_open)
 
 
+async def _home_fix_status_unchanged(pool: asyncpg.Pool, args: Mapping[str, Any]) -> bool | None:
+    """True while a parked Home action still has the status a card showed; False once changed.
+
+    None when the ids or the status are malformed, or the definer answers ``unknown`` (no row, or
+    a state nothing classifies): the timed lane holds an unknown card.  bu-jv1moa.114.
+    """
+    try:
+        action_id = uuid.UUID(str(args.get("action_id")))
+    except ValueError:
+        return None
+    shown = args.get("status")
+    if not isinstance(shown, str) or shown not in STATUSES or shown == "unknown":
+        return None
+    current = await pool.fetchval("SELECT public.resolve_home_action_status($1)", action_id)
+    if current is None or current == "unknown":
+        return None
+    return current == shown
+
+
 #: ``(butler, probe)`` -> probe. A butler adopts premises by registering here.
 PREMISE_PROBES: dict[tuple[str, str], ProbeFn] = {
     ("finance", "bill_still_pending"): _finance_bill_still_pending,
     ("health", "medication_refill_still_due"): _health_medication_refill_still_due,
     ("home", "departure_still_open"): _home_departure_still_open,
+    ("home", "fix_status_unchanged"): _home_fix_status_unchanged,
 }
 
 

@@ -190,3 +190,45 @@ async def test_execution_failure_on_a_prepared_action_records_attention_ledger_r
         approvals_pool, origin_butler="relationship", source="approvals", outcome="failed"
     )
     assert written_id is not None
+
+
+async def test_a_parked_prepared_action_walks_the_home_status_resolver(approvals_pool) -> None:
+    """bu-jv1moa.114: the resolver reads the real approvals row through park, approve, cancel."""
+    from butlers.jobs.home_prepared_status import CANCEL_ACTOR, prepared_action_status
+    from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
+
+    approved, cancelled = uuid.uuid4(), uuid.uuid4()
+    now = datetime.now(UTC)
+    for action_id in (approved, cancelled):
+        await park_prepared_action(
+            approvals_pool,
+            action_id=action_id,
+            tool_name="notify",
+            tool_args={"message": "x", "intent": "send"},
+            agent_summary="Prepared",
+            requested_at=now,
+            expires_at=now + timedelta(days=1),
+            origin_butler="home",
+            deduplication_key=f"home:departure-fix:{action_id}",
+        )
+    assert await prepared_action_status(approvals_pool, approved) == "awaiting_approval"
+
+    await approvals_pool.execute(
+        "UPDATE pending_actions SET status = $1, decided_by = 'human:owner' WHERE id = $2",
+        ActionStatus.APPROVED.value,
+        approved,
+    )
+    await transition_pending_action(
+        approvals_pool,
+        action_id=cancelled,
+        target_status=ActionStatus.REJECTED,
+        decided_by=CANCEL_ACTOR,
+        event_actor=CANCEL_ACTOR,
+        event_reason="owner_returned",
+        event_metadata={},
+        now=now,
+    )
+
+    assert await prepared_action_status(approvals_pool, approved) == "approved_not_run"
+    assert await prepared_action_status(approvals_pool, cancelled) == "cancelled"
+    assert await prepared_action_status(approvals_pool, uuid.uuid4()) == "unknown"
