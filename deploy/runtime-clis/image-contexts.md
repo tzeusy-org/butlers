@@ -1,7 +1,8 @@
 # Source-owned complete image build contexts
 
 `scripts/runtime_clis/produce_image_contexts.py` runs the existing pinned public
-producer recipes serially, with one heavy producer at a time:
+producer recipes serially, with one heavy producer at a time (add `--cache DIR`
+to reuse unchanged producers; see below):
 
 ```sh
 python3 scripts/runtime_clis/produce_image_contexts.py \
@@ -47,8 +48,42 @@ verification. The final app consumes its selected variant, plus the complete
 Go context; the base consumes system and runtime contexts.
 
 Commands are bounded and use the existing producer owner-signal/process-group
-settlement implementation. Logs and command outcomes remain in the work
-directory. They are execution evidence, never reproducible artifact inputs.
+settlement implementation. Each command prints its argv before it starts and its
+exit code and wall-clock seconds after it ends. Buildx output streams to the
+caller's stdout as it happens; other command logs and outcomes remain in the
+work directory. Each producer then prints one `{"producer", "cache",
+"fingerprint", "seconds"}` line. Logs are execution evidence, never reproducible
+artifact inputs.
+
+### Reusing unchanged producers (`--cache DIR`)
+
+With `--cache DIR` (real, absolute, disjoint from the other three paths), each
+producer's extracted context is kept across runs, one entry per producer, and is
+reused only when its input fingerprint matches. The fingerprint is a SHA-256 over:
+
+- the producer's Dockerfile and every checkout path that Dockerfile `COPY`s (mode
+  and content digest, taken from the frozen-source identity);
+- its build arguments, platform and target;
+- the full tree digest (paths, types, permission bits and bytes) of every named
+  context it consumes.
+
+Base images, toolchains and network fetches are pinned by digest inside those
+files, so equal fingerprints mean the build would read the same inputs. A
+recipe whose reads cannot be enumerated is never cached: `ADD`, a bind mount
+from the build context, a cache mount, or a glob, JSON-form or heredoc `COPY`.
+A rebuilt producer changes its context bytes, so every consumer misses too.
+Since local builds are not bit-reproducible, a reused context has the same
+inputs as a fresh build, not necessarily the same bytes.
+
+A fresh build is cached only after the frozen source re-verifies against the
+identity the fingerprint used. Reuse hard-links the entry and re-digests it
+against the digest recorded at store time; a mismatch evicts the entry, and the
+producer runs. The runtime closure, frozen-source verification and atomic
+publication run unchanged on every run. A failed run keeps the producers that
+finished, so a retry resumes from the failure. Producers still run serially:
+the owner-signal boundary installs main-thread signal handlers, and the
+nightly `--prune-build-cache` would race concurrent builds. Nightly does not
+pass `--cache`.
 The three-hour per-producer watchdog accommodates the measured full Codex
 release build (about 85 minutes); it is a bound, not a timing-success claim.
 
