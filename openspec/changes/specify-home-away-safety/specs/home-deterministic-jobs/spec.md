@@ -31,7 +31,7 @@ Home SHALL write the canonical `home.sensing` slot for that group from the Home 
 - state `unmeasurable` when the lease is missing, in error or expired;
 - `unconfigured` when the group profile is not registered or no entity is declared.
 
-Blindness is judged per declared role. The roles are each declared `home.safety_watch` life-safety role (`leak`, `smoke`, `co`, `gas`), `freezer` and `away_door`. A role is blind in a run when the lease is not healthy, or when every declared entity of that role is unreadable. A partial loss within a role is not blind; it stays `degraded` and each unreadable entity stays unknown in its own producer. A role's blindness counts only over consecutive blind runs: Home SHALL record when a role's blind streak started, and any run in which that role is not blind ends the streak. While the owner is confirmed away, a role blind for at least the owner-configured `blind_after_minutes` SHALL open one `home:sensing-blind` condition per absence, naming every currently blind role by role, never by entity label. There is no code-set dwell. Blindness MUST NOT resolve, downgrade or imply clearing any other condition, and MUST NOT be reported as all clear.
+Blindness is judged per declared role. The roles are each declared `home.safety_watch` life-safety role (`leak`, `smoke`, `co`, `gas`), `freezer` and `away_door`. A role is blind in a run when the lease is not healthy, or when every declared entity of that role is unreadable. A partial loss within a role is not blind; it stays `degraded` and each unreadable entity stays unknown in its own producer. A role's blindness counts only over consecutive blind runs: Home SHALL record when a role's blind streak started and when the run that last extended it ran (`last_run_at`), and any run in which that role is not blind ends the streak. When the previous run is older than two job periods (4 minutes), the job did not run in between (crash, deploy or flag off), so the streak SHALL restart at the current run instead of bridging the gap. While the owner is confirmed away, a role blind for at least the owner-configured `blind_after_minutes` SHALL open one `home:sensing-blind` condition per absence, naming every currently blind role by role, never by entity label. There is no code-set dwell. Blindness MUST NOT resolve, downgrade or imply clearing any other condition, and MUST NOT be reported as all clear.
 
 ID: REQ-home-deterministic-jobs-003
 Source: RFC 0038 S3 situation registry (home.sensing row); home-deterministic-jobs "HA Source Health Guard for Snapshot Readers"; REQ-event-response-contract-003 and 005
@@ -72,7 +72,7 @@ Home SHALL judge a declared freezer's dwell from consecutive runs. A run qualifi
 - the reading is numeric and in the declared unit;
 - the reading is above the owner's maximum.
 
-Home SHALL record when the qualifying streak started and carry it into the condition's metadata when the condition opens. Home SHALL open one `home:freezer` condition when `now - streak_start` is at least the owner's dwell. A run with a known reading at or below the maximum ends the streak. A run that cannot qualify for any other reason (lease not healthy, reading unavailable, missing, non-numeric, stale or in another unit) is unknown: it ends the streak, and it carries an open condition forward without resolving it and opens nothing. An open condition SHALL resolve only on a known, fresh reading at or below the maximum minus the owner's hysteresis.
+Home SHALL record when the qualifying streak started and when the run that last extended it ran (`last_run_at`), and carry the start into the condition's metadata when the condition opens. When the previous run is older than two job periods (4 minutes), the job did not run in between, so the streak SHALL restart at the current run: a gap can delay an open but never fabricate one. Home SHALL open one `home:freezer` condition when `now - streak_start` is at least the owner's dwell. A run with a known reading at or below the maximum ends the streak. A run that cannot qualify for any other reason (lease not healthy, reading unavailable, missing, non-numeric, stale or in another unit) is unknown: it ends the streak, and it carries an open condition forward without resolving it and opens nothing. An open condition SHALL resolve only on a known, fresh reading at or below the maximum minus the owner's hysteresis.
 
 ID: REQ-home-deterministic-jobs-004
 Source: bu-jv1moa.6 unshipped freezer promise; home-deterministic-jobs "Home Safety Sentinel Job"; REQ-event-response-contract-002
@@ -87,6 +87,11 @@ Scope: v1-mandatory
 - **WHEN** an open freezer condition's readings fall below the maximum but stay above the maximum minus hysteresis
 - **THEN** the condition SHALL stay open
 - **AND** a dip below the maximum before the dwell elapses SHALL end the streak and open nothing
+
+#### Scenario: A gap in runs restarts the streak
+- **WHEN** a freezer's streak started 50 minutes ago against a 60-minute dwell, the job then did not run for 20 minutes, and the next run qualifies
+- **THEN** the streak SHALL restart at that run, because the previous run is older than 4 minutes
+- **AND** no condition SHALL open until a fresh, unbroken streak reaches the dwell
 
 #### Scenario: An unmeasurable freezer is unknown, not cold
 - **WHEN** the sensor is unavailable, its snapshot is older than the maximum reading age, it reports a different unit, or the source lease is not healthy
@@ -152,7 +157,7 @@ Scope: v1-mandatory
 - **THEN** no condition SHALL open from it, and an open one SHALL resolve as `premise_retracted` without a message
 
 ### Requirement: Away-safety delivery, repetition and quiet hours
-The three producers SHALL deliver through the routine Home notify path. A first send suppressed by quiet hours or the context bus SHALL leave the condition without a delivery marker, and the first run after the suppression lifts SHALL deliver it. Re-escalation follows the ledger as it is: the ladder is relative to the condition's opening, not to its first send. The rungs fall 1 hour after opening, 4 hours after that, then every 24 hours, as an opt-in ladder on their own sources only. A rung that falls while a send is suppressed is skipped, not queued: the ledger advances to the next rung and nothing is re-sent for the skipped one. Before every send of a `home:away-door` or `home:sensing-blind` message, the producer SHALL re-read the away premise and SHALL NOT send unless the owner is still confirmed away. They SHALL be read-only and model-free. They MUST NOT break quiet hours or sleep unless the owner prerequisite in design.md (P1) is answered and implemented under the bu-dhloi1.3 derived-urgency contract.
+The three producers SHALL deliver through the routine Home notify path. A first send suppressed by quiet hours or the context bus SHALL leave the condition without a delivery marker, and the first run after the suppression lifts SHALL deliver it. Re-escalation follows the ledger as it is: the ladder is relative to the condition's opening, not to its first send. The rungs fall 1 hour after opening, 4 hours after that, then every 24 hours, as an opt-in ladder on their own sources only. A rung that falls while a send is suppressed is held, like the first send: the producer records a per-rung delivery marker (a `notified_at`-style retry keyed by the rung), and the first run after the suppression lifts delivers that rung once. Rungs held in the same window are delivered as one message. The ladder stays relative to the opening; the hold changes when a rung is delivered, not when the next rung falls, and needs no change to the ledger's escalation engine. Before every send of a `home:away-door` or `home:sensing-blind` message, the producer SHALL re-read the away premise. It SHALL send only when the owner is still confirmed away. A confirmed return resolves the condition as `owner_returned`. A premise that reads `unknown` holds the send: nothing is sent and nothing is resolved, and the next run re-reads it. They SHALL be read-only and model-free. They MUST NOT break quiet hours or sleep unless the owner prerequisite in design.md (P1) is answered and implemented under the bu-dhloi1.3 derived-urgency contract.
 
 ID: REQ-home-deterministic-jobs-007
 Source: bu-dhloi1.3 and bu-u33sb7 q3=A (who may break quiet hours); owner-condition-ledger "Owner Condition Ledger Representation"; REQ-event-response-contract-001
@@ -162,11 +167,20 @@ Scope: v1-mandatory
 - **WHEN** a condition opens during quiet hours and the send is suppressed
 - **THEN** the condition SHALL stay open with no delivery marker
 - **AND** the first run after quiet hours SHALL send it once
-- **AND** the re-send ladder SHALL keep counting from the opening, so a rung that fell inside quiet hours is skipped and the next re-send is the next rung after the window
+- **AND** the re-send ladder SHALL keep counting from the opening
+
+#### Scenario: A daily rung that falls in quiet hours is held, not lost
+- **WHEN** a freezer or away-door condition stays open for days and its 24-hour rung falls inside quiet hours
+- **THEN** that rung SHALL be held and delivered once by the first run after the window
+- **AND** the next rung SHALL still fall 24 hours after the previous rung's due time, so the condition never goes silent because its rungs keep landing at night
 
 #### Scenario: The owner comes home just before a send
 - **WHEN** an away-door or blind message is due and the owner's return was confirmed since the run read the premise
 - **THEN** the producer SHALL re-read the premise before sending, send nothing, and resolve the condition as `owner_returned`
+
+#### Scenario: The premise is unknown at the re-read
+- **WHEN** an away-door or blind message is due and the re-read finds the away premise `unknown`
+- **THEN** the producer SHALL send nothing and resolve nothing, and the next run SHALL re-read it
 
 #### Scenario: Concurrent runs send once
 - **WHEN** two runs of the away-safety job overlap, or a run retries after a crash between opening and sending

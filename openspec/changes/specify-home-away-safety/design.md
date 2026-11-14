@@ -76,8 +76,9 @@ Freshness and unknown:
 
 Streaks (freezer dwell and per-role blindness):
 - Dwell is judged from consecutive runs, not from a history store.
-- The owner condition ledger has no pre-open state, so Home keeps each streak's start in its own table (`home.away_safety_streaks`, keyed by kind and entity or role). When a condition opens, the streak start is copied into its metadata as `detected_since`.
+- The owner condition ledger has no pre-open state, so Home keeps each streak in its own table (`home.away_safety_streaks`, keyed by kind and entity or role): `streak_start` and `last_run_at`, the time of the run that last extended it. When a condition opens, the streak start is copied into its metadata as `detected_since`.
 - A run that does not qualify deletes the streak. The next qualifying run starts a new one.
+- A run that finds `last_run_at` older than two job periods (4 minutes) restarts the streak at itself. The job did not run in between (crash, deploy, flag off), so nothing is known about that gap and it cannot count toward the dwell.
 - The dwell is met when `now - streak_start >= dwell`.
 
 Blind:
@@ -102,7 +103,9 @@ Away premise:
   - the slot and that transition agree.
 - Anything else is `presence_unknown`: opens nothing, resolves nothing except through an item's own secure reading, and re-sends say "away status unknown".
 - Owner return is the latest non-retracted, non-late confirmed enter after the leave edge. It resolves the away conditions as `owner_returned`. A retraction of the leave resolves them as `premise_retracted`. Neither sends a message.
-- Every away-door or blind send re-reads the premise immediately before sending. If the owner is no longer confirmed away, nothing is sent and the next reconcile applies the rules above.
+- Every away-door or blind send re-reads the premise immediately before sending. It sends only when the owner is still confirmed away:
+  - a confirmed return: nothing is sent and the condition resolves `owner_returned`;
+  - a premise that reads `unknown`: the send is held. Nothing is sent and nothing is resolved; the next run re-reads it.
 
 Dwell and hysteresis:
 - Away door: not secure (the `departure_watch` secure-state rule) continuously since `max(last_changed, leave.confirmed_at)` for `away_alert_after_minutes`.
@@ -127,7 +130,12 @@ Repeat and escalation:
 Quiet hours:
 - Delivery is the routine `_send_notify` path. A suppressed send records `suppressed` and leaves `notified_at` unset.
 - The first send is held: the retry rule (an undelivered condition older than 2 minutes) sends it on the first run after the suppression lifts. Never lost.
-- An escalation rung that falls inside quiet hours is skipped, not queued. The ledger has already advanced, so the next re-send is the next rung after the window. This is the honest cost of routine delivery; P1 is where a bypass would change it.
+- An escalation rung that falls inside quiet hours is held too, and delivered once after the window:
+  - the producer keeps a per-rung delivery marker in the condition metadata (`rung_due_at` and `rung_notified_at`, the `notified_at` pattern keyed by rung);
+  - a suppressed rung leaves `rung_notified_at` unset, and the first run after the suppression lifts sends it once;
+  - rungs held in the same window go out as one message;
+  - the ledger still advances `next_reescalate_at` on its own schedule, so the ladder stays open-relative and the engine is unchanged.
+- Without the hold, an open-relative 24-hour rung that lands at night would land at night every day, and a long-open condition would never re-send.
 - Nothing here breaks quiet hours until P1 below is answered.
 
 Retraction and removal:
@@ -150,7 +158,7 @@ Message text:
 | Maximum observation age | lease 5 min; freezer `max_reading_age_minutes`; presence `fresh_until` |
 | Polling | `home_away_safety` job, `dispatch_mode = "job"`, every 2 minutes; no websocket hook in v1 |
 | Fallback | unknown is carried forward (above); never resolved by omission |
-| Ordering and gaps | consecutive-run streaks; any non-qualifying run ends the streak, so a gap can delay an open but never fabricate one |
+| Ordering and gaps | consecutive-run streaks; any non-qualifying run ends the streak, and a run more than 4 min (two job periods) after the previous one restarts it, so a gap can delay an open but never fabricate one |
 | Dwell | owner values above |
 | Response deadline | opened within dwell + 4 min (two job periods) of the first qualifying run under a healthy source. A later open records `late_detection` with its lag (`opened_at - detected_since - dwell`) in the condition metadata |
 | Inference | none (REQ-event-response-contract-001, 004 not applicable) |
@@ -172,10 +180,12 @@ Every row's outcome is owner-visible: as a message, or as the condition and prod
 | Retracted leave | n/a | resolves `premise_retracted`, no message | resolves `premise_retracted`, no message |
 | Owner returns | n/a | resolves `owner_returned`, no message | resolves `owner_returned`, no message |
 | Owner returns between premise read and send | n/a | premise re-read before send: nothing sent; resolves `owner_returned` | same |
+| Premise unknown at the pre-send re-read | n/a | send held: nothing sent, nothing resolved; next run re-reads | same |
+| Job did not run (crash, deploy, flag off) for more than 4 min | the next run restarts the streak; the gap never counts toward the dwell | the duration is judged from `last_changed`, a persisted fact, so no streak bridges the gap | the next run restarts each role's blind streak |
 | Item open at departure | n/a | the departure card is the first message; the condition opens no earlier than 30 min after the leave confirmation (duration floor) | n/a |
 | Flapping (around the limit, or a door opened and closed) | hysteresis plus streak: a dip ends the streak and nothing opens; an open one stays open until below the hysteresis | a door closed before the duration opens nothing; reopening restarts from `last_changed` | a role that reads again ends its streak |
 | Delivery fails | stays open without `notified_at`; retried after 2 min | same | same |
-| Quiet-hours suppression | first send held by the retry and sent after the window; an escalation rung inside the window is skipped, and the next re-send is the next rung | same | same |
+| Quiet-hours suppression | first send held by the retry and sent after the window; an escalation rung inside the window is held by its per-rung marker and sent once after the window; the ladder stays open-relative | same | same |
 | Crash between open and send | next run: undelivered and older than 2 min, so it sends once | same | same |
 | Concurrent runs, or a run concurrent with the departure job | runs serialize on a transaction advisory lock; a second run returns `busy`; the ledger fingerprint keeps one episode | same; the departure job writes only `departure_cards` | same |
 | Declaration removed | resolves `watch_removed` on a complete healthy run | same | same (settings removed: blind `unconfigured`, resolves) |
@@ -228,7 +238,7 @@ Extend the existing owners first; add a new file only where none exists.
 | Target | Kind | Covers |
 |---|---|---|
 | `tests/jobs/test_home_away_safety.py` (new, mirrors `test_home_safety_sentinel.py`) | pure + real PG | every scenario-matrix row; per-role blindness (leak and smoke dark while the freezer reads opens one condition naming both); streak ends on unknown and on a cold reading; premise re-read before send; `late_detection` recorded and validated against the deadline; no HA POST (the `no_ha_posts` fixture from the departure tests); model-free |
-| `tests/jobs/test_home_safety_escalation_ladder.py` | extend, real PG | the new opt-in ladder, open-relative; a rung inside quiet hours is skipped, not queued; `home:safety` and the other sources unchanged |
+| `tests/jobs/test_home_safety_escalation_ladder.py` | extend, real PG | the new opt-in ladder, open-relative; a rung inside quiet hours is held and delivered once after the window, and the next rung keeps its open-relative time; `home:safety` and the other sources unchanged |
 | `tests/integration/test_condition_ledger_opt_ins_roundtrip.py` | extend, real PG | `notified_at` preservation for the three new sources |
 | `tests/jobs/test_home_safety_last_changed.py` | extend | away-door duration judged from `last_changed`, not `last_updated` |
 | `tests/jobs/test_home_departure_card.py` | extend, real PG | the departure job ignores `away_alert_after_minutes` and the away producer queues no card |
