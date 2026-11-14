@@ -643,6 +643,22 @@ class SelfLinkReferenceV1(BaseModel):
     params: dict[str, Any]
 
 
+class DoorReferenceV1(BaseModel):
+    """A reference to an owner-confirmed vendor door (bu-jv1moa.40), never a URL.
+
+    Not admitted by any notify action yet; the sender and receiver resolve it independently
+    against ``public.vendor_doors_current`` (``butlers.core.vendor_door_resolver``) and discard
+    any wire label, URL, host or provenance. ``slots`` values are strings the resolver types.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["door"]
+    door_id: UUID
+    version: Annotated[int, Field(ge=1)]
+    slots: dict[str, str] = Field(default_factory=dict, max_length=8)
+
+
 _RESOLVED_LINK_CONTEXT = object()
 
 
