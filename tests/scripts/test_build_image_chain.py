@@ -25,9 +25,10 @@ SPEC.loader.exec_module(producer)
 
 
 class Commands:
-    def __init__(self, failure=None):
+    def __init__(self, failure=None, loaded=None):
         self.calls = []
         self.failure = failure
+        self.loaded = loaded
 
     def run(self, argv, *, cwd, timeout=1800):
         self.calls.append((argv, timeout))
@@ -47,6 +48,8 @@ class Commands:
             )
             return ""
         if argv[:3] == ["docker", "image", "inspect"]:
+            if self.loaded is not None:
+                return json.dumps([self.loaded])
             return json.dumps(
                 [
                     {
@@ -175,6 +178,184 @@ def test_complete_chain_requires_real_manifest_all_profiles_and_owned_cleanup(
     assert result["variants"]["default-production"]["tag"] == "butlers-app:" + revision
     assert len(result["variants"]) == 4
     assert json.loads((output / "verification.json").read_text()) == result
+
+
+_MANIFEST = "sha256:" + "a" * 64
+_CONFIG = "sha256:" + "b" * 64
+_FOREIGN = "sha256:" + "c" * 64
+_INDEX = "application/vnd.oci.image.index.v1+json"
+
+
+@pytest.mark.parametrize(
+    ("loaded", "accepted"),
+    [
+        # The classic store reports the config digest as Id.
+        ({"Id": _CONFIG, "Os": "linux", "Architecture": "amd64"}, True),
+        # Docker 29's containerd store reports the loaded manifest digest as Id and
+        # names it again in Descriptor (bu-kiuh8v.38).
+        (
+            {
+                "Id": _MANIFEST,
+                "Descriptor": {"mediaType": _INDEX, "digest": _MANIFEST, "size": 856},
+                "Os": "linux",
+                "Architecture": "amd64",
+            },
+            True,
+        ),
+        ({"Id": _MANIFEST, "Os": "linux", "Architecture": "amd64"}, True),
+        (
+            {
+                "Id": _MANIFEST,
+                "Descriptor": {"mediaType": _INDEX, "digest": _FOREIGN, "size": 856},
+                "Os": "linux",
+                "Architecture": "amd64",
+            },
+            False,
+        ),
+        (
+            {
+                "Id": _CONFIG,
+                "Descriptor": {"mediaType": _INDEX, "digest": _FOREIGN, "size": 856},
+                "Os": "linux",
+                "Architecture": "amd64",
+            },
+            False,
+        ),
+        (
+            {"Id": _CONFIG, "Descriptor": _MANIFEST, "Os": "linux", "Architecture": "amd64"},
+            False,
+        ),
+        ({"Id": _FOREIGN, "Os": "linux", "Architecture": "amd64"}, False),
+        (
+            {
+                "Id": _FOREIGN,
+                "Descriptor": {"mediaType": _INDEX, "digest": _MANIFEST, "size": 856},
+                "Os": "linux",
+                "Architecture": "amd64",
+            },
+            False,
+        ),
+        ({"Id": _MANIFEST, "Os": "linux", "Architecture": "arm64"}, False),
+        ({"Id": _MANIFEST, "Os": "windows", "Architecture": "amd64"}, False),
+    ],
+)
+def test_loaded_application_identity_holds_under_both_image_stores(
+    recipe, tmp_path, loaded, accepted
+):
+    project, contexts, revision, helpers, events = recipe
+    commands = Commands(loaded=loaded)
+    work, output = tmp_path / "work", tmp_path / "output"
+    work.mkdir()
+    if not accepted:
+        with pytest.raises(ValueError, match="loaded application identity differs"):
+            producer.build(project, contexts, work, output, revision, helpers, commands)
+        assert not output.exists() and events[-1] == "cleanup"
+        return
+    result = producer.build(project, contexts, work, output, revision, helpers, commands)
+    # The recorded identity stays the content-addressed config digest from Buildx.
+    assert {variant["image_id"] for variant in result["variants"].values()} == {_CONFIG}
+
+
+def test_application_builds_load_one_attestation_free_manifest(recipe, tmp_path):
+    """Docker 29 + Buildx provenance loads an OCI index with no config digest (dispatch 43610085269).
+
+    The app builds turn attestations off so ``--load`` yields one platform manifest whose config
+    digest Buildx reports; the base push is untouched.
+    """
+    project, contexts, revision, helpers, events = recipe
+    commands = Commands()
+    work, output = tmp_path / "work", tmp_path / "output"
+    work.mkdir()
+    producer.build(project, contexts, work, output, revision, helpers, commands)
+    builds = [argv for argv, _ in commands.calls if argv[:3] == ["docker", "buildx", "build"]]
+    base, *apps = builds
+    assert len(apps) == 4
+    assert all("--provenance=false" in argv and "--sbom=false" in argv for argv in apps)
+    assert "--provenance=false" not in base and "--sbom=false" not in base
+
+
+def test_attested_index_without_config_digest_is_refused(recipe, tmp_path):
+    """The observed index shape stays refused: no config digest means no bound image id."""
+    project, contexts, revision, helpers, events = recipe
+
+    class Attested(Commands):
+        def run(self, argv, *, cwd, timeout=1800):
+            if argv[:3] == ["docker", "buildx", "build"] and "--load" in argv:
+                self.calls.append((argv, timeout))
+                metadata = Path(argv[argv.index("--metadata-file") + 1])
+                metadata.write_text(
+                    json.dumps(
+                        {
+                            "buildx.build.provenance": {},
+                            "containerimage.config.digest": None,
+                            "containerimage.digest": _MANIFEST,
+                            "containerimage.descriptor": {
+                                "mediaType": _INDEX,
+                                "digest": _MANIFEST,
+                                "size": 856,
+                            },
+                        }
+                    )
+                )
+                return ""
+            return super().run(argv, cwd=cwd, timeout=timeout)
+
+    commands = Attested(
+        loaded={
+            "Id": _MANIFEST,
+            "Descriptor": {"mediaType": _INDEX, "digest": _MANIFEST, "size": 856},
+            "RepoDigests": ["butlers-app@" + _MANIFEST],
+            "Os": "linux",
+            "Architecture": "amd64",
+        }
+    )
+    work, output = tmp_path / "work", tmp_path / "output"
+    work.mkdir()
+    with pytest.raises(ValueError, match="loaded application identity differs"):
+        producer.build(project, contexts, work, output, revision, helpers, commands)
+    assert not output.exists() and events[-1] == "cleanup"
+
+
+def test_identity_refusal_reports_digest_evidence_only(recipe, tmp_path):
+    """A runner-shape mismatch must be diagnosable from the job log alone."""
+    project, contexts, revision, helpers, events = recipe
+    commands = Commands(
+        loaded={
+            "Id": _FOREIGN,
+            "Descriptor": {"mediaType": _INDEX, "digest": _FOREIGN, "size": 856},
+            "RepoDigests": ["butlers-app@" + _FOREIGN],
+            "Config": {"Env": ["TOKEN=not-a-digest"]},
+            "Os": "linux",
+            "Architecture": "amd64",
+            "Variant": "TOKEN=also-not-a-digest",
+        }
+    )
+    work, output = tmp_path / "work", tmp_path / "output"
+    work.mkdir()
+    with pytest.raises(ValueError) as refusal:
+        producer.build(project, contexts, work, output, revision, helpers, commands)
+    message = str(refusal.value)
+    assert message.startswith("loaded application identity differs from Buildx output: ")
+    evidence = json.loads(message.split(": ", 1)[1])
+    assert evidence == {
+        "buildx": {
+            "keys": ["containerimage.config.digest", "containerimage.digest"],
+            "containerimage.config.digest": _CONFIG,
+            "containerimage.digest": _MANIFEST,
+            "containerimage.descriptor": None,
+        },
+        "inspect": [
+            {
+                "Id": _FOREIGN,
+                "Descriptor": {"mediaType": _INDEX, "digest": _FOREIGN, "size": 856},
+                "RepoDigests": ["butlers-app@" + _FOREIGN],
+                "Os": "linux",
+                "Architecture": "amd64",
+                "Variant": "<unexpected str>",
+            }
+        ],
+    }
+    assert "not-a-digest" not in message
 
 
 @pytest.mark.parametrize("drift", ["source", "runtime", "verification", "context-link", "revision"])

@@ -85,6 +85,85 @@ def contexts_identity(source: Path, contexts: Path, identity: dict, helpers) -> 
         raise ValueError("runtime context differs from its exact source manifest")
 
 
+def loaded_identity_matches(image: dict, config: str, manifest: str | None) -> bool:
+    """The loaded image is exactly what Buildx built, under either Docker image store.
+
+    The classic store reports the config digest as Id. Docker 29's containerd store
+    reports the loaded manifest digest as Id and repeats it in Descriptor, so a
+    present Descriptor must name exactly the manifest Buildx produced (bu-kiuh8v.38).
+    """
+    descriptor = image.get("Descriptor")
+    if descriptor is not None and (
+        type(descriptor) is not dict or manifest is None or descriptor.get("digest") != manifest
+    ):
+        return False
+    return image.get("Id") == config or (manifest is not None and image.get("Id") == manifest)
+
+
+_EVIDENCE_SHAPES = {
+    "digest": r"sha256:[0-9a-f]{64}",
+    "media": r"application/[a-z0-9.+-]{1,120}",
+    "reference": r"[a-z0-9./:_-]{1,200}@sha256:[0-9a-f]{64}",
+    "platform": r"[a-z0-9]{1,16}",
+}
+
+
+def _shaped(value, shape: str):
+    """Pass a value through only when it has the expected public shape."""
+    if value is None or (shape == "size" and type(value) is int):
+        return value
+    if isinstance(value, str) and re.fullmatch(_EVIDENCE_SHAPES.get(shape, r"(?!)"), value):
+        return value
+    return "<unexpected " + type(value).__name__ + ">"
+
+
+def _descriptor_evidence(descriptor):
+    if not isinstance(descriptor, dict):
+        return _shaped(descriptor, "digest")
+    return {
+        "mediaType": _shaped(descriptor.get("mediaType"), "media"),
+        "digest": _shaped(descriptor.get("digest"), "digest"),
+        "size": _shaped(descriptor.get("size"), "size"),
+    }
+
+
+def identity_evidence(built: dict, inspected) -> str:
+    """Digest-only account of what Buildx and the image store reported.
+
+    Image identities are public content addresses; every other field is dropped,
+    and anything not shaped like one is replaced, so no configuration leaks.
+    """
+    images = inspected if isinstance(inspected, list) else [inspected]
+    evidence = {
+        "buildx": {
+            "keys": sorted(str(key) for key in built),
+            "containerimage.config.digest": _shaped(
+                built.get("containerimage.config.digest"), "digest"
+            ),
+            "containerimage.digest": _shaped(built.get("containerimage.digest"), "digest"),
+            "containerimage.descriptor": _descriptor_evidence(
+                built.get("containerimage.descriptor")
+            ),
+        },
+        "inspect": [
+            {
+                "Id": _shaped(image.get("Id"), "digest"),
+                "Descriptor": _descriptor_evidence(image.get("Descriptor")),
+                "RepoDigests": [
+                    _shaped(item, "reference") for item in image.get("RepoDigests") or []
+                ],
+                "Os": _shaped(image.get("Os"), "platform"),
+                "Architecture": _shaped(image.get("Architecture"), "platform"),
+                "Variant": _shaped(image.get("Variant"), "platform"),
+            }
+            if isinstance(image, dict)
+            else "<unexpected " + type(image).__name__ + ">"
+            for image in images
+        ],
+    }
+    return json.dumps(evidence, sort_keys=True)
+
+
 def local_manifest(reference: str) -> str:
     """Read only the owned loopback registry; redirects and proxies are disabled."""
     match = re.fullmatch(r"127\.0\.0\.1:([0-9]+)/butlers-base@sha256:([0-9a-f]{64})", reference)
@@ -347,6 +426,11 @@ def build(project, contexts, work, output, revision, helpers, commands) -> dict:
                             str(source / "Dockerfile"),
                             "--target",
                             target,
+                            # No attestations: with them Docker 29 loads an OCI index and Buildx
+                            # reports no config digest, so nothing binds the loaded image id
+                            # (bu-kiuh8v.38, dispatch 43610085269). Nothing consumes them.
+                            "--provenance=false",
+                            "--sbom=false",
                             "--load",
                             "--tag",
                             tag,
@@ -367,21 +451,31 @@ def build(project, contexts, work, output, revision, helpers, commands) -> dict:
                         cwd=source,
                         timeout=3600,
                     )
-                    config = json.loads(regular(stage, metadata.name).read_bytes()).get(
-                        "containerimage.config.digest"
-                    )
+                    built = json.loads(regular(stage, metadata.name).read_bytes())
+                    config = built.get("containerimage.config.digest")
+                    manifest = built.get("containerimage.digest")
                     inspected = json.loads(
                         commands.run(["docker", "image", "inspect", tag], cwd=source)
                     )
                     if (
                         not isinstance(config, str)
                         or not re.fullmatch(r"sha256:[0-9a-f]{64}", config)
+                        or not (
+                            manifest is None
+                            or (
+                                isinstance(manifest, str)
+                                and re.fullmatch(r"sha256:[0-9a-f]{64}", manifest)
+                            )
+                        )
                         or len(inspected) != 1
-                        or inspected[0].get("Id") != config
+                        or not loaded_identity_matches(inspected[0], config, manifest)
                         or inspected[0].get("Architecture") != "amd64"
                         or inspected[0].get("Os") != "linux"
                     ):
-                        raise ValueError("loaded application identity differs from Buildx output")
+                        raise ValueError(
+                            "loaded application identity differs from Buildx output: "
+                            + identity_evidence(built, inspected)
+                        )
                     variants[name] = {"tag": tag, "image_id": config}
             helpers.verify_frozen(source, identity)
             contexts_identity(source, contexts, identity, helpers)
