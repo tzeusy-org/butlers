@@ -6614,7 +6614,7 @@ BEGIN
    OR EXISTS(SELECT FROM jsonb_each(p) e WHERE e.key NOT IN('namespace','task_id',
     'original_next_run_at','entity_id','sender_domain','channel','security_kind') OR jsonb_typeof(e.value)<>'string')
    THEN RETURN false; END IF;
-  SELECT encode(sha256(convert_to((to_jsonb(c)-ARRAY['status','delivered_at','delivery_attempt_count','metadata','delivery_ref'])::text,'UTF8')),'hex')
+  SELECT encode(sha256(convert_to((to_jsonb(c)-ARRAY['status','delivered_at','delivery_attempt_count','metadata','delivery_ref','lane','deliver_after','claim_id','claimed_at','attempt_started_at'])::text,'UTF8')),'hex')
    INTO d FROM public.insight_candidates c WHERE id=candidate;
   IF d IS NULL THEN RETURN false; END IF;
   INSERT INTO dashboard_attention.candidate_causes VALUES(candidate,d,p,clock_timestamp())
@@ -6628,7 +6628,7 @@ BEGIN
  BEGIN
   SELECT * INTO b FROM dashboard_attention.candidate_causes WHERE candidate_id=candidate;
   IF NOT FOUND THEN RETURN NULL; END IF;
-  SELECT encode(sha256(convert_to((to_jsonb(c)-ARRAY['status','delivered_at','delivery_attempt_count','metadata','delivery_ref'])::text,'UTF8')),'hex')
+  SELECT encode(sha256(convert_to((to_jsonb(c)-ARRAY['status','delivered_at','delivery_attempt_count','metadata','delivery_ref','lane','deliver_after','claim_id','claimed_at','attempt_started_at'])::text,'UTF8')),'hex')
    INTO d FROM public.insight_candidates c WHERE id=candidate AND status='pending';
   IF d IS DISTINCT FROM b.definition_digest THEN RETURN NULL; END IF;
   RETURN b.origin;
@@ -6829,6 +6829,30 @@ BEGIN
   PERFORM dashboard_attention.finalize_interface();
  END IF;
 END $attention_grant$;
+
+-- ATTENTION_DIGEST_REFRESH_BEGIN
+-- bu-jv1moa.8 (core_334): the candidate definition digest ignores the delivery
+-- lane and claim columns, so a candidate remembered before core_334 keeps its
+-- origin and claim churn never changes it. install_interface creates these two
+-- functions only on a first install; an installed pair is rewritten here, in
+-- place, by replacing exactly the exclusion array (body, owner, proconfig and
+-- EXECUTE grants are otherwise kept). Idempotent: a rewritten body no longer
+-- carries the old array. core_334 refuses to run until this has been applied.
+DO $attention_digest_refresh$
+DECLARE f regprocedure; definition text;
+ old_array constant text := 'ARRAY[''status'',''delivered_at'',''delivery_attempt_count'',''metadata'',''delivery_ref'']';
+ new_array constant text := 'ARRAY[''status'',''delivered_at'',''delivery_attempt_count'',''metadata'',''delivery_ref'',''lane'',''deliver_after'',''claim_id'',''claimed_at'',''attempt_started_at'']';
+BEGIN
+ FOREACH f IN ARRAY ARRAY[to_regprocedure('dashboard_attention.remember(uuid,jsonb)'),
+  to_regprocedure('dashboard_attention.candidate_origin(uuid)')] LOOP
+  CONTINUE WHEN f IS NULL;
+  definition := pg_get_functiondef(f);
+  IF position(old_array IN definition) > 0 THEN
+   EXECUTE replace(definition, old_array, new_array);
+  END IF;
+ END LOOP;
+END $attention_digest_refresh$;
+-- ATTENTION_DIGEST_REFRESH_END
 
 -- D13 fixed step-up interface. Roles/objects are staged ONLY by this existing
 -- privileged bootstrap; ordinary core_277 can invoke no-input installers only.

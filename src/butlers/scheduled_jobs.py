@@ -320,6 +320,25 @@ async def _run_switchboard_insight_urgent_subcycle_job(
     )
 
 
+async def _run_switchboard_insight_timed_subcycle_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the timed insight sub-cycle for the Switchboard butler (bu-jv1moa.8).
+
+    Sends each due ``lane='timed'`` candidate on its own through the same
+    production ``notify_fn`` as the digest. Dark: ``timed.TIMED_INSIGHTS_LIVE``
+    is off and no roster schedules this job; activation adds both.
+    """
+    del job_args
+    from butlers.roster_imports import roster_module
+
+    timed = roster_module("switchboard", "tools/insight/timed")
+    return await timed.timed_delivery_cycle(
+        pool, notify_fn=_build_switchboard_insight_notify_fn(pool)
+    )
+
+
 async def _run_switchboard_commitment_escalation_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2318,6 +2337,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
             "insight_delivery_cycle": _run_switchboard_insight_delivery_cycle_job,
             "insight_urgent_subcycle": _run_switchboard_insight_urgent_subcycle_job,
+            "insight_timed_subcycle": _run_switchboard_insight_timed_subcycle_job,
             "commitment_escalation": _run_switchboard_commitment_escalation_job,
             "spend_rule_savings": _run_switchboard_spend_rule_savings_job,
             "rule_promotion_trigger": _run_switchboard_rule_promotion_trigger_job,
