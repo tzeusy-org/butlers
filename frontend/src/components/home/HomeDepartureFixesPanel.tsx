@@ -4,6 +4,7 @@ import type { HomeDepartureFix, HomeDepartureWatchItem } from "@/api/home-depart
 import { Panel } from "@/components/ui/atoms";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import {
   useDeleteDepartureFix,
   useHomeDepartureFixes,
@@ -149,7 +150,6 @@ export function HomeDepartureFixesPanel() {
   const fixes = useHomeDepartureFixes();
   const loading = watch.isLoading || fixes.isLoading;
   const failed = watch.isError || fixes.isError;
-  const byEntity = new Map((fixes.data ?? []).map((fix) => [fix.entity_id, fix]));
 
   return (
     <Panel title="Departure fixes" span={4} testId="home-departure-fixes-panel">
@@ -164,22 +164,15 @@ export function HomeDepartureFixesPanel() {
           </p>
         ) : null}
         {failed ? (
-          <div className="flex flex-wrap items-center gap-3" aria-live="polite">
-            <p className="text-sm text-destructive" data-testid="home-departure-fixes-error">
-              Couldn&apos;t load departure fixes. Fixes already saved still apply.
-            </p>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                void watch.refetch();
-                void fixes.refetch();
-              }}
-            >
-              Reload departure fixes
-            </Button>
-          </div>
+          <SourceDegradedNote
+            label="Departure fixes"
+            detail="couldn't load; fixes already saved still apply"
+            testId="home-departure-fixes-error"
+            onRetry={() => {
+              void watch.refetch();
+              void fixes.refetch();
+            }}
+          />
         ) : null}
         {watch.data && fixes.data ? (
           watch.data.length === 0 ? (
@@ -189,7 +182,11 @@ export function HomeDepartureFixesPanel() {
           ) : (
             <ul className="space-y-4" data-testid="home-departure-fix-list">
               {watch.data.map((item) => (
-                <FixRow key={item.entity_id} item={item} fix={byEntity.get(item.entity_id)} />
+                <FixRow
+                  key={item.entity_id}
+                  item={item}
+                  fix={fixes.data.find((fix) => fix.entity_id === item.entity_id)}
+                />
               ))}
             </ul>
           )

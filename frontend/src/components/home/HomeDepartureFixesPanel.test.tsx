@@ -126,13 +126,25 @@ describe("HomeDepartureFixesPanel", () => {
     expect(screen.getByText(/nothing to fix/)).toBeTruthy();
   });
 
-  it("offers a reload when a read fails and keeps the saved fixes in force", () => {
+  it("names a failed read as degraded, never as no fixes, and offers a retry", () => {
     state.watch = { isError: true };
     state.fixes = { isError: true };
     render(<HomeDepartureFixesPanel />);
 
-    expect(screen.getByTestId("home-departure-fixes-error").textContent).toContain("still apply");
-    fireEvent.click(screen.getByRole("button", { name: "Reload departure fixes" }));
+    const note = screen.getByTestId("home-departure-fixes-error");
+    expect(note.textContent).toContain("couldn't load");
+    expect(note.textContent).toContain("still apply");
+    expect(screen.queryByText(/nothing to fix/)).toBeNull();
+    expect(screen.queryByTestId("home-departure-fix-list")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(refetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not show an empty list when only the fixes read failed", () => {
+    state.fixes = { isError: true };
+    render(<HomeDepartureFixesPanel />);
+
+    expect(screen.getByTestId("home-departure-fixes-error")).toBeTruthy();
+    expect(screen.queryByTestId("home-departure-fix-list")).toBeNull();
   });
 });
