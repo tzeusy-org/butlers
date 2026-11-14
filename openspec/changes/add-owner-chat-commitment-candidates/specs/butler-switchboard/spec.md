@@ -18,6 +18,10 @@ application before the inbox insert commits, the projection SHALL exclude every 
 `received_at` is less than 60 seconds before the database's current time, so a slow ingest
 transaction commits before the cursor can pass its position. The projection SHALL take no other argument, SHALL
 write nothing, and SHALL report unavailability as an error, never as an empty complete page.
+Only batched `conversation_history` envelopes carry history entries. Single-message user-client
+envelopes (Telegram backfill, ingest retry and the fallback when a chat id cannot be read) carry
+none, so the projection SHALL NOT return their messages in S1; that coverage gap is explicit, not
+a qualifying rule.
 
 ID: REQ-butler-switchboard-011
 Source: about/heart-and-soul/vision.md non-negotiable 3 (cross-domain access MCP-only through the control plane); RFC 0038 D2 and D7; bu-jv1moa.11

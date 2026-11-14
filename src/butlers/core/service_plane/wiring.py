@@ -44,6 +44,7 @@ def build_switchboard_relay_route(pool: Any, roster_dir: Path) -> Any:
             contacts_daemons=roster_module_daemons("contacts", roster_dir),
             memory_daemons=roster_module_daemons("memory", roster_dir),
             catalog_pointer=catalog_pointer_reader(pool),
+            owner_chat_spans=owner_chat_spans_reader(pool),
         )
 
     return build_relay_route(
@@ -52,6 +53,19 @@ def build_switchboard_relay_route(pool: Any, roster_dir: Path) -> Any:
         verifier=lambda: cached_verifier(RELAY_AUDIENCE),
         dispatch_for=lambda endpoint: relay_dispatch(pool, endpoint),
     )
+
+
+def owner_chat_spans_reader(pool: Any) -> Callable[..., Awaitable[Any]]:
+    """Switchboard's own owner-chat read for the ``owner_chat.spans`` relay."""
+
+    async def read(after_received_at: Any, after_inbox_id: Any) -> Any:
+        # Switchboard's tools package is loaded from the roster at runtime.
+        projection = importlib.import_module("butlers.tools.switchboard.owner_chat.projection")
+        return await projection.owner_chat_spans(
+            pool, after_received_at=after_received_at, after_inbox_id=after_inbox_id
+        )
+
+    return read
 
 
 def relay_dispatch(pool: Any, endpoint: RelayEndpoint) -> Dispatch:

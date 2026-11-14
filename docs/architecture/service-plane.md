@@ -38,6 +38,8 @@ fields. `relay_call` refuses, before contacting the target, when:
 - the authenticated caller is not on the relay's allowlist (`caller_not_allowed`);
 - the target tool is LLM-presentable, or is missing from the presentation
   inventory (`target_llm_presentable`);
+- a local relay (below) names any target other than Switchboard alone
+  (`target_not_allowed`);
 - the arguments fail the schema (`args_invalid`).
 
 The caller is a `ServiceCaller(workload, daemon)`. The workload is the
@@ -83,6 +85,7 @@ delivery into a permanent failure.
 | `contacts.resolve_channel` | Relationship `contacts_resolve_channel` | butlers declaring `[modules.contacts]` in `butler.toml`, on `butlers-up` | `channel_type`, `channel_value`, `request_id` (UUID). The Contacts module's owner lookup; any refusal or failure is `ContactsOwnerUnavailable`. |
 | `contacts.report_channel` | Relationship `contacts_report_channel` | as above | `subject` (UUID), `channel_type`, `channel_value`, `primary`. Provenance is fixed by the target (third party); the schema admits no authority field. |
 | `fleet_case.open`, `fleet_case.close`, `fleet_case.propose_posture`, `fleet_case.record_link` | Switchboard `open_case_service`, `close_case_service`, `propose_case_posture_service`, `record_case_link_service` | every roster daemon on `butlers-up` except Switchboard | The fleet-case writes RLS reserves to Switchboard. Each schema is exactly its tool's arguments. The twins are registered on Switchboard only and run Switchboard's own write; a 403 refusal is a permanent error, anything else retryable. |
+| `owner_chat.spans` | Switchboard's own owner-chat projection (local, no MCP tool) | `(butlers-up, relationship)` only | `after_received_at` (aware timestamp) and `after_inbox_id` (UUID), both or neither; nothing else. Served only when Switchboard wires its reader. Returns one page of the owner's own spans from one-to-one user-client chats in `switchboard.message_inbox`, the next cursor and `more` (REQ-butler-switchboard-011; `roster/switchboard/tools/owner_chat/projection.py`). A database failure is an error, never an empty page. |
 | `memory.catalog_fetch` | the pointer owner's `memory_get_service` | every roster daemon on `butlers-up` except Switchboard | `source_schema`, `source_table` (`facts` or `rules`), `source_id` (UUID): only the catalog pointer. The relay's `prepare` reads Switchboard's own live, visible `public.memory_catalog` row and takes the owner and memory type from it; the owner must host the Memory module (`[modules.memory]`), else `target_not_allowed`. A pointer not in the catalog is `catalog_pointer_not_found` (the caller answers `not_found`). The caller's held sensitivity ceiling withholds before the call; the owner's twin applies its own. Switchboard itself keeps the in-process route. |
 
 A relay target must be declared `presentable=False`, so a target that LLM
@@ -91,6 +94,12 @@ LLM-facing tool is never relay-reachable. Relationship's `contacts_ingress`
 tools were already service-only, so the contacts relays need no twin. A
 relay's `prepare` is async, so it may read before it picks a target (the
 memory catalog relay does).
+
+A local relay (`RelayEndpoint.local`) is a fixed read Switchboard answers
+itself from its own schema, with the validated arguments, instead of
+dispatching through `route()`. It has no MCP tool, so it is never declared in
+the presentation inventory and no model session or direct MCP client can reach
+it; its only target is Switchboard. `owner_chat.spans` is the one local relay.
 
 Every `named_relay` row in the route-caller inventory
 (`src/butlers/core/service_plane/inventory.py`) now has its relay. The calendar

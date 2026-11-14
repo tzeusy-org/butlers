@@ -29,17 +29,29 @@ dispatch packet for bu-jv1moa.11.
 
 ## 2. Switchboard projection (REQ-butler-switchboard-011)
 
-- [ ] 2.1 Verify the `[Unknown]` caller-authentication seam: bind the projection on the trusted
-  kernel-peer composition used by `ConfirmAuthorityTopology` with a Relationship issuer and a
-  projection audience. Stop if only weaker authentication is possible.
-- [ ] 2.2 Verify the `[Unknown]` single-message envelope path; cover or exclude it explicitly.
-- [ ] 2.3 Implement the fixed projection over `switchboard.message_inbox` with the
+- [x] 2.1 Verify the `[Unknown]` caller-authentication seam and bind the projection on the
+  strongest live caller authentication. Amended 2026-11-14 (bu-jv1moa.11): the
+  `ConfirmAuthorityTopology` kernel-peer composition is not instantiated in any deployment until
+  bu-atc3xi, so binding on it would leave the projection unreachable. The projection is served
+  only as the `owner_chat.spans` service-plane named relay (RFC 0038 D7): a projected
+  workload token with the relay audience, the presented `relationship` daemon on the allowlist,
+  and a strict cursor-only schema. Switchboard answers it in-process; it has no MCP tool, so no
+  model session or direct MCP client can reach it. The presented daemon narrows the workload
+  and is not separately proven.
+- [x] 2.2 Verify the `[Unknown]` single-message envelope path; cover or exclude it explicitly.
+  Verified 2026-11-14: WhatsApp `_normalize_single_event_to_ingest_v1` has no caller; Telegram's
+  single-message path is live (backfill, ingest retry, chat-id fallback) and carries no
+  `conversation_history`. Excluded explicitly in S1 (REQ-butler-switchboard-011 and
+  `docs/connectors/overview.md`); covering it is a separate follow-up.
+- [x] 2.3 Implement the fixed projection over `switchboard.message_inbox` with the
   `(received_at, inbox_id)` cursor, the normative 60-second in-flight exclusion and the 14-day floor;
   unavailability returns an error.
-- [ ] 2.4 Tests on migrated PostgreSQL next to `roster/switchboard/tests/test_ingest_api.py`
+- [x] 2.4 Tests on migrated PostgreSQL next to `roster/switchboard/tests/test_ingest_api.py`
   (real `ingest_v1` writes, then projection reads): qualifying selection, group exclusion,
   owner-sender mismatch exclusion, cursor resume without gaps, a late-committing row inside the
-  60-second window is not skipped, unauthenticated caller refused.
+  60-second window is not skipped, unauthenticated caller refused. DB cases are in
+  `roster/switchboard/tests/test_owner_chat_projection_db.py`; caller refusals are relay tests in
+  `tests/core/test_service_plane_relay_endpoint.py`.
 
 ## 3. Relationship reducer and store (REQ-commitment-lifecycle-011, -012, -015)
 
