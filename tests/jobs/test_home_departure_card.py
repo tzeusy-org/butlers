@@ -368,6 +368,68 @@ async def test_a_closed_leave_queues_nothing(db, live, case) -> None:
 @_docker
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
+async def test_arming_an_item_for_away_safety_leaves_the_card_unchanged(db, live) -> None:
+    """bu-jv1moa.87: the card ignores away_alert_after_minutes; it is the away producer's."""
+    pool = await _home_pool(db)
+    await _seed(pool, door="on")
+    await pool.execute("UPDATE departure_watch SET away_alert_after_minutes = 30")
+
+    await _run(pool, [_now_edge("leave", 3)])
+
+    (candidate,) = await _candidates(pool)
+    assert candidate["message"] == "You left home.\nFront door: on"
+
+
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_away_producer_opens_a_condition_and_queues_no_card(db, monkeypatch) -> None:
+    """bu-jv1moa.87: away-door alerts go through the ledger and notify, never the card lane."""
+    from butlers.jobs import home_away_safety as away
+
+    monkeypatch.setattr(away, "HOME_AWAY_SAFETY_LIVE", True)
+    pool = await _home_pool(db)
+    await _seed(pool, door="on")
+    await pool.execute(
+        "UPDATE departure_watch SET away_alert_after_minutes = 30, "
+        "secure_states = ARRAY['off'] WHERE entity_id = $1",
+        _DOOR.entity_id,
+    )
+    await pool.execute(
+        "UPDATE ha_entity_snapshot SET last_changed = now() - interval '2 hours' "
+        "WHERE entity_id = $1",
+        _DOOR.entity_id,
+    )
+    # live-clock: the seeded last_changed is Postgres now() - 2h, so the departure
+    # edge must sit on the same real clock for the away window to have elapsed.
+    now = datetime.now(UTC)
+    leave = _edge("leave", 40, now=now)
+    premise = home_departure.PresenceRead(
+        {
+            "state": "known",
+            "value": {"presence": "outside"},
+            "fresh_until": (now + timedelta(minutes=30)).isoformat(),
+        },
+        (leave,),
+    )
+    notify = AsyncMock(return_value="sent")
+
+    result = await away.run_away_safety(
+        pool,
+        None,
+        read_presence=AsyncMock(return_value=premise),
+        sensing_writer=AsyncMock(return_value="unconfigured"),
+        notify_fn=notify,
+    )
+
+    assert result[away.AWAY_DOOR_SOURCE]["opened"] == 1
+    notify.assert_awaited_once()
+    assert await _candidates(pool) == []
+
+
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 async def test_an_unmeasurable_home_assistant_queues_a_cannot_see_card(db, live) -> None:
     pool = await _home_pool(db)
     await _seed(pool, door="off", healthy=False)

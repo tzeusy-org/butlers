@@ -20,6 +20,9 @@ from butlers.core.owner_conditions import (
     get_active_condition,
     reconcile_snapshot,
 )
+from butlers.jobs.home_away_safety import ESCALATION_ADVANCE as AWAY_LADDER
+from butlers.jobs.home_away_safety import INITIAL_GRACE_SECONDS as AWAY_GRACE
+from butlers.jobs.home_away_safety import MARKERS as AWAY_MARKERS
 from butlers.jobs.home_safety import ESCALATION_ADVANCE as SAFETY_LADDER
 
 docker_available = shutil.which("docker") is not None
@@ -75,6 +78,49 @@ async def test_safety_ladder_drives_each_level_and_the_default_is_unchanged(
 
     assert safety == [timedelta(hours=1), timedelta(hours=4), timedelta(days=1), timedelta(days=1)]
     assert default == [timedelta(days=1), timedelta(days=3), timedelta(days=7), timedelta(days=7)]
+
+
+async def test_away_safety_ladder_drives_each_level(db_pool: asyncpg.Pool) -> None:
+    """bu-jv1moa.87: the away sources' opt-in, 4 hours after the first rung then daily."""
+    away = await _gaps_between_escalations(db_pool, escalation_advance=AWAY_LADDER)
+
+    assert away == [timedelta(hours=4), timedelta(days=1), timedelta(days=1), timedelta(days=1)]
+
+
+@pytest.mark.parametrize("source", ["home:freezer", "home:away-door", "home:sensing-blind"])
+async def test_away_safety_delivery_markers_survive_a_concurrent_confirmation(
+    db_pool: asyncpg.Pool, source: str
+) -> None:
+    """A run that confirms with metadata built before the send never erases a marker."""
+    fp = compute_fingerprint(source, 1, {"id": uuid.uuid4().hex})
+    markers = {
+        "notified_at": "2026-11-14T08:00:00+00:00",
+        "rung_due_at": "2026-11-14T09:00:00+00:00",
+        "rung_notified_at": "2026-11-14T09:00:05+00:00",
+    }
+
+    async def check_in(metadata: dict, *, confirm_only: bool) -> None:
+        await reconcile_snapshot(
+            db_pool,
+            source=source,
+            observations=[
+                Observation(
+                    fingerprint=fp, summary="s", metadata=metadata, confirm_only=confirm_only
+                )
+            ],
+            snapshot_complete=False,
+            initial_grace_seconds=AWAY_GRACE,
+            escalation_advance=AWAY_LADDER,
+            preserve_metadata_keys=AWAY_MARKERS,
+        )
+
+    await check_in({"entity_id": "x"}, confirm_only=False)
+    await check_in({"entity_id": "x", **markers}, confirm_only=True)
+    await check_in({"entity_id": "x", "detected_since": "earlier"}, confirm_only=True)
+    active = await get_active_condition(db_pool, source=source, fingerprint=fp)
+
+    assert {key: active["metadata"].get(key) for key in markers} == markers
+    assert active["metadata"]["detected_since"] == "earlier"
 
 
 async def _confirm_after_a_marker(pool: asyncpg.Pool, **opt_ins) -> dict:

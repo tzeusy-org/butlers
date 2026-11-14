@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -81,6 +82,13 @@ OwnerPlaceResponse = _models.OwnerPlaceResponse
 PresenceOwnerEntitiesUpdate = _models.PresenceOwnerEntitiesUpdate
 PresenceOwnerEntitiesResponse = _models.PresenceOwnerEntitiesResponse
 PresenceTransition = _models.PresenceTransition
+TemperatureWatchEntry = _models.TemperatureWatchEntry
+TemperatureWatchUpsertRequest = _models.TemperatureWatchUpsertRequest
+AwayAlertRequest = _models.AwayAlertRequest
+BlindSettingsRequest = _models.BlindSettingsRequest
+AwayDoorEntry = _models.AwayDoorEntry
+AwaySafetyStatus = _models.AwaySafetyStatus
+AwaySafetyConfig = _models.AwaySafetyConfig
 
 logger = logging.getLogger(__name__)
 
@@ -1642,6 +1650,319 @@ async def delete_departure_watch(
         request=request,
     )
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# /api/home/away-safety — freezers, away-door durations and the blind dwell (bu-jv1moa.87)
+# ---------------------------------------------------------------------------
+#
+# Owner-only and content-blind, like the place registry: the handlers read their own bodies,
+# DashboardAuditMiddleware skips this subtree by path, and every refusal is one fixed code
+# audited by outcome only.  No route here creates, registers or changes the installation
+# sensing group; that is the privileged activation act (REQ-home-deterministic-jobs-003).
+
+_AWAY_MAX_BODY_BYTES = 4_096
+_AWAY_MAX_FREEZERS = 8
+_AWAY_INVALID = (422, "INVALID_REQUEST", "Away-safety request is invalid.")
+_AWAY_TOO_LARGE = (413, "REQUEST_BODY_TOO_LARGE", "Request body exceeds 4 KiB.")
+_AWAY_NOT_FOUND = (404, "NOT_FOUND", "No such away-safety declaration.")
+_AWAY_LIMIT = (409, "FREEZER_LIMIT", "At most 8 freezers can be declared.")
+_AWAY_UNAVAILABLE = (503, "AWAY_SAFETY_UNAVAILABLE", "Away-safety settings are unavailable.")
+_AWAY_ENTITY = re.compile(r"\A[a-z_]+\.[a-z0-9_]+\Z", re.ASCII)
+_FREEZER_COLUMNS = (
+    "entity_id, owner_label, unit, max_c, hysteresis_c, dwell_minutes, "
+    "max_reading_age_minutes, updated_at"
+)
+
+
+def _freezer_entry(row: Any) -> TemperatureWatchEntry:
+    updated_at = row["updated_at"]
+    return TemperatureWatchEntry(
+        entity_id=row["entity_id"],
+        owner_label=row["owner_label"],
+        unit=row["unit"],
+        max_c=float(row["max_c"]),
+        hysteresis_c=float(row["hysteresis_c"]),
+        dwell_minutes=row["dwell_minutes"],
+        max_reading_age_minutes=row["max_reading_age_minutes"],
+        updated_at=updated_at.isoformat() if updated_at else None,
+    )
+
+
+def _away_entity(entity_id: str) -> str:
+    if not _AWAY_ENTITY.match(entity_id) or len(entity_id) > 255:
+        raise _PlaceRefusal(*_AWAY_NOT_FOUND)
+    return entity_id
+
+
+async def _audit_away(
+    db: Any, request: Request, operation: str, outcome: str, status_code: int
+) -> None:
+    """One allowlisted audit row: the operation and its outcome, never a submitted value."""
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation=f"away_safety_{operation}",
+        method=request.method,
+        path="/api/home/away-safety",
+        body={"outcome": outcome},
+        response_status=status_code,
+        result="success" if status_code < 400 else "refused",
+        request=request,
+    )
+
+
+async def _away_write(db: Any, request: Request, operation: str, write: Any) -> Any:
+    """Run one write; map every refusal or storage failure to a fixed, audited code."""
+    try:
+        if db is None:
+            raise _PlaceRefusal(*_AWAY_UNAVAILABLE)
+        result = await write(db.pool(BUTLER_DB))
+    except _PlaceRefusal as refusal:
+        await _audit_away(db, request, operation, refusal.code.lower(), refusal.status_code)
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("away-safety write failed: database unavailable")
+        await _audit_away(db, request, operation, "unavailable", 503)
+        return _place_error(_AWAY_UNAVAILABLE)
+    status_code = 200 if result is not None else 204
+    await _audit_away(db, request, operation, "applied", status_code)
+    return result if result is not None else Response(status_code=204)
+
+
+async def _sensing_group_status() -> str:
+    """``registered`` once the activation act registered the group, read as the owner reader."""
+    from butlers.jobs.home_away_safety import SENSING_GROUP
+
+    connection = None
+    try:
+        connection = await _open_presence_reader()
+        if connection is None:
+            return "unknown"
+        slot = await PerceptionStore(connection).read(
+            "home.sensing", SENSING_GROUP, as_of=datetime.now(UTC)
+        )
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        return "unknown"
+    finally:
+        if connection is not None:
+            await connection.close()
+    state = slot.get("state") if isinstance(slot, dict) else None
+    if state == "unconfigured":
+        return "unconfigured"
+    return "registered" if state in ("known", "unknown", "unmeasurable") else "unknown"
+
+
+@router.get(
+    "/away-safety", response_model=AwaySafetyConfig, responses={503: {"model": ErrorResponse}}
+)
+async def get_away_safety(
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """The away-safety declarations and what each producer can do with them."""
+    try:
+        if db is None:
+            return _place_error(_AWAY_UNAVAILABLE)
+        pool = db.pool(BUTLER_DB)
+        freezers = await pool.fetch(
+            f"SELECT {_FREEZER_COLUMNS} FROM temperature_watch ORDER BY entity_id"
+        )
+        doors = await pool.fetch(
+            "SELECT entity_id, owner_label, away_alert_after_minutes FROM departure_watch "
+            "ORDER BY entity_id"
+        )
+        blind_after = await pool.fetchval("SELECT blind_after_minutes FROM away_safety_settings")
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("away-safety read failed: database unavailable")
+        return _place_error(_AWAY_UNAVAILABLE)
+    sensing = await _sensing_group_status()
+    armed = any(r["away_alert_after_minutes"] is not None for r in doors)
+    return AwaySafetyConfig(
+        freezers=[_freezer_entry(r) for r in freezers],
+        doors=[
+            AwayDoorEntry(
+                entity_id=r["entity_id"],
+                owner_label=r["owner_label"],
+                away_alert_after_minutes=r["away_alert_after_minutes"],
+            )
+            for r in doors
+        ],
+        blind_after_minutes=blind_after,
+        status=AwaySafetyStatus(
+            freezer="ok" if freezers else "unconfigured",
+            away_door="ok" if armed else "unconfigured",
+            blind="ok" if blind_after is not None and sensing == "registered" else "unconfigured",
+            sensing_group=sensing,
+        ),
+    )
+
+
+@router.put("/away-safety/freezers", responses={422: {"model": ErrorResponse}})
+async def put_away_freezer(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Declare a freezer or change its values; at most eight, all values the owner's."""
+
+    async def write(pool: Any) -> TemperatureWatchEntry:
+        body = await _read_private_body(
+            request,
+            TemperatureWatchUpsertRequest,
+            max_bytes=_AWAY_MAX_BODY_BYTES,
+            invalid=_AWAY_INVALID,
+            too_large=_AWAY_TOO_LARGE,
+        )
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute("LOCK TABLE temperature_watch IN SHARE ROW EXCLUSIVE MODE")
+            known = await connection.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM temperature_watch WHERE entity_id = $1)",
+                body.entity_id,
+            )
+            count = await connection.fetchval("SELECT count(*) FROM temperature_watch")
+            if not known and count >= _AWAY_MAX_FREEZERS:
+                raise _PlaceRefusal(*_AWAY_LIMIT)
+            row = await connection.fetchrow(
+                "INSERT INTO temperature_watch (entity_id, role, owner_label, unit, max_c, "
+                "hysteresis_c, dwell_minutes, max_reading_age_minutes) "
+                "VALUES ($1, 'freezer', $2, $3, $4, $5, $6, $7) "
+                "ON CONFLICT (entity_id) DO UPDATE SET owner_label = EXCLUDED.owner_label, "
+                "unit = EXCLUDED.unit, max_c = EXCLUDED.max_c, "
+                "hysteresis_c = EXCLUDED.hysteresis_c, dwell_minutes = EXCLUDED.dwell_minutes, "
+                "max_reading_age_minutes = EXCLUDED.max_reading_age_minutes, updated_at = now() "
+                f"RETURNING {_FREEZER_COLUMNS}",
+                body.entity_id,
+                body.owner_label,
+                body.unit,
+                Decimal(str(round(body.max_c, 2))),
+                Decimal(str(round(body.hysteresis_c, 2))),
+                body.dwell_minutes,
+                body.max_reading_age_minutes,
+            )
+        return _freezer_entry(row)
+
+    return await _away_write(db, request, "freezer_upsert", write)
+
+
+@router.delete("/away-safety/freezers/{entity_id}", status_code=204, response_model=None)
+async def delete_away_freezer(
+    request: Request,
+    entity_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Stop watching a freezer; its open condition resolves ``watch_removed`` on the next run."""
+
+    async def write(pool: Any) -> None:
+        status = await pool.execute(
+            "DELETE FROM temperature_watch WHERE entity_id = $1", _away_entity(entity_id)
+        )
+        if status == "DELETE 0":
+            raise _PlaceRefusal(*_AWAY_NOT_FOUND)
+
+    return await _away_write(db, request, "freezer_delete", write)
+
+
+@router.put("/away-safety/doors/{entity_id}", responses={422: {"model": ErrorResponse}})
+async def put_away_door(
+    request: Request,
+    entity_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Arm a departure-watch item for the away-door condition with the owner's duration."""
+
+    async def write(pool: Any) -> AwayDoorEntry:
+        body = await _read_private_body(
+            request,
+            AwayAlertRequest,
+            max_bytes=_AWAY_MAX_BODY_BYTES,
+            invalid=_AWAY_INVALID,
+            too_large=_AWAY_TOO_LARGE,
+        )
+        row = await pool.fetchrow(
+            "UPDATE departure_watch SET away_alert_after_minutes = $2, updated_at = now() "
+            "WHERE entity_id = $1 RETURNING entity_id, owner_label, away_alert_after_minutes",
+            _away_entity(entity_id),
+            body.away_alert_after_minutes,
+        )
+        if row is None:
+            raise _PlaceRefusal(*_AWAY_NOT_FOUND)
+        return AwayDoorEntry(**dict(row))
+
+    return await _away_write(db, request, "door_arm", write)
+
+
+@router.delete("/away-safety/doors/{entity_id}", status_code=204, response_model=None)
+async def delete_away_door(
+    request: Request,
+    entity_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Disarm an item; the departure card keeps it, an open condition resolves ``watch_removed``."""
+
+    async def write(pool: Any) -> None:
+        status = await pool.execute(
+            "UPDATE departure_watch SET away_alert_after_minutes = NULL, updated_at = now() "
+            "WHERE entity_id = $1 AND away_alert_after_minutes IS NOT NULL",
+            _away_entity(entity_id),
+        )
+        if status == "UPDATE 0":
+            raise _PlaceRefusal(*_AWAY_NOT_FOUND)
+
+    return await _away_write(db, request, "door_disarm", write)
+
+
+@router.put("/away-safety/blind", responses={422: {"model": ErrorResponse}})
+async def put_away_blind(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Set the blind dwell.  This never creates or changes the sensing group."""
+
+    async def write(pool: Any) -> dict[str, int]:
+        body = await _read_private_body(
+            request,
+            BlindSettingsRequest,
+            max_bytes=_AWAY_MAX_BODY_BYTES,
+            invalid=_AWAY_INVALID,
+            too_large=_AWAY_TOO_LARGE,
+        )
+        await pool.execute(
+            "INSERT INTO away_safety_settings (singleton, blind_after_minutes) VALUES (true, $1) "
+            "ON CONFLICT (singleton) DO UPDATE SET "
+            "blind_after_minutes = EXCLUDED.blind_after_minutes, updated_at = now()",
+            body.blind_after_minutes,
+        )
+        return {"blind_after_minutes": body.blind_after_minutes}
+
+    return await _away_write(db, request, "blind_set", write)
+
+
+@router.delete("/away-safety/blind", status_code=204, response_model=None)
+async def delete_away_blind(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Clear the blind dwell: the blind check becomes ``unconfigured`` and resolves."""
+
+    async def write(pool: Any) -> None:
+        status = await pool.execute("DELETE FROM away_safety_settings")
+        if status == "DELETE 0":
+            raise _PlaceRefusal(*_AWAY_NOT_FOUND)
+
+    return await _away_write(db, request, "blind_clear", write)
 
 
 # ---------------------------------------------------------------------------

@@ -555,6 +555,40 @@ def test_owner_modes_are_one_projection_and_all_kind_values_round_trip(db):
             write(db, request(key="bad", kind=kind, generation=1, value=value), roles[kind])
 
 
+def test_home_sensing_job_writes_only_after_the_privileged_group_registration(db):
+    """bu-jv1moa.87: the away-safety job's own home.sensing body, as perception_sensing_writer.
+
+    Unregistered, the group is refused (the job reports ``unconfigured``); registration is a
+    privileged act on the bootstrap connection, never a route or job. No other writer may write it.
+    """
+    from butlers.jobs import home_away_safety as away
+
+    body = away.sensing_request("degraded", AT, 0).body
+    group = str(away.SENSING_GROUP)
+    with pytest.raises(DBAPIError):
+        write(db, body, "perception_sensing_writer")
+
+    db.execute(
+        text(
+            "UPDATE perception_private.sources SET subjects=subjects || CAST(:group AS uuid),evidence_sources=evidence_sources || 'home_away_safety'::text WHERE kind='home.sensing'"
+        ),
+        {"group": group},
+    )
+    db.execute(
+        text(
+            "INSERT INTO perception_private.source_refs(id,source,ref_type) VALUES(:ref,'home.sensing','evidence')"
+        ),
+        {"ref": str(away.SENSING_EVIDENCE)},
+    )
+    for role in ("perception_health_writer", "perception_dots_writer"):
+        with pytest.raises(DBAPIError):
+            write(db, body, role)
+
+    assert write(db, body, "perception_sensing_writer")["generation"] == 1
+    row = read(db, kind="home.sensing", subject=group, at=AT)
+    assert (row["state"], row["value"]) == ("known", "degraded")
+
+
 def test_read_aliases_share_the_canonical_row_without_write_authority(db):
     aliases = {
         "owner.place": ["owner.presence", "at_home", "in_space", "away"],

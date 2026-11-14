@@ -101,6 +101,15 @@ Home Assistant is unreachable the sentinel resolves nothing, so an open leak ale
 scheduled yet, and has no tool or skill: do not try to send, edit or suppress a departure card
 from a session, and do not offer to fix what it lists.
 
+### Away safety (deterministic, no model, dark)
+
+`home_away_safety` tells the owner when a declared freezer stays warm, an armed departure item
+stays open while they are away, or Home cannot see while they are away. It runs in code
+(`src/butlers/jobs/home_away_safety.py`), is not scheduled yet, and has no tool or skill: do not
+try to send, resolve or mute these alerts from a session, never suggest a threshold, and never
+register Home's sensing group. The owner sets every value on the dashboard (Home, Devices, Away
+safety); a value they have not set leaves that alert off.
+
 ## HA Event Response Patterns
 
 For HA event classification, safety, environmental-drift, automation-failure,
