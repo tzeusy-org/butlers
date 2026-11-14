@@ -84,19 +84,25 @@ time), `confirmed_at`, `confirmed_by_session` (hash only), `revoked_at`, `create
 
 ## D2b: Bounded lifecycle
 
-- Caps apply only to untrusted pending proposals, counted in separate buckets so a flood of one
-  class can never displace another:
-  - `email` origin with a stored sender verdict other than `authenticated` (the unverified
-    bucket): at most 5 per (owner, host, kind) and 50 per owner.
-  - `email` origin with an `authenticated` verdict, and `extracted` origin: their own bucket, at
-    most 5 per (owner, host, kind) and 50 per owner.
+- Caps apply only to untrusted pending proposals (`status='proposed' AND expires_at > now()`),
+  counted in separate buckets so a flood of one class can never displace another:
+  - Verified-tier email: an `email` proposal is verified-tier only when its stored verdict is
+    `authenticated` AND the link host's registrable domain equals the sender's registrable domain.
+    `authenticated` proves only that the sender's own domain signed the message
+    (`account_security.py:350-362`), so `attacker.com` can sign a mail that links `netflix.com`;
+    that mail fails the equality and is counted as unverified. Cap: 5 per (owner, host, kind) and
+    5 per (owner, sender registrable domain), replacing a shared per-owner cap for this tier.
+  - Unverified email (everything else from email, including an authenticated sender whose domain
+    differs from the link host; a legitimate vendor using a third-party mailer lands here and is
+    still proposed): 5 per (owner, host, kind) and 50 per owner, its own bucket.
+  - `extracted` origin: its own bucket, 5 per (owner, host, kind) and 50 per owner, not shared with
+    email.
   - `dashboard` and `legacy_owner_set` origins, including every row the D5 backfill writes, are
     exempt from the caps entirely.
-  A proposal beyond its own bucket's cap is dropped, not queued. Why: a hostile unverified mail
-  flood (5 junk links for netflix.com cancel, or 50 distinct hosts) then exhausts only the
-  unverified bucket and cannot starve verified-sender proposals, extracted proposals or the
-  migration. One subscription renews once a year, so five candidates per vendor and kind is
-  generous in the other buckets.
+  A proposal beyond its own bucket's cap is dropped, not queued. Why: a hostile mail flood, even
+  one the attacker DKIM-signs, exhausts only its own bucket or sender-domain slots and cannot
+  starve extracted proposals, the migration or another sender domain. One subscription renews
+  once a year, so five candidates per vendor and kind is generous.
 - A proposal expires 30 days after creation (`expires_at`, NOT NULL exactly while pending: the
   table has `CHECK ((status = 'proposed') = (expires_at IS NOT NULL))`, so confirm, revoke and
   reject null it); an expired proposal is not shown and
@@ -107,7 +113,8 @@ time), `confirmed_at`, `confirmed_by_session` (hash only), `revoked_at`, `create
 - The owner reject path (`POST /api/vendor-doors/{id}/reject`, same CAS) moves a proposal to
   `rejected`. Rejections are retained indefinitely, and `vendor_door_propose` refuses a proposal
   whose (owner, kind, template) equals a rejected row's exact stored template after host
-  lowercasing. `slot_types` does not count: the same template with different slot types is the
+  lowercasing, except that a `dashboard`-origin proposal bypasses this suppression, so the owner
+  can always create the real template even after rejecting an attacker's identical one. `slot_types` does not count: the same template with different slot types is the
   same proposal.
 
 ## D3: Confirmation path
@@ -122,8 +129,9 @@ Owner-only, dashboard-only:
    `version`. A stale version or non-proposed status returns the current state with no write
    (idempotent: confirming an already-confirmed identical door returns 200 with the same version).
 3. The confirm view (what the owner decides on) shows, for that exact version: the registrable
-   host, the full template, the origin (`dashboard`, `legacy_owner_set`, `extracted`, `email`) and
-   the stored sender verdict. A vendor display name never appears alone: a look-alike host such as
+   host, the full template, the origin (`dashboard`, `legacy_owner_set`, `extracted`, `email`),
+   the stored sender verdict, the sender's registrable domain beside that verdict, and whether it
+   matches the link host. A vendor display name never appears alone: a look-alike host such as
    `netf1ix.com` is shown as its real registrable domain with its origin, so the owner can see it
    is not the vendor. The version in the view is the version the CAS compares.
 4. Revocation is the same shape (`status='revoked'`, version bump); revoking a revoked door is a

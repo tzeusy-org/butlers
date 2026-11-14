@@ -38,15 +38,22 @@ lineage and consumed as stored; raw headers SHALL NOT be reparsed. Retries SHALL
 `EXECUTE` revoked from `PUBLIC` by a standalone statement and granted only to their one role set
 (dashboard for confirm, revoke and reject; Finance and Switchboard for propose). The confirmation
 view SHALL show, for the exact version being decided, the registrable host, the full template, the
-origin and the stored sender verdict, and SHALL NOT show a vendor display name alone. Pending
-untrusted proposals SHALL be capped at 5 per (owner, host, kind) and 50 per owner in separate
-buckets: unverified-sender email proposals SHALL be counted only in their own bucket and SHALL
-NOT displace verified-sender, extracted or owner proposals, and `dashboard` and `legacy_owner_set`
-origins, including every migration backfill row, SHALL be exempt from the caps. Proposals SHALL
+origin, the stored sender verdict, the sender's registrable domain and whether it matches the link
+host, and SHALL NOT show a vendor display name alone. Pending
+untrusted proposals (`status='proposed'` and not expired) SHALL be capped in separate buckets. An
+email proposal SHALL be verified-tier only when its stored verdict is `authenticated` and the link
+host's registrable domain equals the sender's registrable domain; every other email proposal,
+including an authenticated sender whose domain differs from the link host, SHALL be counted as
+unverified. The verified tier SHALL be capped at 5 per (owner, host, kind) and 5 per (owner,
+sender registrable domain); the unverified email bucket and the separate `extracted` bucket SHALL
+each be capped at 5 per (owner, host, kind) and 50 per owner. No bucket SHALL displace another, and
+`dashboard` and `legacy_owner_set` origins, including every migration backfill row, SHALL be
+exempt from the caps. Proposals SHALL
 expire 30 days after creation, with `expires_at` set exactly while pending; an expired proposal
 SHALL NOT be confirmable. The owner MAY reject a proposal; rejections SHALL be retained
 indefinitely and the same exact stored template (after host lowercasing, ignoring slot types)
-SHALL NOT be proposed again.
+SHALL NOT be proposed again, except that a `dashboard`-origin proposal SHALL bypass this
+suppression.
 
 ID: REQ-vendor-doors-002
 Source: bu-jv1moa.40; core_271 sender_authentication (bu-s11n0s.20); design D1, D3
@@ -97,8 +104,19 @@ Scope: v1-mandatory
 #### Scenario: A flood of unverified proposals does not drop a verified-sender proposal
 - **GIVEN** five unverified-sender email proposals fill the unverified bucket for
   (owner, netflix.com, cancel), or fifty unverified hosts fill the owner's unverified cap
-- **WHEN** a verified-sender proposal, an extracted proposal or a migration backfill row arrives
+- **WHEN** a verified-tier proposal, an extracted proposal or a migration backfill row arrives
 - **THEN** it is stored and pending, and only further unverified proposals are dropped
+
+#### Scenario: An authenticated sender whose domain differs from the link host counts as unverified
+- **GIVEN** a message from `attacker.com` with verdict `authenticated` linking `netflix.com`
+- **WHEN** it is proposed
+- **THEN** it is counted in the unverified bucket, so it cannot fill the verified tier, and the
+  confirm view shows sender domain `attacker.com` as not matching the link host
+
+#### Scenario: The owner can create the real template after rejecting an identical attacker proposal
+- **GIVEN** the owner rejected an attacker's proposal for a template
+- **WHEN** the owner creates the same template from the dashboard
+- **THEN** it is stored despite the retained rejection
 
 #### Scenario: Owner rejects a proposal
 - **WHEN** the owner rejects a proposal with the current version
