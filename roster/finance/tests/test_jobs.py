@@ -3654,6 +3654,13 @@ def test_dedicated_invariant_gate_rejects_unrelated_or_incomplete_failures(case)
 # Tests: run_insight_scan — vendor-door renewal consumer (bu-jv1moa.40, dark)
 # ---------------------------------------------------------------------------
 
+
+def _finance_jobs():
+    from butlers.roster_imports import roster_module
+
+    return roster_module("finance", "jobs/finance_jobs")
+
+
 _DOOR_OWNER = "00000000-0000-4000-8000-0000000000c1"
 
 
@@ -3702,7 +3709,8 @@ async def test_door_flag_off_keeps_todays_behavior_even_with_a_confirmed_door(
     finance_clone, monkeypatch
 ):
     from butlers.core import vendor_doors
-    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    run_insight_scan = _finance_jobs().run_insight_scan
 
     monkeypatch.setattr(vendor_doors, "VENDOR_DOORS_LIVE", False)
     async with finance_clone() as pool:
@@ -3719,7 +3727,8 @@ async def test_door_flag_off_keeps_todays_behavior_even_with_a_confirmed_door(
 
 async def test_door_flag_on_shows_a_link_only_from_a_confirmed_door(finance_clone, monkeypatch):
     from butlers.core import vendor_doors
-    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    run_insight_scan = _finance_jobs().run_insight_scan
 
     monkeypatch.setattr(vendor_doors, "VENDOR_DOORS_LIVE", True)
     async with finance_clone() as pool:
@@ -3741,7 +3750,8 @@ async def test_door_flag_on_a_proposal_or_foreign_door_stays_unverified(
     finance_clone, monkeypatch, state
 ):
     from butlers.core import vendor_doors
-    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    run_insight_scan = _finance_jobs().run_insight_scan
 
     monkeypatch.setattr(vendor_doors, "VENDOR_DOORS_LIVE", True)
     async with finance_clone() as pool:
@@ -3781,7 +3791,8 @@ async def test_door_flag_on_a_registry_read_failure_degrades_to_unverified(
     finance_clone, monkeypatch
 ):
     from butlers.core import vendor_doors
-    from butlers.jobs._roster import finance_jobs
+
+    finance_jobs = _finance_jobs()
 
     monkeypatch.setattr(vendor_doors, "VENDOR_DOORS_LIVE", True)
     async with finance_clone() as pool:
@@ -3799,7 +3810,8 @@ async def test_door_flag_on_owner_cancelled_still_suppresses_and_extracted_still
     finance_clone, monkeypatch
 ):
     from butlers.core import vendor_doors
-    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    run_insight_scan = _finance_jobs().run_insight_scan
 
     monkeypatch.setattr(vendor_doors, "VENDOR_DOORS_LIVE", True)
     async with finance_clone() as pool:
