@@ -307,6 +307,14 @@ _DYNAMIC_RELATION_RE = re.compile(
 # Dynamic entries are exact normalized relation slots, not whole-file waivers.
 SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
+        "src/butlers/capability_host/projection.py",
+        "<dynamic:{state_view}>",
+    ): "dynamic-local: RFC0039 D17 host precondition read of the replicated manifest digest from the mcp_read view butlers.knowledge_read.core.published() derives from the packaged manifest entry for mcp_surface.manifest_state; never a caller-supplied or discovered relation.",
+    (
+        "src/butlers/capability_host/projection.py",
+        "<dynamic:{view}>",
+    ): "dynamic-local: RFC0039 D15 canary probe over each mcp_read projection view butlers.knowledge_read.core.published() derives from a packaged manifest table entry; never a caller-supplied or discovered relation.",
+    (
         "src/butlers/knowledge_read/chronology.py",
         "<dynamic:{episode_view}>",
     ): "dynamic-local: RFC0039 D10 pure reader over a mcp_read projection view whose name butlers.knowledge_read.core.published() derives from the packaged manifest entry assigned to this tool; never a caller-supplied or discovered relation.",
