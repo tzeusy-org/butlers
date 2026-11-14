@@ -3826,6 +3826,22 @@ async def test_door_flag_on_two_doors_without_an_exact_match_stay_unverified(
         assert meta["door_reference"] is None
 
 
+async def test_door_flag_on_a_lone_door_on_the_host_is_not_attached_without_exact_match(
+    finance_clone, monkeypatch
+):
+    from butlers.core import vendor_doors
+
+    monkeypatch.setattr(vendor_doors, "VENDOR_DOORS_LIVE", True)
+    async with finance_clone() as pool:
+        await _setup_insight_schema(pool)
+        await _add_door(pool, host="adobe.com", template="https://account.adobe.com/other")
+        await _owner_sub(pool)
+        await _finance_jobs().run_insight_scan(pool)
+        meta = (await _renewal_candidate(pool))["metadata"]
+        assert meta["door_verified"] is False
+        assert meta["door_reference"] is None
+
+
 async def test_door_flag_on_a_slotted_door_is_never_attached(finance_clone, monkeypatch):
     from butlers.core import vendor_doors
 

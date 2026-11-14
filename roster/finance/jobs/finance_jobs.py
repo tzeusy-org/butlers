@@ -1013,20 +1013,18 @@ async def _confirmed_cancel_doors(db_pool: asyncpg.Pool) -> dict[str, list[async
 def _door_for_link(
     doors: dict[str, list[asyncpg.Record]], url: str | None
 ) -> asyncpg.Record | None:
-    """The door a subscription's link belongs to, or None when that is not unambiguous.
+    """The door whose template is exactly the subscription link's, or None.
 
-    An exact match on the link's template wins; otherwise the host alone decides only when
-    exactly one slot-free door exists on it.
+    A host alone never decides: one door on a shared registrable domain (google.com) would
+    otherwise attach to an unrelated service's subscription.
     """
     from butlers.core.vendor_door_proposer import template_from_url
 
-    candidates = doors.get(_link_host(url) or "", [])
     template = template_from_url(url)
-    if template is not None:
-        exact = [d for d in candidates if d["template"] == template]
-        if len(exact) == 1:
-            return exact[0]
-    return candidates[0] if len(candidates) == 1 else None
+    if template is None:
+        return None
+    exact = [d for d in doors.get(_link_host(url) or "", []) if d["template"] == template]
+    return exact[0] if len(exact) == 1 else None
 
 
 async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None) -> dict[str, Any]:
