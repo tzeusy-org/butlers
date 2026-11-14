@@ -301,8 +301,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --dev
 
-      - name: Disk at job start
-        run: df -h / /mnt
+      - name: Disk and docker storage at job start
+        run: |
+          df -h / /mnt
+          # Annotations are stored by the service as they stream, so they survive a runner that
+          # dies and loses its logs (run 43532052607 died of ENOSPC on / with no log).
+          echo "::notice title=docker storage::$(docker info --format 'driver={{.Driver}} root={{.DockerRootDir}} status={{json .DriverStatus}}' 2>&1 | tr '\n' ' ')"
+          echo "::notice title=containerd store::$(docker info 2>/dev/null | grep -i 'driver-type\|io.containerd' | tr -s ' ' | tr '\n' ';')"
+          echo "::notice title=disk at start::$(df -h --output=target,size,avail / /mnt | tail -n +2 | tr -s ' ' | tr '\n' ';')"
 
       - name: Free disk space before image builds
         run: |
@@ -328,27 +334,59 @@ jobs:
             echo "IMAGE_SCRATCH=${RUNNER_TEMP}" >> "$GITHUB_ENV"
             exit 0
           fi
-          sudo mkdir -p /mnt/docker /mnt/butlers-image
+          sudo mkdir -p /mnt/docker /mnt/containerd /mnt/butlers-image
           sudo chown "$(id -u):$(id -g)" /mnt/butlers-image
           sudo systemctl stop docker.socket docker
+          # The containerd image store keeps layers under /var/lib/containerd, outside
+          # data-root, so point it at /mnt as well, and turn the snapshotter off so docker uses
+          # the classic overlay2 store under data-root. Run 43532052607 still filled / with only
+          # data-root moved.
+          sudo systemctl stop containerd || true
+          sudo mkdir -p /var/lib/containerd
+          sudo mount --bind /mnt/containerd /var/lib/containerd
+          daemon='{"data-root": "/mnt/docker", "features": {"containerd-snapshotter": false}}'
           if [ -s /etc/docker/daemon.json ]; then
-            sudo jq '. + {"data-root": "/mnt/docker"}' /etc/docker/daemon.json | sudo tee /etc/docker/daemon.json.new >/dev/null
+            sudo jq --argjson add "${daemon}" '. * $add' /etc/docker/daemon.json | sudo tee /etc/docker/daemon.json.new >/dev/null
             sudo mv /etc/docker/daemon.json.new /etc/docker/daemon.json
           else
-            echo '{"data-root": "/mnt/docker"}' | sudo tee /etc/docker/daemon.json >/dev/null
+            echo "${daemon}" | sudo tee /etc/docker/daemon.json >/dev/null
           fi
+          sudo systemctl start containerd || true
           sudo systemctl start docker
           test "$(docker info --format '{{.DockerRootDir}}')" = /mnt/docker
+          echo "::notice title=docker storage after move::$(docker info 2>/dev/null | grep -i 'storage driver\|driver-type\|io.containerd\|docker root dir' | tr -s ' ' | tr '\n' ';')"
+          findmnt /var/lib/containerd
           echo "IMAGE_SCRATCH=/mnt/butlers-image" >> "$GITHUB_ENV"
 
       - name: Produce complete closed image contexts
         run: |
-          # Sample disk use into this step's log so a repeat shows where the space went, even
-          # if the runner dies before it can upload anything.
+          # Sample disk use so a repeat shows where the space went. A runner that dies loses its
+          # logs, so each sample also lands in a file on /mnt (uploaded by an always() step) and
+          # every tenth sample or any low-root reading becomes a ::notice::/::warning:: annotation
+          # (annotations are stored as they stream; GitHub caps them, hence the sparse cadence).
+          log="${IMAGE_SCRATCH}/disk-sampler.log"
           (
+            n=0
+            warned=0
             while true; do
-              echo "disk $(date -u +%H:%M:%S) $(df -h --output=target,used,avail / /mnt | tail -n +2 | tr -s ' ' | tr '\n' ';')"
-              docker system df 2>/dev/null | tr -s ' ' | sed 's/^/docker: /'
+              line="disk $(date -u +%H:%M:%S) $(df -h --output=target,used,avail / /mnt | tail -n +2 | tr -s ' ' | tr '\n' ';')"
+              echo "${line}" | tee -a "${log}"
+              docker system df 2>/dev/null | tr -s ' ' | sed 's/^/docker: /' | tee -a "${log}"
+              if [ $((n % 10)) -eq 0 ]; then
+                echo "::notice title=disk sample ${n}::${line}"
+              fi
+              if [ $((n % 5)) -eq 0 ]; then
+                {
+                  echo "root top-level $(date -u +%H:%M:%S):"
+                  sudo timeout 120 du -xk --max-depth=2 / 2>/dev/null | sort -n | tail -8
+                } | tee -a "${log}"
+              fi
+              root_avail_mb=$(df --output=avail -BM / | tail -1 | tr -dc '0-9')
+              if [ "${root_avail_mb}" -lt 15000 ] && [ "${warned}" -lt 3 ]; then
+                warned=$((warned + 1))
+                echo "::warning title=root disk low::${line}; $(sudo timeout 60 du -xk --max-depth=2 / 2>/dev/null | sort -n | tail -5 | tr '\n' ';')"
+              fi
+              n=$((n + 1))
               sleep 120
             done
           ) &
@@ -368,6 +406,14 @@ jobs:
           fi
           df -h / /mnt || true
           docker system df || true
+
+      - name: Upload the disk sampler log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-disk-sampler-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.IMAGE_SCRATCH }}/disk-sampler.log
+          if-no-files-found: ignore
 
       - name: Build butlers-app exact image
         env:

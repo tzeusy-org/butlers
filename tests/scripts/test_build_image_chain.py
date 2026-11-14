@@ -290,8 +290,23 @@ def test_nightly_consumes_closed_contexts_before_unchanged_installed_export():
     )
     assert stop["if"] == "always()" and "disk-sampler.pid" in stop["run"]
     assert names.index(stop["name"]) == names.index("Produce complete closed image contexts") + 1
-    start = next(step for step in steps if step.get("name") == "Disk at job start")
+    start = next(
+        step for step in steps if step.get("name") == "Disk and docker storage at job start"
+    )
     assert "df -h / /mnt" in start["run"]
+    # Evidence must survive a runner that dies and loses its logs: annotations, not log lines.
+    assert "::notice title=docker storage::" in start["run"] and "driver-type" in start["run"]
+    # The containerd image store lives outside data-root; it moves to /mnt and the snapshotter is
+    # turned off (run 43532052607 filled / with only data-root moved).
+    assert "--bind /mnt/containerd /var/lib/containerd" in move
+    assert '"containerd-snapshotter": false' in move
+    assert names.index("Keep docker and image scratch on the larger /mnt disk") > names.index(
+        start["name"]
+    )
+    assert "disk-sampler.log" in context and "::notice title=disk sample" in context
+    assert "::warning title=root disk low" in context
+    upload = next(step for step in steps if step.get("name") == "Upload the disk sampler log")
+    assert upload["if"] == "always()" and "disk-sampler.log" in upload["with"]["path"]
     assert "butlers-base:latest" not in context + chain
     row = next(
         row
