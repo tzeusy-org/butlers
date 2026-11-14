@@ -2142,6 +2142,14 @@ class WhatsAppUserClientConnector:
             "events": buffered_events,
             "batch_size": len(buffered_events),
             "conversation_history": conversation_history,
+            # Transport fact (REQ-connector-base-spec-013): the other party of a private chat,
+            # so a flush holding only owner messages still names its counterparty. A group
+            # carries none, and a malformed chat JID is omitted rather than guessed.
+            **(
+                {"peer_identity": peer}
+                if chat_type == "private" and (peer := self._participant_identity(chat_jid))
+                else {}
+            ),
         }
 
         participants, owner_sender_id = self._extract_participants(buffered_events)
