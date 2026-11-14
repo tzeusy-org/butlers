@@ -39,9 +39,14 @@ lineage and consumed as stored; raw headers SHALL NOT be reparsed. Retries SHALL
 (dashboard for confirm, revoke and reject; Finance and Switchboard for propose). The confirmation
 view SHALL show, for the exact version being decided, the registrable host, the full template, the
 origin and the stored sender verdict, and SHALL NOT show a vendor display name alone. Pending
-proposals SHALL be capped at 5 per (owner, host, kind) and 50 per owner and SHALL expire 30 days
-after creation; an expired proposal SHALL NOT be confirmable. The owner MAY reject a proposal,
-which SHALL be retained and not re-proposed unchanged.
+untrusted proposals SHALL be capped at 5 per (owner, host, kind) and 50 per owner in separate
+buckets: unverified-sender email proposals SHALL be counted only in their own bucket and SHALL
+NOT displace verified-sender, extracted or owner proposals, and `dashboard` and `legacy_owner_set`
+origins, including every migration backfill row, SHALL be exempt from the caps. Proposals SHALL
+expire 30 days after creation, with `expires_at` set exactly while pending; an expired proposal
+SHALL NOT be confirmable. The owner MAY reject a proposal; rejections SHALL be retained
+indefinitely and the same exact stored template (after host lowercasing, ignoring slot types)
+SHALL NOT be proposed again.
 
 ID: REQ-vendor-doors-002
 Source: bu-jv1moa.40; core_271 sender_authentication (bu-s11n0s.20); design D1, D3
@@ -65,8 +70,13 @@ Scope: v1-mandatory
 #### Scenario: Revoke races a re-confirm
 - **GIVEN** a `confirmed` door at version 4
 - **WHEN** a revoke and a confirm with `expected_version=4` run concurrently
-- **THEN** exactly one wins by the CAS, the other receives the current state with no write, and a
-  revoked door is only usable again through a new proposal and confirmation
+- **THEN** the revoke wins, the confirm receives the current state with no write, and a revoked
+  door is only usable again through a new proposal and confirmation
+
+#### Scenario: Confirm races reject at the same proposed version
+- **GIVEN** a `proposed` door at version 3
+- **WHEN** a confirm and a reject with `expected_version=3` run concurrently
+- **THEN** exactly one wins by the CAS and the other receives the current state with no write
 
 #### Scenario: Function execution is closed to every other role
 - **WHEN** `PUBLIC`, a butler role outside a function's grant, or the model-facing roles call
@@ -80,9 +90,15 @@ Scope: v1-mandatory
   the stored sender verdict for that version, never the vendor name alone
 
 #### Scenario: Proposals are capped and expire
-- **WHEN** a sixth pending proposal for the same (owner, host, kind) arrives, or a proposal is
-  older than 30 days
+- **WHEN** a sixth pending proposal for the same (owner, host, kind) arrives in one bucket, or a
+  proposal is older than 30 days
 - **THEN** the sixth is dropped and the expired one cannot be confirmed or listed as pending
+
+#### Scenario: A flood of unverified proposals does not drop a verified-sender proposal
+- **GIVEN** five unverified-sender email proposals fill the unverified bucket for
+  (owner, netflix.com, cancel), or fifty unverified hosts fill the owner's unverified cap
+- **WHEN** a verified-sender proposal, an extracted proposal or a migration backfill row arrives
+- **THEN** it is stored and pending, and only further unverified proposals are dropped
 
 #### Scenario: Owner rejects a proposal
 - **WHEN** the owner rejects a proposal with the current version
@@ -109,8 +125,8 @@ fragment, and slots only inside path segments. It SHALL have no userinfo, no IP 
 `xn--` label and no non-default port, and at most 300 characters after slot substitution, and its
 host SHALL equal the stored registrable host. Slots SHALL be typed regex values that SHALL NOT
 contain `/ ? # % @ :`. The same rules SHALL be re-checked at every resolution. With no query or
-fragment, a template cannot carry an amount, cart contents, a confirmation token or a redirect
-target by construction.
+fragment, no parameter can carry an amount, cart contents, a confirmation token or a redirect
+target; the owner's review of the full template guards what remains in the path.
 
 ID: REQ-vendor-doors-003
 Source: self_links.py S1 URL rules; bu-kr3x6j; bu-jv1moa.40

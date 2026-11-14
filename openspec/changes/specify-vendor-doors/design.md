@@ -73,9 +73,9 @@ time), `confirmed_at`, `confirmed_by_session` (hash only), `revoked_at`, `create
 - Template shape (structural, checked in the confirm function and again at every resolution): a
   template is scheme, host and path only. HTTPS; no userinfo; host ASCII only, no IP literal, no
   `xn--` label, no non-default port; **no query and no fragment**; slots only inside path
-  segments, never in the host. With no query there is no parameter that could carry an amount, a
-  cart, a confirmation token or a redirect target, so "no spend, no token" and "no redirect
-  template" hold by construction, not by a keyword list. At most 300 characters after slot
+  segments, never in the host. With no query, no parameter can carry an amount, a cart, a confirmation
+  token or a redirect target, so the rules need no keyword list; the owner reviewing the full
+  template in the confirm view is the guard for what remains in the path. At most 300 characters after slot
   substitution; the host equals the stored `host`. A path that embeds a second URL (a segment
   containing `://` or an encoded form, already excluded because slot and path text may not contain
   `%`) is refused.
@@ -84,19 +84,31 @@ time), `confirmed_at`, `confirmed_by_session` (hash only), `revoked_at`, `create
 
 ## D2b: Bounded lifecycle
 
-- Pending proposals are capped at 5 per (owner, vendor host, kind) and 50 per owner. A proposal
-  beyond a cap is dropped, not queued, and the producer is told nothing about confirmed rows.
-  Why: one subscription renews once a year, so a handful of candidate links per vendor and kind is
-  generous, while the caps bound a hostile mail flood that would otherwise fill the owner's review
-  list.
-- A proposal expires 30 days after creation (`expires_at`); an expired proposal is not shown and
+- Caps apply only to untrusted pending proposals, counted in separate buckets so a flood of one
+  class can never displace another:
+  - `email` origin with a stored sender verdict other than `authenticated` (the unverified
+    bucket): at most 5 per (owner, host, kind) and 50 per owner.
+  - `email` origin with an `authenticated` verdict, and `extracted` origin: their own bucket, at
+    most 5 per (owner, host, kind) and 50 per owner.
+  - `dashboard` and `legacy_owner_set` origins, including every row the D5 backfill writes, are
+    exempt from the caps entirely.
+  A proposal beyond its own bucket's cap is dropped, not queued. Why: a hostile unverified mail
+  flood (5 junk links for netflix.com cancel, or 50 distinct hosts) then exhausts only the
+  unverified bucket and cannot starve verified-sender proposals, extracted proposals or the
+  migration. One subscription renews once a year, so five candidates per vendor and kind is
+  generous in the other buckets.
+- A proposal expires 30 days after creation (`expires_at`, NOT NULL exactly while pending: the
+  table has `CHECK ((status = 'proposed') = (expires_at IS NOT NULL))`, so confirm, revoke and
+  reject null it); an expired proposal is not shown and
   cannot be confirmed. Why: 30 days spans several dashboard visits, and a later renewal email
   re-proposes a fresh row, so an unreviewed link never lingers as a standing candidate.
 - Confirmed doors do not expire; the owner revokes them. Revoked, rejected and expired rows are
   retained for lineage and are not counted against the caps once not pending.
 - The owner reject path (`POST /api/vendor-doors/{id}/reject`, same CAS) moves a proposal to
-  `rejected`; a rejected row is never re-proposed with the same (owner, kind, template) while the
-  rejection is retained.
+  `rejected`. Rejections are retained indefinitely, and `vendor_door_propose` refuses a proposal
+  whose (owner, kind, template) equals a rejected row's exact stored template after host
+  lowercasing. `slot_types` does not count: the same template with different slot types is the
+  same proposal.
 
 ## D3: Confirmation path
 

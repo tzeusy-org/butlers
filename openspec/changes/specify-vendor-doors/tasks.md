@@ -11,10 +11,10 @@
 - [ ] 2.1 Failing real-PG tests first: roles, direct writes revoked, CHECKs (kind, status, host),
   confirm/revoke CAS, propose cannot touch a confirmed row.
 - [ ] 2.1b Real-PG test: `PUBLIC` and every role outside each function's grant are refused
-  `EXECUTE` on confirm, revoke, reject and propose; the proposal caps and 30-day expiry hold;
+  `EXECUTE` on confirm, revoke, reject and propose; the per-bucket proposal caps (a flood of unverified proposals leaves verified, extracted and backfill rows storable) and 30-day expiry hold;
   reject is retained and not re-proposed.
 - [ ] 2.2 Core revision creating `public.vendor_doors`, `vendor_doors_current` and the four
-  functions, each with a standalone `REVOKE ALL ... FROM PUBLIC` then a single-role `GRANT EXECUTE`;
+  functions, with `CHECK ((status = 'proposed') = (expires_at IS NOT NULL))`, each with a standalone `REVOKE ALL ... FROM PUBLIC` then a `GRANT EXECUTE` to one role set;
   add rows for the table, view and four functions to `src/butlers/db_authority/grants.py`, and to
   the schema-reach and grants-manifest inventories.
 
