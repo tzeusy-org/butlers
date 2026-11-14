@@ -37,11 +37,12 @@ The stored `ingestion_events.sender_authentication` verdict SHALL be copied into
 lineage and consumed as stored; raw headers SHALL NOT be reparsed. Retries SHALL be idempotent. The confirm, revoke, reject, create and propose functions SHALL each have
 `EXECUTE` revoked from `PUBLIC` by a standalone statement and granted only to their one role set
 (dashboard for confirm, revoke, reject and create; Finance and Switchboard for propose).
-`vendor_door_propose` SHALL derive a proposal's origin from the calling session role (Switchboard
-gives `email`, Finance gives `extracted`), SHALL read an email proposal's verdict and sender
+`vendor_door_propose` SHALL derive a proposal's origin from `current_setting('role', true)` (the
+Switchboard runtime role gives `email`, the Finance runtime role gives `extracted`, and any other
+value, including `none`, SHALL be refused with SQLSTATE 42501), SHALL read an email proposal's verdict and sender
 address from `public.ingestion_events` by event id, and SHALL accept neither as an argument.
 `legacy_owner_set` SHALL be written only by the finance migration, and `dashboard` origin only by
-`vendor_door_create` behind `POST /api/vendor-doors` and the authenticated owner control.
+`vendor_door_create`, which writes a `proposed` row after the template checks, behind `POST /api/vendor-doors` and the authenticated owner control.
 "Registrable domain" SHALL be the eTLD+1 under the Public Suffix List (ICANN and private
 sections) from a pinned, vendored snapshot, computed by one shared function for the sender and the
 link host; if it cannot be computed the proposal SHALL count as unverified. The confirmation
@@ -104,6 +105,11 @@ Scope: v1-mandatory
   `legacy_owner_set`, or supplies a sender verdict or address
 - **THEN** the call is refused, and the stored origin is always the one derived from the calling
   role and the verdict always the one read from `public.ingestion_events`
+
+#### Scenario: Proposal origin follows the role setting
+- **WHEN** `vendor_door_propose` runs with the Switchboard runtime role set, the Finance runtime
+  role set, another butler role set, and no role set (`none`)
+- **THEN** the origin is `email`, `extracted`, a 42501 refusal, and a 42501 refusal respectively
 
 #### Scenario: Registrable domains follow the Public Suffix List
 - **WHEN** domains `attacker.com.my` and `vendor.com.my`, or `a.myshopify.com` and

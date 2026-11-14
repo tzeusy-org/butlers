@@ -49,15 +49,23 @@ Found on main:
 - Proposal writer: Finance (the extracted-link path) and Switchboard (email-derived proposals)
   insert through `public.vendor_door_propose`, which can only create `status='proposed'` rows and
   can never touch a confirmed row. Origin and verdict are bound to the caller, never arguments:
-  - `vendor_door_propose` derives `origin` from `session_user` (Switchboard gives `email`, Finance
-    gives `extracted`) and takes no origin argument.
+  - `vendor_door_propose` derives `origin` from `current_setting('role', true)`, the repo pattern in
+    `core_193_dashboard_turn_cancellation.py:244-261`: the Switchboard runtime role gives `email`,
+    the Finance runtime role gives `extracted`, and any other value, including `none`, is refused
+    with SQLSTATE 42501. It takes no origin argument. `session_user` is the shared login for every
+    butler and `current_user` inside a SECURITY DEFINER function is the function owner, so neither
+    identifies the caller. The shared login can `SET ROLE` to any butler role, which is the same
+    trust boundary as core_193.
   - For `email`, it reads the verdict and the sender address from `public.ingestion_events` by the
     `ingestion_event_id` argument, never from arguments, and fails closed (unverified) if the row
     or verdict is missing.
   - `legacy_owner_set` is written only by the finance migration (D5), under the migration role.
   - `dashboard` origin is created only by a new `public.vendor_door_create` function (EXECUTE only
     for the dashboard role, standalone `REVOKE ALL ... FROM PUBLIC`, its own `grants.py` row) behind
-    `POST /api/vendor-doors` and `require_dashboard_owner_control`. This is the owner's fallback
+    `POST /api/vendor-doors` and `require_dashboard_owner_control`. It writes a `proposed` row
+    (origin `dashboard`, cap-exempt, with the usual 30-day expiry) after running the D2 template
+    checks, so a bad template is refused early; the owner then confirms through the same confirm
+    function, which re-checks the rules. One confirm path, one place that sets `confirmed`. This is the owner's fallback
     when a legitimate link is starved out by the caps (D2b). [Unknown] exact dashboard and finance role names: task 1.1
   reads `db_authority/grants.py` and picks the existing roles rather than creating new ones.
 - Readers: Finance, Switchboard, Messenger and the dashboard get SELECT on the resolver view
