@@ -167,8 +167,15 @@ def test_generator_preserves_logical_elf_loader_paths_for_the_empty_root(
         (1, "not a dynamic executable (unexpected suffix)\n", "", False),
         (1, "*** not a dynamic executable ***\n", "", False),
         (1, "not a dynamic executable\nunexpected second line\n", "", False),
+        (0, "", "\tnot a dynamic executable\n", False),
+        (2, "", "\tnot a dynamic executable\n", False),
+        (1, "\n", "\tnot a dynamic executable\n", False),
+        (1, "", "\tnot a dynamic executable\nunexpected second line\n", False),
+        (1, "", "\tnot a dynamic executable (unexpected suffix)\n", False),
         (0, "statically linked\n", "", True),
         (1, "not a dynamic executable\n", "", True),
+        # What glibc's ldd actually prints for a `gcc -static` binary.
+        (1, "", "\tnot a dynamic executable\n", True),
     ],
 )
 def test_strict_shim_dependency_discovery_requires_unambiguous_output(
