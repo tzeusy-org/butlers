@@ -49,6 +49,8 @@ Found on main:
 - Proposal writer: Finance (the extracted-link path) and Switchboard (email-derived proposals)
   insert through `public.vendor_door_propose`, which can only create `status='proposed'` rows and
   can never touch a confirmed row. Origin and verdict are bound to the caller, never arguments:
+  - A proposer never supersedes a door: `vendor_door_propose` has no supersedes argument. Only
+    `vendor_door_create` accepts one, and it must name a door of the same owner, kind and host.
   - `vendor_door_propose` derives `origin` from `current_setting('role', true)`, the repo pattern in
     `core_193_dashboard_turn_cancellation.py:244-261`: the Switchboard runtime role gives `email`,
     the Finance runtime role gives `extracted`, and any other value, including `none`, is refused
@@ -66,8 +68,12 @@ Found on main:
     (origin `dashboard`, cap-exempt, with the usual 30-day expiry) after running the D2 template
     checks, so a bad template is refused early; the owner then confirms through the same confirm
     function, which re-checks the rules. One confirm path, one place that sets `confirmed`. This is the owner's fallback
-    when a legitimate link is starved out by the caps (D2b). [Unknown] exact dashboard and finance role names: task 1.1
-  reads `db_authority/grants.py` and picks the existing roles rather than creating new ones.
+    when a legitimate link is starved out by the caps (D2b). Resolved in PR1: Finance and Switchboard are the
+  existing runtime roles `butler_finance_rw` and `butler_switchboard_rw`. There was no existing role
+  for owner-only dashboard writes to public tables, so owner-only writes use a new NOLOGIN
+  capability role `dashboard_vendor_doors` (created by `scripts/init-db.sql` like
+  `dashboard_auth_api`; membership is host provisioning), so confirmation is unreachable from any
+  butler runtime.
 - Readers: Finance, Switchboard, Messenger and the dashboard get SELECT on the resolver view
   `public.vendor_doors_current` (confirmed, unrevoked rows only). Proposals are readable only by
   the dashboard role.
@@ -121,6 +127,13 @@ time), `confirmed_at`, `confirmed_by_session` (hash only), `revoked_at`, `create
   one the attacker DKIM-signs, exhausts only its own bucket or sender-domain slots and cannot
   starve extracted proposals, the migration or another sender domain. One subscription renews
   once a year, so five candidates per vendor and kind is generous.
+- Precedence and takeover: an existing pending row for the same (owner, kind, template) is taken
+  over by a higher-precedence sighting (`dashboard` over verified over extracted or unverified)
+  and, once expired, by any sighting. Taking over bumps the version and replaces origin, tier,
+  verdict, sender and event with a fresh 30-day expiry, subject to the new tier's caps, and
+  returns `dropped` when that bucket is full. A later low-trust sighting therefore can neither
+  squat a template nor block the real proposal or the owner's own create, and expired rows cannot
+  be revived past a full bucket.
 - A proposal expires 30 days after creation (`expires_at`, NOT NULL exactly while pending: the
   table has `CHECK ((status = 'proposed') = (expires_at IS NOT NULL))`, so confirm, revoke and
   reject null it); an expired proposal is not shown and
@@ -142,11 +155,14 @@ under the Public Suffix List, ICANN and private sections both. One shared functi
 both the sender address and the link host; the sender and the host are never compared with two
 different helpers.
 
-- Implementation choice: a pinned `publicsuffix2`-style library with the Public Suffix List
-  snapshot vendored in the repo and refreshed only by a reviewed PR. Why: a vendored list makes the
-  result deterministic across the database function, tests and CI, and avoids a network fetch or a
-  floating list on a security decision. [Unknown] library name and pin: task 1.4 picks one that is
-  already a dependency if any.
+- Implementation choice (bu-jv1moa.40 PR1): the Public Suffix List snapshot is vendored in the repo
+  (`src/butlers/data/public_suffix_list.dat`) and refreshed only by a reviewed PR with a reloading
+  migration, and the eTLD+1 algorithm is implemented in-repo in Python and SQL over that one file
+  rather than through a library. Why: the database function must apply the identical rules to the
+  identical list, a library could not run inside the database, and a vendored list makes the result
+  deterministic across database, tests and CI with no network fetch on a security decision. A
+  parity test pins the SQL function, the table and the Python function together. Non-ASCII names
+  are refused before lowercasing (the Kelvin sign lowercases to an ASCII `k`).
 - The database enforces the same rule: the host stored on the row is the function's output at
   proposal and confirmation time, and the resolver re-derives it from the template.
 - If it cannot be computed (no public suffix match, an IP, an empty or malformed address), the

@@ -112,6 +112,9 @@ DECLARE
     labels text[]; n integer; i integer; l text; cand text; parent text; suffix_len integer;
 BEGIN
     IF p_name IS NULL OR p_name = '' OR char_length(p_name) > 253 THEN RETURN NULL; END IF;
+    -- ASCII only, checked before lower(): a non-ASCII letter such as the Kelvin sign lowercases
+    -- to an ASCII one and would otherwise pass for it.
+    IF p_name ~ '[^\x01-\x7F]' THEN RETURN NULL; END IF;
     labels := string_to_array(lower(p_name), '.');
     n := cardinality(labels);
     IF n < 2 THEN RETURN NULL; END IF;
@@ -249,6 +252,36 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
       FROM (SELECT 1) AS one LEFT JOIN public.vendor_doors AS d ON d.id = p_id
 $$;
 
+-- NULL when the new pending proposal fits its tier's caps (the row being taken over is not
+-- counted against itself), otherwise the cap that is full.
+CREATE OR REPLACE FUNCTION public.vendor_door_cap_problem(
+    p_owner uuid, p_tier text, p_host text, p_kind text, p_sender_domain text, p_exclude uuid
+) RETURNS text
+LANGUAGE plpgsql STABLE SET search_path = pg_catalog, pg_temp AS $$
+DECLARE pending integer;
+BEGIN
+    IF p_tier = 'exempt' THEN RETURN NULL; END IF;
+    SELECT count(*) INTO pending FROM public.vendor_doors AS d
+     WHERE d.owner_entity_id = p_owner AND d.status = 'proposed'
+       AND d.expires_at > clock_timestamp() AND d.tier = p_tier AND d.host = p_host
+       AND d.kind = p_kind AND d.id IS DISTINCT FROM p_exclude;
+    IF pending >= 5 THEN RETURN 'host_cap'; END IF;
+    IF p_tier = 'verified' THEN
+        SELECT count(*) INTO pending FROM public.vendor_doors AS d
+         WHERE d.owner_entity_id = p_owner AND d.status = 'proposed'
+           AND d.expires_at > clock_timestamp() AND d.tier = 'verified'
+           AND d.sender_domain = p_sender_domain AND d.id IS DISTINCT FROM p_exclude;
+        IF pending >= 5 THEN RETURN 'sender_cap'; END IF;
+    ELSE
+        SELECT count(*) INTO pending FROM public.vendor_doors AS d
+         WHERE d.owner_entity_id = p_owner AND d.status = 'proposed'
+           AND d.expires_at > clock_timestamp() AND d.tier = p_tier
+           AND d.id IS DISTINCT FROM p_exclude;
+        IF pending >= 50 THEN RETURN 'owner_cap'; END IF;
+    END IF;
+    RETURN NULL;
+END $$;
+
 CREATE OR REPLACE FUNCTION public.vendor_door_insert(
     p_origin text, p_tier text, p_kind text, p_template text, p_slot_types jsonb,
     p_vendor_entity_id uuid, p_event uuid, p_verdict text, p_sender_domain text,
@@ -258,7 +291,8 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
     owner_id uuid := public.vendor_door_owner();
     tmpl text; problem text; door_host text; existing public.vendor_doors%ROWTYPE;
-    pending integer; new_id uuid;
+    new_id uuid; rank_new integer; rank_old integer; target public.vendor_doors%ROWTYPE;
+    had_existing boolean;
 BEGIN
     IF owner_id IS NULL THEN
         RETURN jsonb_build_object('outcome', 'refused', 'reason', 'no_owner');
@@ -272,19 +306,20 @@ BEGIN
         RETURN jsonb_build_object('outcome', 'refused', 'reason', problem);
     END IF;
     door_host := public.vendor_door_host(tmpl);
+    -- Only the dashboard replaces a door, and only one of the same owner, kind and host.
+    IF p_supersedes IS NOT NULL AND (p_origin <> 'dashboard' OR NOT EXISTS (
+        SELECT 1 FROM public.vendor_doors AS s
+         WHERE s.id = p_supersedes AND s.owner_entity_id = owner_id AND s.kind = p_kind
+           AND s.host = door_host)) THEN
+        RETURN jsonb_build_object('outcome', 'refused', 'reason', 'supersedes');
+    END IF;
     PERFORM pg_advisory_xact_lock(hashtextextended('vendor_doors:' || owner_id::text, 0));
 
     SELECT * INTO existing FROM public.vendor_doors
      WHERE owner_entity_id = owner_id AND kind = p_kind AND template = tmpl
        AND status IN ('proposed', 'confirmed');
-    IF FOUND THEN
-        IF existing.status = 'proposed' AND existing.expires_at <= clock_timestamp()
-           AND existing.tier = p_tier THEN
-            -- A later sighting revives an unreviewed proposal rather than blocking its slot.
-            UPDATE public.vendor_doors
-               SET expires_at = clock_timestamp() + interval '30 days', version = version + 1
-             WHERE id = existing.id;
-        END IF;
+    had_existing := FOUND;
+    IF had_existing AND existing.status = 'confirmed' THEN
         RETURN public.vendor_door_state(existing.id, 'exists', NULL);
     END IF;
 
@@ -295,46 +330,52 @@ BEGIN
         RETURN jsonb_build_object('outcome', 'suppressed');
     END IF;
 
-    IF p_tier <> 'exempt' THEN
-        SELECT count(*) INTO pending FROM public.vendor_doors
-         WHERE owner_entity_id = owner_id AND status = 'proposed' AND expires_at > clock_timestamp()
-           AND tier = p_tier AND vendor_doors.host = door_host AND kind = p_kind;
-        IF pending >= 5 THEN
-            RETURN jsonb_build_object('outcome', 'dropped', 'reason', 'host_cap');
+    IF had_existing THEN
+        -- A pending row is taken over by a higher-precedence sighting (dashboard, then
+        -- verified, then extracted or unverified), and an expired one by any sighting, so an
+        -- early low-trust proposal can neither squat a template nor block the real one.
+        rank_new := CASE p_tier WHEN 'exempt' THEN 3 WHEN 'verified' THEN 2 ELSE 1 END;
+        rank_old := CASE existing.tier WHEN 'exempt' THEN 3 WHEN 'verified' THEN 2 ELSE 1 END;
+        IF existing.expires_at > clock_timestamp() AND rank_new <= rank_old THEN
+            RETURN public.vendor_door_state(existing.id, 'exists', NULL);
         END IF;
-        IF p_tier = 'verified' THEN
-            SELECT count(*) INTO pending FROM public.vendor_doors
-             WHERE owner_entity_id = owner_id AND status = 'proposed'
-               AND expires_at > clock_timestamp() AND tier = 'verified'
-               AND sender_domain = p_sender_domain;
-            IF pending >= 5 THEN
-                RETURN jsonb_build_object('outcome', 'dropped', 'reason', 'sender_cap');
-            END IF;
-        ELSE
-            SELECT count(*) INTO pending FROM public.vendor_doors
-             WHERE owner_entity_id = owner_id AND status = 'proposed'
-               AND expires_at > clock_timestamp() AND tier = p_tier;
-            IF pending >= 50 THEN
-                RETURN jsonb_build_object('outcome', 'dropped', 'reason', 'owner_cap');
-            END IF;
+        problem := public.vendor_door_cap_problem(
+            owner_id, p_tier, door_host, p_kind, p_sender_domain, existing.id);
+        IF problem IS NOT NULL THEN
+            RETURN jsonb_build_object('outcome', 'dropped', 'reason', problem);
         END IF;
+        UPDATE public.vendor_doors AS d
+           SET origin = p_origin, tier = p_tier, ingestion_event_id = p_event,
+               sender_verdict = p_verdict, sender_domain = p_sender_domain,
+               lineage = coalesce(p_lineage, '{}'::jsonb),
+               vendor_entity_id = coalesce(p_vendor_entity_id, d.vendor_entity_id),
+               supersedes_id = p_supersedes, version = d.version + 1,
+               expires_at = clock_timestamp() + interval '30 days'
+         WHERE d.id = existing.id
+        RETURNING d.* INTO target;
+        RETURN public.vendor_door_state(target.id, 'exists', NULL);
     END IF;
 
+    problem := public.vendor_door_cap_problem(
+        owner_id, p_tier, door_host, p_kind, p_sender_domain, NULL);
+    IF problem IS NOT NULL THEN
+        RETURN jsonb_build_object('outcome', 'dropped', 'reason', problem);
+    END IF;
     INSERT INTO public.vendor_doors (
         owner_entity_id, kind, vendor_entity_id, host, template, slot_types, status, origin,
         tier, ingestion_event_id, sender_verdict, sender_domain, lineage, supersedes_id,
         expires_at)
     VALUES (owner_id, p_kind, p_vendor_entity_id, door_host, tmpl,
         coalesce(p_slot_types, '{}'::jsonb), 'proposed', p_origin, p_tier, p_event, p_verdict,
-        p_sender_domain,
-        coalesce(p_lineage, '{}'::jsonb), p_supersedes, clock_timestamp() + interval '30 days')
+        p_sender_domain, coalesce(p_lineage, '{}'::jsonb), p_supersedes,
+        clock_timestamp() + interval '30 days')
     RETURNING id INTO new_id;
     RETURN public.vendor_door_state(new_id, 'stored', NULL);
 END $$;
 
 CREATE OR REPLACE FUNCTION public.vendor_door_propose(
     p_kind text, p_template text, p_slot_types jsonb, p_ingestion_event_id uuid,
-    p_vendor_entity_id uuid, p_lineage jsonb, p_supersedes uuid
+    p_vendor_entity_id uuid, p_lineage jsonb
 ) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
@@ -343,10 +384,10 @@ DECLARE
 BEGIN
     IF origin = 'extracted' THEN
         RETURN public.vendor_door_insert('extracted', 'extracted', p_kind, p_template, p_slot_types,
-            p_vendor_entity_id, NULL, NULL, NULL, p_lineage, p_supersedes);
+            p_vendor_entity_id, NULL, NULL, NULL, p_lineage, NULL);
     END IF;
     -- The stored verdict and sender are read here, never accepted from the caller. A missing
-    -- event, address or verdict fails closed to unverified.
+    -- event, address or verdict fails closed to unverified. A proposer never supersedes a door.
     SELECT e.source_sender_identity, e.sender_authentication INTO sender, verdict
       FROM public.ingestion_events AS e WHERE e.id = p_ingestion_event_id;
     verdict := coalesce(verdict, 'unverified');
@@ -355,7 +396,7 @@ BEGIN
     tier := CASE WHEN verdict = 'authenticated' AND sender_domain IS NOT NULL
                   AND sender_domain = link_host THEN 'verified' ELSE 'unverified' END;
     RETURN public.vendor_door_insert('email', tier, p_kind, p_template, p_slot_types,
-        p_vendor_entity_id, p_ingestion_event_id, verdict, sender_domain, p_lineage, p_supersedes);
+        p_vendor_entity_id, p_ingestion_event_id, verdict, sender_domain, p_lineage, NULL);
 END $$;
 
 CREATE OR REPLACE FUNCTION public.vendor_door_create(
@@ -388,7 +429,8 @@ BEGIN
         IF done.supersedes_id IS NOT NULL THEN
             UPDATE public.vendor_doors
                SET status = 'revoked', version = version + 1, revoked_at = clock_timestamp()
-             WHERE id = done.supersedes_id AND status = 'confirmed' AND owner_entity_id = owner_id;
+             WHERE id = done.supersedes_id AND status = 'confirmed' AND owner_entity_id = owner_id
+               AND kind = done.kind AND host = done.host;
         END IF;
         RETURN public.vendor_door_state(done.id, 'ok', NULL);
     END IF;
@@ -480,7 +522,7 @@ CREATE TRIGGER vendor_doors_no_delete BEFORE DELETE OR TRUNCATE
 
 # Public (EXECUTE-granted) functions and their one role set; helpers are granted to nobody.
 _PUBLIC_FUNCTIONS = {
-    "public.vendor_door_propose(text, text, jsonb, uuid, uuid, jsonb, uuid)": (
+    "public.vendor_door_propose(text, text, jsonb, uuid, uuid, jsonb)": (
         "butler_switchboard_rw",
         "butler_finance_rw",
     ),
@@ -500,6 +542,7 @@ _HELPER_FUNCTIONS = (
     "public.vendor_door_require_dashboard()",
     "public.vendor_door_state(uuid, text, text)",
     "public.vendor_door_insert(text, text, text, text, jsonb, uuid, uuid, text, text, jsonb, uuid)",
+    "public.vendor_door_cap_problem(uuid, text, text, text, text, uuid)",
     "public.vendor_doors_no_delete()",
 )
 _VIEW_READERS = (

@@ -111,16 +111,15 @@ def event(engine, sender, verdict):
     return event_id
 
 
-def propose(engine, role, template, *, kind="cancel", slots="{}", event_id=None, supersedes=None):
+def propose(engine, role, template, *, kind="cancel", slots="{}", event_id=None):
     return run(
         engine,
         role,
-        "SELECT public.vendor_door_propose(:k, :t, CAST(:s AS jsonb), :e, NULL, '{}'::jsonb, :u)",
+        "SELECT public.vendor_door_propose(:k, :t, CAST(:s AS jsonb), :e, NULL, '{}'::jsonb)",
         k=kind,
         t=template,
         s=slots,
         e=event_id,
-        u=supersedes,
     )
 
 
@@ -185,6 +184,7 @@ def test_sql_registrable_domain_matches_the_python_twin(engine) -> None:
         "example.com.",
         "a..com",
         "xn--bcher-kva.de",
+        "example\u212a.com",
         "",
         "a" * 64 + ".com",
         "exa mple.com",
@@ -369,7 +369,7 @@ def test_origin_follows_the_role_setting(engine) -> None:
             engine,
             role,
             "SELECT public.vendor_door_propose('cancel', 'https://www.netflix.com/c', "
-            "'{}'::jsonb, NULL, NULL, '{}'::jsonb, NULL)",
+            "'{}'::jsonb, NULL, NULL, '{}'::jsonb)",
         )
 
 
@@ -606,3 +606,103 @@ def test_the_view_shows_only_confirmed_rows_of_the_live_owner(engine) -> None:
     }
     assert done in ids and pending not in ids
     refused(engine, FINANCE, "SELECT count(*) FROM public.vendor_doors", code="42501")
+
+
+def expire(engine, door):
+    with engine.begin() as c:
+        c.execute(
+            text(
+                "UPDATE public.vendor_doors SET expires_at = now() - interval '1 day' WHERE id=:i"
+            ),
+            {"i": door},
+        )
+
+
+def verified_event(engine, template_host="netflix.com"):
+    return event(engine, f"billing@{template_host}", "authenticated")
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_a_verified_proposal_takes_over_an_unverified_squat(engine, expired) -> None:
+    template = "https://www.netflix.com/squat"
+    squat = uuid.UUID(propose(engine, SWITCHBOARD, template)["id"])
+    assert row(engine, squat).tier == "unverified"
+    if expired:
+        expire(engine, squat)
+    result = propose(engine, SWITCHBOARD, template, event_id=verified_event(engine))
+    assert (result["outcome"], result["id"]) == ("exists", str(squat))
+    taken = row(engine, squat)
+    assert (taken.tier, taken.version, taken.status) == ("verified", 2, "proposed")
+    assert taken.expires_at is not None
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_the_owners_create_takes_over_a_squatted_template(engine, expired) -> None:
+    template = "https://www.netflix.com/mine2"
+    squat = uuid.UUID(propose(engine, SWITCHBOARD, template)["id"])
+    if expired:
+        expire(engine, squat)
+    result = create(engine, template)
+    assert result["id"] == str(squat)
+    taken = row(engine, squat)
+    assert (taken.origin, taken.tier, taken.version) == ("dashboard", "exempt", 2)
+
+
+def test_an_equal_or_lower_sighting_does_not_take_over_a_live_proposal(engine) -> None:
+    template = "https://www.netflix.com/held"
+    first = uuid.UUID(propose(engine, SWITCHBOARD, template, event_id=verified_event(engine))["id"])
+    for again in (propose(engine, SWITCHBOARD, template), propose(engine, FINANCE, template)):
+        assert (again["outcome"], again["version"]) == ("exists", 1)
+    assert row(engine, first).tier == "verified"
+
+
+def test_a_takeover_is_subject_to_the_new_tiers_caps(engine) -> None:
+    squat = uuid.UUID(propose(engine, SWITCHBOARD, "https://www.netflix.com/squat2")["id"])
+    for i in range(5):
+        stored = propose(
+            engine,
+            SWITCHBOARD,
+            f"https://www.netflix.com/vfull{i}",
+            event_id=verified_event(engine),
+        )
+        assert row(engine, uuid.UUID(stored["id"])).tier == "verified"
+    blocked = propose(
+        engine, SWITCHBOARD, "https://www.netflix.com/squat2", event_id=verified_event(engine)
+    )
+    assert (blocked["outcome"], blocked["reason"]) == ("dropped", "host_cap")
+    assert (row(engine, squat).tier, row(engine, squat).version) == ("unverified", 1)
+
+
+def test_expired_rows_do_not_revive_past_a_full_bucket(engine) -> None:
+    expired = []
+    for i in range(5):
+        door = uuid.UUID(propose(engine, SWITCHBOARD, f"https://www.netflix.com/exp{i}")["id"])
+        expired.append(door)
+    for door in expired:
+        expire(engine, door)
+    for i in range(5):
+        assert propose(engine, SWITCHBOARD, f"https://www.netflix.com/fresh{i}")["outcome"] == (
+            "stored"
+        )
+    revived = propose(engine, SWITCHBOARD, "https://www.netflix.com/exp0")
+    assert revived["outcome"] == "dropped" and revived["reason"] == "host_cap"
+    assert row(engine, expired[0]).version == 1
+
+
+def test_a_proposer_cannot_supersede_a_door_and_the_dashboard_only_its_own_host(engine) -> None:
+    door = uuid.UUID(create(engine, "https://www.netflix.com/real")["id"])
+    confirm(engine, door, 1)
+    assert "p_supersedes" not in set(
+        run(
+            engine,
+            None,
+            "SELECT coalesce(array_agg(a), ARRAY[]::text[]) FROM pg_proc, unnest(proargnames) a "
+            "WHERE proname='vendor_door_propose' AND pronamespace='public'::regnamespace",
+        )
+    )
+    other_host = create(engine, "https://www.hulu.com/cancel", supersedes=door)
+    assert (other_host["outcome"], other_host["reason"]) == ("refused", "supersedes")
+    other_kind = create(engine, "https://www.netflix.com/manage", kind="manage", supersedes=door)
+    assert other_kind["reason"] == "supersedes"
+    assert create(engine, "https://www.netflix.com/real2", supersedes=door)["outcome"] == "stored"
+    assert row(engine, door).status == "confirmed"

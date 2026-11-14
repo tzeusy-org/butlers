@@ -43,6 +43,7 @@ def test_etld_plus_one(name: str, expected: str | None) -> None:
         "a..com",
         "",
         "a" * 64 + ".com",
+        "example\u212a.com",  # Kelvin sign lowercases to ASCII "k", so refuse before lower()
     ],
 )
 def test_uncomputable_names_fail_closed(name: str) -> None:

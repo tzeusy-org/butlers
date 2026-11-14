@@ -53,7 +53,8 @@ def rule_lines() -> list[str]:
 
 def registrable_domain(name: str) -> str | None:
     """Return the eTLD+1 of an ASCII host name, or ``None`` when it cannot be computed."""
-    if not isinstance(name, str) or not name or len(name) > _MAX_NAME:
+    # ASCII is checked before lower(): the Kelvin sign lowercases to an ASCII "k".
+    if not isinstance(name, str) or not name or len(name) > _MAX_NAME or not name.isascii():
         return None
     labels = name.lower().split(".")
     if len(labels) < 2 or not all(_LABEL.fullmatch(label) for label in labels):

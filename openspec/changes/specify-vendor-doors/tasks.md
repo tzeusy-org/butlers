@@ -1,26 +1,28 @@
 ## 1. Ownership verification (before code)
 
-- [ ] 1.1 Read `src/butlers/db_authority/grants.py` and the role inventory; pick the existing
+- [x] 1.1 Read `src/butlers/db_authority/grants.py` and the role inventory; pick the existing
   dashboard-writer, finance and switchboard roles for the confirm/propose functions and amend design D1.
 - [ ] 1.2 Verify `[Unknown]` that Messenger can read `public` (receiver resolution) under its role.
 - [ ] 1.3 Confirm finance_017 `owner` is only ever written from an owner-attested routing context
   (`runtime_signal_source`), supporting design D5.
 
-- [ ] 1.4 Pick the pinned Public Suffix List library and vendor the snapshot; one shared
+- [x] 1.4 Vendor the Public Suffix List snapshot and implement the in-repo eTLD+1 algorithm (no
+  library; see design D2c); one shared
   registrable-domain function for sender and host, fail closed; the finance
   `cancellation_door.py` helper stays display-only.
 
 ## 2. Registry migration (core)
 
-- [ ] 2.1 Failing real-PG tests first: roles, direct writes revoked, CHECKs (kind, status, host),
+- [x] 2.1 Failing real-PG tests first: roles, direct writes revoked, CHECKs (kind, status, host),
   confirm/revoke CAS, propose cannot touch a confirmed row.
-- [ ] 2.1b Real-PG test: `PUBLIC` and every role outside each function's grant are refused
+- [x] 2.1b Real-PG test: `PUBLIC` and every role outside each function's grant are refused
   `EXECUTE` on confirm, revoke, reject, create and propose; origin and verdict cannot be claimed by the proposer; origin follows `current_setting('role', true)` (Switchboard gives email, Finance gives extracted, another role and `none` get 42501), one real-PG case each; the per-bucket proposal caps counting only `proposed` and unexpired rows, the verified tier needing sender-domain equals link-host, `dashboard` bypassing reject suppression (a flood of unverified proposals leaves verified, extracted and backfill rows storable) and 30-day expiry hold;
   reject is retained and not re-proposed.
-- [ ] 2.2 Core revision creating `public.vendor_doors`, `vendor_doors_current` and the five
+- [x] 2.2 Core revision creating `public.vendor_doors`, `vendor_doors_current` and the five
   functions, with `CHECK ((status = 'proposed') = (expires_at IS NOT NULL))`, each with a standalone `REVOKE ALL ... FROM PUBLIC` then a `GRANT EXECUTE` to one role set;
-  add rows for the table, view and five functions to `src/butlers/db_authority/grants.py`, and to
-  the schema-reach and grants-manifest inventories.
+  add rows for the table, view and rules table to `src/butlers/db_authority/grants.py` (it has no
+  function rows, so function grants are covered by the real-PG EXECUTE test in 2.1b) and to the
+  schema-reach and grants-manifest inventories.
 
 ## 3. API
 
