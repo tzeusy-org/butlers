@@ -181,7 +181,8 @@ receipt without a second mutation. `track` SHALL be the only disposition that wr
 commitment: it SHALL call `create_commitment` with the candidate's kind, direction, counterparty,
 confidence, action and deadline, and `evidence_opened` carrying `source: "owner_chat_candidate"`,
 the channel, the source evidence reference, the source event time, the marker, the candidate id,
-the `confirm_id` and the answer time, and SHALL then mark the candidate `tracked` with the
+the `confirm_id` and the application time (`applied_at`); the answer time stays on the confirm
+row. It SHALL then mark the candidate `tracked` with the
 resulting fingerprint. Inside the sink transaction, `track` SHALL first look up an active
 commitment with the candidate's fingerprint; when one exists, `track` SHALL NOT call
 `create_commitment` and SHALL mark the candidate `tracked` with that fingerprint, leaving the

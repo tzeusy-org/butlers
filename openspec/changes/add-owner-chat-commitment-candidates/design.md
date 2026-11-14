@@ -58,9 +58,11 @@ binding, timeout fixed once; written before the first card request), `confirm_id
 ### Evidence on a tracked commitment
 
 `evidence_opened = {source: "owner_chat_candidate", channel, ingestion_event_id,
-provider_message_id, event_time, marker, candidate_id, confirm_id, answered_at,
+provider_message_id, event_time, marker, candidate_id, confirm_id, applied_at,
 detected_at}`. There is no `utterance` or `excerpt`, unlike the routed path, because the
-message text is never stored outside the Switchboard inbox.
+message text is never stored outside the Switchboard inbox. `applied_at` is when
+Relationship applied the answer. The owner's answer time stays on the confirm row
+(`public.pending_confirms.answered_at`), which Relationship's role cannot read.
 
 ## Behavior matrix
 

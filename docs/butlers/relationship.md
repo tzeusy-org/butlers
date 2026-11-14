@@ -204,8 +204,8 @@ contains the address), and the job returns counts only.
 Promises the owner makes in their own one-to-one WhatsApp and Telegram chats become
 **candidates**, which the owner answers on a signed confirm card (bu-jv1moa.11; openspec change
 `add-owner-chat-commitment-candidates`, REQ-commitment-lifecycle-011 to -017). A candidate is
-not a commitment. Only the owner's Track tap creates one; the card and its sink are a later
-slice. The routed extraction path (REQ-commitment-lifecycle-007) is unchanged.
+not a commitment. Only the owner's Track tap creates one. The routed extraction path
+(REQ-commitment-lifecycle-007) is unchanged.
 
 **Dark.** `COMMITMENT_CANDIDATES_LIVE` in `roster/relationship/tools/commitment_candidates.py`
 is `False` until the signed-confirm composition is installed (bu-atc3xi). The job
@@ -242,6 +242,28 @@ the message text. Its states are `pending`, `carded`, `tracked`, `done`, `ignore
 and `lapsed`. A CHECK makes every terminal row a content-free tombstone: source key, state,
 timestamps, `confirm_id`, and the commitment fingerprint only when tracked.
 `relationship.commitment_candidate_receipts` (keyed by `confirm_id`) is for the sink.
+
+**Card.** After reducing, a live scan runs the card step
+(`roster/relationship/tools/commitment_candidate_cards.py`) when the switch passes it, even if
+the relay was unavailable. Under a row lock it gives each pending candidate one card snapshot,
+unless the candidate is within 30 seconds of lapse (lapsed), its fingerprint is already active
+(superseded), the counterparty's posture is not `active` (deferred, stays pending) or the owner
+has no numeric Telegram chat (stays pending). The snapshot fixes the prompt: "To:" name,
+optional "Due:", the quoted action, the owner recipient and a timeout of at most 24 hours and
+never past the lapse. The confirm is requested outside the lock with the candidate id as key,
+so a repeated step returns the same confirm; the candidate becomes `carded` with its
+`confirm_id`. An unanswered card expires and is never re-sent.
+
+**Sink.** `relationship.commitment_candidate` (registered by `relationship_confirm_sources` in
+`src/butlers/core/confirm_authority.py`) accepts `track`, `done` and `ignore` only. `prepare`
+rebuilds the prompt from the snapshot and refuses a pending candidate whose posture or owner
+recipient changed since. `apply_disposition` runs in one transaction: a stored receipt for the
+`confirm_id` is returned unchanged; otherwise it locks the candidate (first terminal wins, a
+later tap gets `already_<state>`), calls `create_commitment` on Track only when the fingerprint
+is not already active (the routed commitment keeps its own evidence), tombstones the row and
+writes the receipt. Track evidence records `source=owner_chat_candidate`, the channel, the
+ingestion event and provider message ids, the marker, the candidate and confirm ids, and
+`applied_at` (the sink's application time; the transport keeps the answer time).
 
 **Lapse and retention.** A live candidate lapses silently at `event_time + 14 days`; nothing is
 sent to the owner. Tombstones are deleted once their event is more than 14 days old. The
