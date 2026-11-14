@@ -10,7 +10,8 @@ from the provider's own outgoing-message flag (the bridge's whatsmeow `IsFromMe`
 connector SHALL omit the fact rather than guess it. The `whatsapp_user_client` SHALL also put the
 normalized identity of the other party on `payload.raw.peer_identity` for a private chat only,
 derived from the chat JID by the same normalization as `sender_identity` (a mapped LID becomes its
-phone identity); a group, channel or broadcast chat SHALL carry none, and a chat JID that does not
+phone identity); only a phone or linked-identity chat is a private peer; a group, channel, broadcast or other
+chat, and a self-chat whose peer equals the owner, SHALL carry none, and a chat JID that does not
 normalize SHALL omit it rather than guess it. An entry's `text` SHALL contain only that
 message's own content; an earlier message it replies to SHALL be referenced by `reply_to`, never
 inlined. These facts are transport representation only: the connector SHALL NOT detect
@@ -58,3 +59,8 @@ Scope: v1-reserved
 
 - **WHEN** the chat JID is empty or does not normalize to an identity
 - **THEN** `payload.raw.peer_identity` is absent and nothing is guessed
+
+#### Scenario: A self-chat carries no peer
+
+- **WHEN** the owner messages their own chat, so the peer would equal `owner_sender_id`
+- **THEN** `payload.raw.peer_identity` is absent

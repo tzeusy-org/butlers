@@ -2369,3 +2369,24 @@ def test_malformed_private_chat_jid_omits_the_peer_identity(
 ) -> None:
     env = connector._build_batch_envelope(chat_jid, [_owner_only_event()], "batch-bad")
     assert "peer_identity" not in env["payload"]["raw"]
+
+
+def test_self_chat_batch_carries_no_peer_identity(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    """Messaging yourself must not make the owner their own counterparty."""
+    event = {**_owner_only_event(), "sender_jid": "15550000@s.whatsapp.net"}
+    env = connector._build_batch_envelope("15550000@s.whatsapp.net", [event], "batch-self")
+    assert env["sender"]["owner_sender_id"] == "15550000@s.whatsapp.net"
+    assert "peer_identity" not in env["payload"]["raw"]
+
+
+@pytest.mark.parametrize(
+    "chat_jid",
+    ["123@newsletter", "status@broadcast", "123@bot", "123@hosted", "123@c.us", "1@call"],
+)
+def test_non_person_chats_carry_no_peer_identity(
+    connector: WhatsAppUserClientConnector, chat_jid: str
+) -> None:
+    env = connector._build_batch_envelope(chat_jid, [_owner_only_event()], "batch-other")
+    assert "peer_identity" not in env["payload"]["raw"]

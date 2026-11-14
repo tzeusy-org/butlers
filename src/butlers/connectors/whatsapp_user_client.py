@@ -1849,6 +1849,20 @@ class WhatsAppUserClientConnector:
             return f"{phone}@s.whatsapp.net" if phone else f"{user}@lid"
         return f"{user}@{server}"
 
+    def _private_peer_identity(self, chat_type: str, chat_jid: str) -> str | None:
+        """Normalized peer of a private chat, or ``None`` for anything else or unparseable.
+
+        Only phone and LID chats are private peers; the bridge's other servers (``@bot``,
+        ``@hosted``, ``@c.us``, ``@call``) fall back to ``private`` in ``_derive_wa_chat_type`` but
+        name no contactable person.
+        """
+        if chat_type != "private":
+            return None
+        split = self._split_jid(chat_jid)
+        if split is None or split[1] not in ("s.whatsapp.net", "lid"):
+            return None
+        return self._participant_identity(chat_jid)
+
     def _project_batch_senders(
         self,
         buffered_events: list[dict[str, Any]],
@@ -2137,22 +2151,24 @@ class WhatsAppUserClientConnector:
                 }
             )
 
+        participants, owner_sender_id = self._extract_participants(buffered_events)
         # Build raw payload from all events
+        peer_identity = self._private_peer_identity(chat_type, chat_jid)
         raw_payload = {
             "events": buffered_events,
             "batch_size": len(buffered_events),
             "conversation_history": conversation_history,
             # Transport fact (REQ-connector-base-spec-013): the other party of a private chat,
-            # so a flush holding only owner messages still names its counterparty. A group
-            # carries none, and a malformed chat JID is omitted rather than guessed.
+            # so a flush holding only owner messages still names its counterparty. A group or
+            # self-chat carries none. Residual: an owner LID that is not in the LID map does
+            # not equal a phone-form chat JID, so that self-chat is not recognised here.
             **(
-                {"peer_identity": peer}
-                if chat_type == "private" and (peer := self._participant_identity(chat_jid))
+                {"peer_identity": peer_identity}
+                if peer_identity is not None and peer_identity != owner_sender_id
                 else {}
             ),
         }
 
-        participants, owner_sender_id = self._extract_participants(buffered_events)
         return {
             "schema_version": "ingest.v1",
             "source": {
