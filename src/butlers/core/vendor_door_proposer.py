@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
@@ -105,6 +106,12 @@ class _Connection(Protocol):
     async def fetchval(self, sql: str, *args: Any) -> Any: ...
 
 
+# Reads the stored text of one *ingested* event under the connection's current role. The
+# Switchboard owns that schema, so its tool supplies the reader; this module holds no
+# Switchboard SQL.
+EventTextReader = Callable[[Any, uuid.UUID], Awaitable[str | None]]
+
+
 def _refused(reason: str) -> dict[str, Any]:
     return {"outcome": "refused", "reason": reason}
 
@@ -116,6 +123,7 @@ async def propose_from_event(
     kind: str,
     template: str,
     slot_types: dict[str, Any],
+    read_text: EventTextReader,
     vendor_entity_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Propose a door found in one stored ingestion event, or refuse without writing.
@@ -127,12 +135,7 @@ async def propose_from_event(
         return _refused("dark")
     async with conn.transaction():
         await conn.execute(f"SET LOCAL ROLE {PROPOSER_ROLE}")
-        text = await conn.fetchval(
-            "SELECT m.normalized_text FROM switchboard.message_inbox AS m "
-            "WHERE m.id = $1 AND EXISTS "
-            "(SELECT 1 FROM public.ingestion_events AS e WHERE e.id = m.id)",
-            event_id,
-        )
+        text = await read_text(conn, event_id)
         if text is None:
             return _refused("event")
         if not template_in_event(template, text):
@@ -158,7 +161,7 @@ class _Pool(Protocol):
 
 
 async def propose_for_session(
-    pool: _Pool, *, event_id: str, kind: str, url_template: str
+    pool: _Pool, *, event_id: str, kind: str, url_template: str, read_text: EventTextReader
 ) -> dict[str, Any]:
     """The MCP tool body: the model names a candidate, the session's own request decides.
 
@@ -185,6 +188,7 @@ async def propose_for_session(
             kind=kind,
             template=url_template,
             slot_types={name: name for name in names},
+            read_text=read_text,
         )
     out: dict[str, Any] = {"status": result.get("outcome", "refused")}
     if result.get("reason"):

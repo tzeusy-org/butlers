@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from butlers.core import vendor_door_proposer as proposer
 from butlers.core import vendor_doors as flag
 
+ROOT = Path(__file__).resolve().parents[2]
 EVENT = uuid.uuid4()
 TEXT = (
     "Manage your plan: https://Shop.Example.com/account/orders/ABC-123/cancel?token=zzz#x. "
@@ -92,9 +94,15 @@ class FakeConn:
         return {"outcome": "stored", "tier": "unverified"}
 
 
+async def read_text(conn, event):
+    """Stands in for the Switchboard tool's reader; FakeConn answers by the SQL's table name."""
+    return await conn.fetchval("SELECT text FROM switchboard.message_inbox", event)
+
+
 async def _propose(conn, **kw):
     return await proposer.propose_from_event(
         cast(Any, conn),
+        read_text=read_text,
         event_id=kw.pop("event_id", EVENT),
         kind="cancel",
         template=kw.pop("template", TEMPLATE),
@@ -190,7 +198,9 @@ async def _tool(pool, **kw):
         "kind": "cancel",
         "url_template": TEMPLATE.replace("{order}", "{order_ref}"),
     }
-    return await proposer.propose_for_session(cast(Any, pool), **{**args, **kw})
+    return await proposer.propose_for_session(
+        cast(Any, pool), read_text=read_text, **{**args, **kw}
+    )
 
 
 async def test_tool_is_disabled_without_touching_anything(monkeypatch):
@@ -293,8 +303,9 @@ def test_adversarial_input_is_decided_by_segment_count_not_backtracking():
     assert proposer._matches(parsed, same) is True
 
 
-async def test_binding_text_comes_only_from_ingested_events(live):
-    conn = FakeConn(TEXT)
-    await _propose(conn)
-    sql = conn.calls[0][0]
-    assert "public.ingestion_events" in sql and "message_inbox" in sql
+def test_the_switchboard_reader_binds_only_ingested_events_and_core_holds_no_switchboard_sql():
+    tools = (ROOT / "roster/switchboard/modules/tools.py").read_text()
+    assert "FROM switchboard.message_inbox AS m" in tools
+    assert "public.ingestion_events AS e WHERE e.id = m.id" in tools
+    core = (ROOT / "src/butlers/core/vendor_door_proposer.py").read_text()
+    assert "switchboard." not in core.replace("butlers.tools.switchboard", "")

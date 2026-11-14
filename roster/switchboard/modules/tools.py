@@ -64,8 +64,22 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         """
         from butlers.core.vendor_door_proposer import propose_for_session
 
+        async def _read_inbound_text(conn: Any, event: uuid.UUID) -> str | None:
+            # Only an ingested event binds a door: it must also have its public.ingestion_events
+            # row, which the ingest path writes and outbound deliveries never do.
+            return await conn.fetchval(
+                "SELECT m.normalized_text FROM switchboard.message_inbox AS m "
+                "WHERE m.id = $1 AND EXISTS "
+                "(SELECT 1 FROM public.ingestion_events AS e WHERE e.id = m.id)",
+                event,
+            )
+
         return await propose_for_session(
-            module._get_pool(), event_id=event_id, kind=kind, url_template=url_template
+            module._get_pool(),
+            event_id=event_id,
+            kind=kind,
+            url_template=url_template,
+            read_text=_read_inbound_text,
         )
 
     # =================================================================
