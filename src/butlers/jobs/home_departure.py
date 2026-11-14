@@ -37,7 +37,7 @@ import hashlib
 import logging
 import os
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -184,10 +184,9 @@ async def load_watch(pool: asyncpg.Pool) -> list[WatchItem]:
     ]
 
 
-async def read_presence_edges(now: datetime) -> list[Edge] | None:
-    """Confirmed owner.place edges of the last 40 minutes, or ``None`` without the reader login."""
+async def _reader_connection() -> asyncpg.Connection | None:
+    """The private owner perception reader, or ``None`` when its login is not configured."""
     from butlers.db import register_jsonb_codec
-    from butlers.perception import PerceptionStore
 
     dsn = (os.environ.get(PERCEPTION_READER_DSN_ENV) or "").strip()
     if not dsn:
@@ -195,6 +194,81 @@ async def read_presence_edges(now: datetime) -> list[Edge] | None:
     connection = await asyncpg.connect(dsn, command_timeout=15)
     try:
         await register_jsonb_codec(connection)
+    except BaseException:
+        await connection.close()
+        raise
+    return connection
+
+
+@dataclass(frozen=True)
+class PresenceRead:
+    """The ``owner.place`` slot as ``perception_read`` returns it, and recent transitions.
+
+    ``edges`` are newest first and include retracted ones, so a caller can tell a retracted
+    leave from one it never saw.
+    """
+
+    slot: Mapping[str, Any] | None
+    edges: tuple[Edge, ...]
+
+
+#: How far back the away premise looks for the latest transition and an absence's leave.
+PREMISE_LOOKBACK = timedelta(days=30)
+#: Heartbeats share the timeline, so a long absence needs several pages (about 10 days here);
+#: past the cap the leave is not seen and the premise reads unknown, which holds and never clears.
+_PREMISE_MAX_SCANS = 30
+
+
+async def read_presence_state(
+    now: datetime, *, subject: UUID, wanted: Collection[UUID] = ()
+) -> PresenceRead | None:
+    """The slot and the transitions back to the latest non-retracted one and every ``wanted`` id.
+
+    Uses the departure card's reader login; ``None`` without it.  ``wanted`` names the leave edges
+    of open away conditions, so their retraction or a later enter can be seen.
+    """
+    from butlers.perception import PerceptionStore
+
+    connection = await _reader_connection()
+    if connection is None:
+        return None
+    try:
+        store = PerceptionStore(connection)
+        slot = await store.read("owner.place", subject, as_of=now)
+        edges: list[Edge] = []
+        missing = set(wanted)
+        before: UUID | None = None
+        for _ in range(_PREMISE_MAX_SCANS):
+            rows = await store.timeline(
+                since=now - PREMISE_LOOKBACK,
+                until=now,
+                kind="owner.place",
+                subject=subject,
+                before=before,
+                limit=_SCAN_PAGE,
+            )
+            for row in rows:
+                before = UUID(str(row["id"]))
+                edge = parse_edge(row)
+                if edge is not None:
+                    edges.append(edge)
+                    missing.discard(edge.id)
+            settled = not missing and any(not e.retracted for e in edges)
+            if settled or len(rows) < _SCAN_PAGE:
+                break
+        return PresenceRead(slot if isinstance(slot, Mapping) else None, tuple(edges))
+    finally:
+        await connection.close()
+
+
+async def read_presence_edges(now: datetime) -> list[Edge] | None:
+    """Confirmed owner.place edges of the last 40 minutes, or ``None`` without the reader login."""
+    from butlers.perception import PerceptionStore
+
+    connection = await _reader_connection()
+    if connection is None:
+        return None
+    try:
         store = PerceptionStore(connection)
         edges: list[Edge] = []
         before: UUID | None = None

@@ -343,8 +343,9 @@ async def test_send_notify_suppressed_by_quiet_hours():
         patch("butlers.jobs.home.get_current_switchboard_client") as mock_client,
         patch("butlers.jobs.home.record_attention_event", new_callable=AsyncMock) as mock_ledger,
     ):
-        await _send_notify(pool, "Weekly digest")
+        outcome = await _send_notify(pool, "Weekly digest")
 
+    assert outcome == "suppressed"
     mock_resolve.assert_not_awaited()
     mock_client.assert_not_called()
     mock_ledger.assert_awaited_once()
@@ -368,8 +369,9 @@ async def test_send_notify_no_recipient_configured():
         patch("butlers.jobs.home.get_current_switchboard_client") as mock_client,
         patch("butlers.jobs.home.record_attention_event", new_callable=AsyncMock) as mock_ledger,
     ):
-        await _send_notify(pool, "Weekly digest")
+        outcome = await _send_notify(pool, "Weekly digest")
 
+    assert outcome == "failed"
     mock_client.assert_not_called()
     assert mock_ledger.await_args.kwargs["outcome"] == "failed"
     assert mock_ledger.await_args.kwargs["reason"] == "no_recipient_configured"
@@ -391,8 +393,9 @@ async def test_send_notify_no_switchboard_client():
         patch("butlers.jobs.home.get_current_switchboard_client", return_value=None),
         patch("butlers.jobs.home.record_attention_event", new_callable=AsyncMock) as mock_ledger,
     ):
-        await _send_notify(pool, "Weekly digest")
+        outcome = await _send_notify(pool, "Weekly digest")
 
+    assert outcome == "failed"
     assert mock_ledger.await_args.kwargs["outcome"] == "failed"
     assert mock_ledger.await_args.kwargs["reason"] == "switchboard_client_unavailable"
 
@@ -419,8 +422,9 @@ async def test_send_notify_delivers_via_deliver_mcp_tool():
         patch("butlers.jobs.home.get_current_switchboard_client", return_value=mock_client),
         patch("butlers.jobs.home.record_attention_event", new_callable=AsyncMock) as mock_ledger,
     ):
-        await _send_notify(pool, "Weekly digest")
+        outcome = await _send_notify(pool, "Weekly digest")
 
+    assert outcome == "sent"
     mock_client.call_tool.assert_awaited_once()
     tool_name, tool_args = mock_client.call_tool.await_args.args
     assert tool_name == "deliver"
@@ -460,7 +464,8 @@ async def test_send_notify_deliver_failure_recorded_as_failed():
         patch("butlers.jobs.home.get_current_switchboard_client", return_value=mock_client),
         patch("butlers.jobs.home.record_attention_event", new_callable=AsyncMock) as mock_ledger,
     ):
-        await _send_notify(pool, "Weekly digest")
+        outcome = await _send_notify(pool, "Weekly digest")
 
+    assert outcome == "failed"
     assert mock_ledger.await_args.kwargs["outcome"] == "failed"
     assert "Messenger unreachable" in mock_ledger.await_args.kwargs["reason"]
