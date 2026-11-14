@@ -38,6 +38,16 @@ def test_candidates_are_bounded():
         ("https://evil.example.net/account/orders/{order}/cancel", False),
         ("https://shop.example.com.evil.net/help", False),
         ("https://shop.example.com/account/{x}", False),
+        ("https://shop.example.com/", False),
+        ("https://shop.example.com/account", False),  # a prefix of a longer event URL
+        ("https://{sub}.example.com/help", False),  # a slot in the host
+        ("https://shop.{tld}/help", False),
+        (
+            "https://shop.example.com/account/orders/ord-{order}/cancel",
+            False,
+        ),  # not a whole segment
+        ("https://shop.example.com/account/orders/{order}/cancel/", False),
+        ("https://SHOP.example.com/help", True),  # host normalizes
         ("http://shop.example.com/help", False),
         ("https://shop.example.com", False),
         ("not a url", False),
@@ -134,3 +144,131 @@ async def test_the_event_text_is_read_by_the_passed_event_id(live):
     await _propose(conn, event_id=other)
     assert conn.calls[0][1] == (other,)
     assert conn.calls[-1][1][3] == other
+
+
+async def test_slot_may_stand_for_exactly_one_segment():
+    text = "https://shop.example.com/a/b/c/cancel"
+    assert not proposer.template_in_event("https://shop.example.com/a/{x}/cancel", text)
+    assert proposer.template_in_event("https://shop.example.com/a/{x}/c/cancel", text)
+
+
+# --- the MCP tool body ---------------------------------------------------------------------
+
+
+class _Acquire:
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def __aenter__(self):
+        return self.conn
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class FakePool:
+    def __init__(self, conn):
+        self.conn = conn
+        self.acquired = 0
+
+    def acquire(self):
+        self.acquired += 1
+        return _Acquire(self.conn)
+
+
+def _session(monkeypatch, request_id):
+    monkeypatch.setattr(
+        proposer,
+        "get_current_runtime_session_routing_context",
+        lambda: {"request_id": request_id} if request_id else None,
+    )
+
+
+async def _tool(pool, **kw):
+    args = {
+        "event_id": str(EVENT),
+        "kind": "cancel",
+        "url_template": TEMPLATE.replace("{order}", "{order_ref}"),
+    }
+    return await proposer.propose_for_session(cast(Any, pool), **{**args, **kw})
+
+
+async def test_tool_is_disabled_without_touching_anything(monkeypatch):
+    _session(monkeypatch, str(EVENT))
+    pool = FakePool(FakeConn(TEXT))
+    assert await _tool(pool) == {"status": "disabled"}
+    assert pool.acquired == 0
+
+
+async def test_tool_refuses_an_event_that_is_not_this_sessions_request(live, monkeypatch):
+    pool = FakePool(FakeConn(TEXT))
+    _session(monkeypatch, str(uuid.uuid4()))
+    assert (await _tool(pool))["reason"] == "event_not_in_session"
+    _session(monkeypatch, None)
+    assert (await _tool(pool))["reason"] == "event_not_in_session"
+    assert (await _tool(pool, event_id="not-a-uuid"))["reason"] == "event"
+    assert pool.acquired == 0
+
+
+async def test_tool_refuses_unknown_slot_names(live, monkeypatch):
+    _session(monkeypatch, str(EVENT))
+    pool = FakePool(FakeConn(TEXT))
+    out = await _tool(pool, url_template="https://shop.example.com/a/{anything}/cancel")
+    assert out == {"status": "refused", "reason": "slot_type"}
+    assert pool.acquired == 0
+
+
+async def test_tool_proposes_a_bound_template_for_its_own_request(live, monkeypatch):
+    _session(monkeypatch, str(EVENT).upper())
+    conn = FakeConn(TEXT)
+    out = await _tool(FakePool(conn))
+    assert out == {"status": "stored"}
+    args = conn.calls[-1][1]
+    assert args[3] == EVENT and args[2] == {"order_ref": "order_ref"}
+
+
+async def test_tool_reports_an_unbound_template_as_refused(live, monkeypatch):
+    _session(monkeypatch, str(EVENT))
+    out = await _tool(FakePool(FakeConn("no links here")), url_template="https://a.example.com/x")
+    assert out == {"status": "refused", "reason": "not_in_event"}
+
+
+# --- the role stays inside the transaction -------------------------------------------------
+
+
+class _TxConn(FakeConn):
+    """Models SET LOCAL: the role holds only while the transaction is open."""
+
+    def __init__(self, text):
+        super().__init__(text)
+        self.in_tx = False
+        self.role = "none"
+
+    def transaction(self, **_):
+        return self
+
+    async def __aenter__(self):
+        self.in_tx = True
+        return self
+
+    async def __aexit__(self, *exc):
+        self.in_tx = False
+        self.role = "none"  # asyncpg ends the transaction; SET LOCAL is discarded
+        return False
+
+    async def execute(self, sql, *args):
+        assert self.in_tx, "SET LOCAL outside a transaction would not hold"
+        assert sql.startswith("SET LOCAL ROLE")
+        self.role = sql.rsplit(" ", 1)[1]
+
+
+async def test_role_is_set_locally_and_does_not_outlive_the_call(live):
+    conn = _TxConn(TEXT)
+    await _propose(conn)
+    assert conn.role == "none" and not conn.in_tx
+
+
+async def test_role_does_not_leak_when_the_proposal_is_refused(live):
+    conn = _TxConn("nothing")
+    await _propose(conn)
+    assert conn.role == "none" and not conn.in_tx

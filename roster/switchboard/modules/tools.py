@@ -50,6 +50,25 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         return await _registry.list_butlers(module._get_pool(), routable_only=routable_only)
 
     # =================================================================
+    # Vendor-door proposals (bu-jv1moa.40; dark until VENDOR_DOORS_LIVE)
+    # =================================================================
+
+    @_tool("routing")
+    async def propose_vendor_door(event_id: str, kind: str, url_template: str) -> dict[str, Any]:
+        """Propose a vendor page found in the message this session is handling.
+
+        ``kind`` is cancel, manage, return or check_in. ``url_template`` is an https URL copied
+        from the message with each identifier path segment replaced by ``{order_ref}``,
+        ``{booking_ref}`` or ``{account_ref}``; it has no query. It is only a proposal: the owner
+        must confirm it on the dashboard, and nothing opens until then.
+        """
+        from butlers.core.vendor_door_proposer import propose_for_session
+
+        return await propose_for_session(
+            module._get_pool(), event_id=event_id, kind=kind, url_template=url_template
+        )
+
+    # =================================================================
     # Connector lifecycle tools
     # =================================================================
 

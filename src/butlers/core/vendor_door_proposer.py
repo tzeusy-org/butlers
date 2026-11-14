@@ -19,6 +19,7 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from butlers.core import vendor_doors as flag
+from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
 
 PROPOSER_ROLE = "butler_switchboard_rw"
 MAX_TEXT_CHARS = 200_000
@@ -26,7 +27,7 @@ MAX_CANDIDATES = 200
 
 _URL = re.compile(r"https://[^\s<>\"'`\\^{}|\[\]()]+", re.IGNORECASE)
 _SLOT = re.compile(r"\{([a-z_]+)\}")
-_SLOT_VALUE = r"[A-Za-z0-9._~-]{1,64}"
+_SLOT_VALUE = r"[^/?#]+"
 _TRAILING = ".,;:!?"
 
 
@@ -45,21 +46,26 @@ def candidate_urls(text: str) -> list[str]:
 
 
 def _template_pattern(template: str) -> re.Pattern[str] | None:
+    """Compile a template to a full-match pattern, or None when it is not well formed.
+
+    Slots stand only for whole path segments (``{name}`` and nothing else in the segment), never
+    in the scheme or host; each becomes one segment ``[^/?#]+``. Every other segment is copied
+    literally, so the template can only match a URL that carries those exact segments.
+    """
     if not template.startswith("https://"):
         return None
-    rest = template[len("https://") :]
-    host, slash, path = rest.partition("/")
-    if not host or not slash:
+    host, slash, path = template[len("https://") :].partition("/")
+    if not host or not slash or re.search(r"[{}]", host):
         return None
     pieces: list[str] = []
-    last = 0
-    path = "/" + path
-    for slot in _SLOT.finditer(path):
-        pieces.append(re.escape(path[last : slot.start()]))
-        pieces.append(_SLOT_VALUE)
-        last = slot.end()
-    pieces.append(re.escape(path[last:]))
-    return re.compile(re.escape("https://" + host.lower()) + "".join(pieces), re.ASCII)
+    for segment in path.split("/"):
+        if _SLOT.fullmatch(segment):
+            pieces.append(_SLOT_VALUE)
+        elif re.search(r"[{}]", segment) or segment == "":
+            return None  # a slot inside a segment, a stray brace, or an empty/trailing segment
+        else:
+            pieces.append(re.escape(segment))
+    return re.compile(re.escape("https://" + host.lower()) + "/" + "/".join(pieces), re.ASCII)
 
 
 def template_in_event(template: str, text: str | None) -> bool:
@@ -115,3 +121,46 @@ async def propose_from_event(
             {},
         )
     return json.loads(raw) if isinstance(raw, str) else dict(raw)
+
+
+# A slot's name is its type: the database accepts only these three, so the tool does too.
+SLOT_NAMES = ("order_ref", "booking_ref", "account_ref")
+
+
+class _Pool(Protocol):
+    def acquire(self) -> Any: ...
+
+
+async def propose_for_session(
+    pool: _Pool, *, event_id: str, kind: str, url_template: str
+) -> dict[str, Any]:
+    """The MCP tool body: the model names a candidate, the session's own request decides.
+
+    ``event_id`` must be the request this runtime session was routed (never another event), and
+    the template must then match a URL in that request's stored text. While the flag is off the
+    answer is ``{"status": "disabled"}`` and nothing is read or written.
+    """
+    if not flag.VENDOR_DOORS_LIVE:
+        return {"status": "disabled"}
+    try:
+        event = uuid.UUID(event_id)
+    except (ValueError, AttributeError, TypeError):
+        return {"status": "refused", "reason": "event"}
+    routed = get_current_runtime_session_routing_context() or {}
+    if str(routed.get("request_id") or "").lower() != str(event):
+        return {"status": "refused", "reason": "event_not_in_session"}
+    names = _SLOT.findall(url_template)
+    if any(name not in SLOT_NAMES for name in names):
+        return {"status": "refused", "reason": "slot_type"}
+    async with pool.acquire() as conn:
+        result = await propose_from_event(
+            conn,
+            event_id=event,
+            kind=kind,
+            template=url_template,
+            slot_types={name: name for name in names},
+        )
+    out: dict[str, Any] = {"status": result.get("outcome", "refused")}
+    if result.get("reason"):
+        out["reason"] = result["reason"]
+    return out
