@@ -68,9 +68,10 @@ function type(label: string, value: string) {
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
 }
 
-function fillFreezer() {
+function fillFreezer(unit = "°C") {
   type("Temperature sensor ID", " sensor.chest_freezer ");
   type("Name in alerts", "  Chest freezer  ");
+  if (unit) type("Sensor reports in", unit);
   type("Alert above (°C)", "-12");
   type("Clear this far below (°C)", "1.5");
   type("Warm for (minutes)", "20");
@@ -148,6 +149,38 @@ describe("HomeAwaySafetyPanel", () => {
 
     expect(screen.getByRole("alert").textContent).toContain("-30 to 0");
     expect(saveFreezer).not.toHaveBeenCalled();
+  });
+
+  it("starts with no unit and refuses to save until the owner chooses one", () => {
+    render(<HomeAwaySafetyPanel />);
+    expect((screen.getByLabelText("Sensor reports in") as HTMLSelectElement).value).toBe("");
+
+    fillFreezer("");
+    fireEvent.click(screen.getByRole("button", { name: "Save freezer" }));
+
+    expect(screen.getByRole("alert").textContent).toContain("unit");
+    expect(saveFreezer).not.toHaveBeenCalled();
+  });
+
+  it("saves the unit the owner chose", () => {
+    render(<HomeAwaySafetyPanel />);
+    fillFreezer("°F");
+    fireEvent.click(screen.getByRole("button", { name: "Save freezer" }));
+
+    expect(saveFreezer.mock.calls[0][0].unit).toBe("°F");
+  });
+
+  it("shows where a freezer alert clears to two decimals", () => {
+    configState.current = {
+      data: {
+        ...CONFIGURED,
+        freezers: [{ ...CONFIGURED.freezers[0], max_c: -12.1, hysteresis_c: 2.8 }],
+      },
+    };
+    render(<HomeAwaySafetyPanel />);
+
+    // -12.1 - 2.8 is -14.899999999999999 in floating point.
+    expect(screen.getByTestId("home-away-freezer-list").textContent).toContain("clears at -14.9 °C");
   });
 
   it("refuses a sensor ID that is not a sensor", () => {

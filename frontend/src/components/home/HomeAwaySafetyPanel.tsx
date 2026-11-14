@@ -63,7 +63,8 @@ function FreezerSection({ freezers }: { freezers: HomeFreezerInput[] }) {
   const remove = useDeleteHomeFreezer();
   const [entityId, setEntityId] = useState("");
   const [label, setLabel] = useState("");
-  const [unit, setUnit] = useState<FreezerUnit>("°C");
+  // No default unit: a wrong one makes every reading unknown and the freezer silently unwatched.
+  const [unit, setUnit] = useState<FreezerUnit | "">("");
   const [numbers, setNumbers] = useState<Record<FreezerNumberKey, string>>({
     max_c: "",
     hysteresis_c: "",
@@ -82,6 +83,10 @@ function FreezerSection({ freezers }: { freezers: HomeFreezerInput[] }) {
     }
     if (trimmedLabel === "" || trimmedLabel.length > 80) {
       setFieldError("Name the freezer in 1 to 80 characters.");
+      return;
+    }
+    if (unit === "") {
+      setFieldError("Choose the unit the sensor reports in.");
       return;
     }
     const parsed: Partial<Record<FreezerNumberKey, number>> = {};
@@ -105,6 +110,7 @@ function FreezerSection({ freezers }: { freezers: HomeFreezerInput[] }) {
         onSuccess: () => {
           setEntityId("");
           setLabel("");
+          setUnit("");
           setNumbers({ max_c: "", hysteresis_c: "", dwell_minutes: "", max_reading_age_minutes: "" });
         },
       },
@@ -125,7 +131,7 @@ function FreezerSection({ freezers }: { freezers: HomeFreezerInput[] }) {
               <span className="font-medium">{freezer.owner_label}</span>
               <span className="text-muted-foreground">
                 above {freezer.max_c} °C for {freezer.dwell_minutes} min, clears at{" "}
-                {freezer.max_c - freezer.hysteresis_c} °C
+                {Number((freezer.max_c - freezer.hysteresis_c).toFixed(2))} °C
               </span>
               <code className="text-xs">{freezer.entity_id}</code>
               <Button
@@ -180,8 +186,11 @@ function FreezerSection({ freezers }: { freezers: HomeFreezerInput[] }) {
               id="home-away-freezer-unit"
               className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
               value={unit}
-              onChange={(event) => setUnit(event.target.value as FreezerUnit)}
+              onChange={(event) => setUnit(event.target.value as FreezerUnit | "")}
             >
+              <option value="" disabled>
+                Choose unit
+              </option>
               <option value="°C">°C</option>
               <option value="°F">°F</option>
             </select>
