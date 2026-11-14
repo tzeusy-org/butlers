@@ -38,6 +38,12 @@ dispatch packet for bu-jv1moa.11.
   and a strict cursor-only schema. Switchboard answers it in-process; it has no MCP tool, so no
   model session or direct MCP client can reach it. The presented daemon narrows the workload
   and is not separately proven.
+  This amendment changes what 2.1 required; it does not merely clarify it. The original text
+  was: "Verify the `[Unknown]` caller-authentication seam: bind the projection on the trusted
+  kernel-peer composition used by `ConfirmAuthorityTopology` with a Relationship issuer and a
+  projection audience. Stop if only weaker authentication is possible." The lead's ruling (P2)
+  reads it this way: the workload is authenticated and the daemon is only presented, which is
+  accepted for this dark, read-only projection.
 - [x] 2.2 Verify the `[Unknown]` single-message envelope path; cover or exclude it explicitly.
   Verified 2026-11-14: WhatsApp `_normalize_single_event_to_ingest_v1` has no caller; Telegram's
   single-message path is live (backfill, ingest retry, chat-id fallback) and carries no
