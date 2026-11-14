@@ -206,6 +206,11 @@ def test_unit_groups_require_native_session_host_proof() -> None:
     assert "continue-on-error" not in test_step and "if" not in test_step
 
 
+def test_browser_lane_stays_on_an_os_playwright_supports() -> None:
+    """bu-kiuh8v.31: Playwright refuses chromium on ubuntu26.04-x64 (ubuntu-latest's new image)."""
+    assert _workflow()["jobs"]["frontend-e2e"]["runs-on"] == "ubuntu-24.04"
+
+
 def test_unit_native_policy_experiment_is_scoped_and_always_cleaned() -> None:
     job = _workflow()["jobs"]["check-unit"]
     assert job["runs-on"] == "ubuntu-24.04"
