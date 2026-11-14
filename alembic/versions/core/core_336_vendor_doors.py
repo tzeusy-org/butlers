@@ -500,9 +500,15 @@ BEGIN
         WHEN cur.status <> 'proposed' THEN 'not_pending' ELSE 'stale_version' END);
 END $$;
 
+-- DELETE is always refused. TRUNCATE is refused only while a row exists: emptying an empty table
+-- retains nothing, and a cascading `TRUNCATE public.entities CASCADE` (test fixtures) reaches this
+-- table through its foreign keys. SECURITY DEFINER because no caller can read the table.
 CREATE OR REPLACE FUNCTION public.vendor_doors_no_delete() RETURNS trigger
-LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
+    IF TG_OP = 'TRUNCATE' AND NOT EXISTS (SELECT 1 FROM public.vendor_doors) THEN
+        RETURN NULL;
+    END IF;
     RAISE EXCEPTION '% rows are retained', TG_TABLE_NAME USING ERRCODE = '42501';
 END $$;
 """
@@ -618,6 +624,38 @@ def _tolerant(statement: str, role: str) -> str:
     """
 
 
+def _own_by_database_owner() -> None:
+    """Make the database owner own every object here, whoever ran the migration.
+
+    A managed bootstrap login can run this revision (a downgrade then upgrade round trip); the
+    objects must end up owned and visible exactly as a run by the database's own migration login
+    leaves them, or that login cannot see the tables the SECURITY DEFINER functions belong to.
+    """
+    objects = [
+        "TABLE public.vendor_doors",
+        "TABLE public.public_suffix_rules",
+        "VIEW public.vendor_doors_current",
+        *(f"FUNCTION {function}" for function in (*_PUBLIC_FUNCTIONS, *_HELPER_FUNCTIONS)),
+    ]
+    body = "\n".join(
+        f"            EXECUTE format('ALTER {obj} OWNER TO %I', db_owner);" for obj in objects
+    )
+    op.execute(
+        f"""
+        DO $$
+        DECLARE db_owner TEXT;
+        BEGIN
+            SELECT r.rolname INTO db_owner FROM pg_database AS d
+                JOIN pg_roles AS r ON r.oid = d.datdba WHERE d.datname = current_database();
+            IF db_owner IS NOT NULL AND db_owner <> current_user
+               AND pg_has_role(current_user, db_owner, 'MEMBER') THEN
+{body}
+            END IF;
+        END $$
+        """
+    )
+
+
 def _load_suffix_rules() -> None:
     from butlers.core.registrable_domain import suffix_rules
 
@@ -676,6 +714,7 @@ def upgrade() -> None:
     op.execute(_AUTHORITY_FUNCTIONS)
     op.execute(_VIEW)
     op.execute(_TRIGGERS)
+    _own_by_database_owner()
     _grants()
 
 

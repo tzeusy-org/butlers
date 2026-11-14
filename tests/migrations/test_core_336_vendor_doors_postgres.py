@@ -341,6 +341,13 @@ def test_delete_and_truncate_are_refused_even_for_the_owner(engine) -> None:
             assert getattr(caught.value.orig, "pgcode", None) == "42501"
 
 
+def test_truncating_an_empty_table_retains_nothing_and_is_allowed(engine) -> None:
+    # A cascading `TRUNCATE public.entities CASCADE` (test fixtures) reaches this table.
+    with engine.connect() as c:
+        c.execute(text("TRUNCATE TABLE public.vendor_doors"))
+        c.rollback()
+
+
 def test_signature_takes_no_origin_or_verdict_argument(engine) -> None:
     with engine.connect() as c:
         names = (
