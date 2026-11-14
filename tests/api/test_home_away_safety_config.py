@@ -1,6 +1,6 @@
 """Owner-only, content-blind away-safety declarations (bu-jv1moa.87).
 
-Away-safety requirements 002 and 003: owner-confirmed values only, bounded, refused without
+REQ-home-deterministic-jobs-002 and 003: owner-confirmed values only, bounded, refused without
 storing or echoing anything, audited by outcome only; no route creates the sensing group.
 """
 
@@ -210,7 +210,7 @@ async def test_a_freezer_is_declared_with_every_owner_value(harness) -> None:
 async def test_an_out_of_bounds_freezer_is_refused_blind_and_stores_nothing(
     harness, change
 ) -> None:
-    """away-safety requirement 002: refused without storing, echoing or auditing any value."""
+    """REQ-home-deterministic-jobs-002: refused without storing, echoing or auditing any value."""
     body = {**_FREEZER, **change}
     async with harness.client as client:
         resp = await client.put("/api/home/away-safety/freezers", json=body)
@@ -234,7 +234,7 @@ async def test_a_ninth_freezer_is_refused(harness) -> None:
 
 @pytest.mark.parametrize(("minutes", "status"), [(29, 422), (30, 200), (1440, 200), (1441, 422)])
 async def test_the_away_duration_floor_is_the_departure_window(harness, minutes, status) -> None:
-    """away-safety requirement 005: at least 30 minutes, the card's whole delivery window."""
+    """REQ-home-deterministic-jobs-005: at least 30 minutes, the card's whole delivery window."""
     harness.pool.fetchrow = AsyncMock(
         return_value={
             "entity_id": "binary_sensor.front_door",
@@ -307,7 +307,7 @@ async def test_every_away_safety_route_requires_the_owner(app) -> None:
 
 
 async def test_no_route_creates_or_changes_the_sensing_group(app) -> None:
-    """away-safety requirement 003: registration is a privileged act outside Home."""
+    """REQ-home-deterministic-jobs-003: registration is a privileged act outside Home."""
     module = _router(app)
     for route in module.router.routes:
         assert "sensing" not in route.path
