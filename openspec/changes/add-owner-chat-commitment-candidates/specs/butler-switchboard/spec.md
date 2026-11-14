@@ -64,7 +64,8 @@ Scope: v1-reserved
 
 #### Scenario: Without a usable peer fact the counterparty is not guessed
 
-- **WHEN** an owner-only WhatsApp batch carries no `peer_identity` (a self-chat), or one equal to
+- **WHEN** an owner-only WhatsApp batch carries no `peer_identity` (a self-chat carries none, except an unmapped
+  owner LID: see the .93 residual), or one equal to
   the owner, or one that disagrees with the history's non-owner sender, or the chat is a group
 - **THEN** the projection returns no span from it
 

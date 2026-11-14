@@ -173,8 +173,9 @@ single-event normalizer carry no history entries, so these facts, and anything t
 such as owner-chat commitment candidates, never cover those messages.
 
 A WhatsApp batch holding only the owner's own entries names its counterparty from
-`payload.raw.peer_identity` (private chats only, never the owner). A self-chat carries no peer, and
-a peer that disagrees with the history's non-owner sender names no one, so neither yields a span.
+`payload.raw.peer_identity` (private chats only, never the owner). A self-chat carries no peer,
+except an unmapped owner LID (see the .93 residual at `_private_peer_identity`'s caller in
+`whatsapp_user_client.py`), and a peer that disagrees with the history's non-owner sender names no one, so neither yields a span.
 
 Owner-chat commitment candidates (REQ-butler-switchboard-011) also leave out these cases rather
 than guess at them:
