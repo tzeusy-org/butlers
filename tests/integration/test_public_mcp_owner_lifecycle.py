@@ -34,13 +34,15 @@ from butlers.testing.public_mcp import public_mcp_topology
 pytestmark = pytest.mark.integration
 
 
-def _wait(predicate, *, seconds=40):
+def _wait(
+    predicate, *, seconds=40, message="owned subscriber did not reach the actual observation"
+):
     deadline = time.monotonic() + seconds
     while True:
         value = predicate()
         if value:
             return value
-        assert time.monotonic() < deadline, "owned subscriber did not reach the actual observation"
+        assert time.monotonic() < deadline, message
         time.sleep(0.05)
 
 
@@ -84,6 +86,81 @@ def topology():
         yield actual
 
 
+_SUB_COUNT = (
+    "SELECT count(*) FROM pg_subscription WHERE subname='butlers_public_sub' "
+    "AND subdbid=(SELECT oid FROM pg_database WHERE datname=current_database())"
+)
+
+
+def _drop_slots(admin, where, params=None):
+    """Terminate the holders of, then drop, every slot matching `where`; tolerate none."""
+    with admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.execute(
+            text(
+                "SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots "
+                f"WHERE ({where}) AND active_pid IS NOT NULL"
+            ),
+            params or {},
+        )
+        _wait(
+            lambda: conn.execute(
+                text(
+                    "SELECT NOT EXISTS(SELECT 1 FROM pg_replication_slots "
+                    f"WHERE ({where}) AND active_pid IS NOT NULL)"
+                ),
+                params or {},
+            ).scalar_one(),
+            message="teardown: slot still active",
+        )
+        conn.execute(
+            text(
+                f"SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE ({where})"
+            ),
+            params or {},
+        )
+
+
+def _teardown_subscription(topology, projection):
+    """Drop the owned subscription and its slots, tolerating any being absent.
+
+    A test that fails mid-program leaves them behind, and the next fixture would
+    inherit them (merge-group run 42592731266). DROP SUBSCRIPTION with
+    slot_name=NONE also orphans tablesync slots (pg_<subid>_sync_*) after a
+    mid-copy failure, so those are dropped by the captured subscription oid.
+    """
+    subid = None
+    with projection.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        subid = conn.execute(
+            text(
+                "SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub' "
+                "AND subdbid=(SELECT oid FROM pg_database WHERE datname=current_database())"
+            )
+        ).scalar_one_or_none()
+        if subid is not None:
+            conn.exec_driver_sql("ALTER SUBSCRIPTION butlers_public_sub DISABLE")
+            # Tablesync workers hold the drop back until they exit.
+            _wait(
+                lambda: (
+                    not conn.execute(
+                        text(
+                            "SELECT EXISTS(SELECT 1 FROM pg_stat_subscription WHERE subid=:subid AND pid IS NOT NULL)"
+                        ),
+                        {"subid": subid},
+                    ).scalar_one()
+                ),
+                message="teardown: subscription workers did not drain",
+            )
+            conn.exec_driver_sql("ALTER SUBSCRIPTION butlers_public_sub SET (slot_name=NONE)")
+            conn.exec_driver_sql("DROP SUBSCRIPTION butlers_public_sub")
+    _drop_slots(topology.admin, "slot_name='butlers_public_sub'")
+    if subid is not None:
+        _drop_slots(
+            topology.admin,
+            "slot_name LIKE :pattern",
+            {"pattern": f"pg\\_{subid}\\_sync\\_%"},
+        )
+
+
 @pytest.fixture
 def copied(topology):
     projection = topology.projection_engine()
@@ -92,7 +169,10 @@ def copied(topology):
         _apply(topology, projection, target)
         yield topology, projection, target
     finally:
-        projection.dispose()
+        try:
+            _teardown_subscription(topology, projection)
+        finally:
+            projection.dispose()
 
 
 def _barrier(topology, projection):
@@ -1903,3 +1983,58 @@ def test_primary_isolation_grants_stats_connection_limit_and_credential_custody(
         for conn in held:
             conn.close()
         engine.dispose()
+
+
+@pytest.mark.parametrize("boundary", ["ddl", "before-publish-state"])
+def test_teardown_leaves_no_subscription_or_slot_after_a_mid_program_failure(topology, boundary):
+    projection = topology.projection_engine()
+    manifest = load_manifest()
+    try:
+        _reconcile(topology, manifest)
+        program = render_owner_program(manifest)
+        if boundary == "ddl":
+            cut = program.index("-- PUBLIC_MCP_SUBSCRIBER_DDL_COMPLETE\n")
+        else:
+            cut = program.rindex("SET ROLE mcp_projection_owner;\nBEGIN;")
+        _run(
+            topology,
+            program[:cut] + "DO $$ BEGIN RAISE EXCEPTION 'forced mid-program failure'; END $$;\n",
+            success=False,
+        )
+        slots = "SELECT count(*) FROM pg_replication_slots WHERE slot_name='butlers_public_sub'"
+        assert _scalar(topology.admin, slots) == 1  # the failure really left a slot behind
+        _teardown_subscription(topology, projection)
+        _teardown_subscription(topology, projection)  # tolerates absence
+        assert _scalar(topology.admin, slots) == 0
+        assert _scalar(projection, _SUB_COUNT) == 0
+        # The next fixture starts from nothing and still converges.
+        _apply(topology, projection, manifest)
+        _teardown_subscription(topology, projection)
+    finally:
+        projection.dispose()
+
+
+def test_teardown_drops_orphaned_tablesync_slots(topology):
+    projection = topology.projection_engine()
+    manifest = load_manifest()
+    try:
+        _apply(topology, projection, manifest)
+        subid = _scalar(
+            projection, "SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub'"
+        )
+        orphan = f"pg_{subid}_sync_99999"
+        unrelated = f"pg_{subid + 1}_sync_99999"
+        with topology.admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            for name in (orphan, unrelated):
+                conn.execute(
+                    text("SELECT pg_create_logical_replication_slot(:n, 'pgoutput')"), {"n": name}
+                )
+        try:
+            _teardown_subscription(topology, projection)
+            names = "SELECT count(*) FROM pg_replication_slots WHERE slot_name=:n"
+            assert _scalar(topology.admin, names, {"n": orphan}) == 0
+            assert _scalar(topology.admin, names, {"n": unrelated}) == 1
+        finally:
+            _drop_slots(topology.admin, "slot_name=:n", {"n": unrelated})
+    finally:
+        projection.dispose()
