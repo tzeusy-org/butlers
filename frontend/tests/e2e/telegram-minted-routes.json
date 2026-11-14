@@ -70,6 +70,14 @@
       "payload_selector": "main h1",
       "phone_walk": "pending",
       "phone_walk_owner": "bu-jv1moa.9"
+    },
+    {
+      "name": "finance subscriptions roster (vendor door fallback)",
+      "pattern": "/butlers/finance\\?tab=finances",
+      "example": "/butlers/finance?tab=finances",
+      "payload_selector": "[data-testid=finance-finances-tab]",
+      "phone_walk": "pending",
+      "phone_walk_owner": "bu-jv1moa.40"
     }
   ]
 }

@@ -64,10 +64,23 @@ someone else's event. Binding a template to the event it was read from belongs t
 A notification references a door only through `OpenDoorActionV1 {verb: "open_door", reference:
 DoorReferenceV1}`: valid on `send` and `insight` intents, alone and at most once, never on
 `approval_request`, `reply` or `react`, and refused under `render_links_inert`. A producer can
-never submit the delivered `open_link` form (`server_open_link_only`). Until the async resolver is
-wired into the sender and Messenger, the synchronous pass drops every door action and appends
-`[link not verified]`, so no door link is delivered. The delivered door output has provenance
-`vendor_door` and is rebuilt by the receiver from the reference alone.
+never submit the delivered `open_link` form (`server_open_link_only`). The delivered door output
+has provenance `vendor_door` and is rebuilt by the receiver from the reference alone.
+
+### Resolution and degradation
+
+The Switchboard sender and the Messenger receiver each resolve the door independently
+(`resolve_request_links`), on a connection of their own from the pool and outside any transaction:
+the resolver's deadline cancels an in-flight query, which would abort an enclosing transaction.
+Only Telegram renders the link, as one server-built URL button; the message text carries no URL.
+
+When the door cannot be verified (stale version, revoked or unconfirmed, flag off, read failure or
+timeout, no pool) the action is replaced by an `open_dashboard` button to the fixed Finance
+subscriptions page (`finance_subscriptions`, `/butlers/finance?tab=finances`) and the message gets
+` [link not verified]`. Under exposure (`render_links_inert`, or the sender's inert-content mark) or
+on a channel without buttons, or if that page cannot be resolved either, it is plain text plus the
+marker and no button. The fallback is the only non-door action a `send` or `insight` may carry, and
+only the server mints it. The notification log keeps the door reference, never its URL.
 
 ## Rollback
 

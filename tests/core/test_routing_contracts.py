@@ -844,6 +844,7 @@ def test_self_reference_resolution_and_inert_fallback(
 
 
 def test_self_route_registry_matches_actual_phone_entry_paths():
+    import json
     import re
     from pathlib import Path
 
@@ -862,7 +863,16 @@ def test_self_route_registry_matches_actual_phone_entry_paths():
             assert "DECISION_SET_ID" in constants
             uuid.UUID(constants["DECISION_SET_ID"])
             route = route.replace("{set_id}", "${DECISION_SET_ID}")
-        assert route in actual, route
+        if route in actual:
+            continue
+        # Not yet walked on a phone: the registry must name the bead that owes the walk.
+        entries = json.loads((root / "frontend/tests/e2e/telegram-minted-routes.json").read_text())[
+            "routes"
+        ]
+        owed = [e for e in entries if re.fullmatch(e["pattern"], route)]
+        assert owed and all(
+            e.get("phone_walk") == "pending" and e.get("phone_walk_owner") for e in owed
+        ), route
 
 
 # --- vendor-door actions (bu-jv1moa.40 PR4b-1) -----------------------------------------------

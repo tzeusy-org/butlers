@@ -17,7 +17,9 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 from butlers.tools.switchboard.contracts import (
+    _DOOR_ACTION_INTENTS,
     _RESOLVED_LINK_CONTEXT,
+    DOOR_FALLBACK_ROUTE_KEY,
     NotifyRequestV1,
     OpenDoorActionV1,
     SelfLinkReferenceV1,
@@ -33,6 +35,8 @@ SELF_ROUTES: Mapping[str, str] = MappingProxyType(
         "approvals_queue": "/approvals",
         # A decision set card opens its own page by id alone: no selection or call in the URL.
         "decision_set": "/decision-sets/{set_id}",
+        # Where a degraded vendor door points: the Finance subscriptions roster.
+        DOOR_FALLBACK_ROUTE_KEY: "/butlers/finance?tab=finances",
     }
 )
 # Routes that take exactly one canonical UUID parameter, by route key.
@@ -181,14 +185,75 @@ def resolve_self_links(request: NotifyRequestV1) -> NotifyRequestV1:
     return NotifyRequestV1.model_validate(payload, context=_RESOLVED_LINK_CONTEXT)
 
 
-def parse_delivered_notify_request(payload: Mapping[str, Any]) -> NotifyRequestV1:
-    """Reconstruct public references, validate, and independently resolve.
+async def resolve_request_links(
+    request: NotifyRequestV1, pool: Any, *, supports_buttons: bool = True
+) -> NotifyRequestV1:
+    """Resolve self links and any vendor door, degrading a door that cannot be verified.
 
-    No claimed server flag or wire URL grants link authority. Even a forged
-    private-output envelope can only name the same fixed self routes as public
-    input; caller-supplied label/URL/host are discarded before resolution.
-    Existing route/owner/recovery admission still gates delivery itself.
+    A door is read from the registry on its own pooled connection, never inside the caller's
+    transaction (the resolver's deadline cancels the query, which would abort one). On any
+    failure, exposure, a flag-off registry or a channel without buttons, the door becomes a
+    button to the fixed fallback page plus ``[link not verified]``; with no button available
+    it is plain text plus the marker.
     """
+    door = next(
+        (
+            a
+            for a in request.actions or ()
+            if isinstance(a, (OpenDoorActionV1, _ResolvedDoorLinkV1))
+        ),
+        None,
+    )
+    if door is None:
+        return resolve_self_links(request)
+    from butlers.core.delivery_rendering import delivery_content_requires_inert_links
+    from butlers.core.vendor_door_resolver import READ_TIMEOUT_S, resolve_door
+
+    exposed = request.render_links_inert or delivery_content_requires_inert_links()
+    resolved = None
+    if supports_buttons and not exposed and pool is not None:
+        reference = door.reference
+        try:
+            async with pool.acquire(timeout=READ_TIMEOUT_S) as conn:
+                resolved = await resolve_door(
+                    conn,
+                    door_id=reference.door_id,
+                    version=reference.version,
+                    slots=dict(reference.slots),
+                    exposed=exposed,
+                )
+        except Exception:  # a pool or read failure degrades; CancelledError still propagates
+            resolved = None
+    payload = request.model_dump(mode="json", exclude_none=True)
+    if resolved is not None:
+        payload["actions"] = [
+            {
+                "verb": "open_link",
+                "reference": door.reference.model_dump(mode="json"),
+                "label": resolved.label,
+                "url": resolved.url,
+                "host": resolved.host,
+                "provenance": "vendor_door",
+            }
+        ]
+        return NotifyRequestV1.model_validate(payload, context=_RESOLVED_LINK_CONTEXT)
+    if _UNVERIFIED not in payload["delivery"]["message"]:
+        payload["delivery"]["message"] += "\n" + _UNVERIFIED
+    if supports_buttons and not exposed:
+        payload["actions"] = [
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": DOOR_FALLBACK_ROUTE_KEY, "params": {}},
+            }
+        ]
+        fallback = NotifyRequestV1.model_validate(payload, context=_RESOLVED_LINK_CONTEXT)
+        return resolve_self_links(fallback)
+    del payload["actions"]
+    return NotifyRequestV1.model_validate(payload, context=_RESOLVED_LINK_CONTEXT)
+
+
+def _public_delivered(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """The delivered payload with every private link rebuilt into its public reference form."""
     public = dict(payload)
     if isinstance(public.get("actions"), (list, tuple)):
         actions = []
@@ -209,4 +274,38 @@ def parse_delivered_notify_request(payload: Mapping[str, Any]) -> NotifyRequestV
                     }
             actions.append(action)
         public["actions"] = actions
+    return public
+
+
+async def parse_delivered_notify_request_resolving_doors(
+    payload: Mapping[str, Any], pool: Any, *, supports_buttons: bool = True
+) -> NotifyRequestV1:
+    """The Messenger receiver's parse: re-derive every link, reading a door independently.
+
+    Same rules as :func:`parse_delivered_notify_request`, but a door is resolved against the
+    registry here instead of degraded, and a degraded door's fixed fallback is admitted.
+    """
+    public = _public_delivered(payload)
+    intent = (public.get("delivery") or {}).get("intent")
+    context = _RESOLVED_LINK_CONTEXT if intent in _DOOR_ACTION_INTENTS else None
+    inert = public.get("render_links_inert") is True
+    if inert and context is not None:
+        # The contract refuses a door under inert links, but a delivered request that carries
+        # both must degrade rather than fail: validate without the mark, then restore it.
+        public["render_links_inert"] = False
+    request = NotifyRequestV1.model_validate(public, context=context)
+    if inert and context is not None:
+        request = request.model_copy(update={"render_links_inert": True})
+    return await resolve_request_links(request, pool, supports_buttons=supports_buttons)
+
+
+def parse_delivered_notify_request(payload: Mapping[str, Any]) -> NotifyRequestV1:
+    """Reconstruct public references, validate, and independently resolve.
+
+    No claimed server flag or wire URL grants link authority. Even a forged
+    private-output envelope can only name the same fixed self routes as public
+    input; caller-supplied label/URL/host are discarded before resolution.
+    Existing route/owner/recovery admission still gates delivery itself.
+    """
+    public = _public_delivered(payload)
     return resolve_self_links(parse_notify_request(public))
