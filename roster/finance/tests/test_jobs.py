@@ -3664,7 +3664,9 @@ def _finance_jobs():
 _DOOR_OWNER = "00000000-0000-4000-8000-0000000000c1"
 
 
-async def _add_door(pool, *, host: str, template: str, status: str = "confirmed", kind="cancel"):
+async def _add_door(
+    pool, *, host: str, template: str, status: str = "confirmed", kind="cancel", slots=None
+):
     await pool.execute(
         "INSERT INTO public.entities(id, canonical_name, entity_type, roles) "
         "VALUES ($1::uuid, 'Owner', 'person', ARRAY['owner']) ON CONFLICT DO NOTHING",
@@ -3673,10 +3675,10 @@ async def _add_door(pool, *, host: str, template: str, status: str = "confirmed"
     return await pool.fetchrow(
         """
         INSERT INTO public.vendor_doors (owner_entity_id, kind, host, template, status, origin,
-            tier, expires_at, confirmed_at)
+            tier, expires_at, confirmed_at, slot_types)
         VALUES ($1::uuid, $2, $3, $4, $5, 'dashboard', 'exempt',
             CASE WHEN $5 = 'proposed' THEN now() + interval '30 days' END,
-            CASE WHEN $5 = 'confirmed' THEN now() END)
+            CASE WHEN $5 = 'confirmed' THEN now() END, $6::jsonb)
         RETURNING id, version
         """,
         _DOOR_OWNER,
@@ -3684,6 +3686,7 @@ async def _add_door(pool, *, host: str, template: str, status: str = "confirmed"
         host,
         template,
         status,
+        slots or {},
     )
 
 
@@ -3785,6 +3788,61 @@ async def test_door_flag_on_a_proposal_or_foreign_door_stays_unverified(
         assert cand["metadata"]["cancellation_url"] is None
         assert "http" not in cand["message"]
         assert "not verified" in cand["message"]
+
+
+async def test_door_flag_on_two_doors_on_one_host_exact_template_wins(finance_clone, monkeypatch):
+    from butlers.core import vendor_doors
+
+    monkeypatch.setattr(vendor_doors, "VENDOR_DOORS_LIVE", True)
+    async with finance_clone() as pool:
+        await _setup_insight_schema(pool)
+        await _add_door(pool, host="adobe.com", template="https://account.adobe.com/other")
+        wanted = await _add_door(
+            pool, host="adobe.com", template="https://account.adobe.com/cancel"
+        )
+        await _owner_sub(pool)
+        await _finance_jobs().run_insight_scan(pool)
+        meta = (await _renewal_candidate(pool))["metadata"]
+        assert meta["door_reference"] == {
+            "door_id": str(wanted["id"]),
+            "version": wanted["version"],
+        }
+
+
+async def test_door_flag_on_two_doors_without_an_exact_match_stay_unverified(
+    finance_clone, monkeypatch
+):
+    from butlers.core import vendor_doors
+
+    monkeypatch.setattr(vendor_doors, "VENDOR_DOORS_LIVE", True)
+    async with finance_clone() as pool:
+        await _setup_insight_schema(pool)
+        await _add_door(pool, host="adobe.com", template="https://account.adobe.com/a")
+        await _add_door(pool, host="adobe.com", template="https://account.adobe.com/b")
+        await _owner_sub(pool)
+        await _finance_jobs().run_insight_scan(pool)
+        meta = (await _renewal_candidate(pool))["metadata"]
+        assert meta["door_verified"] is False
+        assert meta["door_reference"] is None
+
+
+async def test_door_flag_on_a_slotted_door_is_never_attached(finance_clone, monkeypatch):
+    from butlers.core import vendor_doors
+
+    monkeypatch.setattr(vendor_doors, "VENDOR_DOORS_LIVE", True)
+    async with finance_clone() as pool:
+        await _setup_insight_schema(pool)
+        await _add_door(
+            pool,
+            host="adobe.com",
+            template="https://account.adobe.com/cancel/{order_ref}",
+            slots={"order_ref": "alnum"},
+        )
+        await _owner_sub(pool)
+        await _finance_jobs().run_insight_scan(pool)
+        meta = (await _renewal_candidate(pool))["metadata"]
+        assert meta["door_verified"] is False
+        assert meta["door_reference"] is None
 
 
 async def test_door_flag_on_a_registry_read_failure_degrades_to_unverified(

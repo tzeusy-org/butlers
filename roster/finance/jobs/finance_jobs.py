@@ -987,25 +987,46 @@ def _link_host(url: str | None) -> str | None:
     return etld_plus_one(host) if host else None
 
 
-async def _confirmed_cancel_doors(db_pool: asyncpg.Pool) -> dict[str, asyncpg.Record]:
-    """Confirmed cancel doors by registrable host; a read failure means no door is shown.
+async def _confirmed_cancel_doors(db_pool: asyncpg.Pool) -> dict[str, list[asyncpg.Record]]:
+    """Confirmed slot-free cancel doors by registrable host; a read failure means no door.
 
     ``public.vendor_doors_current`` carries only confirmed rows of the live owner, so a
-    proposal, revoked or rejected door never appears here. The first door per host wins.
+    proposal, revoked or rejected door never appears here. Slotted doors are excluded: a
+    reference without slots can never resolve one.
     """
     try:
         async with _finance_scoped_connection(db_pool) as conn:
             rows = await conn.fetch(
-                "SELECT id, version, host FROM public.vendor_doors_current "
-                "WHERE kind = 'cancel' ORDER BY host, id"
+                "SELECT id, version, host, template FROM public.vendor_doors_current "
+                "WHERE kind = 'cancel' AND slot_types = '{}'::jsonb ORDER BY host, id",
+                timeout=2.0,
             )
     except Exception:
         logger.warning("Finance insight scan: vendor-door read failed; links stay unverified")
         return {}
-    doors: dict[str, asyncpg.Record] = {}
+    doors: dict[str, list[asyncpg.Record]] = {}
     for row in rows:
-        doors.setdefault(row["host"], row)
+        doors.setdefault(row["host"], []).append(row)
     return doors
+
+
+def _door_for_link(
+    doors: dict[str, list[asyncpg.Record]], url: str | None
+) -> asyncpg.Record | None:
+    """The door a subscription's link belongs to, or None when that is not unambiguous.
+
+    An exact match on the link's template wins; otherwise the host alone decides only when
+    exactly one slot-free door exists on it.
+    """
+    from butlers.core.vendor_door_proposer import template_from_url
+
+    candidates = doors.get(_link_host(url) or "", [])
+    template = template_from_url(url)
+    if template is not None:
+        exact = [d for d in candidates if d["template"] == template]
+        if len(exact) == 1:
+            return exact[0]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None) -> dict[str, Any]:
@@ -1538,7 +1559,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
         door_verified = cancellation_url is not None and row["cancellation_url_source"] == "owner"
         door = None
         if vendor_doors.VENDOR_DOORS_LIVE:
-            door = confirmed_doors.get(_link_host(cancellation_url) or "")
+            door = _door_for_link(confirmed_doors, cancellation_url)
             door_verified = door is not None
         door_domain = None
         if not door_verified:
