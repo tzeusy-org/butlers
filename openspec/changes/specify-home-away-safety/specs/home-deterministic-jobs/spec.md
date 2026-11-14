@@ -51,6 +51,11 @@ Scope: v1-mandatory
 - **WHEN** one of two declared smoke sensors is unreadable and every other role reads
 - **THEN** no blind condition SHALL open, the slot SHALL be `degraded`, and the unreadable sensor SHALL stay unknown in its own producer
 
+#### Scenario: A gap in runs restarts a blind streak
+- **WHEN** a role's blind streak started 50 minutes ago against a 60-minute `blind_after_minutes`, the job then did not run for 20 minutes, and the next run finds the role still blind
+- **THEN** the streak SHALL restart at that run, because the previous run is older than 4 minutes
+- **AND** no blind condition SHALL open until a fresh, unbroken streak reaches the dwell
+
 #### Scenario: The sensing group is not registered
 - **WHEN** the `home.sensing` profile has no registered subject
 - **THEN** the slot and the blind check SHALL report `unconfigured`, and no route SHALL be able to create one
@@ -150,14 +155,14 @@ Scope: v1-mandatory
 #### Scenario: Conflicting or missing presence is unknown
 - **WHEN** the slot says `outside` but the latest transition is an enter, or the slot is stale or unknown, or the reader is not configured
 - **THEN** the producers SHALL return `presence_unknown` and open nothing
-- **AND** open away conditions SHALL be carried forward, not resolved, and keep re-escalating with "away status unknown"
+- **AND** open away conditions SHALL be carried forward, not resolved; their sends SHALL be held until the premise is known again (REQ-home-deterministic-jobs-007)
 
 #### Scenario: A late or retracted leave is no premise
 - **WHEN** the only leave is late, or is retracted after a condition opened
 - **THEN** no condition SHALL open from it, and an open one SHALL resolve as `premise_retracted` without a message
 
 ### Requirement: Away-safety delivery, repetition and quiet hours
-The three producers SHALL deliver through the routine Home notify path. A first send suppressed by quiet hours or the context bus SHALL leave the condition without a delivery marker, and the first run after the suppression lifts SHALL deliver it. Re-escalation follows the ledger as it is: the ladder is relative to the condition's opening, not to its first send. The rungs fall 1 hour after opening, 4 hours after that, then every 24 hours, as an opt-in ladder on their own sources only. A rung that falls while a send is suppressed is held, like the first send: the producer records a per-rung delivery marker (a `notified_at`-style retry keyed by the rung), and the first run after the suppression lifts delivers that rung once. Rungs held in the same window are delivered as one message. The ladder stays relative to the opening; the hold changes when a rung is delivered, not when the next rung falls, and needs no change to the ledger's escalation engine. Before every send of a `home:away-door` or `home:sensing-blind` message, the producer SHALL re-read the away premise. It SHALL send only when the owner is still confirmed away. A confirmed return resolves the condition as `owner_returned`. A premise that reads `unknown` holds the send: nothing is sent and nothing is resolved, and the next run re-reads it. They SHALL be read-only and model-free. They MUST NOT break quiet hours or sleep unless the owner prerequisite in design.md (P1) is answered and implemented under the bu-dhloi1.3 derived-urgency contract.
+The three producers SHALL deliver through the routine Home notify path. A first send suppressed by quiet hours or the context bus SHALL leave the condition without a delivery marker, and the first run after the suppression lifts SHALL deliver it. Re-escalation follows the ledger as it is: the ladder is relative to the condition's opening, not to its first send. The rungs fall 1 hour after opening, 4 hours after that, then every 24 hours, as an opt-in ladder on their own sources only. A rung that falls while a send is suppressed is held, like the first send: the producer records a delivery marker for the latest held rung (a `notified_at`-style retry; one marker suffices because held rungs coalesce), set only when the send reports `sent`, and the first run after the suppression lifts delivers that rung once. Rungs held in the same window are delivered as one message. The ladder stays relative to the opening; the hold changes when a rung is delivered, not when the next rung falls, and needs no change to the ledger's escalation engine. Before every send of a `home:away-door` or `home:sensing-blind` message, the producer SHALL re-read the away premise. It SHALL send only when the owner is still confirmed away. A confirmed return resolves the condition as `owner_returned`. A premise that reads `unknown` holds the send: nothing is sent and nothing is resolved, and the next run re-reads it. They SHALL be read-only and model-free. They MUST NOT break quiet hours or sleep unless the owner prerequisite in design.md (P1) is answered and implemented under the bu-dhloi1.3 derived-urgency contract.
 
 ID: REQ-home-deterministic-jobs-007
 Source: bu-dhloi1.3 and bu-u33sb7 q3=A (who may break quiet hours); owner-condition-ledger "Owner Condition Ledger Representation"; REQ-event-response-contract-001

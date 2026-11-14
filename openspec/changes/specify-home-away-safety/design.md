@@ -101,7 +101,7 @@ Away premise:
   - `owner.place` known, inside its `fresh_until`, and `outside`;
   - the latest non-retracted confirmed transition is a leave that is not late;
   - the slot and that transition agree.
-- Anything else is `presence_unknown`: opens nothing, resolves nothing except through an item's own secure reading, and re-sends say "away status unknown".
+- Anything else is `presence_unknown`: opens nothing and resolves nothing except through an item's own secure reading. An open away condition is carried forward, not resolved; its sends are held until the premise is known again (REQ-home-deterministic-jobs-007).
 - Owner return is the latest non-retracted, non-late confirmed enter after the leave edge. It resolves the away conditions as `owner_returned`. A retraction of the leave resolves them as `premise_retracted`. Neither sends a message.
 - Every away-door or blind send re-reads the premise immediately before sending. It sends only when the owner is still confirmed away:
   - a confirmed return: nothing is sent and the condition resolves `owner_returned`;
@@ -131,8 +131,8 @@ Quiet hours:
 - Delivery is the routine `_send_notify` path. A suppressed send records `suppressed` and leaves `notified_at` unset.
 - The first send is held: the retry rule (an undelivered condition older than 2 minutes) sends it on the first run after the suppression lifts. Never lost.
 - An escalation rung that falls inside quiet hours is held too, and delivered once after the window:
-  - the producer keeps a per-rung delivery marker in the condition metadata (`rung_due_at` and `rung_notified_at`, the `notified_at` pattern keyed by rung);
-  - a suppressed rung leaves `rung_notified_at` unset, and the first run after the suppression lifts sends it once;
+  - the producer keeps one delivery marker in the condition metadata, the `notified_at` pattern applied to rungs: `rung_due_at` is the due time of the latest held rung and `rung_notified_at` records its delivery. One pair is enough because held rungs coalesce into one message, so only the latest matters;
+  - `rung_notified_at` is set only when `_send_notify` reports `sent`; a suppressed or failed rung leaves it unset, and the first run after the suppression lifts sends it once;
   - rungs held in the same window go out as one message;
   - the ledger still advances `next_reescalate_at` on its own schedule, so the ladder stays open-relative and the engine is unchanged.
 - Without the hold, an open-relative 24-hour rung that lands at night would land at night every day, and a long-open condition would never re-send.
@@ -175,7 +175,7 @@ Every row's outcome is owner-visible: as a message, or as the condition and prod
 | Stale or unavailable feed (lease expired, entity unavailable, unit mismatch, old reading) | unknown: no open, no resolve, streak ends; an open one re-sends "sensor not reporting" | unknown: same | this *is* the blind input: lease expired makes every role blind; a whole role unreadable makes that role blind (slot may be `degraded`); opens if away, naming the roles |
 | Partial loss within one role | unknown for that entity | unknown for that entity | not blind: slot `degraded`, nothing opens |
 | Unconfigured | status `unconfigured`, silent | item not armed, silent | status `unconfigured`; slot `unconfigured` |
-| Presence unknown or conflicting | not presence-dependent | `presence_unknown`: no open; open carried forward with "away status unknown" | same as away door |
+| Presence unknown or conflicting | not presence-dependent | `presence_unknown`: no open; an open one is carried forward, not resolved, and its sends are held until the premise is known again (REQ-007) | same as away door |
 | Late leave | n/a | no premise | no premise |
 | Retracted leave | n/a | resolves `premise_retracted`, no message | resolves `premise_retracted`, no message |
 | Owner returns | n/a | resolves `owner_returned`, no message | resolves `owner_returned`, no message |
@@ -185,7 +185,7 @@ Every row's outcome is owner-visible: as a message, or as the condition and prod
 | Item open at departure | n/a | the departure card is the first message; the condition opens no earlier than 30 min after the leave confirmation (duration floor) | n/a |
 | Flapping (around the limit, or a door opened and closed) | hysteresis plus streak: a dip ends the streak and nothing opens; an open one stays open until below the hysteresis | a door closed before the duration opens nothing; reopening restarts from `last_changed` | a role that reads again ends its streak |
 | Delivery fails | stays open without `notified_at`; retried after 2 min | same | same |
-| Quiet-hours suppression | first send held by the retry and sent after the window; an escalation rung inside the window is held by its per-rung marker and sent once after the window; the ladder stays open-relative | same | same |
+| Quiet-hours suppression | first send held by the retry and sent after the window; an escalation rung inside the window is held by the latest-held-rung marker and sent once after the window; the ladder stays open-relative | same | same |
 | Crash between open and send | next run: undelivered and older than 2 min, so it sends once | same | same |
 | Concurrent runs, or a run concurrent with the departure job | runs serialize on a transaction advisory lock; a second run returns `busy`; the ledger fingerprint keeps one episode | same; the departure job writes only `departure_cards` | same |
 | Declaration removed | resolves `watch_removed` on a complete healthy run | same | same (settings removed: blind `unconfigured`, resolves) |

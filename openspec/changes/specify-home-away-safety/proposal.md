@@ -24,7 +24,7 @@ well", which is the failure the sentinel was built to avoid.
   - open-door duration;
   - blind dwell.
 - A missing value means `unconfigured`, and nothing alerts. The `home:thresholds:*` default-fallback rule does not apply.
-- Delivery is routine, through `_send_notify`. A first send suppressed by quiet hours is held by the ledger retry and never lost; an escalation rung that falls inside quiet hours is held by a per-rung marker and delivered once after the window, while the ladder stays open-relative and the ledger engine is unchanged. Breaking quiet hours for any of these producers is a pending owner prerequisite (design.md, P1), tied to bu-dhloi1.3. It is not assumed.
+- Delivery is routine, through `_send_notify`. A first send suppressed by quiet hours is held by the ledger retry and never lost; an escalation rung that falls inside quiet hours is held by a marker on the latest held rung and delivered once after the window, while the ladder stays open-relative and the ledger engine is unchanged. Breaking quiet hours for any of these producers is a pending owner prerequisite (design.md, P1), tied to bu-dhloi1.3. It is not assumed.
 - Split with the departure card:
   - .8 sends one card at departure.
   - `home:away-door` is the continuing condition for the rest of the absence.
