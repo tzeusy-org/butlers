@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 import asyncpg
 import httpx
 
+from butlers.core import vendor_doors
 from butlers.core.insight_premise import owner_condition_premise, probe_premise
 from butlers.core.owner_conditions import Observation as OwnerObservation
 from butlers.core.owner_conditions import compute_fingerprint as owner_condition_fingerprint
@@ -971,6 +972,61 @@ async def _register_obligations(db_pool: asyncpg.Pool, *, today: date | None = N
 # ---------------------------------------------------------------------------
 
 
+def _link_host(url: str | None) -> str | None:
+    """Registrable domain of a subscription's link, matching how a door's host is stored."""
+    from urllib.parse import urlsplit
+
+    from butlers.core.registrable_domain import registrable_domain as etld_plus_one
+
+    if not url:
+        return None
+    try:
+        host = urlsplit(url.strip()).hostname
+    except ValueError:
+        return None
+    return etld_plus_one(host) if host else None
+
+
+async def _confirmed_cancel_doors(db_pool: asyncpg.Pool) -> dict[str, list[asyncpg.Record]]:
+    """Confirmed slot-free cancel doors by registrable host; a read failure means no door.
+
+    ``public.vendor_doors_current`` carries only confirmed rows of the live owner, so a
+    proposal, revoked or rejected door never appears here. Slotted doors are excluded: a
+    reference without slots can never resolve one.
+    """
+    try:
+        async with _finance_scoped_connection(db_pool) as conn:
+            rows = await conn.fetch(
+                "SELECT id, version, host, template FROM public.vendor_doors_current "
+                "WHERE kind = 'cancel' AND slot_types = '{}'::jsonb ORDER BY host, id",
+                timeout=2.0,
+            )
+    except Exception:
+        logger.warning("Finance insight scan: vendor-door read failed; links stay unverified")
+        return {}
+    doors: dict[str, list[asyncpg.Record]] = {}
+    for row in rows:
+        doors.setdefault(row["host"], []).append(row)
+    return doors
+
+
+def _door_for_link(
+    doors: dict[str, list[asyncpg.Record]], url: str | None
+) -> asyncpg.Record | None:
+    """The door whose template is exactly the subscription link's, or None.
+
+    A host alone never decides: one door on a shared registrable domain (google.com) would
+    otherwise attach to an unrelated service's subscription.
+    """
+    from butlers.core.vendor_door_proposer import template_from_url
+
+    template = template_from_url(url)
+    if template is None:
+        return None
+    exact = [d for d in doors.get(_link_host(url) or "", []) if d["template"] == template]
+    return exact[0] if len(exact) == 1 else None
+
+
 async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None) -> dict[str, Any]:
     """Evaluate financial domain data and submit proactive insight candidates.
 
@@ -1481,6 +1537,12 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
             exc_info=True,
         )
 
+    # bu-jv1moa.40 (dark): with the flag on, a link shows only from an owner-confirmed cancel
+    # door. Flag off, none of this runs and the column logic below is unchanged.
+    confirmed_doors = (
+        await _confirmed_cancel_doors(db_pool) if vendor_doors.VENDOR_DOORS_LIVE else {}
+    )
+
     for row in sub_rows:
         renewal_date = row["warning_date"]
         days_until = (renewal_date - today).days
@@ -1493,6 +1555,10 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
         cancel_by = row["cancel_by"]
         # A door written by anything but an owner-attested session is never a live link.
         door_verified = cancellation_url is not None and row["cancellation_url_source"] == "owner"
+        door = None
+        if vendor_doors.VENDOR_DOORS_LIVE:
+            door = _door_for_link(confirmed_doors, cancellation_url)
+            door_verified = door is not None
         door_domain = None
         if not door_verified:
             domain = registrable_domain(cancellation_url)
@@ -1556,7 +1622,10 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
                 f"warning can reach you in time to act."
             )
         else:
-            if door_verified:
+            if door is not None:
+                # A confirmed door is opened through the typed reference in metadata, never a URL.
+                door_text = f"{defanged_domain(door['host'])} (owner-confirmed door)"
+            elif door_verified:
                 door_text = cancellation_url
             elif door_domain is None:
                 door_text = "an unrecognised link (not verified)"
@@ -1611,7 +1680,11 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
                 # insight carries the door + days-remaining-to-act, not just
                 # the amount.
                 # An unverified door carries no URL, only its display domain.
-                "cancellation_url": cancellation_url if door_verified else None,
+                "cancellation_url": (
+                    cancellation_url
+                    if door_verified and not vendor_doors.VENDOR_DOORS_LIVE
+                    else None
+                ),
                 "cancellation_domain": door_domain,
                 "door_verified": door_verified,
                 "reported_status": row["status"] if row["status"] != "active" else None,
@@ -1624,6 +1697,17 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
                     str(price_change_amount) if price_change_amount is not None else None
                 ),
                 "price_change_direction": price_change_direction,
+                **(
+                    {
+                        "door_reference": (
+                            {"door_id": str(door["id"]), "version": door["version"]}
+                            if door is not None
+                            else None
+                        )
+                    }
+                    if vendor_doors.VENDOR_DOORS_LIVE
+                    else {}
+                ),
             },
         )
         if not keep_going:
