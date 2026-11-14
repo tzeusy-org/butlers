@@ -69,14 +69,16 @@ call). Then:
   selectors, absent) already parks under bu-svqpzo.12. While the registry is non-empty it is also
   treated as possibly critical, so no rule below may approve it.
 - Indirect actuators: while the registry is non-empty, `scene.turn_on`, `script.turn_on`, any
-  `script.<name>` service, `automation.trigger` and every non-`safe` `homeassistant` service
-  (`turn_on`, `turn_off`, `toggle`) count as critical. They already park (consequential or
+  `script.<name>` service, `automation.trigger`, every non-`safe` `homeassistant` service
+  (`turn_on`, `turn_off`, `toggle`) and every pair absent from the risk map (`button.press`,
+  `input_button.press`, `automation.turn_on`, anything new) count as critical. Unlisted pairs fail
+  closed rather than being enumerated. They already park (consequential or
   protected); this only removes their approval shortcuts, because Home cannot see what a scene or
   script will move.
 - Groups and helpers: a target entity whose cached state carries an `entity_id` member list (group
   helpers, light and switch groups) is expanded through nested groups. If any member is critical the
-  call is critical. A target missing from the cache, a malformed member list, a cycle or nesting
-  deeper than 8 counts as critical (fail closed). Without this, `switch.turn_off` on a switch group
+  call is critical. Any target missing from the cache (Home cannot tell whether it is a group), a
+  malformed member list, a cycle or nesting deeper than 8 counts as critical (fail closed). Without this, `switch.turn_off` on a switch group
   containing a critical plug would run unprompted as `reversible`.
 - Not covered, stated plainly: Home Assistant automations that fire on their own triggers, and
   changes made outside Butlers, never pass through `ha_call_service`. A helper that wraps an entity
@@ -234,7 +236,8 @@ It is not in the RFC and binds nothing until the owner adopts it verbatim or as 
 >    `consequential` and parks, whatever its base class. While any entity is critical, a call also
 >    counts as naming one when its target is not an explicit entity list; when it is an indirect
 >    actuator (`scene.turn_on`, `script.turn_on`, any `script.<name>` service, `automation.trigger`,
->    or any `homeassistant` service that is not `safe`); or when a target is a group or helper whose
+>    any `homeassistant` service that is not `safe`, or any service pair this map does not list);
+>    when a target is absent from Home's entity cache; or when a target is a group or helper whose
 >    member list, followed through nested groups, contains a critical entity or cannot be read. No
 >    standing rule, decision memory, suggestion or capability grant approves a critical call; each
 >    needs its own owner approval of the stored call. `safe` services are never promoted.
@@ -303,7 +306,8 @@ Home Assistant service POSTs unless the case is an approved, fresh, unsatisfied 
 | Area/all while registry non-empty | an approved-by-rule path refuses to auto-approve; parks |
 | Group with critical member | `switch.turn_off` on a switch group whose nested member is critical parks as critical; an unrelated group still runs |
 | Indirect actuators | `scene.turn_on`, `script.<name>`, `automation.trigger`, `homeassistant.turn_off`: parked critical, no rule approves; `homeassistant.update_entity` stays `safe` |
-| Unreadable membership | group missing from cache, malformed list, cycle, depth over 8: parks as critical |
+| Unclassified services | `button.press`, `input_button.press`, `automation.turn_on`: parked critical, no rule approves |
+| Unreadable membership | any target missing from cache, malformed list, cycle, depth over 8: parks as critical |
 | Audit | add and remove each write one record with entity id, actor and time, no label |
 | Owner-only changes | registry and mitigation routes refuse non-owner, tool and session callers; content-blind code; nothing stored |
 | Unknown policy refusal | registry table missing or query error: a reversible explicit call parks; broker returns `unknown` |
