@@ -75,6 +75,31 @@ def test_below_the_floor_it_annotates_freezes_snapshots_then_terminates(tmp_path
     assert error < stop < first_du < term < cont, kinds
 
 
+def test_a_failing_snapshot_still_terminates_and_resumes_the_producer(tmp_path):
+    sent = []
+
+    def boom(_argv):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")
+
+    try:
+        wd.watch(
+            4242,
+            tmp_path,
+            floor_mb=3072,
+            free_mb=lambda: 100,
+            run=boom,
+            send=lambda pid, sig: sent.append(sig) or True,
+            sleep=lambda _s: None,
+            alive=lambda _pid: True,
+            emit=lambda _line: None,
+        )
+    except UnicodeDecodeError:
+        pass
+    else:
+        raise AssertionError("the snapshot failure should propagate")
+    assert sent == [signal.SIGSTOP, signal.SIGTERM, signal.SIGCONT]
+
+
 def test_a_healthy_run_only_samples_and_never_kills(tmp_path):
     ticks = iter(range(0, 1000, 60))
     alive = iter([True, True, True, True, False])

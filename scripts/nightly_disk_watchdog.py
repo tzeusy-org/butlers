@@ -37,7 +37,12 @@ def run_command(argv: Sequence[str], timeout: float = 120) -> str:
     """Best-effort command output; a missing tool or a timeout is recorded, never raised."""
     try:
         done = subprocess.run(
-            list(argv), capture_output=True, text=True, timeout=timeout, check=False
+            list(argv),
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"<{argv[0]} unavailable: {type(exc).__name__}>\n"
@@ -133,9 +138,12 @@ def watch(
             # delivers the pending SIGTERM to a stopped group.
             emit(f"::error title=root disk floor::/ down to {free} MB; stopping the producer")
             send(pid, signal.SIGSTOP)
-            path = snapshot(out, run, reason=f"/ has {free} MB free, floor {floor_mb} MB")
-            send(pid, signal.SIGTERM)
-            send(pid, signal.SIGCONT)
+            try:
+                path = snapshot(out, run, reason=f"/ has {free} MB free, floor {floor_mb} MB")
+            finally:
+                # A failing snapshot must never leave the producer frozen.
+                send(pid, signal.SIGTERM)
+                send(pid, signal.SIGCONT)
             emit(f"::notice title=root disk snapshot::{path}")
             return 3
         if now() >= next_sample:
