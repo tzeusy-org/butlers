@@ -84,6 +84,59 @@ def topology():
         yield actual
 
 
+_SUB_COUNT = (
+    "SELECT count(*) FROM pg_subscription WHERE subname='butlers_public_sub' "
+    "AND subdbid=(SELECT oid FROM pg_database WHERE datname=current_database())"
+)
+
+
+def _teardown_subscription(topology, projection):
+    """Drop the owned subscription and slot, tolerating either being absent.
+
+    A test that fails mid-program leaves both behind, and the next fixture would
+    inherit them (merge-group run 42592731266).
+    """
+    with projection.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        if conn.execute(text(_SUB_COUNT)).scalar_one():
+            conn.exec_driver_sql("ALTER SUBSCRIPTION butlers_public_sub DISABLE")
+            # Tablesync workers hold the drop back until they exit.
+            _wait(
+                lambda: (
+                    not conn.execute(
+                        text(
+                            "SELECT EXISTS(SELECT 1 FROM pg_stat_subscription ws JOIN pg_subscription s "
+                            "ON s.oid=ws.subid WHERE s.subname='butlers_public_sub' "
+                            "AND s.subdbid=(SELECT oid FROM pg_database WHERE datname=current_database()) "
+                            "AND ws.pid IS NOT NULL)"
+                        )
+                    ).scalar_one()
+                )
+            )
+            conn.exec_driver_sql("ALTER SUBSCRIPTION butlers_public_sub SET (slot_name=NONE)")
+            conn.exec_driver_sql("DROP SUBSCRIPTION butlers_public_sub")
+    with topology.admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.execute(
+            text(
+                "SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots "
+                "WHERE slot_name='butlers_public_sub' AND active_pid IS NOT NULL"
+            )
+        )
+        _wait(
+            lambda: conn.execute(
+                text(
+                    "SELECT NOT EXISTS(SELECT 1 FROM pg_replication_slots "
+                    "WHERE slot_name='butlers_public_sub' AND active_pid IS NOT NULL)"
+                )
+            ).scalar_one()
+        )
+        conn.execute(
+            text(
+                "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots "
+                "WHERE slot_name='butlers_public_sub'"
+            )
+        )
+
+
 @pytest.fixture
 def copied(topology):
     projection = topology.projection_engine()
@@ -92,7 +145,10 @@ def copied(topology):
         _apply(topology, projection, target)
         yield topology, projection, target
     finally:
-        projection.dispose()
+        try:
+            _teardown_subscription(topology, projection)
+        finally:
+            projection.dispose()
 
 
 def _barrier(topology, projection):
@@ -1903,3 +1959,32 @@ def test_primary_isolation_grants_stats_connection_limit_and_credential_custody(
         for conn in held:
             conn.close()
         engine.dispose()
+
+
+@pytest.mark.parametrize("boundary", ["ddl", "before-publish-state"])
+def test_teardown_leaves_no_subscription_or_slot_after_a_mid_program_failure(topology, boundary):
+    projection = topology.projection_engine()
+    manifest = load_manifest()
+    try:
+        _reconcile(topology, manifest)
+        program = render_owner_program(manifest)
+        if boundary == "ddl":
+            cut = program.index("-- PUBLIC_MCP_SUBSCRIBER_DDL_COMPLETE\n")
+        else:
+            cut = program.rindex("SET ROLE mcp_projection_owner;\nBEGIN;")
+        _run(
+            topology,
+            program[:cut] + "DO $$ BEGIN RAISE EXCEPTION 'forced mid-program failure'; END $$;\n",
+            success=False,
+        )
+        slots = "SELECT count(*) FROM pg_replication_slots WHERE slot_name='butlers_public_sub'"
+        assert _scalar(topology.admin, slots) == 1  # the failure really left a slot behind
+        _teardown_subscription(topology, projection)
+        _teardown_subscription(topology, projection)  # tolerates absence
+        assert _scalar(topology.admin, slots) == 0
+        assert _scalar(projection, _SUB_COUNT) == 0
+        # The next fixture starts from nothing and still converges.
+        _apply(topology, projection, manifest)
+        _teardown_subscription(topology, projection)
+    finally:
+        projection.dispose()
