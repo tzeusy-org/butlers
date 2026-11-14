@@ -67,7 +67,7 @@ def owner_notify_transport(pool: Any, *, origin_butler: str = "switchboard") -> 
             envelope=envelope,
         )
         if result.outcome == "delivered":
-            return SendResult("sent")
+            return SendResult("sent", result.provider_ref)
         return SendResult("unknown" if result.call_started else "failed")
 
     return send

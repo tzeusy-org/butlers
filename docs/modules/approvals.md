@@ -472,9 +472,10 @@ behind `OWNER_DECISIONS_LIVE`: the resolver refuses `unavailable`, and the app s
   subject and presentation key: a replay, a restart or a second runner finds the card handed off.
   A set whose view cannot be read is skipped. A set the card cannot offer a decision on is not
   card-sent, because it has no exactly-once subject and each member effect already has its own
-  approval card. Known limits: the deliver result carries no
-  provider message id, so the connector records `provider_ref_missing` for the retraction until
-  the notify path returns one (stale taps are still refused).
+  approval card. A delivered card records the provider's numeric message id (the deliver
+  result's `delivery_id`, only when it is all digits), so the Telegram connector's retraction
+  drain can edit it. A send with no such id is simply not retractable; stale taps are still
+  refused either way.
 - **Held individual cards** (core_332, bu-jv1moa.80). When a set card is handed off, `send_set_card`
   records its items in the append-only `public.owner_delivery_subject_members` in the same
   transaction as `begin_send`. The approval delivery worker of each item's domain skips an

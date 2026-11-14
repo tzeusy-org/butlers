@@ -306,3 +306,30 @@ async def test_an_envelope_for_another_recipient_is_refused_before_any_call(boun
 
     assert (result.outcome, result.call_started) == ("failed", False)
     boundary["client"].call_tool.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("delivery_id", "expected"),
+    [("4242", "4242"), (4242, "4242"), ("telegram:7f", None), ("", None), (None, None)],
+)
+async def test_only_a_numeric_delivery_id_becomes_the_provider_ref(boundary, delivery_id, expected):
+    boundary["client"].call_tool.return_value = MagicMock(
+        is_error=False,
+        data={"status": "sent", "notification_id": "n-1", "delivery_id": delivery_id},
+    )
+    result = await owner_notify.send_owner_telegram_checked(
+        MagicMock(), origin_butler="switchboard", message="m", log_context="t"
+    )
+
+    assert (result.outcome, result.provider_ref) == ("delivered", expected)
+
+
+async def test_a_failed_send_carries_no_provider_ref(boundary):
+    boundary["client"].call_tool.return_value = MagicMock(
+        is_error=False, data={"status": "failed", "delivery_id": "9"}
+    )
+    result = await owner_notify.send_owner_telegram_checked(
+        MagicMock(), origin_butler="switchboard", message="m", log_context="t"
+    )
+
+    assert (result.outcome, result.provider_ref) == ("failed", None)

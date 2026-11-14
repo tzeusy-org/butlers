@@ -45,6 +45,8 @@ class OwnerNotifyResult:
     outcome: NotifyOutcome
     #: True once a provider call began, so a ``failed`` outcome may still have delivered.
     call_started: bool
+    #: The provider's numeric message id of a delivered send, so the card can be retracted later.
+    provider_ref: str | None = None
 
 
 async def send_owner_telegram_checked(
@@ -126,7 +128,12 @@ async def send_owner_telegram_checked(
         await _record(FAILED, "delivery_error")
         return OwnerNotifyResult(FAILED, True)
     await _record(DELIVERED, ref=data.get("notification_id") if isinstance(data, dict) else None)
-    return OwnerNotifyResult(DELIVERED, True)
+    # Telegram's message id; the adapter-less ``telegram:<uuid>`` fallback is never a card.
+    delivery_id = data.get("delivery_id") if isinstance(data, dict) else None
+    ref = str(delivery_id) if isinstance(delivery_id, (str, int)) else None
+    return OwnerNotifyResult(
+        DELIVERED, True, ref if ref and ref.isascii() and ref.isdigit() else None
+    )
 
 
 async def send_owner_telegram(
