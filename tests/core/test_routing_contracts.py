@@ -870,7 +870,9 @@ def test_self_route_registry_matches_actual_phone_entry_paths():
             "routes"
         ]
         owed = [e for e in entries if re.fullmatch(e["pattern"], route)]
-        assert owed and all(e.get("phone_walk_owner") for e in owed), route
+        assert owed and all(
+            e.get("phone_walk") == "pending" and e.get("phone_walk_owner") for e in owed
+        ), route
 
 
 # --- vendor-door actions (bu-jv1moa.40 PR4b-1) -----------------------------------------------

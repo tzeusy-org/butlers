@@ -831,14 +831,17 @@ async def deliver(
 
             # The input envelope is a tool argument. Only deterministic, internal
             # sender facts can supply this field at the Switchboard boundary.
-            envelope_payload = {
-                **envelope_payload,
-                "render_links_inert": (
-                    delivery_content_requires_inert_links() or content_requires_inert_links is True
-                ),
-            }
+            server_inert = (
+                delivery_content_requires_inert_links() or content_requires_inert_links is True
+            )
+            # Validate the producer's envelope as sent (it cannot set the flag), then apply the
+            # server's inert fact to the parsed request: a door action is refused under inert
+            # links at construction, and an exposed session must degrade it, not fail it.
+            envelope_payload = {**envelope_payload, "render_links_inert": False}
             try:
-                parsed_notify = parse_notify_request(envelope_payload)
+                parsed_notify = parse_notify_request(envelope_payload).model_copy(
+                    update={"render_links_inert": server_inert}
+                )
             except ValidationError as exc:
                 error_msg = (
                     "Invalid approval recovery request."

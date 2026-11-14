@@ -393,3 +393,51 @@ async def test_a_degraded_door_is_the_fixed_page_button_with_the_marker_in_the_t
 async def test_plain_text_fallback_sends_no_button():
     send = await _telegram_command(None)
     send.assert_awaited_once_with("12345", "[finance] Your plan renews soon.")
+
+
+# --- deliver() applies the server's inert fact after parsing the producer's envelope ---------
+
+
+async def test_deliver_degrades_a_door_notify_from_an_exposed_session_to_plain_text(monkeypatch):
+    import importlib
+
+    from butlers.core.delivery_rendering import inert_delivery_content
+
+    deliver_module = importlib.import_module("butlers.tools.switchboard.notification.deliver")
+    captured: list[NotifyRequestV1] = []
+
+    async def dispatch(_pool, **kwargs):
+        captured.append(kwargs["notify_request"])
+        return {"status": "sent"}
+
+    monkeypatch.setattr(deliver_module, "_deliver_via_notify_request", dispatch)
+    pool = Pool()
+    envelope = _request().model_dump(mode="json", exclude_none=True)
+    with inert_delivery_content():
+        result = await deliver_module.deliver(
+            cast(Any, pool), source_butler="finance", notify_request=envelope
+        )
+    assert result == {"status": "sent"}
+    sent = captured[-1]
+    assert sent.render_links_inert is True and sent.actions is None
+    assert sent.delivery.message.endswith(MARKER)
+    assert pool.acquired == 0
+
+
+async def test_deliver_still_resolves_a_door_outside_an_exposed_session(monkeypatch):
+    import importlib
+
+    deliver_module = importlib.import_module("butlers.tools.switchboard.notification.deliver")
+    captured: list[NotifyRequestV1] = []
+
+    async def dispatch(_pool, **kwargs):
+        captured.append(kwargs["notify_request"])
+        return {"status": "sent"}
+
+    monkeypatch.setattr(deliver_module, "_deliver_via_notify_request", dispatch)
+    await deliver_module.deliver(
+        cast(Any, Pool()),
+        source_butler="finance",
+        notify_request=_request().model_dump(mode="json", exclude_none=True),
+    )
+    assert _urls(captured[-1]) == [DOOR_URL]
