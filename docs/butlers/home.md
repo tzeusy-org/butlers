@@ -263,6 +263,15 @@ SECURITY DEFINER, executable by `butler_switchboard_rw` only) and the premise pr
 holds on `unknown`. Nothing consumes it yet: fixes and the arrival card are bu-jv1moa.115 and
 bu-jv1moa.116.
 
+### Critical entities and safety mitigations (proposed)
+
+Owner-marked critical entities that always park, a fail-closed registry, pre-call state with an
+`already_satisfied` no-op, and per-item safety mitigations parked when a `home:safety` condition
+opens are specified in
+[specify-home-critical-entities-mitigations](../../openspec/changes/specify-home-critical-entities-mitigations/proposal.md)
+(bu-jv1moa.33). Nothing is built: the change depends on an RFC 0028 amendment that the owner has
+not adopted, and until then no entity is critical and the safety sentinel stays read-only.
+
 ## Proposed realtime feature specifications
 
 The shared [event-response contract](../../openspec/changes/specify-realtime-feature-contracts/specs/event-response-contract/spec.md)
