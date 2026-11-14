@@ -106,3 +106,21 @@ async def test_a_child_cannot_widen_the_parents_pair_scope(broker_db_url):
         other = {"message_id": "m1", "attachment_id": "a2"}
         refused = await _refused(w.broker.call(goal, child_token, MATERIALIZE.identity, other))
         assert refused.reason is Reason.RESOURCE
+
+
+async def test_list_tools_shows_a_pair_capability_only_when_the_grant_has_the_pair_key(
+    broker_db_url,
+):
+    from butlers.core.goal_admission import Grant
+
+    async with world(broker_db_url, catalog=StaticCatalog(CATALOG)) as w:
+        scoped = _plan(REFS[:1]).ceiling
+        unscoped = (Grant(MATERIALIZE.identity),)
+        goal, _, token = await _admitted(w, _plan(REFS[:1]))
+        assert [c.identity for c in await w.broker.list_tools(goal, token)] == [
+            MATERIALIZE.identity
+        ]
+        bare_goal = await w.goal(*unscoped)
+        _, bare_token = await w.invocation(bare_goal, *unscoped)
+        assert await w.broker.list_tools(bare_goal, bare_token) == ()
+        assert scoped != unscoped
