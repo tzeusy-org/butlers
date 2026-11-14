@@ -28,7 +28,7 @@ helm_args = -n $(NAMESPACE_$(1)) -f values.yaml -f values.$(1).yaml $(if $(LOCAL
 LINT_SITE := --set 'trackerEgress.deniedCidrs={192.0.2.1/32}' --set 'egressPolicy.allowedCidrs={192.0.2.2/32}'
 
 lint:
-	helm lint ../butlers-public-mcp -f ../butlers-public-mcp/values.yaml -f ../butlers-public-mcp/values.dev.yaml --set image.tag=lint
+	helm lint ../butlers-public-mcp -f ../butlers-public-mcp/values.yaml -f ../butlers-public-mcp/values.dev.yaml --set image.tag=lint --set audience=https://lint.invalid/mcp --set allowedSubs=lint
 	helm lint . -f values.yaml -f values.dev.yaml --set image.tag=lint --set frontendImage.tag=lint $(LINT_SITE)
 	helm lint . -f values.yaml -f values.prod.yaml --set image.tag=lint --set frontendImage.tag=lint
 

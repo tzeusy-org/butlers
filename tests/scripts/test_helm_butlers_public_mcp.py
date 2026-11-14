@@ -32,10 +32,14 @@ _POD = {
     "app.kubernetes.io/component": "butlers-public-mcp",
 }
 _MCP_PORT = 8080
-_METRICS_PORT = 9464
+_METRICS_PORT = 9090
 _BEARER_DIR = "/etc/butlers-public-mcp/bearer"
 _KEYRING_DIR = "/etc/butlers-public-mcp/keyring"
 _SWITCHES_DIR = "/etc/butlers-public-mcp/switches"
+_DB_DIR = "/etc/butlers-public-mcp/db"
+_CANARIES_DIR = "/etc/butlers-public-mcp/canaries"
+# Site values the chart requires and never commits (the deploy script supplies them).
+_SITE = ("audience=https://mcp.example/mcp", "allowedSubs=owner-sub-1\\,owner-sub-2")
 
 
 def _render(*settings: str, values: tuple[str, ...] = ("values.dev.yaml",)) -> list[dict]:
@@ -43,7 +47,7 @@ def _render(*settings: str, values: tuple[str, ...] = ("values.dev.yaml",)) -> l
     command += ["-f", str(_CHART / "values.yaml")]
     for value in values:
         command += ["-f", value if Path(value).is_absolute() else str(_CHART / value)]
-    for setting in ("image.tag=t", *settings):
+    for setting in ("image.tag=t", *_SITE, *settings):
         command += ["--set", setting]
     result = subprocess.run(command, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -155,24 +159,39 @@ def test_environment_contract(docs):
     assert env["MCP_PUBLIC_DB_NAME"]["value"] == "butlers_public"
     assert env["MCP_PUBLIC_DB_USER"]["value"] == "mcp_public_ro"
     assert env["MCP_PUBLIC_DASHBOARD_BASE"]["value"]
+    assert env["MCP_PUBLIC_AUDIENCE"]["value"] == "https://mcp.example/mcp"
+    assert env["MCP_PUBLIC_ALLOWED_SUBS"]["value"] == "owner-sub-1,owner-sub-2"
     assert env["HF_HUB_OFFLINE"]["value"] == "1"
     assert env["TRANSFORMERS_OFFLINE"]["value"] == "1"
-    password = env["MCP_PUBLIC_DB_PASSWORD"]
-    assert "value" not in password
-    ref = password["valueFrom"]["secretKeyRef"]
-    secret = _one(docs, "ExternalSecret", "butlers-public-mcp-db")
-    assert ref == {"name": secret["spec"]["target"]["name"], "key": "MCP_PUBLIC_DB_PASSWORD"}
+    # Optional settings are absent unless set: the server defaults apply.
+    assert "MCP_PUBLIC_CLIENT_DOMAINS" not in env
+    assert "MCP_PUBLIC_REGISTERED_CLIENTS" not in env
 
 
-def test_no_other_database_credential_and_no_envfrom(docs):
+def test_optional_client_settings_render_only_when_set():
+    docs = _render("clientDomains=claude.ai", "registeredClients=cid-1")
+    env = _env(docs)
+    assert env["MCP_PUBLIC_CLIENT_DOMAINS"]["value"] == "claude.ai"
+    assert env["MCP_PUBLIC_REGISTERED_CLIENTS"]["value"] == "cid-1"
+
+
+@pytest.mark.parametrize("missing", ["audience", "allowedSubs"])
+def test_audience_and_allowed_subs_are_required(missing):
+    command = ["helm", "template", "x", str(_CHART), "-f", str(_CHART / "values.yaml")]
+    command += ["-f", str(_CHART / "values.dev.yaml"), "--set", "image.tag=t"]
+    for setting in _SITE:
+        if not setting.startswith(missing + "="):
+            command += ["--set", setting]
+    result = subprocess.run(command, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert missing in result.stderr
+
+
+def test_no_secret_is_an_env_var_the_password_is_a_file(docs):
     container = _container(docs)
     assert "envFrom" not in container
-    secret_refs = [
-        e["valueFrom"]["secretKeyRef"]["name"]
-        for e in container["env"]
-        if "secretKeyRef" in e.get("valueFrom", {})
-    ]
-    assert len(secret_refs) == 1
+    assert not [e for e in container["env"] if "valueFrom" in e]
+    assert "MCP_PUBLIC_DB_PASSWORD" not in {e["name"] for e in container["env"]}
     text = yaml.safe_dump(docs)
     for forbidden in ("POSTGRES_PASSWORD", "POSTGRES_USER", "BUTLERS_RUNTIME_DB", "postgres-mcp-"):
         assert forbidden not in text, forbidden
@@ -184,62 +203,103 @@ def test_no_other_database_credential_and_no_envfrom(docs):
         assert other not in text
 
 
-def test_external_secrets_read_the_dev_store_and_name_the_bitwarden_items(docs):
-    secrets = {s["metadata"]["name"]: s for s in _of(docs, "ExternalSecret")}
-    assert len(secrets) == 2
-    keys = {}
-    for secret in secrets.values():
+def _external_keys(docs: list[dict]) -> dict[str, dict[str, str]]:
+    result = {}
+    for secret in _of(docs, "ExternalSecret"):
         assert secret["spec"]["secretStoreRef"] == {
             "name": "bitwarden-secretsmanager-dev",
             "kind": "ClusterSecretStore",
         }
         assert secret["spec"]["target"]["creationPolicy"] == "Owner"
-        for data in secret["spec"]["data"]:
-            keys[data["secretKey"]] = data["remoteRef"]["key"]
-    assert keys == {
-        "MCP_PUBLIC_DB_PASSWORD": "MCP_PUBLIC_RO_DB_PASSWORD",
-        "digest": "MCP_PUBLIC_HOP_BEARER_DIGEST",
+        result[secret["metadata"]["name"]] = {
+            d["secretKey"]: d["remoteRef"]["key"] for d in secret["spec"]["data"]
+        }
+    return result
+
+
+def test_external_secrets_read_the_dev_store_and_name_the_bitwarden_items(docs):
+    assert _external_keys(docs) == {
+        "butlers-public-mcp-db": {"password": "MCP_PUBLIC_RO_DB_PASSWORD"},
+        "butlers-public-mcp-bearer": {"digest": "MCP_PUBLIC_HOP_BEARER_DIGEST"},
+        "butlers-public-mcp-canaries": {"canaries.json": "MCP_PUBLIC_CANARIES"},
     }
+
+
+def test_a_rotation_overlap_adds_digest_next_from_a_second_item():
+    docs = _render("externalSecrets.bearerDigestNextKey=MCP_PUBLIC_HOP_BEARER_DIGEST_NEXT")
+    assert _external_keys(docs)["butlers-public-mcp-bearer"] == {
+        "digest": "MCP_PUBLIC_HOP_BEARER_DIGEST",
+        "digest_next": "MCP_PUBLIC_HOP_BEARER_DIGEST_NEXT",
+    }
+    volumes = {v["name"]: v for v in _pod(docs)["volumes"]}
+    items = volumes["bearer"]["secret"]["items"]
+    assert [(i["key"], i["path"]) for i in items] == [
+        ("digest", "digest"),
+        ("digest_next", "digest_next"),
+    ]
 
 
 def test_files_are_mounted_read_only_where_the_server_reads_them(docs):
     pod, container = _pod(docs), _container(docs)
     mounts = {m["mountPath"]: m for m in container["volumeMounts"]}
     volumes = {v["name"]: v for v in pod["volumes"]}
-    secret_names = {s["spec"]["target"]["name"] for s in _of(docs, "ExternalSecret")}
     config_names = {c["metadata"]["name"] for c in _of(docs, "ConfigMap")}
 
-    bearer = volumes[mounts[_BEARER_DIR]["name"]]
-    assert bearer["secret"]["secretName"] in secret_names
-    assert [i["key"] for i in bearer["secret"]["items"]] == ["digest"]
-    assert bearer["secret"]["items"][0]["path"] == "digest"
-    keyring = volumes[mounts[_KEYRING_DIR]["name"]]
-    assert keyring["configMap"]["name"] in config_names
-    switches = volumes[mounts[_SWITCHES_DIR]["name"]]
-    assert switches["configMap"]["name"] in config_names
-    for path in (_BEARER_DIR, _KEYRING_DIR, _SWITCHES_DIR):
+    def secret_files(path: str, secret: str) -> list[tuple[str, str]]:
+        volume = volumes[mounts[path]["name"]]["secret"]
+        assert volume["secretName"] == secret
+        return [(i["key"], i["path"]) for i in volume["items"]]
+
+    assert secret_files(_BEARER_DIR, "butlers-public-mcp-bearer") == [("digest", "digest")]
+    assert secret_files(_DB_DIR, "butlers-public-mcp-db") == [("password", "password")]
+    assert secret_files(_CANARIES_DIR, "butlers-public-mcp-canaries") == [
+        ("canaries.json", "canaries.json")
+    ]
+    assert volumes[mounts[_KEYRING_DIR]["name"]]["configMap"]["name"] in config_names
+    assert volumes[mounts[_SWITCHES_DIR]["name"]]["configMap"]["name"] in config_names
+    for path in (_BEARER_DIR, _KEYRING_DIR, _SWITCHES_DIR, _DB_DIR, _CANARIES_DIR):
         assert mounts[path]["readOnly"] is True
         # A subPath mount never sees a ConfigMap update; the switches are re-read every 10 s.
         assert "subPath" not in mounts[path]
 
 
-def test_keyring_and_switches_configmaps(docs):
-    by_file = {}
-    for config in _of(docs, "ConfigMap"):
-        for name, body in config["data"].items():
-            by_file[name] = json.loads(body)
-    assert set(by_file) == {"keyring.json", "switches.json"}
-    assert by_file["switches.json"] == {"disabled_domains": []}
-    assert by_file["keyring.json"] == {"keys": []}
+def _config_files(docs: list[dict]) -> dict[str, str]:
+    return {n: body for c in _of(docs, "ConfigMap") for n, body in c["data"].items()}
+
+
+def test_switches_default_disables_nothing_in_the_hosts_format(docs):
+    files = _config_files(docs)
+    assert set(files) == {"keyring.json", "disabled_domains"}
+    entries = [ln.split("#", 1)[0].strip() for ln in files["disabled_domains"].splitlines()]
+    assert [e for e in entries if e] == []
+    assert files["disabled_domains"].lstrip().startswith("#")
+
+
+def test_break_glass_lines_render_verbatim(tmp_path):
+    extra = tmp_path / "switch.yaml"
+    extra.write_text(yaml.safe_dump({"disabledDomains": "finance\nhealth  # incident\n"}))
+    docs = _render(values=("values.dev.yaml", str(extra)))
+    assert _config_files(docs)["disabled_domains"] == "finance\nhealth  # incident\n"
+
+
+def test_default_keyring_is_refused_by_the_hosts_parser_not_a_crash(docs):
+    """An empty keyring makes the host verify nothing; the parser raises its one error type."""
+    from butlers.core.runtime_probe_control.keys import (
+        RuntimeProbeControlKeyError,
+        parse_verifier_keyring_document,
+    )
+
+    raw = _config_files(docs)["keyring.json"].encode()
+    with pytest.raises(RuntimeProbeControlKeyError):
+        parse_verifier_keyring_document(raw)
 
 
 def test_keyring_comes_from_values_verbatim(tmp_path):
-    keyring = json.dumps({"keys": [{"kid": "w1", "alg": "Ed25519", "public": "AAAA"}]})
+    keyring = json.dumps({"version": 1, "current": {"kid": "w1"}, "retiring": []})
     extra = tmp_path / "keyring.yaml"
     extra.write_text(yaml.safe_dump({"keyringJson": keyring}), encoding="utf-8")
     docs = _render(values=("values.dev.yaml", str(extra)))
-    config = next(c for c in _of(docs, "ConfigMap") if "keyring.json" in c["data"])
-    assert json.loads(config["data"]["keyring.json"])["keys"][0]["kid"] == "w1"
+    assert json.loads(_config_files(docs)["keyring.json"])["current"]["kid"] == "w1"
 
 
 def test_service_is_cluster_internal_on_the_mcp_port_only(docs):
@@ -419,8 +479,8 @@ def test_the_db_password_reaches_only_this_chart():
         command += ["--set", setting]
     result = subprocess.run(command, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    for name in ("MCP_PUBLIC_RO_DB_PASSWORD", "MCP_PUBLIC_DB_PASSWORD", "mcp_public_ro",
-                 "MCP_PUBLIC_HOP_BEARER_DIGEST"):  # fmt: skip
+    for name in ("MCP_PUBLIC_RO_DB_PASSWORD", "mcp_public_ro", "MCP_PUBLIC_HOP_BEARER_DIGEST",
+                 "MCP_PUBLIC_CANARIES"):  # fmt: skip
         assert name not in result.stdout, name
     chart_text = "\n".join(p.read_text() for p in _CHART.rglob("*.yaml"))
     assert "MCP_PUBLIC_RO_DB_PASSWORD" in chart_text

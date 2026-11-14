@@ -41,13 +41,19 @@ def test_dev_on_upgrades_the_chart_at_the_tag_from_the_butlers_namespace(tmp_pat
     code, stderr, calls = _run(
         tmp_path, "dev", _TAG, "on",
         BUTLERS_IMAGE_REGISTRY="registry.example", BUTLERS_PUBLIC_HOST="host.example",
+        BUTLERS_PUBLIC_MCP_AUDIENCE="https://mcp.example/mcp",
+        BUTLERS_PUBLIC_MCP_ALLOWED_SUBS="sub-1,sub-2",
+        BUTLERS_PUBLIC_MCP_CLIENT_DOMAINS="claude.ai,chatgpt.com",
     )  # fmt: skip
     assert code == 0, stderr
     assert calls == [
         f"upgrade --install butlers-public-mcp {_CHART} -n butlers-dev "
         f"-f {_CHART}/values.yaml -f {_CHART}/values.dev.yaml --set image.tag={_TAG} "
         "--wait --timeout 5m --set image.repository=registry.example/butlers-app "
-        "--set dashboardBase=https://host.example/butlers-dev"
+        "--set dashboardBase=https://host.example/butlers-dev "
+        "--set-string audience=https://mcp.example/mcp "
+        "--set-string allowedSubs=sub-1\\,sub-2 "
+        "--set-string clientDomains=claude.ai\\,chatgpt.com"
     ]
 
 

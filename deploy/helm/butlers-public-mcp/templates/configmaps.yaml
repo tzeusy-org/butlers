@@ -6,8 +6,7 @@ metadata:
   labels:
     {{- include "pub.labels" . | nindent 4 }}
 data:
-  keyring.json: |
-    {{ .Values.keyringJson | fromJson | toJson }}
+  keyring.json: {{ .Values.keyringJson | quote }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -17,5 +16,4 @@ metadata:
   labels:
     {{- include "pub.labels" . | nindent 4 }}
 data:
-  switches.json: |
-    {{ .Values.switchesJson | fromJson | toJson }}
+  disabled_domains: {{ .Values.disabledDomains | quote }}

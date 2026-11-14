@@ -26,19 +26,37 @@ externalSecrets:
   refreshInterval: 1h
   # Bitwarden item names. The password is custody of this chart only (RFC 0039 D9).
   dbPasswordKey: MCP_PUBLIC_RO_DB_PASSWORD
-  # Hex SHA-256 of the hop bearer (UPSTREAM_BEARER), never the bearer itself (D6).
+  # Lowercase hex SHA-256 of the hop bearer (UPSTREAM_BEARER), no prefix, never the bearer (D6).
   bearerDigestKey: MCP_PUBLIC_HOP_BEARER_DIGEST
+  # Optional second digest for a rotation overlap (served as bearer/digest_next). Empty: none.
+  bearerDigestNextKey: ""
+  # REQUIRED by the server: a JSON list of canary strings (each at least 8 characters, D15).
+  # Missing or invalid, every tool refuses.
+  canariesKey: MCP_PUBLIC_CANARIES
 
-# Worker Ed25519 verifier keys, rendered verbatim as keyring.json (schema owned by
-# butlers.capability_host). Empty until owner act 4 hands over the public key and kid.
-keyringJson: '{"keys": []}'
+# Verifier keyring, the runtime_probe_control document (version, current, retiring[]) rendered
+# verbatim as keyring.json. Empty until owner act 4 hands over the public key and kid: the server
+# then verifies nothing and refuses every call (it does not crash).
+keyringJson: ""
 
-# Break-glass kill switch (D16), re-read by the server every 10 s. Default: all enabled.
-switchesJson: '{"disabled_domains": []}'
+# Break-glass kill switch (D16): the `disabled_domains` file, one domain or `all` per line, `#`
+# comments. Re-read every 10 s. Default: a comment only, so nothing is disabled. An unknown entry
+# disables everything.
+disabledDomains: |
+  # one domain per line, or `all`; empty means nothing is disabled
+
+# Server identity settings. audience (https URL of the public MCP endpoint) and allowedSubs
+# (comma-separated owner subjects) are REQUIRED, site values that are never committed:
+# scripts/k8s/public-mcp-chart-deploy.sh passes them from BUTLERS_PUBLIC_MCP_AUDIENCE and
+# BUTLERS_PUBLIC_MCP_ALLOWED_SUBS. clientDomains defaults to claude.ai,chatgpt.com in the server.
+audience: ""
+allowedSubs: ""
+clientDomains: ""
+registeredClients: ""
 
 ports:
   mcp: 8080
-  metrics: 9464
+  metrics: 9090
 
 networkPolicy:
   # The filter-proxy release's pods, the only caller of the MCP port (D8 item 2).

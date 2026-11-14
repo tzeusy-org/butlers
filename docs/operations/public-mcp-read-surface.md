@@ -369,8 +369,8 @@ again (on dev, the script above).
 ### 3d. Install the public chart
 
 The chart `deploy/helm/butlers-public-mcp` (task 2.4, `bu-y66o00.6`) creates namespace
-`butlers-public-<env>`, two ExternalSecrets (the `mcp_public_ro` password from Bitwarden item
-`MCP_PUBLIC_RO_DB_PASSWORD`, and the hop-bearer digest from `MCP_PUBLIC_HOP_BEARER_DIGEST`), the
+`butlers-public-<env>`, three ExternalSecrets (the `mcp_public_ro` password, mounted as a file, from Bitwarden item
+`MCP_PUBLIC_RO_DB_PASSWORD`; the hop-bearer digest from `MCP_PUBLIC_HOP_BEARER_DIGEST`; the canaries from `MCP_PUBLIC_CANARIES`), the
 verifier keyring and break-glass switch ConfigMaps, one Deployment (one replica) with its
 ClusterIP Service, and default-deny NetworkPolicies with the four allows (D8). Its README has the
 runtime contract and values.
@@ -380,11 +380,21 @@ runtime contract and values.
 1. *Image.* The same `butlers-app` image and TAG as the `butlers` chart (`make ship-dev` builds it);
    the command is `butlers-public-mcp`. The TAG must contain that entrypoint.
 2. *Bitwarden (dev store).* Item `MCP_PUBLIC_RO_DB_PASSWORD` already holds the CNPG password
-   (owner act 2). Create `MCP_PUBLIC_HOP_BEARER_DIGEST` = hex SHA-256 of the filter-proxy
-   `UPSTREAM_BEARER` (owner act 5), never the bearer itself.
-3. *Keyring.* After owner act 4, set `keyringJson` (a local values file or `--set-file`) to the
-   Worker's verifier keys; empty until then, so every assertion is refused.
-4. *Deploy.* On dev, `make deploy-dev` upgrades the chart after a successful owner step, at the
+   (owner act 2). Create `MCP_PUBLIC_HOP_BEARER_DIGEST` = lowercase hex SHA-256 of the
+   filter-proxy `UPSTREAM_BEARER`, no prefix (owner act 5), never the bearer itself; and
+   `MCP_PUBLIC_CANARIES` = the JSON list of canary strings (each at least 8 characters, D15), which
+   the server requires (missing or invalid, every tool refuses). To overlap a bearer rotation set
+   `externalSecrets.bearerDigestNextKey` to a second item holding the next digest; the server
+   accepts both while the overlap lasts.
+3. *Site values.* The server requires `MCP_PUBLIC_AUDIENCE` (https URL of the public endpoint) and
+   `MCP_PUBLIC_ALLOWED_SUBS` (comma-separated owner subjects). Neither is committed: export
+   `BUTLERS_PUBLIC_MCP_AUDIENCE` and `BUTLERS_PUBLIC_MCP_ALLOWED_SUBS` (optionally
+   `BUTLERS_PUBLIC_MCP_CLIENT_DOMAINS`, `BUTLERS_PUBLIC_MCP_REGISTERED_CLIENTS`) for the deploy;
+   the chart refuses to render without the first two.
+4. *Keyring.* After owner act 4, set `keyringJson` (a local values file or `--set-file`) to the
+   verifier keyring document (version, current, retiring). Empty until then: the server verifies
+   nothing and refuses every call.
+5. *Deploy.* On dev, `make deploy-dev` upgrades the chart after a successful owner step, at the
    same tag, through `scripts/k8s/public-mcp-chart-deploy.sh`. **The hook is guarded:**
    `PUBLIC_MCP_CHART_dev := off` in `deploy/helm/butlers/makefile` until go-live. Flip it to `on`
    in a reviewed change once the server PRs have merged and the image exists. It never runs when
@@ -393,8 +403,12 @@ runtime contract and values.
    `scripts/k8s/public-mcp-chart-deploy.sh dev <tag> on`. The release record lives in
    `butlers-dev` (helm cannot store a release in a namespace the chart creates); the namespace
    carries `helm.sh/resource-policy: keep`.
-5. *Filter-proxy.* Owner act 5 points `UPSTREAM_URL` at
+6. *Filter-proxy.* Owner act 5 points `UPSTREAM_URL` at
    `http://butlers-public-mcp.butlers-public-<env>.svc.cluster.local:8080/mcp`.
+
+*Break glass.* ConfigMap `butlers-public-mcp-switches`, key `disabled_domains`: one domain or `all`
+per line, `#` comments. A missing file disables nothing; an unknown entry, invalid UTF-8 or an
+unreadable file disables everything. The server re-reads it every 10 s.
 
 Verify: `scripts/k8s/public-mcp-live-checks.sh dev` runs the live NetworkPolicy check (D8 item 6),
 the `postgres-<env>` policy check (REQ-public-mcp-projection-014), the reachability checks
@@ -426,9 +440,9 @@ table.
 | `projection_apply_pending` | The owner step has not run since the first sync or the last manifest change, stopped midway, or the initial copy is not complete | Run 3c; wait for every relation to reach state `r` |
 | `projection_version_mismatch` | Deploy skew: the public pod ships a different manifest from the replicated digest | On dev, the last deploy's owner step failed, so its public chart step did not run: fix 3c and deploy again. Elsewhere, finish the `butlers` rollout (3b) or deploy the public chart at the same revision |
 | `projection_stale` | Replication older than 15 minutes, or `replication_as_of()` NULL (no subscription, or it never confirmed a position) | Check the slot; if `wal_status = 'lost'`, rerun 3c, which rebuilds the slot and subscription |
-| `unavailable` | No connection to `butlers_public`: `postgres-<env>` down, the connection limit reached, a `pg_hba` refusal (for example, a pod on a second node), or the password Secret missing | Section 1 checks; the ExternalSecret status in `butlers-public-<env>` (`butlers-public-mcp-db`) |
+| `unavailable` | No connection to `butlers_public`: `postgres-<env>` down, the connection limit reached, a `pg_hba` refusal (for example, a pod on a second node), or the password Secret missing | Section 1 checks; the ExternalSecret status in `butlers-public-<env>` (`butlers-public-mcp-db`, mounted at `/etc/butlers-public-mcp/db/password`) |
 | `domain_disabled` | A kill switch is off | Intended, or see section 6 |
-| `blocked` | The canary latch holds | Section 6, leak runbook |
+| `blocked` | The canary latch holds, or the canaries file is missing or invalid (ExternalSecret `butlers-public-mcp-canaries`, Bitwarden `MCP_PUBLIC_CANARIES`) | Section 6, leak runbook |
 | JSON-RPC `-32001` | Bearer or assertion refused | Gateway acts 4-6; bearer digest (ExternalSecret `butlers-public-mcp-bearer`, Bitwarden `MCP_PUBLIC_HOP_BEARER_DIGEST`) and keyring (ConfigMap `butlers-public-mcp-keyring`) in 3d |
 | Pod not Ready, or the `kubectl` rollout never finishes | The TAG has no `butlers-public-mcp` entrypoint (chart switched on before the server PRs merged), or the bearer-digest Secret is missing, so the server fails closed at startup | Check `PUBLIC_MCP_CHART_dev` and the TAG; `kubectl -n butlers-public-<env> get externalsecret` |
 | Every request refused after a hop-bearer change | The digest Secret lags the Bitwarden item (refresh interval 1h) | Force an ExternalSecret refresh; the server accepts the current and next digest during a rotation (D6) |

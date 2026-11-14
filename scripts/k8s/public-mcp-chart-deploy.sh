@@ -12,7 +12,11 @@
 #
 # The release record lives in the butlers namespace, never in butlers-public-<env>: the chart
 # creates that namespace, and helm cannot store a release in a namespace it has yet to create.
-# Nothing here reads a Secret; values come from the chart and the site env.
+# Nothing here reads a Secret; values come from the chart and the site env. The server's
+# audience and allowed owner subjects are site values that are never committed: set
+# BUTLERS_PUBLIC_MCP_AUDIENCE (https URL) and BUTLERS_PUBLIC_MCP_ALLOWED_SUBS (comma-separated);
+# the chart refuses to render without them. BUTLERS_PUBLIC_MCP_CLIENT_DOMAINS and
+# BUTLERS_PUBLIC_MCP_REGISTERED_CLIENTS are optional.
 set -euo pipefail
 
 [ "$#" -ge 2 ] && [ -n "$1" ] && [ -n "$2" ] || {
@@ -57,6 +61,13 @@ args=(
 )
 [ -z "${BUTLERS_IMAGE_REGISTRY:-}" ] || args+=(--set "image.repository=${BUTLERS_IMAGE_REGISTRY}/butlers-app")
 [ -z "${BUTLERS_PUBLIC_HOST:-}" ] || args+=(--set "dashboardBase=https://${BUTLERS_PUBLIC_HOST}/butlers-$ENV_NAME")
+
+# --set-string with escaped commas: subjects and domains are comma-separated lists.
+setlist() { args+=(--set-string "$1=${2//,/\\,}"); }
+[ -z "${BUTLERS_PUBLIC_MCP_AUDIENCE:-}" ] || setlist audience "$BUTLERS_PUBLIC_MCP_AUDIENCE"
+[ -z "${BUTLERS_PUBLIC_MCP_ALLOWED_SUBS:-}" ] || setlist allowedSubs "$BUTLERS_PUBLIC_MCP_ALLOWED_SUBS"
+[ -z "${BUTLERS_PUBLIC_MCP_CLIENT_DOMAINS:-}" ] || setlist clientDomains "$BUTLERS_PUBLIC_MCP_CLIENT_DOMAINS"
+[ -z "${BUTLERS_PUBLIC_MCP_REGISTERED_CLIENTS:-}" ] || setlist registeredClients "$BUTLERS_PUBLIC_MCP_REGISTERED_CLIENTS"
 
 helm "${args[@]}" || {
   echo "public-mcp chart FAILED: helm upgrade of butlers-public-mcp at $TAG" >&2

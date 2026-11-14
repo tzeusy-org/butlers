@@ -27,6 +27,7 @@ bad() { echo "FAIL $*"; fails=$((fails + 1)); }
 cleanup() { kubectl -n "$MCP_NS" delete pod pubmcp-probe-labelled pubmcp-probe-plain --ignore-not-found --wait=false >/dev/null 2>&1; }
 trap cleanup EXIT
 
+server_pod="$(kubectl -n "$NS" get pod -l app.kubernetes.io/component=butlers-public-mcp -o name | head -1)"; server_pod="${server_pod#pod/}"
 # POLICY
 actual="$(kubectl -n "$NS" get networkpolicy -o name | sed 's|.*/||' | sort | tr '\n' ' ')"
 expected="$(printf '%s\n' $CHART_POLICIES | sort | tr '\n' ' ')"
@@ -40,6 +41,12 @@ for p in json.load(sys.stdin)["items"]:
     print(p["metadata"]["name"], "selector=" + json.dumps(sel, sort_keys=True))
 ')"
 [ -z "$pg" ] && ok "POSTGRES no policy selects pods in $PG_NS (the public pod needs no ingress allow)" || bad "POSTGRES policies present, review whether the public pod's 5432 allow is needed: $pg"
+
+# CANARIES/FILES: the server's required files are mounted (names only; contents never read).
+for f in bearer/digest db/password canaries/canaries.json keyring/keyring.json switches/disabled_domains; do
+  kubectl -n "$NS" exec "${server_pod}" -- test -s "/etc/butlers-public-mcp/$f" >/dev/null 2>&1 \
+    && ok "FILES $f present and non-empty" || bad "FILES $f missing or empty (keyring is empty until owner act 4)"
+done
 
 # REACH
 probe() { # name labels
@@ -57,15 +64,16 @@ server="$(kubectl -n "$NS" get pod -l app.kubernetes.io/component=butlers-public
 tcp "$NS" "${server#pod/}" "postgres-$ENV_NAME-rw.$PG_NS.svc.cluster.local" 5432 && ok "REACH server pod reaches postgres 5432" || bad "REACH server pod cannot reach postgres 5432"
 tcp "$NS" "${server#pod/}" 1.1.1.1 443 && bad "REACH server pod reached the internet" || ok "REACH server pod has no internet route"
 
-# ISOLATION: the password is read from the pod's own environment and never printed.
+# ISOLATION: the password is read from the pod's own mounted file and never printed.
 iso='
 import asyncio, os
 import asyncpg
 async def main():
+    password = open("/etc/butlers-public-mcp/db/password").read().strip()
     for db, want in (("butlers_public", True), ("butlers", False), ("postgres", False), ("template1", False)):
         try:
             c = await asyncpg.connect(host=os.environ["MCP_PUBLIC_DB_HOST"], port=int(os.environ["MCP_PUBLIC_DB_PORT"]),
-                user=os.environ["MCP_PUBLIC_DB_USER"], password=os.environ["MCP_PUBLIC_DB_PASSWORD"], database=db, ssl="require", timeout=8)
+                user=os.environ["MCP_PUBLIC_DB_USER"], password=password, database=db, ssl="require", timeout=8)
             await c.close(); got = True
         except Exception as exc:
             got = False

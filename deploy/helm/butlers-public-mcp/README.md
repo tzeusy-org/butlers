@@ -17,24 +17,25 @@ scripts/k8s/public-mcp-live-checks.sh dev             # go-live: policy, reachab
 | | |
 |---|---|
 | Image, command | the `butlers-app` image at the butlers TAG; `butlers-public-mcp` |
-| Port | `8080` (path `/mcp`), TCP liveness and readiness; metrics port `9464` (declared, scraped by `lgtm`) |
-| Env | `MCP_PUBLIC_DB_HOST` (`postgres-<env>-rw`), `_DB_PORT=5432`, `_DB_NAME=butlers_public`, `_DB_USER=mcp_public_ro`, `_DB_PASSWORD` (Secret `butlers-public-mcp-db`), `MCP_PUBLIC_DASHBOARD_BASE`, `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1` |
-| Files (read-only directories) | `/etc/butlers-public-mcp/bearer/digest` (Secret `butlers-public-mcp-bearer`); `/etc/butlers-public-mcp/keyring/keyring.json` and `/etc/butlers-public-mcp/switches/switches.json` (ConfigMaps) |
+| Port | `8080` (path `/mcp`), TCP liveness and readiness; metrics port `9090` (scraped by `lgtm`) |
+| Env | `MCP_PUBLIC_DB_HOST` (`postgres-<env>-rw`), `_DB_PORT=5432`, `_DB_NAME=butlers_public`, `_DB_USER=mcp_public_ro`, `MCP_PUBLIC_DASHBOARD_BASE`, `MCP_PUBLIC_AUDIENCE` and `MCP_PUBLIC_ALLOWED_SUBS` (required, site values), optional `MCP_PUBLIC_CLIENT_DOMAINS` and `MCP_PUBLIC_REGISTERED_CLIENTS`, `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`. No secret is an env var |
+| Files (read-only directories) | `bearer/digest` (+ optional `digest_next`), `db/password`, `canaries/canaries.json` (Secrets); `keyring/keyring.json`, `switches/disabled_domains` (ConfigMaps), all under `/etc/butlers-public-mcp/` |
 | Pod | one replica, `Recreate`, non-root (uid 10001), read-only root filesystem, `/tmp` emptyDir only, no service-account token, drop ALL, seccomp RuntimeDefault |
 
 ## Secrets (ExternalSecrets, dev Bitwarden store, no value in the chart)
 
-| Secret | Bitwarden item | Holds |
-|---|---|---|
-| `butlers-public-mcp-db` | `MCP_PUBLIC_RO_DB_PASSWORD` | the `mcp_public_ro` password. Only this chart references it (`tests/scripts/test_helm_butlers_public_mcp.py` renders the butlers chart to prove it) |
-| `butlers-public-mcp-bearer` | `MCP_PUBLIC_HOP_BEARER_DIGEST` | hex SHA-256 of the filter-proxy `UPSTREAM_BEARER`, never the bearer |
+| Secret | Bitwarden item | File | Holds |
+|---|---|---|---|
+| `butlers-public-mcp-db` | `MCP_PUBLIC_RO_DB_PASSWORD` | `db/password` | the `mcp_public_ro` password. Only this chart references it (`tests/scripts/test_helm_butlers_public_mcp.py` renders the butlers chart to prove it) |
+| `butlers-public-mcp-bearer` | `MCP_PUBLIC_HOP_BEARER_DIGEST` (+ `bearerDigestNextKey`) | `bearer/digest`, `bearer/digest_next` | lowercase hex SHA-256 of the filter-proxy `UPSTREAM_BEARER`, never the bearer |
+| `butlers-public-mcp-canaries` | `MCP_PUBLIC_CANARIES` | `canaries/canaries.json` | JSON list of canary strings, at least 8 characters each; required, or every tool refuses |
 
 ## Network policy (default deny both ways, four allows)
 
 | | Peer | Port |
 |---|---|---|
 | ingress | pods labelled `app.kubernetes.io/instance=butlers` in namespace `mcp` (the filter-proxy release) | 8080 |
-| ingress | namespace `lgtm` (monitoring) | 9464 |
+| ingress | namespace `lgtm` (monitoring) | 9090 |
 | egress | `postgres-<env>` instance pods (`cnpg.io/cluster`, `cnpg.io/podRole=instance`) | 5432 |
 | egress | kube-dns | 53 UDP/TCP |
 
@@ -45,10 +46,12 @@ on dev, and a new one would cut off the primary's other clients (D8 item 3).
 ## Values
 
 `values.yaml` holds defaults and requires `env`; `values.dev.yaml` sets dev. There is no prod values
-file (OD18). `keyringJson` is the Worker's verifier keys, rendered verbatim (empty until owner act
-4); `switchesJson` is the break-glass kill switch (`{"disabled_domains": []}`, edit with `kubectl`
-or Helm, re-read by the server every 10 s). Site values come from the deploy script: image
-registry from `BUTLERS_IMAGE_REGISTRY`, `dashboardBase` from `BUTLERS_PUBLIC_HOST`.
+file (OD18). `audience` and `allowedSubs` are required and never committed: the deploy script passes
+them from `BUTLERS_PUBLIC_MCP_AUDIENCE` and `BUTLERS_PUBLIC_MCP_ALLOWED_SUBS`. `keyringJson` is the
+verifier keyring document, rendered verbatim and empty until owner act 4 (the server then verifies
+nothing and refuses). `disabledDomains` is the break-glass file (one domain or `all` per line, `#`
+comments; default a comment only; edit with `kubectl` or Helm, re-read every 10 s). Image registry
+comes from `BUTLERS_IMAGE_REGISTRY`, `dashboardBase` from `BUTLERS_PUBLIC_HOST`.
 
 ## Release placement
 
