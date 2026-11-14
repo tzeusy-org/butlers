@@ -49,6 +49,7 @@ from butlers.core.runtime_probe_control.keys import (
     KEY_ID_PATTERN,
     MAX_CAPABILITY_LIFETIME,
     SignerKey,
+    VerifierKey,
     VerifierKeyring,
 )
 
@@ -62,7 +63,27 @@ NONCE_BYTES: Final = 32
 #: What the client asks for unless a caller narrows it; also the hard ceiling.
 DEFAULT_LIFETIME: Final = MAX_CAPABILITY_LIFETIME
 
-_HEADER_FIELDS: Final = frozenset({"alg", "kid"})
+
+@dataclass(frozen=True, slots=True)
+class HeaderProfile:
+    """One protocol's exact protected-header shape (RFC 0039 D7: per-protocol header sets).
+
+    ``fields`` is the exact field set; ``typ``, when set, is required and compared exactly.
+    No profile accepts another's header, so a token of one protocol never verifies as the
+    other's, and ``typ`` never becomes optional.
+    """
+
+    fields: frozenset[str]
+    typ: str | None = None
+
+
+#: Runtime-probe and service-call capabilities: exactly ``{alg, kid}``.
+PROBE_HEADER: Final = HeaderProfile(frozenset({"alg", "kid"}))
+
+#: The Worker's public-MCP assertion (RFC 0039 D7): exactly ``{alg, kid, typ}``.
+ASSERTION_HEADER: Final = HeaderProfile(
+    frozenset({"alg", "kid", "typ"}), typ="butlers-mcp-assertion+v1"
+)
 
 #: The signed envelope every audience shares; each audience adds its claims.
 _ENVELOPE_FIELDS: Final = frozenset({"aud", "iat", "exp", "nonce"})
@@ -141,9 +162,9 @@ def _b64u_encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
-def _b64u_decode(segment: str, *, reason: str) -> bytes:
+def _b64u_decode(segment: str, *, reason: str, max_chars: int = _MAX_SEGMENT_CHARS) -> bytes:
     """Decode one canonical unpadded base64url segment."""
-    if len(segment) > _MAX_SEGMENT_CHARS or _SEGMENT_PATTERN.match(segment) is None:
+    if len(segment) > max_chars or _SEGMENT_PATTERN.match(segment) is None:
         raise CapabilityRejected(reason)
     try:
         decoded = base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
@@ -154,6 +175,11 @@ def _b64u_decode(segment: str, *, reason: str) -> bytes:
         # spelling of the same bytes; only one spelling is the capability.
         raise CapabilityRejected(reason)
     return decoded
+
+
+#: Public names for other protocols that reuse this codec (RFC 0039 D7).
+b64u_encode = _b64u_encode
+b64u_decode = _b64u_decode
 
 
 def _reject_duplicate_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -169,7 +195,7 @@ def _reject_json_constant(_token: str) -> Any:
     raise CapabilityRejected("capability contains a non-finite number")
 
 
-def _strict_object(raw: bytes, *, exact_fields: frozenset[str], reason: str) -> dict[str, Any]:
+def strict_object(raw: bytes, *, exact_fields: frozenset[str], reason: str) -> dict[str, Any]:
     """Decode strict UTF-8 JSON with exactly ``exact_fields`` and no duplicates."""
     try:
         text = raw.decode("utf-8")
@@ -366,32 +392,11 @@ def verify_claims(
     raises :class:`CapabilityRejected`; there is no ``None`` return and no
     partial success.
     """
-    header_segment, payload_segment, signature_segment = _split(compact)
+    signed = verify_signature(compact, keyring=keyring, now=now, profile=PROBE_HEADER)
+    entry = signed.entry
 
-    header = _strict_object(
-        _b64u_decode(header_segment, reason="capability header is not base64url"),
-        exact_fields=_HEADER_FIELDS,
-        reason="capability protected header is not the approved shape",
-    )
-    _exact_string(header["alg"], ALGORITHM, reason="capability algorithm is not EdDSA")
-    kid = _key_id(header["kid"])
-
-    # Resolved from the immutable snapshot only.  There is no remote or
-    # token-directed key source anywhere in this function.
-    entry = keyring.acceptable_entry(kid, now)
-    if entry is None:
-        raise CapabilityRejected("capability key id is not an acceptable deployment key")
-
-    signature = _b64u_decode(signature_segment, reason="capability signature is not base64url")
-    try:
-        ed25519.Ed25519PublicKey.from_public_bytes(entry.public_key).verify(
-            signature, f"{header_segment}.{payload_segment}".encode("ascii")
-        )
-    except (InvalidSignature, ValueError) as exc:
-        raise CapabilityRejected("capability signature does not verify") from exc
-
-    payload = _strict_object(
-        _b64u_decode(payload_segment, reason="capability payload is not base64url"),
+    payload = strict_object(
+        signed.payload,
         exact_fields=_ENVELOPE_FIELDS | claim_fields,
         reason="capability payload is not the approved shape",
     )
@@ -412,6 +417,82 @@ def verify_claims(
         raise CapabilityRejected("capability has expired")
 
     issued_instant = datetime.fromtimestamp(issued_at, UTC)
+    check_issued_under(entry, issued_instant)
+
+    return SignedClaims(
+        kid=signed.kid,
+        claims=MappingProxyType({field: payload[field] for field in claim_fields}),
+        issued_at=issued_instant,
+        expires_at=datetime.fromtimestamp(expires_at, UTC),
+        nonce=nonce,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class SignedSegments:
+    """A compact token whose header matched its profile and whose signature verified.
+
+    ``payload`` is the signed payload bytes, not yet parsed: each protocol owns its claims.
+    """
+
+    kid: str
+    entry: VerifierKey
+    payload: bytes
+
+    def __repr__(self) -> str:  # pragma: no cover - trivial redaction
+        return "SignedSegments(<redacted>)"
+
+
+def verify_signature(
+    compact: str | None,
+    *,
+    keyring: VerifierKeyring,
+    now: datetime,
+    profile: HeaderProfile,
+    max_segment_chars: int = _MAX_SEGMENT_CHARS,
+) -> SignedSegments:
+    """Check the header against *profile*, resolve ``kid`` and verify the Ed25519 signature.
+
+    The header is parsed and the key is resolved from the *keyring* first, then the
+    signature is checked; no payload byte is read before the signature verifies.
+    """
+    header_segment, payload_segment, signature_segment = _split(compact)
+    if max(len(header_segment), len(payload_segment)) > max_segment_chars:
+        raise CapabilityRejected("capability segment is longer than the accepted bound")
+
+    header = strict_object(
+        _b64u_decode(header_segment, reason="capability header is not base64url"),
+        exact_fields=profile.fields,
+        reason="capability protected header is not the approved shape",
+    )
+    _exact_string(header["alg"], ALGORITHM, reason="capability algorithm is not EdDSA")
+    if profile.typ is not None:
+        _exact_string(header["typ"], profile.typ, reason="capability type is not this protocol")
+    kid = _key_id(header["kid"])
+
+    # Resolved from the immutable snapshot only.  There is no remote or
+    # token-directed key source anywhere in this function.
+    entry = keyring.acceptable_entry(kid, now)
+    if entry is None:
+        raise CapabilityRejected("capability key id is not an acceptable deployment key")
+
+    signature = _b64u_decode(signature_segment, reason="capability signature is not base64url")
+    try:
+        ed25519.Ed25519PublicKey.from_public_bytes(entry.public_key).verify(
+            signature, f"{header_segment}.{payload_segment}".encode("ascii")
+        )
+    except (InvalidSignature, ValueError) as exc:
+        raise CapabilityRejected("capability signature does not verify") from exc
+    payload = _b64u_decode(
+        payload_segment,
+        reason="capability payload is not base64url",
+        max_chars=max_segment_chars,
+    )
+    return SignedSegments(kid=kid, entry=entry, payload=payload)
+
+
+def check_issued_under(entry: VerifierKey, issued_instant: datetime) -> None:
+    """Refuse an ``iat`` outside the signing window of the key that verified it."""
     if entry.is_retiring:
         # The retiring key stops issuing at ``sign_until`` exactly.  Request
         # skew does not extend it: a capability minted after cutover was minted
@@ -421,14 +502,6 @@ def verify_claims(
             raise CapabilityRejected("capability was issued after the retiring key's cutover")
     elif issued_instant < entry.sign_from:
         raise CapabilityRejected("capability was issued before its key became current")
-
-    return SignedClaims(
-        kid=kid,
-        claims=MappingProxyType({field: payload[field] for field in claim_fields}),
-        issued_at=issued_instant,
-        expires_at=datetime.fromtimestamp(expires_at, UTC),
-        nonce=nonce,
-    )
 
 
 def _split(compact: str | None) -> tuple[str, str, str]:
