@@ -30,6 +30,9 @@ from butlers.mcp_public.server import served_tools
 
 pytestmark = pytest.mark.unit
 
+# A fixed instant: these tests parse arguments only and never depend on the clock.
+NOW = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
+
 PINNED = {
     "search": "7cb8c3a7a36eed5ec5d62012260914ed0515a505b71df8121e00789e72cc90af",
     "fetch": "e30d7f7ff04e4eccebaa6e83d9c4ee0c377f86113cd701812b06b762b9de64e3",
@@ -149,7 +152,7 @@ class _NoDatabase:
 
 async def test_every_advertised_argument_is_one_the_reader_accepts():
     """Each schema property is known to its reader (an unknown name would be refused first)."""
-    now = datetime.now(UTC)
+    now = NOW
     context = ReadContext(sub="1", as_of=now, now=now, cursor_key=b"k" * 32)
     readers = served_tools()
     for entry in _entries():
@@ -175,7 +178,7 @@ def test_the_served_tools_are_the_catalogue():
 
 
 async def test_propose_fact_refuses_domain_disabled_after_parsing_its_arguments():
-    now = datetime.now(UTC)
+    now = NOW
     context = ReadContext(sub="1", as_of=now, now=now, cursor_key=b"k" * 32)
     read = served_tools()["propose_fact"].read
     conn = cast(asyncpg.Connection, _NoDatabase())
