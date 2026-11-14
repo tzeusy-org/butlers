@@ -301,6 +301,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --dev
 
+      - name: Disk at job start
+        run: df -h / /mnt
+
       - name: Free disk space before image builds
         run: |
           sudo rm -rf /usr/local/lib/android
@@ -350,11 +353,21 @@ jobs:
             done
           ) &
           sampler=$!
+          echo "${sampler}" > "${RUNNER_TEMP}/disk-sampler.pid"
           trap 'kill "${sampler}" 2>/dev/null || true' EXIT
           python3 -I -B scripts/runtime_clis/produce_image_contexts.py \
             --project "${GITHUB_WORKSPACE}" \
             --work "${IMAGE_SCRATCH}/image-context-work-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output "${IMAGE_SCRATCH}/image-contexts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+      - name: Stop the disk sampler and show the final disk state
+        if: always()
+        run: |
+          if [ -f "${RUNNER_TEMP}/disk-sampler.pid" ]; then
+            kill "$(cat "${RUNNER_TEMP}/disk-sampler.pid")" 2>/dev/null || true
+          fi
+          df -h / /mnt || true
+          docker system df || true
 
       - name: Build butlers-app exact image
         env:
