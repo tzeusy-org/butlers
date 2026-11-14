@@ -5567,6 +5567,54 @@
       "workloads": [
         "butlers-up"
       ]
+    },
+    "src/butlers/core/vendor_door_proposer.py::<module>::url::5463f678a450471cd1c500713c49ec1a8df95381a8205133552894d8851af681": {
+      "class": "reference",
+      "observed": {
+        "authorities": [],
+        "config": null,
+        "count": 1,
+        "kind": "url",
+        "path": "src/butlers/core/vendor_door_proposer.py",
+        "scope": "<module>",
+        "sha256": "5463f678a450471cd1c500713c49ec1a8df95381a8205133552894d8851af681"
+      },
+      "reason": "URL-template parsing and matching against a stored event's text (regex, urlsplit and https:// prefix checks); vendor_door_proposer makes no network call, nothing dials it.",
+      "resolver": null,
+      "sites": [],
+      "workloads": []
+    },
+    "src/butlers/core/vendor_door_proposer.py::_parse_template::url::66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8": {
+      "class": "reference",
+      "observed": {
+        "authorities": [],
+        "config": null,
+        "count": 2,
+        "kind": "url",
+        "path": "src/butlers/core/vendor_door_proposer.py",
+        "scope": "_parse_template",
+        "sha256": "66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8"
+      },
+      "reason": "URL-template parsing and matching against a stored event's text (regex, urlsplit and https:// prefix checks); vendor_door_proposer makes no network call, nothing dials it.",
+      "resolver": null,
+      "sites": [],
+      "workloads": []
+    },
+    "src/butlers/core/vendor_door_proposer.py::candidate_urls::url::66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8": {
+      "class": "reference",
+      "observed": {
+        "authorities": [],
+        "config": null,
+        "count": 1,
+        "kind": "url",
+        "path": "src/butlers/core/vendor_door_proposer.py",
+        "scope": "candidate_urls",
+        "sha256": "66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8"
+      },
+      "reason": "URL-template parsing and matching against a stored event's text (regex, urlsplit and https:// prefix checks); vendor_door_proposer makes no network call, nothing dials it.",
+      "resolver": null,
+      "sites": [],
+      "workloads": []
     }
   },
   "local_resolvers": {
