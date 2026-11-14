@@ -706,3 +706,70 @@ def test_a_proposer_cannot_supersede_a_door_and_the_dashboard_only_its_own_host(
     assert other_kind["reason"] == "supersedes"
     assert create(engine, "https://www.netflix.com/real2", supersedes=door)["outcome"] == "stored"
     assert row(engine, door).status == "confirmed"
+
+
+def test_a_takeover_replaces_the_sightings_facts_not_the_squatters(engine) -> None:
+    vendor = uuid.uuid4()
+    with engine.begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO public.entities(id, canonical_name, entity_type, roles) "
+                "VALUES (:id, 'opaque vendor', 'organization', ARRAY[]::text[])"
+            ),
+            {"id": vendor},
+        )
+    template = "https://www.netflix.com/facts"
+    squat = uuid.UUID(
+        run(
+            engine,
+            SWITCHBOARD,
+            "SELECT public.vendor_door_propose('cancel', :t, '{}'::jsonb, NULL, :v, '{}'::jsonb)",
+            t=template,
+            v=vendor,
+        )["id"]
+    )
+    run(
+        engine,
+        DASH,
+        "SELECT public.vendor_door_create('cancel', :t, '{}'::jsonb, NULL, NULL)",
+        t=template,
+    )
+    with engine.connect() as c:
+        stored = c.execute(
+            text("SELECT vendor_entity_id, slot_types FROM public.vendor_doors WHERE id=:i"),
+            {"i": squat},
+        ).one()
+    assert stored.vendor_entity_id is None and stored.slot_types == {}
+
+
+def test_a_create_cannot_supersede_the_row_it_would_take_over(engine) -> None:
+    template = "https://www.netflix.com/self"
+    squat = uuid.UUID(propose(engine, SWITCHBOARD, template)["id"])
+    result = create(engine, template, supersedes=squat)
+    assert (result["outcome"], result["reason"]) == ("refused", "supersedes")
+    assert row(engine, squat).version == 1
+    door = uuid.UUID(create(engine, "https://www.netflix.com/self2")["id"])
+    confirm(engine, door, 1)
+    assert create(engine, "https://www.netflix.com/self2", supersedes=door)["reason"] == (
+        "supersedes"
+    )
+
+
+@pytest.mark.parametrize("verified", [False, True])
+def test_an_equal_tier_sighting_changes_neither_version_nor_expiry(engine, verified) -> None:
+    template = f"https://www.netflix.com/equal{int(verified)}"
+
+    def sight():
+        return propose(
+            engine,
+            SWITCHBOARD,
+            template,
+            event_id=verified_event(engine) if verified else None,
+        )
+
+    first = uuid.UUID(sight()["id"])
+    before = row(engine, first)
+    again = sight()
+    after = row(engine, first)
+    assert (again["outcome"], again["id"]) == ("exists", str(first))
+    assert (after.version, after.expires_at) == (before.version, before.expires_at)

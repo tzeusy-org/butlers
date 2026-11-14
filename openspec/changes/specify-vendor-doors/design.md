@@ -129,8 +129,8 @@ time), `confirmed_at`, `confirmed_by_session` (hash only), `revoked_at`, `create
   once a year, so five candidates per vendor and kind is generous.
 - Precedence and takeover: an existing pending row for the same (owner, kind, template) is taken
   over by a higher-precedence sighting (`dashboard` over verified over extracted or unverified)
-  and, once expired, by any sighting. Taking over bumps the version and replaces origin, tier,
-  verdict, sender and event with a fresh 30-day expiry, subject to the new tier's caps, and
+  and, once expired, by any sighting. Taking over bumps the version and replaces the sighting's facts (origin, tier,
+  verdict, sender, event, slot types and vendor entity, never carrying the squatter's values over) with a fresh 30-day expiry, subject to the new tier's caps, and
   returns `dropped` when that bucket is full. A later low-trust sighting therefore can neither
   squat a template nor block the real proposal or the owner's own create, and expired rows cannot
   be revived past a full bucket.

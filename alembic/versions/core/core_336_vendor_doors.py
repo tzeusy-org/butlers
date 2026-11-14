@@ -319,6 +319,10 @@ BEGIN
      WHERE owner_entity_id = owner_id AND kind = p_kind AND template = tmpl
        AND status IN ('proposed', 'confirmed');
     had_existing := FOUND;
+    -- A create cannot replace the very row it would find or take over.
+    IF had_existing AND p_supersedes IS NOT DISTINCT FROM existing.id THEN
+        RETURN jsonb_build_object('outcome', 'refused', 'reason', 'supersedes');
+    END IF;
     IF had_existing AND existing.status = 'confirmed' THEN
         RETURN public.vendor_door_state(existing.id, 'exists', NULL);
     END IF;
@@ -348,7 +352,8 @@ BEGIN
            SET origin = p_origin, tier = p_tier, ingestion_event_id = p_event,
                sender_verdict = p_verdict, sender_domain = p_sender_domain,
                lineage = coalesce(p_lineage, '{}'::jsonb),
-               vendor_entity_id = coalesce(p_vendor_entity_id, d.vendor_entity_id),
+               slot_types = coalesce(p_slot_types, '{}'::jsonb),
+               vendor_entity_id = p_vendor_entity_id,
                supersedes_id = p_supersedes, version = d.version + 1,
                expires_at = clock_timestamp() + interval '30 days'
          WHERE d.id = existing.id
