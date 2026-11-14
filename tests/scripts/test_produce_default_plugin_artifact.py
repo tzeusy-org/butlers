@@ -652,30 +652,57 @@ def test_complete_bun_zip_order_modes_and_prewrite_refusal(tmp_path, unsafe):
 
 
 @pytest.mark.parametrize("number", [signal.SIGINT, signal.SIGTERM])
-@pytest.mark.parametrize("window", ["running", "acquiring-handle"])
+@pytest.mark.parametrize("window", ["running", "acquiring-handle", "inside-subprocess-wait"])
 def test_owned_command_settles_on_owner_signal(tmp_path, number, window):
     child_pid = tmp_path / "child.pid"
     driver = tmp_path / "owner.py"
-    critical = (
-        (
+    # Pid files are published by rename: a reader must never see an empty file.
+    record = (
+        "def record(pid):\n"
+        f" t=m.Path({str(child_pid) + '.owner'!r});t.write_text(str(pid));os.replace(t,{str(child_pid)!r})\n"
+    )
+    critical = {
+        "running": "",
+        "acquiring-handle": (
             "original=m.subprocess.Popen\n"
             "def launch(*args,**kwargs):\n"
             " child=original(*args,**kwargs)\n"
-            f" m.Path({str(child_pid)!r}).write_text(str(child.pid))\n"
+            " record(child.pid)\n"
             f" os.kill(os.getpid(),{number})\n"
             " return child\n"
             "m.subprocess.Popen=launch\n"
-        )
-        if window == "acquiring-handle"
-        else ""
-    )
+        ),
+        # The signal lands right after subprocess's non-blocking waitpid-lock acquire
+        # returns, before its try/finally owns the lock (bu-kiuh8v.34): a handler that
+        # raised there leaked the lock and the settling wait() blocked forever.
+        "inside-subprocess-wait": (
+            "original=m.subprocess.Popen\n"
+            "class Fire:\n"
+            " def __init__(s,inner):s.inner=inner;s.fired=False\n"
+            " def acquire(s,blocking=True,timeout=-1):\n"
+            "  got=s.inner.acquire(blocking,timeout)\n"
+            "  if got and not blocking and not s.fired:\n"
+            f"   s.fired=True;os.kill(os.getpid(),{number})\n"
+            "  return got\n"
+            " def release(s):s.inner.release()\n"
+            " def __enter__(s):s.acquire();return s\n"
+            " def __exit__(s,*a):s.release()\n"
+            "def launch(*args,**kwargs):\n"
+            " child=original(*args,**kwargs)\n"
+            " record(child.pid)\n"
+            " child._waitpid_lock=Fire(child._waitpid_lock)\n"
+            " return child\n"
+            "m.subprocess.Popen=launch\n"
+        ),
+    }[window]
     driver.write_text(
         "import importlib.util,os,signal,sys\n"
         f"s=importlib.util.spec_from_file_location('_private_signal_probe',{str(SCRIPTS / 'produce_default_plugin_artifact.py')!r});m=importlib.util.module_from_spec(s);s.loader.exec_module(m)\n"
+        + record
         + critical
         + "try:\n"
         " with m.owner_signals():\n"
-        f"  m.Operations().run([sys.executable,'-c',\"import os,time,pathlib;pathlib.Path({str(child_pid)!r}).write_text(str(os.getpid()));time.sleep(90)\"],cwd=m.Path({str(tmp_path)!r}),env={{'PATH':'/usr/bin:/bin'}})\n"
+        f"  m.Operations().run([sys.executable,'-c',\"import os,time,pathlib;p=pathlib.Path({str(child_pid) + '.child'!r});p.write_text(str(os.getpid()));os.replace(p,{str(child_pid)!r});time.sleep(90)\"],cwd=m.Path({str(tmp_path)!r}),env={{'PATH':'/usr/bin:/bin'}})\n"
         "except m.OwnerSignal as e:\n"
         " signal.signal(e.number,signal.SIG_DFL);os.kill(os.getpid(),e.number)\n"
     )

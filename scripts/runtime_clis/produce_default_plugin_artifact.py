@@ -105,7 +105,10 @@ class Operations:
         timeout: int = 1800,
     ) -> str:
         # Defer both owner signals while acquiring the process handle and while
-        # settling it. Children retain their ordinary unblocked signal masks.
+        # settling it. Children retain their ordinary unblocked signal masks. An
+        # owner signal never raises inside subprocess internals: while armed it
+        # kills the child's group, communicate() returns, and OwnerSignal is
+        # raised when this scope exits (bu-kiuh8v.34).
         with command_signals() as (arm, disarm):
             child = subprocess.Popen(
                 argv,
@@ -117,7 +120,7 @@ class Operations:
                 start_new_session=True,
             )
             try:
-                arm()
+                arm(child)
                 output, _ = child.communicate(timeout=timeout)
             finally:
                 disarm()
@@ -134,25 +137,34 @@ class Operations:
 
 @contextlib.contextmanager
 def command_signals():
+    # The handler never raises: an exception delivered between subprocess's
+    # waitpid-lock acquire and its try/finally leaks the lock, and the settling
+    # wait() then blocks forever. It records the first signal and, while a
+    # child is armed and unreaped, kills that child's process group.
     requested = None
-    armed = False
+    armed = None
+
+    def stop(child):
+        if child.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(child.pid, signal.SIGKILL)
 
     def interrupted(number, _frame):
         nonlocal requested
         if requested is None:
             requested = number
-            if armed:
-                raise OwnerSignal(number)
+        if armed is not None:
+            stop(armed)
 
-    def arm():
+    def arm(child):
         nonlocal armed
-        armed = True
+        armed = child
         if requested is not None:
-            raise OwnerSignal(requested)
+            stop(child)
 
     def disarm():
         nonlocal armed
-        armed = False
+        armed = None
 
     previous = {
         number: signal.signal(number, interrupted) for number in (signal.SIGINT, signal.SIGTERM)
