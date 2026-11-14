@@ -1498,6 +1498,44 @@ async def test_an_approved_departure_fix_whose_premise_ended_dispatches_nothing(
         case.park.assert_not_awaited()
 
 
+async def test_the_fix_gate_runs_after_argument_binding_and_before_any_receipt(
+    mock_mcp, monkeypatch
+):
+    key = "home:departure-fix:11111111-1111-1111-1111-111111111111:lock.fixture"
+    bound = {
+        "domain": "lock",
+        "service": "lock",
+        "target": {"entity_id": "lock.fixture"},
+        "data": None,
+    }
+    case = await _registered_actuation(mock_mcp, monkeypatch, bound)
+    case.pool.fetchval = AsyncMock(return_value=key)
+    gate = AsyncMock(return_value="premise_owner_returned")
+    monkeypatch.setattr("butlers.jobs.home_departure_fixes.replay_refusal", gate)
+
+    # An authorization bound to different arguments is no approval context at all: the call
+    # parks like any unapproved one and the fix gate is never consulted.
+    token = _authorize_actuation({**bound, "service": "unlock"})
+    try:
+        parked = await case.tool(**bound)
+    finally:
+        reset_approval_execution_context(token)
+    assert parked["status"] == "pending_approval"
+    gate.assert_not_awaited()
+
+    # With the exact binding the gate runs and its refusal precedes every receipt write.
+    token = _authorize_actuation(bound)
+    try:
+        refused = await case.tool(**bound)
+    finally:
+        reset_approval_execution_context(token)
+    gate.assert_awaited_once()
+    assert refused["status"] == "not_run"
+    case.pool.execute.assert_not_awaited()
+    case.pool.fetchrow.assert_not_awaited()  # not even the prior-receipt lookup
+    case.client.post.assert_not_awaited()
+
+
 async def test_an_approved_departure_fix_whose_premise_holds_dispatches_as_approved(
     mock_mcp, monkeypatch
 ):

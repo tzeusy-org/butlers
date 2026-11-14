@@ -616,3 +616,23 @@ async def test_the_departure_job_parks_the_fix_when_it_queues_the_card_and_only_
     assert [(r["status"], r["origin"]) for r in rows] == [("pending", "prepared")]
     assert no_ha_posts == []
     assert await pool.fetchval("SELECT count(*) FROM ha_command_log") == 0
+
+
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_editing_a_declaration_after_parking_never_changes_the_parked_call(db) -> None:
+    pool = await _pool(db)
+    await _watch(pool)
+    await _declare(pool)
+    await _park(pool)
+    before = (await _row(pool))["tool_args"]
+
+    await pool.execute(
+        "UPDATE departure_fixes SET service = 'turn_on', "
+        "target_entity_id = 'light.porch', data = '{\"brightness\": 5}'::jsonb"
+    )
+
+    assert await _park(pool) == 0
+    assert (await _row(pool))["tool_args"] == before
+    assert await pool.fetchval("SELECT count(*) FROM pending_actions") == 1
