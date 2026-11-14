@@ -620,3 +620,111 @@ async def test_fresh_digest_claim_is_left_to_its_holder(timed_pool):
         result = await delivery_cycle(timed_pool, notify_fn=notify, now=_AWAKE)
     assert result["delivered"] == [] and (await _row(timed_pool, candidate))["status"] == "pending"
     notify.assert_not_awaited()
+
+
+async def _propose_card(pool, *, key: str, category: str = "meeting-card", declare=True):
+    from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+    result = await propose_insight_candidate(
+        pool,
+        origin_butler="relationship",
+        priority=70,
+        category=category,
+        dedup_key=key,
+        message=f"Card {key}",
+        expires_at=_AWAKE + timedelta(minutes=20),
+        lane="timed",
+        deliver_after=_AWAKE,
+        metadata={"passes_context": ["meeting", "focused"]} if declare else None,
+        now=_AWAKE,
+    )
+    assert result["status"] == "accepted", result
+    return str(await pool.fetchval("SELECT id FROM insight_candidates WHERE dedup_key = $1", key))
+
+
+@pytest.mark.parametrize("signal", ["meeting", "focused"])
+async def test_a_meeting_card_passes_meeting_and_focused_but_another_candidate_is_held(
+    timed_pool, signal
+):
+    """bu-jv1moa.9: the declared exemption is per candidate; nothing else changes."""
+    card = await _propose_card(timed_pool, key="relationship:meeting-card:e1:100")
+    other = await _propose_card(
+        timed_pool, key="relationship:other:e1:100", category="other", declare=True
+    )
+    plain = await _propose_timed(timed_pool)
+    notify = _sent()
+    result = await _run_timed(timed_pool, notify, context=_context((signal, timedelta(minutes=30))))
+    assert result["delivered"] == [card]
+    assert str(other) in result["held"] and plain in result["held"]
+    assert (await _row(timed_pool, other))["status"] == "pending"
+    assert (await _row(timed_pool, plain))["status"] == "pending"
+
+
+@pytest.mark.parametrize("signal", ["dnd", "sleeping"])
+async def test_a_meeting_card_is_still_held_by_dnd_and_sleeping(timed_pool, signal):
+    card = await _propose_card(timed_pool, key="relationship:meeting-card:e2:100")
+    notify = _sent()
+    result = await _run_timed(timed_pool, notify, context=_context((signal, timedelta(hours=1))))
+    assert result["delivered"] == [] and card in result["held"]
+    notify.assert_not_awaited()
+
+
+async def test_withdraw_pending_candidates_withdraws_only_pending_unclaimed_named_keys(timed_pool):
+    from butlers.tools.switchboard.insight.broker import withdraw_pending_candidates
+
+    stale = await _propose_card(timed_pool, key="relationship:meeting-card:e3:100")
+    keep = await _propose_card(timed_pool, key="relationship:meeting-card:e3:200")
+    sent = await _propose_card(timed_pool, key="relationship:meeting-card:e3:300")
+    await timed_pool.execute(
+        "UPDATE insight_candidates SET status = 'delivered' WHERE id = $1", sent
+    )
+
+    count = await withdraw_pending_candidates(
+        timed_pool,
+        origin_butler="relationship",
+        dedup_keys=[
+            "relationship:meeting-card:e3:100",
+            "relationship:meeting-card:e3:300",
+            "relationship:meeting-card:e3:100",
+        ],
+        reason="meeting_changed",
+        now=_AWAKE,
+    )
+
+    assert count == 1
+    assert (await _row(timed_pool, stale))["status"] == "withdrawn"
+    assert (await _row(timed_pool, stale))["metadata"]["withdrawn_reason"] == "meeting_changed"
+    assert (await _row(timed_pool, keep))["status"] == "pending"
+    assert (await _row(timed_pool, sent))["status"] == "delivered"
+
+
+async def test_withdraw_pending_candidates_leaves_other_origins_and_the_digest_lane(timed_pool):
+    from butlers.tools.switchboard.insight.broker import withdraw_pending_candidates
+
+    foreign = await _propose_card(timed_pool, key="relationship:meeting-card:e4:100")
+    await timed_pool.execute(
+        "UPDATE insight_candidates SET origin_butler = 'home' WHERE id = $1", foreign
+    )
+    digest = await _propose_digest(timed_pool, key="relationship:meeting-card:e4:200")
+    await timed_pool.execute(
+        "UPDATE insight_candidates SET origin_butler = 'relationship' WHERE id = $1", digest
+    )
+
+    count = await withdraw_pending_candidates(
+        timed_pool,
+        origin_butler="relationship",
+        dedup_keys=["relationship:meeting-card:e4:100", "relationship:meeting-card:e4:200"],
+        reason="meeting_changed",
+        now=_AWAKE,
+    )
+
+    assert count == 0
+    assert (await _row(timed_pool, foreign))["status"] == "pending"
+    assert (await _row(timed_pool, digest))["status"] == "pending"
+
+
+async def test_a_malformed_context_signal_skips_the_cycle_instead_of_raising(timed_pool):
+    await _propose_card(timed_pool, key="relationship:meeting-card:e5:100")
+    bad = AsyncMock(return_value=[object()])
+    result = await _run_timed(timed_pool, _sent(), context=bad)
+    assert result["skipped"] is True and result["reason"] == "attention_store_unavailable"
