@@ -27,6 +27,18 @@ and a receipt keyed by `confirm_id` in its own transaction. Switchboard stores t
 choice and application obligation, and retries that same key after loss or restart. A sink
 that cannot provide this contract must not be registered.
 
+Registered deterministic sources, all built by the canonical switch only:
+
+| Source | Built by | Values | Sink effect |
+| --- | --- | --- | --- |
+| `relationship.commitment_candidate` | `relationship_confirm_sources(pool)` (`confirm_authority.py`) | `track`, `done`, `ignore`; no timeout value | One Relationship transaction: candidate disposition, `create_commitment` on Track (skipped when the fingerprint is already active), and a receipt in `relationship.commitment_candidate_receipts` |
+
+The owner-chat candidate card is the owner's own promise, quoted, with the counterparty's name
+and any deadline. Its prompt comes only from the card snapshot persisted on the candidate, so a
+repeated card step returns the existing confirm. An unanswered card is never re-sent; the
+candidate lapses silently at its 14-day horizon. See [Relationship](../butlers/relationship.md)
+§ Owner-chat commitment candidates.
+
 The service refuses superuser, bypass-RLS, table-owner and unrelated connections. Its
 actual connection must be `butler_switchboard_rw` or `butler_messenger_rw`. The public
 coordination table has forced RLS; bootstrap's broad grants do not admit connector roles.

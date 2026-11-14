@@ -271,12 +271,21 @@ async def lapse_and_purge(pool: asyncpg.Pool) -> dict[str, int]:
     return {"lapsed": len(lapsed), "purged": len(purged)}
 
 
-async def scan(pool: asyncpg.Pool, *, read_spans: SpanReader, live: bool) -> dict[str, Any]:
-    """One run: lapse and purge, then (when live) reduce pages after the stored cursor.
+async def scan(
+    pool: asyncpg.Pool,
+    *,
+    read_spans: SpanReader,
+    live: bool,
+    card_step: Callable[[], Awaitable[Mapping[str, int]]] | None = None,
+) -> dict[str, Any]:
+    """One run: lapse and purge, then (when live) reduce pages and card what is pending.
 
     The cursor is written only after a page's candidates are committed, so a crash
     re-reads that page and the unique keys make the replay a no-op. While not live
-    no span is read and the cursor stays where it is.
+    no span is read, no card is requested and the cursor stays where it is.
+    ``card_step`` is the composition's bound card step (``commitment_candidate_cards``);
+    the switch that sets ``live`` supplies it. It also runs when the projection is
+    unavailable, so cards already due are not held back by a read failure.
 
     Poison span (note for activation): any database or resolver failure on one span
     stops the run without moving the cursor, so a span that fails every time blocks
@@ -289,12 +298,21 @@ async def scan(pool: asyncpg.Pool, *, read_spans: SpanReader, live: bool) -> dic
         return {**result, "status": "skipped", "reason": "composition_absent"}
     owner_zone = ZoneInfo(await resolve_general_timezone(pool))
     outcomes: dict[str, int] = result["outcomes"]
+    status = await _reduce(pool, read_spans, owner_zone, outcomes)
+    if card_step is not None:
+        result["cards"] = dict(await card_step())
+    return {**result, "status": status}
+
+
+async def _reduce(
+    pool: asyncpg.Pool, read_spans: SpanReader, owner_zone: ZoneInfo, outcomes: dict[str, int]
+) -> str:
     cursor = await state_get(pool, CURSOR_KEY)
     for _ in range(MAX_PAGES):
         try:
             page = await read_spans(cursor)
         except SpansUnavailable:
-            return {**result, "status": "unavailable"}
+            return "unavailable"
         db_now = await pool.fetchval("SELECT now()")
         for span in page.get("spans") or []:
             outcome = await produce_candidate(pool, span, owner_zone=owner_zone, now=db_now)
@@ -305,4 +323,4 @@ async def scan(pool: asyncpg.Pool, *, read_spans: SpanReader, live: bool) -> dic
             cursor = next_cursor
         if not page.get("more"):
             break
-    return {**result, "status": "ok"}
+    return "ok"

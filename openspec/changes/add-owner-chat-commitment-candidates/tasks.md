@@ -91,32 +91,42 @@ dispatch packet for bu-jv1moa.11.
 
 ## 4. Card and sink (REQ-commitment-lifecycle-013, -014)
 
-- [ ] 4.1 Register `ConfirmSource` `relationship.commitment_candidate` (values `track`, `done`,
+- [x] 4.1 Register `ConfirmSource` `relationship.commitment_candidate` (values `track`, `done`,
   `ignore`; no timeout value) in the trusted composition (`src/butlers/core/confirm_authority.py`);
   `prepare` reloads the candidate, posture and owner recipient from Relationship state and builds
-  the prompt only from the persisted card snapshot (timeout fixed once).
-- [ ] 4.2 Relationship sink: lock candidate, apply disposition, look up an active fingerprint and
+  the prompt only from the persisted card snapshot (timeout fixed once). Done 2026-11-14:
+  `relationship_confirm_sources(pool)` builds it from
+  `roster/relationship/tools/commitment_candidate_cards.py`; the card step is
+  `card_step`, which `scan` runs when the switch passes it. A pending candidate whose owner
+  recipient changed since its snapshot is refused and stays pending.
+- [x] 4.2 Relationship sink: lock candidate, apply disposition, look up an active fingerprint and
   call `create_commitment` for Track only when none exists, with the evidence in design.md, write
-  receipt, all in one transaction; first terminal wins.
-- [ ] 4.3 Tests: extend `tests/integration/test_signed_confirms.py` with the Relationship sink:
+  receipt, all in one transaction; first terminal wins. Done 2026-11-14 (`apply_disposition`).
+- [x] 4.3 Tests: extend `tests/integration/test_signed_confirms.py` with the Relationship sink:
   Track creates one commitment with evidence; Done and Ignore write no owner condition; retry of
   the same `confirm_id` is idempotent; forged, wrong-chat, replayed and expired taps change
   nothing; lapse vs Track race; card step repeated returns the same confirm, including a retry
   in the final 24 hours before lapse; Track on an active fingerprint leaves its evidence unchanged; expired card is
   not re-sent; posture defers the card; four promises to one counterparty across owner-local
   midnight each receive one card (no cap, REQ-commitment-lifecycle-017).
-- [ ] 4.4 Tests delta at implementation: report actual `Tests: +a ~b -c`; extend existing files
-  before adding new ones.
+- [x] 4.4 Tests delta at implementation: report actual `Tests: +a ~b -c`; extend existing files
+  before adding new ones. Reported in the PR; the database cases extend
+  `tests/integration/test_signed_confirms.py`.
 
 ## 5. Coexistence and documentation (REQ-commitment-lifecycle-016)
 
-- [ ] 5.1 Keep `roster/relationship/tests/test_commitment_extraction.py` and
+- [x] 5.1 Keep `roster/relationship/tests/test_commitment_extraction.py` and
   `roster/relationship/tests/test_commitment_extraction_db.py` passing unchanged; add one case
   where a routed commitment and a candidate share a fingerprint and Track yields one active
-  commitment with the routed opening evidence.
-- [ ] 5.2 Document the registered source in `docs/runtime/signed-confirms.md`, the reducer in
+  commitment with the routed opening evidence. Done 2026-11-14: both files are unchanged;
+  `test_owner_chat_track_on_an_active_fingerprint_keeps_its_evidence` is the shared-fingerprint
+  case.
+- [x] 5.2 Document the registered source in `docs/runtime/signed-confirms.md`, the reducer in
   `roster/relationship/AGENTS.md`, and the connector facts in the connector docs.
 - [x] 5.3 File the follow-up for transport retention of the card prompt copy in
   `public.pending_confirms` (design.md, Lapse and retention).
-- [ ] 5.4 Rollback: disabling the job and the source stops new candidates and cards; existing
-  tombstones and receipts are retained so a restart does no duplicate work.
+- [x] 5.4 Rollback: disabling the job and the source stops new candidates and cards; existing
+  tombstones and receipts are retained so a restart does no duplicate work. Holds by
+  construction: with `live` false the scan reads no span and requests no card, and lapse and
+  purge still run. Receipts are never deleted, so a re-enabled sink returns the stored receipt
+  for a retried `confirm_id`.

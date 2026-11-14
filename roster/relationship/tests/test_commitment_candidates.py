@@ -481,3 +481,39 @@ async def test_a_failure_inside_a_page_does_not_move_the_cursor(monkeypatch) -> 
     with pytest.raises(RuntimeError):
         await cc.scan(_Pool(), read_spans=read, live=True)
     assert run.writes == []
+
+
+@pytest.mark.parametrize("readable", [True, False], ids=["read", "projection-unavailable"])
+async def test_a_live_run_cards_after_reducing(monkeypatch, readable: bool) -> None:
+    run = _Scan(monkeypatch)
+    order: list[str] = []
+
+    async def read(cursor: Any) -> Any:
+        order.append("read")
+        if not readable:
+            raise cc.SpansUnavailable("relay")
+        return _page(["a"], "c1", False)
+
+    async def card_step() -> dict[str, int]:
+        order.append("card")
+        return {"carded": 1}
+
+    result = await cc.scan(_Pool(), read_spans=read, live=True, card_step=card_step)
+
+    assert order == ["read", "card"]
+    assert result["cards"] == {"carded": 1}
+    assert run.produced == (["a"] if readable else [])
+
+
+async def test_while_not_live_no_card_is_requested(monkeypatch) -> None:
+    _Scan(monkeypatch)
+
+    async def read(cursor: Any) -> Any:
+        raise AssertionError("read while dark")
+
+    async def card_step() -> dict[str, int]:
+        raise AssertionError("card while dark")
+
+    result = await cc.scan(_Pool(), read_spans=read, live=False, card_step=card_step)
+
+    assert result["status"] == "skipped" and "cards" not in result
