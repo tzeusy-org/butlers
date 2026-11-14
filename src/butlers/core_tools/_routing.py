@@ -443,6 +443,7 @@ async def _build_routed_delivery_command(
     notify_context: Any,
     render_links_inert: bool = False,
     attachments: list[dict[str, Any]] | None = None,
+    actions: Any = None,
 ) -> _RoutedDeliveryCommand | None:
     """Materialize the registered native command before approval evaluation.
 
@@ -546,6 +547,23 @@ async def _build_routed_delivery_command(
                     attachments,
                     None,
                     rendering_kwargs,
+                )
+            link_markup = _door_link_reply_markup(actions)
+            if link_markup is not None:
+                # Server-resolved link button; the text itself carries no URL.
+                rendering_kwargs = {**rendering_kwargs, "server_built_reply_markup": True}
+                return _RoutedDeliveryCommand(
+                    channel=channel,
+                    approval_target=recipient,
+                    tool_name="telegram_send_message",
+                    tool_args={"chat_id": recipient, "text": rendered_text},
+                    execute=partial(
+                        telegram_module._send_message,
+                        recipient,
+                        rendered_text,
+                        reply_markup=link_markup,
+                        **rendering_kwargs,
+                    ),
                 )
             return _RoutedDeliveryCommand(
                 channel=channel,
@@ -904,6 +922,20 @@ def _extract_delivery_id(
     if fallback_request_id:
         return f"{channel}:{fallback_request_id}"
     return f"{channel}:{uuid.uuid4()}"
+
+
+def _channel_of(raw_notify_request: dict[str, Any]) -> str | None:
+    delivery = raw_notify_request.get("delivery")
+    channel = delivery.get("channel") if isinstance(delivery, dict) else None
+    return channel if isinstance(channel, str) else None
+
+
+def _door_link_reply_markup(actions: Any) -> dict[str, Any] | None:
+    """A one-button inline keyboard for a server-resolved link on a send, else None."""
+    for action in actions or ():
+        if action.verb == "open_link":
+            return {"inline_keyboard": [[{"text": action.label, "url": action.url}]]}
+    return None
 
 
 def _approval_request_reply_markup(actions: Any) -> dict[str, Any]:
@@ -1805,10 +1837,17 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 ),
             )
 
-        from butlers.tools.switchboard.notification.self_links import parse_delivered_notify_request
+        from butlers.tools.switchboard.notification.self_links import (
+            parse_delivered_notify_request_resolving_doors,
+        )
 
         try:
-            notify_request = parse_delivered_notify_request(raw_notify_request)
+            # A door is resolved here, on its own connection and outside any transaction.
+            notify_request = await parse_delivered_notify_request_resolving_doors(
+                raw_notify_request,
+                daemon.db.pool if daemon.db is not None else None,
+                supports_buttons=_channel_of(raw_notify_request) == "telegram",
+            )
         except ValidationError as exc:
             message = (
                 "Invalid approval recovery request."
@@ -2044,6 +2083,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 subject=notify_request.delivery.subject,
                 notify_context=notify_context,
                 render_links_inert=notify_request.render_links_inert,
+                actions=notify_request.actions if intent == "send" else None,
                 attachments=(
                     [
                         item.model_dump(exclude_none=True)

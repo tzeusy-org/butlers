@@ -37,7 +37,10 @@ from butlers.tools.switchboard.notification.log import (
     _log_notification_with_review,
     log_notification,
 )
-from butlers.tools.switchboard.notification.self_links import resolve_self_links
+from butlers.tools.switchboard.notification.self_links import (
+    resolve_request_links,
+    resolve_self_links,
+)
 from butlers.tools.switchboard.registry.registry import (
     expected_route_target,
     receiver_route_cutover_enabled,
@@ -332,6 +335,10 @@ async def _deliver_via_notify_request(
         logged_request["delivery"]["attachments"] = redact_attachment_content(
             logged_request["delivery"]["attachments"]
         )
+    for logged_action in logged_request.get("actions") or ():
+        if logged_action.get("provenance") == "vendor_door":
+            # The log keeps the door reference, never a URL carrying account slots.
+            logged_action.pop("url", None)
     log_metadata["notify_request"] = logged_request
     log_metadata["request_context"] = request_context.model_dump(mode="json")
 
@@ -869,7 +876,11 @@ async def deliver(
 
             return await _deliver_via_notify_request(
                 pool,
-                notify_request=resolve_self_links(parsed_notify),
+                notify_request=await resolve_request_links(
+                    parsed_notify,
+                    pool,
+                    supports_buttons=parsed_notify.delivery.channel == "telegram",
+                ),
                 request_context=request_context,
                 source_butler=source_butler,
                 metadata=metadata,

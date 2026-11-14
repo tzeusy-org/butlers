@@ -702,8 +702,25 @@ class _ResolvedDoorLinkV1(BaseModel):
 
 
 _DOOR_ACTION_TYPES = (OpenDoorActionV1, _ResolvedDoorLinkV1)
+# The fixed, server-chosen page a degraded door points at (the Finance subscriptions roster).
+DOOR_FALLBACK_ROUTE_KEY = "finance_subscriptions"
 # Intents that may carry a door action, and only a door action.
 _DOOR_ACTION_INTENTS = ("send", "insight")
+
+
+def _is_door_fallback(action: object) -> bool:
+    """Whether *action* is a self-link to the fixed door fallback page and nothing else."""
+    if isinstance(action, ApprovalRequestActionV1):
+        if action.verb != "open_dashboard" or action.callback_token is not None:
+            return False
+    elif not isinstance(action, _ResolvedOpenLinkV1):
+        return False
+    reference = action.reference
+    return (
+        reference is not None
+        and reference.route_key == DOOR_FALLBACK_ROUTE_KEY
+        and not reference.params
+    )
 
 
 class ApprovalRequestActionV1(BaseModel):
@@ -877,6 +894,17 @@ class NotifyRequestV1(BaseModel):
                     "recovery is only valid for approval_request intent.",
                     {},
                 )
+            return self
+        if (
+            self.delivery.intent in _DOOR_ACTION_INTENTS
+            and info.context is _RESOLVED_LINK_CONTEXT
+            and not self.render_links_inert
+            and self.recovery is None
+            and self.actions is not None
+            and len(self.actions) == 1
+            and _is_door_fallback(self.actions[0])
+        ):
+            # The server's degraded form of a door: one self-link to the fixed fallback page.
             return self
         if self.delivery.intent != "approval_request":
             if self.actions is not None:
