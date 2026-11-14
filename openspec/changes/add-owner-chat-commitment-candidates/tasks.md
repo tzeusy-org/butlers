@@ -44,6 +44,12 @@ dispatch packet for bu-jv1moa.11.
   projection audience. Stop if only weaker authentication is possible." The lead's ruling (P2)
   reads it this way: the workload is authenticated and the daemon is only presented, which is
   accepted for this dark, read-only projection.
+  The stop rule is moved to an owner act, not overridden: the projection ships dark, and S1
+  activation (`COMMITMENT_CANDIDATES_LIVE`, and any use of the `owner_chat.spans` relay) waits on
+  owner approval bead bu-dhloi1.281 (PR #5713, the REQ-butler-switchboard-008 workload
+  principal) as well as on bu-atc3xi. That approval is the owner decision that accepts
+  workload-bound relay authentication as the binding. Until it is given,
+  `BUTLERS_SERVICE_PLANE_AUTH` stays off and the projection is unreachable.
 - [x] 2.2 Verify the `[Unknown]` single-message envelope path; cover or exclude it explicitly.
   Verified 2026-11-14: WhatsApp `_normalize_single_event_to_ingest_v1` has no caller; Telegram's
   single-message path is live (backfill, ingest retry, chat-id fallback) and carries no

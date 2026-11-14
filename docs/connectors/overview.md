@@ -181,7 +181,9 @@ than guess at them:
   including a past bridge device's sends. Live delivery never echoes the bridge's own sends:
   whatsmeow skips its own device when it encrypts a send (`send.go`,
   `encryptMessageForDevices`) and dispatches no local event for it. So only `from_history: false`
-  entries count, and entries from an older bridge that sends no marker do not.
+  entries count, and entries from an older bridge that sends no marker do not. This assumes one
+  bridge per WhatsApp account: two live-linked bridges would each receive the other's sends as
+  live `is_from_me` messages.
 - **Telegram via an inline bot.** The bot's output is posted under the owner's account but the
   bot wrote it, so `via_bot: true` entries do not count.
 - **Telegram forward without author.** A copy sent without its author carries no `fwd_from`, so it

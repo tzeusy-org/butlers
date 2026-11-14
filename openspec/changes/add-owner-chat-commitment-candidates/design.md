@@ -161,7 +161,13 @@ allow. The S2 cap revisit is the place to reconsider it.
    composition of the signed-confirm topology, could not ship because that composition is not
    instantiated in any deployment until bu-atc3xi. S1 still activates as one unit at the
    canonical switch, because the reducer does not run while the signed-confirm composition is
-   absent (decision 9). Reversible: yes.
+   absent (decision 9). The original stop rule ("If not, the projection must not ship with
+   weaker caller authentication; it waits.") is moved to an owner act, not overridden: the
+   projection ships dark, and S1 activation (`COMMITMENT_CANDIDATES_LIVE`, and any use of the
+   relay) waits on owner approval bead bu-dhloi1.281 (PR #5713, the REQ-butler-switchboard-008
+   workload principal) as well as on bu-atc3xi. Until the owner approves workload-bound relay
+   authentication there, `BUTLERS_SERVICE_PLANE_AUTH` stays off and the projection is
+   unreachable. Reversible: yes.
 3. Explicit per-entry connector facts, over inferring direction from `owner_sender_id`.
    Inference fails for Telegram `@username` endpoints and cannot see forwarding per entry.
    Missing facts fail closed. Reversible: yes.
@@ -213,7 +219,13 @@ Rejected alternatives (not live):
   change, `Message.out` covers them. Until the connector ships, Telegram yields nothing.
 - `message_inbox` partitions dropped before a span is read produce nothing (fail closed).
 - Resolved (task 2.1): the projection binds on the live service-plane relay authentication
-  (decision 2), not on the kernel-peer companion.
+  (decision 2), not on the kernel-peer companion. The bullet this replaces read: "Whether the
+  kernel-peer companion can bind a third audience for the projection without new transport code
+  (verify task 2.1). If not, the projection must not ship with weaker caller authentication; it
+  waits." Its wait is kept as an activation gate on owner bead bu-dhloi1.281 (decision 2).
+- One bridge per WhatsApp account is assumed. Two live-linked bridges on the same account would
+  each see the other's sends as live `is_from_me` messages with `from_history` false, so the
+  bridge's own echo exclusion would not hold.
 - Resolved (task 2.2): Telegram's single-message envelopes (backfill, ingest retry, chat-id
   fallback) are live and carry no per-entry facts. They are excluded in S1, so those owner
   messages never become candidates; covering them is a follow-up.
