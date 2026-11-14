@@ -1,7 +1,6 @@
 """The nightly watchdog stops the producer below a floor and leaves evidence first."""
 
 import importlib.util
-import os
 import signal
 import subprocess
 import sys
@@ -52,24 +51,28 @@ def test_snapshot_records_every_source_on_the_out_disk(tmp_path):
         assert needle in text
 
 
-def test_below_the_floor_it_snapshots_then_kills_the_producer_group(tmp_path):
+def test_below_the_floor_it_annotates_freezes_snapshots_then_terminates(tmp_path):
     events = []
     code = wd.watch(
         4242,
         tmp_path,
         floor_mb=3072,
         free_mb=lambda: 100,
-        run=lambda argv: (events.append("run"), fake_run(argv))[1],
-        kill=lambda pid: events.append(("kill", pid)) or True,
+        run=lambda argv: (events.append("du") if argv[0] == "sudo" else None, fake_run(argv))[1],
+        send=lambda pid, sig: events.append(("send", pid, sig)) or True,
         sleep=lambda _s: None,
         alive=lambda _pid: True,
         emit=events.append,
     )
     assert code == 3
     assert list(tmp_path.glob("snapshot-*.txt"))
-    kill_at = events.index(("kill", 4242))
-    assert "run" in events[:kill_at]  # the evidence is written before the kill
-    assert any("::error title=root disk floor" in str(e) for e in events)
+    kinds = [e if isinstance(e, str) else e[2] if e[0] == "send" else e for e in events]
+    error = next(i for i, e in enumerate(events) if "::error title=root disk floor" in str(e))
+    stop = events.index(("send", 4242, signal.SIGSTOP))
+    first_du = events.index("du")
+    term = events.index(("send", 4242, signal.SIGTERM))
+    cont = events.index(("send", 4242, signal.SIGCONT))
+    assert error < stop < first_du < term < cont, kinds
 
 
 def test_a_healthy_run_only_samples_and_never_kills(tmp_path):
@@ -82,7 +85,7 @@ def test_a_healthy_run_only_samples_and_never_kills(tmp_path):
         tmp_path,
         free_mb=lambda: 40000,
         run=fake_run,
-        kill=lambda pid: killed.append(pid) or True,
+        send=lambda pid, sig: killed.append(pid) or True,
         sleep=lambda _s: None,
         now=lambda: float(next(ticks)),
         alive=lambda _pid: next(alive),
@@ -104,7 +107,7 @@ def test_a_low_but_above_floor_reading_warns_at_most_three_times(tmp_path):
         floor_mb=1000,
         free_mb=lambda: 5000,
         run=fake_run,
-        kill=lambda _pid: True,
+        send=lambda _pid, _sig: True,
         sleep=lambda _s: None,
         now=lambda: float(next(ticks)),
         alive=lambda _pid: next(alive),
@@ -120,26 +123,27 @@ def test_summary_prefers_the_last_snapshot_then_a_fresh_du(tmp_path):
     assert wd.summarize(tmp_path / "none", fake_run, count=1) == "7000000 /var/lib/containerd"
 
 
-def test_the_real_kill_takes_down_the_whole_process_group():
+def test_the_real_signal_takes_down_the_whole_process_group():
     child = subprocess.Popen(["sh", "-c", "sleep 60 & sleep 60; wait"], start_new_session=True)
     try:
         time.sleep(0.2)
-        assert wd.kill_group(child.pid) is True
+        assert wd.signal_group(child.pid, signal.SIGSTOP) is True
+        assert wd.signal_group(child.pid, signal.SIGTERM) is True
+        assert wd.signal_group(child.pid, signal.SIGCONT) is True
         assert child.wait(timeout=5) == -signal.SIGTERM
-        try:
-            os.killpg(child.pid, 0)
-        except ProcessLookupError:
-            pass
-        else:
-            time.sleep(0.3)
-            try:
-                os.killpg(child.pid, 0)
-                raise AssertionError("group still alive")
-            except ProcessLookupError:
-                pass
-        assert wd.kill_group(child.pid) is False
+        time.sleep(0.3)
+        assert wd.signal_group(child.pid, 0) is False
     finally:
         child.kill()
+
+
+def test_a_pid_that_is_not_its_own_group_leader_is_never_group_signalled(monkeypatch):
+    calls = []
+    monkeypatch.setattr(wd.os, "getpgid", lambda pid: pid + 1)
+    monkeypatch.setattr(wd.os, "killpg", lambda *a: calls.append(("killpg", a)))
+    monkeypatch.setattr(wd.os, "kill", lambda *a: calls.append(("kill", a)))
+    assert wd.signal_group(77, signal.SIGTERM) is True
+    assert calls == [("kill", (77, signal.SIGTERM))]
 
 
 def test_the_command_line_emits_the_top_consumers_warning(tmp_path):

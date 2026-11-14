@@ -372,7 +372,7 @@ jobs:
             --work "${IMAGE_SCRATCH}/image-context-work-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output "${IMAGE_SCRATCH}/image-contexts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" &
           producer=$!
-          python3 -I -B scripts/nightly_disk_watchdog.py watch \
+          python3 -u -I -B scripts/nightly_disk_watchdog.py watch \
             --pid "${producer}" --out "${watch_dir}" --floor-mb 3072 --interval 10 &
           watchdog=$!
           echo "${watchdog}" > "${RUNNER_TEMP}/disk-sampler.pid"
@@ -389,7 +389,7 @@ jobs:
           fi
           df -h / /mnt || true
           docker system df || true
-          python3 -I -B scripts/nightly_disk_watchdog.py summarize --out "${IMAGE_SCRATCH}/disk-watchdog" || true
+          python3 -u -I -B scripts/nightly_disk_watchdog.py summarize --out "${IMAGE_SCRATCH}/disk-watchdog" || true
 
       - name: Upload the disk sampler log
         if: always()

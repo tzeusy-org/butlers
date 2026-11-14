@@ -283,7 +283,10 @@ def test_nightly_consumes_closed_contexts_before_unchanged_installed_export():
     assert '"data-root": "/mnt/docker"' in move and "IMAGE_SCRATCH=/mnt/butlers-image" in move
     assert "IMAGE_SCRATCH=${RUNNER_TEMP}" in move  # the small-/mnt fallback
     # The watchdog beside the producer snapshots to /mnt and stops it below a floor on /.
-    assert "scripts/nightly_disk_watchdog.py watch" in context and "setsid python3" in context
+    assert (
+        "python3 -u -I -B scripts/nightly_disk_watchdog.py watch" in context
+        and "setsid python3" in context
+    )
     assert "--floor-mb 3072" in context and "--pid" in context
     stop = next(
         step

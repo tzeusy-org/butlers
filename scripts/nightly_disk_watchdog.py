@@ -6,7 +6,8 @@ producer: it samples free space on ``/`` and, below a floor, writes a snapshot t
 the larger ``/mnt`` disk), then terminates the producer's process group so the step fails
 cleanly and the always() steps that follow can upload the evidence.
 
-Everything it writes lands under ``--out``; stdout carries only sparse ``::notice::`` and
+Run it as ``python3 -u`` (its stdout is a pipe, so unbuffered output is what survives a
+SIGTERM). Everything it writes lands under ``--out``; stdout carries only sparse ``::notice::`` and
 ``::warning::`` annotations (the runner's own log lives on ``/``, which is the disk at risk).
 """
 
@@ -85,14 +86,21 @@ def snapshot(out: Path, run: Runner = run_command, *, reason: str) -> Path:
     return target
 
 
-def kill_group(pid: int) -> bool:
-    """Terminate the producer's process group (it was started under ``setsid``)."""
+def signal_group(pid: int, sig: int) -> bool:
+    """Signal the producer's process group, which ``setsid`` made with ``pgid == pid``.
+
+    If *pid* is not its own group leader (``setsid`` forked, so *pid* is not the producer), a
+    group signal could reach the step's own shell; signal the single process instead.
+    """
     try:
-        os.killpg(pid, signal.SIGTERM)
+        if os.getpgid(pid) == pid:
+            os.killpg(pid, sig)
+        else:
+            os.kill(pid, sig)
     except ProcessLookupError:
         return False
     except PermissionError:
-        os.kill(pid, signal.SIGTERM)
+        return False
     return True
 
 
@@ -104,7 +112,7 @@ def watch(
     interval_s: float = DEFAULT_INTERVAL_S,
     free_mb: Callable[[], int] = root_free_mb,
     run: Runner = run_command,
-    kill: Callable[[int], bool] = kill_group,
+    send: Callable[[int, int], bool] = signal_group,
     sleep: Callable[[float], None] = time.sleep,
     now: Callable[[], float] = time.monotonic,
     alive: Callable[[int], bool] | None = None,
@@ -120,9 +128,15 @@ def watch(
     while is_alive(pid):
         free = free_mb()
         if free < floor_mb:
+            # Annotate first (a SIGTERM must not race it), freeze the producer so / stops
+            # filling while the slow du passes run, snapshot, then stop it for good. SIGCONT
+            # delivers the pending SIGTERM to a stopped group.
+            emit(f"::error title=root disk floor::/ down to {free} MB; stopping the producer")
+            send(pid, signal.SIGSTOP)
             path = snapshot(out, run, reason=f"/ has {free} MB free, floor {floor_mb} MB")
-            kill(pid)
-            emit(f"::error title=root disk floor::/ down to {free} MB; producer stopped; {path}")
+            send(pid, signal.SIGTERM)
+            send(pid, signal.SIGCONT)
+            emit(f"::notice title=root disk snapshot::{path}")
             return 3
         if now() >= next_sample:
             line = f"disk {time.strftime('%H:%M:%S', time.gmtime())} root_free_mb={free}"
