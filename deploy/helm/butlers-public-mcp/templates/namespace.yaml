@@ -1,0 +1,11 @@
+# The owning chart creates its namespace (homelab convention, RFC 0039 D8 item 1). The release
+# record lives in the deployer's namespace (see README), so this chart can create it. Kept on
+# uninstall: deleting it would drop the Secrets and policies with it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "pub.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: butlers
+  annotations:
+    helm.sh/resource-policy: keep

@@ -121,6 +121,22 @@
       ],
       "summary": "Key-absent control plane: Switchboard and the session listener"
     },
+    "butlers-public-mcp": {
+      "dynamic": [],
+      "external": [],
+      "gateway_port": null,
+      "held": null,
+      "internal": [],
+      "sites": [
+        {
+          "optional": false,
+          "port": 5432,
+          "protocol": "TCP",
+          "site": "database"
+        }
+      ],
+      "summary": "Public MCP read surface: postgres-<env> instance pods on 5432 and cluster DNS only"
+    },
     "butlers-up": {
       "dynamic": [
         {

@@ -1,0 +1,7 @@
+apiVersion: v2
+name: butlers-public-mcp
+description: "Butlers public MCP read surface (RFC 0039), one deterministic server, default-deny, in butlers-public-ENV."
+type: application
+version: 0.1.0
+# The deployed application version is the image tag, the same TAG as the butlers chart.
+appVersion: "main"

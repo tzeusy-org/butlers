@@ -1,0 +1,58 @@
+# Defaults. values.dev.yaml supplies the environment. There is no values.prod.yaml: prod rollout
+# is deferred (RFC 0039 OD18), and `env` is required so this file alone renders nothing.
+env: ""
+
+image:
+  # Same image and TAG as the butlers chart. Site registry: `--set image.repository=...`.
+  repository: registry.invalid/butlers-app
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# The shared CNPG cluster `postgres-<env>` (instance pods carry cnpg.io/cluster and
+# cnpg.io/podRole=instance). Read-write service: the projection subscriber is the writer.
+database:
+  host: ""
+  port: 5432
+  name: butlers_public
+  user: mcp_public_ro
+  clusterNamespace: ""
+  clusterName: ""
+
+# Dashboard base URL the server puts in card links (MCP_PUBLIC_DASHBOARD_BASE).
+dashboardBase: ""
+
+externalSecrets:
+  storeRef: bitwarden-secretsmanager-dev
+  refreshInterval: 1h
+  # Bitwarden item names. The password is custody of this chart only (RFC 0039 D9).
+  dbPasswordKey: MCP_PUBLIC_RO_DB_PASSWORD
+  # Hex SHA-256 of the hop bearer (UPSTREAM_BEARER), never the bearer itself (D6).
+  bearerDigestKey: MCP_PUBLIC_HOP_BEARER_DIGEST
+
+# Worker Ed25519 verifier keys, rendered verbatim as keyring.json (schema owned by
+# butlers.capability_host). Empty until owner act 4 hands over the public key and kid.
+keyringJson: '{"keys": []}'
+
+# Break-glass kill switch (D16), re-read by the server every 10 s. Default: all enabled.
+switchesJson: '{"disabled_domains": []}'
+
+ports:
+  mcp: 8080
+  metrics: 9464
+
+networkPolicy:
+  # The filter-proxy release's pods, the only caller of the MCP port (D8 item 2).
+  filterProxy:
+    namespace: mcp
+    podLabels:
+      app.kubernetes.io/instance: butlers
+  # The cluster scraper's namespace, the only caller of the metrics port.
+  monitoringNamespace: lgtm
+
+securityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+
+resources:
+  requests: {cpu: 50m, memory: 256Mi}
+  limits: {memory: 1Gi}

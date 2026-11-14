@@ -307,13 +307,16 @@ then; when the migrations did not reconcile, its guard refuses and changes nothi
 `<tag>`, renders `butlers public-mcp owner-sql` from the git tree of `<tag>` in this checkout
 (never from the privileged pod), refuses any psql meta-command outside a short allowlist, and only
 then pipes it to `psql` as the same CNPG local superuser. It runs on every deploy and changes nothing when the manifest is unchanged.
-Once the public chart `deploy/helm/butlers-public-mcp` exists (`bu-y66o00.6`, task 2.4), the
-same target upgrades it at the same tag after the step succeeds. If the step fails, the target prints `public-mcp owner step FAILED` and exits non-zero;
+The public chart `deploy/helm/butlers-public-mcp` (`bu-y66o00.6`, task 2.4) is upgraded by the
+same target at the same tag after the step succeeds, through `scripts/k8s/public-mcp-chart-deploy.sh`
+(release `butlers-public-mcp`, recorded in `butlers-dev`; the chart creates `butlers-public-dev`).
+It is guarded by `PUBLIC_MCP_CHART_dev := off` until go-live, because the TAG must contain the
+server entrypoint, and it never runs when the step was switched off or failed. If the step fails, the target prints `public-mcp owner step FAILED` and exits non-zero;
 nothing rolls back, and the release and its deployments row stand. After a manifest change the
 public server refuses with `projection_apply_pending` until a rerun succeeds; with an unchanged
 manifest it keeps serving and only the marker reports the failure. `PUBLIC_MCP_OWNER_STEP_dev :=
-off` in `deploy/helm/butlers/makefile`, set in a reviewed change, switches the step off (and the
-public chart, once it exists) for a teardown.
+off` in `deploy/helm/butlers/makefile`, set in a reviewed change, switches the step off (and with it the
+public chart) for a teardown.
 Prod stays manual. See [Public MCP Read Surface](public-mcp-read-surface.md).
 
 The new topology guard is dev-only. `dashboard-api`, `butlers-up` and the connectors use the

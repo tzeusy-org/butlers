@@ -1,0 +1,15 @@
+# ClusterIP only: the filter-proxy UPSTREAM_URL is
+# http://<name>.<namespace>.svc.cluster.local:<mcp port>/mcp. No Ingress, no traefik route.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ include "pub.namespace" . }}
+  labels:
+    {{- include "pub.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "pub.selector" . | nindent 4 }}
+  ports:
+    - {name: mcp, port: {{ .Values.ports.mcp }}, targetPort: mcp}

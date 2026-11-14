@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ include "pub.namespace" . }}
+  labels:
+    {{- include "pub.labels" . | nindent 4 }}
+spec:
+  # One replica: the assertion replay (jti) set is in memory, so two pods would each accept
+  # a replay the other saw. Recreate keeps a rollout from overlapping two.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "pub.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pub.selector" . | nindent 8 }}
+      annotations:
+        checksum/keyring: {{ .Values.keyringJson | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.securityContext.runAsGroup }}
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: server
+          image: {{ .Values.image.repository }}:{{ required "image.tag is required (git SHA)" .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["butlers-public-mcp"]
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
+          ports:
+            - {name: mcp, containerPort: {{ .Values.ports.mcp }}}
+            - {name: metrics, containerPort: {{ .Values.ports.metrics }}}
+          env:
+            - {name: MCP_PUBLIC_DB_HOST, value: {{ required "database.host is required" .Values.database.host | quote }}}
+            - {name: MCP_PUBLIC_DB_PORT, value: {{ .Values.database.port | quote }}}
+            - {name: MCP_PUBLIC_DB_NAME, value: {{ .Values.database.name | quote }}}
+            - {name: MCP_PUBLIC_DB_USER, value: {{ .Values.database.user | quote }}}
+            - name: MCP_PUBLIC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ .Release.Name }}-db, key: MCP_PUBLIC_DB_PASSWORD}
+            - {name: MCP_PUBLIC_DASHBOARD_BASE, value: {{ .Values.dashboardBase | quote }}}
+            # No model is ever fetched: the pod has no route to the internet.
+            - {name: HF_HUB_OFFLINE, value: "1"}
+            - {name: TRANSFORMERS_OFFLINE, value: "1"}
+            - {name: HOME, value: /tmp}
+          readinessProbe:
+            tcpSocket: {port: {{ .Values.ports.mcp }}}
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: {{ .Values.ports.mcp }}}
+            periodSeconds: 15
+            failureThreshold: 4
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: bearer, mountPath: /etc/butlers-public-mcp/bearer, readOnly: true}
+            - {name: keyring, mountPath: /etc/butlers-public-mcp/keyring, readOnly: true}
+            # Directory mount, never subPath: the switches are re-read and a subPath never updates.
+            - {name: switches, mountPath: /etc/butlers-public-mcp/switches, readOnly: true}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 256Mi}
+        - name: bearer
+          secret:
+            secretName: {{ .Release.Name }}-bearer
+            items:
+              - {key: digest, path: digest}
+        - name: keyring
+          configMap:
+            name: {{ .Release.Name }}-keyring
+        - name: switches
+          configMap:
+            name: {{ .Release.Name }}-switches

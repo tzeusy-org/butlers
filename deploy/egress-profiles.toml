@@ -344,3 +344,13 @@ sites = [
   { site = "otlp", port = 4318 },
 ]
 external = ["oauth2.googleapis.com:443", "health.googleapis.com:443"]
+
+# Not a workload of the butlers chart: it runs from deploy/helm/butlers-public-mcp in
+# butlers-public-<env> and renders its own default-deny policies (RFC 0039 D8). Declared here so
+# the reviewed egress inventory is complete. It has no external hosts and no gateway_port:
+# the pod has no route to the internet, and no model is ever fetched (HF_HUB_OFFLINE=1).
+[workloads.butlers-public-mcp]
+summary = "Public MCP read surface: postgres-<env> instance pods on 5432 and cluster DNS only"
+sites = [
+  { site = "database", port = 5432 },
+]
