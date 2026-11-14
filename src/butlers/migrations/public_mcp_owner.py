@@ -1841,9 +1841,9 @@ DROP SUBSCRIPTION butlers_public_sub;
         PERFORM pg_drop_replication_slot(item.slot_name);
     END LOOP;""")
     sql += "\\endif\n\\connect butlers\n"
-    # Slot creation must be its own top-level statement: inside a DO block the
-    # surrounding snapshot makes it fail intermittently with "snapshot reference
-    # is not owned by resource owner TopTransaction".
+    # Slot creation inside PL/pgSQL (DO/function) fails intermittently while
+    # concurrent catalog-changing transactions are decoded ("snapshot reference
+    # is not owned by resource owner TopTransaction"); keep it a top-level statement.
     sql += """SELECT pg_create_logical_replication_slot('butlers_public_sub',
         'pgoutput') WHERE NOT EXISTS(SELECT 1 FROM pg_replication_slots WHERE
         slot_name='butlers_public_sub');\n"""

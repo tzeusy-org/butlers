@@ -76,11 +76,10 @@ def test_subscription_drop_waits_for_workers_to_drain_after_disable():
 
 
 def test_logical_slot_is_created_by_a_top_level_statement_not_a_do_block():
-    """A DO block's snapshot makes slot creation fail intermittently (bu-y66o00.33)."""
+    """PL/pgSQL slot creation fails intermittently (bu-y66o00.33); keep it top-level SELECT."""
     program = render_owner_program(load_manifest())
-    calls = [i for i in range(len(program)) if program.startswith("pg_create_logical", i)]
-    assert len(calls) == 1
-    statement_start = program.rindex(";\n", 0, calls[0]) + 2
-    assert program[statement_start : calls[0]].strip() == "SELECT"
-    assert "DO $mcp$" not in program[statement_start : calls[0]]
+    lines = [ln for ln in program.splitlines() if "pg_create_logical_replication_slot" in ln]
+    assert len(lines) == 1
+    assert lines[0].strip().startswith("SELECT pg_create_logical_replication_slot(")
     assert "PERFORM pg_create_logical" not in program
+    assert "DO $mcp$" not in lines[0]
