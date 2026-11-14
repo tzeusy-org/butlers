@@ -161,8 +161,10 @@ entity, the label to use and the states that count as secure (`off`, `closed`, `
   closes as `withdrawn_changed`, which records why it never arrived but not what it said.
 
 The card names things only by the owner's labels, never Home Assistant's `friendly_name`, and has
-no buttons, no Home Assistant service call and no prepared action. Fixes, arrival cards and an
-immediate lane are bu-jv1moa.29. It is dark: `DEPARTURE_CARD_LIVE` is off and no roster schedules
+no buttons, no Home Assistant service call and no prepared action. Per-item fixes, an arrival card
+and a prepared-action status resolver are specified, not built, in
+[specify-home-departure-fixes-arrival](../../openspec/changes/specify-home-departure-fixes-arrival/proposal.md);
+an immediate lane is not specified and waits for exact-text owner adoption (bu-jv1moa.29). It is dark: `DEPARTURE_CARD_LIVE` is off and no roster schedules
 the job; activation turns it on with the timed insight lane, the perception reader login and the
 presence reducer. Requirement: `home-deterministic-jobs` spec delta in
 `openspec/changes/insight-timed-lane/`, "Home Departure Card Job".
