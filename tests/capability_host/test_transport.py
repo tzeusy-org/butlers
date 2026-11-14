@@ -171,3 +171,27 @@ async def test_a_served_call_returns_structured_and_text_content(env: Env):
     result = message["result"]
     assert error_code(message) is None and result["isError"] is False
     assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
+
+
+@pytest.mark.parametrize("length", ["²", "١٢", "+5", "5 ", ""])
+async def test_a_non_ascii_content_length_is_a_size_refusal(env: Env, length: str):
+    response = await env.send(rpc("ping"), headers=[("Content-Length", length)])
+    assert _refused(response) and env.body_reads == 0
+    (line,) = env.audits()
+    assert line["outcome"] == "unauthorized" and line["cause"] == "size"
+
+
+async def test_an_unexpected_failure_is_one_audit_line_and_an_internal_error(tmp_path):
+    def broken(_params):
+        raise RuntimeError("defect")
+
+    env = Env(tmp_path, static={"tools/list": broken})
+    response = await env.send(rpc("tools/list"))
+    assert response.status == 200
+    assert json.loads(response.body) == {
+        "jsonrpc": "2.0",
+        "id": None,
+        "error": {"code": -32603, "message": "Internal error"},
+    }
+    (line,) = env.audits()
+    assert line["outcome"] == "internal" and line["cause"] is None

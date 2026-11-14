@@ -6,13 +6,19 @@ REQ-public-mcp-projection-015. The native PG17 file proves the same against real
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import timedelta
 
 import asyncpg
 import pytest
 
-from butlers.capability_host.config import BudgetLimits, parse_disabled_domains
+from butlers.capability_host import Tool
+from butlers.capability_host.config import (
+    BudgetLimits,
+    parse_canaries,
+    parse_disabled_domains,
+)
 from butlers.capability_host.projection import ProjectionStatus, judge
 from butlers.knowledge_read.core import DOMAINS
 from butlers.knowledge_read.manifest import Manifest, ManifestError, decode_applied_manifest
@@ -22,6 +28,7 @@ from tests.capability_host.helpers import (
     Projection,
     default_fake_tools,
     error_code,
+    fake_reader,
 )
 
 pytestmark = pytest.mark.unit
@@ -79,7 +86,7 @@ async def test_break_glass_works_while_replication_lags(env: Env):
     env.mono.now += 1
     assert error_code(await env.tool("health_series")) == "domain_disabled"
     assert error_code(await env.tool("entity_lookup")) is None
-    (env.root / "switches/disabled_domains").unlink()
+    env.write("switches/disabled_domains", "")
     env.reload()
     assert error_code(await env.tool("health_series")) is None  # re-enabling is clearing
 
@@ -87,8 +94,9 @@ async def test_break_glass_works_while_replication_lags(env: Env):
 @pytest.mark.parametrize(
     ("content", "expected"),
     [
-        (None, frozenset()),
+        (None, frozenset(DOMAINS)),
         (b"", frozenset()),
+        (b"# nothing disabled\n\n", frozenset()),
         (b"finance\n  health  # why\n\n", frozenset({"finance", "health"})),
         (b"all\n", frozenset(DOMAINS)),
         (b"finanse\n", frozenset(DOMAINS)),
@@ -100,9 +108,39 @@ def test_the_break_glass_file_fails_closed(content, expected):
 
 
 async def test_an_unreadable_break_glass_file_disables_everything(env: Env):
+    (env.root / "switches/disabled_domains").unlink()
     (env.root / "switches/disabled_domains").mkdir()
     env.reload()
     assert error_code(await env.tool("entity_lookup")) == "domain_disabled"
+
+
+async def test_a_missing_break_glass_file_disables_everything(env: Env):
+    (env.root / "switches/disabled_domains").unlink()
+    env.reload()
+    assert error_code(await env.tool("entity_lookup")) == "domain_disabled"
+    assert error_code(await env.tool("describe")) is None
+    env.write("switches/disabled_domains", "")
+    env.reload()
+    assert error_code(await env.tool("entity_lookup")) is None
+
+
+async def test_the_host_refuses_a_disabled_domain_even_if_the_reader_forgets(tmp_path):
+    calls: list = []
+    careless = Tool("finance_ledger", "finance", fake_reader(None, {"items": []}, calls=calls))
+    env = Env(tmp_path, tools={**default_fake_tools(), "finance_ledger": careless})
+    env.write("switches/disabled_domains", "finance\n")
+    env.reload()
+    refused = await env.tool("finance_ledger")
+    assert error_code(refused) == "domain_disabled" and _error(refused)["domain"] == "finance"
+    assert calls == [] and "SELECT data" not in env.projection.queries
+
+
+async def test_a_tool_registered_under_an_unknown_domain_never_reads(tmp_path):
+    calls: list = []
+    rogue = Tool("trips", "secrets", fake_reader(None, {"items": []}, calls=calls))
+    env = Env(tmp_path, tools={**default_fake_tools(), "trips": rogue})
+    assert error_code(await env.tool("trips")) == "domain_disabled"
+    assert calls == [] and "SELECT data" not in env.projection.queries
 
 
 async def test_finance_and_health_need_no_unlock(env: Env):
@@ -244,9 +282,17 @@ async def test_missing_canary_values_stop_every_tool(env: Env):
     (env.root / "canaries/canaries.json").unlink()
     env.reload()
     assert error_code(await env.tool("entity_lookup")) == "unavailable"
-    env.write("canaries/canaries.json", '["short"]')
-    env.reload()
-    assert error_code(await env.tool("entity_lookup")) == "unavailable"
+    assert error_code(await env.tool("describe")) is None  # D17: describe keeps answering
+    for broken in ('["short"]', "[]"):
+        env.write("canaries/canaries.json", broken)
+        env.reload()
+        assert error_code(await env.tool("entity_lookup")) == "unavailable"
+    assert not any("strpos" in q for q in env.projection.queries)
+
+
+def test_an_empty_canary_list_is_no_canaries():
+    assert parse_canaries(b"[]") is None
+    assert parse_canaries(b'["CANARY-0001", "CANARY-0001"]') == ("CANARY-0001",)
 
 
 # -- REQ-public-mcp-projection-015 fail closed while the owner step is pending --
@@ -315,3 +361,51 @@ async def test_a_canary_in_the_projection_latches_before_serving(env: Env):
     env.projection.projection_canary = False
     assert error_code(await env.tool("entity_lookup")) == "blocked"
     assert error_code(await env.tool("describe")) is None
+
+
+def _probes(env: Env) -> int:
+    return sum("strpos" in q for q in env.projection.queries)
+
+
+async def test_a_changed_canary_set_probes_again(env: Env):
+    assert error_code(await env.tool("entity_lookup")) is None
+    assert error_code(await env.tool("entity_lookup")) is None
+    assert _probes(env) == len(MANIFEST.tables)
+    env.write("canaries/canaries.json", json.dumps(["CANARY-rotated-0042"]))
+    env.reload()
+    assert error_code(await env.tool("entity_lookup")) is None
+    assert _probes(env) == 2 * len(MANIFEST.tables)
+
+
+async def test_concurrent_first_requests_share_one_probe(env: Env):
+    gate = asyncio.Event()
+    env.projection.probe_gate = gate
+    tasks = [asyncio.create_task(env.tool("entity_lookup")) for _ in range(3)]
+    for _ in range(50):
+        await asyncio.sleep(0)
+    assert _probes(env) == 1  # the first probe is in flight; the others wait for it
+    gate.set()
+    results = await asyncio.gather(*tasks)
+    assert [error_code(r) for r in results] == [None, None, None]
+    assert _probes(env) == len(MANIFEST.tables)
+
+
+async def test_the_probe_runs_in_its_own_transaction_with_a_longer_timeout(env: Env):
+    assert error_code(await env.tool("entity_lookup")) is None
+    queries = env.projection.queries
+    timeout = queries.index("SET LOCAL statement_timeout = '30s'")
+    begin = max(i for i in range(timeout) if queries[i].startswith("BEGIN"))
+    end = queries.index("END", timeout)
+    assert "('readonly', True)" in queries[begin]
+    assert queries[begin + 1] == queries[timeout]  # set before any probe-phase statement
+    probes = [i for i, q in enumerate(queries) if "strpos" in q]
+    assert probes and all(timeout < i < end for i in probes)
+    assert queries.index("SELECT data") > end  # the reader keeps the role's 2 s budget
+
+
+async def test_a_failed_probe_is_retried_by_the_next_call(env: Env):
+    env.projection.fail = asyncpg.QueryCanceledError("canceling statement")
+    assert error_code(await env.tool("entity_lookup")) == "unavailable"
+    env.projection.fail = None
+    assert error_code(await env.tool("entity_lookup")) is None
+    assert _probes(env) == len(MANIFEST.tables)

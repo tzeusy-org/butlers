@@ -117,6 +117,7 @@ class Harness:
             )
         )
         (root / "canaries/canaries.json").write_text(json.dumps([CANARY]))
+        (root / "switches/disabled_domains").write_text("")
         self.b64u = lambda raw: base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
         self.settings = HostSettings(
             audience="https://mcp.tze.how/butlers", allowed_subs=frozenset({"7"}), root=root
@@ -283,6 +284,9 @@ async def test_a_cancelled_statement_is_unavailable(projected, tmp_path):
         result = await harness.call("entity_lookup", {"name": "x"})
         assert _code(result) == "unavailable"
         assert result["structuredContent"]["error"]["retryable"] is True
+        # The probe scanned every view under its own 30 s timeout and was recorded, even
+        # though the role's statement timeout cancels the call's own snapshot.
+        assert harness.host._probed is not None and not harness.host.latched
     finally:
         await slow.close()
 

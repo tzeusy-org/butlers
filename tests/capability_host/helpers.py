@@ -6,6 +6,7 @@ nothing outside tests.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -129,6 +130,7 @@ class Projection:
     disabled: list[str] = field(default_factory=list)
     projection_canary: bool = False
     fail: BaseException | None = None
+    probe_gate: asyncio.Event | None = None
     queries: list[str] = field(default_factory=list)
     acquired: int = 0
 
@@ -152,12 +154,18 @@ class FakeConn:
         return self.depth > 0
 
     @asynccontextmanager
-    async def transaction(self, **_kw):
+    async def transaction(self, **kw):
         self.depth += 1
+        self.p.queries.append(f"BEGIN {sorted(kw.items())}")
         try:
             yield
         finally:
             self.depth -= 1
+            self.p.queries.append("END")
+
+    async def execute(self, sql: str, *args):
+        self.p.queries.append(sql)  # session settings only; injected failures hit the reads
+        return "SET"
 
     def _note(self, sql: str) -> None:
         self.p.queries.append(sql)
@@ -182,6 +190,8 @@ class FakeConn:
             age = self.p.as_of_age
             return None if age is None else datetime.fromtimestamp(self.clock(), UTC) - age
         if "strpos" in sql:
+            if self.p.probe_gate is not None:
+                await self.p.probe_gate.wait()
             return self.p.projection_canary
         return 1
 
@@ -266,6 +276,7 @@ class Env:
         self.write("bearer/digest", hashlib.sha256(BEARER.encode()).hexdigest() + "\n")
         self.write("keyring/keyring.json", keyring_json())
         self.write("canaries/canaries.json", json.dumps([CANARY]))
+        self.write("switches/disabled_domains", "# nothing disabled\n")
         self.settings = settings or HostSettings(
             audience=AUD,
             allowed_subs=frozenset({SUB, "5151"}),

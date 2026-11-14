@@ -10,10 +10,13 @@ latch, arguments, budgets, projection state, the reader, canaries, DLP, size.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -35,7 +38,12 @@ from butlers.capability_host.budgets import Budgets
 from butlers.capability_host.config import FileLayers, HostSettings
 from butlers.capability_host.dlp import MAX_COUNTED, find_canary, scan_result
 from butlers.capability_host.observe import Metrics
-from butlers.capability_host.projection import canary_probe, judge, read_status
+from butlers.capability_host.projection import (
+    ProjectionStatus,
+    canary_probe,
+    judge,
+    read_status,
+)
 from butlers.knowledge_read import (
     chronology,
     describe,
@@ -47,6 +55,7 @@ from butlers.knowledge_read import (
     travel,
 )
 from butlers.knowledge_read.core import (
+    DOMAINS,
     MAX_RESPONSE_BYTES,
     ReadContext,
     ReadError,
@@ -55,7 +64,10 @@ from butlers.knowledge_read.core import (
 )
 from butlers.knowledge_read.manifest import Manifest, load_manifest
 
+logger = logging.getLogger(__name__)
+
 MAX_BODY_BYTES = 1024 * 1024
+PROBE_TIMEOUT = "30s"  # the projection probe scans every view; the role default is 2 s
 EXEMPT = frozenset(
     {
         "initialize",
@@ -67,6 +79,8 @@ EXEMPT = frozenset(
     }
 )
 UNAUTHORIZED = {"code": -32001, "message": "Unauthorized", "data": {"reason": "unauthorized"}}
+INTERNAL = {"code": -32603, "message": "Internal error"}
+_CONTENT_LENGTH = re.compile(r"[0-9]{1,8}\Z", re.ASCII)
 _TOP_KEYS = frozenset({"jsonrpc", "id", "method", "params"})
 _CALL_KEYS = frozenset({"name", "arguments", "_meta"})
 _MAX_AUDIT_IDS = 200
@@ -205,6 +219,7 @@ class CapabilityHost:
         self.process_start = clock()
         self.latched = False
         self._probed: tuple | None = None
+        self._probe_lock = asyncio.Lock()
 
     # -- HTTP --------------------------------------------------------------------------------
 
@@ -223,7 +238,13 @@ class CapabilityHost:
             self.metrics.inc("bearer_refusals")
             return HostResponse(401)
         call = _Call(request_id or uuid.uuid4().hex, time.monotonic())
-        response = await self._admitted(call, method, headers, query, read_body, files)
+        try:
+            response = await self._admitted(call, method, headers, query, read_body, files)
+        except Exception as exc:
+            # A host defect: still exactly one audit line (D15), and nothing about the cause.
+            logger.error("public MCP request failed: %s", type(exc).__name__)
+            call.outcome, call.cause = "internal", None
+            response = self._rpc({"jsonrpc": "2.0", "id": None, "error": INTERNAL})
         self.metrics.inc("requests", tool=call.tool or "", outcome=call.outcome)
         self.metrics.audit(
             {
@@ -261,7 +282,7 @@ class CapabilityHost:
         message: dict[str, Any] = {}
         try:
             lengths = [v for k, v in headers if k.lower() == "content-length"]
-            if any(not v.isdigit() or int(v) > MAX_BODY_BYTES for v in lengths):
+            if any(not _CONTENT_LENGTH.match(v) or int(v) > MAX_BODY_BYTES for v in lengths):
                 raise AuthRefused("size")
             body = await read_body(MAX_BODY_BYTES + 1)
             if len(body) > MAX_BODY_BYTES:
@@ -365,9 +386,15 @@ class CapabilityHost:
         wait = self.budgets.admit(who.sub, who.cid, tool.name, now)
         if wait is not None:
             raise _Budget(wait)
-        canaries = files.canaries
-        if canaries is None or self.pool is None:
+        if self.pool is None:
             raise ReadError("unavailable")
+        canaries = files.canaries
+        probed = tool.name == "describe"  # D17: describe answers without canaries or probe
+        if not probed:
+            if canaries is None:
+                raise ReadError("unavailable")
+            if tool.domain is not None and tool.domain not in DOMAINS:
+                raise ReadError("domain_disabled")  # a mis-registered tool never reads
         disabled = files.break_glass
 
         async def read(conn: asyncpg.Connection) -> dict[str, Any]:
@@ -378,12 +405,8 @@ class CapabilityHost:
             if tool.name != "describe":
                 if verdict.code is not None:
                     raise ReadError(verdict.code)
-                marker = (status.applied_digest, status.applied_at)
-                if self._probed != marker:
-                    if await canary_probe(conn, self.manifest, canaries):
-                        self._latch()
-                        raise ReadError("blocked")
-                    self._probed = marker
+                if self._probed != self._marker(status, canaries):
+                    raise ReadError("unavailable")  # an apply landed after the probe; retry
             context = await read_context(
                 conn,
                 sub=who.sub,
@@ -392,11 +415,15 @@ class CapabilityHost:
                 now=datetime.fromtimestamp(now, UTC),
                 dashboard_base=self.settings.dashboard_base,
             )
+            if tool.domain is not None:
+                context.require(tool.domain)  # defence in depth: the reader checks it too
             return await tool.read(conn, context, arguments)
 
         try:
             async with self.pool.acquire() as conn:
                 conn = cast(asyncpg.Connection, conn)
+                if not probed:
+                    await self._probe(conn, cast(tuple[str, ...], canaries))
                 result = await in_snapshot(conn, lambda: read(conn))
         except ReadError:
             raise
@@ -404,6 +431,31 @@ class CapabilityHost:
             # Connection, timeout and driver errors, and any reader defect: fail closed.
             raise ReadError("unavailable") from None
         return self._release(call, who, tool, result, canaries, now)
+
+    @staticmethod
+    def _marker(status: ProjectionStatus, canaries: tuple[str, ...]) -> tuple:
+        canary_digest = hashlib.sha256(_json(sorted(canaries))).hexdigest()
+        return (status.applied_digest, status.applied_at, canary_digest)
+
+    async def _probe(self, conn: asyncpg.Connection, canaries: tuple[str, ...]) -> None:
+        """The D15 projection probe, once per applied manifest and canary set.
+
+        Single-flight: concurrent first calls wait for one probe instead of each scanning every
+        view. It runs in its own read-only transaction with a longer statement timeout, so a
+        slow scan cannot keep the server unavailable; a failed probe is retried by the next
+        call. A pending or skewed projection is left to the snapshot's own D17 refusal.
+        """
+        async with self._probe_lock:
+            async with conn.transaction(readonly=True):
+                await conn.execute(f"SET LOCAL statement_timeout = '{PROBE_TIMEOUT}'")
+                status = await read_status(conn)
+                marker = self._marker(status, canaries)
+                if self._probed == marker or judge(status, self.manifest).code is not None:
+                    return
+                if await canary_probe(conn, self.manifest, canaries):
+                    self._latch()
+                    raise ReadError("blocked")
+                self._probed = marker
 
     async def _validate(self, tool: Tool, who: Assertion, arguments: dict) -> None:
         """Run the reader's closed argument parsing with no database (D17 precedence)."""
@@ -422,7 +474,7 @@ class CapabilityHost:
             pass  # _Probe: parsing passed; anything else surfaces in the real run
 
     def _release(self, call, who, tool, result, canaries, now) -> dict[str, Any]:
-        if find_canary(result, canaries):
+        if canaries and find_canary(result, canaries):
             self._latch()
             raise ReadError("blocked")
         if not tool.dlp:

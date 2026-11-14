@@ -3,7 +3,8 @@
 Settings that are not secret come from the environment; secrets and the files the owner flips
 at runtime come from mounted files, which :class:`FileLayers` re-reads every 10 seconds. Every
 unreadable or malformed file fails closed: no bearer digest admits nobody, no keyring verifies
-nothing, a broken break-glass file disables every domain, and missing canaries stop every tool.
+nothing, a missing or broken break-glass file disables every domain, and missing or empty
+canaries stop every tool but ``describe``.
 """
 
 from __future__ import annotations
@@ -148,9 +149,13 @@ def parse_digest(raw: bytes | None) -> bytes | None:
 
 
 def parse_disabled_domains(raw: bytes | None) -> frozenset[str]:
-    """One domain or ``all`` per line, ``#`` comments; an unknown entry disables everything."""
+    """One domain or ``all`` per line, ``#`` comments; empty or comment-only disables nothing.
+
+    A missing file, bad UTF-8 or an unknown entry disables every domain: the chart always
+    mounts the file, so its absence means the switch layer is broken, not that it is off.
+    """
     if raw is None:
-        return frozenset()
+        return frozenset(DOMAINS)
     try:
         lines = raw.decode("utf-8").splitlines()
     except UnicodeDecodeError:
@@ -162,15 +167,21 @@ def parse_disabled_domains(raw: bytes | None) -> frozenset[str]:
 
 
 def parse_canaries(raw: bytes | None) -> tuple[str, ...] | None:
-    """A JSON array of distinct canary strings of at least 8 characters; else ``None``."""
+    """A non-empty JSON array of canary strings of at least 8 characters; else ``None``.
+
+    An empty array would disable both the response scan and the projection probe, so it is
+    refused like a missing file.
+    """
     if raw is None:
         return None
     try:
         values = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         return None
-    if not isinstance(values, list) or not all(
-        isinstance(v, str) and len(v) >= _MIN_CANARY_CHARS for v in values
+    if (
+        not isinstance(values, list)
+        or not values
+        or not all(isinstance(v, str) and len(v) >= _MIN_CANARY_CHARS for v in values)
     ):
         return None
     return tuple(dict.fromkeys(values))

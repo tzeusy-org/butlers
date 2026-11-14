@@ -26,6 +26,10 @@ from butlers.knowledge_read.records import JSON_TABLE, record_kinds
 SHARED_DOMAINS = frozenset({"finance", "health"})
 MAX_COUNTED = 5
 # Host- and reader-generated fields outside published data: deep links, cursors, envelopes.
+# Structural assumption: these key names are written only by the readers themselves (cursor,
+# source envelope, deep link, freshness), never copied from a published column. A projection
+# column that reached a result under one of these names would skip the scan, so a manifest or
+# reader change that lets published data use them must drop the name from this set.
 _SERVER_KEYS = frozenset({"next_cursor", "source", "url", "uri", "as_of"})
 _NUMERIC_KEYS = frozenset({"amount", "total", "value", "balance", "minutes", "count", "score"})
 _NUMERIC_TYPES = ("numeric", "integer", "bigint", "smallint", "double precision", "real")

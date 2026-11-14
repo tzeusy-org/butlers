@@ -368,3 +368,12 @@ async def test_exempt_method_with_a_valid_assertion_is_verified_and_recorded(env
     token = sign(claims(rpc("ping")))
     assert json.loads((await env.send(rpc("ping"), assertion=token)).body)["result"] == {}
     assert await _cause(env, token, rpc("ping")) == "replay"
+
+
+@pytest.mark.parametrize("broken", [b"{", b'{"version": 1}', b"\xff"])
+async def test_a_keyring_that_breaks_after_a_good_load_verifies_nothing(env: Env, broken):
+    assert not _refused(await env.send(BODY))
+    env.write("keyring/keyring.json", broken)
+    env.reload()
+    assert await _cause(env, sign(claims(BODY, iat=NOW, exp=NOW + 30))) == "keyring"
+    assert env.host.files.keyring is None
