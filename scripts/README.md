@@ -277,6 +277,7 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | Script | Caller | Purpose |
 | --- | --- | --- |
 | [`check_ci_coverage.py`](check_ci_coverage.py) | `nightly.yml` | Binds and validates the complete same-run coverage population before reporting. |
+| [`nightly_disk_watchdog.py`](nightly_disk_watchdog.py) | `nightly.yml` (`exact-image-sandbox`) | Samples root-disk headroom beside the image producer; below the floor it snapshots disk use to `/mnt` and stops the producer so the evidence steps still run. |
 | [`ci_group_count.py`](ci_group_count.py) | `ci_lanes.py` (pytest plugin) | Records each backend group's actual collection count and test durations. |
 | [`ci_hang_evidence.py`](ci_hang_evidence.py) | `ci_lanes.py` (pytest plugin) | Lets the lane runner dump every pytest process's stacks when a group hangs, and records each worker's last-started test. |
 | [`ci_lanes.py`](ci_lanes.py) | `ci.yml`, `nightly.yml` | Runs pytest-split backend groups, reconciles their counts against fresh collection, and merges measured durations. |
