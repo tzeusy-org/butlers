@@ -426,6 +426,11 @@ def build(project, contexts, work, output, revision, helpers, commands) -> dict:
                             str(source / "Dockerfile"),
                             "--target",
                             target,
+                            # No attestations: with them Docker 29 loads an OCI index and Buildx
+                            # reports no config digest, so nothing binds the loaded image id
+                            # (bu-kiuh8v.38, dispatch 43610085269). Nothing consumes them.
+                            "--provenance=false",
+                            "--sbom=false",
                             "--load",
                             "--tag",
                             tag,

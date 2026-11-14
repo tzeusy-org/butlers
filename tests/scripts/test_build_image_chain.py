@@ -256,6 +256,66 @@ def test_loaded_application_identity_holds_under_both_image_stores(
     assert {variant["image_id"] for variant in result["variants"].values()} == {_CONFIG}
 
 
+def test_application_builds_load_one_attestation_free_manifest(recipe, tmp_path):
+    """Docker 29 + Buildx provenance loads an OCI index with no config digest (dispatch 43610085269).
+
+    The app builds turn attestations off so ``--load`` yields one platform manifest whose config
+    digest Buildx reports; the base push is untouched.
+    """
+    project, contexts, revision, helpers, events = recipe
+    commands = Commands()
+    work, output = tmp_path / "work", tmp_path / "output"
+    work.mkdir()
+    producer.build(project, contexts, work, output, revision, helpers, commands)
+    builds = [argv for argv, _ in commands.calls if argv[:3] == ["docker", "buildx", "build"]]
+    base, *apps = builds
+    assert len(apps) == 4
+    assert all("--provenance=false" in argv and "--sbom=false" in argv for argv in apps)
+    assert "--provenance=false" not in base and "--sbom=false" not in base
+
+
+def test_attested_index_without_config_digest_is_refused(recipe, tmp_path):
+    """The observed index shape stays refused: no config digest means no bound image id."""
+    project, contexts, revision, helpers, events = recipe
+
+    class Attested(Commands):
+        def run(self, argv, *, cwd, timeout=1800):
+            if argv[:3] == ["docker", "buildx", "build"] and "--load" in argv:
+                self.calls.append((argv, timeout))
+                metadata = Path(argv[argv.index("--metadata-file") + 1])
+                metadata.write_text(
+                    json.dumps(
+                        {
+                            "buildx.build.provenance": {},
+                            "containerimage.config.digest": None,
+                            "containerimage.digest": _MANIFEST,
+                            "containerimage.descriptor": {
+                                "mediaType": _INDEX,
+                                "digest": _MANIFEST,
+                                "size": 856,
+                            },
+                        }
+                    )
+                )
+                return ""
+            return super().run(argv, cwd=cwd, timeout=timeout)
+
+    commands = Attested(
+        loaded={
+            "Id": _MANIFEST,
+            "Descriptor": {"mediaType": _INDEX, "digest": _MANIFEST, "size": 856},
+            "RepoDigests": ["butlers-app@" + _MANIFEST],
+            "Os": "linux",
+            "Architecture": "amd64",
+        }
+    )
+    work, output = tmp_path / "work", tmp_path / "output"
+    work.mkdir()
+    with pytest.raises(ValueError, match="loaded application identity differs"):
+        producer.build(project, contexts, work, output, revision, helpers, commands)
+    assert not output.exists() and events[-1] == "cleanup"
+
+
 def test_identity_refusal_reports_digest_evidence_only(recipe, tmp_path):
     """A runner-shape mismatch must be diagnosable from the job log alone."""
     project, contexts, revision, helpers, events = recipe
