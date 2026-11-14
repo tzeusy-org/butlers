@@ -1486,6 +1486,39 @@ class TestSubscriptionFieldProvenance:
         assert result["cancellation_url_source"] == "extracted"
         assert result["status_source"] == "extracted"
 
+    @staticmethod
+    def _record_proposals(monkeypatch) -> list[dict]:
+        from butlers.core import vendor_door_proposer
+
+        calls: list[dict] = []
+
+        async def _record(_conn, **kwargs):
+            calls.append(kwargs)
+            return {"outcome": "stored"}
+
+        monkeypatch.setattr(vendor_door_proposer, "propose_extracted_link", _record)
+        return calls
+
+    async def test_extracted_link_is_also_offered_as_a_proposal(self, finance_pool, monkeypatch):
+        calls = self._record_proposals(monkeypatch)
+        self._as_routed_gmail(monkeypatch)
+
+        result = await self._track(finance_pool, cancellation_url="https://vendor.example/cancel")
+
+        assert result["cancellation_url_source"] == "extracted"  # column behavior unchanged
+        assert [(c["url"], str(c["subscription_id"])) for c in calls] == [
+            ("https://vendor.example/cancel", result["id"])
+        ]
+
+    async def test_owner_write_and_missing_link_propose_nothing(self, finance_pool, monkeypatch):
+        calls = self._record_proposals(monkeypatch)
+        with monkeypatch.context() as owner_context:
+            self._as_owner(owner_context)
+            await self._track(finance_pool, cancellation_url="https://vendor.example/cancel")
+        self._as_routed_gmail(monkeypatch)
+        await self._track(finance_pool)
+        assert calls == []
+
     async def test_routed_gmail_write_never_overwrites_owner_set_values(
         self, finance_pool, monkeypatch
     ):
