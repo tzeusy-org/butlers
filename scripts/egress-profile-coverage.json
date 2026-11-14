@@ -2370,6 +2370,58 @@
         "dashboard-api"
       ]
     },
+    "src/butlers/capability_host/assertion.py::client_label::url::66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8": {
+      "class": "reference",
+      "observed": {
+        "authorities": [],
+        "config": null,
+        "count": 1,
+        "kind": "url",
+        "path": "src/butlers/capability_host/assertion.py",
+        "scope": "client_label",
+        "sha256": "66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8"
+      },
+      "reason": "urlsplit of the assertion's cid claim (a client id URL) to derive the audit label for a configured client domain; the domain is a label, the host never dials it; its only egress is postgres-<env>:5432 (plus kube-dns).",
+      "resolver": null,
+      "sites": [],
+      "workloads": []
+    },
+    "src/butlers/capability_host/config.py::HostSettings.from_env::config::de012ed8ba157415d823f8b983097d238350e1455df7740f88fb67261489d95a": {
+      "class": "site",
+      "observed": {
+        "authorities": [],
+        "config": "MCP_PUBLIC_DB_HOST",
+        "count": 1,
+        "kind": "config",
+        "path": "src/butlers/capability_host/config.py",
+        "scope": "HostSettings.from_env",
+        "sha256": "de012ed8ba157415d823f8b983097d238350e1455df7740f88fb67261489d95a"
+      },
+      "reason": "MCP_PUBLIC_DB_HOST locates the existing database peer only (the mcp_read login on postgres-<env>:5432); no arbitrary external endpoint is admitted.",
+      "resolver": null,
+      "sites": [
+        "database"
+      ],
+      "workloads": [
+        "butlers-public-mcp"
+      ]
+    },
+    "src/butlers/capability_host/config.py::HostSettings.from_env::url::66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8": {
+      "class": "reference",
+      "observed": {
+        "authorities": [],
+        "config": null,
+        "count": 1,
+        "kind": "url",
+        "path": "src/butlers/capability_host/config.py",
+        "scope": "HostSettings.from_env",
+        "sha256": "66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8"
+      },
+      "reason": "https:// prefix check on MCP_PUBLIC_AUDIENCE, the audience the Worker assertion must name; it is compared, never fetched, and the host never dials it; its only egress is postgres-<env>:5432 (plus kube-dns).",
+      "resolver": null,
+      "sites": [],
+      "workloads": []
+    },
     "src/butlers/catalogue_bootstrap.py::<module>::url::0e16c28d2174f5e7232ae63e00ff7f0a6c472ed74d36a28ca3e383e0dd85089f": {
       "class": "reference",
       "observed": {
