@@ -218,7 +218,7 @@
         "sha256": "5a928a24a4bc5f0fa8140880fb25d3eaec75f238f7ad160f37e71c10c7e7ef08"
       },
       "scripts/runtime_clis/produce_default_plugin_artifact.py": {
-        "sha256": "62b3b44cec0344e52a8e1ece03b23197485d0b68dd622e40788038924c21705b"
+        "sha256": "02866adb13f708215b2a59d1bd9614535aa9899f08c9734dc5346e16c3b0321e"
       },
       "scripts/runtime_clis/produce_gemini_component.py": {
         "sha256": "8f4afcfa0d4e8fb4cac9783030c8ca78a8c088e7562df10ceea988e89f032016"
