@@ -272,3 +272,29 @@ async def test_role_does_not_leak_when_the_proposal_is_refused(live):
     conn = _TxConn("nothing")
     await _propose(conn)
     assert conn.role == "none" and not conn.in_tx
+
+
+def test_slot_cap_and_length_cap_refuse_before_any_matching():
+    many = "https://shop.example.com/" + "/".join("{s}" for _ in range(proposer.MAX_SLOTS + 1))
+    assert proposer._parse_template(many) is None
+    assert proposer._parse_template("https://shop.example.com/" + "a" * 300) is None
+    ok = "https://shop.example.com/" + "/".join("{s}" for _ in range(proposer.MAX_SLOTS))
+    assert proposer._parse_template(ok) is not None
+
+
+def test_adversarial_input_is_decided_by_segment_count_not_backtracking():
+    parsed = proposer._parse_template(
+        "https://shop.example.com/" + "/".join("{s}" for _ in range(proposer.MAX_SLOTS))
+    )
+    assert parsed is not None
+    url = "https://shop.example.com/" + "/".join("x" * 5000 for _ in range(30)) + "!"
+    assert proposer._matches(parsed, url) is False  # wrong segment count: one pass, no search
+    same = "https://shop.example.com/" + "/".join("v" * 5000 for _ in range(8))
+    assert proposer._matches(parsed, same) is True
+
+
+async def test_binding_text_comes_only_from_ingested_events(live):
+    conn = FakeConn(TEXT)
+    await _propose(conn)
+    sql = conn.calls[0][0]
+    assert "public.ingestion_events" in sql and "message_inbox" in sql

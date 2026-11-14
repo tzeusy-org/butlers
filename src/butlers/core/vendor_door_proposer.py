@@ -24,10 +24,11 @@ from butlers.core.tool_call_capture import get_current_runtime_session_routing_c
 PROPOSER_ROLE = "butler_switchboard_rw"
 MAX_TEXT_CHARS = 200_000
 MAX_CANDIDATES = 200
+MAX_TEMPLATE_CHARS = 300
+MAX_SLOTS = 8
 
 _URL = re.compile(r"https://[^\s<>\"'`\\^{}|\[\]()]+", re.IGNORECASE)
 _SLOT = re.compile(r"\{([a-z_]+)\}")
-_SLOT_VALUE = r"[^/?#]+"
 _TRAILING = ".,;:!?"
 
 
@@ -45,35 +46,57 @@ def candidate_urls(text: str) -> list[str]:
     return found
 
 
-def _template_pattern(template: str) -> re.Pattern[str] | None:
-    """Compile a template to a full-match pattern, or None when it is not well formed.
+def _parse_template(template: str) -> tuple[str, list[str | None]] | None:
+    """Split a template into ``(host, segments)``; a segment is its literal text or ``None``.
 
-    Slots stand only for whole path segments (``{name}`` and nothing else in the segment), never
-    in the scheme or host; each becomes one segment ``[^/?#]+``. Every other segment is copied
-    literally, so the template can only match a URL that carries those exact segments.
+    ``None`` is a slot, which must be the whole segment (``{name}``): a slot inside a segment,
+    two slots in one segment, a slot in the host, an empty segment or a stray brace is not a
+    template. Over-long or over-slotted input is refused before any work.
     """
-    if not template.startswith("https://"):
+    if len(template) > MAX_TEMPLATE_CHARS or not template.startswith("https://"):
         return None
     host, slash, path = template[len("https://") :].partition("/")
-    if not host or not slash or re.search(r"[{}]", host):
+    if not host or not slash or "{" in host or "}" in host:
         return None
-    pieces: list[str] = []
+    segments: list[str | None] = []
     for segment in path.split("/"):
         if _SLOT.fullmatch(segment):
-            pieces.append(_SLOT_VALUE)
-        elif re.search(r"[{}]", segment) or segment == "":
-            return None  # a slot inside a segment, a stray brace, or an empty/trailing segment
+            segments.append(None)
+        elif not segment or "{" in segment or "}" in segment:
+            return None
         else:
-            pieces.append(re.escape(segment))
-    return re.compile(re.escape("https://" + host.lower()) + "/" + "/".join(pieces), re.ASCII)
+            segments.append(segment)
+    if segments.count(None) > MAX_SLOTS:
+        return None
+    return host.lower(), segments
+
+
+def _matches(parsed: tuple[str, list[str | None]], url: str) -> bool:
+    host, segments = parsed
+    parts = urlsplit(url)
+    if parts.netloc != host:
+        return False
+    candidate = parts.path.split("/")[1:]
+    if len(candidate) != len(segments):
+        return False
+    return all(
+        (want is None and bool(have)) or want == have
+        for want, have in zip(segments, candidate, strict=True)
+    )
 
 
 def template_in_event(template: str, text: str | None) -> bool:
-    """True when the template matches a URL the event itself carries (host exact, path by slot)."""
-    pattern = _template_pattern(template)
-    if pattern is None or not text:
+    """True when the template matches a URL the event itself carries.
+
+    Compared segment by segment (linear, no regex over the path): scheme and host equal, the
+    same number of path segments, literal segments equal, each slot one non-empty segment. The
+    template never carries a query or fragment; a content URL's query and fragment are dropped
+    before matching, because they are never part of a door.
+    """
+    parsed = _parse_template(template)
+    if parsed is None or not text:
         return False
-    return any(pattern.fullmatch(url) for url in candidate_urls(text))
+    return any(_matches(parsed, url) for url in candidate_urls(text))
 
 
 class _Connection(Protocol):
@@ -105,7 +128,10 @@ async def propose_from_event(
     async with conn.transaction():
         await conn.execute(f"SET LOCAL ROLE {PROPOSER_ROLE}")
         text = await conn.fetchval(
-            "SELECT normalized_text FROM switchboard.message_inbox WHERE id = $1", event_id
+            "SELECT m.normalized_text FROM switchboard.message_inbox AS m "
+            "WHERE m.id = $1 AND EXISTS "
+            "(SELECT 1 FROM public.ingestion_events AS e WHERE e.id = m.id)",
+            event_id,
         )
         if text is None:
             return _refused("event")
