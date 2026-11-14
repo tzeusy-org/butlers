@@ -63,7 +63,12 @@ def _batch(
     chat_type: str = "private",
     participant_count: int = 2,
     owner: str = OWNER,
+    participants: dict[str, str] | None = None,
+    peer: str | None = None,
 ) -> dict[str, Any]:
+    raw: dict[str, Any] = {"conversation_history": history}
+    if peer is not None:
+        raw["peer_identity"] = peer
     return {
         "schema_version": "ingest.v1",
         "source": {
@@ -79,13 +84,13 @@ def _batch(
         },
         "sender": {
             "identity": "multiple",
-            "participants": {OWNER: "Owner", THEM: "Them"},
+            "participants": participants or {OWNER: "Owner", THEM: "Them"},
             "owner_sender_id": owner,
             "participant_count": participant_count,
             "chat_type": chat_type,
         },
         "payload": {
-            "raw": {"conversation_history": history},
+            "raw": raw,
             "normalized_text": "\n".join(e["text"] for e in history),
         },
         "control": {
@@ -140,6 +145,27 @@ async def test_only_the_owners_own_unforwarded_entry_is_projected(
     assert span["counterparty_identity"] == THEM
     assert span["ingestion_event_id"] == str(inbox_id)
     assert span["text"] == "I'll send it tomorrow"
+
+
+async def test_an_owner_only_batch_names_its_peer_and_a_self_chat_names_no_one(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
+    """bu-jv1moa.100: the stored peer_identity survives ingest and names the counterparty."""
+    promise = [_entry("m-only", OWNER, "I'll send it tomorrow", mine=True, fwd=False)]
+    peered = await _ingest(
+        switchboard_pool,
+        _batch("b-peer", promise, participants={OWNER: "Owner"}, peer=THEM),
+    )
+    self_chat = await _ingest(
+        switchboard_pool, _batch("b-self", promise, participants={OWNER: "Owner"})
+    )
+    await _age(switchboard_pool, peered, 120)
+    await _age(switchboard_pool, self_chat, 120)
+
+    (span,) = await _all_spans(switchboard_pool)
+
+    assert span["ingestion_event_id"] == str(peered)
+    assert span["counterparty_identity"] == THEM
 
 
 async def test_group_chats_and_owner_mismatch_are_excluded(

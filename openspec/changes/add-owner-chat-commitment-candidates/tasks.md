@@ -25,7 +25,8 @@ dispatch packet for bu-jv1moa.11.
 
 - [x] 1.4 WhatsApp: `payload.raw.peer_identity` for private chats only (bu-jv1moa.93), tested for
   private, mapped LID, group and malformed JIDs. The bu-jv1moa.11 counterparty derivation
-  consumes it when history lacks a non-owner sender; that consumption is a separate slice.
+  consumes it when history lacks a non-owner sender (bu-jv1moa.100): never the owner, and a peer
+  that disagrees with history names no one.
 
 ## 2. Switchboard projection (REQ-butler-switchboard-011)
 

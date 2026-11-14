@@ -47,6 +47,7 @@ def _row(
     participant_count: int | None = 2,
     owner: str | None = OWNER,
     senders: list[str] | None = None,
+    peer: Any = None,
 ) -> dict[str, Any]:
     context: dict[str, Any] = {
         "source_channel": channel,
@@ -60,7 +61,10 @@ def _row(
         context["participant_count"] = participant_count
     if owner is not None:
         context["owner_sender_identity"] = owner
-    payload = {"payload": {"raw": {"conversation_history": history}}}
+    raw: dict[str, Any] = {"conversation_history": history}
+    if peer is not None:
+        raw["peer_identity"] = peer
+    payload = {"payload": {"raw": raw}}
     return {"id": INBOX_ID, "request_context": json.dumps(context), "raw_payload": payload}
 
 
@@ -231,6 +235,71 @@ def test_without_a_stored_owner_the_entry_facts_alone_qualify() -> None:
 )
 def test_no_single_counterparty_means_no_span(senders: list[str]) -> None:
     row = _row([_promise(is_from_me=True, forwarded=False)], senders=senders)
+    assert spans_of_row(row, NOW) == []
+
+
+def test_an_owner_only_whatsapp_batch_takes_the_stored_peer_identity() -> None:
+    """bu-jv1moa.100: the bridge's peer fact names the counterparty history cannot."""
+    row = _row([_promise(is_from_me=True, forwarded=False)], senders=[OWNER], peer=THEM)
+
+    (span,) = spans_of_row(row, NOW)
+
+    assert span["counterparty_identity"] == THEM
+
+
+def test_the_peer_identity_agrees_with_history_or_names_no_one() -> None:
+    history = [
+        _entry("m-them", THEM, "Can you send the deck?", is_from_me=False, forwarded=False),
+        _promise(is_from_me=True, forwarded=False),
+    ]
+    other = "6590000003@s.whatsapp.net"
+
+    (agreeing,) = spans_of_row(_row(history, peer=THEM), NOW)
+    assert agreeing["counterparty_identity"] == THEM
+    assert spans_of_row(_row(history, peer=other), NOW) == []
+
+
+@pytest.mark.parametrize(
+    ("owner", "peer"),
+    [(OWNER, OWNER), (None, OWNER)],
+    ids=["equals-stored-owner", "equals-the-author"],
+)
+def test_a_peer_identity_that_is_the_owner_names_no_one(owner: str | None, peer: str) -> None:
+    """Never the owner: a self-chat must not turn into a promise to oneself."""
+    row = _row(
+        [_promise(is_from_me=True, forwarded=False)], owner=owner, senders=[OWNER], peer=peer
+    )
+    assert spans_of_row(row, NOW) == []
+
+
+@pytest.mark.parametrize(
+    "peer",
+    ["", "unknown", "multiple", 42, ["x"]],
+    ids=["empty", "unknown", "multiple", "number", "list"],
+)
+def test_a_malformed_peer_identity_names_no_one(peer: Any) -> None:
+    row = _row([_promise(is_from_me=True, forwarded=False)], senders=[OWNER], peer=peer)
+    assert spans_of_row(row, NOW) == []
+
+
+def test_a_group_with_a_peer_identity_still_yields_nothing() -> None:
+    row = _row(
+        [_promise(is_from_me=True, forwarded=False)],
+        chat_type="group",
+        senders=[OWNER],
+        peer=THEM,
+    )
+    assert spans_of_row(row, NOW) == []
+
+
+def test_the_peer_identity_is_a_whatsapp_fact_only() -> None:
+    row = _row(
+        [_telegram_promise()],
+        channel="telegram_user_client",
+        owner="telegram:100",
+        senders=["telegram:100"],
+        peer="telegram:200",
+    )
     assert spans_of_row(row, NOW) == []
 
 

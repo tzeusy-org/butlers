@@ -172,11 +172,13 @@ ingest retry, and the fallback when a chat id cannot be read) and the unused Wha
 single-event normalizer carry no history entries, so these facts, and anything that reads them
 such as owner-chat commitment candidates, never cover those messages.
 
+A WhatsApp batch holding only the owner's own entries names its counterparty from
+`payload.raw.peer_identity` (private chats only, never the owner). A self-chat carries no peer, and
+a peer that disagrees with the history's non-owner sender names no one, so neither yields a span.
+
 Owner-chat commitment candidates (REQ-butler-switchboard-011) also leave out these cases rather
 than guess at them:
 
-- **WhatsApp owner-only batch.** A batch holding only the owner's own entries names no
-  counterparty, so it yields no span. A bridge peer fact is follow-up bu-jv1moa.93.
 - **WhatsApp history sync.** A history replay can carry text that any linked device sent,
   including a past bridge device's sends. Live delivery never echoes the bridge's own sends:
   whatsmeow skips its own device when it encrypts a send (`send.go`,
