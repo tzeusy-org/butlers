@@ -9099,7 +9099,12 @@ SELECT jsonb_build_object('tables',(SELECT jsonb_object_agg(name,value) FROM tab
         relations text[]:=ARRAY['perception_private.kinds','perception_private.sources','perception_private.source_refs','perception_private.suppression_refs','public.timeline','perception_private.receipts','public.situation_slots','public.owner_modes','public.perception_conditions','public.perception_suppressions'];
     BEGIN
         catalog:=perception_private.backup_catalog();
-        IF encode(sha256(convert_to(catalog::text,'UTF8')),'hex')<>'a6de1390a642aec4e8b6b5a2a7f7ce07e00ecd45115e9cc2f5b04b3592c5f87f'
+        -- The pin below is the catalog hash under PostgreSQL 17 (the CI major). It embeds
+        -- pg_get_functiondef text, which differs by major version, so a local server of another
+        -- major reports a different hash. Recompute on a migrated postgres:17 database with
+        -- SELECT encode(sha256(convert_to(perception_private.backup_catalog()::text,'UTF8')),'hex')
+        -- run as perception_owner.
+        IF encode(sha256(convert_to(catalog::text,'UTF8')),'hex')<>'1fa34ae16009bc205e2b5657cca667b563d48ff3f5e3a7c1ca6c29afef30e94f'
             OR (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
                 WHERE n.nspname='perception_private' AND c.relkind IN ('r','v','m','f','p'))<>5
             OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
