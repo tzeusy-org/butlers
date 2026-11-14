@@ -400,6 +400,8 @@ async def test_the_away_producer_opens_a_condition_and_queues_no_card(db, monkey
         "WHERE entity_id = $1",
         _DOOR.entity_id,
     )
+    # live-clock: the seeded last_changed is Postgres now() - 2h, so the departure
+    # edge must sit on the same real clock for the away window to have elapsed.
     now = datetime.now(UTC)
     leave = _edge("leave", 40, now=now)
     premise = home_departure.PresenceRead(
