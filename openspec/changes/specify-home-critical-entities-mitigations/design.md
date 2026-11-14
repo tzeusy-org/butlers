@@ -68,6 +68,20 @@ call). Then:
 - A call whose target is not an explicit entity list (area, device, label, `all`, data-carried
   selectors, absent) already parks under bu-svqpzo.12. While the registry is non-empty it is also
   treated as possibly critical, so no rule below may approve it.
+- Indirect actuators: while the registry is non-empty, `scene.turn_on`, `script.turn_on`, any
+  `script.<name>` service, `automation.trigger` and every non-`safe` `homeassistant` service
+  (`turn_on`, `turn_off`, `toggle`) count as critical. They already park (consequential or
+  protected); this only removes their approval shortcuts, because Home cannot see what a scene or
+  script will move.
+- Groups and helpers: a target entity whose cached state carries an `entity_id` member list (group
+  helpers, light and switch groups) is expanded through nested groups. If any member is critical the
+  call is critical. A target missing from the cache, a malformed member list, a cycle or nesting
+  deeper than 8 counts as critical (fail closed). Without this, `switch.turn_off` on a switch group
+  containing a critical plug would run unprompted as `reversible`.
+- Not covered, stated plainly: Home Assistant automations that fire on their own triggers, and
+  changes made outside Butlers, never pass through `ha_call_service`. A helper that wraps an entity
+  without listing it (for example a switch shown as a light) looks like an ordinary entity; it is
+  covered only if the owner marks the helper itself critical. The registry panel says so.
 - If the registry cannot be read (table missing, query error, timeout), every call is treated as
   naming a critical entity: nothing runs unprompted, and every park is marked critical.
 - A critical park is excluded from every approval shortcut: standing rules, decision-memory
@@ -82,8 +96,11 @@ value.
 
 ## Pre-call state and target binding (REQ-module-home-assistant-003)
 
-This applies to every approved replay whose target names a critical entity (or any call while the
-registry is unreadable) and to every safety mitigation. After the replay premise gate and before the
+This applies to every approved replay that names a critical entity under REQ-module-home-assistant-002
+(including the group cases, and any call while the registry is unreadable) and to every safety
+mitigation. An indirect actuator called on its own explicit entity id (`scene.x`, `script.y`) is
+pre-read as that entity only; Home cannot read what it will move, it has no verifier, so it never
+settles `already_satisfied` and after a request it settles `unverified`. After the replay premise gate and before the
 receipt claim:
 
 1. The target must be an explicit list of entities, each of which is one explicit entity of the
@@ -106,7 +123,10 @@ The same approval may be replayed again after a refusal, because no request left
 If the pre-call state already meets the call's declared post-condition (`verify_post_condition`
 against the pre-state), Home sends nothing and writes a receipt that settles directly to
 `already_satisfied`: no `attempting` phase, `pre_state` recorded, no `observed_state` claim. It is
-not `succeeded` and it claims no effect. A service with no
+not `succeeded` and it claims no effect. It is terminal for its approval: the prior-effect fence in
+`_call_service` (which today finds any non-`failed` receipt and answers `unverified` with attention
+unless it is `succeeded`) treats `already_satisfied` like `succeeded`, returning it without a
+request and without attention. A service with no
 declared verifier can never be `already_satisfied`; it proceeds to the normal attempt and, as
 today, settles `unverified`.
 
@@ -211,10 +231,17 @@ It is not in the RFC and binds nothing until the owner adopts it verbatim or as 
 >    attribute or name adds, removes or implies an entry.
 > 2. The `reversible` class runs without approval only for a call whose target is an explicit list
 >    of entities, none of which is critical. A call naming a critical entity is at least
->    `consequential` and parks, whatever its base class. While any entity is critical, a call whose
->    target is not an explicit entity list is treated as naming one. No standing rule, decision
->    memory, suggestion or capability grant approves a critical call; each needs its own owner
->    approval of the stored call.
+>    `consequential` and parks, whatever its base class. While any entity is critical, a call also
+>    counts as naming one when its target is not an explicit entity list; when it is an indirect
+>    actuator (`scene.turn_on`, `script.turn_on`, any `script.<name>` service, `automation.trigger`,
+>    or any `homeassistant` service that is not `safe`); or when a target is a group or helper whose
+>    member list, followed through nested groups, contains a critical entity or cannot be read. No
+>    standing rule, decision memory, suggestion or capability grant approves a critical call; each
+>    needs its own owner approval of the stored call. `safe` services are never promoted.
+> 2a. This covers only calls that Butlers sends. Home Assistant automations that fire on their own
+>    triggers, and changes made outside Butlers, do not pass through this gate and are not covered.
+>    A helper that wraps an entity without exposing its membership is covered only when the owner
+>    marks the helper itself critical.
 > 3. If the registry cannot be read, every call is treated as naming a critical entity.
 > 4. Before an approved call naming a critical entity, or an approved safety mitigation, leaves the
 >    process, Home reads every target entity live from Home Assistant. If a read fails, the entity is
@@ -223,7 +250,8 @@ It is not in the RFC and binds nothing until the owner adopts it verbatim or as 
 >    The pre-call state is kept on the receipt.
 > 5. If the pre-call state already meets the call's declared post-condition, no request is sent and
 >    the receipt settles `already_satisfied`. `already_satisfied` is not `succeeded` and claims no
->    effect. A service with no declared post-condition is never `already_satisfied`.
+>    effect. A service with no declared post-condition is never `already_satisfied`. It is terminal
+>    for its approval: a later replay returns it without a request and raises no attention.
 > 6. An approved safety mitigation is an owner-declared exact call for one explicit entity, parked
 >    when a deterministic safety condition opens, and replayed only while that condition is still
 >    open and the owner's declaration still digests to the stored call. There is no all, area,
@@ -239,6 +267,15 @@ Not adopted, not written as requirements:
 - **G7 (new). Adopt Amendment 1** above, verbatim or edited. Until then REQ-module-home-assistant-001
   to 004 and REQ-home-deterministic-jobs-013 to 015 are proposed only and no implementation bead may
   start. This includes the `already_satisfied` outcome and the 10-second bound in item 4.
+  Sub-question G7a: is the stated limit of item 2a acceptable (HA-side automations on their own
+  triggers, and helpers that hide membership, are not covered unless the owner marks the helper),
+  or does the owner want a further step, such as refusing to mark an entity critical while an HA
+  automation targets it? This change does not add one.
+
+Every requirement in this change except the departure-fix part of REQ-home-deterministic-jobs-015
+says in its text that it takes effect only on adoption. The trace format allows only
+`v1-mandatory`, `v1-reserved` or `post-v1` as Scope, so `v1-mandatory` there means "mandatory once
+adopted", not "in force".
 - **G3 (existing, overlaps).** Safety consumers while away. Two points here touch it and are not
   decided: whether a high-priority safety alert may carry the mitigation pointer, and whether a
   mitigation may ever run faster than a dashboard approval (for example tapless while away). This
@@ -264,13 +301,20 @@ Home Assistant service POSTs unless the case is an approved, fresh, unsatisfied 
 |---|---|
 | Critical target parks | `light.turn_on` on a critical light parks with `critical_entity`; the same call on a non-critical light still runs unprompted |
 | Area/all while registry non-empty | an approved-by-rule path refuses to auto-approve; parks |
+| Group with critical member | `switch.turn_off` on a switch group whose nested member is critical parks as critical; an unrelated group still runs |
+| Indirect actuators | `scene.turn_on`, `script.<name>`, `automation.trigger`, `homeassistant.turn_off`: parked critical, no rule approves; `homeassistant.update_entity` stays `safe` |
+| Unreadable membership | group missing from cache, malformed list, cycle, depth over 8: parks as critical |
+| Audit | add and remove each write one record with entity id, actor and time, no label |
 | Owner-only changes | registry and mitigation routes refuse non-owner, tool and session callers; content-blind code; nothing stored |
 | Unknown policy refusal | registry table missing or query error: a reversible explicit call parks; broker returns `unknown` |
 | Shortcuts excluded | a standing rule pinning the exact critical call does not approve it; a goal grant does not |
 | Stored-call digest | an edited mitigation declaration refuses replay (`declaration_changed`); the stored `tool_args` are byte-identical to park time |
 | Stale or missing pre-state | read older than 10 s, failed read, `unavailable`, partial read set: no receipt, no POST, `approved_not_run`, one approval event |
 | Replay | the same approval after a stale refusal and a later fresh read sends once; after `unverified` it never resends |
-| Already-satisfied no-op | valve already closed: no POST, receipt `already_satisfied`, resolver never `succeeded` (`already_satisfied` after the follow-up delta), card text not "done" |
+| Unreadable registry pre-read | registry read fails at replay of an ordinary approved call: the pre-read is required; a stale read sends nothing |
+| Already-satisfied no-op | valve already closed: no POST, receipt `already_satisfied`, resolver never `succeeded` (`already_satisfied` after the follow-up delta), card text not "done"; a second replay returns it with no POST and no attention |
+| No verifier | an approved critical call with no verifier never settles `already_satisfied`; it attempts and settles `unverified` |
+| Mitigation lifecycle | 2 h expiry; unreadable ledger leaves rows pending; `mitigation_removed` and `watch_removed` withdrawals |
 | Measured post-condition failure | HA accepts, read-back mismatches: `unverified`, never `succeeded` |
 | Mitigation premise | condition resolved before approval: withdrawn `condition_resolved`; resolved after approval: replay refuses |
 | Alert independence | parking raises: the alert is still sent unchanged |

@@ -4,8 +4,11 @@ The safety sentinel (bu-jv1moa.6) alerts on leak, smoke, CO and gas and never ca
 Two physical-safety promises from the same outcome were left out of it and have no specification:
 
 - **Critical entities.** The owner can mark an entity (a water main valve, a gas valve, a garage
-  door, a space heater plug) as one that never moves without the owner's own approval, even when
-  RFC 0028 would run the call unprompted as `reversible`.
+  door, a space heater plug) so that no call Butlers sends moves it without the owner's own
+  approval, even when RFC 0028 would run the call unprompted as `reversible`. That includes calls
+  that reach it indirectly through a group, scene, script or automation trigger. It does not cover
+  Home Assistant automations that fire on their own triggers, or a helper that hides which entity
+  it wraps unless the owner marks the helper too.
 - **Approved safety mitigations.** When a safety condition opens, the owner is offered the one exact
   call they declared for it (close this valve), per item, with the pre-call state captured and a
   post-condition receipt. It is not a bundle, and it never runs by itself.
@@ -22,9 +25,11 @@ loosened until the owner adopts the amendment.
   approved safety mitigations.
 - Specify an **owner-only critical-entity registry**: written only through owner-authenticated
   dashboard routes, never derived from a label, area, attribute, name or model.
-- Specify that **a call naming a critical entity always parks**, that no standing rule, decision
-  memory or capability grant approves it, and that **a lost or unreadable registry fails closed**
-  (every call is treated as naming a critical entity).
+- Specify that **a call naming a critical entity always parks**, directly or through a group whose
+  members include one, and that scenes, scripts, automation triggers and non-safe `homeassistant`
+  services count as critical while any entity is; that no standing rule, decision memory or
+  capability grant approves such a call; and that **a lost or unreadable registry or group
+  membership fails closed**.
 - Specify **pre-call state and target binding** for approved calls on critical entities and for
   mitigations: a live read of exactly the stored target, fresh within a fixed bound, kept on the
   receipt; stale, missing or unreadable state sends nothing.
