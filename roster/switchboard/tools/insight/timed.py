@@ -61,6 +61,29 @@ TIMED_STALE_CLAIM_AFTER = timedelta(minutes=10)
 
 _ALWAYS_HOLD = ("dnd", "sleeping")
 
+#: Context signals a producer's timed candidates may declare they pass (bu-jv1moa.9). A candidate
+#: declares them in ``metadata["passes_context"]``; the lane honors only the intersection with this
+#: table for the candidate's ``(origin_butler, category)``, and never ``dnd`` or ``sleeping``. The
+#: only entry is the T-20 meeting card: an owner already in a meeting or focused is exactly who it
+#: is for. Every other timed candidate is held by every suppressing signal, as before.
+CONTEXT_PASS_ALLOWED: dict[tuple[str, str], frozenset[str]] = {
+    ("relationship", "meeting-card"): frozenset({"meeting", "focused"}),
+}
+
+
+def passed_context_signals(candidate: dict[str, Any]) -> frozenset[str]:
+    """The suppressing signals this candidate is allowed to ignore (usually none)."""
+    origin, category = candidate.get("origin_butler"), candidate.get("category")
+    if not isinstance(origin, str) or not isinstance(category, str):
+        return frozenset()
+    allowed = CONTEXT_PASS_ALLOWED.get((origin, category))
+    if not allowed:
+        return frozenset()
+    declared = (broker._json_object(candidate.get("metadata")) or {}).get("passes_context")
+    if not isinstance(declared, list):
+        return frozenset()
+    return frozenset(x for x in declared if isinstance(x, str)) & (allowed - set(_ALWAYS_HOLD))
+
 
 def fresh_presence_edge(premise: dict[str, Any] | None, *, now: datetime) -> bool:
     """True when ``premise`` names a presence-edge probe confirmed under 15 minutes ago."""
@@ -78,12 +101,19 @@ def fresh_presence_edge(premise: dict[str, Any] | None, *, now: datetime) -> boo
     return timedelta(0) <= now - confirmed_at < PRESENCE_EDGE_FRESHNESS
 
 
-def _context_hold(signals: list[Any], *, now: datetime) -> str | None:
-    """The context signal holding timed delivery: dnd/sleeping always, others within max hold."""
+def _context_hold(
+    signals: list[Any], *, now: datetime, passes: frozenset[str] = frozenset()
+) -> str | None:
+    """The context signal holding timed delivery: dnd/sleeping always, others within max hold.
+
+    *passes* names signals the candidate declared it ignores (see ``CONTEXT_PASS_ALLOWED``).
+    """
     for signal in signals:
         if signal.signal_type in _ALWAYS_HOLD:
             return signal.signal_type
     for signal_type in broker._CONTEXT_SUPPRESSING_SIGNALS:
+        if signal_type in passes:
+            continue
         for signal in signals:
             if (
                 signal.signal_type == signal_type
@@ -346,7 +376,7 @@ async def timed_delivery_cycle(
         from butlers.context_bus import get_active_context
 
         policy = await get_approvals_policy_quiet_hours(pool)
-        hold = _context_hold(await get_active_context(pool), now=now)
+        signals = await get_active_context(pool)
     except Exception:
         result.update(skipped=True, reason="attention_store_unavailable")
         return result
@@ -364,10 +394,17 @@ async def timed_delivery_cycle(
     )
     if not rows:
         return result
-    if hold is not None:
-        for row in rows:
-            await _block(pool, row["id"], "held_by")
-            result["held"][str(row["id"])] = f"context_bus:{hold}"
+    held_by: dict[str, int] = {}
+    free_rows = []
+    for row in rows:
+        hold = _context_hold(signals, now=now, passes=passed_context_signals(dict(row)))
+        if hold is None:
+            free_rows.append(row)
+            continue
+        await _block(pool, row["id"], "held_by")
+        result["held"][str(row["id"])] = f"context_bus:{hold}"
+        held_by[hold] = held_by.get(hold, 0) + 1
+    for hold in held_by:
         await record_attention_event(
             pool,
             origin_butler="switchboard",
@@ -377,6 +414,8 @@ async def timed_delivery_cycle(
             reason=f"context_bus:{hold}",
             metadata={"lane": "timed", "held_by": hold},
         )
+    rows = free_rows
+    if not rows:
         return result
 
     eligible = set(await broker.filter_by_cooldown(pool, [str(r["id"]) for r in rows], now=now))

@@ -276,6 +276,54 @@ def _get_default_cooldown(priority: int) -> int:
 # ---------------------------------------------------------------------------
 
 
+async def withdraw_pending_candidates(
+    pool: asyncpg.Pool,
+    *,
+    dedup_keys: list[str],
+    reason: str,
+    now: datetime | None = None,
+) -> int:
+    """Withdraw the named pending, unclaimed candidates because their premise no longer holds.
+
+    The same guarded ``status = 'pending' AND claim_id IS NULL`` transition and ``withdrawn``
+    attention event as the premise recheck, for a producer that knows its own candidate went
+    stale (bu-jv1moa.9: a moved meeting's card). A sent, claimed or terminal candidate is left
+    alone. Returns the number withdrawn. Never deletes.
+    """
+    moment = now or datetime.now(UTC)
+    withdrawn = 0
+    for key in dict.fromkeys(dedup_keys):
+        rows = await pool.fetch(
+            """
+            UPDATE insight_candidates
+            SET status = 'withdrawn',
+                metadata = COALESCE(metadata, '{}'::jsonb)
+                           || jsonb_build_object('withdrawn_at', $2::text,
+                                                 'withdrawn_reason', $3::text)
+            WHERE dedup_key = $1 AND status = 'pending' AND claim_id IS NULL
+            RETURNING id, origin_butler, priority, channel, dedup_key
+            """,
+            key,
+            moment.isoformat(),
+            reason,
+        )
+        for row in rows:
+            withdrawn += 1
+            await record_attention_event(
+                pool,
+                origin_butler=row["origin_butler"],
+                source="insight",
+                outcome="withdrawn",
+                channel=row["channel"],
+                intent="insight",
+                priority=row["priority"],
+                dedup_key=row["dedup_key"],
+                notification_ref=str(row["id"]),
+                reason=reason,
+            )
+    return withdrawn
+
+
 async def propose_insight_candidate(
     pool: asyncpg.Pool,
     *,

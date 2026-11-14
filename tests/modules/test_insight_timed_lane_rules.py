@@ -127,3 +127,47 @@ def test_no_roster_schedules_the_dark_timed_subcycle():
         for path in roster.glob("*/butler.toml")
         if "insight_timed_subcycle" in path.read_text()
     ]
+
+
+_CARD = {
+    "origin_butler": "relationship",
+    "category": "meeting-card",
+    "metadata": {"passes_context": ["meeting", "focused", "dnd", "sleeping", "traveling"]},
+}
+
+
+def test_only_the_meeting_card_may_pass_meeting_and_focused():
+    assert timed.passed_context_signals(_CARD) == {"meeting", "focused"}
+    assert not {"dnd", "sleeping", "traveling"} & timed.passed_context_signals(_CARD)
+    # The declaration is not enough: another producer or category passes nothing.
+    assert timed.passed_context_signals({**_CARD, "category": "departure"}) == frozenset()
+    assert timed.passed_context_signals({**_CARD, "origin_butler": "home"}) == frozenset()
+    assert timed.passed_context_signals({**_CARD, "metadata": {}}) == frozenset()
+    assert timed.passed_context_signals({**_CARD, "metadata": None}) == frozenset()
+    assert timed.passed_context_signals({**_CARD, "metadata": {"passes_context": "meeting"}}) == (
+        frozenset()
+    )
+
+
+@pytest.mark.parametrize(
+    ("signals", "hold"),
+    [
+        ([("meeting", timedelta(minutes=10))], None),
+        ([("focused", timedelta(minutes=10))], None),
+        ([("dnd", timedelta(minutes=10))], "dnd"),
+        ([("sleeping", timedelta(hours=30))], "sleeping"),
+        ([("meeting", timedelta(minutes=10)), ("dnd", timedelta(minutes=1))], "dnd"),
+        ([("traveling", timedelta(minutes=10))], "traveling"),
+    ],
+    ids=["meeting", "focused", "dnd", "sleeping", "meeting-and-dnd", "traveling-not-passed"],
+)
+def test_a_passed_signal_does_not_hold_but_dnd_and_sleeping_always_do(signals, hold):
+    entries = [_signal(name, age) for name, age in signals]
+    passes = timed.passed_context_signals(_CARD)
+    assert timed._context_hold(entries, now=_NOW, passes=passes) == hold
+
+
+def test_by_default_every_signal_still_holds():
+    entries = [_signal("meeting", timedelta(minutes=10))]
+    assert timed._context_hold(entries, now=_NOW) == "meeting"
+    assert timed._context_hold(entries, now=_NOW, passes=frozenset()) == "meeting"

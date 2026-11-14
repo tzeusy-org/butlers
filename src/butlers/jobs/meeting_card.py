@@ -49,6 +49,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
+from uuid import UUID
 
 import asyncpg
 
@@ -90,6 +91,32 @@ _MAX_COMMITMENTS = 2
 _UNSAFE = re.compile(r"[*_`\[\]<>\x00-\x1f\x7f]")
 
 InsightProposer = Callable[..., Awaitable[dict[str, Any]]]
+#: ``(pool, dedup_keys=..., reason=..., now=...) -> number withdrawn`` (the broker's withdraw path).
+InsightWithdrawer = Callable[..., Awaitable[int]]
+
+#: Context signals a card passes: an owner in a meeting or focused is who it is for. ``dnd`` and
+#: ``sleeping`` still hold it. The lane honors this only for this producer's category.
+PASSES_CONTEXT = ["meeting", "focused"]
+_KEY_PREFIX = "relationship:meeting-card:"
+
+_PENDING_CARDS_SQL = """
+    SELECT dedup_key FROM insight_candidates
+    WHERE origin_butler = 'relationship' AND category = 'meeting-card'
+      AND lane = 'timed' AND status = 'pending' AND claim_id IS NULL
+"""
+
+_STILL_SCHEDULED_SQL = """
+    SELECT EXISTS (
+        SELECT 1 FROM calendar_events ce
+        WHERE ce.id = $1 AND ce.recurrence_rule IS NULL
+          AND ce.status <> 'cancelled' AND ce.starts_at = $2
+        UNION ALL
+        SELECT 1 FROM calendar_event_instances ci
+        JOIN calendar_events ce ON ce.id = ci.event_id
+        WHERE ce.id = $1 AND ce.recurrence_rule IS NOT NULL
+          AND ce.status <> 'cancelled' AND ci.status <> 'cancelled' AND ci.starts_at = $2
+    )
+"""
 
 _OCCURRENCE_SQL = """
     SELECT ce.id AS event_id, ce.title AS title, ce.location AS location,
@@ -122,6 +149,15 @@ def clean_text(value: Any, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
+def inert_text(value: Any, limit: int) -> str:
+    """Third-party text as one plain line no chat client can link: cleaned, then defanged.
+
+    Insight delivery sends the text as written (no ``notify`` envelope, so ``render_links_inert``
+    never runs), so every piece of invite or person-authored text passes through here.
+    """
+    return defang_delivery_text(clean_text(value, limit))
+
+
 def inert_location(value: Any) -> str | None:
     """A location that no chat client can turn into a link, or ``None`` when empty.
 
@@ -137,8 +173,8 @@ def inert_location(value: Any) -> str | None:
         except ValueError:
             host = None
         return f"online ({defang_delivery_text(host)})" if host else "online"
-    text = clean_text(candidate, _MAX_LOCATION)
-    return defang_delivery_text(text) if text else None
+    text = inert_text(candidate, _MAX_LOCATION)
+    return text or None
 
 
 def _day_label(moment: datetime, now: datetime) -> str:
@@ -164,7 +200,7 @@ def _stale(envelope: Any, starts_at: datetime) -> bool:
 
 def _commitment_lines(entries: Sequence[Mapping[str, Any]], direction: str, label: str) -> str:
     lines = [
-        clean_text(c.get("summary"), _MAX_LINE)
+        inert_text(c.get("summary"), _MAX_LINE)
         for c in entries
         if isinstance(c, Mapping) and c.get("direction") == direction
     ]
@@ -187,7 +223,7 @@ def render_card(
     Pure: the same inputs always give the same text, and nothing here reads a database.
     """
     local = starts_at.astimezone(SGT)
-    heading = clean_text(title, _MAX_TITLE) or "Meeting"
+    heading = inert_text(title, _MAX_TITLE) or "Meeting"
     lines = [f"{heading} at {local:%H:%M} ({_day_label(starts_at, now)})"]
     place = inert_location(location)
     if place:
@@ -201,7 +237,7 @@ def render_card(
         }
     shown = list(attendees)[:_MAX_ATTENDEES]
     for person in shown:
-        name = clean_text(person.get("name"), _MAX_NAME) or clean_text(person.get("email"), 40)
+        name = inert_text(person.get("name"), _MAX_NAME) or inert_text(person.get("email"), 40)
         prep = prep_by_entity.get(str(person.get("entity_id")))
         entry = name or "Someone"
         if prep and isinstance(prep.get("last_met"), str):
@@ -227,18 +263,60 @@ def render_card(
     return "\n".join(lines)
 
 
+async def _withdraw_superseded(
+    pool: asyncpg.Pool, insight_withdrawer: InsightWithdrawer, now: datetime
+) -> int:
+    """Withdraw pending cards whose meeting moved, was cancelled or no longer exists.
+
+    A card's key names its event and start. If no live occurrence starts then, the card describes
+    a meeting that is not happening at that time, so it is withdrawn through the broker's path
+    (never deleted) and the moved meeting's new card is queued by the normal run.
+    """
+    try:
+        pending = [r["dedup_key"] for r in await pool.fetch(_PENDING_CARDS_SQL)]
+    except asyncpg.PostgresError:
+        return 0
+    stale: list[str] = []
+    for key in pending:
+        if not key.startswith(_KEY_PREFIX):
+            continue
+        try:
+            event_id, epoch = key[len(_KEY_PREFIX) :].split(":")
+            event_uuid = UUID(event_id)
+            start = datetime.fromtimestamp(int(epoch), UTC)
+            live = await pool.fetchval(_STILL_SCHEDULED_SQL, event_uuid, start)
+        except (ValueError, OverflowError, asyncpg.PostgresError):
+            continue
+        if not live:
+            stale.append(key)
+    if not stale:
+        return 0
+    try:
+        return int(
+            await insight_withdrawer(pool, dedup_keys=stale, reason="meeting_changed", now=now)
+        )
+    except Exception:
+        logger.exception("meeting_card: withdrawing superseded cards raised")
+        return 0
+
+
 async def run_meeting_card(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None = None,
     *,
     insight_proposer: InsightProposer,
+    insight_withdrawer: InsightWithdrawer,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Queue one timed card for each meeting starting within the lead window."""
+    """Queue one timed card for each meeting starting within the lead window.
+
+    First withdraws any pending card whose meeting moved or was cancelled.
+    """
     del job_args
     if not MEETING_CARD_LIVE:
         return {"status": "dark"}
     now = now or datetime.now(UTC)
+    withdrawn = await _withdraw_superseded(pool, insight_withdrawer, now)
     try:
         rows = await pool.fetch(_OCCURRENCE_SQL, now + MIN_LEAD, now + CARD_LEAD)
     except asyncpg.exceptions.UndefinedTableError:
@@ -260,21 +338,38 @@ async def run_meeting_card(
             emails.update(a["email"] for a in others)
     people = await _resolve_people(pool, emails)
 
-    counts = {"considered": len(staged), "proposed": 0, "duplicate": 0, "failed": 0}
-    link = dashboard_link("/calendar")
+    # Anyone who resolves to the owner is the owner for eligibility: a meeting whose only other
+    # address is the owner's own is a solo block and gets no card. A non-active person is still
+    # a real attendee (the meeting is carded) but is never named.
+    carded: list[tuple[Any, list[dict[str, Any]]]] = []
     for row, others in staged:
         named: list[dict[str, Any]] = []
+        real = 0
         for att in others:
             person = people.get(att["email"])
             if person is None:
+                real += 1
                 named.append(
                     {"entity_id": None, "name": att["display_name"], "email": att["email"]}
                 )
             elif person["is_owner"]:
                 continue
-            elif person["posture"] == "active":
-                named.append({**person, "email": att["email"]})
-            # A non-active person is counted as an attendee (the meeting is carded) but never named.
+            else:
+                real += 1
+                if person["posture"] == "active":
+                    named.append({**person, "email": att["email"]})
+        if real:
+            carded.append((row, named))
+
+    counts = {
+        "considered": len(carded),
+        "proposed": 0,
+        "duplicate": 0,
+        "failed": 0,
+        "withdrawn": withdrawn,
+    }
+    link = dashboard_link("/calendar")
+    for row, named in carded:
         try:
             envelope = await state_get(pool, prep_key(str(row["event_id"])))
         except asyncpg.PostgresError:
@@ -301,6 +396,7 @@ async def run_meeting_card(
                 expires_at=row["starts_at"],
                 lane="timed",
                 deliver_after=now,
+                metadata={"passes_context": list(PASSES_CONTEXT)},
                 now=now,
             )
         except Exception:

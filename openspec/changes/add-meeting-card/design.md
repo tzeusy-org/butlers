@@ -15,8 +15,19 @@ queueing is `propose_insight_candidate(lane="timed")`.
 - **Posture.** The attendee block (names, last met, commitments) lists only `active` people. A
   non-`active` or owner-resolved attendee is not named; the meeting still counts as having other
   attendees, so the card carries title, time and place only.
-- **Holds.** The timed lane holds for `dnd` and `sleeping` and for quiet hours; `meeting` and
-  `focused` do not hold it. Nothing in this job reads the owner's posture.
+- **Holds.** The card is time-critical, so `meeting` and `focused` must not hold it; `dnd`,
+  `sleeping` and quiet hours still do. A candidate declares `metadata.passes_context`, and the timed
+  lane honors it only for `(relationship, meeting-card)` (`timed.CONTEXT_PASS_ALLOWED`) and never
+  for `dnd` or `sleeping`; every other candidate is held by every signal as before. "Away" is not
+  a broker signal and none is invented here. Nothing in this job reads the owner's posture.
+- **Reschedule.** Each run withdraws pending cards whose event has no live occurrence at the
+  start in the card's key (moved, cancelled or deleted) through
+  `broker.withdraw_pending_candidates`, the premise recheck's guarded pending-to-withdrawn
+  transition and `withdrawn` attention event, then queues the moved meeting's new card. A
+  send-time premise would need a definer function for the Switchboard to read the Relationship
+  calendar tables, so it is not added.
+- **Owner alias.** An attendee address that resolves to the owner is the owner for eligibility:
+  a meeting whose only other address is the owner's own gets no card.
 - **Third-party text** (title, names, summaries, location) is stripped of markup and control
   characters and truncated. A location is never a link: a URL shows its host defanged, other text
   has its separators defanged.

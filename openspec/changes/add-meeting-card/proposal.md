@@ -13,8 +13,10 @@ directions) holds what a short card needs (bu-jv1moa.9, slice 1 of dots-superset
 - The card is a fixed template: title, start time, a defanged location, each named attendee with
   the last time they met, "You owe" and "Waiting on" commitments, and a link to the dashboard
   Calendar page. A missing or stale envelope gives "No prep context yet." rather than no card.
-- Idempotent per `(event_id, start_at)`: a moved meeting earns one new card, the old one is never
-  re-sent.
+- Idempotent per `(event_id, start_at)`: a moved meeting's pending card is withdrawn and it earns one
+  new card; a cancelled meeting's pending card is withdrawn.
+- Time-critical: `meeting` and `focused` do not hold the card (a per-candidate declaration the timed
+  lane honors for this producer only); `dnd` and `sleeping` still do.
 - Dark behind `MEETING_CARD_LIVE`, default off, and unscheduled.
 
 ## Deferred

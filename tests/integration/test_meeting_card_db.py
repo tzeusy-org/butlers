@@ -126,8 +126,19 @@ def _guests(*others: str) -> list[dict]:
     ]
 
 
-async def _run(pool, proposer: _Proposer, now: datetime) -> dict[str, Any]:
-    return await card.run_meeting_card(pool, insight_proposer=proposer, now=now)
+class _Withdrawer:
+    def __init__(self) -> None:
+        self.keys: list[str] = []
+
+    async def __call__(self, pool: asyncpg.Pool, *, dedup_keys: list[str], **_: Any) -> int:
+        self.keys.extend(dedup_keys)
+        return len(dedup_keys)
+
+
+async def _run(pool, proposer: _Proposer, now: datetime, withdrawer=None) -> dict[str, Any]:
+    return await card.run_meeting_card(
+        pool, insight_proposer=proposer, insight_withdrawer=withdrawer or _Withdrawer(), now=now
+    )
 
 
 NOW = datetime.now(UTC).replace(microsecond=0)
@@ -229,3 +240,49 @@ async def test_a_moved_meeting_is_proposed_under_a_new_key(card_pool) -> None:
     )
     await _run(card_pool, proposer, NOW)
     assert proposer.calls[0]["dedup_key"] != proposer.calls[1]["dedup_key"]
+
+
+async def test_the_owners_other_address_alone_is_not_a_guest(card_pool) -> None:
+    owner = await _person(card_pool, "Owner", "alt@example.test")
+    await card_pool.execute(
+        "UPDATE public.entities SET roles = ARRAY['owner'] WHERE id = $1", owner
+    )
+    await _event(card_pool, NOW + timedelta(minutes=15), attendees=_guests("alt@example.test"))
+    proposer = _Proposer()
+    result = await _run(card_pool, proposer, NOW)
+    assert result["considered"] == 0 and proposer.calls == []
+
+
+async def test_a_moved_meeting_withdraws_its_old_card_through_the_broker(
+    card_pool, monkeypatch
+) -> None:
+    """Real broker and real candidates table: the old card is withdrawn, the new one pending."""
+    from butlers.roster_imports import roster_module
+
+    timed = roster_module("switchboard", "tools/insight/timed")
+    broker = roster_module("switchboard", "tools/insight/broker")
+    monkeypatch.setattr(timed, "TIMED_INSIGHTS_LIVE", True)
+    await card_pool.execute("TRUNCATE TABLE public.insight_candidates CASCADE")
+    await _person(card_pool, "Sam Lee", "sam@example.test")
+    start = NOW + timedelta(minutes=15)
+    event = await _event(card_pool, start, attendees=_guests("sam@example.test"))
+
+    async def run() -> dict[str, Any]:
+        return await card.run_meeting_card(
+            card_pool,
+            insight_proposer=broker.propose_insight_candidate,
+            insight_withdrawer=broker.withdraw_pending_candidates,
+            now=NOW,
+        )
+
+    first = await run()
+    moved = start + timedelta(minutes=3)
+    await card_pool.execute("UPDATE calendar_events SET starts_at = $2 WHERE id = $1", event, moved)
+    second = await run()
+
+    rows = await card_pool.fetch(
+        "SELECT dedup_key, status, metadata FROM public.insight_candidates ORDER BY created_at"
+    )
+    assert (first["proposed"], second["proposed"], second["withdrawn"]) == (1, 1, 1)
+    assert [r["status"] for r in rows] == ["withdrawn", "pending"]
+    assert rows[1]["dedup_key"].endswith(f":{int(moved.timestamp())}")

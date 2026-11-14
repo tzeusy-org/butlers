@@ -148,16 +148,17 @@ endpoint custody.
 Twenty minutes before a meeting with at least one other, non-declined attendee, the zero-LLM
 `meeting_card_push` job queues one card on the insight broker's timed lane (bu-jv1moa.9; openspec
 change `add-meeting-card`). It sends nothing itself, so quiet hours, `dnd`/`sleeping` holds and the
-daily cap are the broker's; `meeting` and `focused` do not hold it. It is dark: `MEETING_CARD_LIVE`
+daily cap are the broker's. `meeting` and `focused` do not hold it (the card declares `passes_context`, honored only for this producer); `dnd` and `sleeping` do. It is dark: `MEETING_CARD_LIVE`
 is off and no schedule exists, so activation is one owner-approved change.
 
 The card is a fixed template read from the prep envelope `calendar/prep/<event_id>`: title and
 time, location, each named attendee with the date they last met, "You owe" and "Waiting on"
 commitments, and a link to the dashboard Calendar page. A missing envelope, or one stamped for a
-different start, gives "No prep context yet." Dedup is `(event_id, start)`, so a moved meeting
-earns one new card. The meeting selection and exclusions are the debrief's. A non-`active` person
-is never named; the meeting is still carded without them. Invite text is stripped of markup and a
-location never renders as a link (a URL shows only its defanged host).
+different start, gives "No prep context yet." Dedup is `(event_id, start)`; a moved or cancelled meeting's pending
+card is withdrawn through the broker and a moved meeting earns one new card. The meeting selection and exclusions are the debrief's. A non-`active` person
+is never named; the meeting is still carded without them. An address that resolves to the owner does
+not count as a guest. Invite and person text is stripped of markup and defanged, and a location never
+renders as a link (a URL shows only its defanged host).
 
 Not built: the "Debrief later" button (no signed tap sink fits a timed insight), leave-by timing
 (needs travel legs, bu-jv1moa.7), the last message topic (the Relationship role cannot read the

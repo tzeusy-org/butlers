@@ -1207,13 +1207,16 @@ async def _run_relationship_meeting_card_push_job(
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Queue one timed T-20 card per meeting with other people (dark, unscheduled; bu-jv1moa.9)."""
-    import importlib
-
     from butlers.jobs.meeting_card import run_meeting_card
+    from butlers.roster_imports import roster_module
 
-    # Resolved at call time: a static import would add one more unresolved-import baseline entry.
-    broker = importlib.import_module("butlers.tools.switchboard.insight.broker")
-    return await run_meeting_card(pool, job_args, insight_proposer=broker.propose_insight_candidate)
+    broker = roster_module("switchboard", "tools/insight/broker")
+    return await run_meeting_card(
+        pool,
+        job_args,
+        insight_proposer=broker.propose_insight_candidate,
+        insight_withdrawer=broker.withdraw_pending_candidates,
+    )
 
 
 async def _run_messenger_calendar_prep_contribution_job(
