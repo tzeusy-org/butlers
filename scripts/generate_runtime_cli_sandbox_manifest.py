@@ -137,6 +137,15 @@ def _ldd_dependencies(
         text=True,
     )
     normalized_stdout = result.stdout.strip().casefold()
+    # glibc's ldd reports a static executable as exactly "\tnot a dynamic
+    # executable" on stderr with exit status 1 and nothing on stdout.
+    if (
+        strict
+        and result.returncode == 1
+        and not result.stdout
+        and result.stderr.strip().casefold() == "not a dynamic executable"
+    ):
+        return ()
     if strict and result.stderr:
         raise ManifestGenerationError(f"runtime dependency output is ambiguous: {path}")
     if strict and "not found" in normalized_stdout:
