@@ -59,6 +59,16 @@ No request body accepts an ingestion event, origin, tier, verdict or lineage (ex
 someone else's event. Binding a template to the event it was read from belongs to the proposers
 (Switchboard and Finance), whose origin the database derives from the calling role.
 
+## Notify contract
+
+A notification references a door only through `OpenDoorActionV1 {verb: "open_door", reference:
+DoorReferenceV1}`: valid on `send` and `insight` intents, alone and at most once, never on
+`approval_request`, `reply` or `react`, and refused under `render_links_inert`. A producer can
+never submit the delivered `open_link` form (`server_open_link_only`). Until the async resolver is
+wired into the sender and Messenger, the synchronous pass drops every door action and appends
+`[link not verified]`, so no door link is delivered. The delivered door output has provenance
+`vendor_door` and is rebuilt by the receiver from the reference alone.
+
 ## Rollback
 
 core_336 downgrade refuses while any door row exists. With the flag off nothing resolves a door.

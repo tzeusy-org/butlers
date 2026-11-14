@@ -675,6 +675,37 @@ class _ResolvedOpenLinkV1(BaseModel):
     provenance: Literal["dashboard"]
 
 
+class OpenDoorActionV1(BaseModel):
+    """A producer's request to link an owner-confirmed vendor door, by reference only.
+
+    Valid on ``send`` and ``insight`` notifications, at most one, and never on an approval
+    request. The server resolves it independently in the sender and in Messenger.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    verb: Literal["open_door"]
+    reference: DoorReferenceV1
+
+
+class _ResolvedDoorLinkV1(BaseModel):
+    """Private delivery output for a door; its fields are re-derived by the receiver."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    verb: Literal["open_link"]
+    reference: DoorReferenceV1
+    label: NonEmptyStr
+    url: NonEmptyStr
+    host: NonEmptyStr
+    provenance: Literal["vendor_door"]
+
+
+_DOOR_ACTION_TYPES = (OpenDoorActionV1, _ResolvedDoorLinkV1)
+# Intents that may carry a door action, and only a door action.
+_DOOR_ACTION_INTENTS = ("send", "insight")
+
+
 class ApprovalRequestActionV1(BaseModel):
     """One deterministic affordance on an owner approval-request notification."""
 
@@ -720,7 +751,13 @@ class NotifyRequestV1(BaseModel):
     # envelope only preserves the already-validated context across deferred
     # delivery so Messenger can validate it again against the flush-time target.
     decision_dossier: dict[str, Any] | None = None
-    actions: tuple[ApprovalRequestActionV1 | _ResolvedOpenLinkV1, ...] | None = None
+    actions: (
+        tuple[
+            ApprovalRequestActionV1 | _ResolvedOpenLinkV1 | OpenDoorActionV1 | _ResolvedDoorLinkV1,
+            ...,
+        ]
+        | None
+    ) = None
     recovery: ApprovalRecoveryV1 | None = None
     render_links_inert: bool = Field(default=False, strict=True)
 
@@ -809,11 +846,38 @@ class NotifyRequestV1(BaseModel):
         requires an explicit target and action affordances so that a request
         can never degrade into an unaddressed, non-interactive owner page.
         """
-        if self.actions and any(isinstance(a, _ResolvedOpenLinkV1) for a in self.actions):
+        if self.actions and any(
+            isinstance(a, (_ResolvedOpenLinkV1, _ResolvedDoorLinkV1)) for a in self.actions
+        ):
             if info.context is not _RESOLVED_LINK_CONTEXT:
                 raise PydanticCustomError(
                     "server_open_link_only", "open_link is server delivery output only.", {}
                 )
+        door_actions = [a for a in (self.actions or ()) if isinstance(a, _DOOR_ACTION_TYPES)]
+        if door_actions:
+            if self.delivery.intent not in _DOOR_ACTION_INTENTS:
+                raise PydanticCustomError(
+                    "door_action_intent",
+                    "a door action is only valid for send and insight intents.",
+                    {},
+                )
+            if len(door_actions) != len(self.actions or ()) or len(door_actions) > 1:
+                raise PydanticCustomError(
+                    "door_action_only",
+                    "a door action must be the only action, at most one per request.",
+                    {},
+                )
+            if self.render_links_inert:
+                raise PydanticCustomError(
+                    "door_action_inert", "a door action is not valid under inert links.", {}
+                )
+            if self.recovery is not None:
+                raise PydanticCustomError(
+                    "approval_recovery_intent_required",
+                    "recovery is only valid for approval_request intent.",
+                    {},
+                )
+            return self
         if self.delivery.intent != "approval_request":
             if self.actions is not None:
                 raise PydanticCustomError(
