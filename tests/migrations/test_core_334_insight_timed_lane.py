@@ -34,7 +34,7 @@ def _run(fn: str, installed: int) -> list[str]:
 
 def test_core_334_extends_the_current_head() -> None:
     module = load_migration(_PATH, "core_334")
-    assert (module.revision, module.down_revision) == ("core_334", "core_331")
+    assert (module.revision, module.down_revision) == ("core_334", "core_333")
 
 
 def test_upgrade_adds_the_lane_window_and_claim_without_grants() -> None:

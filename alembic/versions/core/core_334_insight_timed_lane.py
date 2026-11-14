@@ -1,7 +1,7 @@
 """Timed insight lane and a shared delivery claim (bu-jv1moa.8 PR-A).
 
 Revision ID: core_334
-Revises: core_331
+Revises: core_333
 Create Date: 2026-11-14 00:00:00.000000
 
 ``public.insight_candidates`` gains:
@@ -38,7 +38,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_334"
-down_revision = "core_331"
+down_revision = "core_333"
 branch_labels = None
 depends_on = None
 
