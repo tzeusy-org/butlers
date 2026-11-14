@@ -177,6 +177,22 @@ async def test_finance_summary_obligations_and_records(projected, primary, reade
                     status,
                 )
             )
+        # A stored 'overdue' bill is unpaid (kills a `status = 'pending'` mutant); a bill due
+        # exactly at the horizon end is in, end+1 is out (kills a `<= end + 1` mutant).
+        for payee, status, offset in (
+            ("Stored Overdue", "overdue", -5),
+            ("Edge In", "pending", 30),
+            ("Edge Out", "pending", 31),
+        ):
+            bills.append(
+                await primary.fetchval(
+                    "INSERT INTO finance.bills(payee,amount,currency,due_date,frequency,status) "
+                    "VALUES ($1,3,'SGD',$2,'monthly',$3) RETURNING id",
+                    payee,
+                    _day(offset),
+                    status,
+                )
+            )
         bills.append(
             await primary.fetchval(
                 "INSERT INTO finance.bills(payee,amount,currency,due_date,frequency,status) "
@@ -253,13 +269,16 @@ async def test_finance_summary_obligations_and_records(projected, primary, reade
         obligations = await finance_obligations(reader, context, {"horizon_days": 30})
         assert [(i["kind"], i["payee"], i["amount"]) for i in obligations["items"]] == [
             ("bill", "Late Pending", "7.00"),
+            ("bill", "Stored Overdue", "3.00"),
             ("bill", "Landlord", "1200.50"),
             ("subscription", "Soon Stream", "9.99"),
+            ("bill", "Edge In", "3.00"),
         ]
+        assert "Edge Out" not in json.dumps(obligations)
         assert "Late Paid" not in json.dumps(obligations)
         assert "Far Stream" not in json.dumps(obligations)
         assert "Paid Up" not in json.dumps(obligations)
-        bill = obligations["items"][1]
+        bill = obligations["items"][2]
         assert bill["next_due"] == _day(10).isoformat() and bill["cancel_by"] is None
         assert bill["source"]["uri"] == f"butlers://finance/bills/{bills[0]}"
         wide = await finance_obligations(reader, context, {"horizon_days": 90})

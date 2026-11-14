@@ -225,9 +225,9 @@ async def finance_obligations(
 ) -> dict[str, Any]:
     """Unpaid bills and active subscriptions falling due within ``horizon_days`` of today (UTC).
 
-    Every unpaid bill due on or before the horizon is included, past-due ones too: the
-    ``overdue`` status is derived on read in the finance tools and is not reliably stored, and
-    the schema's only other status is ``paid``. A field the item's table lacks is ``null``.
+    Every bill whose status is not ``paid`` (``pending`` or a stored ``overdue``) and whose due
+    date is on or before ``today + horizon_days`` is included, past-due ones too. A field the
+    item's table lacks is ``null``.
     """
     args = Arguments(arguments, {"horizon_days"})
     horizon = args.integer("horizon_days", low=1, high=90)
