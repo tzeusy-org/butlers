@@ -1841,14 +1841,13 @@ DROP SUBSCRIPTION butlers_public_sub;
         PERFORM pg_drop_replication_slot(item.slot_name);
     END LOOP;""")
     sql += "\\endif\n\\connect butlers\n"
-    sql += _do(
-        """IF NOT EXISTS(SELECT 1 FROM pg_replication_slots WHERE
-        slot_name='butlers_public_sub') THEN
-    PERFORM pg_create_logical_replication_slot('butlers_public_sub',
-        'pgoutput'); END IF;
-"""
-        + PUBLISHER_GRANTS_SQL
-    )
+    # Slot creation inside PL/pgSQL (DO/function) fails intermittently while
+    # concurrent catalog-changing transactions are decoded ("snapshot reference
+    # is not owned by resource owner TopTransaction"); keep it a top-level statement.
+    sql += """SELECT pg_create_logical_replication_slot('butlers_public_sub',
+        'pgoutput') WHERE NOT EXISTS(SELECT 1 FROM pg_replication_slots WHERE
+        slot_name='butlers_public_sub');\n"""
+    sql += _do(PUBLISHER_GRANTS_SQL)
     sql += "\\connect butlers_public\nSET ROLE mcp_projection_owner;\n"
     sql += """SELECT set_config('butlers.e_old_canonical', :'e_old_canonical',
         false);\n"""

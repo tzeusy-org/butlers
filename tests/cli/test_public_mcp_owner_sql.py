@@ -73,3 +73,13 @@ def test_subscription_drop_waits_for_workers_to_drain_after_disable():
     detach = program.index("SET (slot_name=NONE)", disable)
     drop = program.index("DROP SUBSCRIPTION butlers_public_sub;", disable)
     assert disable < drain < detach < drop
+
+
+def test_logical_slot_is_created_by_a_top_level_statement_not_a_do_block():
+    """PL/pgSQL slot creation fails intermittently (bu-y66o00.33); keep it top-level SELECT."""
+    program = render_owner_program(load_manifest())
+    lines = [ln for ln in program.splitlines() if "pg_create_logical_replication_slot" in ln]
+    assert len(lines) == 1
+    assert lines[0].strip().startswith("SELECT pg_create_logical_replication_slot(")
+    assert "PERFORM pg_create_logical" not in program
+    assert "DO $mcp$" not in lines[0]
