@@ -1690,6 +1690,16 @@ async def _run_home_safety_sentinel_job(
     return await run_safety_sentinel(pool, job_args)
 
 
+async def _run_home_arrival_watch_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Queue one read-only timed arrival card per confirmed enter edge (dark, unscheduled)."""
+    from butlers.jobs.home_arrival import run_arrival_watch
+
+    return await run_arrival_watch(pool, job_args)
+
+
 async def _run_home_departure_watch_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1720,6 +1730,7 @@ _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "atmosphere_preconditioning": _run_home_atmosphere_preconditioning_job,
     "home_safety_sentinel": _run_home_safety_sentinel_job,
     "home_departure_watch": _run_home_departure_watch_job,
+    "home_arrival_watch": _run_home_arrival_watch_job,
     "home_away_safety": _run_home_away_safety_job,
 }
 

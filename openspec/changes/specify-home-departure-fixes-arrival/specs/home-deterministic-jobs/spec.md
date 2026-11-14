@@ -67,7 +67,7 @@ Scope: v1-mandatory
 
 ### Requirement: Arrival card of what changed while away
 
-The Home butler SHALL queue at most one read-only arrival card per confirmed, non-late `owner.place` enter edge that follows a leave edge by at least 30 minutes and for which a departure card, a parked fix or a Home condition existed, through the Switchboard timed lane (RFC 0011 Amendment 8), with dedup key `home:arrival:<edge id>` and a premise probe `("home", "arrival_card_current")` carrying the edge id and its `confirmed_at`. The card SHALL list, by the owner's labels only, the Home conditions that opened or resolved during the absence with their reasons, the departure-card items still not secure, each fix with its resolver status, and the stretches in which the Home Assistant source was not healthy. It SHALL NOT be inferred from Home Assistant history, SHALL NOT contain `friendly_name` or any coordinate, and SHALL contain no button, prepared action or Home Assistant call. An absence with a departure card whose items all stayed secure SHALL say that nothing Home tracks changed and that Home tracks only what the owner declared. The job SHALL run with no model in the loop and SHALL stay dark behind its own flag, off by default.
+The Home butler SHALL queue at most one read-only arrival card per confirmed, non-late `owner.place` enter edge that follows a leave edge by at least 30 minutes and for which a departure card, a parked fix or a Home condition existed, through the Switchboard timed lane (RFC 0011 Amendment 8), with dedup key `home:arrival:<edge id>` and a premise probe `("home", "arrival_card_current")` carrying the edge id and its `confirmed_at`. The card SHALL list, by the owner's labels only, the Home conditions that opened or resolved during the absence with their reasons, the departure-card items still not secure, each fix with its resolver status, and a fixed line when the Home Assistant source recorded an error during the absence (exact unhealthy stretches are deferred). It SHALL NOT be inferred from Home Assistant history, SHALL NOT contain `friendly_name` or any coordinate, and SHALL contain no button, prepared action or Home Assistant call. "Had a departure card" SHALL mean a card was actually queued; an all-secure absence that never queued one SHALL queue no arrival card. An absence whose queued departure card items all stayed secure, with no source error, SHALL say that everything on the departure card is secure now and that Home tracks only what the owner declared. The card is delivered as a confirmed presence edge, so the lane's quiet hours yield to it for 15 minutes while `dnd` and `sleeping` still hold it. Lane-level feedback actions are not card buttons. The job SHALL run with no model in the loop and SHALL stay dark behind its own flag, off by default.
 
 ID: REQ-home-deterministic-jobs-010
 Source: RFC 0011 Amendment 8; bu-jv1moa.29
@@ -96,8 +96,8 @@ Scope: v1-mandatory
 
 #### Scenario: A source outage is visible
 
-- **WHEN** the Home Assistant source lease was missing, in error or expired during the absence
-- **THEN** the card SHALL say Home could not see for that stretch and SHALL NOT call the home secure
+- **WHEN** the Home Assistant source recorded an error during the absence, even if it has recovered
+- **THEN** the card SHALL say Home could not see for part of the time away and SHALL NOT send the quiet secure card
 
 #### Scenario: Holds and window follow the timed lane
 

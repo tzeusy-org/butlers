@@ -84,6 +84,20 @@ async def _home_departure_still_open(pool: asyncpg.Pool, args: Mapping[str, Any]
     return None if still_open is None else bool(still_open)
 
 
+async def _home_arrival_card_current(pool: asyncpg.Pool, args: Mapping[str, Any]) -> bool | None:
+    """True while the arrival card is open and unchanged; False once closed or changed.
+
+    None when the edge id is malformed or the definer answers unknown (no card, or no recheck
+    within three minutes): the timed lane holds an unknown card. bu-jv1moa.116.
+    """
+    try:
+        edge_event_id = uuid.UUID(str(args.get("edge_event_id")))
+    except ValueError:
+        return None
+    current = await pool.fetchval("SELECT public.resolve_home_arrival($1)", edge_event_id)
+    return None if current is None else bool(current)
+
+
 async def _home_fix_status_unchanged(pool: asyncpg.Pool, args: Mapping[str, Any]) -> bool | None:
     """True while a parked Home action still has the status a card showed; False once changed.
 
@@ -108,6 +122,7 @@ PREMISE_PROBES: dict[tuple[str, str], ProbeFn] = {
     ("finance", "bill_still_pending"): _finance_bill_still_pending,
     ("health", "medication_refill_still_due"): _health_medication_refill_still_due,
     ("home", "departure_still_open"): _home_departure_still_open,
+    ("home", "arrival_card_current"): _home_arrival_card_current,
     ("home", "fix_status_unchanged"): _home_fix_status_unchanged,
 }
 
