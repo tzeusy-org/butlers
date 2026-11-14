@@ -640,9 +640,14 @@ async def test_verify_all_rejects_concurrent_arrival_while_run_is_in_flight(app,
         base_url="http://test",
         headers={"X-API-Key": "owner-key"},
     ) as client:
+        # FastAPI builds every route's dependency/validation state on the first request through
+        # an app. That one-off cost (seconds on a loaded runner) must not count against the wait
+        # below, so pay it here with a request that matches no handler.
+        await client.get("/api/settings/models/verify-all")
         first_task = asyncio.create_task(client.post("/api/settings/models/verify-all"))
         try:
-            await asyncio.wait_for(started.wait(), timeout=1)
+            # A hang guard, not a latency assertion: the handler blocks on `release`.
+            await asyncio.wait_for(started.wait(), timeout=30)
             concurrent = await client.post("/api/settings/models/verify-all")
         finally:
             release.set()
