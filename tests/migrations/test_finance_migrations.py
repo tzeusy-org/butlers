@@ -1175,6 +1175,20 @@ class TestVendorDoorBackfillMigration:
         assert [r["status"] for r in rows] == ["rejected"]
 
     @pytest.mark.integration
+    async def test_an_owner_link_wins_a_template_shared_with_an_extracted_one(
+        self, door_pool: asyncpg.Pool
+    ) -> None:
+        pool = door_pool
+        await _sub(pool, "X1", "https://shop.example.com/cancel", "extracted")
+        owner = await _sub(pool, "X2", "https://shop.example.com/cancel?a=1", "owner")
+        await _sub(pool, "X3", "https://shop.example.com/cancel#z", "extracted")
+        await _apply(pool, load_migration(_MIGRATION_021, "finance_021"), "upgrade")
+        rows = await pool.fetch("SELECT status, lineage FROM public.vendor_doors")
+        assert [(r["status"], r["lineage"]["subscription_id"]) for r in rows] == [
+            ("confirmed", owner)
+        ]
+
+    @pytest.mark.integration
     async def test_no_owner_entity_is_a_no_op(self, db) -> None:
         pool = await _finance_at(db, "finance_020")
         await _sub(pool, "C", "https://other.example.org/cancel", "extracted")

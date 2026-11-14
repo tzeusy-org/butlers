@@ -78,6 +78,9 @@ BEGIN
            SELECT 1 FROM public.vendor_doors AS d
             WHERE d.lineage ->> 'subscription_id' = c.id::text
               AND d.lineage ->> 'column' = 'cancellation_url')
+     -- Two subscriptions can share a template and only one row may be live for it, so the
+     -- first row wins: an owner-set, rule-clean link must never lose to an extracted one.
+     ORDER BY c.is_owner DESC, (c.problem IS NULL) DESC, c.id
     ON CONFLICT (owner_entity_id, kind, template) WHERE status IN ('proposed', 'confirmed')
     DO NOTHING;
 END $$

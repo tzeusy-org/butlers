@@ -1510,6 +1510,28 @@ class TestSubscriptionFieldProvenance:
             ("https://vendor.example/cancel", result["id"])
         ]
 
+    async def test_a_failing_proposal_cannot_lose_the_subscription_write(
+        self, finance_pool, monkeypatch
+    ):
+        """The proposer runs in a savepoint: its database error must not abort the owning
+        transaction that holds the subscription row."""
+        from butlers.core import vendor_door_proposer
+        from butlers.core import vendor_doors as flag
+
+        monkeypatch.setattr(flag, "VENDOR_DOORS_LIVE", True)
+        monkeypatch.setattr(vendor_door_proposer, "FINANCE_ROLE", "no_such_role_for_door_test")
+        self._as_routed_gmail(monkeypatch)
+
+        result = await self._track(finance_pool, cancellation_url="https://vendor.example/cancel")
+
+        stored = await finance_pool.fetchrow(
+            "SELECT cancellation_url, cancellation_url_source FROM subscriptions WHERE id=$1::uuid",
+            result["id"],
+        )
+        assert stored is not None
+        assert stored["cancellation_url"] == "https://vendor.example/cancel"
+        assert stored["cancellation_url_source"] == "extracted"
+
     async def test_owner_write_and_missing_link_propose_nothing(self, finance_pool, monkeypatch):
         calls = self._record_proposals(monkeypatch)
         with monkeypatch.context() as owner_context:
