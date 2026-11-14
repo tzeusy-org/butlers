@@ -23,6 +23,10 @@ dispatch packet for bu-jv1moa.11.
   `tests/connectors/test_telegram_user_client.py` with mixed owner, counterparty, forwarded and
   reply entries; assert facts and that `text` never inlines the quoted message.
 
+- [x] 1.4 WhatsApp: `payload.raw.peer_identity` for private chats only (bu-jv1moa.93), tested for
+  private, mapped LID, group and malformed JIDs. The bu-jv1moa.11 counterparty derivation
+  consumes it when history lacks a non-owner sender; that consumption is a separate slice.
+
 ## 2. Switchboard projection (REQ-butler-switchboard-011)
 
 - [ ] 2.1 Verify the `[Unknown]` caller-authentication seam: bind the projection on the trusted
