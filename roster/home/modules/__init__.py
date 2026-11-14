@@ -1896,6 +1896,21 @@ class HomeAssistantModule(Module):
             payload["target"] = target
 
         if approval_context is not None:
+            # A departure fix replays only while the leave edge it was parked for is still the
+            # latest confirmed owner.place edge (REQ-home-deterministic-jobs-009). Refused here,
+            # before any receipt or request: nothing is sent and the row stays approved.
+            from butlers.jobs.home_departure_fixes import replay_refusal
+
+            refused = await replay_refusal(pool, approval_context.action_id, now=datetime.now(UTC))
+            if refused is not None:
+                return {
+                    "status": "not_run",
+                    "risk": risk.value,
+                    "approval_id": str(approval_context.action_id),
+                    "error": "The departure fix was not run: the owner is no longer away "
+                    "for the departure it was approved for, or Home could not confirm it.",
+                    "reason": refused,
+                }
             prior_effect_possible = await pool.fetchrow(
                 "SELECT attempt_id, status, result, observed_state, failure_reason "
                 "FROM ha_command_log "

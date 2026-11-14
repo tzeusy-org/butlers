@@ -1035,6 +1035,7 @@ async def _registered_actuation(mock_mcp, monkeypatch, args, *, units=None):
     pool = MagicMock()
     pool.execute = AsyncMock(return_value="UPDATE 1")
     pool.fetchrow = AsyncMock(return_value=None)
+    pool.fetchval = AsyncMock(return_value=None)  # not a departure fix: the replay gate passes
     db = MagicMock()
     db.pool = pool
     await module.register_tools(mock_mcp, {}, db, "home")
@@ -1465,6 +1466,99 @@ def _authorize_actuation(args, *, tool="ha_call_service"):
             authorized_task=task,
         )
     )
+
+
+async def test_an_approved_departure_fix_whose_premise_ended_dispatches_nothing(
+    mock_mcp, monkeypatch
+):
+    key = "home:departure-fix:11111111-1111-1111-1111-111111111111:light.fixture"
+    args = {
+        "domain": "light",
+        "service": "turn_off",
+        "target": {"entity_id": "light.fixture"},
+        "data": None,
+    }
+    for premise, expected in [("owner_returned", "premise_owner_returned"), ("unknown", None)]:
+        case = await _registered_actuation(mock_mcp, monkeypatch, args)
+        case.pool.fetchval = AsyncMock(return_value=key)
+        monkeypatch.setattr(
+            "butlers.jobs.home_departure_fixes.away_premise", AsyncMock(return_value=premise)
+        )
+        token = _authorize_actuation(args)
+        try:
+            outcome = await case.tool(**args)
+        finally:
+            reset_approval_execution_context(token)
+
+        assert outcome["status"] == "not_run"
+        assert outcome["reason"] == (expected or "premise_unknown")
+        assert "undone" not in outcome["error"] and "reverted" not in outcome["error"]
+        case.client.post.assert_not_awaited()
+        case.pool.execute.assert_not_awaited()  # no receipt row was started
+        case.park.assert_not_awaited()
+
+
+async def test_the_fix_gate_runs_after_argument_binding_and_before_any_receipt(
+    mock_mcp, monkeypatch
+):
+    key = "home:departure-fix:11111111-1111-1111-1111-111111111111:lock.fixture"
+    bound = {
+        "domain": "lock",
+        "service": "lock",
+        "target": {"entity_id": "lock.fixture"},
+        "data": None,
+    }
+    case = await _registered_actuation(mock_mcp, monkeypatch, bound)
+    case.pool.fetchval = AsyncMock(return_value=key)
+    gate = AsyncMock(return_value="premise_owner_returned")
+    monkeypatch.setattr("butlers.jobs.home_departure_fixes.replay_refusal", gate)
+
+    # An authorization bound to different arguments is no approval context at all: the call
+    # parks like any unapproved one and the fix gate is never consulted.
+    token = _authorize_actuation({**bound, "service": "unlock"})
+    try:
+        parked = await case.tool(**bound)
+    finally:
+        reset_approval_execution_context(token)
+    assert parked["status"] == "pending_approval"
+    gate.assert_not_awaited()
+
+    # With the exact binding the gate runs and its refusal precedes every receipt write.
+    token = _authorize_actuation(bound)
+    try:
+        refused = await case.tool(**bound)
+    finally:
+        reset_approval_execution_context(token)
+    gate.assert_awaited_once()
+    assert refused["status"] == "not_run"
+    case.pool.execute.assert_not_awaited()
+    case.pool.fetchrow.assert_not_awaited()  # not even the prior-receipt lookup
+    case.client.post.assert_not_awaited()
+
+
+async def test_an_approved_departure_fix_whose_premise_holds_dispatches_as_approved(
+    mock_mcp, monkeypatch
+):
+    key = "home:departure-fix:11111111-1111-1111-1111-111111111111:light.fixture"
+    args = {
+        "domain": "light",
+        "service": "turn_off",
+        "target": {"entity_id": "light.fixture"},
+        "data": None,
+    }
+    case = await _registered_actuation(mock_mcp, monkeypatch, args)
+    case.pool.fetchval = AsyncMock(return_value=key)
+    monkeypatch.setattr(
+        "butlers.jobs.home_departure_fixes.away_premise", AsyncMock(return_value="holds")
+    )
+    token = _authorize_actuation(args)
+    try:
+        outcome = await case.tool(**args)
+    finally:
+        reset_approval_execution_context(token)
+
+    assert outcome["status"] != "not_run"
+    case.client.post.assert_awaited_once()
 
 
 async def test_approved_dual_target_sources_are_not_silently_merged(mock_mcp, monkeypatch):

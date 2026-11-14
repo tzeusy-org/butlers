@@ -359,6 +359,30 @@ class DepartureWatchUpsertRequest(BaseModel):
         return list(dict.fromkeys(value))
 
 
+class DepartureFixEntry(BaseModel):
+    """The one exact call declared for a watched item (``home.departure_fixes``)."""
+
+    entity_id: str
+    domain: str
+    service: str
+    target_entity_id: str
+    data: dict[str, Any]
+    risk: str
+    updated_at: str | None = None
+
+
+class DepartureFixUpsertRequest(BaseModel):
+    """Declare the exact fix for one watched item; every field is the owner's."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entity_id: str = Field(..., pattern=r"^[a-z_]+\.[a-z0-9_]+$", max_length=255)
+    domain: str = Field(..., pattern=r"^[a-z0-9_]{1,64}$")
+    service: str = Field(..., pattern=r"^[a-z0-9_]{1,64}$")
+    target_entity_id: str = Field(..., pattern=r"^[a-z0-9_]+\.[a-z0-9_]+$", max_length=255)
+    data: dict[str, Any] = Field(default_factory=dict, max_length=8)
+
+
 # ---------------------------------------------------------------------------
 # Away safety (home_007; bu-jv1moa.87, REQ-home-deterministic-jobs-002)
 # ---------------------------------------------------------------------------

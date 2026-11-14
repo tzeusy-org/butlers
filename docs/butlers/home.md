@@ -161,13 +161,42 @@ entity, the label to use and the states that count as secure (`off`, `closed`, `
   closes as `withdrawn_changed`, which records why it never arrived but not what it said.
 
 The card names things only by the owner's labels, never Home Assistant's `friendly_name`, and has
-no buttons, no Home Assistant service call and no prepared action. Per-item fixes, an arrival card
-and a prepared-action status resolver are specified, not built, in
+no buttons and no Home Assistant service call of its own. Per-item fixes (below), an arrival card
+and a prepared-action status resolver are specified in
 [specify-home-departure-fixes-arrival](../../openspec/changes/specify-home-departure-fixes-arrival/proposal.md);
 an immediate lane is not specified and waits for exact-text owner adoption (bu-jv1moa.29). It is dark: `DEPARTURE_CARD_LIVE` is off and no roster schedules
 the job; activation turns it on with the timed insight lane, the perception reader login and the
 presence reducer. Requirement: `home-deterministic-jobs` spec delta in
 `openspec/changes/insight-timed-lane/`, "Home Departure Card Job".
+
+### Departure fixes (dark)
+
+The owner can declare, per watched item, the one exact call that would fix it (bu-jv1moa.115,
+REQ-home-deterministic-jobs-008 and -009). A declaration lives in `home.departure_fixes` (home_009):
+`(domain, service)`, one explicit target entity and allowed `data`, for an entity already in
+`home.departure_watch`. It is written only by the owner-only `GET/PUT /api/home/departure-fixes` and
+`DELETE /api/home/departure-fixes/{entity_id}`, never by conversation or tool (decided D7). A route
+refuses, with one fixed code and no echoed value, an unwatched entity, a non-explicit target, a
+service outside the allowlist in `src/butlers/jobs/home_departure_fixes.py` and any `data` key a
+pair does not allow.
+
+- **Parking.** When the departure job queues a card it parks one `origin='prepared'` approval per
+  listed item that has a declaration (`home:departure-fix:<leave edge id>:<entity>`), carrying the
+  stored call unchanged. The job never calls Home Assistant and no fix runs without an owner
+  approval, whatever its RFC 0028 class (decided D5); a `protected` fix says so on its card line.
+  There is no "secure all": each item has its own action, approval and receipt.
+- **Dispatch.** After an owner approves it on the dashboard, the approvals executor replays it
+  through `ha_call_service`. Before any receipt or request that path refuses unless the leave edge
+  the fix was parked for is still the latest confirmed, unretracted `owner.place` edge, so leave,
+  return, leave again dispatches nothing. An unreadable timeline refuses too. A refused replay
+  leaves the row `approved` (status `approved_not_run`) with no receipt.
+- **Cancellation.** Each run rejects a still-pending fix as `system:home-departure-fix` with reason
+  `owner_returned`, `premise_retracted`, `already_secure` or `watch_removed`; its status then reads
+  `cancelled`. An unreadable timeline leaves it pending. A receipt is never edited, and no text
+  says a fix was undone, reverted or restored.
+
+It is dark: `DEPARTURE_FIX_LIVE` is off and nothing is scheduled. The owner declares fixes in the
+Home, Devices, "Departure fixes" panel; approval happens on Approvals.
 
 ## Away safety (dark)
 

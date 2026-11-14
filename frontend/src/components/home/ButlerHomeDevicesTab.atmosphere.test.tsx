@@ -32,6 +32,18 @@ vi.mock("recharts", () => ({
 
 vi.mock("@/hooks/use-home", () => homeMocks);
 
+// Departure fixes are not under test here; a failed read would add a second role="alert".
+vi.mock("@/hooks/use-home-departure-fixes.ts", () => {
+  const loading = { isLoading: true, isError: false, data: undefined, refetch: () => undefined };
+  const idle = { mutate: () => undefined, isPending: false, isError: false };
+  return {
+    useHomeDepartureWatch: () => loading,
+    useHomeDepartureFixes: () => loading,
+    useSaveDepartureFix: () => idle,
+    useDeleteDepartureFix: () => idle,
+  };
+});
+
 import ButlerHomeDevicesTab from "./ButlerHomeDevicesTab.tsx";
 
 const unconfigured: HomeAtmosphereCurrentResponse = {
