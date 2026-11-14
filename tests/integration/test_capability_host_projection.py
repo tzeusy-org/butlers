@@ -178,17 +178,17 @@ def _code(result: dict) -> str | None:
 
 
 @pytest.fixture
-async def pool(projected):
+async def reader(projected):
     topology, _ = projected
-    pool = await _pool(topology)
+    reader = await _pool(topology)
     try:
-        yield pool
+        yield reader
     finally:
-        await pool.close()
+        await reader.close()
 
 
-async def test_the_host_serves_production_readers_as_the_public_role(projected, pool, tmp_path):
-    harness = Harness(tmp_path, pool)
+async def test_the_host_serves_production_readers_as_the_public_role(projected, reader, tmp_path):
+    harness = Harness(tmp_path, reader)
     described = await harness.call("describe")
     assert _code(described) is None
     assert described["structuredContent"]["manifest_digest"] == load_manifest().digest
@@ -198,9 +198,9 @@ async def test_the_host_serves_production_readers_as_the_public_role(projected, 
     assert json.loads(harness.lines[-1])["outcome"] == "ok"
 
 
-async def test_a_replicated_switch_refuses_its_domain(projected, pool, tmp_path):
+async def test_a_replicated_switch_refuses_its_domain(projected, reader, tmp_path):
     topology, _ = projected
-    harness = Harness(tmp_path, pool)
+    harness = Harness(tmp_path, reader)
     try:
         with topology.engine.begin() as conn:
             conn.execute(
@@ -224,8 +224,8 @@ async def test_a_replicated_switch_refuses_its_domain(projected, pool, tmp_path)
         _barrier(projected)
 
 
-async def test_break_glass_drops_a_domain_from_timeline(projected, pool, tmp_path):
-    harness = Harness(tmp_path, pool)
+async def test_break_glass_drops_a_domain_from_timeline(projected, reader, tmp_path):
+    harness = Harness(tmp_path, reader)
     (tmp_path / "switches/disabled_domains").write_text("travel\n")
     result = await harness.call("timeline", {"start": "2026-01-01", "end": "2026-02-01"})
     assert _code(result) is None
@@ -235,9 +235,9 @@ async def test_break_glass_drops_a_domain_from_timeline(projected, pool, tmp_pat
     assert _code(await harness.call("trips", {})) == "domain_disabled"
 
 
-async def test_a_changed_applied_digest_is_pending_then_serves_again(projected, pool, tmp_path):
+async def test_a_changed_applied_digest_is_pending_then_serves_again(projected, reader, tmp_path):
     _, projection = projected
-    harness = Harness(tmp_path, pool)
+    harness = Harness(tmp_path, reader)
     original = _scalar(projection, "SELECT digest FROM mcp_local.manifest_applied")
     try:
         with projection.begin() as conn:
@@ -252,9 +252,9 @@ async def test_a_changed_applied_digest_is_pending_then_serves_again(projected, 
     assert _code(await harness.call("entity_lookup", {"name": "x"})) is None
 
 
-async def test_a_disabled_subscription_is_never_a_complete_copy(projected, pool, tmp_path):
+async def test_a_disabled_subscription_is_never_a_complete_copy(projected, reader, tmp_path):
     _, projection = projected
-    harness = Harness(tmp_path, pool)
+    harness = Harness(tmp_path, reader)
     try:
         with projection.begin() as conn:
             conn.exec_driver_sql("ALTER SUBSCRIPTION butlers_public_sub DISABLE")
@@ -266,10 +266,10 @@ async def test_a_disabled_subscription_is_never_a_complete_copy(projected, pool,
         _barrier(projected)
 
 
-async def test_deploy_skew_refuses_every_tool_but_describe(projected, pool, tmp_path):
+async def test_deploy_skew_refuses_every_tool_but_describe(projected, reader, tmp_path):
     shipped = load_manifest()
     other = Manifest(tuple(t for t in shipped.tables if t.source != "travel.trips"))
-    harness = Harness(tmp_path, pool, manifest=other)
+    harness = Harness(tmp_path, reader, manifest=other)
     assert _code(await harness.call("entity_lookup", {"name": "x"})) == (
         "projection_version_mismatch"
     )
@@ -302,7 +302,7 @@ async def test_an_unreachable_projection_is_unavailable(tmp_path):
         await dead.close()
 
 
-async def test_a_canary_in_the_projection_latches_on_the_probe(projected, pool, tmp_path):
+async def test_a_canary_in_the_projection_latches_on_the_probe(projected, reader, tmp_path):
     topology, projection = projected
     with topology.engine.begin() as conn:
         person = conn.execute(
@@ -320,7 +320,7 @@ async def test_a_canary_in_the_projection_latches_on_the_probe(projected, pool, 
                 {"i": str(person)},
             )
         )
-        harness = Harness(tmp_path, pool)
+        harness = Harness(tmp_path, reader)
         assert _code(await harness.call("entity_lookup", {"name": "x"})) == "blocked"
         assert harness.host.latched and harness.host.metrics.get("canary_hits") == 1
         assert _code(await harness.call("describe")) is None
@@ -329,5 +329,5 @@ async def test_a_canary_in_the_projection_latches_on_the_probe(projected, pool, 
             conn.execute(text("DELETE FROM public.entities WHERE id=:i"), {"i": person})
         _barrier(projected)
     (tmp_path / "restarted").mkdir()
-    restarted = Harness(tmp_path / "restarted", pool)
+    restarted = Harness(tmp_path / "restarted", reader)
     assert _code(await restarted.call("entity_lookup", {"name": "x"})) is None
