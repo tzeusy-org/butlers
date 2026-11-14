@@ -223,7 +223,9 @@ counterparty identity. For each one the job:
    is neither the owner nor unidentified;
 3. runs `detect_commitment` with `now` set to the message's event time in the owner's timezone,
    so relative deadlines anchor to the message, not to processing time;
-4. refuses an action longer than 120 characters (it is never truncated);
+4. refuses an action longer than 120 characters, or a detector marker longer than 32 (the
+   relay form "I told <name> I'll" carries a name); neither is ever truncated, and rel_042
+   CHECKs both bounds;
 5. writes nothing when an active commitment or a live candidate already has the fingerprint.
 
 The cursor (`state` key `commitment_candidates:cursor`, the projection's

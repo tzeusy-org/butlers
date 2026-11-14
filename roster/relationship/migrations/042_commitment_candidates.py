@@ -76,7 +76,7 @@ def upgrade_statements() -> tuple[str, ...]:
                 CHECK (char_length(action_description) BETWEEN 1 AND 120),
             deadline TIMESTAMPTZ,
             confidence DOUBLE PRECISION CHECK (confidence > 0 AND confidence <= 1),
-            marker TEXT,
+            marker TEXT CHECK (char_length(marker) BETWEEN 1 AND 32),
             fingerprint TEXT,
             channel TEXT CHECK (channel IN ('whatsapp_user_client','telegram_user_client')),
             evidence_ref JSONB,

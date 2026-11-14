@@ -46,6 +46,9 @@ COMMITMENT_SOURCE: Final = "relationship:commitment"
 DIRECTION: Final = "owner_to_other"
 CHANNELS: Final = ("whatsapp_user_client", "telegram_user_client")
 MAX_ACTION_CHARS: Final = 120
+#: The longest plain detector marker is 13 characters ("I have got to"); the bound
+#: leaves room for the relay form with a short name, and rel_042 enforces it.
+MAX_MARKER_CHARS: Final = 32
 HORIZON: Final = timedelta(days=14)
 CURSOR_KEY: Final = "commitment_candidates:cursor"
 #: Pages read per run. The 14-day floor bounds catch-up; the next run continues.
@@ -174,6 +177,11 @@ async def produce_candidate(
     action = signal.action_description
     if not action or len(action) > MAX_ACTION_CHARS:
         return "action_too_long"
+    if not signal.marker or len(signal.marker) > MAX_MARKER_CHARS:
+        # The relay form ("I told <name> I'll") carries a name; rel_042 refuses a
+        # marker over the bound, so the span is refused here rather than poisoning
+        # the page with a CHECK failure.
+        return "marker_too_long"
     fingerprint = commitment_fingerprint(
         source=COMMITMENT_SOURCE,
         counterparty_entity_id=str(contact.entity_id),
@@ -245,6 +253,12 @@ async def scan(pool: asyncpg.Pool, *, read_spans: SpanReader, live: bool) -> dic
     The cursor is written only after a page's candidates are committed, so a crash
     re-reads that page and the unique keys make the replay a no-op. While not live
     no span is read and the cursor stays where it is.
+
+    Poison span (note for activation): any database or resolver failure on one span
+    stops the run without moving the cursor, so a span that fails every time blocks
+    every later span until it falls behind the projection's 14-day floor. The run
+    reports it only as a failed run. Known content limits (action, marker) are
+    refused per span before any write, so they cannot poison a page.
     """
     result: dict[str, Any] = {**await lapse_and_purge(pool), "outcomes": {}}
     if not live:

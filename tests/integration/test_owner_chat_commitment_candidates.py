@@ -364,8 +364,22 @@ CONTENT_COLUMNS = (
            VALUES (repeat('d', 64), 'pending', 'promise', 'owner_to_other', gen_random_uuid(),
                    repeat('x', 121), 0.9, 'm', 'f', 'whatsapp_user_client', '{}',
                    'untrusted_origin', now(), now() + interval '1 day')""",
+        # The marker is at most 32 characters: no message text beyond the action.
+        """INSERT INTO relationship.commitment_candidates (
+            source_key, state, kind, direction, counterparty_entity_id, action_description,
+            confidence, marker, fingerprint, channel, evidence_ref, taint, event_time, lapse_at)
+           VALUES (repeat('d', 64), 'pending', 'promise', 'owner_to_other', gen_random_uuid(),
+                   'x', 0.9, repeat('m', 33), 'f', 'whatsapp_user_client', '{}',
+                   'untrusted_origin', now(), now() + interval '1 day')""",
     ],
-    ids=["terminal-content", "terminal-time", "tracked-fingerprint", "live-content", "long"],
+    ids=[
+        "terminal-content",
+        "terminal-time",
+        "tracked-fingerprint",
+        "live-content",
+        "long",
+        "long-marker",
+    ],
 )
 async def test_the_store_refuses_content_on_tombstones_and_malformed_rows(
     rel_pool, statement: str

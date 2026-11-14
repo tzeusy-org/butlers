@@ -237,6 +237,26 @@ async def test_an_action_of_121_characters_is_refused(world) -> None:
     assert pool.inserts == []
 
 
+@pytest.mark.parametrize(
+    ("text", "outcome"),
+    [
+        # Marker "I told Maximilian Wellington I'll": 33 characters.
+        ("I told Maximilian Wellington I'll send the deck", "marker_too_long"),
+        # Marker "I told Maximilian Wellingtn I'll": exactly 32.
+        ("I told Maximilian Wellingtn I'll send the deck", "created"),
+    ],
+    ids=["33", "32"],
+)
+async def test_a_marker_over_32_characters_is_refused_not_stored(
+    world, text: str, outcome: str
+) -> None:
+    """The relay form's marker carries a name; it is never stored past the CHECK bound."""
+    pool = _Pool()
+
+    assert await _produce(pool, _span(text=text)) == outcome
+    assert len(pool.inserts) == (outcome == "created")
+
+
 async def test_an_action_of_exactly_120_characters_is_proposed(world) -> None:
     pool = _Pool()
     action = "send you " + "x" * 111
