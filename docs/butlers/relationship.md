@@ -223,9 +223,11 @@ counterparty identity. For each one the job:
    is neither the owner nor unidentified;
 3. runs `detect_commitment` with `now` set to the message's event time in the owner's timezone,
    so relative deadlines anchor to the message, not to processing time;
-4. refuses an action longer than 120 characters, or a detector marker longer than 32 (the
-   relay form "I told <name> I'll" carries a name); neither is ever truncated, and rel_042
-   CHECKs both bounds;
+4. refuses an action longer than 120 characters (it is never truncated), and stores the
+   detector marker only as a fixed category (`first_person_will`, `first_person_going_to`,
+   `first_person_obligation`, `relay_told`, `relay_promised`), never the matched text, which in
+   the relay forms ("I told <name> I'll") carries a third party's name. A form with no category
+   is refused; rel_042 CHECKs both;
 5. writes nothing when an active commitment or a live candidate already has the fingerprint.
 
 The cursor (`state` key `commitment_candidates:cursor`, the projection's
@@ -234,7 +236,7 @@ before the cursor write, or two concurrent runs therefore converge on one candid
 Any relay or database failure stops the run without moving the cursor.
 
 **`relationship.commitment_candidates`** (rel_042) stores the detected action, deadline, kind,
-confidence, marker, fingerprint, counterparty entity, channel, the evidence reference
+confidence, marker category, fingerprint, counterparty entity, channel, the evidence reference
 (`ingestion_event_id`, `provider_message_id`) and the `untrusted_origin` taint. It never stores
 the message text. Its states are `pending`, `carded`, `tracked`, `done`, `ignored`, `superseded`
 and `lapsed`. A CHECK makes every terminal row a content-free tombstone: source key, state,

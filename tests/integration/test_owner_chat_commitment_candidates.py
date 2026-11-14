@@ -187,6 +187,7 @@ async def test_a_verified_owner_promise_creates_one_candidate_without_its_text(
     assert row["action_description"] == "send you the deck"
     assert _evidence(row) == {"ingestion_event_id": str(inbox_id), "provider_message_id": "m-1"}
     assert row["taint"] == "untrusted_origin"
+    assert row["marker"] == "first_person_will"
     assert row["lapse_at"] - row["event_time"] == timedelta(days=14)
     assert PROMISE not in json.dumps({k: str(v) for k, v in row.items()})
     assert await rel_pool.fetchval("SELECT count(*) FROM public.owner_conditions") == 0
@@ -287,7 +288,8 @@ async def _live_row(rel_pool: asyncpg.Pool, key: str, *, event_age: timedelta, l
             source_key, state, kind, direction, counterparty_entity_id, action_description,
             confidence, marker, fingerprint, channel, evidence_ref, taint, event_time, lapse_at)
         VALUES ($1, 'pending', 'promise', 'owner_to_other', gen_random_uuid(), 'call you',
-                0.9, 'i''ll', $1, 'whatsapp_user_client', '{}'::jsonb, 'untrusted_origin',
+                0.9, 'first_person_will', $1, 'whatsapp_user_client', '{}'::jsonb,
+                'untrusted_origin',
                 now() - $2::interval, now() + $3::interval)
         """,
         key,
@@ -362,14 +364,14 @@ CONTENT_COLUMNS = (
             source_key, state, kind, direction, counterparty_entity_id, action_description,
             confidence, marker, fingerprint, channel, evidence_ref, taint, event_time, lapse_at)
            VALUES (repeat('d', 64), 'pending', 'promise', 'owner_to_other', gen_random_uuid(),
-                   repeat('x', 121), 0.9, 'm', 'f', 'whatsapp_user_client', '{}',
-                   'untrusted_origin', now(), now() + interval '1 day')""",
-        # The marker is at most 32 characters: no message text beyond the action.
+                   repeat('x', 121), 0.9, 'first_person_will', 'f', 'whatsapp_user_client',
+                   '{}', 'untrusted_origin', now(), now() + interval '1 day')""",
+        # The marker is a fixed category, never matched text that could carry a name.
         """INSERT INTO relationship.commitment_candidates (
             source_key, state, kind, direction, counterparty_entity_id, action_description,
             confidence, marker, fingerprint, channel, evidence_ref, taint, event_time, lapse_at)
            VALUES (repeat('d', 64), 'pending', 'promise', 'owner_to_other', gen_random_uuid(),
-                   'x', 0.9, repeat('m', 33), 'f', 'whatsapp_user_client', '{}',
+                   'x', 0.9, 'I told Sam I''ll', 'f', 'whatsapp_user_client', '{}',
                    'untrusted_origin', now(), now() + interval '1 day')""",
     ],
     ids=[
@@ -378,7 +380,7 @@ CONTENT_COLUMNS = (
         "tracked-fingerprint",
         "live-content",
         "long",
-        "long-marker",
+        "marker-text",
     ],
 )
 async def test_the_store_refuses_content_on_tombstones_and_malformed_rows(

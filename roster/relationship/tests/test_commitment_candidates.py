@@ -7,7 +7,10 @@ concurrency, lapse and purge run on migrated PostgreSQL in
 
 from __future__ import annotations
 
+import dataclasses
+import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -238,23 +241,55 @@ async def test_an_action_of_121_characters_is_refused(world) -> None:
 
 
 @pytest.mark.parametrize(
-    ("text", "outcome"),
+    ("text", "category"),
     [
-        # Marker "I told Maximilian Wellington I'll": 33 characters.
-        ("I told Maximilian Wellington I'll send the deck", "marker_too_long"),
-        # Marker "I told Maximilian Wellingtn I'll": exactly 32.
-        ("I told Maximilian Wellingtn I'll send the deck", "created"),
+        ("I'll send you the deck", "first_person_will"),
+        ("I will send you the deck", "first_person_will"),
+        ("I'm going to send you the deck", "first_person_going_to"),
+        ("I am going to send you the deck", "first_person_going_to"),
+        ("I need to send you the deck", "first_person_obligation"),
+        ("I have to send you the deck", "first_person_obligation"),
+        ("I told Maximilian Wellington I'll send the deck", "relay_told"),
+        ("I promised Maximilian Wellington I'd send the deck", "relay_promised"),
     ],
-    ids=["33", "32"],
+    ids=["ll", "will", "m-going", "am-going", "need", "have-to", "told", "promised"],
 )
-async def test_a_marker_over_32_characters_is_refused_not_stored(
-    world, text: str, outcome: str
+async def test_the_marker_is_stored_as_a_fixed_category_never_the_matched_text(
+    world, text: str, category: str
 ) -> None:
-    """The relay form's marker carries a name; it is never stored past the CHECK bound."""
+    """The relay forms' match carries a third party's name; only the category is stored."""
     pool = _Pool()
 
-    assert await _produce(pool, _span(text=text)) == outcome
-    assert len(pool.inserts) == (outcome == "created")
+    assert await _produce(pool, _span(text=text)) == "created"
+    (args,) = pool.inserts
+    assert args[7] == category
+    assert category in cc.MARKER_CATEGORIES
+    assert not any("Maximilian" in str(arg) for arg in args)
+
+
+@pytest.mark.parametrize("marker", ["I shall", "", "I'll Sam", "we'll"], ids=str)
+def test_a_marker_form_without_a_category_is_refused(marker: str) -> None:
+    assert cc.marker_category(marker) is None
+
+
+async def test_an_uncategorised_marker_writes_nothing(world, monkeypatch) -> None:
+    real = cc._commitments.detect_commitment
+
+    def detect(text: str, *, now: Any) -> Any:
+        signal = real(text, now=now)
+        return dataclasses.replace(signal, marker="I shall")
+
+    monkeypatch.setattr(cc._commitments, "detect_commitment", detect)
+    pool = _Pool()
+
+    assert await _produce(pool, _span()) == "marker_unrecognised"
+    assert pool.inserts == []
+
+
+def test_the_store_check_admits_exactly_the_marker_categories() -> None:
+    source = (Path(__file__).parents[1] / "migrations" / "042_commitment_candidates.py").read_text()
+    check = source[source.index("marker TEXT CHECK") :].split(")),", 1)[0]
+    assert set(re.findall(r"'([a-z_]+)'", check)) == cc.MARKER_CATEGORIES
 
 
 async def test_an_action_of_exactly_120_characters_is_proposed(world) -> None:

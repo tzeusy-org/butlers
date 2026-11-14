@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta
 from typing import Any, Final
@@ -46,9 +47,32 @@ COMMITMENT_SOURCE: Final = "relationship:commitment"
 DIRECTION: Final = "owner_to_other"
 CHANNELS: Final = ("whatsapp_user_client", "telegram_user_client")
 MAX_ACTION_CHARS: Final = 120
-#: The longest plain detector marker is 13 characters ("I have got to"); the bound
-#: leaves room for the relay form with a short name, and rel_042 enforces it.
-MAX_MARKER_CHARS: Final = 32
+#: The stored marker is a fixed category, never the matched text: the relay forms
+#: ("I told <name> I'll", "I promised <name>") would otherwise store a third party's
+#: name. One category per family of ``commitments._MARKERS``; rel_042 CHECKs the set.
+_MARKER_FAMILIES: Final = (
+    (re.compile(r"[Ii]\s+told\s+.+"), "relay_told"),
+    (re.compile(r"[Ii]\s+promised\s+.+"), "relay_promised"),
+    (re.compile(r"[Ii]\s*['’]ll|[Ii]\s+will"), "first_person_will"),
+    (re.compile(r"[Ii]\s*['’]m\s+going\s+to|[Ii]\s+am\s+going\s+to"), "first_person_going_to"),
+    (
+        re.compile(r"[Ii]\s*['’]ve\s+got\s+to|[Ii]\s+have\s+got\s+to|[Ii]\s+(?:need|have)\s+to"),
+        "first_person_obligation",
+    ),
+)
+MARKER_CATEGORIES: Final = frozenset(category for _pattern, category in _MARKER_FAMILIES)
+
+
+def marker_category(marker: str | None) -> str | None:
+    """The fixed category of a detector marker, or None for a form not listed here."""
+    if not marker:
+        return None
+    for pattern, category in _MARKER_FAMILIES:
+        if pattern.fullmatch(marker):
+            return category
+    return None
+
+
 HORIZON: Final = timedelta(days=14)
 CURSOR_KEY: Final = "commitment_candidates:cursor"
 #: Pages read per run. The 14-day floor bounds catch-up; the next run continues.
@@ -177,11 +201,11 @@ async def produce_candidate(
     action = signal.action_description
     if not action or len(action) > MAX_ACTION_CHARS:
         return "action_too_long"
-    if not signal.marker or len(signal.marker) > MAX_MARKER_CHARS:
-        # The relay form ("I told <name> I'll") carries a name; rel_042 refuses a
-        # marker over the bound, so the span is refused here rather than poisoning
-        # the page with a CHECK failure.
-        return "marker_too_long"
+    marker = marker_category(signal.marker)
+    if marker is None:
+        # A detector form with no category here is refused, never stored as text;
+        # rel_042's CHECK would refuse it too and poison the page.
+        return "marker_unrecognised"
     fingerprint = commitment_fingerprint(
         source=COMMITMENT_SOURCE,
         counterparty_entity_id=str(contact.entity_id),
@@ -209,7 +233,7 @@ async def produce_candidate(
         action,
         signal.deadline,
         signal.confidence,
-        signal.marker,
+        marker,
         fingerprint,
         channel,
         json.dumps({"ingestion_event_id": ingestion_id, "provider_message_id": message_id}),
@@ -257,8 +281,8 @@ async def scan(pool: asyncpg.Pool, *, read_spans: SpanReader, live: bool) -> dic
     Poison span (note for activation): any database or resolver failure on one span
     stops the run without moving the cursor, so a span that fails every time blocks
     every later span until it falls behind the projection's 14-day floor. The run
-    reports it only as a failed run. Known content limits (action, marker) are
-    refused per span before any write, so they cannot poison a page.
+    reports it only as a failed run. Known content limits (action length, marker
+    category) are refused per span before any write, so they cannot poison a page.
     """
     result: dict[str, Any] = {**await lapse_and_purge(pool), "outcomes": {}}
     if not live:
