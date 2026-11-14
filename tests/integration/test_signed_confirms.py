@@ -671,7 +671,9 @@ async def test_owner_chat_forged_wrong_chat_replayed_and_expired_taps_change_not
         )
         await conn.execute("SET LOCAL ROLE butler_switchboard_rw")
         await conn.execute(
-            "UPDATE public.pending_confirms SET expires_at=now()-interval '1 minute' WHERE id=$1",
+            # created_at moves too: the table requires expires_at > created_at.
+            "UPDATE public.pending_confirms SET created_at=now()-interval '2 minutes', "
+            "expires_at=now()-interval '1 minute' WHERE id=$1",
             confirm_id,
         )
         await conn.execute("RESET ROLE")
