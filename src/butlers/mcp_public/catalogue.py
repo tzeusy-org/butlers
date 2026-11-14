@@ -1,7 +1,9 @@
 """The pinned tool catalogue and the handshake answers (RFC 0039 D10, D14 items 4 and 6).
 
-Everything here is static: ``tools/list``, ``initialize`` and ``server/discover`` answer the
-same bytes whatever the kill-switch state or caller (REQ-public-mcp-surface-002). Input
+Everything here is static: ``tools/list`` and ``initialize`` answer the same bytes whatever
+the kill-switch state or caller (REQ-public-mcp-surface-002). ``server/discover`` is not
+answered (-32601) until homelab cross-checks the gateway's catalogue probe, which then falls
+back to ``initialize`` and ``tools/list``. Input
 schemas advertise what the readers' closed argument parsing accepts; the readers stay the
 authority and refuse anything else with ``invalid_argument``. Output schemas declare only
 what every success result carries, so a validating client never rejects a real answer.
@@ -16,6 +18,7 @@ from collections.abc import Mapping
 from functools import cache
 from typing import Any
 
+import asyncpg
 from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 from mcp.types import (
     LATEST_PROTOCOL_VERSION,
@@ -28,7 +31,7 @@ from mcp.types import (
 )
 
 from butlers.knowledge_read import chronology, describe, finance, graph, health, search, travel
-from butlers.knowledge_read.core import DOMAINS
+from butlers.knowledge_read.core import DOMAINS, Arguments, ReadContext, ReadError
 from butlers.knowledge_read.records import RECORDS_LIMIT, RECORDS_MAX_DAYS, record_kinds
 
 SERVER_NAME = "butlers-public-mcp"
@@ -782,7 +785,7 @@ def _annotations(name: str, title: str) -> ToolAnnotations:
         title=title,
         readOnlyHint=name != "propose_fact",
         destructiveHint=False,
-        idempotentHint=True,
+        idempotentHint=name != "propose_fact",  # each proposal creates an inbox row
         openWorldHint=False,
     )
 
@@ -838,17 +841,32 @@ def tools_list(_params: Mapping[str, Any]) -> dict[str, Any]:
     return json.loads(tools_list_result())
 
 
-def server_discover(_params: Mapping[str, Any]) -> dict[str, Any]:
-    """Versions, capabilities and identity without a handshake (the gateway's catalogue probe)."""
-    return {
-        "supportedVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
-        "capabilities": _wire(CAPABILITIES),
-        "serverInfo": _wire(_server_info()),
-    }
-
-
 STATIC_HANDLERS = {
     "initialize": initialize,
     "tools/list": tools_list,
-    "server/discover": server_discover,
 }
+
+
+async def propose_fact_pending(
+    _conn: asyncpg.Connection, _context: ReadContext, arguments: object
+) -> dict[str, Any]:
+    """``propose_fact`` until its reader lands (bu-y66o00.8): closed argument parsing, then
+    ``unavailable``, so a client fixes a bad argument but never rewrites a good one."""
+    args = Arguments(
+        arguments,
+        {
+            "subject_entity_id",
+            "predicate",
+            "object_entity_id",
+            "evidence_url",
+            "note",
+            "idempotency_key",
+        },
+    )
+    args.uuid("subject_entity_id")
+    args.choice("predicate", PROPOSABLE_PREDICATES)
+    args.uuid("object_entity_id")
+    args.text("evidence_url", max_length=2048)
+    args.text("note", max_length=500)
+    args.text("idempotency_key", max_length=64, required=True)
+    raise ReadError("unavailable", domain="proposals")

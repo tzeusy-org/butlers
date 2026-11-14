@@ -418,13 +418,14 @@ The process the chart runs (`butlers.mcp_public`, task 2.3) is the console scrip
 | Contract | Value |
 | --- | --- |
 | MCP | `POST :8080/mcp`, stateless JSON responses; `GET`/`DELETE` are 405 after the bearer, other paths 404 |
+| `server/discover` | -32601 until homelab cross-checks the gateway's catalogue probe |
 | Metrics and probes | `GET :9090/metrics` (Prometheus text), `GET :9090/healthz` (no database) |
 | Required env | `MCP_PUBLIC_AUDIENCE` (https URL), `MCP_PUBLIC_ALLOWED_SUBS`, `MCP_PUBLIC_DB_HOST` |
 | Optional env | `MCP_PUBLIC_DB_PORT` (5432), `MCP_PUBLIC_DB_NAME` (`butlers_public`), `MCP_PUBLIC_DB_USER` (`mcp_public_ro`), `MCP_PUBLIC_CLIENT_DOMAINS` (`claude.ai,chatgpt.com`), `MCP_PUBLIC_REGISTERED_CLIENTS`, `MCP_PUBLIC_DASHBOARD_BASE` |
-| Files under `/etc/butlers-public-mcp/` | `db/password` (read once at start), `bearer/digest` and optional `bearer/digest_next`, `keyring/keyring.json`, `switches/disabled_domains`, `canaries/canaries.json` (re-read every 10 s) |
+| Files under `/etc/butlers-public-mcp/` | `db/password` (read once at start), `bearer/digest` and optional `bearer/digest_next`, `keyring/keyring.json`, `switches/disabled_domains` (must exist; missing disables every domain), `canaries/canaries.json` (non-empty; re-read every 10 s) |
 
 A missing or malformed required setting exits 2 before any port opens. The reader pool pins
-`search_path` to `pg_catalog`. Access logs are off; the audit line on stdout is the request log.
+`search_path` to `pg_catalog, pg_temp`. Access logs are off; the audit line on stdout is the request log.
 
 Verify: `scripts/k8s/public-mcp-live-checks.sh dev` runs the live NetworkPolicy check (D8 item 6),
 the `postgres-<env>` policy check (REQ-public-mcp-projection-014), the reachability checks

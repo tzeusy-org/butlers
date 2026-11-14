@@ -21,18 +21,28 @@ from butlers.capability_host import (
     CapabilityHost,
     ConfigError,
     HostSettings,
+    Tool,
     create_pool,
+    default_tools,
 )
 from butlers.mcp_public.app import McpApp, MetricsApp
-from butlers.mcp_public.catalogue import STATIC_HANDLERS, catalogue
+from butlers.mcp_public.catalogue import STATIC_HANDLERS, catalogue, propose_fact_pending
 
 logger = logging.getLogger(__name__)
 BIND = "0.0.0.0"  # the pod's NetworkPolicies decide who reaches either port (D8)
 
 
+def served_tools() -> dict[str, Tool]:
+    """The host's readers plus ``propose_fact``, which refuses ``unavailable`` until .8."""
+    return {
+        **default_tools(),
+        "propose_fact": Tool("propose_fact", "proposals", propose_fact_pending, dlp=False),
+    }
+
+
 def build_host(settings: HostSettings, pool: asyncpg.Pool | None) -> CapabilityHost:
     catalogue()  # fail at start, not on the first tools/list, if the catalogue drifted
-    return CapabilityHost(settings, pool=pool, static=STATIC_HANDLERS)
+    return CapabilityHost(settings, pool=pool, tools=served_tools(), static=STATIC_HANDLERS)
 
 
 def _server(app: McpApp | MetricsApp, port: int) -> uvicorn.Server:

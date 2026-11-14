@@ -40,6 +40,7 @@ BEARER = "hop-bearer-e2e-test"
 AUD = "https://mcp.tze.how/butlers"
 SUB = "7"
 PERSON = "Ada Projection-Lovelace"
+CANARY = "CANARY-e2e-0b7d4c11"
 KEY = ed25519.Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
 
 
@@ -141,12 +142,13 @@ async def served(projected, tmp_path: Path):
     """The entrypoint's host and pool, configured as the pod is: env-shaped settings, files."""
     topology, person = projected
     url = make_url(topology.container.get_connection_url())
-    for sub in ("bearer", "keyring", "canaries", "db"):
+    for sub in ("bearer", "keyring", "canaries", "switches", "db"):
         (tmp_path / sub).mkdir()
     (tmp_path / "bearer/digest").write_text(hashlib.sha256(BEARER.encode()).hexdigest())
     keyring = keyring_document(current_entry(KEY.public_key().public_bytes_raw(), kid="k1"))
     (tmp_path / "keyring/keyring.json").write_text(json.dumps(keyring))
-    (tmp_path / "canaries/canaries.json").write_text("[]")
+    (tmp_path / "canaries/canaries.json").write_text(json.dumps([CANARY]))
+    (tmp_path / "switches/disabled_domains").write_text("# nothing disabled\n")
     fd = os.open(tmp_path / "db/password", os.O_WRONLY | os.O_CREAT, 0o600)
     with os.fdopen(fd, "w") as handle:
         handle.write(topology.role_passwords["mcp_public_ro"])
@@ -170,7 +172,7 @@ async def test_the_reader_pool_pins_search_path(served):
     """bu-y66o00.28: no database- or role-level setting can steer an unqualified name."""
     host, _ = served
     async with host.pool.acquire() as conn:
-        assert await conn.fetchval("SHOW search_path") == "pg_catalog"
+        assert await conn.fetchval("SHOW search_path") == "pg_catalog, pg_temp"
         assert await conn.fetchval("SELECT current_user") == "mcp_public_ro"
 
 
@@ -269,6 +271,8 @@ async def test_an_mcp_client_handshakes_lists_and_calls(served):
                 },
             )
             assert refused.isError is True
+            assert refused.structuredContent is not None
+            assert refused.structuredContent["error"]["code"] == "unavailable"
         assert session_id() is None  # stateless: no session to resume or delete
     assert calls["describe"]["manifest_digest"] == load_manifest().digest
     assert "tools/list" in box[0].posts and "notifications/initialized" in box[0].posts

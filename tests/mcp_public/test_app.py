@@ -108,6 +108,15 @@ async def test_initialize_declares_exactly_tools_through_the_host(env: Env):
     assert env.projection.acquired == 0
 
 
+@pytest.mark.parametrize("assertion", [False, True])
+async def test_server_discover_is_method_not_found(env: Env, assertion: bool):
+    """Until homelab cross-checks the gateway probe, it falls back to initialize + tools/list."""
+    exchange = await _request(McpApp(env.host), rpc("server/discover"), assertion=assertion)
+    message = json.loads(exchange.body)
+    assert exchange.status == 200 and message["error"]["code"] == -32601
+    assert message["id"] == 1 and env.projection.acquired == 0
+
+
 async def test_tools_list_is_byte_identical_whatever_the_switches(env: Env):
     app = McpApp(env.host)
     first = await _request(app, rpc("tools/list"), assertion=False)
