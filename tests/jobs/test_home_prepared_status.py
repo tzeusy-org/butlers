@@ -29,7 +29,12 @@ CASES: list[tuple[str, dict[str, Any] | None, str | None, str]] = [
     ("pending", _action("pending", expires=timedelta(hours=1)), None, "awaiting_approval"),
     ("pending-no-expiry", _action("pending"), None, "awaiting_approval"),
     ("pending-past-expiry", _action("pending", expires=-timedelta(minutes=1)), None, "expired"),
-    ("approved", _action("approved", decided_by="human:owner"), None, "approved_not_run"),
+    (
+        "approved-or-refused-replay",
+        _action("approved", decided_by="human:owner"),
+        None,
+        "approved_not_run",
+    ),
     ("rejected-by-owner", _action("rejected", decided_by="human:owner"), None, "rejected"),
     (
         "rejected-by-system",

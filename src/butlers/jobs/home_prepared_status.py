@@ -4,7 +4,8 @@ One closed, content-blind answer to "what happened to this parked Home action?",
 Home's own approval row and the actuation receipt (``home.ha_command_log``, RFC 0028):
 
 ``awaiting_approval``  parked and still pending, not yet past its expiry;
-``approved_not_run``   approved, no receipt yet;
+``approved_not_run``   approved, no receipt: also what a replay refused because the away premise
+                       ended reads as (the row stays ``approved``, no request was sent);
 ``succeeded``          the receipt's live read-back matched;
 ``unverified``         the receipt is ``unverified``, or an attempt is still ``attempting`` (a
                        request may have left; it is never success);
