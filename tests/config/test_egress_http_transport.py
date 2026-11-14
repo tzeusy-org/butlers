@@ -252,19 +252,24 @@ async def test_default_hop_progressing_upload_stream_and_aclose(tls_contexts, mo
     from butlers.egress import gateway
 
     map_owned_hop(monkeypatch)
-    monkeypatch.setattr(gateway, "_HEAD_TIMEOUT_S", 0.04)
-    monkeypatch.setattr(gateway, "_IDLE_TIMEOUT_S", 0.2)
+    # Only one inequality is under test: the upload (at least 6 x 0.1 s, since sleeps
+    # never end early) outlasts the 0.3 s header budget twice over, so a budget that
+    # started before the upload finished must fire. Every other budget is generous,
+    # because a loaded xdist runner can stall a loop for tens of milliseconds; the old
+    # 0.04 s read and 0.2 s connect budgets flaked under such stalls (bu-kiuh8v.32).
+    monkeypatch.setattr(gateway, "_HEAD_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(gateway, "_IDLE_TIMEOUT_S", 5)
     origin = Origin(chunks=(b"data: one\n\n", b"data: two\n\n"), delay=0.02)
 
     async def body():
-        for _ in range(5):
-            await asyncio.sleep(0.03)
+        for _ in range(6):
+            await asyncio.sleep(0.1)
             yield b"part"
 
     async with running_gateway(tls_contexts, origin, bound_port=True) as (port, _):
         transport = GatewayTransport(GatewayConfig(port))
         async with httpx.AsyncClient(
-            transport=transport, timeout=httpx.Timeout(connect=0.2, write=0.2, read=0.04, pool=0.2)
+            transport=transport, timeout=httpx.Timeout(5, read=0.3)
         ) as caller:
             async with caller.stream("POST", f"https://{HOST}/", content=body()) as response:
                 assert response.status_code == 200
@@ -274,7 +279,7 @@ async def test_default_hop_progressing_upload_stream_and_aclose(tls_contexts, mo
                 ]
             assert not transport._hop._streams
         assert transport._hop._closed
-    assert origin.requests[0][1] == b"part" * 5
+    assert origin.requests[0][1] == b"part" * 6
 
 
 @pytest.mark.parametrize(
