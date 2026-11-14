@@ -1663,6 +1663,7 @@ class ButlerDaemon:
                 owner_domain=self.config.name,
                 approval_policy={"mode": approval_mode},
                 content_params=presentation.content_params,
+                resource_pair=presentation.resource_pair,
                 read_stores=presentation.read_stores,
                 write_stores=presentation.write_stores,
                 unknown_output_source=presentation.unknown_output_source,

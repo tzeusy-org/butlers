@@ -125,14 +125,14 @@ async def test_building_a_catalog_carries_content_params_and_moves_only_that_dig
 def _digest_of(catalog: ToolCatalog) -> str:
     from dataclasses import fields
 
-    from butlers.core.catalog_publication import generation, plain
+    from butlers.core.catalog_publication import OPTIONAL_FIELDS, generation, plain
     from butlers.core.tool_catalog import ToolDescriptor
 
     items = [
         {
             field.name: plain(getattr(item, field.name))
             for field in fields(ToolDescriptor)
-            if field.name != "content_params" or item.content_params is not None
+            if field.name not in OPTIONAL_FIELDS or getattr(item, field.name) is not None
         }
         for item in sorted(catalog.descriptors, key=lambda item: item.canonical_name)
     ]

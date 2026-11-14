@@ -5,7 +5,7 @@ from dataclasses import fields, replace
 import pytest
 
 from butlers.core.capability_catalog import BrokerCatalogReader
-from butlers.core.catalog_publication import CatalogPublisher, generation, plain
+from butlers.core.catalog_publication import OPTIONAL_FIELDS, CatalogPublisher, generation, plain
 from butlers.core.catalog_reader import DOMAINS
 from butlers.core.goal_admission import EvidenceRefused
 from butlers.core.tool_catalog import RecipientParameters
@@ -39,7 +39,7 @@ async def test_final_registry_maps_exact_metadata_without_owner_authority():
                 {
                     f.name: plain(getattr(item, f.name))
                     for f in fields(item)
-                    if f.name != "content_params" or item.content_params is not None
+                    if f.name not in OPTIONAL_FIELDS or getattr(item, f.name) is not None
                 }
             ]
         ),

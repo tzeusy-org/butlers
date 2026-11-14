@@ -26,6 +26,7 @@ from butlers.core.capability_json import (
 from butlers.core.goal_admission import Grant
 from butlers.core.goal_labels import Label, output_label
 from butlers.core.owner_policy import PolicyHold
+from butlers.core.resource_pairs import encode_pair, pair_key
 
 from .actuation import rfc0028_actuation_risk
 from .aliases import AliasResolver, Resolution, canonical_policy, resolve_args
@@ -72,11 +73,21 @@ def _in_scope(capability: Capability, grant: Grant, args: dict[str, Any]) -> boo
     scope (D7): the capability is neither listed nor callable.
     """
     restrictions = dict(grant.resources)
-    if not set(restrictions) <= set(capability.resource_params):
+    pair = capability.resource_pair
+    key = pair_key(pair) if pair else None
+    if not set(restrictions) <= set(capability.resource_params) | ({key} if key else set()):
         return False
     if capability.selection_bound - set(restrictions):
         return False
+    if pair and key:
+        # The two arguments are scoped as one pair, never as a cross product of two sets. A
+        # grant with no pair scope has an empty scope: the capability is not callable.
+        encoded = encode_pair(args.get(pair[0]), args.get(pair[1]))
+        if encoded is None or encoded not in restrictions.get(key, ()):
+            return False
     for name, permitted in restrictions.items():
+        if name == key:
+            continue
         value = args.get(name)
         values = [value] if type(value) is str else value
         if type(values) is not list or not values:
@@ -215,6 +226,10 @@ class Broker:
                 and listable(capability, principal.depth)
                 and capability.domain not in RESERVED_DOMAINS
                 and not (capability.selection_bound - {k for k, _ in grant.resources})
+                and not (
+                    capability.resource_pair
+                    and pair_key(capability.resource_pair) not in {k for k, _ in grant.resources}
+                )
             )
 
     async def call(
