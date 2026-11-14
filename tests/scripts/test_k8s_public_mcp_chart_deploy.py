@@ -102,7 +102,100 @@ def test_the_live_checks_keep_their_review_guards() -> None:
         "get svc -o json",  # Service selectors read before the labelled probe
         "ABORTED",
         "INCONCLUSIVE",
-        'startswith("28")',  # only an auth/pg_hba error class counts as refused
         "CANARIES",
     ):
         assert needle in text, needle
+    probe = (_ROOT / "scripts/k8s/public-mcp-isolation-probe.py").read_text()
+    assert 'startswith("28")' in probe  # only an auth/pg_hba error class counts as refused
+
+
+# --- live checks: a broken or inconclusive probe never reads as a pass (N1) ----------------
+
+_FAKE_ASYNCPG = """
+import asyncio, os
+
+class _Auth(Exception):
+    sqlstate = "28000"
+
+async def connect(*, database, **_kw):
+    mode = os.environ["FAKE_MODE"]
+    if database == "butlers_public":
+        class C:
+            async def close(self): pass
+        return C()
+    if mode == "timeout_second" and database == "butlers":
+        raise asyncio.TimeoutError()
+    if mode == "crash":
+        raise SystemExit(7)
+    raise _Auth()
+"""
+
+_KUBECTL = r"""#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  *"get deploy butlers-public-mcp"*) echo "registry.invalid/butlers-app:t" ;;
+  *"get pod -l app.kubernetes.io/component=butlers-public-mcp"*) echo "pod/srv" ;;
+  *"get networkpolicy -o name"*)
+    printf 'networkpolicy.networking.k8s.io/%s\n' butlers-public-mcp-default-deny \
+      butlers-public-mcp-allow-mcp-ingress butlers-public-mcp-allow-metrics-ingress \
+      butlers-public-mcp-allow-postgres-egress butlers-public-mcp-allow-dns-egress ;;
+  *"get networkpolicy -o json"*) echo '{"items": []}' ;;
+  *"get crd"*) echo "NotFound" >&2; exit 1 ;;
+  *"get svc -o json"*) echo '{"items": []}' ;;
+  *" run "*|*" wait "*|*" delete "*) exit 0 ;;
+  *"exec -i srv -- python3 -"*) exec "$PYBIN" - ;;
+  *"test -s"*) exit 0 ;;
+  *"import json"*) echo 2 ;;
+  *"import socket"*)
+    case "$args" in *pubmcp-probe-plain*|*1.1.1.1*) exit 2 ;; *) exit 0 ;; esac ;;
+  *) echo "unexpected kubectl: $args" >&2; exit 99 ;;
+esac
+"""
+
+
+def _live(tmp_path: Path, mode: str) -> tuple[int, str]:
+    fake = tmp_path / "pylib"
+    fake.mkdir()
+    (fake / "asyncpg.py").write_text(_FAKE_ASYNCPG)
+    secret = tmp_path / "password"
+    secret.write_text("not-a-real-password\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "kubectl"
+    stub.write_text(_KUBECTL)
+    stub.chmod(0o755)
+    import sys
+
+    result = subprocess.run(
+        ["bash", str(_ROOT / "scripts/k8s/public-mcp-live-checks.sh"), "dev"],
+        capture_output=True, text=True,
+        env={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}", "PYBIN": sys.executable,
+            "PYTHONPATH": str(fake), "FAKE_MODE": mode, "PYTHONDONTWRITEBYTECODE": "1",
+            "PUBLIC_MCP_PASSWORD_FILE": str(secret), "MCP_PUBLIC_DB_HOST": "h",
+            "MCP_PUBLIC_DB_PORT": "5432", "MCP_PUBLIC_DB_USER": "u", "HOME": str(tmp_path),
+        },
+    )  # fmt: skip
+    return result.returncode, result.stdout + result.stderr
+
+
+def test_live_checks_pass_only_when_every_database_check_is_conclusive(tmp_path: Path) -> None:
+    code, out = _live(tmp_path, "refuse")
+    assert code == 0, out
+    assert "live checks passed" in out
+
+
+def test_a_timeout_on_the_second_database_is_inconclusive_not_a_pass(tmp_path: Path) -> None:
+    code, out = _live(tmp_path, "timeout_second")
+    assert code != 0, out
+    assert "INCONCLUSIVE ISOLATION login to butlers: TimeoutError" in out
+    assert "NameError" not in out
+    assert "live checks passed" not in out
+    assert "live checks FAILED" in out
+
+
+def test_a_crashing_isolation_probe_fails_closed(tmp_path: Path) -> None:
+    code, out = _live(tmp_path, "crash")
+    assert code != 0, out
+    assert "ISOLATION probe did not complete" in out
+    assert "live checks passed" not in out

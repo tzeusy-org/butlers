@@ -63,13 +63,20 @@ else
 fi
 
 # POSTGRES: list policy names in postgres-<env> with a podSelector that could select instance pods.
-pg="$(kubectl -n "$PG_NS" get networkpolicy -o json | python3 -c '
+pg_json="$(kubectl -n "$PG_NS" get networkpolicy -o json 2>&1)" && pg_rc=0 || pg_rc=$?
+if [ "$pg_rc" -ne 0 ]; then
+  inconclusive "POSTGRES cannot list policies in $PG_NS (not visible)"
+else
+  pg="$(echo "$pg_json" | python3 -c '
 import json, sys
 for p in json.load(sys.stdin)["items"]:
     sel = p["spec"].get("podSelector", {})
     print(p["metadata"]["name"], "selector=" + json.dumps(sel, sort_keys=True))
-')"
-[ -z "$pg" ] && ok "POSTGRES no policy selects pods in $PG_NS (the public pod needs no ingress allow)" || bad "POSTGRES policies present, review whether the public pod's 5432 allow is needed: $pg"
+')" && pg_rc=0 || pg_rc=$?
+  if [ "$pg_rc" -ne 0 ]; then bad "POSTGRES policy listing could not be parsed"
+  elif [ -z "$pg" ]; then ok "POSTGRES no policy selects pods in $PG_NS (the public pod needs no ingress allow)"
+  else bad "POSTGRES policies present, review whether the public pod's 5432 allow is needed: $pg"; fi
+fi
 
 # CANARIES/FILES: the server's required files are mounted (names only; contents never read).
 for f in bearer/digest db/password canaries/canaries.json keyring/keyring.json switches/disabled_domains; do
@@ -110,43 +117,44 @@ probe() { # name labels
   kubectl -n "$MCP_NS" run "$1" --image="$IMAGE" --restart=Never ${2:+--labels="$2"} --overrides="$overrides" >/dev/null 2>&1
   kubectl -n "$MCP_NS" wait --for=condition=Ready "pod/$1" --timeout=60s >/dev/null 2>&1
 }
+# Exit 0 connected, 2 refused or timed out (a socket error), anything else: the probe itself broke.
 tcp() { # namespace pod host port
-  kubectl -n "$1" exec "$2" -- python3 -c "import socket,sys; s=socket.socket(); s.settimeout(4); s.connect((sys.argv[1], int(sys.argv[2])))" "$3" "$4" >/dev/null 2>&1
+  kubectl -n "$1" exec "$2" -- python3 -c "
+import socket, sys
+s = socket.socket(); s.settimeout(4)
+try:
+    s.connect((sys.argv[1], int(sys.argv[2])))
+except OSError:
+    sys.exit(2)
+" "$3" "$4" >/dev/null 2>&1
+}
+# reach <want: open|closed> <label> <ns> <pod> <host> <port>
+reach() {
+  local want="$1" label="$2"; shift 2
+  tcp "$@"; local rc=$?
+  case "$want:$rc" in
+    open:0|closed:2) ok "REACH $label" ;;
+    open:2) bad "REACH $label (connection refused or timed out)" ;;
+    closed:0) bad "REACH $label (connected, expected refusal)" ;;
+    *) inconclusive "REACH $label (probe failed with status $rc)" ;;
+  esac
 }
 probe pubmcp-probe-labelled "$PROBE_LABEL"
 probe pubmcp-probe-plain ""
-tcp "$MCP_NS" pubmcp-probe-labelled "$SVC" 8080 && ok "REACH labelled mcp pod reaches 8080" || bad "REACH labelled mcp pod refused"
-tcp "$MCP_NS" pubmcp-probe-plain "$SVC" 8080 && bad "REACH unlabelled mcp pod reached 8080" || ok "REACH unlabelled mcp pod refused"
-server="$(kubectl -n "$NS" get pod -l app.kubernetes.io/component=butlers-public-mcp -o name | head -1)"
-tcp "$NS" "${server#pod/}" "postgres-$ENV_NAME-rw.$PG_NS.svc.cluster.local" 5432 && ok "REACH server pod reaches postgres 5432" || bad "REACH server pod cannot reach postgres 5432"
-tcp "$NS" "${server#pod/}" 1.1.1.1 443 && bad "REACH server pod reached the internet" || ok "REACH server pod has no internet route"
+server="$(kubectl -n "$NS" get pod -l app.kubernetes.io/component=butlers-public-mcp -o name | head -1)"; server="${server#pod/}"
+reach open "labelled mcp pod reaches 8080" "$MCP_NS" pubmcp-probe-labelled "$SVC" 8080
+reach closed "unlabelled mcp pod is refused on 8080" "$MCP_NS" pubmcp-probe-plain "$SVC" 8080
+reach open "server pod reaches postgres 5432" "$NS" "$server" "postgres-$ENV_NAME-rw.$PG_NS.svc.cluster.local" 5432
+reach closed "server pod has no internet route" "$NS" "$server" 1.1.1.1 443
 
-# ISOLATION: the password is read from the pod's own mounted file and never printed.
-iso='
-import asyncio, os
-import asyncpg
-async def main():
-    password = open("/etc/butlers-public-mcp/db/password").read().strip()
-    for db, want in (("butlers_public", True), ("butlers", False), ("postgres", False), ("template1", False)):
-        try:
-            c = await asyncpg.connect(host=os.environ["MCP_PUBLIC_DB_HOST"], port=int(os.environ["MCP_PUBLIC_DB_PORT"]),
-                user=os.environ["MCP_PUBLIC_DB_USER"], password=password, database=db, ssl="require", timeout=8)
-            await c.close()
-            word = "allowed"
-        except Exception as exc:
-            # Only a pg_hba/auth refusal (SQLSTATE class 28) counts as refused. A timeout, DNS
-            # or TLS error says nothing about the boundary.
-            state = getattr(exc, "sqlstate", None) or ""
-            word = "refused" if state.startswith("28") else "inconclusive"
-        if word == "inconclusive":
-            print("INCONCLUSIVE ISOLATION login to " + db + ": " + type(exc).__name__)
-        else:
-            good = (word == "allowed") == want
-            print(("ok   " if good else "FAIL ") + "ISOLATION login to " + db + ": " + word)
-asyncio.run(main())
-'
-out="$(kubectl -n "$NS" exec "${server#pod/}" -- python3 -c "$iso" 2>&1)"
-echo "$out" | grep -E '^(ok|FAIL|INCONCLUSIVE) ' || bad "ISOLATION probe produced no verdict"
+# ISOLATION: scripts/k8s/public-mcp-isolation-probe.py runs in the server pod over stdin. A non-zero
+# exit, a crash or anything but one verdict per database is a failure, never a pass.
+out="$(kubectl -n "$NS" exec -i "$server" -- python3 - < "$(dirname "${BASH_SOURCE[0]}")/public-mcp-isolation-probe.py" 2>&1)" && iso_rc=0 || iso_rc=$?
+verdicts="$(echo "$out" | grep -cE '^(ok|FAIL|INCONCLUSIVE) ')"
+echo "$out" | grep -E '^(ok|FAIL|INCONCLUSIVE) '
+if [ "$iso_rc" -ne 0 ] || [ "$verdicts" -ne 4 ]; then
+  bad "ISOLATION probe did not complete (exit $iso_rc, $verdicts of 4 verdicts)"
+fi
 fails=$((fails + $(echo "$out" | grep -cE '^(FAIL|INCONCLUSIVE) ')))
 [ "$fails" -eq 0 ] && echo "live checks passed" || echo "live checks FAILED ($fails)"
 exit "$([ "$fails" -eq 0 ] && echo 0 || echo 1)"
