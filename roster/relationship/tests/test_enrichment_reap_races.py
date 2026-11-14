@@ -44,6 +44,8 @@ _CHECKED: set[tuple[str, str]] = {
     ("priority_contacts", "entity_id"),
     # An open or answerable gap is an owner question the entity's later fact write closes.
     ("knowledge_gaps", "entity_id"),
+    # A live commitment candidate's confirm card names its counterparty (tombstones null it).
+    ("commitment_candidates", "counterparty_entity_id"),
 }
 _EXCUSED: set[tuple[str, str]] = {
     # Derived from facts or ledgers: they follow a fact the reap already read, or record history.
@@ -378,6 +380,30 @@ async def test_the_reap_leaves_a_placeholder_a_contact_is_linked_to(rel_pool) ->
 async def test_the_reap_leaves_a_placeholder_with_other_entity_references(rel_pool, insert) -> None:
     placeholder = await _placeholder(rel_pool)
     await rel_pool.execute(insert, placeholder)
+
+    assert await reap(rel_pool) == 0
+
+    assert await _deleted_at(rel_pool, placeholder) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_reap_leaves_a_placeholder_a_live_commitment_candidate_names(rel_pool) -> None:
+    """A pending candidate's card names its counterparty; reaping it would orphan the card.
+
+    rel_042 has no FK on ``counterparty_entity_id`` and a tombstone nulls it, so only a live
+    (pending or carded) candidate can hold the placeholder.
+    """
+    placeholder = await _placeholder(rel_pool)
+    await rel_pool.execute(
+        "INSERT INTO relationship.commitment_candidates (source_key, state, kind, direction, "
+        "counterparty_entity_id, action_description, confidence, marker, fingerprint, channel, "
+        "evidence_ref, taint, event_time, lapse_at) VALUES ($1, 'pending', 'promise', "
+        "'owner_to_other', $2, 'send the slides', 0.9, 'first_person_will', $3, "
+        "'whatsapp_user_client', '{}'::jsonb, 'untrusted_origin', now(), now() + interval '7 days')",
+        uuid.uuid4().hex + uuid.uuid4().hex,
+        placeholder,
+        uuid.uuid4().hex,
+    )
 
     assert await reap(rel_pool) == 0
 

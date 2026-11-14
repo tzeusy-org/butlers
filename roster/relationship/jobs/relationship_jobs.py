@@ -3530,6 +3530,16 @@ _NO_OPEN_KNOWLEDGE_GAP = """
     )
 """
 
+# A live commitment candidate's confirm card names its counterparty, and rel_042 has no FK to
+# hold the entity. Every terminal candidate nulls the column (ck_cc_tombstone), so this matches
+# only pending and carded candidates.
+_NO_LIVE_COMMITMENT_CANDIDATE = """
+    AND NOT EXISTS (
+        SELECT 1 FROM relationship.commitment_candidates cc
+        WHERE cc.counterparty_entity_id = e.id
+    )
+"""
+
 
 async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) -> int:
     """Archive ``public.entities`` orphaned by rejected/expired enrichment proposals.
@@ -3556,7 +3566,8 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
     memory fact as subject or object (read from ``public.memory_catalog`` for every butler's
     schema, whose ``invalid_at`` is set by supersede, forget, expire and purge, and from this
     schema's own ``facts`` where present), no open knowledge gap in this schema (other
-    butlers' gaps are out of reach), no ``contact_entity_map`` link, no
+    butlers' gaps are out of reach), no live commitment candidate naming it as counterparty,
+    no ``contact_entity_map`` link, no
     ``public.entity_info`` row and no ``public.priority_contacts`` entry. Any acquired
     reference means the entity graduated to a real entity and is left fully intact.
     ``test_every_table_referencing_entities_is_checked_by_the_reap_or_excused`` fails when a
@@ -3579,6 +3590,10 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
         clean_orphan += _NO_LIVE_MEMORY_FACT
     if await db_pool.fetchval("SELECT to_regclass('knowledge_gaps') IS NOT NULL"):
         clean_orphan += _NO_OPEN_KNOWLEDGE_GAP
+    if await db_pool.fetchval(
+        "SELECT to_regclass('relationship.commitment_candidates') IS NOT NULL"
+    ):
+        clean_orphan += _NO_LIVE_COMMITMENT_CANDIDATE
     candidates = await db_pool.fetch(
         f"SELECT e.id FROM public.entities e WHERE {clean_orphan} ORDER BY e.id"
     )
