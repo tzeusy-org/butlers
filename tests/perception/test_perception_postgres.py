@@ -848,6 +848,21 @@ def test_bootstrap_replay_after_seed_restores_effective_role_boundary(db, databa
     db.execute(
         text("SELECT set_config('butlers.connecting_user',:role,false)"), {"role": migration_user}
     )
+    # Earlier tests leave dead rows here, which invites autovacuum. A worker holding one of the
+    # tables the bootstrap alters can wait on this open transaction's catalog update while the
+    # bootstrap waits on that table: a deadlock cycle through a process the test does not
+    # control (bu-kiuh8v.41). Taking the locks first cancels any such worker and keeps new ones
+    # out, and unlike a reloption change it rolls back with the fixture, so the exact-catalog
+    # checks in other tests still see the canonical tables.
+    db.execute(
+        text(
+            "LOCK TABLE public.situation_slots, public.owner_modes, public.timeline, "
+            "public.perception_conditions, public.perception_suppressions, "
+            "perception_private.kinds, perception_private.sources, perception_private.source_refs, "
+            "perception_private.suppression_refs, perception_private.receipts "
+            "IN ACCESS EXCLUSIVE MODE"
+        )
+    )
     raw = db.connection.driver_connection
     with raw.cursor() as cursor:
         cursor.execute(init_db_sql_for_dbapi())
