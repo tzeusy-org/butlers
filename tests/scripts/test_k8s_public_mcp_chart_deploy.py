@@ -139,21 +139,32 @@ case "$args" in
     printf 'networkpolicy.networking.k8s.io/%s\n' butlers-public-mcp-default-deny \
       butlers-public-mcp-allow-mcp-ingress butlers-public-mcp-allow-metrics-ingress \
       butlers-public-mcp-allow-postgres-egress butlers-public-mcp-allow-dns-egress ;;
-  *"get networkpolicy -o json"*) echo '{"items": []}' ;;
+  *"get networkpolicy -o json"*)
+    case "${FAKE_PG:-}" in
+      cannot_list) echo "forbidden" >&2; exit 1 ;;
+      garbage) echo "not json" ;;
+      *) echo '{"items": []}' ;;
+    esac ;;
   *"get crd"*) echo "NotFound" >&2; exit 1 ;;
   *"get svc -o json"*) echo '{"items": []}' ;;
   *" run "*|*" wait "*|*" delete "*) exit 0 ;;
-  *"exec -i srv -- python3 -"*) exec "$PYBIN" - ;;
+  *"exec -i srv -- python3 -"*)
+    case "${FAKE_ISOLATION:-}" in
+      three_verdicts_exit_0) printf 'ok   ISOLATION a\nok   ISOLATION b\nok   ISOLATION c\n'; exit 0 ;;
+      four_verdicts_exit_1) printf 'ok   ISOLATION %s\n' a b c d; exit 1 ;;
+    esac
+    exec "$PYBIN" - ;;
   *"test -s"*) exit 0 ;;
   *"import json"*) echo 2 ;;
   *"import socket"*)
+    [ -n "${FAKE_REACH_BROKEN:-}" ] && case "$args" in *pubmcp-probe-labelled*) exit 5 ;; esac
     case "$args" in *pubmcp-probe-plain*|*1.1.1.1*) exit 2 ;; *) exit 0 ;; esac ;;
   *) echo "unexpected kubectl: $args" >&2; exit 99 ;;
 esac
 """
 
 
-def _live(tmp_path: Path, mode: str) -> tuple[int, str]:
+def _live(tmp_path: Path, mode: str, **extra_env: str) -> tuple[int, str]:
     fake = tmp_path / "pylib"
     fake.mkdir()
     (fake / "asyncpg.py").write_text(_FAKE_ASYNCPG)
@@ -174,6 +185,7 @@ def _live(tmp_path: Path, mode: str) -> tuple[int, str]:
             "PYTHONPATH": str(fake), "FAKE_MODE": mode, "PYTHONDONTWRITEBYTECODE": "1",
             "PUBLIC_MCP_PASSWORD_FILE": str(secret), "MCP_PUBLIC_DB_HOST": "h",
             "MCP_PUBLIC_DB_PORT": "5432", "MCP_PUBLIC_DB_USER": "u", "HOME": str(tmp_path),
+            **extra_env,
         },
     )  # fmt: skip
     return result.returncode, result.stdout + result.stderr
@@ -198,4 +210,39 @@ def test_a_crashing_isolation_probe_fails_closed(tmp_path: Path) -> None:
     code, out = _live(tmp_path, "crash")
     assert code != 0, out
     assert "ISOLATION probe did not complete" in out
+    assert "live checks passed" not in out
+
+
+def test_isolation_exit_zero_with_three_verdicts_fails(tmp_path: Path) -> None:
+    code, out = _live(tmp_path, "refuse", FAKE_ISOLATION="three_verdicts_exit_0")
+    assert code != 0, out
+    assert "ISOLATION probe did not complete (exit 0, 3 of 4 verdicts)" in out
+    assert "live checks passed" not in out
+
+
+def test_isolation_four_verdicts_with_nonzero_exit_fails(tmp_path: Path) -> None:
+    code, out = _live(tmp_path, "refuse", FAKE_ISOLATION="four_verdicts_exit_1")
+    assert code != 0, out
+    assert "ISOLATION probe did not complete (exit 1, 4 of 4 verdicts)" in out
+    assert "live checks passed" not in out
+
+
+def test_an_unlistable_postgres_policy_set_is_inconclusive_not_ok(tmp_path: Path) -> None:
+    code, out = _live(tmp_path, "refuse", FAKE_PG="cannot_list")
+    assert code != 0, out
+    assert "INCONCLUSIVE POSTGRES cannot list policies" in out
+    assert "live checks passed" not in out
+
+
+def test_an_unparseable_postgres_policy_listing_fails(tmp_path: Path) -> None:
+    code, out = _live(tmp_path, "refuse", FAKE_PG="garbage")
+    assert code != 0, out
+    assert "FAIL POSTGRES policy listing could not be parsed" in out
+    assert "live checks passed" not in out
+
+
+def test_a_broken_reach_probe_is_inconclusive_not_ok(tmp_path: Path) -> None:
+    code, out = _live(tmp_path, "refuse", FAKE_REACH_BROKEN="1")
+    assert code != 0, out
+    assert "INCONCLUSIVE REACH labelled mcp pod reaches 8080 (probe failed with status 5)" in out
     assert "live checks passed" not in out
