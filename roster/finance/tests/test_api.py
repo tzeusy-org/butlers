@@ -693,8 +693,11 @@ async def test_list_obligations_empty():
 @pytest.mark.asyncio
 async def test_list_obligations_known_door_carries_warn_and_days_remaining():
     """A known-door row surfaces the door fields and days-remaining-to-act."""
-    cancel_by = _TODAY + timedelta(days=3)
-    warn_by = _TODAY - timedelta(days=4)
+    # The route reads date.today() per request, so derive the dates here, not from
+    # the import-time _TODAY, which drifts by a day when a run crosses midnight.
+    today = date.today()
+    cancel_by = today + timedelta(days=3)
+    warn_by = today - timedelta(days=4)
     rows = [
         _obligation_row(
             service="Adobe",
