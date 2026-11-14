@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -130,7 +131,10 @@ class Projection:
     disabled: list[str] = field(default_factory=list)
     projection_canary: bool = False
     fail: BaseException | None = None
+    fail_once: BaseException | None = None  # raised by the next read only
     probe_gate: asyncio.Event | None = None
+    after_probe: Callable[[Projection], None] | None = None  # e.g. an apply landing mid-call
+    probe_timeouts: list[float | None] = field(default_factory=list)
     queries: list[str] = field(default_factory=list)
     acquired: int = 0
 
@@ -169,6 +173,9 @@ class FakeConn:
 
     def _note(self, sql: str) -> None:
         self.p.queries.append(sql)
+        if self.p.fail_once is not None:
+            failure, self.p.fail_once = self.p.fail_once, None
+            raise failure
         if self.p.fail is not None:
             raise self.p.fail
 
@@ -184,14 +191,17 @@ class FakeConn:
         self._note(sql)
         return self.p.applied if "manifest_applied" in sql else None
 
-    async def fetchval(self, sql: str, *args):
+    async def fetchval(self, sql: str, *args, **kw: Any):
         self._note(sql)
         if "replication_as_of" in sql:
             age = self.p.as_of_age
             return None if age is None else datetime.fromtimestamp(self.clock(), UTC) - age
         if "strpos" in sql:
+            self.p.probe_timeouts.append(kw.get("timeout"))  # asyncpg's client-side bound
             if self.p.probe_gate is not None:
                 await self.p.probe_gate.wait()
+            if self.p.after_probe is not None:
+                self.p.after_probe(self.p)
             return self.p.projection_canary
         return 1
 

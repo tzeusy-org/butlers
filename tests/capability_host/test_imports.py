@@ -1,7 +1,7 @@
 """Importing the host loads no model, spawner or runtime module (RFC 0039 D14 item 1, partial).
 
-PR 2 adds the full static import-ban contract over all three packages; this guard keeps the
-host's own runtime import closure clean in the meantime.
+The full static contract over all three packages is
+``tests/contracts/test_public_mcp_import_ban.py``; this guard checks the host on its own.
 """
 
 from __future__ import annotations

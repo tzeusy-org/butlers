@@ -67,7 +67,10 @@ from butlers.knowledge_read.manifest import Manifest, load_manifest
 logger = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 1024 * 1024
-PROBE_TIMEOUT = "30s"  # the projection probe scans every view; the role default is 2 s
+# The projection probe scans every view: the role's 2 s statement_timeout and the pool's 10 s
+# client command_timeout are both raised to this for the probe's own queries.
+PROBE_TIMEOUT_S = 30
+PROBE_TIMEOUT = f"{PROBE_TIMEOUT_S}s"
 EXEMPT = frozenset(
     {
         "initialize",
@@ -440,11 +443,23 @@ class CapabilityHost:
     async def _probe(self, conn: asyncpg.Connection, canaries: tuple[str, ...]) -> None:
         """The D15 projection probe, once per applied manifest and canary set.
 
-        Single-flight: concurrent first calls wait for one probe instead of each scanning every
-        view. It runs in its own read-only transaction with a longer statement timeout, so a
-        slow scan cannot keep the server unavailable; a failed probe is retried by the next
-        call. A pending or skewed projection is left to the snapshot's own D17 refusal.
+        The marker is compared first without the lock, so a probed projection costs one status
+        read and no serialization. On a mismatch it is single-flight: concurrent first calls
+        wait for one probe instead of each scanning every view, and re-check the marker once
+        they hold the lock. The probe runs in its own read-only transaction with a longer
+        statement timeout, so a slow scan cannot keep the server unavailable; a failed probe is
+        retried by the next call. A pending or skewed projection is left to the snapshot's own
+        D17 refusal.
         """
+        try:
+            status = await read_status(conn)
+        except asyncpg.QueryCanceledError:
+            status = None  # the role's 2 s budget: re-read under the probe's own timeout below
+        if status is not None and (
+            self._probed == self._marker(status, canaries)
+            or judge(status, self.manifest).code is not None
+        ):
+            return
         async with self._probe_lock:
             async with conn.transaction(readonly=True):
                 await conn.execute(f"SET LOCAL statement_timeout = '{PROBE_TIMEOUT}'")
@@ -452,7 +467,7 @@ class CapabilityHost:
                 marker = self._marker(status, canaries)
                 if self._probed == marker or judge(status, self.manifest).code is not None:
                     return
-                if await canary_probe(conn, self.manifest, canaries):
+                if await canary_probe(conn, self.manifest, canaries, query_timeout=PROBE_TIMEOUT_S):
                     self._latch()
                     raise ReadError("blocked")
                 self._probed = marker
