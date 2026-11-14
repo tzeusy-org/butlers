@@ -211,8 +211,20 @@ writes `owner.clock`, and no consumer has switched.
 ## Owner modes (dark, `.21`)
 
 `butlers.perception.modes` holds the owner mode rules recorded in bu-u33sb7.
-It is dark: `perception.flags.MODE_CONTROLS_LIVE` is off, and no route or tool
-calls it.
+It is dark: `perception.flags.MODE_CONTROLS_LIVE` is off, and no tool calls it.
+
+- The dashboard routes under `/api/owner-modes` (`butlers.api.routers.owner_modes`)
+  answer 404 while the flag is off, before touching the database or the
+  owner-auth service. Live, each needs the owner's verified dashboard session,
+  then the switchboard pool. `GET` lists every mode's profile and active entry
+  with their versions; `POST /{mode}/enter|exit|edit` writes one change at an
+  expected version (an edit names exactly one of holds, break-through or
+  duration). `POST /step-up/options` returns `{"required": false}` for a
+  tightening, else asks for a `mode_loosen` assertion bound by
+  `mode_controls.loosen_binding`. That binding never depends on the clock, so
+  the writer re-derives the same one when it spends the step-up later; if the
+  classification flips first (the entry ended), the writer refuses without
+  spending the proof.
 
 - The modes are the eight git IDs. Display aliases resolve to them; any other
   name refuses. "In flight" is a posture that only travel carries, never a mode.
