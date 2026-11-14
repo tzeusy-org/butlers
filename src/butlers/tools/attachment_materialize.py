@@ -26,6 +26,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.resource_pairs import lazy_attachment_refs
 from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
 
 DEFAULT_WAIT_S = 20.0
@@ -66,16 +67,7 @@ def _ready(row: asyncpg.Record) -> dict[str, Any]:
 
 def _routed_refs(routing_context: dict[str, Any] | None) -> set[tuple[str, str]]:
     """The lazy ``(message_id, attachment_id)`` refs of the routed request."""
-    attachments = (routing_context or {}).get("attachments")
-    if not isinstance(attachments, list):
-        return set()
-    return {
-        (att["source_message_id"], att["source_attachment_id"])
-        for att in attachments
-        if isinstance(att, dict)
-        and isinstance(att.get("source_message_id"), str)
-        and isinstance(att.get("source_attachment_id"), str)
-    }
+    return set(lazy_attachment_refs((routing_context or {}).get("attachments")))
 
 
 async def materialize_routed_attachment(

@@ -176,3 +176,42 @@ def test_only_attachment_materialize_declares_a_pair_today():
         if item.resource_pair is not None
     }
     assert declared == {"attachment_materialize": PAIR}
+
+
+def test_a_grant_with_both_per_param_sets_and_the_pair_key_enforces_every_one():
+    from butlers.core.goal_admission import decode_grants, encode_grants
+
+    grant = Grant(
+        "general__attachment_materialize",
+        (("message_id", ("m1", "m2")), pair_scope(PAIR, [("m1", "a1"), ("m2", "a2")])),
+    )
+    cap = _materialize()
+    assert _in_scope(cap, grant, _args("m1", "a1"))
+    assert _in_scope(cap, grant, _args("m2", "a2"))
+    # In the pair set's message but not paired with this attachment.
+    assert not _in_scope(cap, grant, _args("m1", "a2"))
+    # A pair in the pair set that the per-param message set does not allow.
+    narrowed = Grant(
+        "general__attachment_materialize",
+        (("message_id", ("m1",)), pair_scope(PAIR, [("m1", "a1"), ("m2", "a2")])),
+    )
+    assert _in_scope(cap, narrowed, _args("m1", "a1"))
+    assert not _in_scope(cap, narrowed, _args("m2", "a2"))
+    # The combined grant survives the stored form.
+    assert decode_grants(encode_grants((grant,))) == (grant,)
+
+
+def test_the_pair_key_survives_the_stored_grant_codec():
+    from butlers.core.goal_admission import decode_grants, encode_grants
+
+    grants = (_grant(("m1", "a1"), ("a:b", "c/d")), Grant("general__other"))
+    stored = encode_grants(grants)
+    assert KEY in stored[0]["resources"]
+    assert decode_grants(stored) == tuple(sorted(grants, key=lambda g: g.capability))
+    assert decode_grants(json_roundtrip(stored)) == decode_grants(stored)
+
+
+def json_roundtrip(value):
+    import json
+
+    return json.loads(json.dumps(value))
