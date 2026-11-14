@@ -22,6 +22,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from butlers.core import vendor_doors as flag
 from butlers.core.registrable_domain import registrable_domain
@@ -95,7 +96,36 @@ def build_url(template: str, slot_types: Any, slots: dict[str, str], host: str) 
         if not isinstance(value, str) or not SLOT_VALUE.fullmatch(value):
             return None
     url = "https://" + template_host + _SLOT.sub(lambda m: slots[m.group(1)], path)
-    return url if len(url) <= MAX_URL_CHARS else None
+    if len(url) > MAX_URL_CHARS or not _same_shape(url, template_host, path):
+        return None
+    return url
+
+
+def _same_shape(url: str, template_host: str, template_path: str) -> bool:
+    """The rebuilt URL must still parse to the template's host and segment count.
+
+    A last check independent of the slot regex: no query, fragment, userinfo, port or escape,
+    no dot segment, and one path segment for each segment of the template.
+    """
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    if (
+        parts.scheme != "https"
+        or parts.hostname != template_host
+        or port is not None
+        or parts.username is not None
+        or parts.query
+        or parts.fragment
+        or "%" in url
+        or "?" in url
+        or "#" in url
+    ):
+        return False
+    segments = parts.path.split("/")
+    return len(segments) == len(template_path.split("/")) and ".." not in segments
 
 
 async def resolve_door(

@@ -176,3 +176,36 @@ def test_reference_is_typed_and_has_no_url_field():
         DoorReferenceV1(kind="self", door_id=DOOR, version=1)  # type: ignore[arg-type]
     with pytest.raises(ValidationError):
         DoorReferenceV1(kind="door", door_id=DOOR, version=1, slots={str(i): "x" for i in range(9)})
+
+
+@pytest.mark.parametrize(
+    ("template", "reason"),
+    [
+        ("https://my.shop.example.com/a/{order}", "ok"),
+        ("https://my.shop.example.com/a/{order}/b", "ok"),
+    ],
+)
+def test_a_rebuilt_url_keeps_its_host_and_segment_count(template, reason):
+    url = resolver.build_url(template, {"order": "order_ref"}, {"order": "A-1"}, "example.com")
+    assert url is not None
+    assert url.count("/") == template.count("/")
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "https://my.shop.example.com/a/x/y",  # an extra segment
+        "https://my.shop.example.com/a/x?y=1",
+        "https://my.shop.example.com/a/x#y",
+        "https://my.shop.example.com/a/%2F",
+        "https://my.shop.example.com/a/..",
+        "https://other.example.com/a/x",
+        "https://u@my.shop.example.com/a/x",
+        "https://my.shop.example.com:8443/a/x",
+    ],
+)
+def test_the_final_shape_check_rejects_anything_that_drifts(bad):
+    assert not resolver._same_shape(bad, "my.shop.example.com", "/a/{order}")
+    assert resolver._same_shape(
+        "https://my.shop.example.com/a/x", "my.shop.example.com", "/a/{order}"
+    )
