@@ -376,7 +376,8 @@ async def test_digest_budget_is_reduced_by_timed_sends_today(timed_pool):
 
 
 async def test_timed_lane_caps_at_six_sends_a_day(timed_pool):
-    await timed_pool.execute("INSERT INTO insight_settings (id, custom_budget) VALUES (1, 20)")
+    # 10 is the largest budget chk_insight_settings_custom_budget allows: the lane cap binds first.
+    await timed_pool.execute("INSERT INTO insight_settings (id, custom_budget) VALUES (1, 10)")
     notify = _sent()
     ids = []
     for index in range(7):
@@ -481,8 +482,8 @@ async def test_stale_timed_claim(timed_pool, attempt_started, status, resent):
     await timed_pool.execute(
         """
         UPDATE insight_candidates
-        SET claim_id = gen_random_uuid(), claimed_at = $2,
-            attempt_started_at = CASE WHEN $3 THEN $2 ELSE NULL END
+        SET claim_id = gen_random_uuid(), claimed_at = $2::timestamptz,
+            attempt_started_at = CASE WHEN $3::boolean THEN $2::timestamptz ELSE NULL END
         WHERE id = $1::uuid
         """,
         candidate,
