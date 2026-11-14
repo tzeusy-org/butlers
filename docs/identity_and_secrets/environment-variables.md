@@ -60,6 +60,8 @@ Every process uses one `TracerProvider` and attributes spans per butler via `but
 | `DASHBOARD_API_KEY` | (none) | Configured-key mode: non-browser `X-API-Key` or HTTPS key-to-session login. Unset selects passkey enrollment/login; owner authentication is enforced either way. No query-parameter credential is accepted. Mode or key changes require host reconciliation. |
 | `DASHBOARD_AUTH_DB_USER` | (none) | Dedicated restricted LOGIN for the authentication store; no fallback to the administrative `POSTGRES_USER`. |
 | `DASHBOARD_AUTH_DB_PASSWORD` | (none) | Tier 0 password for that restricted login, supplied only to the dashboard API through deployment secrets; never to browser/runtime children. |
+| `DASHBOARD_VENDOR_DOORS_DB_USER` | (none) | Dedicated LOGIN for the vendor-door routes, a member of `dashboard_vendor_doors` and nothing else; absent means the routes answer 503. |
+| `DASHBOARD_VENDOR_DOORS_DB_PASSWORD` | (none) | Password for that login, supplied only to the dashboard API through deployment secrets. |
 | `DASHBOARD_AUTH_ORIGIN` | (none) | Exact canonical `https://<dns-host>` origin on port 443; no path, wildcard, alias or HTTP fallback. |
 | `DASHBOARD_AUTH_RP_ID` | (none) | The same exact DNS hostname, without scheme or path. |
 | `DASHBOARD_AUTH_DEPLOYMENT` | `default` | Stable deployment suffix, unique on the origin: lowercase ASCII letters/digits with interior hyphens, at most 32 characters. Scopes cookie names, not browser trust. |
