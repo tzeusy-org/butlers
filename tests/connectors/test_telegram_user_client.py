@@ -184,6 +184,47 @@ def test_batch_history_uses_shared_structured_sender_contract(
     ]
 
 
+def test_batch_history_carries_authorship_and_forward_facts(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """Spec: REQ-connector-base-spec-013 (Message.out and Message.fwd_from, omitted if absent)."""
+
+    def _msg(msg_id: int, sender_id: int, text: str, **flags: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=msg_id,
+            chat_id=200,
+            sender_id=sender_id,
+            sender=SimpleNamespace(first_name="Alice", username=None),
+            message=text,
+            text=text,
+            date=datetime(2026, 8, 24, 10, msg_id, tzinfo=UTC),
+            reply_to_msg_id=flags.pop("reply_to", None),
+            **flags,
+        )
+
+    counterparty = _msg(1, 777, "Can you send the deck?", out=False, fwd_from=None)
+    owner = _msg(2, 555, "I'll send it tomorrow", out=True, fwd_from=None)
+    forwarded = _msg(3, 555, "I will pay you back", out=True, fwd_from=_fwd_header(888))
+    reply = _msg(4, 555, "yes, that one", out=True, fwd_from=None, reply_to=1)
+    no_flags = _msg(5, 555, "no provider flags")
+    odd_out = _msg(6, 555, "odd flag", out="yes")
+
+    messages = [counterparty, owner, forwarded, reply, no_flags, odd_out]
+    envelope = connector._build_batch_envelope(
+        "200", messages, messages, participant_count=2, chat_type="private"
+    )
+    history = {e["message_id"]: e for e in envelope["payload"]["raw"]["conversation_history"]}
+
+    assert (history["1"]["is_from_me"], history["1"]["forwarded"]) == (False, False)
+    assert (history["2"]["is_from_me"], history["2"]["forwarded"]) == (True, False)
+    assert (history["3"]["is_from_me"], history["3"]["forwarded"]) == (True, True)
+    assert history["4"]["text"] == "yes, that one"
+    assert history["4"]["reply_to"] == 1
+    assert "Can you send the deck?" not in history["4"]["text"]
+    assert "is_from_me" not in history["5"] and "forwarded" not in history["5"]
+    assert "is_from_me" not in history["6"]
+
+
 def test_batch_history_missing_date_warning_is_content_blind(
     connector: TelegramUserClientConnector,
     caplog: pytest.LogCaptureFixture,

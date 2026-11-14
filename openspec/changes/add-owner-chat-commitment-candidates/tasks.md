@@ -13,13 +13,13 @@ dispatch packet for bu-jv1moa.11.
 
 ## 1. Connector transport facts (REQ-connector-base-spec-013)
 
-- [ ] 1.1 WhatsApp: add `is_from_me` (bridge `raw.is_from_me`) and `forwarded` (`_is_forwarded`)
+- [x] 1.1 WhatsApp: add `is_from_me` (bridge `raw.is_from_me`) and `forwarded` (`_is_forwarded`)
   to each `conversation_history` entry in `_build_batch_envelope`
   (`src/butlers/connectors/whatsapp_user_client.py`).
-- [ ] 1.2 Telegram: add `is_from_me` (`Message.out`) and `forwarded` (`Message.fwd_from is not
+- [x] 1.2 Telegram: add `is_from_me` (`Message.out`) and `forwarded` (`Message.fwd_from is not
   None`) per entry (`src/butlers/connectors/telegram_user_client.py`); omit when the attribute
   is absent.
-- [ ] 1.3 Tests: extend `tests/connectors/test_whatsapp_user_client.py` and
+- [x] 1.3 Tests: extend `tests/connectors/test_whatsapp_user_client.py` and
   `tests/connectors/test_telegram_user_client.py` with mixed owner, counterparty, forwarded and
   reply entries; assert facts and that `text` never inlines the quoted message.
 
