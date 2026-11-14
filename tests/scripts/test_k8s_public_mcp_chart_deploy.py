@@ -87,3 +87,22 @@ def test_the_go_live_live_checks_script_parses_and_never_dumps_a_secret() -> Non
     text = script.read_text()
     for banned in ("get secret", "printenv", "jsonpath='{.data"):
         assert banned not in text
+
+
+def test_the_live_checks_keep_their_review_guards() -> None:
+    """Pin what the review required of the go-live script (it cannot run before go-live)."""
+    text = (_ROOT / "scripts/k8s/public-mcp-live-checks.sh").read_text()
+    for needle in (
+        "ciliumclusterwidenetworkpolicies",
+        "globalnetworkpolicies",
+        "clusterpolicies.kyverno.io",
+        "constrainttemplates",
+        "not visible",  # forbidden is never a pass
+        "seccompProfile",  # restricted-compliant probe pods
+        "get svc -o json",  # Service selectors read before the labelled probe
+        "ABORTED",
+        "INCONCLUSIVE",
+        'startswith("28")',  # only an auth/pg_hba error class counts as refused
+        "CANARIES",
+    ):
+        assert needle in text, needle

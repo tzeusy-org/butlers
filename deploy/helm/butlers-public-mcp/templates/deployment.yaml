@@ -7,7 +7,7 @@ metadata:
     {{- include "pub.labels" . | nindent 4 }}
 spec:
   # One replica: the assertion replay (jti) set is in memory, so two pods would each accept
-  # a replay the other saw. Recreate keeps a rollout from overlapping two.
+  # a replay the other saw. Recreate keeps a rollout from overlapping two. Fixed: not a value.
   replicas: 1
   strategy:
     type: Recreate
@@ -37,11 +37,11 @@ spec:
             capabilities: {drop: [ALL]}
             seccompProfile: {type: RuntimeDefault}
           ports:
-            - {name: mcp, containerPort: {{ .Values.ports.mcp }}}
-            - {name: metrics, containerPort: {{ .Values.ports.metrics }}}
+            - {name: mcp, containerPort: 8080}
+            - {name: metrics, containerPort: 9090}
           env:
-            - {name: MCP_PUBLIC_DB_HOST, value: {{ required "database.host is required" .Values.database.host | quote }}}
-            - {name: MCP_PUBLIC_DB_PORT, value: {{ .Values.database.port | quote }}}
+            - {name: MCP_PUBLIC_DB_HOST, value: "postgres-{{ .Values.env }}-rw.{{ include "pub.pgNamespace" . }}.svc.cluster.local"}
+            - {name: MCP_PUBLIC_DB_PORT, value: "5432"}
             - {name: MCP_PUBLIC_DB_NAME, value: {{ .Values.database.name | quote }}}
             - {name: MCP_PUBLIC_DB_USER, value: {{ .Values.database.user | quote }}}
             # The DB password is a file (/etc/butlers-public-mcp/db/password), never env.
@@ -59,10 +59,10 @@ spec:
             - {name: TRANSFORMERS_OFFLINE, value: "1"}
             - {name: HOME, value: /tmp}
           readinessProbe:
-            tcpSocket: {port: {{ .Values.ports.mcp }}}
+            tcpSocket: {port: 8080}
             periodSeconds: 5
           livenessProbe:
-            tcpSocket: {port: {{ .Values.ports.mcp }}}
+            tcpSocket: {port: 8080}
             periodSeconds: 15
             failureThreshold: 4
           resources:

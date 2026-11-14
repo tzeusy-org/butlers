@@ -383,7 +383,9 @@ runtime contract and values.
    (owner act 2). Create `MCP_PUBLIC_HOP_BEARER_DIGEST` = lowercase hex SHA-256 of the
    filter-proxy `UPSTREAM_BEARER`, no prefix (owner act 5), never the bearer itself; and
    `MCP_PUBLIC_CANARIES` = the JSON list of canary strings (each at least 8 characters, D15), which
-   the server requires (missing or invalid, every tool refuses). To overlap a bearer rotation set
+   the server requires. The list must be non-empty (at least one string of 8 or more characters):
+   a missing, invalid or empty file makes every tool refuse, and the chart cannot read the item, so
+   the live checks verify it. To overlap a bearer rotation set
    `externalSecrets.bearerDigestNextKey` to a second item holding the next digest; the server
    accepts both while the overlap lasts.
 3. *Site values.* The server requires `MCP_PUBLIC_AUDIENCE` (https URL of the public endpoint) and
@@ -440,9 +442,9 @@ table.
 | `projection_apply_pending` | The owner step has not run since the first sync or the last manifest change, stopped midway, or the initial copy is not complete | Run 3c; wait for every relation to reach state `r` |
 | `projection_version_mismatch` | Deploy skew: the public pod ships a different manifest from the replicated digest | On dev, the last deploy's owner step failed, so its public chart step did not run: fix 3c and deploy again. Elsewhere, finish the `butlers` rollout (3b) or deploy the public chart at the same revision |
 | `projection_stale` | Replication older than 15 minutes, or `replication_as_of()` NULL (no subscription, or it never confirmed a position) | Check the slot; if `wal_status = 'lost'`, rerun 3c, which rebuilds the slot and subscription |
-| `unavailable` | No connection to `butlers_public`: `postgres-<env>` down, the connection limit reached, a `pg_hba` refusal (for example, a pod on a second node), or the password Secret missing | Section 1 checks; the ExternalSecret status in `butlers-public-<env>` (`butlers-public-mcp-db`, mounted at `/etc/butlers-public-mcp/db/password`) |
+| `unavailable` | The canaries file is missing, invalid or an empty list (ExternalSecret `butlers-public-mcp-canaries`, Bitwarden `MCP_PUBLIC_CANARIES`; `describe` still answers), or no connection to `butlers_public`: `postgres-<env>` down, the connection limit reached, a `pg_hba` refusal (for example, a pod on a second node), or the password Secret missing | Section 1 checks; the ExternalSecret status in `butlers-public-<env>` (`butlers-public-mcp-db`, mounted at `/etc/butlers-public-mcp/db/password`) |
 | `domain_disabled` | A kill switch is off | Intended, or see section 6 |
-| `blocked` | The canary latch holds, or the canaries file is missing or invalid (ExternalSecret `butlers-public-mcp-canaries`, Bitwarden `MCP_PUBLIC_CANARIES`) | Section 6, leak runbook |
+| `blocked` | The canary latch holds | Section 6, leak runbook |
 | JSON-RPC `-32001` | Bearer or assertion refused | Gateway acts 4-6; bearer digest (ExternalSecret `butlers-public-mcp-bearer`, Bitwarden `MCP_PUBLIC_HOP_BEARER_DIGEST`) and keyring (ConfigMap `butlers-public-mcp-keyring`) in 3d |
 | Pod not Ready, or the `kubectl` rollout never finishes | The TAG has no `butlers-public-mcp` entrypoint (chart switched on before the server PRs merged), or the bearer-digest Secret is missing, so the server fails closed at startup | Check `PUBLIC_MCP_CHART_dev` and the TAG; `kubectl -n butlers-public-<env> get externalsecret` |
 | Every request refused after a hop-bearer change | The digest Secret lags the Bitwarden item (refresh interval 1h) | Force an ExternalSecret refresh; the server accepts the current and next digest during a rotation (D6) |

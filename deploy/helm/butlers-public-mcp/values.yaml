@@ -8,15 +8,15 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
-# The shared CNPG cluster `postgres-<env>` (instance pods carry cnpg.io/cluster and
-# cnpg.io/podRole=instance). Read-write service: the projection subscriber is the writer.
+# The shared CNPG cluster `postgres-<env>`: its read-write service, namespace and instance-pod
+# labels are derived from `env` in the templates and are not values. The network allows (mcp
+# filter-proxy, monitoring, postgres, kube-dns), the ports (8080, 9090) and the replica count
+# (1) are fixed by RFC 0039 D8 and the host, so no value can widen or change them: setting
+# `networkPolicy`, `ports`, `database.host`, `database.port`, `database.clusterNamespace`,
+# `database.clusterName` or a `replicas` other than 1 fails the render.
 database:
-  host: ""
-  port: 5432
   name: butlers_public
   user: mcp_public_ro
-  clusterNamespace: ""
-  clusterName: ""
 
 # Dashboard base URL the server puts in card links (MCP_PUBLIC_DASHBOARD_BASE).
 dashboardBase: ""
@@ -31,7 +31,8 @@ externalSecrets:
   # Optional second digest for a rotation overlap (served as bearer/digest_next). Empty: none.
   bearerDigestNextKey: ""
   # REQUIRED by the server: a JSON list of canary strings (each at least 8 characters, D15).
-  # Missing or invalid, every tool refuses.
+  # Missing, invalid or EMPTY, every tool refuses: the Bitwarden item must hold a JSON list with
+  # at least one string of 8 or more characters (a chart cannot read the item's content).
   canariesKey: MCP_PUBLIC_CANARIES
 
 # Verifier keyring, the runtime_probe_control document (version, current, retiring[]) rendered
@@ -53,19 +54,6 @@ audience: ""
 allowedSubs: ""
 clientDomains: ""
 registeredClients: ""
-
-ports:
-  mcp: 8080
-  metrics: 9090
-
-networkPolicy:
-  # The filter-proxy release's pods, the only caller of the MCP port (D8 item 2).
-  filterProxy:
-    namespace: mcp
-    podLabels:
-      app.kubernetes.io/instance: butlers
-  # The cluster scraper's namespace, the only caller of the metrics port.
-  monitoringNamespace: lgtm
 
 securityContext:
   runAsUser: 10001

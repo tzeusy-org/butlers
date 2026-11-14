@@ -28,7 +28,7 @@ scripts/k8s/public-mcp-live-checks.sh dev             # go-live: policy, reachab
 |---|---|---|---|
 | `butlers-public-mcp-db` | `MCP_PUBLIC_RO_DB_PASSWORD` | `db/password` | the `mcp_public_ro` password. Only this chart references it (`tests/scripts/test_helm_butlers_public_mcp.py` renders the butlers chart to prove it) |
 | `butlers-public-mcp-bearer` | `MCP_PUBLIC_HOP_BEARER_DIGEST` (+ `bearerDigestNextKey`) | `bearer/digest`, `bearer/digest_next` | lowercase hex SHA-256 of the filter-proxy `UPSTREAM_BEARER`, never the bearer |
-| `butlers-public-mcp-canaries` | `MCP_PUBLIC_CANARIES` | `canaries/canaries.json` | JSON list of canary strings, at least 8 characters each; required, or every tool refuses |
+| `butlers-public-mcp-canaries` | `MCP_PUBLIC_CANARIES` | `canaries/canaries.json` | JSON list of canary strings, at least 8 characters each. The list must be non-empty: a missing, invalid or empty (`[]`) file makes every tool refuse. The chart cannot read the item, so this is a documented rule checked by the live checks |
 
 ## Network policy (default deny both ways, four allows)
 
@@ -45,7 +45,7 @@ on dev, and a new one would cut off the primary's other clients (D8 item 3).
 
 ## Values
 
-`values.yaml` holds defaults and requires `env`; `values.dev.yaml` sets dev. There is no prod values
+`values.yaml` holds defaults and requires `env`. The network allows, ports (8080, 9090), `postgres-<env>` names and the single replica are constants: a value that tries to set them (`networkPolicy`, `ports`, `database.host|port|clusterNamespace|clusterName`, `replicas` other than 1) fails the render; `values.dev.yaml` sets dev. There is no prod values
 file (OD18). `audience` and `allowedSubs` are required and never committed: the deploy script passes
 them from `BUTLERS_PUBLIC_MCP_AUDIENCE` and `BUTLERS_PUBLIC_MCP_ALLOWED_SUBS`. `keyringJson` is the
 verifier keyring document, rendered verbatim and empty until owner act 4 (the server then verifies

@@ -447,6 +447,87 @@ def test_no_internet_egress_and_no_route_to_the_primary_or_other_namespaces(docs
     assert ports == {53, 5432}
 
 
+def _render_raw(*settings: str) -> subprocess.CompletedProcess[str]:
+    command = ["helm", "template", "butlers-public-mcp", str(_CHART), "-n", "butlers-dev"]
+    command += ["-f", str(_CHART / "values.yaml"), "-f", str(_CHART / "values.dev.yaml")]
+    for setting in ("image.tag=t", *_SITE, *settings):
+        command += ["--set", setting]
+    return subprocess.run(command, capture_output=True, text=True)
+
+
+def _policy_fingerprint(docs: list[dict]) -> str:
+    policies = sorted(_of(docs, "NetworkPolicy"), key=lambda p: p["metadata"]["name"])
+    return json.dumps(policies, sort_keys=True)
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        "networkPolicy.filterProxy.podLabels.app\\.kubernetes\\.io/instance=null",
+        "networkPolicy.filterProxy.podLabels=null",
+        "networkPolicy.filterProxy.namespace=butlers-dev",
+        "networkPolicy.filterProxy.namespace=",
+        "networkPolicy.monitoringNamespace=other",
+        "networkPolicy.monitoringNamespace=",
+        "database.clusterNamespace=butlers-dev",
+        "database.clusterNamespace=",
+        "database.clusterName=other",
+        "database.clusterName=",
+        "database.port=1",
+        "database.port=65535",
+        "database.host=elsewhere.example",
+        "ports.mcp=9999",
+        "ports.metrics=1",
+        "env=dev/x",
+        "env=Dev",
+    ],
+)
+def test_no_value_can_widen_or_move_a_network_allow(docs, override):
+    """Each override fails the render or leaves every rendered policy exactly as it was."""
+    result = _render_raw(override)
+    if result.returncode != 0:
+        return
+    rendered = [d for d in yaml.safe_load_all(result.stdout) if d]
+    assert _policy_fingerprint(rendered) == _policy_fingerprint(docs), override
+
+
+def test_the_allows_are_derived_from_env_not_from_values():
+    prod_like = _render("env=stage")
+    egress = [r for p in _of(prod_like, "NetworkPolicy") for r in p["spec"].get("egress", [])]
+    selectors = [peer for rule in egress for peer in rule["to"]]
+    names = {
+        s["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"] for s in selectors
+    }
+    assert names == {"postgres-stage", "kube-system"}
+
+
+def test_replicas_cannot_be_overridden_by_values():
+    assert _render_raw("replicas=2").returncode != 0
+    assert _render_raw("replicas=0").returncode != 0
+    ok = _render_raw("replicas=1")
+    assert ok.returncode == 0, ok.stderr
+    deployment = next(d for d in yaml.safe_load_all(ok.stdout) if d and d["kind"] == "Deployment")
+    assert deployment["spec"]["replicas"] == 1
+
+
+def test_the_mounts_always_exist_even_when_the_switch_file_is_empty(tmp_path):
+    """A missing disabled_domains file disables every domain in the host: always render it."""
+    extra = tmp_path / "empty.yaml"
+    extra.write_text(yaml.safe_dump({"disabledDomains": ""}))
+    docs = _render(values=("values.dev.yaml", str(extra)))
+    assert _config_files(docs)["disabled_domains"] == ""
+    mounts = {m["mountPath"] for m in _container(docs)["volumeMounts"]}
+    assert _SWITCHES_DIR in mounts
+
+
+def test_the_canaries_secret_and_mount_are_always_present(docs):
+    """The chart cannot read the item's content; it guarantees the file, the docs name the rule."""
+    assert "butlers-public-mcp-canaries" in _external_keys(docs)
+    readme = (_CHART / "README.md").read_text()
+    assert "non-empty" in readme
+    assert "non-empty" in (_ROOT / "docs/operations/public-mcp-read-surface.md").read_text()
+
+
 def test_policies_are_confined_to_the_public_namespace(docs):
     for policy in _of(docs, "NetworkPolicy"):
         assert policy["metadata"]["namespace"] == _NAMESPACE
