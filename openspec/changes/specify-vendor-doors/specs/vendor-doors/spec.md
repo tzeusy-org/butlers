@@ -34,9 +34,17 @@ revoked from every role. A forged owner id, non-owner session, connector callbac
 or MCP caller, exposed invocation, or email- or message-originated request SHALL be refused with a
 content-free reason and no row change. An authenticated email sender SHALL NOT confirm a door.
 The stored `ingestion_events.sender_authentication` verdict SHALL be copied into the proposal
-lineage and consumed as stored; raw headers SHALL NOT be reparsed. Retries SHALL be idempotent. The confirm, revoke, reject and propose functions SHALL each have
+lineage and consumed as stored; raw headers SHALL NOT be reparsed. Retries SHALL be idempotent. The confirm, revoke, reject, create and propose functions SHALL each have
 `EXECUTE` revoked from `PUBLIC` by a standalone statement and granted only to their one role set
-(dashboard for confirm, revoke and reject; Finance and Switchboard for propose). The confirmation
+(dashboard for confirm, revoke, reject and create; Finance and Switchboard for propose).
+`vendor_door_propose` SHALL derive a proposal's origin from the calling session role (Switchboard
+gives `email`, Finance gives `extracted`), SHALL read an email proposal's verdict and sender
+address from `public.ingestion_events` by event id, and SHALL accept neither as an argument.
+`legacy_owner_set` SHALL be written only by the finance migration, and `dashboard` origin only by
+`vendor_door_create` behind `POST /api/vendor-doors` and the authenticated owner control.
+"Registrable domain" SHALL be the eTLD+1 under the Public Suffix List (ICANN and private
+sections) from a pinned, vendored snapshot, computed by one shared function for the sender and the
+link host; if it cannot be computed the proposal SHALL count as unverified. The confirmation
 view SHALL show, for the exact version being decided, the registrable host, the full template, the
 origin, the stored sender verdict, the sender's registrable domain and whether it matches the link
 host, and SHALL NOT show a vendor display name alone. Pending
@@ -87,8 +95,21 @@ Scope: v1-mandatory
 
 #### Scenario: Function execution is closed to every other role
 - **WHEN** `PUBLIC`, a butler role outside a function's grant, or the model-facing roles call
-  `vendor_door_confirm`, `vendor_door_revoke`, `vendor_door_reject` or `vendor_door_propose`
+  `vendor_door_confirm`, `vendor_door_revoke`, `vendor_door_reject`, `vendor_door_create` or
+  `vendor_door_propose`
 - **THEN** the call is refused for lack of `EXECUTE`
+
+#### Scenario: Origin and verdict cannot be claimed by the proposer
+- **WHEN** Switchboard or Finance calls `vendor_door_propose` claiming origin `dashboard` or
+  `legacy_owner_set`, or supplies a sender verdict or address
+- **THEN** the call is refused, and the stored origin is always the one derived from the calling
+  role and the verdict always the one read from `public.ingestion_events`
+
+#### Scenario: Registrable domains follow the Public Suffix List
+- **WHEN** domains `attacker.com.my` and `vendor.com.my`, or `a.myshopify.com` and
+  `b.myshopify.com`, are compared
+- **THEN** each pair is two different registrable domains, and a host or sender whose registrable
+  domain cannot be computed makes the proposal unverified
 
 #### Scenario: A look-alike proposal is shown with its real domain and origin
 - **GIVEN** a proposal from an email for host `netf1ix.com` labelled "Netflix"

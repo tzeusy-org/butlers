@@ -42,13 +42,23 @@ Found on main:
 - Function grants: each of `vendor_door_confirm`, `vendor_door_revoke`, `vendor_door_reject` and
   `vendor_door_propose` gets its own standalone `REVOKE ALL ON FUNCTION ... FROM PUBLIC` (outside
   any tolerant grant block), then `GRANT EXECUTE` to exactly one role set: the dashboard role for
-  confirm, revoke and reject; Finance and Switchboard for propose. The table, the view and the four
+  confirm, revoke, reject and create; Finance and Switchboard for propose. The table, the view and the five
   functions each get a row in `src/butlers/db_authority/grants.py` and the schema-reach and
   grants-manifest inventories (the catalog test is Docker-only, so the real-PG test in task 2.1
   asserts PUBLIC and every other role are refused EXECUTE).
 - Proposal writer: Finance (the extracted-link path) and Switchboard (email-derived proposals)
   insert through `public.vendor_door_propose`, which can only create `status='proposed'` rows and
-  can never touch a confirmed row. [Unknown] exact dashboard and finance role names: task 1.1
+  can never touch a confirmed row. Origin and verdict are bound to the caller, never arguments:
+  - `vendor_door_propose` derives `origin` from `session_user` (Switchboard gives `email`, Finance
+    gives `extracted`) and takes no origin argument.
+  - For `email`, it reads the verdict and the sender address from `public.ingestion_events` by the
+    `ingestion_event_id` argument, never from arguments, and fails closed (unverified) if the row
+    or verdict is missing.
+  - `legacy_owner_set` is written only by the finance migration (D5), under the migration role.
+  - `dashboard` origin is created only by a new `public.vendor_door_create` function (EXECUTE only
+    for the dashboard role, standalone `REVOKE ALL ... FROM PUBLIC`, its own `grants.py` row) behind
+    `POST /api/vendor-doors` and `require_dashboard_owner_control`. This is the owner's fallback
+    when a legitimate link is starved out by the caps (D2b). [Unknown] exact dashboard and finance role names: task 1.1
   reads `db_authority/grants.py` and picks the existing roles rather than creating new ones.
 - Readers: Finance, Switchboard, Messenger and the dashboard get SELECT on the resolver view
   `public.vendor_doors_current` (confirmed, unrevoked rows only). Proposals are readable only by
@@ -116,6 +126,31 @@ time), `confirmed_at`, `confirmed_by_session` (hash only), `revoked_at`, `create
   lowercasing, except that a `dashboard`-origin proposal bypasses this suppression, so the owner
   can always create the real template even after rejecting an attacker's identical one. `slot_types` does not count: the same template with different slot types is the
   same proposal.
+
+## D2c: Registrable domain
+
+"Registrable domain" is an authorization input (verified-tier equality, D2b), so it is the eTLD+1
+under the Public Suffix List, ICANN and private sections both. One shared function computes it for
+both the sender address and the link host; the sender and the host are never compared with two
+different helpers.
+
+- Implementation choice: a pinned `publicsuffix2`-style library with the Public Suffix List
+  snapshot vendored in the repo and refreshed only by a reviewed PR. Why: a vendored list makes the
+  result deterministic across the database function, tests and CI, and avoids a network fetch or a
+  floating list on a security decision. [Unknown] library name and pin: task 1.4 picks one that is
+  already a dependency if any.
+- The database enforces the same rule: the host stored on the row is the function's output at
+  proposal and confirmation time, and the resolver re-derives it from the template.
+- If it cannot be computed (no public suffix match, an IP, an empty or malformed address), the
+  proposal is unverified. It fails closed.
+- Private-section suffixes count: `myshopify.com` is a public suffix, so `a.myshopify.com` and
+  `b.myshopify.com` are different registrable domains. `attacker.com.my` and `vendor.com.my` are
+  different too: `com.my` is a suffix, never a registrable domain.
+- The finance display helper in `cancellation_door.py` (a two-label heuristic) stays display-only
+  and is never used for any decision.
+- Accepted residual: a legitimate vendor using a third-party mailer is counted unverified, and a
+  flood in that bucket can starve it for up to 30 days. The owner's fallback is the dashboard
+  create path.
 
 ## D3: Confirmation path
 
