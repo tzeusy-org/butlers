@@ -73,6 +73,8 @@ AtmosphereCurrentResponse = _models.AtmosphereCurrentResponse
 AtmosphereLocationUpdateRequest = _models.AtmosphereLocationUpdateRequest
 SafetyWatchEntry = _models.SafetyWatchEntry
 SafetyWatchUpsertRequest = _models.SafetyWatchUpsertRequest
+DepartureWatchEntry = _models.DepartureWatchEntry
+DepartureWatchUpsertRequest = _models.DepartureWatchUpsertRequest
 OwnerPlaceInput = _models.OwnerPlaceInput
 OwnerPlaceUpdate = _models.OwnerPlaceUpdate
 OwnerPlaceResponse = _models.OwnerPlaceResponse
@@ -1547,6 +1549,95 @@ async def delete_safety_watch(
         method="DELETE",
         path="/api/home/safety-watch",
         body={"entity_id": entity_id, "role": role},
+        response_status=204,
+        request=request,
+    )
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# /api/home/departure-watch — what the departure card checks (bu-jv1moa.8)
+# ---------------------------------------------------------------------------
+
+
+def _departure_watch_entry(row: Any) -> DepartureWatchEntry:
+    updated_at = row["updated_at"]
+    return DepartureWatchEntry(
+        entity_id=row["entity_id"],
+        owner_label=row["owner_label"],
+        secure_states=list(row["secure_states"]),
+        updated_at=updated_at.isoformat() if updated_at else None,
+    )
+
+
+@router.get("/departure-watch", response_model=list[DepartureWatchEntry])
+async def list_departure_watch(
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> list[DepartureWatchEntry]:
+    """The entities the departure card checks, as the owner declared them."""
+    rows = await _pool(db).fetch(
+        "SELECT entity_id, owner_label, secure_states, updated_at FROM departure_watch "
+        "ORDER BY entity_id"
+    )
+    return [_departure_watch_entry(row) for row in rows]
+
+
+@router.put("/departure-watch", response_model=DepartureWatchEntry)
+async def upsert_departure_watch(
+    request: Request,
+    body: DepartureWatchUpsertRequest,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> DepartureWatchEntry:
+    """Declare an entity for the departure card, or change its label or secure states.
+
+    The label is the owner's own wording and is the only name a card uses; Home Assistant's
+    ``friendly_name`` is never read.  A state outside ``secure_states`` is listed on the card.
+    """
+    row = await _pool(db).fetchrow(
+        "INSERT INTO departure_watch (entity_id, owner_label, secure_states) VALUES ($1, $2, $3) "
+        "ON CONFLICT (entity_id) DO UPDATE SET owner_label = EXCLUDED.owner_label, "
+        "secure_states = EXCLUDED.secure_states, updated_at = now() "
+        "RETURNING entity_id, owner_label, secure_states, updated_at",
+        body.entity_id,
+        body.owner_label,
+        body.secure_states,
+    )
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation="departure_watch_upsert",
+        method="PUT",
+        path="/api/home/departure-watch",
+        body={"entity_id": body.entity_id},
+        response_status=200,
+        request=request,
+    )
+    return _departure_watch_entry(row)
+
+
+@router.delete("/departure-watch/{entity_id}", status_code=204)
+async def delete_departure_watch(
+    request: Request,
+    entity_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> Response:
+    """Stop checking an entity on departure."""
+    status = await _pool(db).execute("DELETE FROM departure_watch WHERE entity_id = $1", entity_id)
+    if status == "DELETE 0":
+        raise HTTPException(status_code=404, detail="No such departure watch")
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation="departure_watch_delete",
+        method="DELETE",
+        path="/api/home/departure-watch",
+        body={"entity_id": entity_id},
         response_status=204,
         request=request,
     )

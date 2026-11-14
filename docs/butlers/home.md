@@ -139,6 +139,34 @@ separate owner-authorized act; until then nothing runs. `GET /api/home/presence/
 (owner-only) lists confirmed edges with `late` and `retracted` flags; the Devices page shows them in
 `PresenceTimeline`, with a quiet "not activated" state while the reader login is absent.
 
+## Departure card (dark)
+
+When the owner leaves home, Home can send one plain-text card listing what they asked to have
+checked and is not secure, for example "You left home. Front door: on". The owner declares each
+entity, the label to use and the states that count as secure (`off`, `closed`, `locked`...) in
+`home.departure_watch` through the owner-only `GET/PUT /api/home/departure-watch` and
+`DELETE /api/home/departure-watch/{entity_id}` (no dashboard panel yet). The deterministic
+`home_departure_watch` job (`src/butlers/jobs/home_departure.py`) runs each minute once scheduled:
+
+- it reads confirmed `owner.place` edges from the perception timeline as the owner reader; without
+  `BUTLERS_PERCEPTION_READER_DSN` it does nothing (`reader_unavailable`);
+- for a leave confirmed 2 to 30 minutes ago it records `home.departure_cards` and queues one timed
+  insight (`home:departure:<edge id>`, delivered by confirmed + 30 minutes or not at all);
+- a retracted or late leave, a later enter, or an all-secure home queues nothing;
+- an unhealthy Home Assistant source gives "Home: cannot see (last good reading N min ago)", and a
+  missing or unavailable entity gives "<label>: cannot see"; neither ever reads as secure;
+- every run rechecks open cards, and the Switchboard asks `public.resolve_home_departure`
+  (core_335) before sending: a closed card, or one whose lines changed since it was queued, is
+  withdrawn unsent; a card not rechecked for three minutes holds. A changed card's evidence row
+  closes as `withdrawn_changed`, which records why it never arrived but not what it said.
+
+The card names things only by the owner's labels, never Home Assistant's `friendly_name`, and has
+no buttons, no Home Assistant service call and no prepared action. Fixes, arrival cards and an
+immediate lane are bu-jv1moa.29. It is dark: `DEPARTURE_CARD_LIVE` is off and no roster schedules
+the job; activation turns it on with the timed insight lane, the perception reader login and the
+presence reducer. Requirement: `home-deterministic-jobs` spec delta in
+`openspec/changes/insight-timed-lane/`, "Home Departure Card Job".
+
 ## Proposed realtime feature specifications
 
 The shared [event-response contract](../../openspec/changes/specify-realtime-feature-contracts/specs/event-response-contract/spec.md)

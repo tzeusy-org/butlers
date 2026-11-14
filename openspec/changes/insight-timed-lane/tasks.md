@@ -7,5 +7,8 @@
 
 ## 2. Verification
 - [ ] 2.1 Real-PostgreSQL timed-lane and concurrency tests green in CI (Docker unavailable locally).
-- [ ] 2.2 Home departure producer and premise probe (bu-jv1moa.8 PR-B).
+- [x] 2.2 Home departure producer and premise probe (bu-jv1moa.8 PR-B): home_006 watch and card
+  tables, `home_departure_watch` job (dark, unscheduled), core_335 `resolve_home_departure`,
+  `("home", "departure_still_open")` probe, owner-only `/api/home/departure-watch`.
+- [ ] 2.2a Real-PostgreSQL departure job, definer and end-to-end timed-lane tests green in CI.
 - [ ] 2.3 Owner-approved activation: flag on and schedule added.

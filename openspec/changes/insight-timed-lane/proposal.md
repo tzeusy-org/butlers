@@ -13,4 +13,8 @@ Some insights are only worth saying at a moment: "you left; the back door is ope
 
 ## Impact
 
-Switchboard insight broker, the core migration chain, and the scheduled-job registry. No new table, role, grant or producer. The Home departure producer, its premise probe and its definer come later (bu-jv1moa.8 PR-B). Activation flips the flag and adds the schedule in one owner-approved change.
+Switchboard insight broker, the core migration chain, and the scheduled-job registry. No new role and no producer in PR-A.
+
+PR-B adds the first producer, the Home departure card: `home.departure_watch` (what to check, owner labels, secure states) and `home.departure_cards` (per-edge evidence) in home_006; the dark, unscheduled `home_departure_watch` job; the `("home", "departure_still_open")` premise probe; and `public.resolve_home_departure` (core_335), a SECURITY DEFINER that answers open/closed/unknown to `butler_switchboard_rw` only. Departure fixes, arrival cards and an immediate lane stay with bu-jv1moa.29.
+
+Activation flips both flags, logs in the perception reader and adds both schedules in one owner-approved change.

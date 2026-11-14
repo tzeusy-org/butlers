@@ -326,6 +326,39 @@ class SafetyWatchUpsertRequest(BaseModel):
         return stripped
 
 
+class DepartureWatchEntry(BaseModel):
+    """One thing the owner wants checked on departure (``home.departure_watch``)."""
+
+    entity_id: str
+    owner_label: str
+    secure_states: list[str]
+    updated_at: str | None = None
+
+
+class DepartureWatchUpsertRequest(BaseModel):
+    """Declare (or relabel) an entity the departure card checks, and its secure states."""
+
+    entity_id: str = Field(..., pattern=r"^[a-z_]+\.[a-z0-9_]+$", max_length=255)
+    owner_label: str = Field(..., min_length=1, max_length=80)
+    secure_states: list[str] = Field(..., min_length=1, max_length=8)
+
+    @field_validator("owner_label")
+    @classmethod
+    def _label_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("owner_label must not be blank")
+        return stripped
+
+    @field_validator("secure_states")
+    @classmethod
+    def _states_are_ha_state_words(cls, value: list[str]) -> list[str]:
+        for state in value:
+            if not re.fullmatch(r"[a-z0-9_]{1,32}", state):
+                raise ValueError("secure_states are lower-case Home Assistant state words")
+        return list(dict.fromkeys(value))
+
+
 # ---------------------------------------------------------------------------
 # Owner place registry (public.owner_places, core_303; bu-jv1moa.7)
 # ---------------------------------------------------------------------------
