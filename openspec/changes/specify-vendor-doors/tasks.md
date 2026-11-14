@@ -10,13 +10,18 @@
 
 - [ ] 2.1 Failing real-PG tests first: roles, direct writes revoked, CHECKs (kind, status, host),
   confirm/revoke CAS, propose cannot touch a confirmed row.
-- [ ] 2.2 Core revision creating `public.vendor_doors`, `vendor_doors_current`, the three functions,
-  grants manifest and schema-reach entries.
+- [ ] 2.1b Real-PG test: `PUBLIC` and every role outside each function's grant are refused
+  `EXECUTE` on confirm, revoke, reject and propose; the proposal caps and 30-day expiry hold;
+  reject is retained and not re-proposed.
+- [ ] 2.2 Core revision creating `public.vendor_doors`, `vendor_doors_current` and the four
+  functions, each with a standalone `REVOKE ALL ... FROM PUBLIC` then a single-role `GRANT EXECUTE`;
+  add rows for the table, view and four functions to `src/butlers/db_authority/grants.py`, and to
+  the schema-reach and grants-manifest inventories.
 
 ## 3. API
 
 - [ ] 3.1 `src/butlers/api/routers/vendor_doors.py` behind `require_dashboard_owner_control`: list,
-  confirm, revoke; refusal matrix (forged, non-owner, connector, exposed, email-originated).
+  confirm, revoke; refusal matrix (forged, non-owner, connector, exposed, email-originated); confirm view shows host, template, origin and verdict; reject route.
 - [ ] 3.2 Concurrent confirm/revoke test; idempotent retry test.
 
 ## 4. Typed reference and resolver

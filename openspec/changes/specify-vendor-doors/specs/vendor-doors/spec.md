@@ -14,7 +14,7 @@ Source: bu-kr3x6j (closed, option A); RFC 0038 D4; bu-jv1moa.40
 Scope: v1-mandatory
 
 #### Scenario: Door text cannot carry spend
-- **WHEN** a door template or any slot value names an amount, cart, or confirmation token
+- **WHEN** a door template has any query, any fragment, or a slot value outside the typed set
 - **THEN** confirmation refuses it and no row becomes `confirmed`
 
 #### Scenario: A click is not evidence
@@ -34,7 +34,14 @@ revoked from every role. A forged owner id, non-owner session, connector callbac
 or MCP caller, exposed invocation, or email- or message-originated request SHALL be refused with a
 content-free reason and no row change. An authenticated email sender SHALL NOT confirm a door.
 The stored `ingestion_events.sender_authentication` verdict SHALL be copied into the proposal
-lineage and consumed as stored; raw headers SHALL NOT be reparsed. Retries SHALL be idempotent.
+lineage and consumed as stored; raw headers SHALL NOT be reparsed. Retries SHALL be idempotent. The confirm, revoke, reject and propose functions SHALL each have
+`EXECUTE` revoked from `PUBLIC` by a standalone statement and granted only to their one role set
+(dashboard for confirm, revoke and reject; Finance and Switchboard for propose). The confirmation
+view SHALL show, for the exact version being decided, the registrable host, the full template, the
+origin and the stored sender verdict, and SHALL NOT show a vendor display name alone. Pending
+proposals SHALL be capped at 5 per (owner, host, kind) and 50 per owner and SHALL expire 30 days
+after creation; an expired proposal SHALL NOT be confirmable. The owner MAY reject a proposal,
+which SHALL be retained and not re-proposed unchanged.
 
 ID: REQ-vendor-doors-002
 Source: bu-jv1moa.40; core_271 sender_authentication (bu-s11n0s.20); design D1, D3
@@ -49,9 +56,38 @@ Scope: v1-mandatory
 - **WHEN** the same confirmation is sent again after success
 - **THEN** the response reports the same confirmed version and nothing else changes
 
-#### Scenario: Stale or concurrent confirm and revoke
-- **WHEN** a confirm with an old version races a revoke
-- **THEN** exactly one wins by the CAS and the loser receives the current state without a write
+#### Scenario: Two confirms at the same version
+- **GIVEN** a `proposed` door at version 3
+- **WHEN** two owner confirmations with `expected_version=3` run concurrently
+- **THEN** exactly one transitions the row to version 4 and the other reads the same confirmed
+  version 4 without a second write
+
+#### Scenario: Revoke races a re-confirm
+- **GIVEN** a `confirmed` door at version 4
+- **WHEN** a revoke and a confirm with `expected_version=4` run concurrently
+- **THEN** exactly one wins by the CAS, the other receives the current state with no write, and a
+  revoked door is only usable again through a new proposal and confirmation
+
+#### Scenario: Function execution is closed to every other role
+- **WHEN** `PUBLIC`, a butler role outside a function's grant, or the model-facing roles call
+  `vendor_door_confirm`, `vendor_door_revoke`, `vendor_door_reject` or `vendor_door_propose`
+- **THEN** the call is refused for lack of `EXECUTE`
+
+#### Scenario: A look-alike proposal is shown with its real domain and origin
+- **GIVEN** a proposal from an email for host `netf1ix.com` labelled "Netflix"
+- **WHEN** the owner opens the confirmation view
+- **THEN** it shows the registrable domain `netf1ix.com`, the full template, origin `email` and
+  the stored sender verdict for that version, never the vendor name alone
+
+#### Scenario: Proposals are capped and expire
+- **WHEN** a sixth pending proposal for the same (owner, host, kind) arrives, or a proposal is
+  older than 30 days
+- **THEN** the sixth is dropped and the expired one cannot be confirmed or listed as pending
+
+#### Scenario: Owner rejects a proposal
+- **WHEN** the owner rejects a proposal with the current version
+- **THEN** the row becomes `rejected`, is retained, and the same (owner, kind, template) is not
+  proposed again while retained
 
 #### Scenario: Forged, non-owner or exposed callers are refused
 - **WHEN** the caller is a non-owner, a connector callback, a goal, an MCP tool, an exposed request, or an email-originated request, or the body names another owner
@@ -66,19 +102,38 @@ Scope: v1-mandatory
 - **WHEN** a proposal is created from an ingested email
 - **THEN** its lineage holds the stored verdict value, an absent value is stored as `unverified`, and no header parser is invoked
 
-### Requirement: Door URLs and slots follow fixed safety rules at confirmation and resolution
+### Requirement: Door templates are scheme, host and path only
 
-A door template SHALL be HTTPS, with no userinfo, no IP literal, no IDN or `xn--` label, no
-non-default port, no redirect template and at most 300 characters after slot substitution, and its
+A door template SHALL consist only of an HTTPS scheme, a host and a path, with no query and no
+fragment, and slots only inside path segments. It SHALL have no userinfo, no IP literal, no IDN or
+`xn--` label and no non-default port, and at most 300 characters after slot substitution, and its
 host SHALL equal the stored registrable host. Slots SHALL be typed regex values that SHALL NOT
-contain `/ ? # % @ :`. The same rules SHALL be re-checked at every resolution.
+contain `/ ? # % @ :`. The same rules SHALL be re-checked at every resolution. With no query or
+fragment, a template cannot carry an amount, cart contents, a confirmation token or a redirect
+target by construction.
 
 ID: REQ-vendor-doors-003
-Source: self_links.py S1 URL rules; bu-jv1moa.40
+Source: self_links.py S1 URL rules; bu-kr3x6j; bu-jv1moa.40
 Scope: v1-mandatory
 
-#### Scenario: Unsafe templates are refused
-- **WHEN** a template has userinfo, an IP host, a punycode label, port 8443, an embedded redirect parameter, or exceeds 300 characters
+#### Scenario: A query is refused
+- **WHEN** a template contains a query string (for example `?amount=10` or `?next=...`)
+- **THEN** confirmation refuses it
+
+#### Scenario: A fragment is refused
+- **WHEN** a template contains a fragment
+- **THEN** confirmation refuses it
+
+#### Scenario: A slot in the host is refused
+- **WHEN** a template places a slot in the host (for example `https://{vendor}.example.com/cancel`)
+- **THEN** confirmation refuses it
+
+#### Scenario: A redirect-like path is refused
+- **WHEN** a path segment embeds a second URL or an encoded form of one
+- **THEN** confirmation refuses it
+
+#### Scenario: Other unsafe templates are refused
+- **WHEN** a template has userinfo, an IP host, a punycode label, port 8443, or exceeds 300 characters
 - **THEN** confirmation refuses it
 
 #### Scenario: Hostile slot values are inert

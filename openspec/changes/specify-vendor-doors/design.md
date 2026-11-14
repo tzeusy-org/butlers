@@ -35,10 +35,17 @@ Found on main:
 - Schema and migration owner: the core alembic chain (`alembic/versions/core/`), table
   `public.vendor_doors`. A finance-owned table was rejected because Switchboard and Messenger must
   resolve doors from other schemas, and `public` is the only cross-butler namespace.
-- Writer: only the dashboard API role, through two SQL functions (`public.vendor_door_confirm`,
+- Writer: only the dashboard API role, through SQL functions (`public.vendor_door_confirm`, `public.vendor_door_reject`,
   `public.vendor_door_revoke`) that enforce the URL rules, the CAS, and the owner binding in the
   database, so a bug in the router cannot store an unsafe row. Direct INSERT/UPDATE/DELETE is
   revoked from every role including the dashboard role.
+- Function grants: each of `vendor_door_confirm`, `vendor_door_revoke`, `vendor_door_reject` and
+  `vendor_door_propose` gets its own standalone `REVOKE ALL ON FUNCTION ... FROM PUBLIC` (outside
+  any tolerant grant block), then `GRANT EXECUTE` to exactly one role set: the dashboard role for
+  confirm, revoke and reject; Finance and Switchboard for propose. The table, the view and the four
+  functions each get a row in `src/butlers/db_authority/grants.py` and the schema-reach and
+  grants-manifest inventories (the catalog test is Docker-only, so the real-PG test in task 2.1
+  asserts PUBLIC and every other role are refused EXECUTE).
 - Proposal writer: Finance (the extracted-link path) and Switchboard (email-derived proposals)
   insert through `public.vendor_door_propose`, which can only create `status='proposed'` rows and
   can never touch a confirmed row. [Unknown] exact dashboard and finance role names: task 1.1
@@ -53,8 +60,8 @@ Found on main:
 
 One row per door, versioned. Columns: `id` UUID, `version` int (CAS), `owner_entity_id`, `kind`
 (`cancel`, `manage`, `return`, `check_in`), `vendor_entity_id` and `host` (registrable domain,
-lowercase ASCII), `template` (HTTPS URL with at most typed slots `{slot}`), `slot_types` (JSON map
-slot name to one of a closed regex set), `status` (`proposed`, `confirmed`, `revoked`, `rejected`),
+lowercase ASCII), `template` (HTTPS scheme, host and path only; typed slots `{slot}` only inside path segments), `slot_types` (JSON map
+slot name to one of a closed regex set), `status` (`proposed`, `confirmed`, `revoked`, `rejected`), `expires_at` (proposals only),
 `origin` (`dashboard`, `legacy_owner_set`, `extracted`, `email`), `lineage` (JSON: subscription id
 and column, or `ingestion_event_id` and the stored `sender_authentication` value copied at proposal
 time), `confirmed_at`, `confirmed_by_session` (hash only), `revoked_at`, `created_at`.
@@ -63,12 +70,33 @@ time), `confirmed_at`, `confirmed_by_session` (hash only), `revoked_at`, `create
   `https://example.com/orders/{order_ref}/return`). Slots take typed regex values from
   `{order_ref, booking_ref, account_ref}` with `[A-Za-z0-9_-]{1,64}`. A slot value may never
   contain `/ ? # % @ :`, and there is no slot type for amount, cart or token.
-- URL rules (checked in the confirm function and again at every resolution): HTTPS; no userinfo;
-  host ASCII only, no IP literal, no `xn--` label, no non-default port; no redirect template
-  (no `url=`, `next=`, `redirect`, `return_to` style query key, no second scheme in the string);
-  at most 300 characters after slot substitution; host equals the stored `host`.
+- Template shape (structural, checked in the confirm function and again at every resolution): a
+  template is scheme, host and path only. HTTPS; no userinfo; host ASCII only, no IP literal, no
+  `xn--` label, no non-default port; **no query and no fragment**; slots only inside path
+  segments, never in the host. With no query there is no parameter that could carry an amount, a
+  cart, a confirmation token or a redirect target, so "no spend, no token" and "no redirect
+  template" hold by construction, not by a keyword list. At most 300 characters after slot
+  substitution; the host equals the stored `host`. A path that embeds a second URL (a segment
+  containing `://` or an encoded form, already excluded because slot and path text may not contain
+  `%`) is refused.
 - Why not store a bare URL: the pending finance_017 model stores a bare URL, which cannot
   express "confirmed host" separately from the path an extracted email suggests.
+
+## D2b: Bounded lifecycle
+
+- Pending proposals are capped at 5 per (owner, vendor host, kind) and 50 per owner. A proposal
+  beyond a cap is dropped, not queued, and the producer is told nothing about confirmed rows.
+  Why: one subscription renews once a year, so a handful of candidate links per vendor and kind is
+  generous, while the caps bound a hostile mail flood that would otherwise fill the owner's review
+  list.
+- A proposal expires 30 days after creation (`expires_at`); an expired proposal is not shown and
+  cannot be confirmed. Why: 30 days spans several dashboard visits, and a later renewal email
+  re-proposes a fresh row, so an unreviewed link never lingers as a standing candidate.
+- Confirmed doors do not expire; the owner revokes them. Revoked, rejected and expired rows are
+  retained for lineage and are not counted against the caps once not pending.
+- The owner reject path (`POST /api/vendor-doors/{id}/reject`, same CAS) moves a proposal to
+  `rejected`; a rejected row is never re-proposed with the same (owner, kind, template) while the
+  rejection is retained.
 
 ## D3: Confirmation path
 
@@ -78,12 +106,17 @@ Owner-only, dashboard-only:
    `require_dashboard_owner_control`. The confirming owner is the authenticated owner authority,
    never a body field; a forged `owner_entity_id` in the body is ignored and a mismatching
    server-held owner is refused.
-2. The function does `UPDATE ... WHERE id=$1 AND version=$2 AND status='proposed'` and bumps
+2. The function does `UPDATE ... WHERE id=$1 AND version=$2 AND status='proposed' AND expires_at > now()` and bumps
    `version`. A stale version or non-proposed status returns the current state with no write
    (idempotent: confirming an already-confirmed identical door returns 200 with the same version).
-3. Revocation is the same shape (`status='revoked'`, version bump); revoking a revoked door is a
+3. The confirm view (what the owner decides on) shows, for that exact version: the registrable
+   host, the full template, the origin (`dashboard`, `legacy_owner_set`, `extracted`, `email`) and
+   the stored sender verdict. A vendor display name never appears alone: a look-alike host such as
+   `netf1ix.com` is shown as its real registrable domain with its origin, so the owner can see it
+   is not the vendor. The version in the view is the version the CAS compares.
+4. Revocation is the same shape (`status='revoked'`, version bump); revoking a revoked door is a
    no-op.
-4. Refused, with a content-free reason and no row change: a non-owner session, a connector
+5. Refused, with a content-free reason and no row change: a non-owner session, a connector
    callback credential, an MCP or goal caller, a request produced under exposure (the router
    rejects any request that carries goal lineage), and an email- or message-originated request.
    An authenticated email sender is evidence only; it can raise a proposal's displayed trust label
