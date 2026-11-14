@@ -1,0 +1,115 @@
+{{- /*
+Default deny both directions, then exactly four allows (RFC 0039 D8 item 2). Allowed traffic is
+the union of every policy selecting the pod, so no rule here may be wider than the flow it names.
+Every peer and port is a constant: no value can widen an allow (the pub.guard helper refuses the old keys).
+tests/scripts/test_helm_butlers_public_mcp.py evaluates that union. The live check
+(scripts/k8s/public-mcp-live-checks.sh) fails on any policy this chart did not render.
+On postgres-<env> nothing is added: no policy selects those pods on dev (D8 item 3).
+*/ -}}
+{{- $ns := include "pub.namespace" . }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-default-deny
+  namespace: {{ $ns }}
+  labels:
+    {{- include "pub.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# 1. MCP port, from the filter-proxy release in `mcp` only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-allow-mcp-ingress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "pub.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pub.selector" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mcp
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: butlers
+      ports:
+        - {protocol: TCP, port: 8080}
+---
+# 2. Metrics port, from the monitoring namespace only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-allow-metrics-ingress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "pub.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pub.selector" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: lgtm
+      ports:
+        - {protocol: TCP, port: 9090}
+---
+# 3. The postgres-<env> instance pods on 5432 (the same pods serve the primary: pg_hba and
+#    grants separate the databases, not the network, RFC 0039 D3).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-allow-postgres-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "pub.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pub.selector" . | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "pub.pgNamespace" . | quote }}
+          podSelector:
+            matchLabels:
+              cnpg.io/cluster: {{ include "pub.pgNamespace" . | quote }}
+              cnpg.io/podRole: instance
+      ports:
+        - {protocol: TCP, port: 5432}
+---
+# 4. Cluster DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-allow-dns-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "pub.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pub.selector" . | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}

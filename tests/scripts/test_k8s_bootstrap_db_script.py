@@ -47,6 +47,10 @@ def fake_repo(tmp_path: Path) -> Path:
     owner_step = tmp_path / "scripts" / "k8s" / "public-mcp-owner-step.sh"
     owner_step.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     owner_step.chmod(0o755)
+    # The public chart upgrade follows the owner step; test_k8s_public_mcp_chart_deploy covers it.
+    chart_deploy = tmp_path / "scripts" / "k8s" / "public-mcp-chart-deploy.sh"
+    chart_deploy.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    chart_deploy.chmod(0o755)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     stubs = {

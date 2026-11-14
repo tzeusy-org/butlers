@@ -320,6 +320,7 @@ def chart(tmp_path: Path) -> Path:
         ("bootstrap-db.sh", "0"),
         ("record-deploy.sh", "${RECORD_RC:-0}"),
         ("public-mcp-owner-step.sh", "${OWNER_RC:-0}"),
+        ("public-mcp-chart-deploy.sh", "${CHART_RC:-0}"),
     ):
         stub = scripts / name
         stub.write_text(
@@ -350,7 +351,9 @@ def _deploy(chart: Path, *make_args: str, **env: str) -> tuple[int, list[str]]:
         if not line.startswith("site-helm-args.sh")
     ]
     return status, [line.split(" ", 1)[0] for line in lines] + [
-        line for line in lines if line.startswith("public-mcp-owner-step.sh")
+        line
+        for line in lines
+        if line.startswith(("public-mcp-owner-step.sh", "public-mcp-chart-deploy.sh"))
     ]
 
 
@@ -362,8 +365,61 @@ def test_recipe_runs_the_owner_step_after_the_release_with_the_switch(chart: Pat
         "bootstrap-db.sh",
         "record-deploy.sh",
         "public-mcp-owner-step.sh",
-        f"public-mcp-owner-step.sh dev {_TAG} on butlers",
+        "public-mcp-chart-deploy.sh",
     ]
+    assert f"public-mcp-owner-step.sh dev {_TAG} on butlers" in calls
+
+
+# --- public chart hook (task 2.4) --------------------------------------------------------
+
+
+def _chart_calls(calls: list[str]) -> list[str]:
+    return [c for c in calls if c.startswith("public-mcp-chart-deploy.sh ")]
+
+
+def test_committed_chart_switches_are_off_until_go_live() -> None:
+    makefile = (_REPO_ROOT / "deploy/helm/butlers/makefile").read_text(encoding="utf-8")
+    assert "\nPUBLIC_MCP_CHART_dev := off\n" in makefile
+    assert "\nPUBLIC_MCP_CHART_prod := off\n" in makefile
+
+
+def test_chart_upgrade_runs_after_the_owner_step_at_the_same_tag_with_its_switch(
+    chart: Path,
+) -> None:
+    code, calls = _deploy(chart, "PUBLIC_MCP_CHART_dev=on")
+    assert code == 0
+    assert calls.index("public-mcp-chart-deploy.sh") > calls.index("public-mcp-owner-step.sh")
+    # The committed default is off, and the switch is passed through, not decided here.
+    assert _chart_calls(calls) == [f"public-mcp-chart-deploy.sh dev {_TAG} on"]
+    _code, calls = _deploy(chart)
+    assert _chart_calls(calls) == [f"public-mcp-chart-deploy.sh dev {_TAG} off"]
+
+
+@pytest.mark.parametrize(
+    ("record_rc", "owner_rc", "chart_rc", "expected", "chart_runs"),
+    [
+        ("0", "0", "0", 0, True),
+        ("0", "0", "7", 7, True),
+        ("0", "5", "7", 5, False),
+        ("3", "0", "7", 3, True),
+        ("3", "5", "7", 3, False),
+    ],
+)
+def test_chart_status_joins_with_the_first_non_zero_winning(
+    chart: Path, record_rc: str, owner_rc: str, chart_rc: str, expected: int, chart_runs: bool
+) -> None:
+    code, calls = _deploy(
+        chart, "PUBLIC_MCP_CHART_dev=on",
+        RECORD_RC=record_rc, OWNER_RC=owner_rc, CHART_RC=chart_rc,
+    )  # fmt: skip
+    assert code == expected
+    assert bool(_chart_calls(calls)) is chart_runs
+
+
+def test_a_skipped_owner_step_never_lets_the_chart_deploy(chart: Path) -> None:
+    """The step exits 0 when switched off; the chart must not read that as success."""
+    _code, calls = _deploy(chart, "PUBLIC_MCP_OWNER_STEP_dev=off", "PUBLIC_MCP_CHART_dev=on")
+    assert not _chart_calls(calls)
 
 
 @pytest.mark.parametrize(
@@ -407,7 +463,7 @@ def test_committed_switch_is_on_and_passed_through_when_overridden(chart: Path) 
     makefile = (_REPO_ROOT / "deploy/helm/butlers/makefile").read_text(encoding="utf-8")
     assert "\nPUBLIC_MCP_OWNER_STEP_dev := on\n" in makefile
     _code, calls = _deploy(chart, "PUBLIC_MCP_OWNER_STEP_dev=off")
-    assert calls[-1] == f"public-mcp-owner-step.sh dev {_TAG} off butlers"
+    assert f"public-mcp-owner-step.sh dev {_TAG} off butlers" in calls
 
 
 def test_recipe_with_the_real_step_fails_when_the_guard_refuses(chart: Path, tools: Path) -> None:

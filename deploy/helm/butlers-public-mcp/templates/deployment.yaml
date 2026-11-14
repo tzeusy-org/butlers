@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ include "pub.namespace" . }}
+  labels:
+    {{- include "pub.labels" . | nindent 4 }}
+spec:
+  # One replica: the assertion replay (jti) set is in memory, so two pods would each accept
+  # a replay the other saw. Recreate keeps a rollout from overlapping two. Fixed: not a value.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "pub.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pub.selector" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.securityContext.runAsGroup }}
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: server
+          image: {{ .Values.image.repository }}:{{ required "image.tag is required (git SHA)" .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["butlers-public-mcp"]
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
+          ports:
+            - {name: mcp, containerPort: 8080}
+            - {name: metrics, containerPort: 9090}
+          env:
+            - {name: MCP_PUBLIC_DB_HOST, value: "postgres-{{ .Values.env }}-rw.{{ include "pub.pgNamespace" . }}.svc.cluster.local"}
+            - {name: MCP_PUBLIC_DB_PORT, value: "5432"}
+            - {name: MCP_PUBLIC_DB_NAME, value: {{ .Values.database.name | quote }}}
+            - {name: MCP_PUBLIC_DB_USER, value: {{ .Values.database.user | quote }}}
+            # The DB password is a file (/etc/butlers-public-mcp/db/password), never env.
+            - {name: MCP_PUBLIC_AUDIENCE, value: {{ required "audience is required (https URL of the public MCP endpoint)" .Values.audience | quote }}}
+            - {name: MCP_PUBLIC_ALLOWED_SUBS, value: {{ required "allowedSubs is required (comma-separated owner subjects)" .Values.allowedSubs | quote }}}
+            {{- with .Values.clientDomains }}
+            - {name: MCP_PUBLIC_CLIENT_DOMAINS, value: {{ . | quote }}}
+            {{- end }}
+            {{- with .Values.registeredClients }}
+            - {name: MCP_PUBLIC_REGISTERED_CLIENTS, value: {{ . | quote }}}
+            {{- end }}
+            - {name: MCP_PUBLIC_DASHBOARD_BASE, value: {{ .Values.dashboardBase | quote }}}
+            # No model is ever fetched: the pod has no route to the internet.
+            - {name: HF_HUB_OFFLINE, value: "1"}
+            - {name: TRANSFORMERS_OFFLINE, value: "1"}
+            - {name: HOME, value: /tmp}
+          readinessProbe:
+            tcpSocket: {port: 8080}
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: 8080}
+            periodSeconds: 15
+            failureThreshold: 4
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: bearer, mountPath: /etc/butlers-public-mcp/bearer, readOnly: true}
+            - {name: keyring, mountPath: /etc/butlers-public-mcp/keyring, readOnly: true}
+            # Directory mount, never subPath: the switches are re-read and a subPath never updates.
+            - {name: switches, mountPath: /etc/butlers-public-mcp/switches, readOnly: true}
+            - {name: db, mountPath: /etc/butlers-public-mcp/db, readOnly: true}
+            - {name: canaries, mountPath: /etc/butlers-public-mcp/canaries, readOnly: true}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 256Mi}
+        - name: bearer
+          secret:
+            secretName: {{ .Release.Name }}-bearer
+            items:
+              - {key: digest, path: digest}
+              {{- if .Values.externalSecrets.bearerDigestNextKey }}
+              - {key: digest_next, path: digest_next}
+              {{- end }}
+        - name: db
+          secret:
+            secretName: {{ .Release.Name }}-db
+            items:
+              - {key: password, path: password}
+        - name: canaries
+          secret:
+            secretName: {{ .Release.Name }}-canaries
+            items:
+              - {key: canaries.json, path: canaries.json}
+        - name: keyring
+          configMap:
+            name: {{ .Release.Name }}-keyring
+        - name: switches
+          configMap:
+            name: {{ .Release.Name }}-switches

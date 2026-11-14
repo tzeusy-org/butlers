@@ -605,6 +605,24 @@
         "dashboard-api"
       ]
     },
+    "deploy/helm/butlers-public-mcp/values.dev.yaml::<deployment-scalar>::deployment::99f7be80eeeac037892650ddfec585e3d9dc18567a6d115588450bc9bb786b47": {
+      "class": "reference",
+      "observed": {
+        "authorities": [
+          "butlers.invalid:443"
+        ],
+        "config": null,
+        "count": 1,
+        "kind": "deployment",
+        "path": "deploy/helm/butlers-public-mcp/values.dev.yaml",
+        "scope": "<deployment-scalar>",
+        "sha256": "99f7be80eeeac037892650ddfec585e3d9dc18567a6d115588450bc9bb786b47"
+      },
+      "reason": "dashboardBase is the dashboard link base the public server writes into card links (MCP_PUBLIC_DASHBOARD_BASE); the server never dials it, and its pod has no route outside postgres-<env>:5432 and kube-dns. The site host replaces this placeholder at deploy time.",
+      "resolver": null,
+      "sites": [],
+      "workloads": []
+    },
     "docker-compose.control-stage.yml::<deployment-scalar>::deployment::09f66b26c794676f2a1faa7760f2c8cec72964e7c28a22d8772f59d0e24c10d7": {
       "class": "internal",
       "observed": {

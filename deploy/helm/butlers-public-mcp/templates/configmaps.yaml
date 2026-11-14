@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-keyring
+  namespace: {{ include "pub.namespace" . }}
+  labels:
+    {{- include "pub.labels" . | nindent 4 }}
+data:
+  keyring.json: {{ .Values.keyringJson | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-switches
+  namespace: {{ include "pub.namespace" . }}
+  labels:
+    {{- include "pub.labels" . | nindent 4 }}
+data:
+  disabled_domains: {{ .Values.disabledDomains | quote }}

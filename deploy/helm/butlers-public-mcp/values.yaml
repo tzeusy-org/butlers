@@ -1,0 +1,64 @@
+# Defaults. values.dev.yaml supplies the environment. There is no values.prod.yaml: prod rollout
+# is deferred (RFC 0039 OD18), and `env` is required so this file alone renders nothing.
+env: ""
+
+image:
+  # Same image and TAG as the butlers chart. Site registry: `--set image.repository=...`.
+  repository: registry.invalid/butlers-app
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# The shared CNPG cluster `postgres-<env>`: its read-write service, namespace and instance-pod
+# labels are derived from `env` in the templates and are not values. The network allows (mcp
+# filter-proxy, monitoring, postgres, kube-dns), the ports (8080, 9090) and the replica count
+# (1) are fixed by RFC 0039 D8 and the host, so no value can widen or change them: setting
+# `networkPolicy`, `ports`, `database.host`, `database.port`, `database.clusterNamespace`,
+# `database.clusterName` or a `replicas` other than 1 fails the render.
+database:
+  name: butlers_public
+  user: mcp_public_ro
+
+# Dashboard base URL the server puts in card links (MCP_PUBLIC_DASHBOARD_BASE).
+dashboardBase: ""
+
+externalSecrets:
+  storeRef: bitwarden-secretsmanager-dev
+  refreshInterval: 1h
+  # Bitwarden item names. The password is custody of this chart only (RFC 0039 D9).
+  dbPasswordKey: MCP_PUBLIC_RO_DB_PASSWORD
+  # Lowercase hex SHA-256 of the hop bearer (UPSTREAM_BEARER), no prefix, never the bearer (D6).
+  bearerDigestKey: MCP_PUBLIC_HOP_BEARER_DIGEST
+  # Optional second digest for a rotation overlap (served as bearer/digest_next). Empty: none.
+  bearerDigestNextKey: ""
+  # REQUIRED by the server: a JSON list of canary strings (each at least 8 characters, D15).
+  # Missing, invalid or EMPTY, every tool refuses: the Bitwarden item must hold a JSON list with
+  # at least one string of 8 or more characters (a chart cannot read the item's content).
+  canariesKey: MCP_PUBLIC_CANARIES
+
+# Verifier keyring, the runtime_probe_control document (version, current, retiring[]) rendered
+# verbatim as keyring.json. Empty until owner act 4 hands over the public key and kid: the server
+# then verifies nothing and refuses every call (it does not crash).
+keyringJson: ""
+
+# Break-glass kill switch (D16): the `disabled_domains` file, one domain or `all` per line, `#`
+# comments. Re-read every 10 s. Default: a comment only, so nothing is disabled. An unknown entry
+# disables everything.
+disabledDomains: |
+  # one domain per line, or `all`; empty means nothing is disabled
+
+# Server identity settings. audience (https URL of the public MCP endpoint) and allowedSubs
+# (comma-separated owner subjects) are REQUIRED, site values that are never committed:
+# scripts/k8s/public-mcp-chart-deploy.sh passes them from BUTLERS_PUBLIC_MCP_AUDIENCE and
+# BUTLERS_PUBLIC_MCP_ALLOWED_SUBS. clientDomains defaults to claude.ai,chatgpt.com in the server.
+audience: ""
+allowedSubs: ""
+clientDomains: ""
+registeredClients: ""
+
+securityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+
+resources:
+  requests: {cpu: 50m, memory: 256Mi}
+  limits: {memory: 1Gi}

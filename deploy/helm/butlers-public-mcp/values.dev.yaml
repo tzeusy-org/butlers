@@ -1,0 +1,5 @@
+# Namespace butlers-public-dev. Reads postgres-dev, the LIVE database despite the name.
+env: dev
+
+# Site host is never committed: make deploy-dev passes --set dashboardBase from BUTLERS_PUBLIC_HOST.
+dashboardBase: https://butlers.invalid/butlers-dev
