@@ -1121,6 +1121,12 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "transaction as the mode_loosen dashboard step-up; qualified SQL allocated to "
         "perception/mode_entries.py (bu-dhloi1.21)"
     ),
+    ("src/butlers/perception/mode_projection.py", "switchboard.owner_mode_entries"): (
+        "sanctioned:RFC-0038: S3.1 the owner.mode projection reads only the owner's mode "
+        "entries (sw_077) as perception_context_writer and writes them through "
+        "perception_write; qualified SQL allocated to perception/mode_projection.py "
+        "(bu-dhloi1.21)"
+    ),
     **{
         ("src/butlers/core/decision_sets.py", f"switchboard.{relation}"): (
             "sanctioned:RFC-0038: D13/S2.2 a decision-set wait reads its version's owner "

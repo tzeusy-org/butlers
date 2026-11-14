@@ -261,8 +261,29 @@ calls it.
   entry (`modes.entry_text`: `entry|since|until|cause|open-or-exited`, instants
   in epoch microseconds). The `entry|` prefix keeps entry targets apart from
   overlay targets. Only owner causes are stored; nothing infers an entry.
-- The `owner.mode` projection of the active entries is a later change, on the
-  `perception_context_writer` identity behind its own flag.
+- `butlers.perception.mode_projection` writes the `owner.mode` projection of
+  the active entries. It is dark: `perception.flags.MODE_PROJECTION_LIVE` is
+  off, nothing calls or schedules it, and `perception_context_writer` has no
+  login or privilege on the entries. `project_modes(rows, now, max_age=...)` is
+  pure: the set is the active entries (the same rule as SQL
+  `owner_mode_entry_active`), and the effective end is the earliest finite
+  end among them, capped at `now + max_age`, so an open-ended entry still
+  projects a finite span. It reads only `switchboard.owner_mode_entries`; no
+  mode is derived from place, clock or activity, and a non-owner cause
+  refuses. `ModeProjector` writes through `PerceptionStore` in one transaction
+  on the database's clock, only when the authenticated actor is
+  `perception_context_writer`, and refuses without a configured
+  `context.mode` profile (the store refuses too while it is unconfigured). A
+  generation conflict is written again once at the store's generation. The
+  projection must be written again by its end, which is the activation's
+  scheduling step.
+- Both mode tables enable row-level security, and sw_078 adds the read policies
+  activation needs, so activation is grants only: `perception_context_writer`
+  reads the entries, and `butler_switchboard_rw` reads the entries and the
+  overlay, each only as itself. Without a policy, a granted reader would see
+  zero rows with no error, and the projector would publish an empty mode set as
+  fresh. No role gets a write policy: owner writes run on the dashboard's owner
+  connection (the table owner, outside RLS). sw_078 grants nothing.
 
 ## Complete private backup
 
