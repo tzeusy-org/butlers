@@ -267,22 +267,24 @@ def test_nightly_consumes_closed_contexts_before_unchanged_installed_export():
         '--revision "${GIT_SHA}"' in chain
         and '--contexts "${IMAGE_SCRATCH}/image-contexts-' in chain
     )
-    # bu-kiuh8v.24: the producers' work, contexts and chain output, and docker's own data, live on
-    # the runner's larger /mnt disk (falling back to RUNNER_TEMP only when /mnt is too small).
+    # bu-kiuh8v.24: the runner has one disk (/mnt is a directory on /), so scratch is RUNNER_TEMP
+    # and docker is never moved; the producer prunes each finished producer's build cache.
     assert '--work "${IMAGE_SCRATCH}/image-context-work-' in context
     assert '--output "${IMAGE_SCRATCH}/image-contexts-' in context
     assert "RUNNER_TEMP}/image-" not in context + chain
-    move = next(
+    assert "--prune-build-cache" in context
+    scratch = next(
         step["run"]
         for step in steps
-        if step.get("name") == "Keep docker and image scratch on the larger /mnt disk"
+        if step.get("name") == "Image scratch on the runner's single disk"
     )
-    assert names.index("Keep docker and image scratch on the larger /mnt disk") < names.index(
+    assert names.index("Image scratch on the runner's single disk") < names.index(
         "Produce complete closed image contexts"
     )
-    assert '"data-root": "/mnt/docker"' in move and "IMAGE_SCRATCH=/mnt/butlers-image" in move
-    assert "IMAGE_SCRATCH=${RUNNER_TEMP}" in move  # the small-/mnt fallback
-    # The watchdog beside the producer snapshots to /mnt and stops it below a floor on /.
+    assert "IMAGE_SCRATCH=${RUNNER_TEMP}" in scratch and "findmnt" in scratch
+    workflow_text = (ROOT / ".github/workflows/nightly.yml").read_text()
+    assert '"data-root"' not in workflow_text and "mount --bind" not in workflow_text
+    # The watchdog beside the producer stops it below a floor on /.
     assert (
         "python3 -u -I -B scripts/nightly_disk_watchdog.py watch" in context
         and "setsid python3" in context
@@ -301,13 +303,7 @@ def test_nightly_consumes_closed_contexts_before_unchanged_installed_export():
     assert "df -h / /mnt" in start["run"]
     # Evidence must survive a runner that dies and loses its logs: annotations, not log lines.
     assert "::notice title=docker storage::" in start["run"] and "driver-type" in start["run"]
-    # The containerd image store lives outside data-root; it moves to /mnt and the snapshotter is
-    # turned off (run 43532052607 filled / with only data-root moved).
-    assert "--bind /mnt/containerd /var/lib/containerd" in move
-    assert '"containerd-snapshotter": false' in move
-    assert names.index("Keep docker and image scratch on the larger /mnt disk") > names.index(
-        start["name"]
-    )
+    assert names.index("Image scratch on the runner's single disk") > names.index(start["name"])
     assert "disk-watchdog" in context and 'wait "${producer}"' in context
     upload = next(step for step in steps if step.get("name") == "Upload the disk sampler log")
     assert upload["if"] == "always()" and "disk-watchdog" in upload["with"]["path"]

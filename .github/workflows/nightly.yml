@@ -304,8 +304,8 @@ jobs:
       - name: Disk and docker storage at job start
         run: |
           df -h / /mnt
-          # Annotations are stored by the service as they stream, so they survive a runner that
-          # dies and loses its logs (run 43532052607 died of ENOSPC on / with no log).
+          # Annotations survive a runner that hits ENOSPC (run 43532052607), but not one that loses
+          # communication with the server (run 43556274608 kept none of them).
           echo "::notice title=docker storage::$(docker info --format 'driver={{.Driver}} root={{.DockerRootDir}} status={{json .DriverStatus}}' 2>&1 | tr '\n' ' ')"
           echo "::notice title=containerd store::$(docker info 2>/dev/null | grep -i 'driver-type\|io.containerd' | tr -s ' ' | tr '\n' ';')"
           echo "::notice title=disk at start::$(df -h --output=target,size,avail / /mnt | tail -n +2 | tr -s ' ' | tr '\n' ';')"
@@ -321,53 +321,28 @@ jobs:
           sudo apt-get clean -q
           docker system prune -af || true
 
-      # bu-kiuh8v.24: the python producer's build cache, layers, tarball and extracted context
-      # filled the 84 GB root disk (run 43517653812 died at 1h47m, runner log ENOSPC). The
-      # runner's /mnt is a separate larger disk: keep docker's data and the producers' scratch there.
-      - name: Keep docker and image scratch on the larger /mnt disk
+      # bu-kiuh8v.24: this hosted runner has ONE disk. /mnt is a plain directory on / (run
+      # 43554266906: `df / /mnt` printed `/ 145G` for both), so moving docker's data-root or
+      # containerd to /mnt frees nothing; #5804 tried it and / still filled. Do not retry it.
+      # What filled / was finished producers' build cache (76 GB, 57 GB reclaimable): the
+      # producer now prunes the cache after each context (--prune-build-cache below).
+      - name: Image scratch on the runner's single disk
         run: |
-          set -euo pipefail
-          avail_mb=$(df --output=avail -BM /mnt | tail -1 | tr -dc '0-9')
-          echo "free before: root=$(df --output=avail -BM / | tail -1 | tr -d ' ') /mnt=${avail_mb}M"
-          if [ "${avail_mb}" -lt 30000 ]; then
-            echo "::warning::/mnt has under 30 GB free; leaving docker and scratch on the root disk"
-            echo "IMAGE_SCRATCH=${RUNNER_TEMP}" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          sudo mkdir -p /mnt/docker /mnt/containerd /mnt/butlers-image
-          sudo chown "$(id -u):$(id -g)" /mnt/butlers-image
-          sudo systemctl stop docker.socket docker
-          # The containerd image store keeps layers under /var/lib/containerd, outside
-          # data-root, so point it at /mnt as well, and turn the snapshotter off so docker uses
-          # the classic overlay2 store under data-root. Run 43532052607 still filled / with only
-          # data-root moved.
-          sudo systemctl stop containerd || true
-          sudo mkdir -p /var/lib/containerd
-          sudo mount --bind /mnt/containerd /var/lib/containerd
-          daemon='{"data-root": "/mnt/docker", "features": {"containerd-snapshotter": false}}'
-          if [ -s /etc/docker/daemon.json ]; then
-            sudo jq --argjson add "${daemon}" '. * $add' /etc/docker/daemon.json | sudo tee /etc/docker/daemon.json.new >/dev/null
-            sudo mv /etc/docker/daemon.json.new /etc/docker/daemon.json
-          else
-            echo "${daemon}" | sudo tee /etc/docker/daemon.json >/dev/null
-          fi
-          sudo systemctl start containerd || true
-          sudo systemctl start docker
-          test "$(docker info --format '{{.DockerRootDir}}')" = /mnt/docker
-          echo "::notice title=docker storage after move::$(docker info 2>/dev/null | grep -i 'storage driver\|driver-type\|io.containerd\|docker root dir' | tr -s ' ' | tr '\n' ';')"
-          findmnt /var/lib/containerd
-          echo "IMAGE_SCRATCH=/mnt/butlers-image" >> "$GITHUB_ENV"
+          echo "::notice title=/mnt mount::/mnt is on $(findmnt -n -o TARGET --target /mnt)"
+          echo "IMAGE_SCRATCH=${RUNNER_TEMP}" >> "$GITHUB_ENV"
 
       - name: Produce complete closed image contexts
         run: |
           # The producer runs in its own process group beside a watchdog (scripts/
-          # nightly_disk_watchdog.py). Below a free-space floor on / the watchdog writes a snapshot
-          # to /mnt and stops the producer, so the step fails cleanly while the runner can still
-          # upload evidence; a runner that dies loses its logs (runs 43532052607, 43545970763).
-          # The watchdog also samples to /mnt every two minutes and annotates sparsely.
+          # nightly_disk_watchdog.py). Below a free-space floor on / the watchdog freezes the
+          # producer, prunes the build cache, snapshots and stops the producer, so the step fails
+          # cleanly while the runner can still upload evidence; a runner that dies loses its logs
+          # and its annotations (runs 43532052607, 43545970763, 43556274608). The watchdog also
+          # samples disk and memory every two minutes and annotates sparsely.
           watch_dir="${IMAGE_SCRATCH}/disk-watchdog"
           mkdir -p "${watch_dir}"
           setsid python3 -I -B scripts/runtime_clis/produce_image_contexts.py \
+            --prune-build-cache \
             --project "${GITHUB_WORKSPACE}" \
             --work "${IMAGE_SCRATCH}/image-context-work-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output "${IMAGE_SCRATCH}/image-contexts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" &
