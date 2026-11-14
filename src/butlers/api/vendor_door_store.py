@@ -24,7 +24,7 @@ from typing import Any
 import asyncpg
 from opentelemetry.instrumentation.utils import suppress_instrumentation
 
-from butlers.db import database_name_from_env, db_params_from_env
+from butlers.db import database_name_from_env, db_params_from_env, register_jsonb_codec
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +48,12 @@ SELECT pg_has_role(session_user, $1, 'MEMBER')
    )
 """
 
-_COLUMNS = (
-    "id, version, kind, host, template, slot_types, status, origin, tier, sender_verdict, "
-    "sender_domain, vendor_entity_id, supersedes_id, expires_at, confirmed_at, revoked_at, "
-    "rejected_at, created_at"
+# A proposal past its expiry is never listed as pending: it reads as 'expired'.
+_VIEW = (
+    "SELECT id, version, kind, host, template, slot_types, "
+    "CASE WHEN status = 'proposed' AND expires_at <= now() THEN 'expired' ELSE status END "
+    "AS status, origin, tier, sender_verdict, sender_domain, vendor_entity_id, supersedes_id, "
+    "expires_at, confirmed_at, revoked_at, rejected_at, created_at FROM public.vendor_doors"
 )
 
 
@@ -65,6 +67,7 @@ async def _initialize_connection(connection: asyncpg.Connection) -> None:
         safe = await connection.fetchval(_SAFE_LOGIN_SQL, CAPABILITY_ROLE)
     if safe is not True:
         raise RuntimeError("vendor-door login holds authority beyond its capability role")
+    await register_jsonb_codec(connection)
 
 
 async def create_vendor_door_pool() -> asyncpg.Pool | None:
@@ -74,7 +77,7 @@ async def create_vendor_door_pool() -> asyncpg.Pool | None:
     if not (user and password):
         return None
     try:
-        params = db_params_from_env() | {"user": user, "password": password}
+        params: dict[str, Any] = {**db_params_from_env(), "user": user, "password": password}
         with suppress_instrumentation():
             return await asyncpg.create_pool(
                 **params,
@@ -92,6 +95,13 @@ async def create_vendor_door_pool() -> asyncpg.Pool | None:
 
 def _outcome(raw: Any) -> dict[str, Any]:
     return json.loads(raw) if isinstance(raw, str) else dict(raw)
+
+
+def _row(record: Any) -> dict[str, Any]:
+    row = dict(record)
+    if isinstance(row.get("slot_types"), str):  # a connection without the jsonb codec
+        row["slot_types"] = json.loads(row["slot_types"])
+    return row
 
 
 class VendorDoorStore:
@@ -129,17 +139,14 @@ class VendorDoorStore:
             args.extend(after)
             clauses.append(f"(created_at, id) < (${len(args) - 1}, ${len(args)})")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        sql = (
-            f"SELECT {_COLUMNS} FROM public.vendor_doors {where} "
-            "ORDER BY created_at DESC, id DESC LIMIT $1"
-        )
+        sql = f"SELECT * FROM ({_VIEW}) AS d {where} ORDER BY created_at DESC, id DESC LIMIT $1"
         try:
             async with pool.acquire() as conn, conn.transaction(readonly=True):
                 await conn.execute(f"SET LOCAL ROLE {CAPABILITY_ROLE}")
                 rows = await conn.fetch(sql, *args)
         except (asyncpg.PostgresError, OSError, TimeoutError) as exc:
             raise VendorDoorStoreUnavailable from exc
-        return [dict(r) for r in rows]
+        return [_row(r) for r in rows]
 
     async def create(
         self,
@@ -151,10 +158,10 @@ class VendorDoorStore:
         supersedes: uuid.UUID | None,
     ) -> dict[str, Any]:
         return await self._call(
-            "SELECT public.vendor_door_create($1, $2, $3::jsonb, $4, $5)",
+            "SELECT public.vendor_door_create($1, $2, $3, $4, $5)",
             kind,
             template,
-            json.dumps(slot_types),
+            slot_types,  # the pool's jsonb codec encodes it
             vendor_entity_id,
             supersedes,
         )

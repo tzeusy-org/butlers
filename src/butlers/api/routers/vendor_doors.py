@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -30,7 +30,7 @@ from butlers.core import vendor_doors as flag
 
 CURSOR_SCOPE = "vendor-doors:list:v1"
 Kind = Literal["cancel", "manage", "return", "check_in"]
-Status = Literal["proposed", "confirmed", "revoked", "rejected"]
+Status = Literal["proposed", "confirmed", "revoked", "rejected", "expired"]
 
 
 def _require_live() -> None:
@@ -53,8 +53,8 @@ class CreateDoor(_Body):
     kind: Kind
     template: str = Field(min_length=1, max_length=300)
     slot_types: dict[str, Any] = Field(default_factory=dict)
-    vendor_entity_id: uuid.UUID | None = None
-    supersedes: uuid.UUID | None = None
+    vendor_entity_id: uuid.UUID | None = Field(default=None, strict=False)
+    supersedes: uuid.UUID | None = Field(default=None, strict=False)
 
 
 class Versioned(_Body):
@@ -125,7 +125,14 @@ async def list_doors(
     cursor: str | None = Query(None),
     status: Status | None = Query(None),
 ) -> Any:
-    position = decode_cursor(cursor, (datetime, uuid.UUID), scope=CURSOR_SCOPE) if cursor else None
+    position = (
+        cast(
+            tuple[datetime, uuid.UUID],
+            decode_cursor(cursor, (datetime, uuid.UUID), scope=CURSOR_SCOPE),
+        )
+        if cursor
+        else None
+    )
     try:
         rows = await _store(request).list(limit=limit, status=status, after=position)
     except VendorDoorStoreUnavailable:

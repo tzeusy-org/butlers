@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -214,20 +215,29 @@ class _Conn:
     def __init__(self, safe):
         self.safe = safe
         self.args = None
+        self.codec = None
 
     async def fetchval(self, sql, *args):
         self.args = args
         return self.safe
 
+    async def set_type_codec(self, *args, **kwargs):
+        self.codec = (args, kwargs)
+
 
 async def test_login_check_accepts_only_a_clean_capability_member():
-    await store_mod._initialize_connection(_Conn(True))
+    await store_mod._initialize_connection(cast(Any, _Conn(True)))
     for bad in (False, None):
         with pytest.raises(RuntimeError):
-            await store_mod._initialize_connection(_Conn(bad))
+            await store_mod._initialize_connection(cast(Any, _Conn(bad)))
     conn = _Conn(True)
-    await store_mod._initialize_connection(conn)
+    await store_mod._initialize_connection(cast(Any, conn))
     assert conn.args == ("dashboard_vendor_doors",)
+    assert conn.codec is not None and conn.codec[0][0] == "jsonb"
+    refused = _Conn(False)
+    with pytest.raises(RuntimeError):
+        await store_mod._initialize_connection(cast(Any, refused))
+    assert refused.codec is None
 
 
 async def test_login_check_sql_rejects_reachable_foreign_roles():
@@ -248,3 +258,78 @@ async def test_pool_is_absent_without_its_own_credentials(monkeypatch):
 async def test_store_without_a_pool_is_unavailable():
     with pytest.raises(VendorDoorStoreUnavailable):
         await VendorDoorStore(None).confirm(DOOR, 1, "h")
+
+
+async def test_create_accepts_uuid_fields(client, fake):
+    vendor, old = uuid.uuid4(), uuid.uuid4()
+    r = await client.post(
+        "/api/vendor-doors",
+        json={**CREATE, "vendor_entity_id": str(vendor), "supersedes": str(old)},
+    )
+    assert r.status_code == 200
+    kw = fake.calls[0][2]
+    assert kw["vendor_entity_id"] == vendor and kw["supersedes"] == old
+    r = await client.post("/api/vendor-doors", json={**CREATE, "supersedes": "nope"})
+    assert r.status_code == 422
+
+
+class _PoolConn:
+    def __init__(self, rows):
+        self.rows = rows
+        self.sql = ""
+        self.args: tuple[Any, ...] = ()
+        self.executed: list[str] = []
+
+    def transaction(self, **_):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, sql):
+        self.executed.append(sql)
+
+    async def fetch(self, sql, *args):
+        self.sql, self.args = sql, args
+        return self.rows
+
+    async def fetchval(self, sql, *args):
+        self.sql, self.args = sql, args
+        return {"outcome": "ok"}
+
+
+class _Pool:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def acquire(self):
+        return self.conn
+
+
+async def test_list_decodes_a_connection_without_the_jsonb_codec():
+    row = _row(1) | {"slot_types": '{"order": "text"}'}
+    conn = _PoolConn([row])
+    out = await VendorDoorStore(cast(Any, _Pool(conn))).list(limit=5, status=None, after=None)
+    assert out[0]["slot_types"] == {"order": "text"}
+    assert conn.executed == ["SET LOCAL ROLE dashboard_vendor_doors"]
+
+
+async def test_expired_proposals_are_never_listed_as_pending():
+    conn = _PoolConn([])
+    store = VendorDoorStore(cast(Any, _Pool(conn)))
+    await store.list(limit=5, status="proposed", after=None)
+    assert "expires_at <= now() THEN 'expired'" in conn.sql
+    assert "status = $2" in conn.sql  # filtered on the projected status
+    assert conn.args == (6, "proposed")
+
+
+async def test_create_hands_the_codec_a_dict_not_pre_encoded_json():
+    conn = _PoolConn([])
+    store = VendorDoorStore(cast(Any, _Pool(conn)))
+    await store.create(
+        kind="cancel", template="t", slot_types={"a": "b"}, vendor_entity_id=None, supersedes=None
+    )
+    assert conn.args[2] == {"a": "b"}

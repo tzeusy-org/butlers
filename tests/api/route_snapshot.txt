@@ -431,7 +431,7 @@ OP GET /api/travel/trips/{trip_id}/documents cf6f80450ea3
 OP GET /api/travel/trips/{trip_id}/legs f9165eec5833
 OP GET /api/travel/trips/{trip_id}/reservations 57078d5c8c85
 OP GET /api/travel/upcoming 56a9eac8d629
-OP GET /api/vendor-doors 30f6c85273ba
+OP GET /api/vendor-doors 607c391c6ecc
 OP GET /api/webhooks 2dfbaffb1b0c
 OP GET /api/webhooks/{webhook_id} fefddc7b97af
 OP GET /health 7c8fa7428b01

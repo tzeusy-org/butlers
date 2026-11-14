@@ -669,8 +669,9 @@ async def lifespan(app: FastAPI):
         from butlers.api.routers.approvals import drain_decision_writebacks
 
         await asyncio.wait_for(drain_decision_writebacks(), timeout=30)
-    if getattr(app.state, "vendor_door_pool", None) is not None:
-        await app.state.vendor_door_pool.close()
+    vendor_door_pool = getattr(app.state, "vendor_door_pool", None)
+    if vendor_door_pool is not None:
+        await vendor_door_pool.close()
         app.state.vendor_door_pool = None
     if app.state.owner_auth_service is not None:
         await close_owner_auth_service(app.state.owner_auth_service)
