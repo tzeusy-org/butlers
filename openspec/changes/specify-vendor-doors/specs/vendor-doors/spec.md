@@ -145,6 +145,22 @@ Scope: v1-mandatory
 - **WHEN** the owner creates the same template from the dashboard
 - **THEN** it is stored despite the retained rejection
 
+#### Scenario: A higher-precedence sighting takes over a squatted template
+- **GIVEN** a pending or expired unverified proposal for a template
+- **WHEN** a verified-tier proposal or the owner's dashboard create names the same template
+- **THEN** the row is taken over at the next version with the new origin, tier and a fresh expiry,
+  subject to the new tier's caps, and an equal or lower live sighting changes nothing
+
+#### Scenario: Revival and takeover respect the caps
+- **GIVEN** a bucket holding five live proposals and an expired one
+- **WHEN** the expired template is sighted again
+- **THEN** it is dropped, not revived
+
+#### Scenario: A proposer cannot supersede a door
+- **WHEN** an email or extracted proposal is made
+- **THEN** it cannot name a door to supersede, and a dashboard create may only supersede a door
+  of the same owner, kind and host
+
 #### Scenario: Owner rejects a proposal
 - **WHEN** the owner rejects a proposal with the current version
 - **THEN** the row becomes `rejected`, is retained, and the same (owner, kind, template) is not

@@ -358,7 +358,7 @@ def _default_profile() -> list[dict[str, str]]:
 def _normal_roles() -> list[str]:
     return (
         [f"butler_{s}_rw" for s in _BUTLERS]
-        + ["connector_writer", "butler_calendar_rw", "dashboard_auth_api"]
+        + ["connector_writer", "butler_calendar_rw", "dashboard_auth_api", "dashboard_vendor_doors"]
         + list(_RESTORE_DRILL_ROLES)
     )
 

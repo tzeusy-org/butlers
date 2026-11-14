@@ -3541,6 +3541,13 @@ _NO_LIVE_COMMITMENT_CANDIDATE = """
 """
 
 
+# A vendor door names its owner and vendor entity, rows are retained forever, and this role cannot
+# read the table: the core_336 definer answers only whether a row names the entity (either column).
+_NO_VENDOR_DOOR = """
+    AND NOT public.vendor_door_entity_pinned(e.id)
+"""
+
+
 async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) -> int:
     """Archive ``public.entities`` orphaned by rejected/expired enrichment proposals.
 
@@ -3567,7 +3574,7 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
     schema, whose ``invalid_at`` is set by supersede, forget, expire and purge, and from this
     schema's own ``facts`` where present), no open knowledge gap in this schema (other
     butlers' gaps are out of reach), no live commitment candidate naming it as counterparty,
-    no ``contact_entity_map`` link, no
+    no vendor door naming it (owner or vendor, any status), no ``contact_entity_map`` link, no
     ``public.entity_info`` row and no ``public.priority_contacts`` entry. Any acquired
     reference means the entity graduated to a real entity and is left fully intact.
     ``test_every_table_referencing_entities_is_checked_by_the_reap_or_excused`` fails when a
@@ -3594,6 +3601,10 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
         "SELECT to_regclass('relationship.commitment_candidates') IS NOT NULL"
     ):
         clean_orphan += _NO_LIVE_COMMITMENT_CANDIDATE
+    if await db_pool.fetchval(
+        "SELECT to_regprocedure('public.vendor_door_entity_pinned(uuid)') IS NOT NULL"
+    ):
+        clean_orphan += _NO_VENDOR_DOOR
     candidates = await db_pool.fetch(
         f"SELECT e.id FROM public.entities e WHERE {clean_orphan} ORDER BY e.id"
     )

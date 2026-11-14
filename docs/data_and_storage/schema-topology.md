@@ -64,6 +64,13 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   because RFC 0038 S3 makes condition instances shared coordination projections. Only
   `butler_switchboard_rw` is granted anything, and non-FORCE RLS keeps every other role out even
   after an init-db replay re-grants public DML. See [Goal conditions](conditions.md).
+- **`public.vendor_doors`** and **`public.public_suffix_rules`** -- Owner-confirmed vendor-door registry
+  and the vendored Public Suffix List snapshot behind `public.registrable_domain` (core_336, dark).
+  In `public` because Finance, Switchboard and Messenger resolve doors from separate schemas. No
+  role holds INSERT, UPDATE, DELETE or TRUNCATE; every write is a SECURITY DEFINER function bound
+  to its caller through `current_setting('role', true)`, and the dashboard capability role
+  `dashboard_vendor_doors` is the only reader of proposals. The view `public.vendor_doors_current`
+  shows confirmed rows of the live owner. See [Vendor doors](vendor-doors.md).
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
   [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
 

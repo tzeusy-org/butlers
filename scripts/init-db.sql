@@ -6354,6 +6354,18 @@ BEGIN
 END;
 $$;
 
+-- Owner-only vendor-door writes (bu-jv1moa.40): the dashboard API takes this capability role with
+-- SET LOCAL ROLE for confirm, revoke, reject and create. It is a NOLOGIN capability role like
+-- dashboard_auth_api; membership for the dashboard login stays explicit host provisioning.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'dashboard_vendor_doors') THEN
+        CREATE ROLE dashboard_vendor_doors NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE
+            NOCREATEDB NOREPLICATION NOBYPASSRLS;
+    END IF;
+END;
+$$;
+
 -- Ordinary owner-at-creation and clause authoring are a separate purpose from
 -- D13 standing-permission confirmation. Only privileged bootstrap stages DDL.
 DO $attention_bootstrap$
