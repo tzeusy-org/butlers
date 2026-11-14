@@ -25,9 +25,10 @@ SPEC.loader.exec_module(producer)
 
 
 class Commands:
-    def __init__(self, failure=None):
+    def __init__(self, failure=None, loaded=None):
         self.calls = []
         self.failure = failure
+        self.loaded = loaded
 
     def run(self, argv, *, cwd, timeout=1800):
         self.calls.append((argv, timeout))
@@ -47,6 +48,8 @@ class Commands:
             )
             return ""
         if argv[:3] == ["docker", "image", "inspect"]:
+            if self.loaded is not None:
+                return json.dumps([self.loaded])
             return json.dumps(
                 [
                     {
@@ -175,6 +178,82 @@ def test_complete_chain_requires_real_manifest_all_profiles_and_owned_cleanup(
     assert result["variants"]["default-production"]["tag"] == "butlers-app:" + revision
     assert len(result["variants"]) == 4
     assert json.loads((output / "verification.json").read_text()) == result
+
+
+_MANIFEST = "sha256:" + "a" * 64
+_CONFIG = "sha256:" + "b" * 64
+_FOREIGN = "sha256:" + "c" * 64
+_INDEX = "application/vnd.oci.image.index.v1+json"
+
+
+@pytest.mark.parametrize(
+    ("loaded", "accepted"),
+    [
+        # The classic store reports the config digest as Id.
+        ({"Id": _CONFIG, "Os": "linux", "Architecture": "amd64"}, True),
+        # Docker 29's containerd store reports the loaded manifest digest as Id and
+        # names it again in Descriptor (bu-kiuh8v.38).
+        (
+            {
+                "Id": _MANIFEST,
+                "Descriptor": {"mediaType": _INDEX, "digest": _MANIFEST, "size": 856},
+                "Os": "linux",
+                "Architecture": "amd64",
+            },
+            True,
+        ),
+        ({"Id": _MANIFEST, "Os": "linux", "Architecture": "amd64"}, True),
+        (
+            {
+                "Id": _MANIFEST,
+                "Descriptor": {"mediaType": _INDEX, "digest": _FOREIGN, "size": 856},
+                "Os": "linux",
+                "Architecture": "amd64",
+            },
+            False,
+        ),
+        (
+            {
+                "Id": _CONFIG,
+                "Descriptor": {"mediaType": _INDEX, "digest": _FOREIGN, "size": 856},
+                "Os": "linux",
+                "Architecture": "amd64",
+            },
+            False,
+        ),
+        (
+            {"Id": _CONFIG, "Descriptor": _MANIFEST, "Os": "linux", "Architecture": "amd64"},
+            False,
+        ),
+        ({"Id": _FOREIGN, "Os": "linux", "Architecture": "amd64"}, False),
+        (
+            {
+                "Id": _FOREIGN,
+                "Descriptor": {"mediaType": _INDEX, "digest": _MANIFEST, "size": 856},
+                "Os": "linux",
+                "Architecture": "amd64",
+            },
+            False,
+        ),
+        ({"Id": _MANIFEST, "Os": "linux", "Architecture": "arm64"}, False),
+        ({"Id": _MANIFEST, "Os": "windows", "Architecture": "amd64"}, False),
+    ],
+)
+def test_loaded_application_identity_holds_under_both_image_stores(
+    recipe, tmp_path, loaded, accepted
+):
+    project, contexts, revision, helpers, events = recipe
+    commands = Commands(loaded=loaded)
+    work, output = tmp_path / "work", tmp_path / "output"
+    work.mkdir()
+    if not accepted:
+        with pytest.raises(ValueError, match="loaded application identity differs"):
+            producer.build(project, contexts, work, output, revision, helpers, commands)
+        assert not output.exists() and events[-1] == "cleanup"
+        return
+    result = producer.build(project, contexts, work, output, revision, helpers, commands)
+    # The recorded identity stays the content-addressed config digest from Buildx.
+    assert {variant["image_id"] for variant in result["variants"].values()} == {_CONFIG}
 
 
 @pytest.mark.parametrize("drift", ["source", "runtime", "verification", "context-link", "revision"])
