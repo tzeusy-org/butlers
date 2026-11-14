@@ -115,8 +115,17 @@ def matching_image(result: subprocess.CompletedProcess, image: dict) -> bool:
         environment = actual.get("Config", {}).get("Env", [])
         if type(environment) is not list or any(type(item) is not str for item in environment):
             return False
+        # The image's identity is content-addressed either way: the classic store reports the
+        # pinned config digest as Id, while the containerd image store (Docker 29's default, as
+        # on ubuntu-26.04 runners) reports the pinned manifest digest, which commits to that
+        # config, and names it in Descriptor. A Descriptor present must name the pinned manifest.
+        descriptor = actual.get("Descriptor")
+        if descriptor is not None and (
+            type(descriptor) is not dict or descriptor.get("digest") != image["manifest"]
+        ):
+            return False
         return (
-            actual.get("Id") == image["config"]
+            actual.get("Id") in (image["config"], image["manifest"])
             and actual.get("Os") == "linux"
             and actual.get("Architecture") == "amd64"
             and (
