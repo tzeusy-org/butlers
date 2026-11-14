@@ -517,7 +517,7 @@ async def _candidate(admin, person: UUID, action: str, *, event_at=None, lapse_i
         INSERT INTO relationship.commitment_candidates (
             source_key, state, kind, direction, counterparty_entity_id, action_description,
             confidence, marker, fingerprint, channel, evidence_ref, taint, event_time, lapse_at)
-        VALUES ($1, 'pending', 'promise', 'owner_to_other', $2, $3, 0.9, 'i''ll', $4,
+        VALUES ($1, 'pending', 'promise', 'owner_to_other', $2, $3, 0.9, 'first_person_will', $4,
                 'whatsapp_user_client',
                 '{"ingestion_event_id": "ing-1", "provider_message_id": "m-1"}'::jsonb,
                 'untrusted_origin', COALESCE($5::timestamptz, now() - interval '1 hour'),
