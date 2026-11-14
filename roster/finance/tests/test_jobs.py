@@ -3648,3 +3648,179 @@ def test_dedicated_invariant_gate_rejects_unrelated_or_incomplete_failures(case)
         assert isinstance(caught, pytest.fail.Exception)
     else:
         assert caught is error
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_insight_scan — vendor-door renewal consumer (bu-jv1moa.40, dark)
+# ---------------------------------------------------------------------------
+
+_DOOR_OWNER = "00000000-0000-4000-8000-0000000000c1"
+
+
+async def _add_door(pool, *, host: str, template: str, status: str = "confirmed", kind="cancel"):
+    await pool.execute(
+        "INSERT INTO public.entities(id, canonical_name, entity_type, roles) "
+        "VALUES ($1::uuid, 'Owner', 'person', ARRAY['owner']) ON CONFLICT DO NOTHING",
+        _DOOR_OWNER,
+    )
+    return await pool.fetchrow(
+        """
+        INSERT INTO public.vendor_doors (owner_entity_id, kind, host, template, status, origin,
+            tier, expires_at, confirmed_at)
+        VALUES ($1::uuid, $2, $3, $4, $5, 'dashboard', 'exempt',
+            CASE WHEN $5 = 'proposed' THEN now() + interval '30 days' END,
+            CASE WHEN $5 = 'confirmed' THEN now() END)
+        RETURNING id, version
+        """,
+        _DOOR_OWNER,
+        kind,
+        host,
+        template,
+        status,
+    )
+
+
+async def _renewal_candidate(pool):
+    return await pool.fetchrow(
+        "SELECT message, metadata FROM insight_candidates WHERE category = 'subscription-renewal'"
+    )
+
+
+async def _owner_sub(pool):
+    await _insert_subscription(
+        pool,
+        service="Adobe",
+        next_renewal=_today() + timedelta(days=10),
+        cancellation_url="https://account.adobe.com/cancel",
+        notice_period_days=7,
+        cancel_by=_today() + timedelta(days=3),
+        cancellation_url_source="owner",
+    )
+
+
+async def test_door_flag_off_keeps_todays_behavior_even_with_a_confirmed_door(
+    finance_clone, monkeypatch
+):
+    from butlers.core import vendor_doors
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    monkeypatch.setattr(vendor_doors, "VENDOR_DOORS_LIVE", False)
+    async with finance_clone() as pool:
+        await _setup_insight_schema(pool)
+        await _add_door(pool, host="adobe.com", template="https://account.adobe.com/cancel")
+        await _owner_sub(pool)
+        await run_insight_scan(pool)
+        cand = await _renewal_candidate(pool)
+        assert cand["metadata"]["cancellation_url"] == "https://account.adobe.com/cancel"
+        assert cand["metadata"]["door_verified"] is True
+        assert "door_reference" not in cand["metadata"]
+        assert "at https://account.adobe.com/cancel to avoid" in cand["message"]
+
+
+async def test_door_flag_on_shows_a_link_only_from_a_confirmed_door(finance_clone, monkeypatch):
+    from butlers.core import vendor_doors
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    monkeypatch.setattr(vendor_doors, "VENDOR_DOORS_LIVE", True)
+    async with finance_clone() as pool:
+        await _setup_insight_schema(pool)
+        door = await _add_door(pool, host="adobe.com", template="https://account.adobe.com/cancel")
+        await _owner_sub(pool)
+        await run_insight_scan(pool)
+        cand = await _renewal_candidate(pool)
+        meta = cand["metadata"]
+        assert meta["door_verified"] is True
+        assert meta["door_reference"] == {"door_id": str(door["id"]), "version": door["version"]}
+        assert meta["cancellation_url"] is None
+        assert "adobe[.]com (owner-confirmed door)" in cand["message"]
+        assert "http" not in cand["message"]
+
+
+@pytest.mark.parametrize("state", ["proposed", "rejected", "revoked", "other_host", "other_kind"])
+async def test_door_flag_on_a_proposal_or_foreign_door_stays_unverified(
+    finance_clone, monkeypatch, state
+):
+    from butlers.core import vendor_doors
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    monkeypatch.setattr(vendor_doors, "VENDOR_DOORS_LIVE", True)
+    async with finance_clone() as pool:
+        await _setup_insight_schema(pool)
+        if state in {"proposed"}:
+            await _add_door(
+                pool, host="adobe.com", template="https://account.adobe.com/cancel", status=state
+            )
+        elif state == "other_host":
+            await _add_door(pool, host="other.org", template="https://other.org/cancel")
+        elif state == "other_kind":
+            await _add_door(
+                pool,
+                host="adobe.com",
+                template="https://account.adobe.com/manage",
+                kind="manage",
+            )
+        else:
+            row = await _add_door(pool, host="adobe.com", template="https://a.adobe.com/x")
+            await pool.execute(
+                "UPDATE public.vendor_doors SET status=$2, expires_at=NULL, "
+                "confirmed_at=CASE WHEN $2='revoked' THEN now() END WHERE id=$1",
+                row["id"],
+                state,
+            )
+        await _owner_sub(pool)
+        await run_insight_scan(pool)
+        cand = await _renewal_candidate(pool)
+        assert cand["metadata"]["door_verified"] is False
+        assert cand["metadata"]["door_reference"] is None
+        assert cand["metadata"]["cancellation_url"] is None
+        assert "http" not in cand["message"]
+        assert "not verified" in cand["message"]
+
+
+async def test_door_flag_on_a_registry_read_failure_degrades_to_unverified(
+    finance_clone, monkeypatch
+):
+    from butlers.core import vendor_doors
+    from butlers.jobs._roster import finance_jobs
+
+    monkeypatch.setattr(vendor_doors, "VENDOR_DOORS_LIVE", True)
+    async with finance_clone() as pool:
+        await _setup_insight_schema(pool)
+        await _add_door(pool, host="adobe.com", template="https://account.adobe.com/cancel")
+        await _owner_sub(pool)
+        await pool.execute("DROP VIEW public.vendor_doors_current")
+        await finance_jobs.run_insight_scan(pool)
+        cand = await _renewal_candidate(pool)
+        assert cand["metadata"]["door_verified"] is False
+        assert "http" not in cand["message"]
+
+
+async def test_door_flag_on_owner_cancelled_still_suppresses_and_extracted_still_warns(
+    finance_clone, monkeypatch
+):
+    from butlers.core import vendor_doors
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    monkeypatch.setattr(vendor_doors, "VENDOR_DOORS_LIVE", True)
+    async with finance_clone() as pool:
+        await _setup_insight_schema(pool)
+        await _insert_subscription(
+            pool,
+            service="Owned",
+            next_renewal=_today() + timedelta(days=10),
+            status="cancelled",
+            status_source="owner",
+        )
+        await _insert_subscription(
+            pool,
+            service="Reported",
+            next_renewal=_today() + timedelta(days=10),
+            status="cancelled",
+            status_source="extracted",
+        )
+        await run_insight_scan(pool)
+        rows = await pool.fetch(
+            "SELECT message FROM insight_candidates WHERE category = 'subscription-renewal'"
+        )
+        assert len(rows) == 1 and "Reported" in rows[0]["message"]
+        assert "confirm the subscription status" in rows[0]["message"]
