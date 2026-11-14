@@ -52,7 +52,7 @@ def test_home_007_extends_the_home_chain() -> None:
 
 @pytest.mark.unit
 def test_no_threshold_has_a_default() -> None:
-    """REQ-home-deterministic-jobs-002: a missing value is unconfigured, never filled in."""
+    """Away-safety requirement 002: a missing value is unconfigured, never filled in."""
     upgrade = " ".join(" ".join(_statements(_load(_HOME_007, "h007"), "upgrade")).split())
     for column in (
         "max_c",
@@ -111,9 +111,7 @@ async def test_away_safety_tables_hold_their_bounds_and_downgrade(
             "INSERT INTO departure_watch (entity_id, owner_label, secure_states) "
             "VALUES ('binary_sensor.front_door', 'Front door', ARRAY['off'])"
         )
-        assert (
-            await pool.fetchval("SELECT away_alert_after_minutes FROM departure_watch") is None
-        )
+        assert await pool.fetchval("SELECT away_alert_after_minutes FROM departure_watch") is None
         await pool.execute("UPDATE departure_watch SET away_alert_after_minutes = 30")
         for minutes in (29, 1441):
             with pytest.raises(asyncpg.CheckViolationError):

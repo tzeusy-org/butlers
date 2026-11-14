@@ -1683,6 +1683,16 @@ async def _run_home_departure_watch_job(
     return await run_departure_watch(pool, job_args)
 
 
+async def _run_home_away_safety_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Freezer, away-door and sensing-blind owner conditions without a model (dark, unscheduled)."""
+    from butlers.jobs.home_away_safety import run_away_safety
+
+    return await run_away_safety(pool, job_args)
+
+
 _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
     "device_health_check": _run_home_device_health_check_job,
     "environment_report": _run_home_environment_report_job,
@@ -1693,6 +1703,7 @@ _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "atmosphere_preconditioning": _run_home_atmosphere_preconditioning_job,
     "home_safety_sentinel": _run_home_safety_sentinel_job,
     "home_departure_watch": _run_home_departure_watch_job,
+    "home_away_safety": _run_home_away_safety_job,
 }
 
 

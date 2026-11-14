@@ -1,4 +1,4 @@
-"""Away-safety declarations and streaks (bu-jv1moa.87, REQ-home-deterministic-jobs-002..007).
+"""Away-safety declarations and streaks (bu-jv1moa.87, specify-home-away-safety).
 
 Revision ID: home_007
 Revises: home_006
