@@ -14,6 +14,7 @@ admitted into a scope.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 
 
@@ -37,3 +38,27 @@ def pair_scope(
     if None in values or not values:
         raise ValueError("a pair scope needs non-empty string ids")
     return pair_key(pair), tuple(sorted(v for v in values if v is not None))
+
+
+def lazy_attachment_refs(attachments: object) -> tuple[tuple[str, str], ...]:
+    """The distinct ``(source_message_id, source_attachment_id)`` refs of an attachment list.
+
+    The one reading of a message's stored attachments, shared by the routing context check and
+    admission, so they cannot disagree about which refs a request carries. Accepts the list or its
+    JSON text; anything else, and any entry without both string ids, yields nothing.
+    """
+    if isinstance(attachments, str):
+        try:
+            attachments = json.loads(attachments)
+        except ValueError:
+            return ()
+    if not isinstance(attachments, list):
+        return ()
+    refs = {
+        (att["source_message_id"], att["source_attachment_id"])
+        for att in attachments
+        if isinstance(att, dict)
+        and isinstance(att.get("source_message_id"), str)
+        and isinstance(att.get("source_attachment_id"), str)
+    }
+    return tuple(sorted(refs))

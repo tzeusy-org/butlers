@@ -14,8 +14,15 @@ from uuid import UUID
 
 from butlers.audio_authorship import usable_key
 from butlers.core.fact_authority import FactWriteContext, dashboard_origin_digest
-from butlers.core.goal_admission import Evidence, EvidenceRefused, SourceRef, digest
+from butlers.core.goal_admission import (
+    MAX_ATTACHMENT_REFS,
+    Evidence,
+    EvidenceRefused,
+    SourceRef,
+    digest,
+)
 from butlers.core.reply_scope import scoped_reply_ref
+from butlers.core.resource_pairs import lazy_attachment_refs
 from butlers.identity import resolve_owner_channel_via_definer
 from butlers.tools.switchboard.connector.heartbeat import (
     VALID_CONNECTOR_TYPES,
@@ -224,6 +231,9 @@ class AcceptedSourceEvidence:
             owner_entity=entity,
             owner_channel=channel,
             prepared_input=prepared,
+            # The request's own lazy refs scope a pair-bound capability's grant (bu-jv1moa.64).
+            # More than the cap keeps the first sorted few, which only narrows the goal.
+            attachment_refs=lazy_attachment_refs(row["attachments"])[:MAX_ATTACHMENT_REFS],
         )
 
     async def _reply(self, connection, context, raw, reference, entity):

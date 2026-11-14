@@ -18,6 +18,7 @@ import asyncpg
 from opentelemetry import trace
 
 from butlers.core.goal_labels import Label, LabelRefused
+from butlers.core.resource_pairs import pair_scope
 from butlers.core.runtime_config import read_goal_admission_config
 
 Origin = Literal["owner", "obligation", "third_party", "staffer"]
@@ -40,6 +41,11 @@ RUN_REDEMPTION: ContextVar[str | None] = ContextVar("run_redemption", default=No
 
 def retry_source_allowed(source_id: str) -> bool:
     return source_id == OWNER_RETRY_PREFIX + (RUN_REDEMPTION.get() or "-")
+
+
+#: At most this many lazy attachment refs scope one goal; a source reader keeps the first few
+#: (sorted) of a larger set, which only narrows what the goal can fetch.
+MAX_ATTACHMENT_REFS = 64
 
 
 class EvidenceRefused(ValueError):
@@ -147,6 +153,9 @@ class Capability:
     owner_authority: bool = False
     owner_default: bool = False
     presentable: bool = True
+    # Two resource params scoped as one pair (``core.resource_pairs``): a message-admitted grant
+    # carries the pair scope of the request's own refs, never an unscoped one.
+    resource_pair: tuple[str, str] | None = None
 
     def __post_init__(self):
         if (
@@ -255,8 +264,24 @@ class Evidence:
     owner_entity: UUID | None = None
     owner_channel: str | None = None
     record_only: bool = False
+    # The admitting message's lazy attachment refs, ``(message_id, attachment_id)``, from the
+    # stored message the source reader verified. Only a message's evidence may carry them.
+    attachment_refs: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self):
+        refs = self.attachment_refs
+        if (
+            type(refs) is not tuple
+            or len(refs) > MAX_ATTACHMENT_REFS
+            or (refs and self.kind != "message")
+            or any(
+                type(ref) is not tuple
+                or len(ref) != 2
+                or any(type(i) is not str or not i or len(i) > 256 for i in ref)
+                for ref in refs
+            )
+        ):
+            raise EvidenceRefused("source_context_invalid")
         if (
             self.kind not in {"message", "occurrence", "feed", "domain", "staffer"}
             or (self.kind != "message" and self.owner)
@@ -299,15 +324,35 @@ def derive_admission(evidence: Evidence, catalog: CatalogView) -> AdmissionPlan:
             raise EvidenceRefused("invalid_contract_capabilities")
         return tuple(sorted(grants, key=lambda g: g.capability))
 
+    def grant(capability_id: str, **kwargs) -> Grant:
+        """A message grant; a pair-scoped capability gets the request's own refs and no more.
+
+        With no usable ref the grant carries no pair scope, which the broker treats as an empty
+        scope: the capability is neither listed nor callable. An id the exact-identifier rule
+        refuses is dropped, which only narrows.
+        """
+        pair = eligible[capability_id].resource_pair
+        if pair is None:
+            return Grant(capability_id, **kwargs)
+        usable = []
+        for ref in evidence.attachment_refs:
+            try:
+                Grant(capability_id, (pair_scope(pair, [ref]),))
+            except ValueError:
+                continue
+            usable.append(ref)
+        resources = (pair_scope(pair, usable),) if usable else ()
+        return Grant(capability_id, resources, **kwargs)
+
     if evidence.kind == "message":
         if evidence.owner:
             return AdmissionPlan(
                 "owner",
                 evidence.forwarded or evidence.outside_content,
-                tuple(Grant(c) for c in sorted(eligible)),
+                tuple(grant(c) for c in sorted(eligible)),
             )
         grants = tuple(
-            Grant(c.id, park_only=c.effect_class == "communicate" and not c.owner_default)
+            grant(c.id, park_only=c.effect_class == "communicate" and not c.owner_default)
             for c in eligible.values()
             if c.effect_class == "read"
             or (c.effect_class == "record" and not c.owner_authority)
