@@ -14,7 +14,12 @@ from butlers.core.goal_admission import (
     EvidenceRefused,
     derive_admission,
 )
-from butlers.core.resource_pairs import encode_pair, lazy_attachment_refs, pair_key
+from butlers.core.resource_pairs import (
+    MAX_ID_LENGTH,
+    encode_pair,
+    lazy_attachment_refs,
+    pair_key,
+)
 from butlers.tools.attachment_materialize import _routed_refs
 
 pytestmark = pytest.mark.unit
@@ -60,7 +65,7 @@ def test_an_id_the_exact_identifier_rule_forbids_is_dropped_and_the_rest_kept():
 def test_only_a_message_may_carry_refs_and_the_shape_is_checked():
     with pytest.raises(EvidenceRefused):
         Evidence("feed", "x", attachment_refs=(("m", "a"),))
-    for bad in ([("m", "a")], (("m",),), (("m", ""),), (("m", 3),), (("m", "a" * 257),)):
+    for bad in ([("m", "a")], (("m",),), (("m", ""),), (("m", 3),), (("m", "a" * 1025),)):
         with pytest.raises(EvidenceRefused):
             Evidence("message", "x", attachment_refs=bad)  # type: ignore[arg-type]
     too_many = tuple((f"m{i}", "a") for i in range(MAX_ATTACHMENT_REFS + 1))
@@ -88,3 +93,32 @@ def test_lazy_refs_are_sorted_distinct_and_need_both_ids():
 def test_the_routing_context_check_reads_refs_the_same_way_admission_does():
     assert _routed_refs({"attachments": ATTACHMENTS}) == set(lazy_attachment_refs(ATTACHMENTS))
     assert _routed_refs(None) == set() and _routed_refs({"attachments": "x"}) == set()
+
+
+def _lazy(message_id, attachment_id):
+    return {"source_message_id": message_id, "source_attachment_id": attachment_id}
+
+
+def test_a_realistic_long_gmail_attachment_id_is_a_ref_and_admits(caplog):
+    gmail_id = "ANGjdJ" + "x" * 594  # base64url, several hundred characters
+    refs = lazy_attachment_refs([_lazy("m1", gmail_id)])
+    assert refs == (("m1", gmail_id),) and len(gmail_id) == 600
+    grants = _grants(Evidence("message", "mail", attachment_refs=refs))
+    assert dict(grants[MAT].resources)[pair_key(PAIR)] == (encode_pair("m1", gmail_id),)
+
+
+def test_an_over_long_id_drops_only_its_own_ref_and_the_message_still_admits(caplog):
+    too_long = "y" * (MAX_ID_LENGTH + 1)
+    attachments = [_lazy("m1", "a1"), _lazy("m1", too_long), _lazy(too_long, "a2"), _lazy("m1", "")]
+    with caplog.at_level("INFO", logger="butlers.core.resource_pairs"):
+        refs = lazy_attachment_refs(attachments)
+    assert refs == (("m1", "a1"),)
+    # A content-blind count is logged, never an id.
+    assert [r.getMessage() for r in caplog.records] == [
+        "dropped 3 attachment refs with an empty or over-long id"
+    ]
+    assert too_long not in caplog.text
+    # The edge of the cap is kept; the Evidence check is only a backstop behind the filter.
+    assert lazy_attachment_refs([_lazy("m", "z" * MAX_ID_LENGTH)]) == (("m", "z" * MAX_ID_LENGTH),)
+    grants = _grants(Evidence("message", "mail", attachment_refs=refs))
+    assert dict(grants[MAT].resources)[pair_key(PAIR)] == (encode_pair("m1", "a1"),)

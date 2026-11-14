@@ -18,7 +18,7 @@ import asyncpg
 from opentelemetry import trace
 
 from butlers.core.goal_labels import Label, LabelRefused
-from butlers.core.resource_pairs import pair_scope
+from butlers.core.resource_pairs import MAX_ID_LENGTH, pair_scope
 from butlers.core.runtime_config import read_goal_admission_config
 
 Origin = Literal["owner", "obligation", "third_party", "staffer"]
@@ -277,7 +277,7 @@ class Evidence:
             or any(
                 type(ref) is not tuple
                 or len(ref) != 2
-                or any(type(i) is not str or not i or len(i) > 256 for i in ref)
+                or any(type(i) is not str or not i or len(i) > MAX_ID_LENGTH for i in ref)
                 for ref in refs
             )
         ):

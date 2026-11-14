@@ -15,7 +15,16 @@ admitted into a scope.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterable
+
+logger = logging.getLogger(__name__)
+
+#: The longest provider id a pair scope carries. Sized from evidence, not a guess: on butlers-dev
+#: (2026-11-14, read-only length query over 704 stored lazy Gmail refs) source_attachment_id is at
+#: most 426 characters (p99 426) and source_message_id at most 16; Gmail documents no bound for
+#: either. 1024 is about 2.4x the observed maximum. A ref over it is dropped, never truncated.
+MAX_ID_LENGTH = 1024
 
 
 def pair_key(pair: tuple[str, str]) -> str:
@@ -61,4 +70,10 @@ def lazy_attachment_refs(attachments: object) -> tuple[tuple[str, str], ...]:
         and isinstance(att.get("source_message_id"), str)
         and isinstance(att.get("source_attachment_id"), str)
     }
-    return tuple(sorted(refs))
+    usable = {ref for ref in refs if all(0 < len(i) <= MAX_ID_LENGTH for i in ref)}
+    if len(usable) != len(refs):
+        # Content-blind: a count only, never an id. The message still admits without them.
+        logger.info(
+            "dropped %d attachment refs with an empty or over-long id", len(refs) - len(usable)
+        )
+    return tuple(sorted(usable))

@@ -92,13 +92,31 @@ async def test_the_reader_carries_only_the_messages_lazy_attachment_refs(accepte
             "source_message_id": "gm-1",
             "source_attachment_id": "att-1",
         },
+        # Gmail ids are long opaque tokens: a realistic one is a ref, an absurd one is dropped
+        # without refusing the message.
+        {
+            "media_type": "application/pdf",
+            "size_bytes": 5,
+            "source_message_id": "gm-1",
+            "source_attachment_id": "L" * 600,
+        },
+        {
+            "media_type": "application/pdf",
+            "size_bytes": 5,
+            "source_message_id": "gm-1",
+            "source_attachment_id": "X" * 5000,
+        },
         # A ref is both ids or nothing: a half-named lazy attachment is not a ref.
         {"media_type": "text/csv", "size_bytes": 2, "source_message_id": "gm-1"},
     ]
     refs, reader = await admit_source(
         runtime, await accept(ingest, sender="111", attachments=attachments)
     )
-    assert reader.inputs[0].attachment_refs == (("gm-1", "att-1"), ("gm-1", "att-2"))
+    assert reader.inputs[0].attachment_refs == (
+        ("gm-1", "L" * 600),
+        ("gm-1", "att-1"),
+        ("gm-1", "att-2"),
+    )
     assert (await goal(owner, refs))["origin"] == "third_party"
     _, plain = await admit_source(runtime, await accept(ingest, sender="111", text="no files"))
     assert plain.inputs[0].attachment_refs == ()
