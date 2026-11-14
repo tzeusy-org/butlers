@@ -62,7 +62,7 @@ Scope: v1-mandatory
 
 ### Requirement: Arrival card of what changed while away
 
-The Home butler SHALL queue at most one read-only arrival card per confirmed, non-late `owner.place` enter edge that follows a leave edge, through the Switchboard timed lane (RFC 0011 Amendment 8), with dedup key `home:arrival:<edge id>` and a premise probe `("home", "arrival_card_current")` carrying the edge id and its `confirmed_at`. The card SHALL list, by the owner's labels only, the Home conditions that opened or resolved during the absence with their reasons, the departure-card items still not secure, each fix with its resolver status, and the stretches in which the Home Assistant source was not healthy. It SHALL NOT be inferred from Home Assistant history, SHALL NOT contain `friendly_name` or any coordinate, and SHALL contain no button, prepared action or Home Assistant call. A quiet absence SHALL say that nothing Home tracks changed and that Home tracks only what the owner declared. The job SHALL run with no model in the loop and SHALL stay dark behind its own flag, off by default.
+The Home butler SHALL queue at most one read-only arrival card per confirmed, non-late `owner.place` enter edge that follows a leave edge by at least 30 minutes and for which a departure card, a parked fix or a Home condition existed, through the Switchboard timed lane (RFC 0011 Amendment 8), with dedup key `home:arrival:<edge id>` and a premise probe `("home", "arrival_card_current")` carrying the edge id and its `confirmed_at`. The card SHALL list, by the owner's labels only, the Home conditions that opened or resolved during the absence with their reasons, the departure-card items still not secure, each fix with its resolver status, and the stretches in which the Home Assistant source was not healthy. It SHALL NOT be inferred from Home Assistant history, SHALL NOT contain `friendly_name` or any coordinate, and SHALL contain no button, prepared action or Home Assistant call. An absence with a departure card whose items all stayed secure SHALL say that nothing Home tracks changed and that Home tracks only what the owner declared. The job SHALL run with no model in the loop and SHALL stay dark behind its own flag, off by default.
 
 ID: REQ-home-deterministic-jobs-010
 Source: RFC 0011 Amendment 8; bu-jv1moa.29
@@ -73,6 +73,11 @@ Scope: v1-mandatory
 - **WHEN** a confirmed, non-late enter edge follows a leave edge
 - **THEN** one timed candidate SHALL be queued with `deliver_after` confirmed + 2 minutes and `expires_at` confirmed + 30 minutes
 - **AND** a later run SHALL NOT queue a second for the same edge
+
+#### Scenario: A short or empty absence queues no card
+
+- **WHEN** the enter edge follows the leave edge by less than 30 minutes, or no departure card, fix or condition existed for the absence
+- **THEN** no arrival candidate SHALL be queued
 
 #### Scenario: A retracted or superseded enter withdraws the card
 

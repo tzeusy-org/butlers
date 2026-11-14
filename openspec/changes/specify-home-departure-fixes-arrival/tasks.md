@@ -5,7 +5,7 @@ from design.md, Successor packets, behind the owner gates there. These gates mir
 they are not a separate execution queue.
 
 - [ ] 1. Adopt REQ-home-deterministic-jobs-008 through 012.
-- [ ] 2. Record the owner's answers to gates G1 to G7 (design.md). Until G1 to G3 are answered no
+- [ ] 2. Record the owner's answers to gates G1, G2, G3 and G6 (design.md; D4, D5 and D7 are decided). Until G1 to G3 are answered no
   immediate lane exists and no flight-delay or safety consumer changes lane.
 - [ ] 3. Implement the status resolver (successor S-A), then fixes (S-B), then the arrival card (S-C),
   each dark, with the test targets named in design.md.

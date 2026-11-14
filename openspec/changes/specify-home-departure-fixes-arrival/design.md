@@ -52,7 +52,7 @@ When the departure card queues, the job parks one prepared action per fixable it
 the approvals module with `origin='prepared'`, dedup key `home:departure-fix:<edge id>:<entity>`, and
 the exact stored kwargs. Risk comes from `effective_actuation_risk` at park time and is stored on the
 action. A fix always waits for an owner approval: a `reversible` class that RFC 0028 would run
-unprompted still parks here, because the card moment is not an owner request (gate G5). A
+unprompted still parks here, because the card moment is not an owner request (decided D5). A
 `protected` fix (locks, garage doors, anything unlisted) parks and its card line says so; the
 approvals module's existing rule applies, so no standing rule ever covers it by default.
 
@@ -86,7 +86,8 @@ replay-time premise check is what keeps arrival from racing an old approval.
 A confirmed, non-late `owner.place` enter edge after a leave edge for which the departure card (or
 any fix) existed queues one read-only timed candidate, dedup key `home:arrival:<edge id>`. Window:
 `deliver_after` confirmed + 2 minutes, `expires_at` confirmed + 30 minutes, mirroring the departure
-card so one lifecycle is reviewed once (gate G4 covers the numbers). The timed lane's existing
+card so one lifecycle is reviewed once (decided D4). An absence shorter than the departure card's 30
+minute window, or one with no card, fix or condition, queues no arrival card (decided D4). The timed lane's existing
 presence-edge rule applies as adopted: quiet hours yield to a confirmed edge under 15 minutes old;
 `dnd` and `sleeping` hold.
 
@@ -97,8 +98,8 @@ Content, all from stores Home already owns, newest first, capped, owner labels o
 - each fix with its resolver status;
 - stretches where the Home Assistant lease was unhealthy ("could not see from X to Y").
 
-Nothing is inferred from Home Assistant history (it has no freshness record); a quiet absence says
-"Nothing changed that Home tracks" and states that Home only watches what the owner declared.
+Nothing is inferred from Home Assistant history (it has no freshness record); an absence that had a departure card
+says "Nothing changed that Home tracks" and states that Home only watches what the owner declared.
 A premise probe `("home", "arrival_card_current")` answers false for a retracted or superseded
 enter edge, so a card for an edge that was undone is withdrawn unsent.
 
@@ -141,22 +142,24 @@ Owner gates (not adopted, not written as requirements):
 - **G3.** Safety consumers while away: is the hourly urgent sub-cycle acceptable for leak, smoke, CO
   and gas, or does an owner want faster? Also the existing P1 of `specify-home-away-safety`
   (quiet-hours bypass for the new away-safety producers).
-- **G4.** Arrival window numbers (2 to 30 minutes mirrored from departure) and whether an arrival card
-  should exist for an absence with no card or fix.
-- **G5.** May a `reversible` fix ever run without a tap (RFC 0028 allows it for owner requests)? This
-  change says no.
 - **G6.** A Telegram approve button for a parked fix (a signed tap sink, bu-kqme7f.4) versus
-  dashboard-only approval.
-- **G7.** Custody of the fix declaration: dashboard-owner only (assumed), or also by conversation.
+  dashboard-only approval. Until answered, approval is dashboard-only.
+
+Decided engineering defaults (coordinator ruling 2026-11-14; not owner gates, reversible by a later
+change):
+- **D4.** The arrival window mirrors the departure card (confirmed + 2 to + 30 minutes). A short
+  absence (under 30 minutes) or one with nothing to report queues no card.
+- **D5.** No tapless fix: a `reversible` fix still parks and runs only after an owner approval.
+- **D7.** Fix declarations are written by the dashboard owner only, never by conversation or tool.
 
 ## Successor packets
 
 - **S-A. Prepared-action status resolver (REQ-011).** No deps. Home read function, definer probe
   function and tests. Dark.
-- **S-B. Departure fixes (REQ-008, REQ-009).** Deps: S-A, the departure card (merged), G5, G7. Home
+- **S-B. Departure fixes (REQ-008, REQ-009).** Deps: S-A, the departure card (merged). Home
   migration for `departure_fixes`, owner routes, parking in the departure job, cancellation and
   replay-time premise check, dashboard panel.
-- **S-C. Arrival card (REQ-010).** Deps: S-A, S-B for fix lines (works without), G4. Migration for
+- **S-C. Arrival card (REQ-010).** Deps: S-A, S-B for fix lines (works without). Migration for
   `arrival_cards`, producer, premise probe.
 - **S-D. Immediate-lane RFC text and consumers.** Blocked on G1 to G3; no implementation bead until
   the owner adopts exact text. Held.
