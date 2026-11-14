@@ -65,7 +65,7 @@ import re
 from collections.abc import Callable, Coroutine, Iterable
 from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 import asyncpg
 
@@ -315,7 +315,12 @@ async def _check_owner_notify_suppression(pool: asyncpg.Pool) -> str | None:
     return await check_owner_notify_suppression(pool, log_context="_send_notify")
 
 
-async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
+#: ``_send_notify``'s terminal outcome. Callers that track delivery (the away-safety
+#: producer's ``notified_at``) set their marker only on ``"sent"``.
+NotifyOutcome = Literal["sent", "suppressed", "failed"]
+
+
+async def _send_notify(pool: asyncpg.Pool, message: str) -> NotifyOutcome:
     """Send an owner notification through the notify boundary (channel=telegram, intent=send).
 
     This is the canonical notify helper for Home butler job handlers
@@ -369,7 +374,7 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
             priority="medium",
             reason=suppress_reason,
         )
-        return
+        return "suppressed"
 
     recipient = await resolve_owner_telegram_recipient(pool)
     if not recipient:
@@ -386,7 +391,7 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
             priority="medium",
             reason="no_recipient_configured",
         )
-        return
+        return "failed"
 
     client = get_current_switchboard_client()
     if client is None:
@@ -401,7 +406,7 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
             priority="medium",
             reason="switchboard_client_unavailable",
         )
-        return
+        return "failed"
 
     notify_request = {
         "schema_version": "notify.v1",
@@ -433,7 +438,7 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
             priority="medium",
             reason=f"delivery_error:{exc}",
         )
-        return
+        return "failed"
 
     if result.is_error:
         error_text = str(result.content[0].text) if result.content else "Unknown error"
@@ -448,7 +453,7 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
             priority="medium",
             reason=f"delivery_error:{error_text}",
         )
-        return
+        return "failed"
 
     data = result.data
     if isinstance(data, dict) and data.get("status") == "failed":
@@ -464,7 +469,7 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
             priority="medium",
             reason=f"delivery_error:{error_text}",
         )
-        return
+        return "failed"
 
     logger.info("_send_notify: notification delivered to chat_id=%r", recipient)
     await record_attention_event(
@@ -477,6 +482,7 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
         priority="medium",
         notification_ref=data.get("notification_id") if isinstance(data, dict) else None,
     )
+    return "sent"
 
 
 class _NoOpEmbeddingEngine:
