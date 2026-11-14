@@ -1,6 +1,6 @@
 """Owner-only, content-blind away-safety declarations (bu-jv1moa.87).
 
-REQ-home-deterministic-jobs-002 and 003: owner-confirmed values only, bounded, refused without
+Away-safety requirements 002 and 003: owner-confirmed values only, bounded, refused without
 storing or echoing anything, audited by outcome only; no route creates the sensing group.
 """
 
