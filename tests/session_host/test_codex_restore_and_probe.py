@@ -13,7 +13,6 @@ import base64
 import dataclasses
 import inspect
 import json
-import time
 
 import pytest
 
@@ -50,18 +49,24 @@ class Store:
         return None
 
 
-def _jwt(expires_in: int) -> str:
+#: Far-future expiry (2100-01-01 UTC). A fixed value keeps the document, and so its digest,
+#: identical across calls: a clock-derived ``exp`` made two calls in one test differ whenever
+#: the run crossed a second boundary.
+_FAR_FUTURE_EXP = 4_102_444_800
+
+
+def _jwt() -> str:
     def part(value: dict) -> str:
         raw = json.dumps(value).encode()
         return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
-    return f"{part({'alg': 'none'})}.{part({'exp': int(time.time()) + expires_in})}.sig"
+    return f"{part({'alg': 'none'})}.{part({'exp': _FAR_FUTURE_EXP})}.sig"
 
 
 def live_document(marker: str = "one") -> str:
     """A device-auth document whose access token is an unexpired JWT."""
     document = json.loads(codex_document(marker))
-    document["tokens"]["access_token"] = _jwt(3600)
+    document["tokens"]["access_token"] = _jwt()
     return json.dumps(document, sort_keys=True, separators=(",", ":"))
 
 
