@@ -76,25 +76,31 @@ async def test_the_probe_compares_the_shown_status_and_holds_unknown() -> None:
     probe = premises.PREMISE_PROBES[("home", "fix_status_unchanged")]
     action = str(uuid.uuid4())
 
-    def pool(answer):
+    def answering(answer):
         return MagicMock(fetchval=AsyncMock(return_value=answer))
 
     assert (
-        await probe(pool("approved_not_run"), {"action_id": action, "status": "approved_not_run"})
+        await probe(
+            answering("approved_not_run"), {"action_id": action, "status": "approved_not_run"}
+        )
         is True
     )
     assert (
-        await probe(pool("succeeded"), {"action_id": action, "status": "approved_not_run"}) is False
+        await probe(answering("succeeded"), {"action_id": action, "status": "approved_not_run"})
+        is False
     )
-    assert await probe(pool("unknown"), {"action_id": action, "status": "approved_not_run"}) is None
-    assert await probe(pool(None), {"action_id": action, "status": "approved_not_run"}) is None
+    assert (
+        await probe(answering("unknown"), {"action_id": action, "status": "approved_not_run"})
+        is None
+    )
+    assert await probe(answering(None), {"action_id": action, "status": "approved_not_run"}) is None
     for bad in (
         {"action_id": "x", "status": "approved_not_run"},
         {"action_id": action},
         {"action_id": action, "status": "unknown"},
         {"action_id": action, "status": "bogus"},
     ):
-        unused = pool("succeeded")
+        unused = answering("succeeded")
         assert await probe(unused, bad) is None
         unused.fetchval.assert_not_awaited()
 

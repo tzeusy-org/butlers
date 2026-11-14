@@ -198,7 +198,8 @@ async def test_a_parked_prepared_action_walks_the_home_status_resolver(approvals
     from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
 
     approved, cancelled = uuid.uuid4(), uuid.uuid4()
-    now = datetime.now(UTC)
+    # Pinned far ahead so the pending row never reads as expired against the real clock.
+    now = datetime(2099, 1, 1, tzinfo=UTC)
     for action_id in (approved, cancelled):
         await park_prepared_action(
             approvals_pool,
