@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import dataclasses
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -825,6 +827,62 @@ def test_owner_chat_spans_have_no_mcp_tool_and_admit_only_relationship() -> None
     assert endpoint.allowed_callers == frozenset({ServiceCaller("butlers-up", "relationship")})
     # No tool of that name is declared anywhere, so no session or MCP client can call it.
     assert endpoint.target_tool not in TOOL_PRESENTATION_BY_NAME
+
+
+def _decorated_function_names(root: Path) -> set[str]:
+    names: set[str] = set()
+    for path in root.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.decorator_list:
+                names.add(node.name)
+    return names
+
+
+def test_no_mcp_tool_carries_the_owner_chat_relays_name() -> None:
+    """A model session lists only registered MCP tools; none is registered under this name.
+
+    Switchboard's tools and the shared core and module tools are all registered as
+    decorated closures, so a tool of that name would be a decorated function here.
+    """
+    target = _owner_chat_relays(_OwnerChatRead())[OWNER_CHAT_SPANS].target_tool
+    repo = Path(__file__).resolve().parents[2]
+    switchboard = _decorated_function_names(repo / "roster" / "switchboard" / "modules")
+    shared = _decorated_function_names(repo / "src" / "butlers")
+
+    assert {"route", "deliver"} <= switchboard  # the scan sees Switchboard's real tools
+    assert target not in switchboard | shared
+
+
+async def test_a_local_relay_that_lost_its_reader_never_reaches_the_mcp_path() -> None:
+    """Mutant pin: without its in-process read the relay must refuse, not dispatch."""
+    read = _OwnerChatRead()
+    endpoint = dataclasses.replace(_owner_chat_relays(read)[OWNER_CHAT_SPANS], local=None)
+    dispatched: list[tuple[str, str]] = []
+
+    async def dispatch(butler: str, tool: str, args: dict[str, Any]) -> Any:
+        dispatched.append((butler, tool))
+        return {}
+
+    with pytest.raises(RelayRefused) as refused:
+        await relay_call(endpoint, ServiceCaller("butlers-up", "relationship"), {}, dispatch)
+
+    assert refused.value.code == "target_llm_presentable"
+    assert dispatched == []
+    assert read.reads == []
+
+
+async def test_an_unknown_relay_name_is_refused_before_any_read(tmp_path: Path) -> None:
+    read = _OwnerChatRead()
+    harness = _Harness(relays=_owner_chat_relays(read))
+
+    with pytest.raises(RelayRefused) as refused:
+        await harness.call(
+            "owner_chat.spans_all", {}, tmp_path, daemon="relationship", token=_up_token()
+        )
+
+    assert refused.value.code == "unknown_relay"
+    assert read.reads == []
+    assert harness.calls == []
 
 
 def test_without_switchboards_reader_no_owner_chat_relay_is_served() -> None:

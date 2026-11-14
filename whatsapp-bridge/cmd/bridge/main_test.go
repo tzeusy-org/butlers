@@ -104,6 +104,11 @@ func TestMapHistorySyncMessages_UsesLiveBridgeSchema(t *testing.T) {
 	if raw["is_from_me"] != true {
 		t.Errorf("history event lost owner metadata: %v", raw)
 	}
+	// History sync can carry what any linked device sent, a past bridge device's
+	// sends included, so a history replay is never presented as live delivery.
+	if raw["from_history"] != true {
+		t.Errorf("history event not marked from_history: %v", raw)
+	}
 	if len(parser.calls) != 1 || parser.calls[0].String() != chat {
 		t.Errorf("history parser calls: got %v want %s", parser.calls, chat)
 	}

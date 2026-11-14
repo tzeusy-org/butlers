@@ -65,7 +65,70 @@ def _row(
 
 
 def _promise(**facts: Any) -> dict[str, Any]:
-    return _entry("m-owner", OWNER, "I'll send it tomorrow", **facts)
+    return _entry("m-owner", OWNER, "I'll send it tomorrow", **{"from_history": False, **facts})
+
+
+def _without(entry: dict[str, Any], key: str) -> dict[str, Any]:
+    return {k: v for k, v in entry.items() if k != key}
+
+
+@pytest.mark.parametrize("from_history", [True, None, "false"], ids=["history", "null", "string"])
+def test_a_whatsapp_entry_not_known_to_be_live_is_not_returned(from_history: Any) -> None:
+    """History sync can carry text another linked device sent, a past bridge's included.
+
+    Live delivery never echoes the bridge's own sends (whatsmeow skips its own device
+    when it encrypts a send and dispatches no local event for it), so only an entry the
+    bridge marked live, ``from_history`` false, is the owner's own typing.
+    """
+    entry = _promise(is_from_me=True, forwarded=False, from_history=from_history)
+    assert spans_of_row(_row([entry]), NOW) == []
+
+
+def test_a_whatsapp_entry_without_the_live_marker_is_not_returned() -> None:
+    """An older bridge sends no marker: its entries are not returned, not guessed live."""
+    entry = _without(_promise(is_from_me=True, forwarded=False), "from_history")
+    assert spans_of_row(_row([entry]), NOW) == []
+
+
+def _telegram_promise(**facts: Any) -> dict[str, Any]:
+    return _entry(
+        "4711",
+        "telegram:100",
+        "I'll send it tomorrow",
+        **{"is_from_me": True, "forwarded": False, "via_bot": False, **facts},
+    )
+
+
+def _telegram_row(entry: dict[str, Any]) -> dict[str, Any]:
+    return _row(
+        [entry],
+        channel="telegram_user_client",
+        owner="telegram:100",
+        senders=["telegram:100", "telegram:200"],
+    )
+
+
+def test_a_telegram_entry_typed_by_the_owner_is_returned() -> None:
+    (span,) = spans_of_row(_telegram_row(_telegram_promise()), NOW)
+    assert span["counterparty_identity"] == "telegram:200"
+
+
+@pytest.mark.parametrize("via_bot", [True, None, "false"], ids=["via-bot", "null", "string"])
+def test_a_telegram_entry_sent_via_a_bot_is_not_returned(via_bot: Any) -> None:
+    """Inline-bot output is posted under the owner's account but written by the bot."""
+    entry = _telegram_promise(via_bot=via_bot)
+    assert spans_of_row(_telegram_row(entry), NOW) == []
+
+
+def test_a_telegram_entry_without_the_via_bot_fact_is_not_returned() -> None:
+    entry = _without(_telegram_promise(), "via_bot")
+    assert spans_of_row(_telegram_row(entry), NOW) == []
+
+
+def test_from_history_is_not_required_of_telegram_entries() -> None:
+    entry = _telegram_promise()
+    assert "from_history" not in entry
+    assert len(spans_of_row(_telegram_row(entry), NOW)) == 1
 
 
 def test_only_the_unforwarded_owner_entry_is_returned() -> None:

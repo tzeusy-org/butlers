@@ -12,6 +12,8 @@ A span qualifies only on stored transport facts, never on anything a model said:
   and its stored ``participant_count`` is at most 2;
 * the history entry has ``is_from_me`` explicitly true, ``forwarded`` explicitly
   false (REQ-connector-base-spec-013) and ``is_new`` true;
+* the entry's channel fact is explicitly false: WhatsApp ``from_history`` (live
+  delivery, not history sync) and Telegram ``via_bot`` (not inline-bot output);
 * when the envelope stored the owner's sender identity, the entry's sender identity
   equals it;
 * the entry has a parseable event time no more than 14 days old;
@@ -37,6 +39,15 @@ from typing import Any, Final
 from uuid import UUID
 
 OWNER_CHAT_CHANNELS: Final = ("whatsapp_user_client", "telegram_user_client")
+#: The per-channel fact that must be explicitly false for the owner to have typed the
+#: text on this account. WhatsApp: the entry came from history sync, which can carry
+#: text another linked device sent, a past bridge device's sends included (live
+#: delivery never echoes the bridge's own sends). Telegram: the entry was posted via an
+#: inline bot, whose output appears under the owner's account.
+_TYPED_BY_OWNER_FACT: Final = {
+    "whatsapp_user_client": "from_history",
+    "telegram_user_client": "via_bot",
+}
 #: Rows read per page. Fixed: the caller chooses nothing but its cursor.
 PAGE_ROWS: Final = 200
 IN_FLIGHT: Final = timedelta(seconds=60)
@@ -114,6 +125,8 @@ def spans_of_row(row: Any, db_now: datetime) -> list[dict[str, Any]]:
         if entry.get("is_from_me") is not True or entry.get("forwarded") is not False:
             continue
         if entry.get("is_new") is not True:
+            continue
+        if entry.get(_TYPED_BY_OWNER_FACT[context["source_channel"]]) is not False:
             continue
         author = entry.get("sender_identity")
         message_id = entry.get("message_id")

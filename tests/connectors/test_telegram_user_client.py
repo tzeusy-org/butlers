@@ -225,6 +225,39 @@ def test_batch_history_carries_authorship_and_forward_facts(
     assert "is_from_me" not in history["6"]
 
 
+def test_batch_history_carries_the_via_bot_fact(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """Message.via_bot_id: inline-bot output is posted under the owner's account."""
+
+    def _msg(msg_id: int, **flags: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=msg_id,
+            chat_id=200,
+            sender_id=555,
+            sender=SimpleNamespace(first_name="Owner", username=None),
+            message="text",
+            text="text",
+            date=datetime(2026, 8, 24, 10, msg_id, tzinfo=UTC),
+            reply_to_msg_id=None,
+            **flags,
+        )
+
+    typed = _msg(1, out=True, fwd_from=None, via_bot_id=None)
+    via_bot = _msg(2, out=True, fwd_from=None, via_bot_id=93372553)
+    no_attr = _msg(3, out=True, fwd_from=None)
+
+    messages = [typed, via_bot, no_attr]
+    envelope = connector._build_batch_envelope(
+        "200", messages, messages, participant_count=2, chat_type="private"
+    )
+    history = {e["message_id"]: e for e in envelope["payload"]["raw"]["conversation_history"]}
+
+    assert history["1"]["via_bot"] is False
+    assert history["2"]["via_bot"] is True
+    assert "via_bot" not in history["3"]
+
+
 def test_batch_history_missing_date_warning_is_content_blind(
     connector: TelegramUserClientConnector,
     caplog: pytest.LogCaptureFixture,

@@ -49,6 +49,7 @@ func mapHistorySyncMessages(
 			// messages fall through to normal LLM-gated discretion, same as
 			// before this change — not a regression, just out of scope here.
 			if event := bridgeEvents.MapMessage(message, 0); event != nil {
+				bridgeEvents.MarkFromHistory(event)
 				mapped = append(mapped, event)
 			}
 		}

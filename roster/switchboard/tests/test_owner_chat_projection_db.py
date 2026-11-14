@@ -52,6 +52,7 @@ def _entry(message_id: str, sender: str, body: str, *, mine: bool, fwd: bool) ->
         "reply_to": None,
         "is_from_me": mine,
         "forwarded": fwd,
+        "from_history": False,
     }
 
 

@@ -6,7 +6,11 @@ The `whatsapp_user_client` and `telegram_user_client` connectors SHALL put two e
 transport facts on every `payload.raw.conversation_history` entry they emit: `is_from_me`, copied
 from the provider's own outgoing-message flag (the bridge's whatsmeow `IsFromMe`, Telethon's
 `Message.out`), and `forwarded`, copied from the provider's forward marker (the bridge's
-`content.is_forwarded`, Telethon's `Message.fwd_from`). When the provider flag is unavailable the
+`content.is_forwarded`, Telethon's `Message.fwd_from`). The WhatsApp connector SHALL also copy
+`from_history`, the bridge's `raw.from_history` (true for a history-sync replay, false for live
+delivery), and the Telegram connector SHALL also copy `via_bot`, whether Telethon's
+`Message.via_bot_id` is set. The bridge SHALL mark a forward on every message kind whose
+protobuf carries a context, including location, contact, poll and group-invite messages. When the provider flag is unavailable the
 connector SHALL omit the fact rather than guess it. The `whatsapp_user_client` SHALL also put the
 normalized identity of the other party on `payload.raw.peer_identity` for a private chat only,
 derived from the chat JID by the same normalization as `sender_identity` (a mapped LID becomes its
@@ -30,6 +34,12 @@ Scope: v1-reserved
 
 - **WHEN** the owner forwards someone else's message into a private Telegram chat
 - **THEN** its conversation history entry carries `is_from_me: true` and `forwarded: true`
+
+#### Scenario: A WhatsApp history replay is marked
+
+- **WHEN** the bridge replays a message from WhatsApp history sync
+- **THEN** its conversation history entry carries `from_history: true`, and a live message
+  carries `from_history: false`
 
 #### Scenario: A missing provider flag is omitted, not guessed
 

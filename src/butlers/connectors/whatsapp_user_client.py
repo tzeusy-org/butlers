@@ -371,13 +371,17 @@ def _transport_facts(event: dict[str, Any]) -> dict[str, bool]:
 
     ``is_from_me`` is the bridge's ``raw.is_from_me`` (whatsmeow ``IsFromMe``) and
     ``forwarded`` its ``content.is_forwarded`` marker, which the bridge sets only on a
-    forward. A fact the event cannot supply (no boolean flag, no content mapping) is
-    omitted rather than guessed. Transport only: nothing here classifies the message.
+    forward. ``from_history`` is the bridge's ``raw.from_history``: true for a history-sync
+    replay, false for live delivery. A fact the event cannot supply (no boolean flag, no
+    content mapping) is omitted rather than guessed. Transport only: nothing here
+    classifies the message.
     """
     facts: dict[str, bool] = {}
     raw = event.get("raw")
-    if isinstance(raw, dict) and isinstance(raw.get("is_from_me"), bool):
-        facts["is_from_me"] = raw["is_from_me"]
+    if isinstance(raw, dict):
+        for key in ("is_from_me", "from_history"):
+            if isinstance(raw.get(key), bool):
+                facts[key] = raw[key]
     if isinstance(event.get("content"), dict):
         facts["forwarded"] = _is_forwarded(event)
     return facts

@@ -407,6 +407,71 @@ func TestMapMessage_ForwardedTextAndMediaCarryIsForwarded(t *testing.T) {
 	}
 }
 
+func TestMapMessage_ForwardedNonTextKindsCarryIsForwarded(t *testing.T) {
+	fwd := &waE2E.ContextInfo{IsForwarded: proto.Bool(true), ForwardingScore: proto.Uint32(1)}
+	cases := map[string]*waE2E.Message{
+		"location": {LocationMessage: &waE2E.LocationMessage{
+			DegreesLatitude: proto.Float64(1.3), DegreesLongitude: proto.Float64(103.8), ContextInfo: fwd,
+		}},
+		"contact": {ContactMessage: &waE2E.ContactMessage{
+			DisplayName: proto.String("Alice"), ContextInfo: fwd,
+		}},
+		"poll": {PollCreationMessage: &waE2E.PollCreationMessage{
+			Name:        proto.String("Lunch?"),
+			Options:     []*waE2E.PollCreationMessage_Option{{OptionName: proto.String("Yes")}},
+			ContextInfo: fwd,
+		}},
+		"group_invite": {GroupInviteMessage: &waE2E.GroupInviteMessage{
+			GroupName: proto.String("Team"), ContextInfo: fwd,
+		}},
+	}
+	for name, msg := range cases {
+		be := events.MapMessage(&waEvents.Message{
+			Info:    makeInfo("fwd-"+name, "1234567890@s.whatsapp.net", "9876543210@s.whatsapp.net"),
+			Message: msg,
+		}, 0)
+		if be == nil {
+			t.Fatalf("%s: expected non-nil BridgeEvent", name)
+		}
+		var content map[string]any
+		if err := json.Unmarshal(be.Content, &content); err != nil {
+			t.Fatalf("%s: unmarshal content: %v", name, err)
+		}
+		if content["is_forwarded"] != true {
+			t.Errorf("%s: is_forwarded: got %v want true", name, content["is_forwarded"])
+		}
+	}
+}
+
+func TestMapMessage_LiveDeliveryIsNotFromHistory(t *testing.T) {
+	be := events.MapMessage(&waEvents.Message{
+		Info:    makeInfo("live", "1234567890@s.whatsapp.net", "9876543210@s.whatsapp.net"),
+		Message: &waE2E.Message{Conversation: proto.String("hello")},
+	}, 0)
+	var raw map[string]any
+	if err := json.Unmarshal(be.Raw, &raw); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	if raw["from_history"] != false {
+		t.Errorf("from_history: got %v want false", raw["from_history"])
+	}
+}
+
+func TestMarkFromHistory_SetsTheMarkerAndKeepsTheSummary(t *testing.T) {
+	be := events.MapMessage(&waEvents.Message{
+		Info:    makeInfo("hist", "1234567890@s.whatsapp.net", "9876543210@s.whatsapp.net"),
+		Message: &waE2E.Message{Conversation: proto.String("hello")},
+	}, 0)
+	events.MarkFromHistory(be)
+	var raw map[string]any
+	if err := json.Unmarshal(be.Raw, &raw); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	if raw["from_history"] != true || raw["message_id"] != "hist" {
+		t.Errorf("raw after MarkFromHistory: %v", raw)
+	}
+}
+
 func TestMapMessage_UnforwardedOmitsIsForwarded(t *testing.T) {
 	be := events.MapMessage(&waEvents.Message{
 		Info: makeInfo("plain", "1234567890@s.whatsapp.net", "9876543210@s.whatsapp.net"),
