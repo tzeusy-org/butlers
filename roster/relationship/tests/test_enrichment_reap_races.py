@@ -46,6 +46,10 @@ _CHECKED: set[tuple[str, str]] = {
     ("knowledge_gaps", "entity_id"),
     # A live commitment candidate's confirm card names its counterparty (tombstones null it).
     ("commitment_candidates", "counterparty_entity_id"),
+    # Door rows are retained forever, so one naming an entity pins it. The relationship role cannot
+    # read the table; ``public.vendor_door_entity_pinned`` answers for both columns.
+    ("vendor_doors", "owner_entity_id"),
+    ("vendor_doors", "vendor_entity_id"),
 }
 _EXCUSED: set[tuple[str, str]] = {
     # Derived from facts or ledgers: they follow a fact the reap already read, or record history.
@@ -408,6 +412,36 @@ async def test_the_reap_leaves_a_placeholder_a_live_commitment_candidate_names(r
     assert await reap(rel_pool) == 0
 
     assert await _deleted_at(rel_pool, placeholder) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("column", ["owner_entity_id", "vendor_entity_id"])
+async def test_the_reap_leaves_a_placeholder_a_vendor_door_names(rel_pool, column) -> None:
+    """Door rows are never deleted, so a row naming a placeholder (in either column) pins it."""
+    placeholder = await _placeholder(rel_pool)
+    other = await _entity(rel_pool, "Owner")
+    owner, vendor = (placeholder, other) if column == "owner_entity_id" else (other, placeholder)
+    await rel_pool.execute(
+        "INSERT INTO public.vendor_doors (owner_entity_id, vendor_entity_id, kind, host, "
+        "template, status, origin, tier, confirmed_at) VALUES ($1, $2, 'cancel', 'example.com', "
+        "'https://example.com/cancel', 'revoked', 'dashboard', 'exempt', now())",
+        owner,
+        vendor,
+    )
+
+    assert await reap(rel_pool) >= 0
+
+    assert await _deleted_at(rel_pool, placeholder) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_relationship_role_can_ask_but_not_read_the_door_table(rel_pool) -> None:
+    row = await rel_pool.fetchrow(
+        "SELECT has_function_privilege('butler_relationship_rw', "
+        "'public.vendor_door_entity_pinned(uuid)', 'EXECUTE') AS can_ask, "
+        "has_table_privilege('butler_relationship_rw', 'public.vendor_doors', 'SELECT') AS can_read"
+    )
+    assert (row["can_ask"], row["can_read"]) == (True, False)
 
 
 @pytest.mark.asyncio(loop_scope="session")

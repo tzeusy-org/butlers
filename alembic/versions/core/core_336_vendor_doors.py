@@ -224,6 +224,16 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
     SELECT id FROM public.entities WHERE 'owner' = ANY (roles) ORDER BY created_at, id LIMIT 1
 $$;
 
+-- Door rows are retained forever, so one naming an entity pins it. Callers that may archive
+-- an entity (the Relationship enrichment reap) cannot read the table; this answers one boolean.
+CREATE OR REPLACE FUNCTION public.vendor_door_entity_pinned(p_entity_id uuid) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM public.vendor_doors
+         WHERE owner_entity_id = p_entity_id OR vendor_entity_id = p_entity_id
+    )
+$$;
+
 CREATE OR REPLACE FUNCTION public.vendor_door_caller_origin() RETURNS text
 LANGUAGE plpgsql STABLE SET search_path = pg_catalog, pg_temp AS $$
 DECLARE caller text := current_setting('role', true);
@@ -541,6 +551,7 @@ _PUBLIC_FUNCTIONS = {
     "public.vendor_door_confirm(uuid, integer, text)": (_DASH,),
     "public.vendor_door_revoke(uuid, integer)": (_DASH,),
     "public.vendor_door_reject(uuid, integer)": (_DASH,),
+    "public.vendor_door_entity_pinned(uuid)": ("butler_relationship_rw",),
 }
 _HELPER_FUNCTIONS = (
     "public.registrable_domain(text)",

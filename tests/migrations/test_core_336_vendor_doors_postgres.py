@@ -38,6 +38,7 @@ PUBLIC_FUNCTIONS = {
     "vendor_door_confirm": {DASH},
     "vendor_door_revoke": {DASH},
     "vendor_door_reject": {DASH},
+    "vendor_door_entity_pinned": {"butler_relationship_rw"},
 }
 HELPERS = (
     "registrable_domain",
@@ -345,6 +346,36 @@ def test_truncating_an_empty_table_retains_nothing_and_is_allowed(engine) -> Non
     # A cascading `TRUNCATE public.entities CASCADE` (test fixtures) reaches this table.
     with engine.connect() as c:
         c.execute(text("TRUNCATE TABLE public.vendor_doors"))
+        c.rollback()
+
+
+def test_a_door_row_pins_the_entities_it_names_for_the_relationship_reap(engine) -> None:
+    vendor = uuid.uuid4()
+    with engine.begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO public.entities (id, canonical_name, entity_type) "
+                "VALUES (:id, 'Vendor', 'organization')"
+            ),
+            {"id": vendor},
+        )
+    pinned = "SELECT public.vendor_door_entity_pinned(:e)"
+    relationship = "butler_relationship_rw"
+    assert run(engine, relationship, pinned, e=vendor) is False
+    run(
+        engine,
+        DASH,
+        "SELECT public.vendor_door_create('cancel', 'https://www.netflix.com/cancel', "
+        "'{}'::jsonb, :v, NULL)",
+        v=vendor,
+    )
+    assert run(engine, relationship, pinned, e=vendor) is True
+    assert run(engine, relationship, pinned, e=OWNER) is True
+    assert run(engine, relationship, pinned, e=uuid.uuid4()) is False
+    with engine.connect() as c:
+        c.execute(text(f'SET LOCAL ROLE "{relationship}"'))
+        with pytest.raises(DBAPIError):
+            c.execute(text("SELECT count(*) FROM public.vendor_doors"))
         c.rollback()
 
 
