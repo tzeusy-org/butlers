@@ -13,7 +13,11 @@ false; entry `is_new` true; the entry's `sender_identity` equal to the envelope'
 whenever that identity is present; and a source event time no more than 14 days old. Each span
 SHALL carry the source channel, endpoint identity, chat identity, the single non-owner
 counterparty channel identity, the provider message id, the source event time, the ingestion
-event id and the entry's text, ordered by a stable `(received_at, inbox id)` cursor that the
+event id and the entry's text. The counterparty SHALL be the only identity in the row other
+than the entry's author, drawn from the row's senders and history entries and, for a WhatsApp
+private chat, from the stored `payload.raw.peer_identity` unless it equals the author or the
+stored owner sender identity; zero such identities, or several (a peer that disagrees with
+history included), SHALL yield no span. Spans are ordered by a stable `(received_at, inbox id)` cursor that the
 caller supplies and the projection returns. Because `received_at` is assigned by the
 application before the inbox insert commits, the projection SHALL exclude every row whose
 `received_at` is less than 60 seconds before the database's current time, so a slow ingest
@@ -25,9 +29,6 @@ none, so the projection SHALL NOT return their messages in S1; that coverage gap
 a qualifying rule. The same holds for these cases, which the projection SHALL exclude rather than
 guess:
 
-- A WhatsApp batch holding only the owner's own entries names no counterparty, so no single
-  counterparty identity is present and no span is returned. A peer fact from the bridge is
-  follow-up bu-jv1moa.93.
 - A WhatsApp history-sync replay can carry text that any linked device sent, a past bridge
   device's sends included. Live delivery never returns the bridge's own sends to it, because
   whatsmeow does not encrypt a send for its own device and dispatches no local event for it.
@@ -39,7 +40,7 @@ One case stays indistinguishable from owner typing and is accepted: a Telegram c
 its author ("forward without author") carries no forward header.
 
 ID: REQ-butler-switchboard-011
-Source: about/heart-and-soul/vision.md non-negotiable 3 (cross-domain access MCP-only through the control plane); RFC 0038 D2 and D7; bu-jv1moa.11
+Source: about/heart-and-soul/vision.md non-negotiable 3 (cross-domain access MCP-only through the control plane); RFC 0038 D2 and D7; bu-jv1moa.11; bu-jv1moa.100
 Scope: v1-reserved
 
 #### Scenario: Only qualifying owner entries are returned
@@ -55,10 +56,18 @@ Scope: v1-reserved
   identity differs from the stored owner sender identity
 - **THEN** the projection does not return it
 
-#### Scenario: An owner-only WhatsApp batch is excluded, not guessed
+#### Scenario: An owner-only WhatsApp batch names its counterparty from the peer fact
 
-- **WHEN** a stored WhatsApp batch for a private chat holds only the owner's entries
-- **THEN** the projection returns no span from it, because no counterparty identity is present
+- **WHEN** a stored WhatsApp batch for a private chat holds only the owner's entries and its
+  `payload.raw.peer_identity` is a non-owner identity
+- **THEN** the projection returns the qualifying owner entries with that peer as the counterparty
+
+#### Scenario: Without a usable peer fact the counterparty is not guessed
+
+- **WHEN** an owner-only WhatsApp batch carries no `peer_identity` (a self-chat carries none, except an unmapped
+  owner LID: see the .93 residual), or one equal to
+  the owner, or one that disagrees with the history's non-owner sender, or the chat is a group
+- **THEN** the projection returns no span from it
 
 #### Scenario: Text the owner may not have typed is excluded
 

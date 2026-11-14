@@ -17,8 +17,11 @@ A span qualifies only on stored transport facts, never on anything a model said:
 * when the envelope stored the owner's sender identity, the entry's sender identity
   equals it;
 * the entry has a parseable event time no more than 14 days old;
-* exactly one other identity appears in the row (its senders and history), which is
-  the counterparty. Zero or several mean the span is not returned.
+* exactly one other identity appears in the row (its senders and history, plus a
+  WhatsApp private chat's stored ``peer_identity`` when it is not the owner), which is
+  the counterparty. Zero or several, a disagreeing peer included, mean the span is not
+  returned. The peer lets an owner-only WhatsApp batch name its counterparty
+  (bu-jv1moa.100); self-chats carry no peer and groups are never private.
 
 Only batched ``conversation_history`` envelopes carry entries. Single-message envelopes
 (Telegram backfill, ingest retry and the chat-id fallback) have none, so their messages
@@ -89,8 +92,30 @@ def _row_is_private(context: dict[str, Any]) -> bool:
     )
 
 
-def _counterparty(context: dict[str, Any], history: list[Any], author: str) -> str | None:
-    """The single identity in the row other than the author (who is the stored owner, if any)."""
+_NOT_AN_IDENTITY: Final = frozenset({"", "multiple", "unknown"})
+
+
+def _peer_identity(
+    context: dict[str, Any], raw: dict[str, Any], author: str, owner: str | None
+) -> str | None:
+    """The stored WhatsApp private-chat peer, never the owner (REQ-connector-base-spec-013)."""
+    if context.get("source_channel") != "whatsapp_user_client":
+        return None
+    peer = raw.get("peer_identity")
+    if not isinstance(peer, str) or peer in _NOT_AN_IDENTITY or peer in (author, owner):
+        return None
+    return peer
+
+
+def _counterparty(
+    context: dict[str, Any], history: list[Any], author: str, peer: str | None
+) -> str | None:
+    """The single identity in the row other than the author (who is the stored owner, if any).
+
+    History names it from its senders. When history names no one but the owner (an
+    owner-only WhatsApp batch), the stored peer identity does. When both name someone, they
+    must agree; a disagreement names no one rather than picking one.
+    """
     identities: set[str] = set()
     senders = context.get("source_sender_identities")
     if isinstance(senders, list):
@@ -99,8 +124,9 @@ def _counterparty(context: dict[str, Any], history: list[Any], author: str) -> s
         if isinstance(entry, dict) and isinstance(entry.get("sender_identity"), str):
             identities.add(entry["sender_identity"])
     identities.discard(author)
-    identities.discard("multiple")
-    identities.discard("unknown")
+    identities -= _NOT_AN_IDENTITY
+    if peer is not None:
+        identities.add(peer)
     return next(iter(identities)) if len(identities) == 1 else None
 
 
@@ -113,7 +139,9 @@ def spans_of_row(row: Any, db_now: datetime) -> list[dict[str, Any]]:
     if context.get("source_channel") not in OWNER_CHAT_CHANNELS or not _row_is_private(context):
         return []
     raw = (payload.get("payload") or {}).get("raw")
-    history = raw.get("conversation_history") if isinstance(raw, dict) else None
+    if not isinstance(raw, dict):
+        return []
+    history = raw.get("conversation_history")
     if not isinstance(history, list):
         return []
     owner = context.get("owner_sender_identity")
@@ -140,7 +168,8 @@ def spans_of_row(row: Any, db_now: datetime) -> list[dict[str, Any]]:
         event_time = _event_time(entry.get("timestamp"))
         if event_time is None or event_time > db_now or db_now - event_time > MAX_AGE:
             continue
-        counterparty = _counterparty(context, history, author)
+        peer = _peer_identity(context, raw, author, owner)
+        counterparty = _counterparty(context, history, author, peer)
         if counterparty is None:
             continue
         spans.append(
