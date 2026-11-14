@@ -167,6 +167,28 @@ the job; activation turns it on with the timed insight lane, the perception read
 presence reducer. Requirement: `home-deterministic-jobs` spec delta in
 `openspec/changes/insight-timed-lane/`, "Home Departure Card Job".
 
+## Away safety (dark)
+
+The deterministic `home_away_safety` job (`src/butlers/jobs/home_away_safety.py`) keeps three
+owner conditions and tells the owner through the routine notify path (quiet hours apply):
+
+- `home:freezer`: a declared freezer read above the owner's maximum on every run for the owner's
+  dwell; it clears only on a fresh reading at or below the maximum minus the owner's hysteresis;
+- `home:away-door`: an armed departure-watch item left not secure while the owner is confirmed
+  away, for that item's `away_alert_after_minutes` (at least 30, the departure card's window);
+- `home:sensing-blind`: while the owner is away, Home cannot read a declared role (leak, smoke,
+  CO, gas, freezer, doors) or has lost the Home Assistant lease for the owner's blind wait.
+
+Every value is the owner's, typed on the dashboard (Home, Devices, Away safety) through the
+owner-only, content-blind `/api/home/away-safety` routes; a missing value leaves that alert
+`unconfigured` and silent. Unknown is never clear: a stale reading, a lost lease or an uncertain
+presence premise carries an open condition and opens nothing. Each run also writes the canonical
+`home.sensing` slot as `perception_sensing_writer` (`BUTLERS_SENSING_WRITER_DSN`); registering
+the sensing group is a privileged activation step, and no route or job creates it. There is no
+tool, skill or session control for these alerts. It is dark: `HOME_AWAY_SAFETY_LIVE` is off and
+no roster schedules the job. Requirement: `home-deterministic-jobs` spec delta in
+`openspec/changes/specify-home-away-safety/`.
+
 ## Proposed realtime feature specifications
 
 The shared [event-response contract](../../openspec/changes/specify-realtime-feature-contracts/specs/event-response-contract/spec.md)
