@@ -191,6 +191,7 @@ def test_an_empty_argument_is_refused_before_helm_runs(
     scripts.mkdir(parents=True)
     shutil.copy2(_REPO_ROOT / "deploy/helm/butlers/makefile", chart / "makefile")
     shutil.copy2(_REPO_ROOT / "scripts/k8s/record-deploy.sh", scripts / "record-deploy.sh")
+    shutil.copy2(_REPO_ROOT / "scripts/k8s/prepull-images.sh", scripts / "prepull-images.sh")
     for name in (
         "bootstrap-db.sh",
         "site-helm-args.sh",

@@ -226,7 +226,15 @@ make deploy-dev                                             # helm upgrade --ins
 make status-dev
 ```
 
-`make deploy-*` runs through `scripts/k8s/record-deploy.sh`, so each release appends one
+Before anything is released, `make deploy-*` runs `scripts/k8s/prepull-images.sh`. It renders
+the release with the same Helm arguments and pulls every image onto each node that hosts the
+release's pods today. It does this with one short-lived pod per node: `nodeName`-pinned, one no-op
+container per image, deleted afterwards. Every workload uses the `Recreate` strategy, so without
+this the old pods stop first and the namespace is down for the whole pull of a large new image. A
+failed or timed-out pull (`PREPULL_TIMEOUT`, default 5400 s) stops the deploy while the old pods
+still serve. A namespace with no release pods skips the step.
+
+`make deploy-*` then runs through `scripts/k8s/record-deploy.sh`, so each release appends one
 `public.deployments` row with `source='deploy'` and `serving_mode='image'`: `success` once `dashboard-api`, `butlers-up` and the optional enabled `butlers-control`
 rollouts have finished **and** semantic readiness has been sustained, `failed` when `helm upgrade`,
 a rollout, or the readiness wait fails.

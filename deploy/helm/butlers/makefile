@@ -49,12 +49,15 @@ bootstrap-%:
 	../../../scripts/k8s/bootstrap-db.sh $* $(TAG)
 
 # Wrapped so each release leaves one public.deployments row (success or failed).
+# Images are pulled onto the serving node first (prepull-images.sh): every workload is
+# Recreate, so a pull after Helm starts would leave the namespace down for the whole pull.
 # The public MCP owner step runs after the release whatever it returned, because the
 # migrations (and reconcile) may have run before a later rollout or readiness failure; its
 # guard refuses when they did not. The public chart upgrade runs only after the owner step exited 0
 # (it never runs when the owner step was switched off, so a skipped step is not a succeeded one; the chart has its own switch too). The recipe exits with the first non-zero status.
 deploy-%:
 	@../../../scripts/k8s/runtime-topology-preflight.sh "$(NAMESPACE_$*)" "$(TAG)" "$(RELEASE_NAME)" -- $(call helm_args,$*)
+	../../../scripts/k8s/prepull-images.sh "$(NAMESPACE_$*)" "$(TAG)" "$(RELEASE_NAME)" -- $(call helm_args,$*)
 	$(MAKE) --no-print-directory bootstrap-$* TAG="$(TAG)"
 	../../../scripts/k8s/record-deploy.sh "$(NAMESPACE_$*)" "$(TAG)" "$(RELEASE_NAME)" -- $(call helm_args,$*); \
 	rd=$$?; \

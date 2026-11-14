@@ -43,6 +43,10 @@ def fake_repo(tmp_path: Path) -> Path:
     helm_args = tmp_path / "scripts" / "k8s" / "site-helm-args.sh"
     helm_args.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     helm_args.chmod(0o755)
+    # The image pre-pull precedes the release; test_k8s_prepull_images covers it.
+    prepull = tmp_path / "scripts" / "k8s" / "prepull-images.sh"
+    prepull.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    prepull.chmod(0o755)
     # The public MCP owner step follows the release; its own tests cover it.
     owner_step = tmp_path / "scripts" / "k8s" / "public-mcp-owner-step.sh"
     owner_step.write_text("#!/usr/bin/env bash\n", encoding="utf-8")

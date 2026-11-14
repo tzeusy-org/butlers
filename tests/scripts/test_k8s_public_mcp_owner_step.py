@@ -316,6 +316,7 @@ def chart(tmp_path: Path) -> Path:
     scripts.mkdir(parents=True)
     for name, rc in (
         ("runtime-topology-preflight.sh", "0"),
+        ("prepull-images.sh", "${PREPULL_RC:-0}"),
         ("site-helm-args.sh", "0"),
         ("bootstrap-db.sh", "0"),
         ("record-deploy.sh", "${RECORD_RC:-0}"),
@@ -360,14 +361,22 @@ def _deploy(chart: Path, *make_args: str, **env: str) -> tuple[int, list[str]]:
 def test_recipe_runs_the_owner_step_after_the_release_with_the_switch(chart: Path) -> None:
     code, calls = _deploy(chart)
     assert code == 0
-    assert calls[:5] == [
+    assert calls[:6] == [
         "runtime-topology-preflight.sh",
+        "prepull-images.sh",
         "bootstrap-db.sh",
         "record-deploy.sh",
         "public-mcp-owner-step.sh",
         "public-mcp-chart-deploy.sh",
     ]
     assert f"public-mcp-owner-step.sh dev {_TAG} on butlers" in calls
+
+
+def test_a_failed_prepull_releases_nothing(chart: Path) -> None:
+    """Images are pulled while the old pods still serve; a failed pull must not release."""
+    code, calls = _deploy(chart, PREPULL_RC="1")
+    assert code == 1
+    assert calls == ["runtime-topology-preflight.sh", "prepull-images.sh"]
 
 
 # --- public chart hook (task 2.4) --------------------------------------------------------
