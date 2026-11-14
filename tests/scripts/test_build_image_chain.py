@@ -25,10 +25,11 @@ SPEC.loader.exec_module(producer)
 
 
 class Commands:
-    def __init__(self, failure=None, loaded=None):
+    def __init__(self, failure=None, loaded=None, built=None):
         self.calls = []
         self.failure = failure
         self.loaded = loaded
+        self.built = built
 
     def run(self, argv, *, cwd, timeout=1800):
         self.calls.append((argv, timeout))
@@ -38,6 +39,9 @@ class Commands:
             metadata = Path(argv[argv.index("--metadata-file") + 1])
             if self.failure == metadata.stem:
                 raise RuntimeError("positioned build failure")
+            if self.built is not None and "--load" in argv:
+                metadata.write_text(json.dumps(self.built))
+                return ""
             metadata.write_text(
                 json.dumps(
                     {
@@ -184,83 +188,114 @@ _MANIFEST = "sha256:" + "a" * 64
 _CONFIG = "sha256:" + "b" * 64
 _FOREIGN = "sha256:" + "c" * 64
 _INDEX = "application/vnd.oci.image.index.v1+json"
+_DOCKER_V2 = "application/vnd.docker.distribution.manifest.v2+json"
+_OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
+_CLASSIC_BUILT = {"containerimage.digest": _MANIFEST, "containerimage.config.digest": _CONFIG}
+# Dispatch 43621341717, attestation-free: Docker 29's containerd store with the docker driver
+# reports no config digest, only the single loaded manifest (bu-kiuh8v.38).
+_CONTAINERD_BUILT = {
+    "containerimage.config.digest": None,
+    "containerimage.digest": _MANIFEST,
+    "containerimage.descriptor": {"mediaType": _DOCKER_V2, "digest": _MANIFEST, "size": 1612},
+}
+# Dispatch 43610085269, with Buildx's default provenance: an attested index.
+_INDEX_BUILT = {
+    "buildx.build.provenance": {},
+    "containerimage.config.digest": None,
+    "containerimage.digest": _MANIFEST,
+    "containerimage.descriptor": {"mediaType": _INDEX, "digest": _MANIFEST, "size": 856},
+}
+
+
+def _image(identity, descriptor=None, *, arch="amd64", os_name="linux"):
+    image = {"Id": identity, "Os": os_name, "Architecture": arch}
+    if descriptor is not None:
+        image["Descriptor"] = descriptor
+        image["RepoDigests"] = ["butlers-app@" + identity]
+    return image
+
+
+def _desc(media, digest):
+    return {"mediaType": media, "digest": digest, "size": 1612}
 
 
 @pytest.mark.parametrize(
-    ("loaded", "accepted"),
+    ("built", "loaded", "image_id"),
     [
-        # The classic store reports the config digest as Id.
-        ({"Id": _CONFIG, "Os": "linux", "Architecture": "amd64"}, True),
-        # Docker 29's containerd store reports the loaded manifest digest as Id and
-        # names it again in Descriptor (bu-kiuh8v.38).
+        # Classic store: Id is the config digest Buildx reports.
+        (_CLASSIC_BUILT, _image(_CONFIG), _CONFIG),
+        # Docker 29 containerd store, exactly as observed: null config, one v2 manifest named by
+        # Buildx's digest and descriptor and by inspect's Id and Descriptor.
+        (_CONTAINERD_BUILT, _image(_MANIFEST, _desc(_DOCKER_V2, _MANIFEST)), _MANIFEST),
+        # Containerd store when Buildx does report a config digest: Id is still the manifest.
+        (_CLASSIC_BUILT, _image(_MANIFEST, _desc(_OCI_MANIFEST, _MANIFEST)), _MANIFEST),
+        # The attested index stays refused: it is not one platform image.
+        (_INDEX_BUILT, _image(_MANIFEST, _desc(_INDEX, _MANIFEST)), None),
+        (_CLASSIC_BUILT, _image(_MANIFEST, _desc(_INDEX, _MANIFEST)), None),
+        # Every digest must be this build's own.
+        (_CONTAINERD_BUILT, _image(_MANIFEST, _desc(_DOCKER_V2, _FOREIGN)), None),
+        (_CONTAINERD_BUILT, _image(_FOREIGN, _desc(_DOCKER_V2, _MANIFEST)), None),
+        (_CONTAINERD_BUILT, _image(_FOREIGN, _desc(_DOCKER_V2, _FOREIGN)), None),
         (
-            {
-                "Id": _MANIFEST,
-                "Descriptor": {"mediaType": _INDEX, "digest": _MANIFEST, "size": 856},
-                "Os": "linux",
-                "Architecture": "amd64",
-            },
-            True,
-        ),
-        ({"Id": _MANIFEST, "Os": "linux", "Architecture": "amd64"}, True),
-        (
-            {
-                "Id": _MANIFEST,
-                "Descriptor": {"mediaType": _INDEX, "digest": _FOREIGN, "size": 856},
-                "Os": "linux",
-                "Architecture": "amd64",
-            },
-            False,
+            {**_CONTAINERD_BUILT, "containerimage.descriptor": _desc(_DOCKER_V2, _FOREIGN)},
+            _image(_MANIFEST, _desc(_DOCKER_V2, _MANIFEST)),
+            None,
         ),
         (
-            {
-                "Id": _CONFIG,
-                "Descriptor": {"mediaType": _INDEX, "digest": _FOREIGN, "size": 856},
-                "Os": "linux",
-                "Architecture": "amd64",
-            },
-            False,
+            {**_CONTAINERD_BUILT, "containerimage.descriptor": _desc(_INDEX, _MANIFEST)},
+            _image(_MANIFEST, _desc(_DOCKER_V2, _MANIFEST)),
+            None,
         ),
         (
-            {"Id": _CONFIG, "Descriptor": _MANIFEST, "Os": "linux", "Architecture": "amd64"},
-            False,
+            {**_CONTAINERD_BUILT, "containerimage.descriptor": "sha256:" + "a" * 64},
+            _image(_MANIFEST, _desc(_DOCKER_V2, _MANIFEST)),
+            None,
         ),
-        ({"Id": _FOREIGN, "Os": "linux", "Architecture": "amd64"}, False),
+        (_CONTAINERD_BUILT, _image(_MANIFEST, _MANIFEST), None),
+        # Without a Descriptor only the classic binding exists: Id must be the config digest.
+        (_CLASSIC_BUILT, _image(_MANIFEST), None),
+        (_CLASSIC_BUILT, _image(_FOREIGN), None),
+        (_CONTAINERD_BUILT, _image(_MANIFEST), None),
+        # Neither binding is available.
         (
-            {
-                "Id": _FOREIGN,
-                "Descriptor": {"mediaType": _INDEX, "digest": _MANIFEST, "size": 856},
-                "Os": "linux",
-                "Architecture": "amd64",
-            },
-            False,
+            {"containerimage.config.digest": None, "containerimage.digest": None},
+            _image(_MANIFEST, _desc(_DOCKER_V2, _MANIFEST)),
+            None,
         ),
-        ({"Id": _MANIFEST, "Os": "linux", "Architecture": "arm64"}, False),
-        ({"Id": _MANIFEST, "Os": "windows", "Architecture": "amd64"}, False),
+        (
+            {"containerimage.config.digest": "sha256:short", "containerimage.digest": _MANIFEST},
+            _image(_MANIFEST, _desc(_DOCKER_V2, _MANIFEST)),
+            None,
+        ),
+        # Platform.
+        (_CONTAINERD_BUILT, _image(_MANIFEST, _desc(_DOCKER_V2, _MANIFEST), arch="arm64"), None),
+        (_CLASSIC_BUILT, _image(_CONFIG, os_name="windows"), None),
     ],
 )
 def test_loaded_application_identity_holds_under_both_image_stores(
-    recipe, tmp_path, loaded, accepted
+    recipe, tmp_path, built, loaded, image_id
 ):
     project, contexts, revision, helpers, events = recipe
-    commands = Commands(loaded=loaded)
+    commands = Commands(loaded=loaded, built=built)
     work, output = tmp_path / "work", tmp_path / "output"
     work.mkdir()
-    if not accepted:
+    if image_id is None:
         with pytest.raises(ValueError, match="loaded application identity differs"):
             producer.build(project, contexts, work, output, revision, helpers, commands)
         assert not output.exists() and events[-1] == "cleanup"
         return
     result = producer.build(project, contexts, work, output, revision, helpers, commands)
-    # The recorded identity stays the content-addressed config digest from Buildx.
-    assert {variant["image_id"] for variant in result["variants"].values()} == {_CONFIG}
+    # The recorded identity is the bound local image Id: the config digest in the classic store,
+    # the single loaded manifest digest in the containerd store.
+    assert {variant["image_id"] for variant in result["variants"].values()} == {image_id}
 
 
 def test_application_builds_load_one_attestation_free_manifest(recipe, tmp_path):
     """Docker 29 + Buildx provenance loads an OCI index with no config digest (dispatch 43610085269).
 
-    The app builds turn attestations off so ``--load`` yields one platform manifest whose config
-    digest Buildx reports; the base push is untouched.
+    The app builds turn attestations off so ``--load`` yields one platform manifest that Buildx's
+    digest and inspect's Id and Descriptor all name; the base push is untouched. The index shape
+    itself stays refused (``_INDEX_BUILT`` above).
     """
     project, contexts, revision, helpers, events = recipe
     commands = Commands()
@@ -272,48 +307,6 @@ def test_application_builds_load_one_attestation_free_manifest(recipe, tmp_path)
     assert len(apps) == 4
     assert all("--provenance=false" in argv and "--sbom=false" in argv for argv in apps)
     assert "--provenance=false" not in base and "--sbom=false" not in base
-
-
-def test_attested_index_without_config_digest_is_refused(recipe, tmp_path):
-    """The observed index shape stays refused: no config digest means no bound image id."""
-    project, contexts, revision, helpers, events = recipe
-
-    class Attested(Commands):
-        def run(self, argv, *, cwd, timeout=1800):
-            if argv[:3] == ["docker", "buildx", "build"] and "--load" in argv:
-                self.calls.append((argv, timeout))
-                metadata = Path(argv[argv.index("--metadata-file") + 1])
-                metadata.write_text(
-                    json.dumps(
-                        {
-                            "buildx.build.provenance": {},
-                            "containerimage.config.digest": None,
-                            "containerimage.digest": _MANIFEST,
-                            "containerimage.descriptor": {
-                                "mediaType": _INDEX,
-                                "digest": _MANIFEST,
-                                "size": 856,
-                            },
-                        }
-                    )
-                )
-                return ""
-            return super().run(argv, cwd=cwd, timeout=timeout)
-
-    commands = Attested(
-        loaded={
-            "Id": _MANIFEST,
-            "Descriptor": {"mediaType": _INDEX, "digest": _MANIFEST, "size": 856},
-            "RepoDigests": ["butlers-app@" + _MANIFEST],
-            "Os": "linux",
-            "Architecture": "amd64",
-        }
-    )
-    work, output = tmp_path / "work", tmp_path / "output"
-    work.mkdir()
-    with pytest.raises(ValueError, match="loaded application identity differs"):
-        producer.build(project, contexts, work, output, revision, helpers, commands)
-    assert not output.exists() and events[-1] == "cleanup"
 
 
 def test_identity_refusal_reports_digest_evidence_only(recipe, tmp_path):
