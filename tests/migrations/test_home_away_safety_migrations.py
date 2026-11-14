@@ -52,7 +52,7 @@ def test_home_007_extends_the_home_chain() -> None:
 
 @pytest.mark.unit
 def test_no_threshold_has_a_default() -> None:
-    """Away-safety requirement 002: a missing value is unconfigured, never filled in."""
+    """REQ-home-deterministic-jobs-002: a missing value is unconfigured, never filled in."""
     upgrade = " ".join(" ".join(_statements(_load(_HOME_007, "h007"), "upgrade")).split())
     for column in (
         "max_c",
@@ -64,6 +64,18 @@ def test_no_threshold_has_a_default() -> None:
     ):
         definition = upgrade[upgrade.index(f" {column} ") :].split(",", 1)[0]
         assert "DEFAULT" not in definition, column
+
+
+@pytest.mark.unit
+def test_the_downgrade_checks_for_owner_declarations_before_dropping_anything() -> None:
+    """The owner's values have no default to rebuild from, so a downgrade refuses (core_331)."""
+    downgrade = _statements(_load(_HOME_007, "h007_guard"), "downgrade")
+    guard = downgrade[0]
+    assert "RAISE EXCEPTION" in guard
+    for target in ("temperature_watch", "away_safety_settings", "away_alert_after_minutes"):
+        assert target in guard
+    assert not any("DROP" in statement for statement in downgrade[:1])
+    assert all("DROP" in statement for statement in downgrade[1:])
 
 
 @_docker
@@ -133,7 +145,20 @@ async def test_away_safety_tables_hold_their_bounds_and_downgrade(
                     f"last_run_at) VALUES ('{kind}', 'sensor.x', {start}, {last})"
                 )
 
-        for statement in _statements(_load(_HOME_007, "h007_down"), "downgrade"):
+        downgrade = _statements(_load(_HOME_007, "h007_down"), "downgrade")
+        # Each owner declaration alone refuses the downgrade and loses nothing.
+        for clear in (
+            "DELETE FROM temperature_watch",
+            "DELETE FROM away_safety_settings",
+            "UPDATE departure_watch SET away_alert_after_minutes = NULL",
+        ):
+            with pytest.raises(asyncpg.RaiseError):
+                await pool.execute(downgrade[0])
+            assert await pool.fetchval("SELECT to_regclass('temperature_watch')") is not None
+            await pool.execute(clear)
+
+        # Streaks are derived state; with no declaration left the downgrade proceeds.
+        for statement in downgrade:
             await pool.execute(statement)
         for table in ("temperature_watch", "away_safety_settings", "away_safety_streaks"):
             assert await pool.fetchval("SELECT to_regclass($1)", table) is None

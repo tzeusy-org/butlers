@@ -471,7 +471,7 @@ async def write_sensing(state: SensingState, now: datetime) -> WriteOutcome:
         return "unconfigured"
     try:
         connection = await asyncpg.connect(dsn, command_timeout=15)
-    except (asyncpg.PostgresError, OSError):
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
         logger.warning("home away safety: sensing writer connect failed")
         return "unavailable"
     try:
@@ -495,8 +495,15 @@ async def write_sensing(state: SensingState, now: datetime) -> WriteOutcome:
             "home away safety: sensing write failed sqlstate=%s", getattr(exc, "sqlstate", None)
         )
         return "unavailable"
+    except (asyncpg.InterfaceError, OSError):
+        # A dropped writer connection is an outcome, never an abort of the whole run.
+        logger.warning("home away safety: sensing writer connection lost")
+        return "unavailable"
     finally:
-        await connection.close()
+        try:
+            await connection.close()
+        except (asyncpg.InterfaceError, OSError):
+            logger.warning("home away safety: sensing writer close failed")
 
 
 # ---------------------------------------------------------------------------
@@ -585,9 +592,6 @@ async def _apply(
     for transition in transitions:
         fingerprint = transition.fingerprint
         message = plan.messages.get(fingerprint)
-        if message is None:
-            continue
-        counts["opened"] += int(transition.transition in ("opened", "reopened"))
         prior = actives.get(fingerprint)
         prior_meta = _as_dict(prior.get("metadata")) if prior else {}
         rung_due = (
@@ -595,6 +599,20 @@ async def _apply(
             if prior is not None and transition.transition == "escalation_due"
             else None
         )
+        if message is None:
+            # Carried without a message (premise or leave unknown): the ledger has already
+            # advanced the rung, so record it as held for the next known-premise run.
+            if rung_due is not None:
+                counts["held"] += 1
+                await _write_markers(
+                    pool,
+                    source,
+                    fingerprint,
+                    None,
+                    {**_without_identity(prior_meta), "rung_due_at": rung_due.isoformat()},
+                )
+            continue
+        counts["opened"] += int(transition.transition in ("opened", "reopened"))
         first = _due_first_send(prior, transition.transition, now)
         held = _held_rung(prior_meta)
         if not (first or rung_due or held):
@@ -631,26 +649,39 @@ async def _apply(
                     markers["rung_notified_at"] = now.isoformat()
         if not markers:
             continue
-        base = plan.metadata.get(fingerprint) or {
-            k: v for k, v in prior_meta.items() if k != "identity_payload"
-        }
-        await reconcile_snapshot(
-            pool,
-            source=source,
-            observations=[
-                Observation(
-                    fingerprint=fingerprint,
-                    summary=message,
-                    metadata={**base, **markers},
-                    confirm_only=True,
-                )
-            ],
-            snapshot_complete=False,
-            initial_grace_seconds=INITIAL_GRACE_SECONDS,
-            escalation_advance=ESCALATION_ADVANCE,
-            preserve_metadata_keys=MARKERS,
-        )
+        base = plan.metadata.get(fingerprint) or _without_identity(prior_meta)
+        await _write_markers(pool, source, fingerprint, message, {**base, **markers})
     return counts
+
+
+def _without_identity(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in metadata.items() if k != "identity_payload"}
+
+
+async def _write_markers(
+    pool: asyncpg.Pool,
+    source: str,
+    fingerprint: str,
+    summary: str | None,
+    metadata: dict[str, Any],
+) -> None:
+    """Confirm-only write of delivery markers; ``None`` keeps the stored summary."""
+    await reconcile_snapshot(
+        pool,
+        source=source,
+        observations=[
+            Observation(
+                fingerprint=fingerprint,
+                summary=summary,
+                metadata=metadata,
+                confirm_only=True,
+            )
+        ],
+        snapshot_complete=False,
+        initial_grace_seconds=INITIAL_GRACE_SECONDS,
+        escalation_advance=ESCALATION_ADVANCE,
+        preserve_metadata_keys=MARKERS,
+    )
 
 
 # ---------------------------------------------------------------------------

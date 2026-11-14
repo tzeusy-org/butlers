@@ -101,7 +101,44 @@ def upgrade() -> None:
     """)
 
 
+_ROLLBACK_REFUSAL = (
+    "home_007 downgrade refused: the owner has away-safety declarations; "
+    "remove them on the dashboard first"
+)
+
+
 def downgrade() -> None:
+    # The declarations are the owner's own values with no default to rebuild them from, so a
+    # downgrade refuses rather than drops them.  Streaks are derived and may go.
+    op.execute(f"""
+        DO $$
+        BEGIN
+            -- Nested IFs: each query is planned only once its table or column is known to exist.
+            IF to_regclass('temperature_watch') IS NOT NULL THEN
+                IF EXISTS (SELECT 1 FROM temperature_watch) THEN
+                    RAISE EXCEPTION '{_ROLLBACK_REFUSAL}';
+                END IF;
+            END IF;
+            IF to_regclass('away_safety_settings') IS NOT NULL THEN
+                IF EXISTS (SELECT 1 FROM away_safety_settings) THEN
+                    RAISE EXCEPTION '{_ROLLBACK_REFUSAL}';
+                END IF;
+            END IF;
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'departure_watch'
+                  AND column_name = 'away_alert_after_minutes'
+            ) THEN
+                IF EXISTS (
+                    SELECT 1 FROM departure_watch WHERE away_alert_after_minutes IS NOT NULL
+                ) THEN
+                    RAISE EXCEPTION '{_ROLLBACK_REFUSAL}';
+                END IF;
+            END IF;
+        END
+        $$
+    """)
     op.execute("ALTER TABLE departure_watch DROP COLUMN IF EXISTS away_alert_after_minutes")
     op.execute("DROP TABLE IF EXISTS away_safety_streaks")
     op.execute("DROP TABLE IF EXISTS away_safety_settings")

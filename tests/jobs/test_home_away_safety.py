@@ -1,6 +1,6 @@
 """Home away safety: freezer, away door and sensing blind (bu-jv1moa.87).
 
-away-safety requirement002..007.  The pure rules, the per-source plans and the delivery
+REQ-home-deterministic-jobs-002..007.  The pure rules, the per-source plans and the delivery
 rules run anywhere.  The end-to-end runs need real PostgreSQL and run CI-first where Docker is
 unavailable.
 """
@@ -97,7 +97,7 @@ def _slot(presence: str | None, *, fresh_min: float = 30) -> dict[str, Any]:
     ],
 )
 def test_sensing_state_follows_the_lease_then_readability(lease, states, expected) -> None:
-    """away-safety requirement003: the slot states, unmeasurable before unavailable."""
+    """REQ-home-deterministic-jobs-003: the slot states, unmeasurable before unavailable."""
     readings = {e: Reading(s) for e, s in states.items() if s is not None}
     assert (
         sensing_state(lease_healthy=lease, entity_ids=list(states), readings=readings) == expected
@@ -106,7 +106,7 @@ def test_sensing_state_follows_the_lease_then_readability(lease, states, expecte
 
 @pytest.mark.unit
 def test_a_whole_role_lost_is_blind_while_the_slot_is_only_degraded() -> None:
-    """away-safety requirement003: leak and smoke dark, freezer still reads."""
+    """REQ-home-deterministic-jobs-003: leak and smoke dark, freezer still reads."""
     roles = {"leak": ["l1"], "smoke": ["s1", "s2"], "freezer": ["f1"], "gas": []}
     readings = {"l1": Reading("unavailable"), "s1": Reading("unknown"), "f1": Reading("-18")}
 
@@ -144,7 +144,7 @@ def test_a_lost_lease_blinds_every_declared_role_and_no_undeclared_one() -> None
 def test_streaks_extend_restart_after_a_gap_and_end(
     prior_start, prior_last, qualifies, expected_start
 ) -> None:
-    """away-safety requirement003/004: a gap over two job periods restarts, never bridges."""
+    """REQ-home-deterministic-jobs-003/004: a gap over two job periods restarts, never bridges."""
     prior = (
         None
         if prior_start is None
@@ -175,7 +175,7 @@ def test_streaks_extend_restart_after_a_gap_and_end(
 def test_a_freezer_run_qualifies_only_on_a_known_fresh_declared_unit_reading(
     state, unit, age_min, lease, expected
 ) -> None:
-    """away-safety requirement004: stale, wrong-unit, unreadable or unleased is unknown."""
+    """REQ-home-deterministic-jobs-004: stale, wrong-unit, unreadable or unleased is unknown."""
     verdict, _ = freezer_run(
         _FREEZER, _reading(state, unit=unit, age_min=age_min), lease_healthy=lease, now=_NOW
     )
@@ -194,7 +194,7 @@ def test_a_fahrenheit_freezer_is_judged_in_celsius() -> None:
 
 @pytest.mark.unit
 def test_the_away_door_counts_from_the_later_of_last_change_and_the_leave() -> None:
-    """away-safety requirement005: an item open at departure counts from the leave."""
+    """REQ-home-deterministic-jobs-005: an item open at departure counts from the leave."""
     leave_at = _NOW - timedelta(minutes=50)
     early = door_state(
         _DOOR, _reading("on", changed_min=600), leave_at=leave_at, lease_healthy=True, now=_NOW
@@ -236,7 +236,7 @@ def test_an_away_door_is_secure_only_on_its_own_reading(state, lease, expected) 
 
 @pytest.mark.unit
 def test_away_needs_a_fresh_outside_slot_agreeing_with_a_timely_leave() -> None:
-    """away-safety requirement006."""
+    """REQ-home-deterministic-jobs-006."""
     leave = _edge("leave", 60)
     premise = away_premise(PresenceRead(_slot("outside"), (leave, _edge("enter", 120))), _NOW)
 
@@ -249,7 +249,7 @@ def test_away_needs_a_fresh_outside_slot_agreeing_with_a_timely_leave() -> None:
     "case", ["stale", "slot_unknown", "disagree", "late_leave", "no_reader", "no_edges"]
 )
 def test_conflicting_or_missing_presence_is_unknown(case) -> None:
-    """away-safety requirement006: conflicting or missing presence is unknown."""
+    """REQ-home-deterministic-jobs-006: conflicting or missing presence is unknown."""
     slot = _slot("outside", fresh_min=-1) if case == "stale" else _slot("outside")
     edges: tuple[Edge, ...] = (_edge("leave", 60),)
     if case == "slot_unknown":
@@ -276,7 +276,7 @@ def test_a_retracted_latest_leave_is_skipped_for_the_one_before() -> None:
 
 @pytest.mark.unit
 def test_a_leave_ends_by_return_retraction_or_stays_unknown() -> None:
-    """away-safety requirement005/006: return, retraction, or nothing concluded."""
+    """REQ-home-deterministic-jobs-005/006: return, retraction, or nothing concluded."""
     leave = _edge("leave", 90)
     retracted = Edge(leave.id, "leave", leave.confirmed_at, False, True)
     enter = _edge("enter", 10)
@@ -361,8 +361,50 @@ def test_the_sensing_request_is_a_valid_closed_perception_write(state, slot_stat
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("step", "error", "expected"),
+    [
+        ("write", "interface", "unavailable"),
+        ("write", "privilege", "unconfigured"),
+        ("write", "postgres", "unavailable"),
+        ("connect", "interface", "unavailable"),
+        ("close", "interface", "written"),
+    ],
+)
+async def test_a_failing_sensing_write_is_an_outcome_never_an_abort(
+    monkeypatch, step, error, expected
+) -> None:
+    """A dropped writer connection must not abort the run (and with it the freezer alerts)."""
+    import butlers.db
+    import butlers.perception
+
+    raised = {
+        "interface": asyncpg.InterfaceError("connection is closed"),
+        "privilege": asyncpg.InsufficientPrivilegeError("not registered"),
+        "postgres": asyncpg.PostgresError("boom"),
+    }[error]
+    connection = MagicMock()
+    connection.close = AsyncMock(side_effect=raised if step == "close" else None)
+    store = MagicMock()
+    store.write = AsyncMock(
+        side_effect=raised if step == "write" else None,
+        return_value={"status": "committed"},
+    )
+    monkeypatch.setenv(away.SENSING_WRITER_DSN_ENV, "postgresql://sensing@db/x")
+    monkeypatch.setattr(
+        away.asyncpg,
+        "connect",
+        AsyncMock(side_effect=raised if step == "connect" else None, return_value=connection),
+    )
+    monkeypatch.setattr(butlers.db, "register_jsonb_codec", AsyncMock())
+    monkeypatch.setattr(butlers.perception, "PerceptionStore", MagicMock(return_value=store))
+
+    assert await away.write_sensing("degraded", _NOW) == expected
+
+
+@pytest.mark.unit
 def test_the_module_has_no_actuation_model_or_prepared_action_path() -> None:
-    """away-safety requirement007: no model call, no HA service call, no prepared action."""
+    """REQ-home-deterministic-jobs-007: no model call, no HA service call, no prepared action."""
     source = inspect.getsource(away)
     for forbidden in ("call_service", "ha_call", "spawn", "anthropic", "prepared_action"):
         assert forbidden not in source
@@ -441,7 +483,7 @@ def test_a_held_warm_freezer_opens_once_its_streak_reaches_the_dwell() -> None:
 
 @pytest.mark.unit
 def test_a_gap_in_runs_delays_the_freezer_open() -> None:
-    """away-safety requirement004 scenario: streak 50 min old, 20 min without a run."""
+    """REQ-home-deterministic-jobs-004 scenario: streak 50 min old, 20 min without a run."""
     run = _run(
         freezers=[_FREEZER],
         readings={_FREEZER.entity_id: _reading("-10")},
@@ -546,7 +588,7 @@ def _door_active(leave: Edge) -> dict[str, dict[str, Any]]:
 def test_an_open_away_door_resolves_by_its_reading_return_or_retraction(
     premise_case, state, expected
 ) -> None:
-    """away-safety requirement005/006: unknown presence resolves only via a secure reading."""
+    """REQ-home-deterministic-jobs-005/006: unknown presence resolves only via a secure reading."""
     leave = _edge("leave", 90)
     premises = {
         "returned": Premise("inside", edges=(_edge("enter", 5), leave)),
@@ -625,7 +667,7 @@ def _blind_run(**overrides: Any) -> away._Run:
 
 @pytest.mark.unit
 def test_whole_roles_dark_while_away_open_one_blind_condition_naming_them() -> None:
-    """away-safety requirement003 scenario: leak and smoke dark, the freezer reads."""
+    """REQ-home-deterministic-jobs-003 scenario: leak and smoke dark, the freezer reads."""
     leave = _edge("leave", 60)
     run = _blind_run(premise=_away(leave))
     plan = away._plan_blind(run, configured=True, tz=ZoneInfo("UTC"))
@@ -691,7 +733,7 @@ def test_an_open_blind_condition_resolves_on_sight_or_return(
 
 @pytest.mark.unit
 def test_blindness_never_resolves_another_condition() -> None:
-    """away-safety requirement003: a blind run resolves nothing by omission."""
+    """REQ-home-deterministic-jobs-003: a blind run resolves nothing by omission."""
     fp = freezer_fingerprint(_FREEZER.entity_id)
     run = _run(
         lease_healthy=False,
@@ -772,7 +814,7 @@ def _plan(fp: str, leave: Edge | None = None) -> away._Plan:
 async def test_an_opened_condition_is_marked_delivered_only_when_sent(
     monkeypatch, outcome, markers
 ) -> None:
-    """away-safety requirement007: a suppressed first send leaves no delivery marker."""
+    """REQ-home-deterministic-jobs-007: a suppressed first send leaves no delivery marker."""
     ledger = _ledger(monkeypatch, _transition("fp", "opened"))
     notify = AsyncMock(return_value=outcome)
 
@@ -810,7 +852,7 @@ async def test_an_undelivered_condition_is_retried_after_two_minutes(
 @pytest.mark.unit
 @pytest.mark.parametrize("outcome", ["sent", "suppressed"])
 async def test_a_rung_is_recorded_when_due_and_marked_only_when_sent(monkeypatch, outcome) -> None:
-    """away-safety requirement007: a rung inside quiet hours is held, not lost."""
+    """REQ-home-deterministic-jobs-007: a rung inside quiet hours is held, not lost."""
     due = _NOW - timedelta(minutes=1)
     ledger = _ledger(monkeypatch, _transition("fp", "escalation_due"))
     prior = {
@@ -831,6 +873,53 @@ async def test_a_rung_is_recorded_when_due_and_marked_only_when_sent(monkeypatch
     (written,) = ledger.marker_writes
     assert written["rung_due_at"] == due.isoformat()
     assert ("rung_notified_at" in written) is (outcome == "sent")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source", [AWAY_DOOR_SOURCE, BLIND_SOURCE])
+async def test_a_rung_falling_while_the_premise_is_unknown_is_held_then_sent(
+    monkeypatch, source
+) -> None:
+    """REQ-home-deterministic-jobs-006 and 007: a rung is held, not lost.
+
+    With the premise unknown the plan carries the condition without a message; the ledger still
+    advances the rung, so the run records it and the next known-premise run sends it.
+    """
+    due = _NOW - timedelta(minutes=1)
+    ledger = _ledger(monkeypatch, _transition("fp", "escalation_due"))
+    prior = {
+        "metadata": {"entity_id": "x", "notified_at": "2026-11-14T06:00:00+00:00"},
+        "first_detected_at": _NOW - timedelta(hours=2),
+        "next_reescalate_at": due,
+    }
+    carried = away._Plan()
+    carried.carry("fp")
+    notify = AsyncMock(return_value="sent")
+
+    counts = await away._apply(MagicMock(), source, carried, {"fp": prior}, now=_NOW, notify=notify)
+
+    notify.assert_not_awaited()
+    assert counts["held"] == 1
+    (written,) = ledger.marker_writes
+    assert written["rung_due_at"] == due.isoformat()
+    assert written["notified_at"] == "2026-11-14T06:00:00+00:00"
+    assert "rung_notified_at" not in written
+
+    later = _NOW + timedelta(minutes=2)
+    ledger.transitions = [_transition("fp", "confirmed")]
+    leave = _edge("leave", 60)
+    await away._apply(
+        MagicMock(),
+        source,
+        _plan("fp", leave),
+        {"fp": {**prior, "metadata": written, "next_reescalate_at": None}},
+        now=later,
+        notify=notify,
+        recheck=AsyncMock(return_value="current"),
+    )
+
+    notify.assert_awaited_once_with("message")
+    assert ledger.marker_writes[-1]["rung_notified_at"] == later.isoformat()
 
 
 @pytest.mark.unit
@@ -871,7 +960,7 @@ async def test_a_held_rung_is_delivered_once_after_the_window(
     ],
 )
 async def test_an_away_send_re_reads_the_premise_first(monkeypatch, fate, resolved, sends) -> None:
-    """away-safety requirement007: return resolves, unknown holds, only away sends."""
+    """REQ-home-deterministic-jobs-007: return resolves, unknown holds, only away sends."""
     ledger = _ledger(monkeypatch, _transition("fp", "opened"))
     notify = AsyncMock(return_value="sent")
     recheck = AsyncMock(return_value=fate)
@@ -1132,7 +1221,7 @@ async def test_an_away_door_opens_while_away_and_resolves_on_return(db, live, no
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 async def test_concurrent_runs_serialize_and_the_second_is_busy(db, live) -> None:
-    """away-safety requirement007 scenario: concurrent runs send once."""
+    """REQ-home-deterministic-jobs-007 scenario: concurrent runs send once."""
     pool = await _home_pool(db)
     await _seed_freezer(pool, "-9")
     gate = asyncio.Event()
