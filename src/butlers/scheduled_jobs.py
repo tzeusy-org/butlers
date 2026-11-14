@@ -1202,6 +1202,20 @@ async def _run_relationship_meeting_debrief_job(
     return await run_meeting_debrief(pool, insight_proposer=propose_insight_candidate)
 
 
+async def _run_relationship_meeting_card_push_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Queue one timed T-20 card per meeting with other people (dark, unscheduled; bu-jv1moa.9)."""
+    import importlib
+
+    from butlers.jobs.meeting_card import run_meeting_card
+
+    # Resolved at call time: a static import would add one more unresolved-import baseline entry.
+    broker = importlib.import_module("butlers.tools.switchboard.insight.broker")
+    return await run_meeting_card(pool, job_args, insight_proposer=broker.propose_insight_candidate)
+
+
 async def _run_messenger_calendar_prep_contribution_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2265,6 +2279,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "upcoming_dates_check": _run_relationship_upcoming_dates_check_job,
             "relationship_maintenance": _run_relationship_maintenance_job,
             "meeting_debrief": _run_relationship_meeting_debrief_job,
+            "meeting_card_push": _run_relationship_meeting_card_push_job,
             "interaction_sync": _run_relationship_interaction_sync_job,
             "loan_cost_claim_backfill": _run_relationship_loan_cost_claim_backfill_job,
             "memory_curation": _run_relationship_memory_curation_job,

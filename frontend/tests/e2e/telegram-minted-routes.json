@@ -62,6 +62,14 @@
       "payload_selector": "[data-highlighted=true]",
       "phone_walk": "pending",
       "phone_walk_owner": "bu-z0b0ah.3"
+    },
+    {
+      "name": "calendar page (meeting card)",
+      "pattern": "/calendar",
+      "example": "/calendar",
+      "payload_selector": "main h1",
+      "phone_walk": "pending",
+      "phone_walk_owner": "bu-jv1moa.9"
     }
   ]
 }
