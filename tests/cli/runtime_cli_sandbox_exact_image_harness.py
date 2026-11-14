@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 
 from butlers.cli_auth.registry import PROVIDERS
 from butlers.cli_auth.sandbox_platform import (
@@ -18,6 +19,26 @@ from butlers.cli_auth.sandbox_platform import (
     resolve_readonly_runtime_inputs,
     resolve_shim_runtime_inputs,
 )
+
+#: A ``<name> <version>`` first line, as ``codex --version`` prints. Only the match is reported.
+_VERSION_SHAPE = re.compile(rb"\A[A-Za-z0-9_.-]{1,64} v?[0-9]+\.[0-9]+")
+
+
+def completion_failure(terminated: bool, returncode: int | None, output: bytes) -> str | None:
+    """Which completion condition failed, or None when all hold (bu-kiuh8v.42).
+
+    Reports booleans, the exit status and a byte count only: the payload's output never
+    leaves the sandbox through this message.
+    """
+    if terminated and returncode == 0 and output:
+        return None
+    evidence = {
+        "terminated": bool(terminated),
+        "returncode": returncode if type(returncode) is int else None,
+        "output_bytes": len(output),
+        "version_shaped": bool(_VERSION_SHAPE.match(output)),
+    }
+    return "exact-image sandbox probe did not complete: " + json.dumps(evidence, sort_keys=True)
 
 
 async def _run() -> None:
@@ -99,8 +120,9 @@ async def _run() -> None:
 
         output = await asyncio.wait_for(process.stdout.read(), timeout=10)
         terminated = await handle.complete_readonly()
-        if not terminated or process.returncode != 0 or not output:
-            raise RuntimeError("exact-image sandbox probe did not complete")
+        failure = completion_failure(terminated, process.returncode, output)
+        if failure is not None:
+            raise RuntimeError(failure)
         print(json.dumps({"launch": "ok", "termination": "proven"}, sort_keys=True))
     finally:
         for fd in (info_read, info_write, block_read, block_write, shim_gate_read, shim_gate_write):
@@ -111,4 +133,5 @@ async def _run() -> None:
             await handle.terminate()
 
 
-asyncio.run(_run())
+if __name__ == "__main__":
+    asyncio.run(_run())

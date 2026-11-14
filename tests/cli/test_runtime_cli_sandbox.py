@@ -3126,6 +3126,60 @@ def _require_exact_sandbox_image(docker: str) -> str:
     return image
 
 
+def _load_exact_image_harness():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_exact_image_harness", _EXACT_IMAGE_HARNESS)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(
+    ("terminated", "returncode", "output", "expected"),
+    [
+        (True, 0, b"codex-cli 0.1.0\n", None),
+        (
+            False,
+            0,
+            b"codex-cli 0.1.0\n",
+            {"terminated": False, "returncode": 0, "output_bytes": 16, "version_shaped": True},
+        ),
+        (
+            True,
+            1,
+            b"secret-looking payload\n",
+            {"terminated": True, "returncode": 1, "output_bytes": 23, "version_shaped": False},
+        ),
+        (
+            True,
+            None,
+            b"",
+            {"terminated": True, "returncode": None, "output_bytes": 0, "version_shaped": False},
+        ),
+        (
+            True,
+            0,
+            b"",
+            {"terminated": True, "returncode": 0, "output_bytes": 0, "version_shaped": False},
+        ),
+    ],
+)
+def test_exact_image_probe_names_the_failed_condition_without_payload(
+    terminated, returncode, output, expected
+) -> None:
+    """bu-kiuh8v.42: the refusal says which condition failed, never what the payload printed."""
+    harness = _load_exact_image_harness()
+    failure = harness.completion_failure(terminated, returncode, output)
+    if expected is None:
+        assert failure is None
+        return
+    assert failure.startswith("exact-image sandbox probe did not complete: ")
+    assert json.loads(failure.split(": ", 1)[1]) == expected
+    assert "payload" not in failure and "codex-cli" not in failure
+
+
 @pytest.mark.integration
 def test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled() -> None:
     """REQ-core-credentials-002: the real image forwards the shim gate before exec."""
