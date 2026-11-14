@@ -90,6 +90,7 @@ google-drive-connector = "butlers.connectors.google_drive:main"
 steam-connector = "butlers.connectors.steam:main"
 telegram-user-client-connector = "butlers.connectors.telegram_user_client:run_telegram_user_client_connector"
 butlers = "butlers.cli:cli"
+butlers-public-mcp = "butlers.mcp_public.server:main"
 
 [tool.ruff]
 target-version = "py312"

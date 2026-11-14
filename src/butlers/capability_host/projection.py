@@ -21,6 +21,8 @@ from butlers.knowledge_read.manifest import (
     manifest_transition,
 )
 
+READER_SERVER_SETTINGS = {"search_path": "pg_catalog"}
+
 
 @dataclass(frozen=True)
 class ProjectionStatus:
@@ -101,7 +103,11 @@ async def canary_probe(conn: asyncpg.Connection, manifest: Manifest, canaries: t
 
 
 async def create_pool(settings: HostSettings) -> asyncpg.Pool:
-    """The reader pool as ``mcp_public_ro``; the password is file-mounted (no env fallback)."""
+    """The reader pool as ``mcp_public_ro``; the password is file-mounted (no env fallback).
+
+    ``search_path`` is pinned to ``pg_catalog`` (bu-y66o00.28): readers name every projection
+    object by schema, so no database- or role-level setting can steer an unqualified name.
+    """
     password = settings.db_password_path.read_text().strip()
     return await asyncpg.create_pool(
         host=settings.db_host,
@@ -113,4 +119,5 @@ async def create_pool(settings: HostSettings) -> asyncpg.Pool:
         max_size=4,
         timeout=5,
         command_timeout=10,
+        server_settings=dict(READER_SERVER_SETTINGS),
     )
