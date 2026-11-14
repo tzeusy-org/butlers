@@ -25,7 +25,7 @@ def _refused(response) -> bool:
     return response.status == 200 and json.loads(response.body).get("error") == UNAUTHORIZED
 
 
-# -- REQ-001 hop bearer -------------------------------------------------------------------------
+# -- REQ-public-mcp-authorization-001 hop bearer --
 
 
 async def test_missing_bearer_is_refused_before_the_body_is_read(env: Env):
@@ -83,7 +83,7 @@ async def test_bearer_alone_cannot_call_a_tool(env: Env):
     assert env.calls == [] and env.projection.acquired == 0
 
 
-# -- REQ-002 request shape ----------------------------------------------------------------------
+# -- REQ-public-mcp-authorization-002 request shape --
 
 
 async def test_oversized_body_is_refused(env: Env):
@@ -126,7 +126,7 @@ async def test_no_sse_get_stream(env: Env):
     assert response.status == 405 and env.body_reads == 0
 
 
-# -- REQ-003 assertion for data methods ---------------------------------------------------------
+# -- REQ-public-mcp-authorization-003 assertion for data methods --
 
 
 async def test_handshake_works_without_an_assertion_and_opens_no_connection(tmp_path):

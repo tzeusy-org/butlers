@@ -62,7 +62,7 @@ async def test_a_valid_assertion_is_served(env: Env):
     assert line["sub"] == SUB and line["cid"] == "claude.ai" and line["outcome"] == "ok"
 
 
-# -- REQ-004 signature and identity -------------------------------------------------------------
+# -- REQ-public-mcp-authorization-004 signature and identity --
 
 
 async def test_unknown_key_id_is_refused(env: Env):
@@ -201,7 +201,7 @@ async def test_two_assertion_headers_are_refused(env: Env):
     assert await _cause(env, sign(claims(BODY)), headers=extra) == "shape"
 
 
-# -- REQ-005 freshness, replay, binding ---------------------------------------------------------
+# -- REQ-public-mcp-authorization-005 freshness, replay, binding --
 
 
 async def test_expired_assertion_is_refused(env: Env):
@@ -256,7 +256,7 @@ async def test_method_and_tool_are_bound(env: Env, field):
     assert await _cause(env, sign(claims(BODY, **{field: "other"}))) == "binding"
 
 
-# -- REQ-006 uniform refusal --------------------------------------------------------------------
+# -- REQ-public-mcp-authorization-006 uniform refusal --
 
 
 async def test_causes_are_indistinguishable_to_the_caller(env: Env):
@@ -270,7 +270,7 @@ async def test_causes_are_indistinguishable_to_the_caller(env: Env):
     assert env.host.metrics.get("auth_failures", cause="replay") == 1
 
 
-# -- REQ-007 keyring custody and rotation -------------------------------------------------------
+# -- REQ-public-mcp-authorization-007 keyring custody and rotation --
 
 
 def _rotated(new_seed: bytes, *, cutover: datetime, with_retiring: bool) -> bytes:

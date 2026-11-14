@@ -36,7 +36,7 @@ def _env_with(tmp_path, name: str, domain: str | None, result, **kw) -> Env:
     return Env(tmp_path, tools=tools, **kw)
 
 
-# -- REQ-011 canaries ---------------------------------------------------------------------------
+# -- REQ-public-mcp-authorization-011 canaries --
 
 
 async def test_a_canary_in_a_response_latches_the_surface_off(tmp_path):
@@ -69,7 +69,7 @@ async def test_the_canary_check_runs_before_dlp_could_hide_it(tmp_path):
     assert error_code(await env.tool("trips")) == "blocked" and env.host.latched
 
 
-# -- REQ-012 budgets ----------------------------------------------------------------------------
+# -- REQ-public-mcp-authorization-012 budgets --
 
 
 async def test_per_client_rate_is_enforced(env: Env):
@@ -132,7 +132,7 @@ async def test_a_refused_budget_spends_nothing(tmp_path):
         assert error_code(await env.tool("entity_lookup")) is None
 
 
-# -- REQ-013 audit ------------------------------------------------------------------------------
+# -- REQ-public-mcp-authorization-013 audit --
 
 
 async def test_a_served_call_is_audited(tmp_path):
@@ -181,7 +181,7 @@ async def test_tool_errors_are_audited_with_their_code(env: Env):
     assert env.audits()[-1]["outcome"] == "domain_disabled"
 
 
-# -- REQ-surface-012 cursors --------------------------------------------------------------------
+# -- REQ-public-mcp-surface-012 cursors --
 
 
 def _paging_tools():

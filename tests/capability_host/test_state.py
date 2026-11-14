@@ -46,7 +46,7 @@ def _narrowed() -> Manifest:
     raise AssertionError("no table can be dropped from the manifest")
 
 
-# -- REQ-009 kill switches ----------------------------------------------------------------------
+# -- REQ-public-mcp-authorization-009 kill switches --
 
 
 async def test_a_replicated_switch_refuses_its_domain_only(env: Env):
@@ -109,7 +109,7 @@ async def test_finance_and_health_need_no_unlock(env: Env):
     assert error_code(await env.tool("finance_summary")) is None
 
 
-# -- REQ-surface-002 allowlist and arguments ----------------------------------------------------
+# -- REQ-public-mcp-surface-002 allowlist and arguments --
 
 
 async def test_unknown_argument_is_refused_before_any_query(tmp_path):
@@ -153,7 +153,7 @@ async def test_only_registered_tools_with_object_arguments_run(env: Env, params)
     assert env.projection.acquired == 0
 
 
-# -- REQ-surface-013 error shape and precedence -------------------------------------------------
+# -- REQ-public-mcp-surface-013 error shape and precedence --
 
 
 async def test_stale_projection_refuses_data(env: Env):
@@ -249,7 +249,7 @@ async def test_missing_canary_values_stop_every_tool(env: Env):
     assert error_code(await env.tool("entity_lookup")) == "unavailable"
 
 
-# -- REQ-projection-015 fail closed while the owner step is pending -----------------------------
+# -- REQ-public-mcp-projection-015 fail closed while the owner step is pending --
 
 
 def _status(**kw) -> ProjectionStatus:
