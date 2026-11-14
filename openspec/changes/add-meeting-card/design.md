@@ -38,3 +38,10 @@ queueing is `propose_insight_candidate(lane="timed")`.
 
 - Queue at T-60 and let the lane time it: the card would outlive a reschedule without a premise.
 - Read the merged prep view for message topics: needs a new grant for the Relationship role.
+
+## Activation conditions (notes, not built)
+
+- Schedule `meeting_card_push` at least as often as `insight_timed_subcycle`, so a card is queued
+  before the sub-cycle that could send it.
+- A meeting the owner declines after its card was queued is not withdrawn today (only a moved,
+  cancelled or deleted occurrence is); that withdrawal comes with activation.

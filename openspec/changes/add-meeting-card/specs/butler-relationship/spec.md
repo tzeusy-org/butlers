@@ -75,7 +75,8 @@ or invite text and SHALL be stripped of markup and control characters, truncated
 written and no inert-link rendering runs on it. A location SHALL never render as a link: a URL
 SHALL show only its defanged host.
 An attendee whose posture is not `active`, or who resolves to the owner, SHALL NOT be named and
-SHALL contribute no prep lines; the meeting is still carded.
+SHALL contribute no prep lines. The meeting is still carded when another real attendee remains (a
+non-active person counts as one; the owner's own address does not).
 
 ID: REQ-butler-relationship-008
 Source: about/heart-and-soul/security.md (third-party content; owner-notify inert rendering)

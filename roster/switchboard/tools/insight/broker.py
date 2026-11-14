@@ -279,11 +279,12 @@ def _get_default_cooldown(priority: int) -> int:
 async def withdraw_pending_candidates(
     pool: asyncpg.Pool,
     *,
+    origin_butler: str,
     dedup_keys: list[str],
     reason: str,
     now: datetime | None = None,
 ) -> int:
-    """Withdraw the named pending, unclaimed candidates because their premise no longer holds.
+    """Withdraw the named pending, unclaimed timed candidates of *origin_butler*, premise gone.
 
     The same guarded ``status = 'pending' AND claim_id IS NULL`` transition and ``withdrawn``
     attention event as the premise recheck, for a producer that knows its own candidate went
@@ -300,12 +301,14 @@ async def withdraw_pending_candidates(
                 metadata = COALESCE(metadata, '{}'::jsonb)
                            || jsonb_build_object('withdrawn_at', $2::text,
                                                  'withdrawn_reason', $3::text)
-            WHERE dedup_key = $1 AND status = 'pending' AND claim_id IS NULL
+            WHERE dedup_key = $1 AND origin_butler = $4 AND lane = 'timed'
+              AND status = 'pending' AND claim_id IS NULL
             RETURNING id, origin_butler, priority, channel, dedup_key
             """,
             key,
             moment.isoformat(),
             reason,
+            origin_butler,
         )
         for row in rows:
             withdrawn += 1

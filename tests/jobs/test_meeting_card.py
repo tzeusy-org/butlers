@@ -372,6 +372,7 @@ class TestSupersededCards:
         result = await _run(pool, proposer, withdrawer)
         assert withdrawer.calls[0]["dedup_keys"] == [old_key]
         assert withdrawer.calls[0]["reason"] == "meeting_changed"
+        assert withdrawer.calls[0]["origin_butler"] == "relationship"
         assert result["withdrawn"] == 1 and result["proposed"] == 1
         assert proposer.calls[0]["dedup_key"] != old_key
 

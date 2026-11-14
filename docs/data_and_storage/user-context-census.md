@@ -114,6 +114,9 @@ matched.
 | `src/butlers/jobs/briefing.py::run_education_briefing_contribution` | contribution date and the SGT-midnight window | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; contribution key identity |
 | `src/butlers/jobs/briefing.py::run_home_briefing_contribution` | contribution date (`today_sgt`) | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; contribution key identity |
 | `src/butlers/jobs/briefing.py::run_lifestyle_briefing_contribution` | contribution date and the SGT-midnight window | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; contribution key identity |
+| `src/butlers/jobs/meeting_card.py::<module>` | imports `SGT` from briefing for the card's local start time (dark) | bu-enbrs2 | deferred to the same owner-zone migration as briefing; no code until `OWNER_CLOCK_LIVE` |
+| `src/butlers/jobs/meeting_card.py::_day_label` | today/date label in fixed UTC+8 (dark) | bu-enbrs2 | deferred to the same owner-zone migration as briefing; no code until `OWNER_CLOCK_LIVE` |
+| `src/butlers/jobs/meeting_card.py::render_card` | start time rendered in `SGT` (dark) | bu-enbrs2 | deferred to the same owner-zone migration as briefing; no code until `OWNER_CLOCK_LIVE` |
 | `src/butlers/jobs/calendar_overlay.py::<module>` | imports `SGT` and `today_sgt` | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
 | `src/butlers/jobs/calendar_overlay.py::_sgt_date_str` | buckets a timestamp onto its UTC+8 calendar date | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; the date is the overlay key |
 | `src/butlers/jobs/calendar_overlay.py::run_finance_calendar_overlay_contribution` | overlay date (`today_sgt`) | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE`; overlay key identity |

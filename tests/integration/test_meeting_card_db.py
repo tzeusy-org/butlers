@@ -130,7 +130,9 @@ class _Withdrawer:
     def __init__(self) -> None:
         self.keys: list[str] = []
 
-    async def __call__(self, pool: asyncpg.Pool, *, dedup_keys: list[str], **_: Any) -> int:
+    async def __call__(
+        self, pool: asyncpg.Pool, *, origin_butler: str, dedup_keys: list[str], **_: Any
+    ) -> int:
         self.keys.extend(dedup_keys)
         return len(dedup_keys)
 

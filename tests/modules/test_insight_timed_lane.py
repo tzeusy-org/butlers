@@ -681,6 +681,7 @@ async def test_withdraw_pending_candidates_withdraws_only_pending_unclaimed_name
 
     count = await withdraw_pending_candidates(
         timed_pool,
+        origin_butler="relationship",
         dedup_keys=[
             "relationship:meeting-card:e3:100",
             "relationship:meeting-card:e3:300",
@@ -695,3 +696,35 @@ async def test_withdraw_pending_candidates_withdraws_only_pending_unclaimed_name
     assert (await _row(timed_pool, stale))["metadata"]["withdrawn_reason"] == "meeting_changed"
     assert (await _row(timed_pool, keep))["status"] == "pending"
     assert (await _row(timed_pool, sent))["status"] == "delivered"
+
+
+async def test_withdraw_pending_candidates_leaves_other_origins_and_the_digest_lane(timed_pool):
+    from butlers.tools.switchboard.insight.broker import withdraw_pending_candidates
+
+    foreign = await _propose_card(timed_pool, key="relationship:meeting-card:e4:100")
+    await timed_pool.execute(
+        "UPDATE insight_candidates SET origin_butler = 'home' WHERE id = $1", foreign
+    )
+    digest = await _propose_digest(timed_pool, key="relationship:meeting-card:e4:200")
+    await timed_pool.execute(
+        "UPDATE insight_candidates SET origin_butler = 'relationship' WHERE id = $1", digest
+    )
+
+    count = await withdraw_pending_candidates(
+        timed_pool,
+        origin_butler="relationship",
+        dedup_keys=["relationship:meeting-card:e4:100", "relationship:meeting-card:e4:200"],
+        reason="meeting_changed",
+        now=_AWAKE,
+    )
+
+    assert count == 0
+    assert (await _row(timed_pool, foreign))["status"] == "pending"
+    assert (await _row(timed_pool, digest))["status"] == "pending"
+
+
+async def test_a_malformed_context_signal_skips_the_cycle_instead_of_raising(timed_pool):
+    await _propose_card(timed_pool, key="relationship:meeting-card:e5:100")
+    bad = AsyncMock(return_value=[object()])
+    result = await _run_timed(timed_pool, _sent(), context=bad)
+    assert result["skipped"] is True and result["reason"] == "attention_store_unavailable"

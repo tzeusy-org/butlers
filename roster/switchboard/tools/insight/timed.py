@@ -394,10 +394,17 @@ async def timed_delivery_cycle(
     )
     if not rows:
         return result
+    try:
+        # Judged under the same guard as the read: a malformed signal skips the cycle.
+        holds = [
+            _context_hold(signals, now=now, passes=passed_context_signals(dict(r))) for r in rows
+        ]
+    except Exception:
+        result.update(skipped=True, reason="attention_store_unavailable")
+        return result
     held_by: dict[str, int] = {}
     free_rows = []
-    for row in rows:
-        hold = _context_hold(signals, now=now, passes=passed_context_signals(dict(row)))
+    for row, hold in zip(rows, holds, strict=True):
         if hold is None:
             free_rows.append(row)
             continue

@@ -91,7 +91,7 @@ _MAX_COMMITMENTS = 2
 _UNSAFE = re.compile(r"[*_`\[\]<>\x00-\x1f\x7f]")
 
 InsightProposer = Callable[..., Awaitable[dict[str, Any]]]
-#: ``(pool, dedup_keys=..., reason=..., now=...) -> number withdrawn`` (the broker's withdraw path).
+#: ``(pool, origin_butler=, dedup_keys=, reason=, now=) -> number withdrawn`` (broker path).
 InsightWithdrawer = Callable[..., Awaitable[int]]
 
 #: Context signals a card passes: an owner in a meeting or focused is who it is for. ``dnd`` and
@@ -293,7 +293,13 @@ async def _withdraw_superseded(
         return 0
     try:
         return int(
-            await insight_withdrawer(pool, dedup_keys=stale, reason="meeting_changed", now=now)
+            await insight_withdrawer(
+                pool,
+                origin_butler="relationship",
+                dedup_keys=stale,
+                reason="meeting_changed",
+                now=now,
+            )
         )
     except Exception:
         logger.exception("meeting_card: withdrawing superseded cards raised")
