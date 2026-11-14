@@ -851,7 +851,8 @@ async def propose_fact_pending(
     _conn: asyncpg.Connection, _context: ReadContext, arguments: object
 ) -> dict[str, Any]:
     """``propose_fact`` until its reader lands (bu-y66o00.8): closed argument parsing, then
-    ``unavailable``, so a client fixes a bad argument but never rewrites a good one."""
+    ``domain_disabled`` (non-retryable, D5), so a client fixes a bad argument but never
+    retries a good one."""
     args = Arguments(
         arguments,
         {
@@ -869,4 +870,4 @@ async def propose_fact_pending(
     args.text("evidence_url", max_length=2048)
     args.text("note", max_length=500)
     args.text("idempotency_key", max_length=64, required=True)
-    raise ReadError("unavailable", domain="proposals")
+    raise ReadError("domain_disabled", domain="proposals")

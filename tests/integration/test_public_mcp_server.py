@@ -272,7 +272,8 @@ async def test_an_mcp_client_handshakes_lists_and_calls(served):
             )
             assert refused.isError is True
             assert refused.structuredContent is not None
-            assert refused.structuredContent["error"]["code"] == "unavailable"
+            assert refused.structuredContent["error"]["code"] == "domain_disabled"
+            assert refused.structuredContent["error"]["retryable"] is False
         assert session_id() is None  # stateless: no session to resume or delete
     assert calls["describe"]["manifest_digest"] == load_manifest().digest
     assert "tools/list" in box[0].posts and "notifications/initialized" in box[0].posts

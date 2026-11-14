@@ -33,7 +33,7 @@ BIND = "0.0.0.0"  # the pod's NetworkPolicies decide who reaches either port (D8
 
 
 def served_tools() -> dict[str, Tool]:
-    """The host's readers plus ``propose_fact``, which refuses ``unavailable`` until .8."""
+    """The host's readers plus ``propose_fact``, which refuses ``domain_disabled`` until .8."""
     return {
         **default_tools(),
         "propose_fact": Tool("propose_fact", "proposals", propose_fact_pending, dlp=False),

@@ -174,7 +174,7 @@ def test_the_served_tools_are_the_catalogue():
     assert set(served_tools()) == set(D10)
 
 
-async def test_propose_fact_refuses_unavailable_after_parsing_its_arguments():
+async def test_propose_fact_refuses_domain_disabled_after_parsing_its_arguments():
     now = datetime.now(UTC)
     context = ReadContext(sub="1", as_of=now, now=now, cursor_key=b"k" * 32)
     read = served_tools()["propose_fact"].read
@@ -187,7 +187,7 @@ async def test_propose_fact_refuses_unavailable_after_parsing_its_arguments():
     }
     with pytest.raises(ReadError) as refused:
         await read(conn, context, good)
-    assert (refused.value.code, refused.value.domain) == ("unavailable", "proposals")
+    assert (refused.value.code, refused.value.domain) == ("domain_disabled", "proposals")
     for bad in (
         {**good, "predicate": "parent-of"},
         {**good, "sql": "x"},
