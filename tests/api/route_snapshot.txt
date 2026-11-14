@@ -18,6 +18,7 @@ OP DELETE /api/health/symptoms/{symptom_id} 1774ea670dd2
 OP DELETE /api/home/away-safety/blind 6271d2979719
 OP DELETE /api/home/away-safety/doors/{entity_id} e3269bafde1b
 OP DELETE /api/home/away-safety/freezers/{entity_id} cca0e0af1b8c
+OP DELETE /api/home/departure-fixes/{entity_id} f85722084ed7
 OP DELETE /api/home/departure-watch/{entity_id} b4a6121fd094
 OP DELETE /api/home/maintenance/{item_id} d6cfc8dfd703
 OP DELETE /api/home/places/{place_id} 09ed4b48365b
@@ -223,6 +224,7 @@ OP GET /api/home/areas 32990587a16f
 OP GET /api/home/atmosphere/current 67282c4c8ed3
 OP GET /api/home/away-safety f4815e1779a4
 OP GET /api/home/command-log 4cb4fc6f3d61
+OP GET /api/home/departure-fixes e4ead587e5b7
 OP GET /api/home/departure-watch 24a1abdcd43c
 OP GET /api/home/devices 091c797147d7
 OP GET /api/home/energy 26f6bce32961
@@ -657,6 +659,7 @@ OP PUT /api/health/symptoms/{symptom_id} c75b6bc0bd80
 OP PUT /api/home/away-safety/blind b9383fa6c0a9
 OP PUT /api/home/away-safety/doors/{entity_id} 10cf2f3e6d3f
 OP PUT /api/home/away-safety/freezers 1a66252a0e54
+OP PUT /api/home/departure-fixes 627abbe34870
 OP PUT /api/home/departure-watch 45543d187a62
 OP PUT /api/home/places/{place_id} ef4960199b00
 OP PUT /api/home/safety-watch 38d220541c78
@@ -699,6 +702,7 @@ ROUTE APIRoute DELETE '/api/health/symptoms/{symptom_id}' name=delete_symptom op
 ROUTE APIRoute DELETE '/api/home/away-safety/blind' name=delete_away_blind op=delete_away_blind_api_home_away_safety_blind_delete tags=home schema=True
 ROUTE APIRoute DELETE '/api/home/away-safety/doors/{entity_id}' name=delete_away_door op=delete_away_door_api_home_away_safety_doors__entity_id__delete tags=home schema=True
 ROUTE APIRoute DELETE '/api/home/away-safety/freezers/{entity_id}' name=delete_away_freezer op=delete_away_freezer_api_home_away_safety_freezers__entity_id__delete tags=home schema=True
+ROUTE APIRoute DELETE '/api/home/departure-fixes/{entity_id}' name=delete_departure_fix op=delete_departure_fix_api_home_departure_fixes__entity_id__delete tags=home schema=True
 ROUTE APIRoute DELETE '/api/home/departure-watch/{entity_id}' name=delete_departure_watch op=delete_departure_watch_api_home_departure_watch__entity_id__delete tags=home schema=True
 ROUTE APIRoute DELETE '/api/home/maintenance/{item_id}' name=delete_maintenance_item op=delete_maintenance_item_api_home_maintenance__item_id__delete tags=home schema=True
 ROUTE APIRoute DELETE '/api/home/places/{place_id}' name=delete_owner_place op=delete_owner_place_api_home_places__place_id__delete tags=home schema=True
@@ -901,6 +905,7 @@ ROUTE APIRoute GET '/api/home/areas' name=list_areas op=list_areas_api_home_area
 ROUTE APIRoute GET '/api/home/atmosphere/current' name=get_atmosphere_current op=get_atmosphere_current_api_home_atmosphere_current_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/away-safety' name=get_away_safety op=get_away_safety_api_home_away_safety_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/command-log' name=list_command_log op=list_command_log_api_home_command_log_get tags=home schema=True
+ROUTE APIRoute GET '/api/home/departure-fixes' name=list_departure_fixes op=list_departure_fixes_api_home_departure_fixes_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/departure-watch' name=list_departure_watch op=list_departure_watch_api_home_departure_watch_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/devices' name=list_devices op=list_devices_api_home_devices_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/energy' name=get_energy op=get_energy_api_home_energy_get tags=home schema=True
@@ -1323,6 +1328,7 @@ ROUTE APIRoute PUT '/api/health/symptoms/{symptom_id}' name=update_symptom op=up
 ROUTE APIRoute PUT '/api/home/away-safety/blind' name=put_away_blind op=put_away_blind_api_home_away_safety_blind_put tags=home schema=True
 ROUTE APIRoute PUT '/api/home/away-safety/doors/{entity_id}' name=put_away_door op=put_away_door_api_home_away_safety_doors__entity_id__put tags=home schema=True
 ROUTE APIRoute PUT '/api/home/away-safety/freezers' name=put_away_freezer op=put_away_freezer_api_home_away_safety_freezers_put tags=home schema=True
+ROUTE APIRoute PUT '/api/home/departure-fixes' name=put_departure_fix op=put_departure_fix_api_home_departure_fixes_put tags=home schema=True
 ROUTE APIRoute PUT '/api/home/departure-watch' name=upsert_departure_watch op=upsert_departure_watch_api_home_departure_watch_put tags=home schema=True
 ROUTE APIRoute PUT '/api/home/places/{place_id}' name=update_owner_place op=update_owner_place_api_home_places__place_id__put tags=home schema=True
 ROUTE APIRoute PUT '/api/home/safety-watch' name=upsert_safety_watch op=upsert_safety_watch_api_home_safety_watch_put tags=home schema=True
@@ -1906,6 +1912,7 @@ SCHEMA DeliveryEntry f0ed290427c0
 SCHEMA DeliveryReplayResult 7c0ecdadfe3d
 SCHEMA DeltaFactEntry ca21b7bb605d
 SCHEMA DeltaFactsResponse bff4e129c7be
+SCHEMA DepartureFixEntry 600986f087a1
 SCHEMA DepartureWatchEntry e901eea5e5b5
 SCHEMA DepartureWatchUpsertRequest 1b8273dd4e85
 SCHEMA DeploymentFacts d79f34698b3e

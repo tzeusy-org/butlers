@@ -76,6 +76,8 @@ SafetyWatchEntry = _models.SafetyWatchEntry
 SafetyWatchUpsertRequest = _models.SafetyWatchUpsertRequest
 DepartureWatchEntry = _models.DepartureWatchEntry
 DepartureWatchUpsertRequest = _models.DepartureWatchUpsertRequest
+DepartureFixEntry = _models.DepartureFixEntry
+DepartureFixUpsertRequest = _models.DepartureFixUpsertRequest
 OwnerPlaceInput = _models.OwnerPlaceInput
 OwnerPlaceUpdate = _models.OwnerPlaceUpdate
 OwnerPlaceResponse = _models.OwnerPlaceResponse
@@ -1650,6 +1652,174 @@ async def delete_departure_watch(
         request=request,
     )
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# /api/home/departure-fixes: the one exact fix per watched item (bu-jv1moa.115)
+# ---------------------------------------------------------------------------
+#
+# Owner-only (decided D7: never by conversation or tool) and content-blind: the handlers read
+# their own bodies and every refusal is one fixed code, audited by outcome only.  Storing a
+# declaration parks nothing and calls nothing; the departure job parks it as a prepared action
+# only when the card queues, and it always waits for an owner approval.
+
+_FIX_MAX_BODY_BYTES = 2_048
+_FIX_INVALID = (422, "INVALID_REQUEST", "Departure-fix request is invalid.")
+_FIX_TOO_LARGE = (413, "REQUEST_BODY_TOO_LARGE", "Request body exceeds 2 KiB.")
+_FIX_NOT_FOUND = (404, "NOT_FOUND", "No such departure fix.")
+_FIX_UNAVAILABLE = (503, "DEPARTURE_FIX_UNAVAILABLE", "Departure fixes are unavailable.")
+_FIX_REFUSALS = {
+    "not_watched": (422, "NOT_WATCHED", "Only a watched departure item can have a fix."),
+    "not_explicit_entity": (422, "NOT_EXPLICIT_ENTITY", "A fix targets one explicit entity."),
+    "unclassified": (422, "UNCLASSIFIED_CALL", "That service is not an allowed fix."),
+    "data_not_allowed": (422, "DATA_NOT_ALLOWED", "That data is not allowed for this service."),
+}
+
+
+def _fix_entry(row: Any) -> DepartureFixEntry:
+    from butlers.jobs.home_departure_fixes import Declaration, risk_class
+
+    data = row["data"]
+    if isinstance(data, str):
+        data = json.loads(data)
+    declaration = Declaration(
+        row["entity_id"], row["domain"], row["service"], row["target_entity_id"], dict(data)
+    )
+    updated_at = row["updated_at"]
+    return DepartureFixEntry(
+        entity_id=declaration.entity_id,
+        domain=declaration.domain,
+        service=declaration.service,
+        target_entity_id=declaration.target_entity_id,
+        data=declaration.data,
+        risk=risk_class(declaration),
+        updated_at=updated_at.isoformat() if updated_at else None,
+    )
+
+
+async def _fix_write(db: Any, request: Request, operation: str, write: Any) -> Any:
+    """Run one write; map every refusal or storage failure to a fixed, audited code."""
+
+    async def audit(outcome: str, status_code: int) -> None:
+        await emit_dashboard_audit(
+            db,
+            butler="home",
+            operation=f"departure_fix_{operation}",
+            method=request.method,
+            path="/api/home/departure-fixes",
+            body={"outcome": outcome},
+            response_status=status_code,
+            result="success" if status_code < 400 else "refused",
+            request=request,
+        )
+
+    try:
+        if db is None:
+            raise _PlaceRefusal(*_FIX_UNAVAILABLE)
+        result = await write(db.pool(BUTLER_DB))
+    except _PlaceRefusal as refusal:
+        await audit(refusal.code.lower(), refusal.status_code)
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("departure-fix write failed: database unavailable")
+        await audit("unavailable", 503)
+        return _place_error(_FIX_UNAVAILABLE)
+    status_code = 200 if result is not None else 204
+    await audit("applied", status_code)
+    return result if result is not None else Response(status_code=204)
+
+
+@router.get(
+    "/departure-fixes",
+    response_model=list[DepartureFixEntry],
+    responses={503: {"model": ErrorResponse}},
+)
+async def list_departure_fixes(
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """The fixes the owner declared, each with the RFC 0028 class its call would have."""
+    if db is None:
+        return _place_error(_FIX_UNAVAILABLE)
+    try:
+        rows = await db.pool(BUTLER_DB).fetch(
+            "SELECT entity_id, domain, service, target_entity_id, data, updated_at "
+            "FROM departure_fixes ORDER BY entity_id"
+        )
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("departure-fix read failed: database unavailable")
+        return _place_error(_FIX_UNAVAILABLE)
+    return [_fix_entry(row) for row in rows]
+
+
+@router.put("/departure-fixes", responses={422: {"model": ErrorResponse}})
+async def put_departure_fix(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Declare (or replace) the one exact fix for a watched item; nothing is parked or run."""
+    from butlers.jobs.home_departure_fixes import refusal
+
+    async def write(pool: Any) -> DepartureFixEntry:
+        body = await _read_private_body(
+            request,
+            DepartureFixUpsertRequest,
+            max_bytes=_FIX_MAX_BODY_BYTES,
+            invalid=_FIX_INVALID,
+            too_large=_FIX_TOO_LARGE,
+        )
+        watched = bool(
+            await pool.fetchval(
+                "SELECT 1 FROM departure_watch WHERE entity_id = $1", body.entity_id
+            )
+        )
+        try:
+            why = refusal(
+                body.domain, body.service, body.target_entity_id, body.data, watched=watched
+            )
+        except ValueError as exc:
+            raise _PlaceRefusal(*_FIX_INVALID) from exc
+        if why is not None:
+            raise _PlaceRefusal(*_FIX_REFUSALS[why])
+        row = await pool.fetchrow(
+            "INSERT INTO departure_fixes (entity_id, domain, service, target_entity_id, data) "
+            "VALUES ($1, $2, $3, $4, $5) "
+            "ON CONFLICT (entity_id) DO UPDATE SET domain = EXCLUDED.domain, "
+            "service = EXCLUDED.service, target_entity_id = EXCLUDED.target_entity_id, "
+            "data = EXCLUDED.data, updated_at = now() "
+            "RETURNING entity_id, domain, service, target_entity_id, data, updated_at",
+            body.entity_id,
+            body.domain,
+            body.service,
+            body.target_entity_id,
+            body.data,
+        )
+        return _fix_entry(row)
+
+    return await _fix_write(db, request, "upsert", write)
+
+
+@router.delete("/departure-fixes/{entity_id}", status_code=204, response_model=None)
+async def delete_departure_fix(
+    request: Request,
+    entity_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Remove a declared fix; its still-pending approval is withdrawn on the next job run."""
+
+    async def write(pool: Any) -> None:
+        status = await pool.execute(
+            "DELETE FROM departure_fixes WHERE entity_id = $1", _away_entity(entity_id)
+        )
+        if status == "DELETE 0":
+            raise _PlaceRefusal(*_FIX_NOT_FOUND)
+
+    return await _fix_write(db, request, "delete", write)
 
 
 # ---------------------------------------------------------------------------

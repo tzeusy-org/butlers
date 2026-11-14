@@ -348,6 +348,11 @@ async def run_departure_watch(
     if not DEPARTURE_CARD_LIVE:
         return {"status": "dark"}
     now = now or datetime.now(UTC)
+    from butlers.jobs import home_departure_fixes as fixes
+
+    if fixes.DEPARTURE_FIX_LIVE:
+        # Before everything else: a removed watch must still withdraw its pending fix.
+        await fixes.cancel_fixes(pool, now=now)
     watch = await load_watch(pool)
     if not watch:
         return {"status": "no_watch"}
@@ -415,9 +420,22 @@ async def run_departure_watch(
         )
         if inserted is None or reason is not None:
             continue
-        status = await _propose(pool, leave, card_message(lines), now)
+        declared = await fixes.load_declarations(pool) if fixes.DEPARTURE_FIX_LIVE else {}
+        shown = tuple(
+            (key, text + fixes.fix_hint(declared.get(key.partition("=")[0]))) for key, text in lines
+        )
+        status = await _propose(pool, leave, card_message(shown), now)
         if status == "accepted":
             counts["proposed"] += 1
+            if declared:
+                labels = {w.entity_id: w.owner_label for w in watch}
+                await fixes.park_fixes(
+                    pool,
+                    leave.id,
+                    fixes.fixable_entities([key for key, _ in lines]),
+                    labels,
+                    now=now,
+                )
         elif status != "duplicate":
             await pool.execute(
                 "UPDATE departure_cards SET state = 'closed', closed_reason = 'not_queued' "

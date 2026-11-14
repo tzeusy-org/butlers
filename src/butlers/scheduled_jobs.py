@@ -1695,9 +1695,12 @@ async def _run_home_arrival_watch_job(
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Queue one read-only timed arrival card per confirmed enter edge (dark, unscheduled)."""
+    from butlers.jobs import home_departure_fixes
     from butlers.jobs.home_arrival import run_arrival_watch
 
-    return await run_arrival_watch(pool, job_args)
+    # Fix lines come from the departure-fix slice; while it is dark the card has none.
+    read_fixes = home_departure_fixes.fix_lines if home_departure_fixes.DEPARTURE_FIX_LIVE else None
+    return await run_arrival_watch(pool, job_args, read_fixes=read_fixes)
 
 
 async def _run_home_departure_watch_job(

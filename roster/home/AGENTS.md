@@ -99,7 +99,8 @@ Home Assistant is unreachable the sentinel resolves nothing, so an open leak ale
 `home_departure_watch` queues one read-only timed card when the owner leaves with something in
 `home.departure_watch` not secure. It runs in code (`src/butlers/jobs/home_departure.py`), is not
 scheduled yet, and has no tool or skill: do not try to send, edit or suppress a departure card
-from a session, and do not offer to fix what it lists.
+from a session, and do not declare, approve or run a fix for what it lists: owner-declared fixes are
+parked for the owner's own dashboard approval and no tool or skill reaches them.
 
 ### Away safety (deterministic, no model, dark)
 
