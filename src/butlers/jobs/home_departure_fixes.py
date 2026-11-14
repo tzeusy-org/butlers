@@ -264,6 +264,8 @@ ReadSubject = Callable[[Any], Awaitable[UUID | None]]
 def premise_of(edges: Sequence[Any], leave_id: UUID) -> Premise:
     """``holds`` only while ``leave_id`` is still the latest confirmed, unretracted edge.
 
+    A late edge counts: a late assert still moves the slot, and actuation fails closed.
+
     ``edges`` come from the presence timeline, retracted ones included. A leave that is not in
     view reads ``unknown``: neither dispatch nor rejection follows from it.
     """
@@ -273,12 +275,7 @@ def premise_of(edges: Sequence[Any], leave_id: UUID) -> Premise:
     if origin.retracted or origin.late:
         return "premise_retracted"
     for edge in edges:
-        if (
-            edge.id != leave_id
-            and not edge.retracted
-            and not edge.late
-            and edge.confirmed_at > origin.confirmed_at
-        ):
+        if edge.id != leave_id and not edge.retracted and edge.confirmed_at > origin.confirmed_at:
             return "owner_returned"
     return "holds"
 

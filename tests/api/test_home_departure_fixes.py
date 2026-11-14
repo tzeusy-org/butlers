@@ -1,4 +1,7 @@
-"""Owner-only dashboard editing of home.departure_fixes (bu-jv1moa.115, REQ-008)."""
+"""Owner-only dashboard editing of home.departure_fixes.
+
+bu-jv1moa.115, REQ-home-deterministic-jobs-008.
+"""
 
 from __future__ import annotations
 

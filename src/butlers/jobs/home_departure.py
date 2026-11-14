@@ -352,7 +352,10 @@ async def run_departure_watch(
 
     if fixes.DEPARTURE_FIX_LIVE:
         # Before everything else: a removed watch must still withdraw its pending fix.
-        await fixes.cancel_fixes(pool, now=now)
+        try:
+            await fixes.cancel_fixes(pool, now=now)
+        except Exception:  # a departure card must not die on fix bookkeeping
+            logger.exception("home departure: fix cancellation failed")
     watch = await load_watch(pool)
     if not watch:
         return {"status": "no_watch"}

@@ -148,12 +148,9 @@ def test_the_class_of_a_fix_is_the_rfc_0028_effective_class() -> None:
         ([_edge("leave", 1), _edge("leave", 10, id=_LEAVE)], "owner_returned"),
         ([_edge("leave", 10, id=_LEAVE, retracted=True)], "premise_retracted"),
         ([_edge("leave", 10, id=_LEAVE, late=True)], "premise_retracted"),
-        # a retracted or late enter does not end the absence
-        (
-            [_edge("enter", 2, retracted=True), _edge("enter", 3, late=True)]
-            + [_edge("leave", 10, id=_LEAVE)],
-            "holds",
-        ),
+        # a retracted enter does not end the absence; a late one does (the slot moved)
+        ([_edge("enter", 2, retracted=True), _edge("leave", 10, id=_LEAVE)], "holds"),
+        ([_edge("enter", 3, late=True), _edge("leave", 10, id=_LEAVE)], "owner_returned"),
         ([_edge("enter", 2)], "unknown"),
         ([], "unknown"),
     ],
@@ -164,7 +161,8 @@ def test_the_class_of_a_fix_is_the_rfc_0028_effective_class() -> None:
         "newer-leave-only",
         "retracted",
         "late",
-        "retracted-or-late-enter",
+        "retracted-enter",
+        "late-enter",
         "origin-not-in-view",
         "no-edges",
     ],
