@@ -11,8 +11,8 @@ The card says, by the owner's labels and fixed words only:
 * Home conditions that opened or resolved during the absence, with the recorded reason;
 * departure-watch items that are still not secure now (or that Home cannot see);
 * each parked fix with its resolver status (:mod:`butlers.jobs.home_prepared_status`);
-* or, when a departure card existed and nothing changed, that nothing Home tracks changed and that
-  Home only tracks what the owner declared.
+* or, when a departure card was queued and nothing changed, that everything on it is secure now
+  and that Home only tracks what the owner declared.
 
 Hard rules:
 
@@ -21,6 +21,8 @@ Hard rules:
 * No Home Assistant service call, no button, no prepared action, no ``friendly_name`` and no
   coordinate. Condition summaries are never read: a condition is named by its source family.
 * Nothing is inferred from Home Assistant history. An unhealthy HA source reads "cannot see".
+  A source error recorded inside the absence adds a fixed line and never leaves the quiet card;
+  exact outage stretches are deferred.
 * Routine priority on the timed lane; no urgency, no quiet-hours bypass beyond the lane's own
   confirmed-presence-edge rule (REQ-home-deterministic-jobs-012).
 
@@ -99,6 +101,11 @@ _REASON_WORDS = {
     "watch_removed": "the watch was removed",
 }
 
+_OUTAGE_LINE: CardLine = ("ha=outage", "Home could not see for part of the time you were away")
+_OUTAGE_SQL = (
+    "SELECT 1 FROM ha_source_health WHERE last_error_at >= $1 AND last_error_at <= $2 LIMIT 1"
+)
+
 _CONDITIONS_SQL = """
     SELECT source, state, first_detected_at, resolved_at,
            metadata ->> 'resolution_reason' AS reason
@@ -174,7 +181,7 @@ def arrival_message(lines: Sequence[CardLine], *, quiet: bool) -> str:
     if quiet:
         return (
             "Welcome home.\n"
-            "Nothing Home tracks changed while you were away. "
+            "Everything on your departure card is secure now. "
             "Home only tracks what you declared."
         )
     shown = [text for _key, text in lines[:_MAX_LINES]]
@@ -304,8 +311,13 @@ async def _build(
     read_fixes: ReadFixes,
 ) -> tuple[tuple[CardLine, ...], bool] | None:
     """The card lines and whether it is the quiet card, or ``None`` when there is nothing to say."""
+    # "Had a card" means one was actually queued; an all-secure absence never produced one.
     had_card = bool(
-        await pool.fetchval("SELECT 1 FROM departure_cards WHERE edge_event_id = $1", leave.id)
+        await pool.fetchval(
+            "SELECT 1 FROM departure_cards WHERE edge_event_id = $1 "
+            "AND proposed_fingerprint IS NOT NULL AND closed_reason IS DISTINCT FROM 'not_queued'",
+            leave.id,
+        )
     )
     changes = await _conditions(pool, leave, enter, tz)
     fixes = tuple(await read_fixes(pool, leave.id))
@@ -317,7 +329,9 @@ async def _build(
         if watch:
             still = await _current_lines(pool, watch, now)
     # Conditions are fixed words and times; labels and HA states in the rest are defanged.
-    lines = (*changes, *_defanged((*fixes, *still)))
+    blind = await pool.fetchval(_OUTAGE_SQL, leave.confirmed_at, enter.confirmed_at)
+    outage: tuple[CardLine, ...] = (_OUTAGE_LINE,) if blind else ()
+    lines = (*changes, *_defanged((*fixes, *still)), *outage)
     return lines, not lines
 
 

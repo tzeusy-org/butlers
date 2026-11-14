@@ -113,7 +113,7 @@ def test_a_condition_is_named_by_its_source_family_and_recorded_times_only() -> 
 @pytest.mark.unit
 def test_the_card_text_quiet_lines_and_overflow() -> None:
     assert arrival_message([], quiet=True) == (
-        "Welcome home.\nNothing Home tracks changed while you were away. "
+        "Welcome home.\nEverything on your departure card is secure now. "
         "Home only tracks what you declared."
     )
     lines = [(f"k{i}", f"line {i}") for i in range(11)]
@@ -245,14 +245,19 @@ async def _run(pool, edges: list[Edge], *, fixes=None) -> dict[str, Any]:
     )
 
 
-async def _departure_card(pool, leave: Edge, *, state: str = "open") -> None:
+async def _departure_card(
+    pool, leave: Edge, *, state: str = "open", queued: bool = True, reason: str | None = None
+) -> None:
+    """A departure card row; ``queued=False`` is an all-secure card that was never sent."""
+    closed = state == "closed"
     await pool.execute(
         "INSERT INTO departure_cards (edge_event_id, confirmed_at, state, closed_reason, "
-        "proposed_fingerprint, fingerprint, checked_at) VALUES ($1, $2, $3, $4, 'x', 'x', now())",
+        "proposed_fingerprint, fingerprint, checked_at) VALUES ($1, $2, $3, $4, $5, $5, now())",
         leave.id,
         leave.confirmed_at,
         state,
-        "all_secure" if state == "closed" else None,
+        (reason or "all_secure") if closed else None,
+        "x" if queued else None,
     )
 
 
@@ -376,16 +381,47 @@ async def test_a_closed_enter_queues_nothing_and_is_decided_once(db, live, case,
 async def test_an_absence_with_a_card_where_everything_stayed_secure_says_so(db, live) -> None:
     pool = await _home_pool(db)
     leave, enter = _live_edge("leave", 200), _live_edge("enter", 5)
-    await _departure_card(pool, leave, state="closed")
+    await _departure_card(pool, leave, state="closed", reason="withdrawn_changed")
     await _watch(pool, door="off")
 
     await _run(pool, [enter, leave])
 
     (candidate,) = await _candidates(pool)
     assert candidate["message"] == (
-        "Welcome home.\nNothing Home tracks changed while you were away. "
+        "Welcome home.\nEverything on your departure card is secure now. "
         "Home only tracks what you declared."
     )
+
+
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_all_secure_absence_that_never_queued_a_card_queues_nothing(db, live) -> None:
+    pool = await _home_pool(db)
+    leave, enter = _live_edge("leave", 200), _live_edge("enter", 5)
+    await _departure_card(pool, leave, state="closed", queued=False)
+    await _watch(pool, door="off")
+
+    await _run(pool, [enter, leave])
+
+    assert await _candidates(pool) == []
+
+
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_outage_that_recovered_mid_absence_is_shown_never_secure(db, live) -> None:
+    pool = await _home_pool(db)
+    leave, enter = _live_edge("leave", 200), _live_edge("enter", 5)
+    await _departure_card(pool, leave)
+    await _watch(pool, door="off")
+    await pool.execute("UPDATE ha_source_health SET last_error_at = now() - interval '100 minutes'")
+
+    await _run(pool, [enter, leave])
+
+    (candidate,) = await _candidates(pool)
+    assert "Home could not see for part of the time you were away" in candidate["message"]
+    assert "secure now" not in candidate["message"]
 
 
 @_docker
@@ -417,7 +453,7 @@ async def test_a_source_outage_reads_cannot_see_never_secure(db, live) -> None:
 
     (candidate,) = await _candidates(pool)
     assert "Home[:] cannot see" in candidate["message"]
-    assert "Nothing Home tracks changed" not in candidate["message"]
+    assert "secure now" not in candidate["message"]
 
 
 @_docker

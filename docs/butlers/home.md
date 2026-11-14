@@ -206,16 +206,18 @@ roster schedules it.
 - Lines: conditions named by their source family ("Freezer temperature", "Door or window left
   open") with the recorded open and resolve times and resolution reason (never the condition's own
   text); departure-watch items still not secure, or "cannot see", by the owner's labels; each fix
-  with its resolver status. An absence that had a departure card where nothing changed says
-  that nothing Home tracks changed and that Home only tracks what the owner declared.
+  with its resolver status. A departure card counts only if it was queued; an absence whose queued card
+  stayed secure says everything on it is secure now and that Home only tracks what the owner
+  declared. A source error recorded inside the absence adds "Home could not see for part of the
+  time you were away" and never the quiet card.
 - Nothing is queued for a retracted or late enter, one followed by another leave, an absence under 30
   minutes, or one with nothing to report; each decision is recorded once in `home.arrival_cards`
   (kept 7 days). Every run rechecks open cards: one whose lines changed is closed
   `withdrawn_changed`, and `public.resolve_home_arrival` (core_338) makes the Switchboard
   withdraw it unsent or hold it when not rechecked for three minutes.
 - No Home Assistant call, button, prepared action, `friendly_name` or coordinate. Nothing is
-  inferred from Home Assistant history; Home-source outage stretches are not recorded, so only
-  the current lease and any `home:sensing-blind` condition appear. Fix lines come from an injected
+  inferred from Home Assistant history; exact outage stretches are not recorded, so only the
+  current lease, a source error inside the absence and any `home:sensing-blind` condition appear. Fix lines come from an injected
   reader that the departure-fix slice (bu-jv1moa.115) supplies; until then none appear.
 
 ### Prepared-action status
