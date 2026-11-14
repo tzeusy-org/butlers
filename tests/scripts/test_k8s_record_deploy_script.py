@@ -196,6 +196,7 @@ def test_an_empty_argument_is_refused_before_helm_runs(
         "site-helm-args.sh",
         "runtime-topology-preflight.sh",
         "public-mcp-owner-step.sh",
+        "public-mcp-chart-deploy.sh",
     ):
         stub = scripts / name
         stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
