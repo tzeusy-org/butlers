@@ -150,6 +150,26 @@ removing readers or propagation.
 | Gmail | A forward marker line marks a `forwarded` span to the end of the text. `-----Original Message-----` and `>` quote runs (with an `On … wrote:` line) mark `quoted` spans. A `Fwd:` subject without a marker marks the whole text, and an attached `message/rfc822` marks the whole text as `embedded`. Selected HTML blockquote/cite structure also survives visible-text and whitespace normalization, HTML escaping and bearer scrubbing. MIME preference is unchanged. Metadata-only envelopes retain known exposure kinds conservatively over their subject-only text without fetching body attachments. |
 | Home Assistant, ActivityWatch, OwnTracks, Steam, Google Health | Register `channel_kind = "feed"` on every heartbeat. |
 
+### Per-entry authorship facts in conversation history
+
+The WhatsApp and Telegram user clients put two boolean transport facts on each
+`payload.raw.conversation_history` entry (REQ-connector-base-spec-013):
+
+| Fact | WhatsApp | Telegram user client |
+| --- | --- | --- |
+| `is_from_me` | the bridge's `raw.is_from_me` (whatsmeow `IsFromMe`) | Telethon `Message.out` |
+| `forwarded` | the bridge's `content.is_forwarded` (set only on a forward, so a content mapping without it is `false`) | `Message.fwd_from is not None` |
+
+A fact the provider object does not carry is omitted, never guessed; consumers that need it treat
+the entry as not qualifying. An entry's `text` is only that message's own text, and a reply names
+its target in `reply_to`. The connector does not interpret the facts: it detects no commitments,
+resolves no counterparties and writes no butler schema because of them.
+
+Only batched envelopes carry `conversation_history`. Single-message Telegram envelopes (backfill,
+ingest retry, and the fallback when a chat id cannot be read) and the unused WhatsApp
+single-event normalizer carry no history entries, so these facts, and anything that reads them
+such as owner-chat commitment candidates, never cover those messages.
+
 ## Checkpoint Persistence
 
 All connectors persist their resume cursor in the database via the `cursor_store` module (`butlers.connectors.cursor_store`). The canonical storage location is the `switchboard.connector_registry` table, keyed by `(connector_type, endpoint_identity)`.

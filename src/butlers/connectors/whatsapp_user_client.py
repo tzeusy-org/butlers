@@ -366,6 +366,23 @@ def _is_forwarded(event: dict[str, Any]) -> bool:
     return (event.get("content") or {}).get("is_forwarded") is True
 
 
+def _transport_facts(event: dict[str, Any]) -> dict[str, bool]:
+    """Per-entry authorship and forward facts (REQ-connector-base-spec-013).
+
+    ``is_from_me`` is the bridge's ``raw.is_from_me`` (whatsmeow ``IsFromMe``) and
+    ``forwarded`` its ``content.is_forwarded`` marker, which the bridge sets only on a
+    forward. A fact the event cannot supply (no boolean flag, no content mapping) is
+    omitted rather than guessed. Transport only: nothing here classifies the message.
+    """
+    facts: dict[str, bool] = {}
+    raw = event.get("raw")
+    if isinstance(raw, dict) and isinstance(raw.get("is_from_me"), bool):
+        facts["is_from_me"] = raw["is_from_me"]
+    if isinstance(event.get("content"), dict):
+        facts["forwarded"] = _is_forwarded(event)
+    return facts
+
+
 def _quoted_ref(event: dict[str, Any]) -> str | None:
     content = event.get("content")
     value = content.get("quoted_message_id") if isinstance(content, dict) else None
@@ -2116,6 +2133,7 @@ class WhatsAppUserClientConnector:
                     "timestamp": timestamp,
                     "is_new": True,
                     "reply_to": reply_to,
+                    **_transport_facts(event),
                 }
             )
 

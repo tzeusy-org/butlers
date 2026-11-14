@@ -2074,6 +2074,76 @@ def test_unforwarded_events_carry_no_spans(connector: WhatsAppUserClientConnecto
     assert batch["payload"]["raw"]["conversation_history"][0]["reply_to"] == "q-9"
 
 
+def test_history_entries_carry_authorship_and_forward_facts(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    """Spec: REQ-connector-base-spec-013 (owner, counterparty, forward, reply, missing facts)."""
+    owner = {
+        "message_id": "m-owner",
+        "chat_jid": "chat-1",
+        "sender_jid": "owner@s.whatsapp.net",
+        "type": "text",
+        "content": {"text": "I'll send it tomorrow"},
+        "raw": {"is_from_me": True, "is_group": False},
+    }
+    counterparty = {
+        "message_id": "m-them",
+        "chat_jid": "chat-1",
+        "sender_jid": "them@s.whatsapp.net",
+        "type": "text",
+        "content": {"text": "Can you send the deck?"},
+        "raw": {"is_from_me": False, "is_group": False},
+    }
+    forwarded = {
+        "message_id": "m-fwd",
+        "chat_jid": "chat-1",
+        "sender_jid": "owner@s.whatsapp.net",
+        "type": "text",
+        "content": {"text": "I will pay you back", "is_forwarded": True},
+        "raw": {"is_from_me": True, "is_group": False},
+    }
+    reply = {
+        "message_id": "m-reply",
+        "chat_jid": "chat-1",
+        "sender_jid": "owner@s.whatsapp.net",
+        "type": "text",
+        "content": {"text": "yes, that one", "quoted_message_id": "m-them"},
+        "raw": {"is_from_me": True, "is_group": False},
+    }
+    no_raw = {
+        "message_id": "m-noraw",
+        "chat_jid": "chat-1",
+        "sender_jid": "owner@s.whatsapp.net",
+        "type": "text",
+        "content": {"text": "no provider flag"},
+    }
+    odd_flag = {
+        "message_id": "m-odd",
+        "chat_jid": "chat-1",
+        "sender_jid": "owner@s.whatsapp.net",
+        "type": "text",
+        "content": None,
+        "raw": {"is_from_me": "true", "is_group": False},
+    }
+
+    envelope = connector._build_batch_envelope(
+        "chat-1", [owner, counterparty, forwarded, reply, no_raw, odd_flag], "batch-facts"
+    )
+    history = {e["message_id"]: e for e in envelope["payload"]["raw"]["conversation_history"]}
+
+    assert (history["m-owner"]["is_from_me"], history["m-owner"]["forwarded"]) == (True, False)
+    assert (history["m-them"]["is_from_me"], history["m-them"]["forwarded"]) == (False, False)
+    assert (history["m-fwd"]["is_from_me"], history["m-fwd"]["forwarded"]) == (True, True)
+    assert history["m-reply"]["text"] == "yes, that one"
+    assert history["m-reply"]["reply_to"] == "m-them"
+    assert "Can you send the deck?" not in history["m-reply"]["text"]
+    # A missing or non-boolean provider flag is omitted, never guessed.
+    assert "is_from_me" not in history["m-noraw"]
+    assert history["m-noraw"]["forwarded"] is False
+    assert "is_from_me" not in history["m-odd"]
+    assert "forwarded" not in history["m-odd"]
+
+
 def test_descriptor_identity_preserves_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
     from butlers.connectors import whatsapp_user_client as module
 
