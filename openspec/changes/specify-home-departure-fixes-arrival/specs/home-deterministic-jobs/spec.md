@@ -32,7 +32,7 @@ Scope: v1-mandatory
 
 ### Requirement: Cancellation never claims an undone effect
 
-Before every run and before dispatching every replay, the fix job SHALL re-read the away premise from the canonical `owner.place` slot and timeline. It SHALL reject each still-`pending` fix with a system actor and a content-blind reason `owner_returned`, `premise_retracted`, `already_secure` or `watch_removed`. For an `approved` fix whose premise has ended it SHALL refuse to dispatch any Home Assistant request. It SHALL NOT edit, delete or reinterpret any actuation receipt, and SHALL NOT roll back an executed fix. Text produced about a fix SHALL be derived from its resolver status, and SHALL NOT say a fix was undone, reverted or restored.
+Before every run and before dispatching every replay, the fix job SHALL re-read the away premise from the canonical `owner.place` slot and timeline. A fix's premise is bound to the leave edge it was parked for (the edge id in its dedup key): the premise holds only while that edge is still the latest confirmed, unretracted `owner.place` edge, so a later absence never revives an earlier absence's fix. It SHALL reject each still-`pending` fix with a system actor and a content-blind reason `owner_returned`, `premise_retracted`, `already_secure` or `watch_removed`. For an `approved` fix whose premise has ended it SHALL refuse to dispatch any Home Assistant request. It SHALL NOT edit, delete or reinterpret any actuation receipt, and SHALL NOT roll back an executed fix. Text produced about a fix SHALL be derived from its resolver status, and SHALL NOT say a fix was undone, reverted or restored.
 
 ID: REQ-home-deterministic-jobs-009
 Source: RFC 0028 (receipt and `unverified` semantics); module-approvals status transitions; bu-jv1moa.29
@@ -54,6 +54,11 @@ Scope: v1-mandatory
 
 - **WHEN** an approved fix replays after a confirmed enter edge or a retraction of the leave
 - **THEN** the replay SHALL dispatch nothing and SHALL record that it did not run
+
+#### Scenario: A later absence does not revive an earlier fix
+
+- **WHEN** a fix approved for one leave edge replays after the owner returned and then left again on a new leave edge
+- **THEN** the replay SHALL dispatch nothing, because its originating leave edge is no longer the latest confirmed `owner.place` edge
 
 #### Scenario: Unknown presence holds
 

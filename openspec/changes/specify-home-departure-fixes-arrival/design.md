@@ -64,7 +64,12 @@ No "secure all" action exists: each item is its own action with its own approval
 ## Cancellation and honesty (REQ-009)
 
 A run of the fix job, and every replay of an approved fix, re-reads the away premise
-(`owner.place` slot and timeline, the same reader as the card). It then:
+(`owner.place` slot and timeline, the same reader as the card). The premise is bound to the fix's
+originating leave edge (the edge id in its dedup key): it holds only while that edge is still the
+latest confirmed, unretracted `owner.place` edge. Reading "away" again after a return and a new
+leave does not revive it, which matters because an unrun `approved` row can only move to `executed`
+or `abandoned` (approvals module) and abandon is dashboard-only, so this binding is the only guard
+on a stale approval. It then:
 - rejects each still-`pending` fix with a system actor and a content-blind reason: `owner_returned`
   after a confirmed non-late enter, `premise_retracted` after a retracted leave, `already_secure`
   when the item reads secure, `watch_removed` when the declaration or watch row was removed;
