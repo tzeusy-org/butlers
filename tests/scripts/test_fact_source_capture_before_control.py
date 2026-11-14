@@ -233,7 +233,11 @@ def owner(address, case):
         while not pathlib.Path(f'/proc/{child.pid}/task/{child.pid}/children').read_text().strip():
             assert time.monotonic() < until
             time.sleep(0.001)
-        actor.update(pid=os.getpid(), tid=threading.get_native_id(), child=child.pid)
+        # Start ticks are read here, while both actors are certainly alive: this
+        # process is the child's unreaped parent, so neither pid can be reused yet.
+        # A root that read them later raced the supervisor's teardown (bu-kiuh8v.37).
+        actor.update(pid=os.getpid(), tid=threading.get_native_id(), child=child.pid,
+                     pid_start=start_ticks(os.getpid()), child_start=start_ticks(child.pid))
         ready.set()
         if case == 'leader-thread':
             channel.sendall(json.dumps(actor).encode()+b'\n')
@@ -264,8 +268,10 @@ def owner(address, case):
 def await_retirement(owner_probe, task_probe, owner_start, task_start, clock, pause):
     assert type(owner_start) is int and owner_start > 0
     assert type(task_start) is int and task_start > 0
-    until = clock() + 0.05
-    for _ in range(64):
+    # A liveness bound, not the property under test: a loaded runner can take far
+    # longer than 50 ms to retire a joined thread (bu-kiuh8v.37).
+    until = clock() + 5
+    for _ in range(5000):
         owner = owner_probe()
         assert isinstance(owner, tuple) and len(owner) == 2
         assert type(owner[0]) is int and owner[0] == owner_start
@@ -312,7 +318,7 @@ def wrapper(case, address, parent, parent_start):
             connection, _ = server.accept()
             connection.settimeout(5)
             actor = json.loads(connection.recv(512))
-            assert set(actor) == {'pid', 'tid', 'child'}
+            assert set(actor) == {'pid', 'tid', 'child', 'pid_start', 'child_start'}
             assert all(type(n) is int and n > 1 for n in actor.values())
             send({'fixture': 'owned-actors', 'actor': actor})
         return actor
@@ -322,7 +328,9 @@ def wrapper(case, address, parent, parent_start):
                 raw = stream.read(4096)
             fields = raw[raw.rfind(')')+2:].split()
             return (int(fields[19]), fields[0]), 'known'
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
+            # A retiring thread's stat read fails with ESRCH before its entry is
+            # removed; both mean the task is gone (bu-kiuh8v.37).
             return None, 'absent'
     def emitting(value):
         nonlocal positioned, cached_tasks
@@ -331,7 +339,7 @@ def wrapper(case, address, parent, parent_start):
             cached_tasks = original_listdir(f"/proc/{a['pid']}/task")
             assert str(a['tid']) in cached_tasks
             if case == 'leader-thread':
-                until = time.monotonic()+0.05
+                until = time.monotonic()+5
                 while module.process(a['pid'])[1] != 'Z':
                     assert time.monotonic() < until
                     time.sleep(0.001)
@@ -471,13 +479,19 @@ def run():
                             wire[:] = tail
                             value = json.loads(line)
                             if value.get('fixture') == 'owned-actors':
-                                for owned in (value['actor']['pid'], value['actor']['child']):
-                                    known[owned] = start_ticks(owned)
+                                actor = value['actor']
+                                known[actor['pid']] = actor['pid_start']
+                                known[actor['child']] = actor['child_start']
                             else:
                                 events.append(value)
                                 if value.get('fixture') == 'wrapper-fault':
                                     CLOSED_EVENTS.append(value)
-                            if value.get('fixture') == 'positioned' and not stopped:
+                            # Loss cases cancel themselves at positioning. An extra
+                            # SIGTERM from a lagging root could land after the
+                            # supervisor's verdict, during interpreter exit, and
+                            # turn exit 2 into -15 (bu-kiuh8v.37).
+                            if (value.get('fixture') == 'positioned' and not stopped
+                                    and case not in ('parent-loss', 'reader-loss')):
                                 active.send_signal(signal.SIGTERM)
                                 stopped = True
                 STAGE = 'before-wait'
