@@ -264,8 +264,25 @@ def test_nightly_consumes_closed_contexts_before_unchanged_installed_export():
     assert "scripts/runtime_clis/produce_image_contexts.py" in context
     assert "scripts/runtime_clis/build_image_chain.py" in chain
     assert (
-        '--revision "${GIT_SHA}"' in chain and '--contexts "${RUNNER_TEMP}/image-contexts-' in chain
+        '--revision "${GIT_SHA}"' in chain
+        and '--contexts "${IMAGE_SCRATCH}/image-contexts-' in chain
     )
+    # bu-kiuh8v.24: the producers' work, contexts and chain output, and docker's own data, live on
+    # the runner's larger /mnt disk (falling back to RUNNER_TEMP only when /mnt is too small).
+    assert '--work "${IMAGE_SCRATCH}/image-context-work-' in context
+    assert '--output "${IMAGE_SCRATCH}/image-contexts-' in context
+    assert "RUNNER_TEMP" not in context + chain
+    move = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Keep docker and image scratch on the larger /mnt disk"
+    )
+    assert names.index("Keep docker and image scratch on the larger /mnt disk") < names.index(
+        "Produce complete closed image contexts"
+    )
+    assert '"data-root": "/mnt/docker"' in move and "IMAGE_SCRATCH=/mnt/butlers-image" in move
+    assert "IMAGE_SCRATCH=${RUNNER_TEMP}" in move  # the small-/mnt fallback
+    assert "docker system df" in context  # the disk sampler that shows where space went
     assert "butlers-base:latest" not in context + chain
     row = next(
         row

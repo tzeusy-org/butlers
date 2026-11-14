@@ -310,14 +310,51 @@ jobs:
           sudo rm -rf /usr/share/swift
           sudo rm -rf /usr/local/share/boost
           sudo apt-get clean -q
-          docker image prune -f --filter "until=1h" || true
+          docker system prune -af || true
+
+      # bu-kiuh8v.24: the python producer's build cache, layers, tarball and extracted context
+      # filled the 84 GB root disk (run 43517653812 died at 1h47m, runner log ENOSPC). The
+      # runner's /mnt is a separate larger disk: keep docker's data and the producers' scratch there.
+      - name: Keep docker and image scratch on the larger /mnt disk
+        run: |
+          set -euo pipefail
+          avail_mb=$(df --output=avail -BM /mnt | tail -1 | tr -dc '0-9')
+          echo "free before: root=$(df --output=avail -BM / | tail -1 | tr -d ' ') /mnt=${avail_mb}M"
+          if [ "${avail_mb}" -lt 30000 ]; then
+            echo "::warning::/mnt has under 30 GB free; leaving docker and scratch on the root disk"
+            echo "IMAGE_SCRATCH=${RUNNER_TEMP}" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          sudo mkdir -p /mnt/docker /mnt/butlers-image
+          sudo chown "$(id -u):$(id -g)" /mnt/butlers-image
+          sudo systemctl stop docker.socket docker
+          if [ -s /etc/docker/daemon.json ]; then
+            sudo jq '. + {"data-root": "/mnt/docker"}' /etc/docker/daemon.json | sudo tee /etc/docker/daemon.json.new >/dev/null
+            sudo mv /etc/docker/daemon.json.new /etc/docker/daemon.json
+          else
+            echo '{"data-root": "/mnt/docker"}' | sudo tee /etc/docker/daemon.json >/dev/null
+          fi
+          sudo systemctl start docker
+          test "$(docker info --format '{{.DockerRootDir}}')" = /mnt/docker
+          echo "IMAGE_SCRATCH=/mnt/butlers-image" >> "$GITHUB_ENV"
 
       - name: Produce complete closed image contexts
         run: |
+          # Sample disk use into this step's log so a repeat shows where the space went, even
+          # if the runner dies before it can upload anything.
+          (
+            while true; do
+              echo "disk $(date -u +%H:%M:%S) $(df -h --output=target,used,avail / /mnt | tail -n +2 | tr -s ' ' | tr '\n' ';')"
+              docker system df 2>/dev/null | tr -s ' ' | sed 's/^/docker: /'
+              sleep 120
+            done
+          ) &
+          sampler=$!
+          trap 'kill "${sampler}" 2>/dev/null || true' EXIT
           python3 -I -B scripts/runtime_clis/produce_image_contexts.py \
             --project "${GITHUB_WORKSPACE}" \
-            --work "${RUNNER_TEMP}/image-context-work-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --output "${RUNNER_TEMP}/image-contexts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            --work "${IMAGE_SCRATCH}/image-context-work-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output "${IMAGE_SCRATCH}/image-contexts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
       - name: Build butlers-app exact image
         env:
@@ -325,9 +362,9 @@ jobs:
         run: |
           python3 -I -B scripts/runtime_clis/build_image_chain.py \
             --project "${GITHUB_WORKSPACE}" \
-            --contexts "${RUNNER_TEMP}/image-contexts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --work "${RUNNER_TEMP}/image-chain-work-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --output "${RUNNER_TEMP}/image-chain-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --contexts "${IMAGE_SCRATCH}/image-contexts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --work "${IMAGE_SCRATCH}/image-chain-work-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output "${IMAGE_SCRATCH}/image-chain-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --revision "${GIT_SHA}"
 
       - name: Export installed runtime image files
