@@ -15,6 +15,9 @@ OP DELETE /api/health/measurements/{measurement_id} bd1771d4974a
 OP DELETE /api/health/medications/{medication_id} 6fb198ddc01b
 OP DELETE /api/health/research/{research_id} 37a5e0da711f
 OP DELETE /api/health/symptoms/{symptom_id} 1774ea670dd2
+OP DELETE /api/home/away-safety/blind 6271d2979719
+OP DELETE /api/home/away-safety/doors/{entity_id} e3269bafde1b
+OP DELETE /api/home/away-safety/freezers/{entity_id} cca0e0af1b8c
 OP DELETE /api/home/departure-watch/{entity_id} b4a6121fd094
 OP DELETE /api/home/maintenance/{item_id} d6cfc8dfd703
 OP DELETE /api/home/places/{place_id} 09ed4b48365b
@@ -218,6 +221,7 @@ OP GET /api/health/research 10c8d0cf0aa3
 OP GET /api/health/symptoms 144289f6883f
 OP GET /api/home/areas 32990587a16f
 OP GET /api/home/atmosphere/current 67282c4c8ed3
+OP GET /api/home/away-safety f4815e1779a4
 OP GET /api/home/command-log 4cb4fc6f3d61
 OP GET /api/home/departure-watch 24a1abdcd43c
 OP GET /api/home/devices 091c797147d7
@@ -645,6 +649,9 @@ OP PUT /api/health/measurements/{measurement_id} aacd1fd2e7ef
 OP PUT /api/health/medications/{medication_id} 46c496e9bffd
 OP PUT /api/health/research/{research_id} f2ca9af23103
 OP PUT /api/health/symptoms/{symptom_id} c75b6bc0bd80
+OP PUT /api/home/away-safety/blind b9383fa6c0a9
+OP PUT /api/home/away-safety/doors/{entity_id} 10cf2f3e6d3f
+OP PUT /api/home/away-safety/freezers 1a66252a0e54
 OP PUT /api/home/departure-watch 45543d187a62
 OP PUT /api/home/places/{place_id} ef4960199b00
 OP PUT /api/home/safety-watch 38d220541c78
@@ -684,6 +691,9 @@ ROUTE APIRoute DELETE '/api/health/measurements/{measurement_id}' name=delete_me
 ROUTE APIRoute DELETE '/api/health/medications/{medication_id}' name=delete_medication op=delete_medication_api_health_medications__medication_id__delete tags=health schema=True
 ROUTE APIRoute DELETE '/api/health/research/{research_id}' name=delete_research op=delete_research_api_health_research__research_id__delete tags=health schema=True
 ROUTE APIRoute DELETE '/api/health/symptoms/{symptom_id}' name=delete_symptom op=delete_symptom_api_health_symptoms__symptom_id__delete tags=health schema=True
+ROUTE APIRoute DELETE '/api/home/away-safety/blind' name=delete_away_blind op=delete_away_blind_api_home_away_safety_blind_delete tags=home schema=True
+ROUTE APIRoute DELETE '/api/home/away-safety/doors/{entity_id}' name=delete_away_door op=delete_away_door_api_home_away_safety_doors__entity_id__delete tags=home schema=True
+ROUTE APIRoute DELETE '/api/home/away-safety/freezers/{entity_id}' name=delete_away_freezer op=delete_away_freezer_api_home_away_safety_freezers__entity_id__delete tags=home schema=True
 ROUTE APIRoute DELETE '/api/home/departure-watch/{entity_id}' name=delete_departure_watch op=delete_departure_watch_api_home_departure_watch__entity_id__delete tags=home schema=True
 ROUTE APIRoute DELETE '/api/home/maintenance/{item_id}' name=delete_maintenance_item op=delete_maintenance_item_api_home_maintenance__item_id__delete tags=home schema=True
 ROUTE APIRoute DELETE '/api/home/places/{place_id}' name=delete_owner_place op=delete_owner_place_api_home_places__place_id__delete tags=home schema=True
@@ -884,6 +894,7 @@ ROUTE APIRoute GET '/api/health/research' name=list_research op=list_research_ap
 ROUTE APIRoute GET '/api/health/symptoms' name=list_symptoms op=list_symptoms_api_health_symptoms_get tags=health schema=True
 ROUTE APIRoute GET '/api/home/areas' name=list_areas op=list_areas_api_home_areas_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/atmosphere/current' name=get_atmosphere_current op=get_atmosphere_current_api_home_atmosphere_current_get tags=home schema=True
+ROUTE APIRoute GET '/api/home/away-safety' name=get_away_safety op=get_away_safety_api_home_away_safety_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/command-log' name=list_command_log op=list_command_log_api_home_command_log_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/departure-watch' name=list_departure_watch op=list_departure_watch_api_home_departure_watch_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/devices' name=list_devices op=list_devices_api_home_devices_get tags=home schema=True
@@ -1299,6 +1310,9 @@ ROUTE APIRoute PUT '/api/health/measurements/{measurement_id}' name=update_measu
 ROUTE APIRoute PUT '/api/health/medications/{medication_id}' name=update_medication op=update_medication_api_health_medications__medication_id__put tags=health schema=True
 ROUTE APIRoute PUT '/api/health/research/{research_id}' name=update_research op=update_research_api_health_research__research_id__put tags=health schema=True
 ROUTE APIRoute PUT '/api/health/symptoms/{symptom_id}' name=update_symptom op=update_symptom_api_health_symptoms__symptom_id__put tags=health schema=True
+ROUTE APIRoute PUT '/api/home/away-safety/blind' name=put_away_blind op=put_away_blind_api_home_away_safety_blind_put tags=home schema=True
+ROUTE APIRoute PUT '/api/home/away-safety/doors/{entity_id}' name=put_away_door op=put_away_door_api_home_away_safety_doors__entity_id__put tags=home schema=True
+ROUTE APIRoute PUT '/api/home/away-safety/freezers' name=put_away_freezer op=put_away_freezer_api_home_away_safety_freezers_put tags=home schema=True
 ROUTE APIRoute PUT '/api/home/departure-watch' name=upsert_departure_watch op=upsert_departure_watch_api_home_departure_watch_put tags=home schema=True
 ROUTE APIRoute PUT '/api/home/places/{place_id}' name=update_owner_place op=update_owner_place_api_home_places__place_id__put tags=home schema=True
 ROUTE APIRoute PUT '/api/home/safety-watch' name=upsert_safety_watch op=upsert_safety_watch_api_home_safety_watch_put tags=home schema=True
@@ -1640,6 +1654,9 @@ SCHEMA AuditLogEntry 17148d3d27c2
 SCHEMA AutonomySuggestion 738c4da0f13d
 SCHEMA AutonomySuggestionDismissRequest 252b97479b57
 SCHEMA AutonomySuggestionVelocity 03c4b5140f04
+SCHEMA AwayDoorEntry a6c955abf3c0
+SCHEMA AwaySafetyConfig 0aed035c497b
+SCHEMA AwaySafetyStatus c1e437a7d7f3
 SCHEMA BackfillJobEntry bfa293f1bf2c
 SCHEMA BackfillJobSummary 46b94875cb77
 SCHEMA BackfillLifecycleResponse 1ad09bd0c69f
@@ -2441,6 +2458,7 @@ SCHEMA TasteSummaryQueryName 473c45447410
 SCHEMA TasteVerdict 20ebfbb67436
 SCHEMA TasteWork e506f508abd2
 SCHEMA TeachingFlowResponse 218f955f4fb4
+SCHEMA TemperatureWatchEntry 465898c28ec0
 SCHEMA TestResult c7bc5829703c
 SCHEMA ThreadAffinitySettings 8c6747677a43
 SCHEMA ThreadAffinitySettingsUpdate 1c1551eb1e05

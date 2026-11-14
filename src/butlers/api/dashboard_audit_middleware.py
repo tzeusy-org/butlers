@@ -76,7 +76,8 @@ _EXACT_SKIP_ROUTES: frozenset[tuple[str, str]] = frozenset(
 # The owner place registry editor carries coordinates and Wi-Fi SSIDs.  Its handlers write
 # one explicit allowlisted audit row per write, so the generic middleware never reads these
 # bodies: matched by path before the body is touched, for every method and outcome.
-_PRIVATE_SUBTREES: tuple[str, ...] = ("/api/home/places",)
+#: Away-safety declarations follow the same rule: refusals are audited by outcome only.
+_PRIVATE_SUBTREES: tuple[str, ...] = ("/api/home/places", "/api/home/away-safety")
 
 
 # Capture intake (RFC0037): a server-owned, exact method+route no-body policy chosen

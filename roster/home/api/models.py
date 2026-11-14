@@ -360,6 +360,91 @@ class DepartureWatchUpsertRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Away safety (home_007; bu-jv1moa.87, REQ-home-deterministic-jobs-002)
+# ---------------------------------------------------------------------------
+#
+# Owner-confirmed values only: the bounds below validate, they never suggest, and nothing
+# here has a default.
+
+
+def _strip_label(value: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("owner_label must not be blank")
+    return stripped
+
+
+class TemperatureWatchEntry(BaseModel):
+    """One declared freezer (``home.temperature_watch``); thresholds are in °C."""
+
+    entity_id: str
+    owner_label: str
+    unit: Literal["°C", "°F"]
+    max_c: float
+    hysteresis_c: float
+    dwell_minutes: int
+    max_reading_age_minutes: int
+    updated_at: str | None = None
+
+
+class TemperatureWatchUpsertRequest(BaseModel):
+    """Declare a freezer, or change any of its values; all of them are required."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entity_id: str = Field(..., pattern=r"^sensor\.[a-z0-9_]+$", max_length=255)
+    owner_label: str = Field(..., min_length=1, max_length=80)
+    unit: Literal["°C", "°F"]
+    max_c: float = Field(..., ge=-30.0, le=0.0, allow_inf_nan=False)
+    hysteresis_c: float = Field(..., ge=0.5, le=10.0, allow_inf_nan=False)
+    dwell_minutes: int = Field(..., ge=5, le=240, strict=True)
+    max_reading_age_minutes: int = Field(..., ge=10, le=360, strict=True)
+
+    _label = field_validator("owner_label")(_strip_label)
+
+
+class AwayAlertRequest(BaseModel):
+    """Arm a departure-watch item for the away-door condition."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    away_alert_after_minutes: int = Field(..., ge=30, le=1440, strict=True)
+
+
+class BlindSettingsRequest(BaseModel):
+    """How long a declared role may stay unseen, while the owner is away, before Home says so."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    blind_after_minutes: int = Field(..., ge=5, le=1440, strict=True)
+
+
+class AwayDoorEntry(BaseModel):
+    """A departure-watch item and its away duration; ``None`` means not armed."""
+
+    entity_id: str
+    owner_label: str
+    away_alert_after_minutes: int | None = None
+
+
+class AwaySafetyStatus(BaseModel):
+    """What each producer can do with the current declarations; ``unconfigured`` is silent."""
+
+    freezer: Literal["ok", "unconfigured"]
+    away_door: Literal["ok", "unconfigured"]
+    blind: Literal["ok", "unconfigured"]
+    #: The installation sensing group is registered only by the privileged activation act.
+    sensing_group: Literal["registered", "unconfigured", "unknown"]
+
+
+class AwaySafetyConfig(BaseModel):
+    freezers: list[TemperatureWatchEntry]
+    doors: list[AwayDoorEntry]
+    blind_after_minutes: int | None = None
+    status: AwaySafetyStatus
+
+
+# ---------------------------------------------------------------------------
 # Owner place registry (public.owner_places, core_303; bu-jv1moa.7)
 # ---------------------------------------------------------------------------
 
