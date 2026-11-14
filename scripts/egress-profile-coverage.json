@@ -5649,6 +5649,22 @@
       "resolver": null,
       "sites": [],
       "workloads": []
+    },
+    "src/butlers/core/vendor_door_resolver.py::build_url::url::66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8": {
+      "class": "reference",
+      "observed": {
+        "authorities": [],
+        "config": null,
+        "count": 3,
+        "kind": "url",
+        "path": "src/butlers/core/vendor_door_resolver.py",
+        "scope": "build_url",
+        "sha256": "66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8"
+      },
+      "reason": "Rebuilds a vendor-door https URL from a confirmed template; the result is rendered only as an open_link inline-keyboard button (self_links -> _routing reply markup) and never fetched server-side. vendor_door_resolver imports no network client.",
+      "resolver": null,
+      "sites": [],
+      "workloads": []
     }
   },
   "local_resolvers": {
