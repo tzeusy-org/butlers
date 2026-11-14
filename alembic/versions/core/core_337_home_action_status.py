@@ -1,7 +1,7 @@
 """resolve_home_action_status: a parked Home action's closed status (bu-jv1moa.114).
 
-Revision ID: core_336
-Revises: core_335
+Revision ID: core_337
+Revises: core_336
 Create Date: 2026-11-14 00:00:00.000000
 
 REQ-home-deterministic-jobs-011.  Cards that mention a parked Home fix queue a timed insight
@@ -16,19 +16,19 @@ tables at call time, so a database without the home chain gets an error the prob
 unknown.  EXECUTE is revoked from PUBLIC as a standalone statement (an object this migration
 owns) and granted to the Switchboard role only.  The core chain runs once per butler schema over
 this shared function, so every statement is idempotent under an advisory lock and only the last
-schema at core_336 drops it.
+schema at core_337 drops it.
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "core_336"
-down_revision = "core_335"
+revision = "core_337"
+down_revision = "core_336"
 branch_labels = None
 depends_on = None
 
-_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_336:home-action-status', 0))"
+_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_337:home-action-status', 0))"
 _FUNCTION = "public.resolve_home_action_status(uuid)"
 _SWITCHBOARD_ROLE = "butler_switchboard_rw"
 #: Mirrors ``butlers.jobs.home_prepared_status.CANCEL_ACTOR``.
@@ -108,7 +108,7 @@ def _installation_count() -> int:
             SELECT EXISTS (
                 SELECT 1 FROM {quote(schema)}.alembic_version
                 WHERE CASE WHEN version_num ~ '^core_[0-9]+$'
-                    THEN substring(version_num FROM 6)::integer >= 336
+                    THEN substring(version_num FROM 6)::integer >= 337
                     ELSE false END
             )
             """

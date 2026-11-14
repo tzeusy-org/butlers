@@ -20,7 +20,7 @@ The receipt decides the executed case; the approval row decides everything else.
 never rendered as done. The answer carries no arguments, target, message text or reason.
 
 The Switchboard reaches the same mapping through ``public.resolve_home_action_status(uuid)``
-(core_336), a SECURITY DEFINER function; ``tests/migrations/test_core_336_home_action_status.py``
+(core_337), a SECURITY DEFINER function; ``tests/migrations/test_core_337_home_action_status.py``
 holds the two to one table of cases.
 """
 

@@ -1,4 +1,4 @@
-"""core_336 (resolve_home_action_status) and the fix-status premise probe (bu-jv1moa.114).
+"""core_337 (resolve_home_action_status) and the fix-status premise probe (bu-jv1moa.114).
 
 Statement-shape tests run anywhere. The parity and privilege tests need real PostgreSQL and run
 CI-first where Docker is unavailable.
@@ -19,12 +19,12 @@ from butlers.jobs import home_prepared_status as status
 from tests.jobs.test_home_prepared_status import CASES, NOW
 
 _ROOT = Path(__file__).resolve().parents[2]
-_CORE_336 = _ROOT / "alembic/versions/core/core_336_home_action_status.py"
+_CORE_337 = _ROOT / "alembic/versions/core/core_337_home_action_status.py"
 _docker = pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available")
 
 
 def _load():
-    spec = importlib.util.spec_from_file_location("core_336", _CORE_336)
+    spec = importlib.util.spec_from_file_location("core_337", _CORE_337)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -43,9 +43,9 @@ def _statements(direction: str) -> list[str]:
 
 
 @pytest.mark.unit
-def test_the_revision_extends_core_335() -> None:
+def test_the_revision_extends_core_336_vendor_doors() -> None:
     module = _load()
-    assert (module.revision, module.down_revision) == ("core_336", "core_335")
+    assert (module.revision, module.down_revision) == ("core_337", "core_336")
 
 
 @pytest.mark.unit
