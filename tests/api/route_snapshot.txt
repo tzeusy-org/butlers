@@ -431,6 +431,7 @@ OP GET /api/travel/trips/{trip_id}/documents cf6f80450ea3
 OP GET /api/travel/trips/{trip_id}/legs f9165eec5833
 OP GET /api/travel/trips/{trip_id}/reservations 57078d5c8c85
 OP GET /api/travel/upcoming 56a9eac8d629
+OP GET /api/vendor-doors 607c391c6ecc
 OP GET /api/webhooks 2dfbaffb1b0c
 OP GET /api/webhooks/{webhook_id} fefddc7b97af
 OP GET /health 7c8fa7428b01
@@ -628,6 +629,10 @@ OP POST /api/switchboard/rule-promotion-suggestions/{suggestion_id}/rule-enabled
 OP POST /api/telegram/session/send-code abd48679d3e9
 OP POST /api/telegram/session/verify 3712e65d0e4d
 OP POST /api/timeline/saved-views 4458b0e37766
+OP POST /api/vendor-doors aa052044649e
+OP POST /api/vendor-doors/{door_id}/confirm de33fbe8eddd
+OP POST /api/vendor-doors/{door_id}/reject 72b2c47540de
+OP POST /api/vendor-doors/{door_id}/revoke 9878da0d18cc
 OP POST /api/webhooks 9cd97a1b66a7
 OP POST /api/webhooks/{webhook_id}/test 86ab26f5de42
 OP PUT /api/approvals/policy 2eccb9a75cd7
@@ -1095,6 +1100,7 @@ ROUTE APIRoute GET '/api/travel/trips/{trip_id}/documents' name=list_trip_docume
 ROUTE APIRoute GET '/api/travel/trips/{trip_id}/legs' name=list_trip_legs op=list_trip_legs_api_travel_trips__trip_id__legs_get tags=travel schema=True
 ROUTE APIRoute GET '/api/travel/trips/{trip_id}/reservations' name=list_trip_reservations op=list_trip_reservations_api_travel_trips__trip_id__reservations_get tags=travel schema=True
 ROUTE APIRoute GET '/api/travel/upcoming' name=get_upcoming_travel op=get_upcoming_travel_api_travel_upcoming_get tags=travel schema=True
+ROUTE APIRoute GET '/api/vendor-doors' name=list_doors op=list_doors_api_vendor_doors_get tags=vendor-doors schema=True
 ROUTE APIRoute GET '/api/webhooks' name=list_webhooks op=list_webhooks_api_webhooks_get tags=webhooks schema=True
 ROUTE APIRoute GET '/api/webhooks/{webhook_id}' name=get_webhook op=get_webhook_api_webhooks__webhook_id__get tags=webhooks schema=True
 ROUTE APIRoute GET '/health' name=health op=health_health_get tags=- schema=True
@@ -1289,6 +1295,10 @@ ROUTE APIRoute POST '/api/switchboard/rule-promotion-suggestions/{suggestion_id}
 ROUTE APIRoute POST '/api/telegram/session/send-code' name=send_code op=send_code_api_telegram_session_send_code_post tags=telegram schema=True
 ROUTE APIRoute POST '/api/telegram/session/verify' name=verify_code op=verify_code_api_telegram_session_verify_post tags=telegram schema=True
 ROUTE APIRoute POST '/api/timeline/saved-views' name=create_saved_view op=create_saved_view_api_timeline_saved_views_post tags=timeline schema=True
+ROUTE APIRoute POST '/api/vendor-doors' name=create_door op=create_door_api_vendor_doors_post tags=vendor-doors schema=True
+ROUTE APIRoute POST '/api/vendor-doors/{door_id}/confirm' name=confirm_door op=confirm_door_api_vendor_doors__door_id__confirm_post tags=vendor-doors schema=True
+ROUTE APIRoute POST '/api/vendor-doors/{door_id}/reject' name=reject_door op=reject_door_api_vendor_doors__door_id__reject_post tags=vendor-doors schema=True
+ROUTE APIRoute POST '/api/vendor-doors/{door_id}/revoke' name=revoke_door op=revoke_door_api_vendor_doors__door_id__revoke_post tags=vendor-doors schema=True
 ROUTE APIRoute POST '/api/webhooks' name=create_webhook op=create_webhook_api_webhooks_post tags=webhooks schema=True
 ROUTE APIRoute POST '/api/webhooks/{webhook_id}/test' name=test_webhook op=test_webhook_api_webhooks__webhook_id__test_post tags=webhooks schema=True
 ROUTE APIRoute PUT '/api/approvals/policy' name=update_approvals_policy op=update_approvals_policy_api_approvals_policy_put tags=approvals schema=True
@@ -1850,6 +1860,7 @@ SCHEMA CorrectionPrompts 20b932d6fc4a
 SCHEMA CostClaimModel 767cff8ff969
 SCHEMA CounterEvidenceItem 74d3e0386c4a
 SCHEMA CreateBackfillJobRequest bc123a06fcf2
+SCHEMA CreateDoor 8c10c74a3e98
 SCHEMA CreateEntityGiftRequest 7aca2b3d0c33
 SCHEMA CreateEntityInfoRequest 4049e93c61e8
 SCHEMA CreateEntityInfoResponse 2f73f5e2e93a
@@ -1916,6 +1927,7 @@ SCHEMA DispatchAttemptEntry 0523c6c89168
 SCHEMA DisplayedApprovalCall 3d1a7b6cdcf0
 SCHEMA DistinctMerchantModel 979d0a8d1a67
 SCHEMA DocumentModel 45309aaf1e81
+SCHEMA DoorView 05efdfd72197
 SCHEMA Dose 2429bc44f7bb
 SCHEMA DoseLogRequest c17b593e259c
 SCHEMA DossierReceipt f762235ac98c
@@ -2168,6 +2180,7 @@ SCHEMA OwnerPolicyTermTighten 1aef6104cfc0
 SCHEMA OwnerSetupStatus 32f995df4bb1
 SCHEMA PageContext 182e6b0803de
 SCHEMA Page_CaptureStatus_ 71149e250264
+SCHEMA Page_DoorView_ 7c8d059923a7
 SCHEMA Page_EntityFactEntry_ 11ad68f8a95a
 SCHEMA Page_FleetCaseSummary_ 594f7698dd4e
 SCHEMA Page_IngestionEventSummary_ 307e0f0b28bc
@@ -2517,6 +2530,7 @@ SCHEMA ValidationError ca285d0c0e64
 SCHEMA VerifyAllResult 69b64e64e34d
 SCHEMA VerifyCodeRequest 39a98f8fc749
 SCHEMA VerifyCodeResponse dfa9f20315d0
+SCHEMA Versioned bc8ec9aef68e
 SCHEMA ViewMarkResponse e336b400cb25
 SCHEMA VisibleResource 61577ec3ca97
 SCHEMA WebhookCreate b6a020ed0f97

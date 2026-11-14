@@ -55,6 +55,7 @@ from butlers.api.routers.secrets_v2 import (
 from butlers.api.routers.settings_console import (
     run_settings_console_delta_loop,
 )
+from butlers.api.vendor_door_store import VendorDoorStore, create_vendor_door_pool
 from butlers.core.approval_callbacks import APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY
 from butlers.core.definer_search_path import (
     compute_unpinned_definers,
@@ -172,6 +173,9 @@ async def lifespan(app: FastAPI):
     except Exception:
         app.state.owner_auth_service = None
         logger.warning("Owner authentication storage is unavailable")
+    # The vendor-door routes get their own restricted login, never the auth pool.
+    app.state.vendor_door_pool = await create_vendor_door_pool()
+    app.state.vendor_door_store = VendorDoorStore(app.state.vendor_door_pool)
 
     # Startup
     init_dependencies(carrier=carry_via_control_plane)
@@ -665,6 +669,10 @@ async def lifespan(app: FastAPI):
         from butlers.api.routers.approvals import drain_decision_writebacks
 
         await asyncio.wait_for(drain_decision_writebacks(), timeout=30)
+    vendor_door_pool = getattr(app.state, "vendor_door_pool", None)
+    if vendor_door_pool is not None:
+        await vendor_door_pool.close()
+        app.state.vendor_door_pool = None
     if app.state.owner_auth_service is not None:
         await close_owner_auth_service(app.state.owner_auth_service)
         app.state.owner_auth_service = None

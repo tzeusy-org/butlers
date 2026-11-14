@@ -43,6 +43,22 @@ only in a reviewed PR that updates the file and adds a migration reloading the t
 cannot be computed returns NULL and counts as unverified. The two-label helper in
 `roster/finance/tools/cancellation_door.py` is display-only.
 
+## Dashboard routes
+
+`/api/vendor-doors` (list, create, confirm, revoke, reject; `src/butlers/api/routers/vendor_doors.py`)
+sits behind `require_dashboard_owner_control` and answers 404 while `VENDOR_DOORS_LIVE` is `False`.
+It uses its own pool and login (`DASHBOARD_VENDOR_DOORS_DB_USER` / `_PASSWORD`), never the
+dashboard-auth login: `src/butlers/api/vendor_door_store.py` refuses at connect time any login that
+is not a member of `dashboard_vendor_doors` or that reaches any other role, superuser, createrole,
+createdb, bypassrls, replication or the database owner. Each call runs `SET LOCAL ROLE
+dashboard_vendor_doors` and then one definer function; there are no direct table writes. Granting
+the login membership is host provisioning, like the capability role itself.
+
+No request body accepts an ingestion event, origin, tier, verdict or lineage (extra fields are a
+422), so a route can only create an owner-typed `dashboard` row and can never attach a template to
+someone else's event. Binding a template to the event it was read from belongs to the proposers
+(Switchboard and Finance), whose origin the database derives from the calling role.
+
 ## Rollback
 
 core_336 downgrade refuses while any door row exists. With the flag off nothing resolves a door.
