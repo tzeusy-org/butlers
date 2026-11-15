@@ -83,6 +83,7 @@ from butlers.chronicler.storage import (
     get_carryover,
     get_checkpoint,
     mark_source_active,
+    owntracks_projection_lock_key,
     save_carryover,
     upsert_checkpoint,
     upsert_episode,
@@ -432,12 +433,8 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
             async with chronicler_pool.acquire() as conn:
                 async with conn.transaction():
                     await conn.execute(
-                        """
-                        SELECT pg_advisory_xact_lock(
-                            hashtextextended('chronicler.projection:' || $1, 0)
-                        )
-                        """,
-                        self.source_name,
+                        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                        owntracks_projection_lock_key(self.source_name),
                     )
                     checkpoint = await get_checkpoint(conn, self.source_name)
                     since = checkpoint.watermark if checkpoint is not None else None

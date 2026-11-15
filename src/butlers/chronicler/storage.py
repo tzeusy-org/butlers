@@ -62,6 +62,19 @@ async def owntracks_connection(
         yield pool
 
 
+def owntracks_projection_lock_key(source_name: str) -> str:
+    """The transaction advisory-lock key that serializes one OwnTracks projection.
+
+    Retention preparation takes every key in source-name order, so a projection run and a
+    grant never interleave (``location_retention_grant``).
+    """
+    if source_name in {"owntracks.points", "owntracks.place_cluster"}:
+        return "chronicler:trail:" + source_name
+    if source_name == "owntracks.ssid_presence":
+        return "chronicler.projection:" + source_name
+    raise ValueError("OwnTracks projection lock requires an OwnTracks source")
+
+
 @asynccontextmanager
 async def owntracks_transaction(
     pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
@@ -78,7 +91,7 @@ async def owntracks_transaction(
         async with conn.transaction():
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                "chronicler:trail:" + source_name,
+                owntracks_projection_lock_key(source_name),
             )
             yield conn
 
