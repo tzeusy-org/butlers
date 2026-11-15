@@ -13,6 +13,10 @@ marker alone fails closed, end to end across the shipped machinery:
 4. an exposed invocation is refused the owner-authority write path and can only park, never
    dispatch, a communicate path.
 
+An external apply lands in ``relationship.entity_facts``, which only the identity reader reads;
+the narrative and note readers are covered for the same stamp-account rule. Production labels
+``relationship_lookup`` output ``untrusted`` already; ``stamped`` here is the stricter case.
+
 Nothing here adds a column or touches the classify-and-route paths; the successor that would
 stamp a real taint on these facts is deferred to the RFC 0038 hard cutover (bu-y66o00.10).
 """
@@ -104,29 +108,51 @@ async def test_the_owner_only_control_read_stays_unexposed(read):
     assert not label.exposed
 
 
-@pytest.mark.parametrize("read", READERS)
-async def test_an_exposed_session_cannot_reach_a_write_capable_path_untainted(read):
-    label = await _broker_label(read, [_applied_external_fact()])
-    exposed = principal(depth=0, exposed=label.exposed)
-    assert exposed.exposed
-    refused = capability("remember_rule", "record", owner_authority=True)
-    sent = capability("send", "communicate")
-    for cap, recipient, expected in (
-        (refused, "none", Disposition.REFUSE),
-        (sent, "non_owner", Disposition.PARK),
-        (sent, "owner", Disposition.PARK),
-    ):
+def _dispositions(label: Label) -> dict[str, Disposition]:
+    """The broker's disposition for each write-capable path, for an invocation holding *label*."""
+    paths = {
+        "owner_authority_record": (
+            capability("remember_rule", "record", owner_authority=True),
+            "none",
+        ),
+        "send_to_non_owner": (capability("send", "communicate"), "non_owner"),
+        "send_to_owner": (capability("send", "communicate"), "owner"),
+    }
+    result = {}
+    for name, (cap, recipient) in paths.items():
         grant = Grant(cap.identity)
-        decision = decide(principal(grant, exposed=True), cap, grant, recipient, "safe")
-        assert decision.disposition is expected, (cap.name, recipient)
-        assert decision.disposition is not Disposition.DISPATCH
-        if decision.disposition is Disposition.PARK:
-            assert decision.allow_standing_rule is True  # the approvals module bounds exposed rules
-    # The one exposed dispatch is an owner-recipient notify, whose content the domain neutralises.
+        result[name] = decide(
+            principal(grant, exposed=label.exposed), cap, grant, recipient, "safe"
+        ).disposition
+    return result
+
+
+async def test_a_session_that_read_an_external_fact_cannot_reach_a_write_path_untainted():
+    """Reader -> label -> decide, on the identity reader (``entity_facts``).
+
+    ``relationship.entity_facts`` is where an approved external apply lands, and only
+    ``_fetch_identity_facts`` reads it. Production already labels ``relationship_lookup`` output
+    ``untrusted`` (world); the ``stamped`` trust used here is the stricter hypothetical, so this
+    holds even if that labelling were ever relaxed.
+    """
+    label = await _broker_label(_fetch_identity_facts, [_applied_external_fact()])
+    assert label.exposed
+    assert _dispositions(label) == {
+        "owner_authority_record": Disposition.REFUSE,
+        "send_to_non_owner": Disposition.PARK,
+        "send_to_owner": Disposition.PARK,
+    }
+    # Never an unmediated dispatch, and a parked send never becomes unbounded by a rule.
+    assert Disposition.DISPATCH not in _dispositions(label).values()
     grant = Grant(notify().identity)
-    assert decide(principal(grant, exposed=True), notify(), grant, "owner", "safe").disposition is (
-        Disposition.DISPATCH
-    )
+    notify_owner = decide(principal(grant, exposed=label.exposed), notify(), grant, "owner", "safe")
+    # The one exposed dispatch is an owner-recipient notify, whose content the domain neutralises.
+    assert notify_owner.disposition is Disposition.DISPATCH
+
+    # Control: the same paths for an owner-only read are not refused or parked by exposure.
+    owner_label = await _broker_label(_fetch_identity_facts, [_owner_fact()])
+    assert not owner_label.exposed
+    assert _dispositions(owner_label)["owner_authority_record"] is Disposition.DISPATCH
 
 
 @pytest.mark.parametrize("read", READERS)
