@@ -225,6 +225,12 @@ async def test_late_offline_fix_is_covered_by_device_age_on_a_later_run(
     assert await _retention_at(chronicler_db, late) == _T0 + timedelta(minutes=2)
     await _run(chronicler_db)
     assert await _event_id(chronicler_db, late) is not None
+    # The late fix is the trail's pending candidate, re-read and still revisable: held under
+    # its trail carry, never covered yet.
+    held = await _open(chronicler_db)
+    assert late in held
+    assert held[late]["carry_key"].startswith("trail:")
+    assert late not in await _coverage(chronicler_db)
     # A later fix (arriving after the late one) resolves the trail and closes the old carry.
     await _insert_point(
         chronicler_db,
