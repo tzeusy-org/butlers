@@ -101,6 +101,13 @@ The point and place-cluster projections share one plausibility policy
   stored one for the same endpoint widens it rather than adding a second chunk.
   Terminal coordinates come from the same fix as the widened end time;
   a later legacy end without a valid coordinate pair stays unknown.
+- Each movement records `payload.path_m`: the cumulative great-circle distance
+  over its ordered accepted fixes, counting each connecting edge once across
+  batches (the carry keeps the path and the fix it ends on). It is `null`,
+  never 0 or the straight-line endpoint distance, when it cannot be rebuilt
+  exactly: an episode carried over from before path tracking, or new fixes
+  widening a stored episode. An exact replay keeps the stored value. Raw expiry
+  needs this metric to survive the fixes it summarises.
   Migration `chronicler_027` applied the same rule once to episodes stored
   before it: each overlapping group keeps its earliest episode, widened, and
   tombstones the rest. Groups holding a user correction are left alone.
