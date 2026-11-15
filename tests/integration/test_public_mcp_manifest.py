@@ -111,7 +111,7 @@ def test_publication_action_explicit_columns_filters_and_wildcards(primary):
         text(
             "SELECT attnames FROM pg_publication_tables WHERE pubname='butlers_public_v1' AND schemaname='mcp_surface' AND tablename='controls'"
         )
-    ).scalar_one() == ["domain", "state", "changed_at"]
+    ).scalar_one() == ["domain", "state", "changed_at", "changed_by"]
     assert "explicit column" in publication_state(primary, manifest).reason
     assert reconcile_connection(primary, manifest)
     primary.exec_driver_sql("ALTER TABLE mcp_surface.controls ADD COLUMN private_actor text")
