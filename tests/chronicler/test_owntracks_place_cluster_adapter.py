@@ -14,6 +14,8 @@ Covers:
 from __future__ import annotations
 
 import ast
+import json
+import logging
 import math
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -923,6 +925,64 @@ async def _project_place(
             _pool_returning(*rows), chronicler_pool=_chronicler_pool(), since=None
         )
     return upserted, mock_save.await_args.args[2]
+
+
+@pytest.mark.asyncio
+async def test_a_forgotten_fix_never_joins_a_place_cluster_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The resurrection floor runs before clustering: a forgotten fix feeds no stay or carry."""
+    rows = [
+        {
+            **_row(_NOW + timedelta(minutes=m), row_id=f"h{m}"),
+            "idempotency_key": f"owntracks:alice:{m}:location",
+        }
+        for m in range(0, 30, 5)
+    ]
+    forgotten = "connectors.owntracks_points:owntracks:alice:10:location"
+
+    async def _forgotten(_conn: object, source_ref: str) -> bool:
+        return source_ref == forgotten
+
+    upserted: list[Episode] = []
+
+    async def _capture(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    with (
+        patch(
+            "butlers.chronicler.location_forgetting.owntracks_point_forgotten",
+            side_effect=_forgotten,
+        ),
+        patch("butlers.chronicler.adapters.owntracks_place_cluster.get_carryover", return_value={}),
+        patch("butlers.chronicler.adapters.owntracks_place_cluster.save_carryover") as mock_save,
+        patch(
+            "butlers.chronicler.adapters.owntracks_place_cluster.upsert_episode",
+            side_effect=_capture,
+        ),
+        patch("butlers.chronicler.adapters.owntracks_place_cluster.upsert_owner_episode_entity"),
+        patch(
+            "butlers.chronicler.adapters.owntracks_place_cluster.resolve_owner_entity_id",
+            return_value=None,
+        ),
+        caplog.at_level(logging.DEBUG),
+    ):
+        result = await OwnTracksPlaceClusterAdapter().project(
+            _pool_returning(*rows), chronicler_pool=_chronicler_pool(), since=None
+        )
+
+    places = [ep for ep in upserted if ep.episode_type == EPISODE_TYPE_PLACE]
+    assert [ep.payload["point_count"] for ep in places] == [5]
+    assert result.rows_refused_forgotten == 1
+    # Nothing of the forgotten fix reaches the saved carryover (open stay, trail anchors).
+    saved = json.dumps(mock_save.await_args.args[2], default=str)
+    assert "h10" not in saved and ":10:location" not in saved
+    # Observable as a count only.
+    (warning,) = [w for w in result.warnings if "forgotten" in w]
+    assert warning == "OwnTracks forgotten sources not projected again: 1."
+    emitted = [*result.warnings, *(r.getMessage() for r in caplog.records)]
+    assert not [line for line in emitted if "h10" in line or ":10:location" in line]
 
 
 @pytest.mark.asyncio

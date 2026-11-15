@@ -10,28 +10,36 @@ was evidence for. No coordinates, title, network name or payload.
 in the same transaction as the deletions and summary coarsening it records. Nothing here
 deletes.
 
-:func:`owntracks_point_forgotten` is the resurrection floor: the OwnTracks point projection
-asks it for each fix before classifying the trail and drops a forgotten one, so a replayed
-webhook, reset cursor or wider horizon never restores a forgotten point.
+:func:`drop_forgotten_rows` is the resurrection floor. The OwnTracks point and place-cluster
+projections run it over their batch before classifying the trail, so a replayed webhook, reset
+cursor or wider horizon never restores a forgotten fix into a point event, an episode, a carry
+or a trail anchor. :func:`owntracks_point_forgotten` answers it for one source.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from butlers.chronicler.spatial_precision import SPATIAL_PRECISION_M, SPATIAL_SCHEME_REVISION
+
+if TYPE_CHECKING:
+    from butlers.chronicler.adapters.base import AdapterResult
 
 __all__ = [
     "OWNTRACKS_SOURCE_REF_PREFIX",
     "ForgettingReceipt",
     "ForgottenPointEvent",
+    "drop_forgotten_rows",
     "owntracks_point_forgotten",
     "record_forgetting",
 ]
+
+logger = logging.getLogger(__name__)
 
 OWNTRACKS_SOURCE_REF_PREFIX = "connectors.owntracks_points:"
 
@@ -139,3 +147,33 @@ async def owntracks_point_forgotten(conn: Any, source_ref: str) -> bool:
         source_ref,
     )
     return found is True
+
+
+async def drop_forgotten_rows[Row: Mapping[str, Any]](
+    conn: Any, rows: Sequence[Row], result: AdapterResult
+) -> list[Row]:
+    """Resurrection floor (chronicler_035): the rows whose source was not forgotten.
+
+    A dropped row gets no output, joins no carry or trail decision and is never observed for
+    coverage, so it stays uncovered: fail-closed. Refusals are counted in
+    ``result.rows_refused_forgotten`` and reported as a count only, never a source, key,
+    timestamp or coordinate. A row without an idempotency key cannot have been tombstoned and
+    is kept (it can never be covered either).
+    """
+    kept: list[Row] = []
+    refused = 0
+    for row in rows:
+        key = row.get("idempotency_key")
+        if (
+            isinstance(key, str)
+            and key
+            and await owntracks_point_forgotten(conn, OWNTRACKS_SOURCE_REF_PREFIX + key)
+        ):
+            refused += 1
+        else:
+            kept.append(row)
+    if refused:
+        result.rows_refused_forgotten += refused
+        result.warnings.append(f"OwnTracks forgotten sources not projected again: {refused}.")
+        logger.info("OwnTracks resurrection floor refused %d forgotten sources", refused)
+    return kept

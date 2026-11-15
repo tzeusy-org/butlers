@@ -143,7 +143,7 @@ from butlers.chronicler.confidence import (
     derive_confidence,
     evidence_refs_from_event_ids,
 )
-from butlers.chronicler.location_forgetting import owntracks_point_forgotten
+from butlers.chronicler.location_forgetting import drop_forgotten_rows
 from butlers.chronicler.models import (
     Episode,
     Layer,
@@ -449,7 +449,8 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 if identity in pending_ids and identity not in current_ids
             ]
             valid_rows = sorted([*pending_rows, *valid_rows], key=trail_order_key)
-            valid_rows = await self._drop_forgotten(chronicler_pool, valid_rows, result)
+            # Resurrection floor, before any trail, movement or coverage decision.
+            valid_rows = await drop_forgotten_rows(chronicler_pool, valid_rows, result)
             changes = {}
             rejected_seeds: set[str] = set()
             outliers, anchors = classify_trail(
@@ -779,34 +780,6 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         if newest_settled is None:
             return None
         return IngestCursor(recorded_at=newest_settled["recorded_at"], id=newest_settled["id"])
-
-    @staticmethod
-    async def _drop_forgotten(
-        chronicler_pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
-        rows: list[dict[str, Any]],
-        result: AdapterResult,
-    ) -> list[dict[str, Any]]:
-        """Resurrection floor (chronicler_035): drop rows whose source was forgotten.
-
-        Whatever re-delivers a tombstoned source (a replayed webhook, a reset cursor, a wider
-        horizon), it gets no point event, joins no movement or trail decision, and is not
-        observed for coverage, so it is never recorded as projected: it stays uncovered,
-        fail-closed. Refusals are counted in ``rows_refused_forgotten`` and reported as a count
-        only, never a source, key or coordinate; the rest of the batch projects as usual.
-        """
-        kept: list[dict[str, Any]] = []
-        refused = 0
-        for row in rows:
-            source_ref = f"{_EVIDENCE_TABLE}:{row['idempotency_key']}"
-            if await owntracks_point_forgotten(chronicler_pool, source_ref):
-                refused += 1
-            else:
-                kept.append(row)
-        if refused:
-            result.rows_refused_forgotten += refused
-            result.warnings.append(f"OwnTracks forgotten sources not projected again: {refused}.")
-            logger.info("OwnTracks resurrection floor refused %d forgotten sources", refused)
-        return kept
 
     async def _project_point_event(
         self,

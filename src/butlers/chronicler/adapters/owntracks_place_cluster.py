@@ -136,6 +136,7 @@ from butlers.chronicler.confidence import (
     derive_confidence,
     evidence_refs_from_event_ids,
 )
+from butlers.chronicler.location_forgetting import drop_forgotten_rows
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.projection_coverage import (
     COVERAGE_REVISION_CARRYOVER_KEY,
@@ -1178,6 +1179,8 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                 if identity in pending_ids and identity not in current_ids
             ]
             valid_rows = sorted([*pending_rows, *valid_rows], key=trail_order_key)
+            # Resurrection floor, before any trail, stay, trip or coverage decision.
+            valid_rows = await drop_forgotten_rows(chronicler_pool, valid_rows, result)
             changes = {}
             rejected_seeds: set[str] = set()
             outliers, anchors = classify_trail(
