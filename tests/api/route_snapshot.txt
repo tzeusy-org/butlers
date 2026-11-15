@@ -2302,7 +2302,7 @@ SCHEMA ProviderMetadata e0380cf70cde
 SCHEMA PublicMcpControl 374c4d5eb11e
 SCHEMA PublicMcpControlWrite 7133d5dbfcc6
 SCHEMA PublicMcpControls 244c8128cc77
-SCHEMA PublicMcpSummary 48f11eab0d64
+SCHEMA PublicMcpSummary 2b840c550458
 SCHEMA QaActiveBreakdown d40c17eb9585
 SCHEMA QaActiveDismissal 3ff14391ba8c
 SCHEMA QaAllTimeStats 8289d813f2fd

@@ -20,6 +20,8 @@ export interface PublicMcpSummary {
   disabled_domains: number;
   total_domains: number;
   all_disabled: boolean;
+  /** Control rows absent from the table; neither enabled nor disabled. */
+  missing_rows: number;
 }
 
 export interface PublicMcpControls {

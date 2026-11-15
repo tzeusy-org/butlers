@@ -105,7 +105,12 @@ async def test_lists_all_then_each_domain_with_state_time_and_actor(table):
     assert all(c["state"] == "enabled" for c in body["controls"])
     assert body["controls"][1]["changed_at"] == T0.isoformat().replace("+00:00", "Z")
     assert body["controls"][1]["changed_by"] == "system"
-    assert body["summary"] == {"disabled_domains": 0, "total_domains": 7, "all_disabled": False}
+    assert body["summary"] == {
+        "disabled_domains": 0,
+        "total_domains": 7,
+        "all_disabled": False,
+        "missing_rows": 0,
+    }
 
 
 async def test_owner_disables_finance_with_the_owner_as_actor_and_a_time(table):
@@ -182,7 +187,12 @@ async def test_summary_counts_disabled_domains_and_the_all_switch(table):
             await client.put(f"/api/settings/public-mcp/{domain}", json={"state": "disabled"})
         summary = (await client.get("/api/settings/public-mcp/summary")).json()["data"]
     # ``all`` is not one of the seven.
-    assert summary == {"disabled_domains": 2, "total_domains": 7, "all_disabled": True}
+    assert summary == {
+        "disabled_domains": 2,
+        "total_domains": 7,
+        "all_disabled": True,
+        "missing_rows": 0,
+    }
 
 
 async def test_a_missing_row_lists_as_unknown_and_never_counts_as_disabled(table):
@@ -192,6 +202,7 @@ async def test_a_missing_row_lists_as_unknown_and_never_counts_as_disabled(table
     travel = next(c for c in body["controls"] if c["domain"] == "travel")
     assert travel == {"domain": "travel", "state": None, "changed_at": None, "changed_by": None}
     assert body["summary"]["disabled_domains"] == 0
+    assert body["summary"]["missing_rows"] == 1
 
 
 async def test_a_failed_write_is_a_closed_503_that_leaks_no_driver_text(table):
@@ -217,3 +228,10 @@ def test_the_domain_list_is_the_public_servers_plus_all():
 
     assert set(DATA_DOMAINS) == set(DOMAINS)
     assert len(DATA_DOMAINS) == 7 and CONTROL_DOMAINS[0] == "all"
+
+
+async def test_an_unauthenticated_malformed_body_is_401_not_422(table):
+    async with _client(_app(table, session=None)) as client:
+        put = await client.put("/api/settings/public-mcp/finance", json={"state": "x", "z": 1})
+    assert put.status_code == 401
+    assert table.writes == 0

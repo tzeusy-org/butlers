@@ -173,7 +173,11 @@ export default function SettingsPublicMcpPage() {
             {LABEL[failure.domain]?.name ?? failure.domain}: {failure.message}. The switch still
             shows what the server holds.
           </p>
-          <InlineActionLink onClick={() => change(failure.domain, failure.state)}>
+          <InlineActionLink
+            onClick={() => {
+              if (!busy) change(failure.domain, failure.state);
+            }}
+          >
             Retry →
           </InlineActionLink>
         </div>

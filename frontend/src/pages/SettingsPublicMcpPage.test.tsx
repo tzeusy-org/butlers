@@ -53,7 +53,7 @@ function listing(rows: PublicMcpControl[]) {
   api.getPublicMcpControls.mockResolvedValue({
     data: {
       controls: rows,
-      summary: { disabled_domains: 0, total_domains: 7, all_disabled: false },
+      summary: { disabled_domains: 0, total_domains: 7, all_disabled: false, missing_rows: 0 },
     },
   });
 }

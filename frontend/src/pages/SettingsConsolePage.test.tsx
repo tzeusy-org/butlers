@@ -53,7 +53,7 @@ function defaultApiFetchImpl(path: string) {
   }
   if (path === "/settings/public-mcp/summary") {
     return Promise.resolve({
-      data: { disabled_domains: 0, total_domains: 7, all_disabled: false },
+      data: { disabled_domains: 0, total_domains: 7, all_disabled: false, missing_rows: 0 },
     });
   }
   if (path === "/approvals/metrics") {
@@ -314,7 +314,7 @@ describe("SettingsConsolePage Public MCP panel", () => {
     apiFetchMock.mockImplementation((path: string) =>
       path === "/settings/public-mcp/summary"
         ? Promise.resolve({
-            data: { disabled_domains: 2, total_domains: 7, all_disabled: true },
+            data: { disabled_domains: 2, total_domains: 7, all_disabled: true, missing_rows: 0 },
           })
         : defaultApiFetchImpl(path),
     );
@@ -330,6 +330,20 @@ describe("SettingsConsolePage Public MCP panel", () => {
       .map((el) => el.getAttribute("aria-label"))
       .filter((label): label is string => label?.startsWith("Go to ") ?? false);
     expect(labels.indexOf("Go to Public MCP")).toBe(labels.indexOf("Go to Secrets") + 1);
+  });
+
+  it("says so when switch rows are missing instead of showing the safe state", async () => {
+    apiFetchMock.mockImplementation((path: string) =>
+      path === "/settings/public-mcp/summary"
+        ? Promise.resolve({
+            data: { disabled_domains: 0, total_domains: 7, all_disabled: false, missing_rows: 2 },
+          })
+        : defaultApiFetchImpl(path),
+    );
+    renderWithProbe();
+    const panel = await screen.findByLabelText("Go to Public MCP");
+    expect(await within(panel).findByText("2 switch rows missing")).toBeTruthy();
+    expect(within(panel).queryByText("All switch: enabled")).toBeNull();
   });
 
   it("navigates to /settings/public-mcp on click and on keyboard activation", async () => {
@@ -371,7 +385,7 @@ describe("SettingsConsolePage Public MCP panel", () => {
         return calls <= 2
           ? Promise.reject(new Error("down"))
           : Promise.resolve({
-              data: { disabled_domains: 1, total_domains: 7, all_disabled: false },
+              data: { disabled_domains: 1, total_domains: 7, all_disabled: false, missing_rows: 0 },
             });
       }
       return defaultApiFetchImpl(path);

@@ -23,6 +23,8 @@ class PublicMcpSummary(BaseModel):
     disabled_domains: int
     total_domains: int
     all_disabled: bool
+    #: Control rows absent from the table; they are neither enabled nor disabled.
+    missing_rows: int = 0
 
 
 class PublicMcpControls(BaseModel):

@@ -619,10 +619,16 @@ function PublicMcpPanel({ onNavigate }: { onNavigate: (route: string) => void })
           <span
             className={cn(
               "ml-auto text-xs",
-              summary.all_disabled ? "text-[var(--amber-text)]" : "text-muted-foreground",
+              summary.all_disabled || summary.missing_rows > 0
+                ? "text-[var(--amber-text)]"
+                : "text-muted-foreground",
             )}
           >
-            {summary.all_disabled ? "All switch: disabled" : "All switch: enabled"}
+            {summary.missing_rows > 0
+              ? `${summary.missing_rows} switch rows missing`
+              : summary.all_disabled
+                ? "All switch: disabled"
+                : "All switch: enabled"}
           </span>
         </div>
       )}

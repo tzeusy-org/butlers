@@ -133,7 +133,12 @@ async def test_owner_disables_finance_over_the_real_table_with_the_owner_as_acto
     assert finance["state"] == "disabled" and finance["changed_by"] == "owner:dashboard"
     assert finance["changed_at"] is not None and changed_at is not None
     assert _row(topology, "health")[0] == "enabled"
-    assert listed["summary"] == {"disabled_domains": 1, "total_domains": 7, "all_disabled": False}
+    assert listed["summary"] == {
+        "disabled_domains": 1,
+        "total_domains": 7,
+        "all_disabled": False,
+        "missing_rows": 0,
+    }
 
 
 async def test_unauthenticated_write_is_401_and_the_row_is_unchanged(app, topology):

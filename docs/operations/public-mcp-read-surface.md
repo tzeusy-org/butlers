@@ -537,7 +537,11 @@ and CLI login, so the write needs no grant and no definer function. No butler ru
 write it, and only `butler_relationship_rw` can read it (importer). `init-db.sql` adds the private
 `changed_by` column (`NOT NULL DEFAULT 'system'`) to an existing table and rechecks the shape;
 `changed_by` is not in the projection manifest and never replicates. The write is an upsert, so
-a deleted seed row can still be switched off during an incident.
+a deleted seed row can still be switched off during an incident. `init-db.sql` (3a) must run before
+the new API image or CLI is used, because the `changed_by` column comes from it (every
+`make deploy-dev` does this first). The dashboard login being the migration principal is a
+deployment assumption, not something the API checks; a different login gets a closed 503. The
+console summary reports `missing_rows` so an unseeded table never reads as all-enabled.
 
 ## 7. Teardown and rebuild
 

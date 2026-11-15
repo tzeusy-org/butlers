@@ -946,7 +946,10 @@ def _set_public_mcp_control(domain: str, state: str, database: str) -> None:
     from butlers.db import db_params_from_env
     from butlers.public_mcp_controls import (
         ACTOR_CLI,
+        BREAK_GLASS_CONFIGMAP,
+        BREAK_GLASS_KEY,
         READ_ONE_SQL,
+        REPLICATION_WINDOW_MINUTES,
         WRITE_SQL,
         UnknownDomain,
         check_domain,
@@ -981,9 +984,10 @@ def _set_public_mcp_control(domain: str, state: str, database: str) -> None:
     else:
         click.echo(f"{domain}: already {state} (unchanged)")
     click.echo(
-        "The public server follows by replication within 15 minutes and the Relationship "
-        "proposal importer at its next pass. For immediate effect use the break-glass ConfigMap "
-        "butlers-public-mcp-switches (key disabled_domains) or scale the public server to zero."
+        f"The public server follows by replication within {REPLICATION_WINDOW_MINUTES} minutes "
+        "and the Relationship proposal importer at its next pass. For immediate effect use the "
+        f"break-glass ConfigMap {BREAK_GLASS_CONFIGMAP} (key {BREAK_GLASS_KEY}) or scale the "
+        "public server to zero."
     )
 
 

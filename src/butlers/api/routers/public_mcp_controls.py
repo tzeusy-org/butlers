@@ -21,7 +21,7 @@ import logging
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
@@ -55,6 +55,13 @@ def _refuse(status: int, error: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"error": error})
 
 
+def _require_owner_session() -> None:
+    """401 without the owner's verified dashboard session; a dependency, so it runs before
+    the body is validated and an unauthenticated caller never learns the body's shape."""
+    if verified_dashboard_session.get() is None:
+        raise _refuse(401, "owner_dashboard_session_required")
+
+
 def _pool(db: Any) -> Any:
     try:
         return db.pool(_POOL)
@@ -86,7 +93,11 @@ async def _read(db: Any) -> PublicMcpControls:
     controls = [_control(domain, by_domain.get(domain)) for domain in CONTROL_DOMAINS]
     states = {c.domain: c.state for c in controls if c.state is not None}
     return PublicMcpControls(
-        controls=controls, summary=PublicMcpSummary(**asdict(summarize(states)))
+        controls=controls,
+        summary=PublicMcpSummary(
+            **asdict(summarize(states)),
+            missing_rows=sum(1 for c in controls if c.state is None),
+        ),
     )
 
 
@@ -102,13 +113,15 @@ async def get_public_mcp_summary(*, db: Db) -> ApiResponse[PublicMcpSummary]:
     return ApiResponse(data=(await _read(db)).summary)
 
 
-@router.put("/{domain}", response_model=ApiResponse[PublicMcpControl])
+@router.put(
+    "/{domain}",
+    response_model=ApiResponse[PublicMcpControl],
+    dependencies=[Depends(_require_owner_session)],
+)
 async def set_public_mcp_control(
     domain: str, body: PublicMcpControlWrite = Body(...), *, db: Db
 ) -> ApiResponse[PublicMcpControl]:
     """Set one switch, recording the owner as the actor."""
-    if verified_dashboard_session.get() is None:
-        raise _refuse(401, "owner_dashboard_session_required")
     try:
         check_domain(domain)
     except UnknownDomain:
