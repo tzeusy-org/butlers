@@ -505,6 +505,27 @@ async def test_a_generated_out_of_office_does_not_clear_a_meeting():
     assert result["signal"] == "meeting"
 
 
+async def test_a_generated_out_of_office_does_not_suppress_focus():
+    # A meeting survives a real out-of-office too, so only a focus block tells a
+    # butler-generated out-of-office apart from a human one.
+    ooo = _active_calendar_row(
+        title="BUTLER: hold",
+        starts_at=_NOW - timedelta(hours=2),
+        ends_at=_NOW + timedelta(hours=2),
+        event_type="outOfOffice",
+        metadata={"butler_generated": True},
+    )
+    focus = _active_calendar_row(
+        title="Writing",
+        starts_at=_NOW - timedelta(minutes=5),
+        ends_at=_NOW + timedelta(minutes=55),
+        event_type="focusTime",
+    )
+    result, set_context, _ = await _run_calendar([focus, ooo])
+    assert result == {"signal": "focused", "value": "focused", "cleared": ["meeting"]}
+    assert set_context.await_args.args[1] == "focused"
+
+
 async def test_the_calendar_query_reads_the_type_and_all_day_out_of_office():
     pool = MagicMock()
     pool.fetch = AsyncMock(return_value=[])
