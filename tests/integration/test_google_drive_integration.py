@@ -775,6 +775,8 @@ class _FakeGoogle:
             return httpx.Response(
                 200, json={"id": file_id, "name": "T", "webViewLink": f"https://docs/{file_id}"}
             )
+        if path == "/drive/v3/files" and method == "GET":
+            return httpx.Response(200, json={"files": []})  # no default folder exists yet
         if path == "/drive/v3/files" and method == "POST":
             self._n += 1
             return httpx.Response(
@@ -1113,3 +1115,30 @@ class TestNativeDocsAndSheets:
             ("drive_append_sheet_rows", "sheet-1"),
             ("drive_update_sheet_range", "sheet-1"),
         ]
+
+    async def test_default_folder_is_not_created_under_a_shared_parent(self) -> None:
+        """folder_id=None must refuse before it creates butlers/<name> anywhere."""
+        fake = _FakeGoogle()
+        fake.files["root"] = {
+            "id": "root",
+            "mimeType": _FOLDER_MIME,
+            "ownedByMe": True,
+            "permissions": [_OWN_GRANT, {"type": "user", "role": "writer", "emailAddress": "b@x"}],
+        }
+        module = _native_module(fake)
+        for call in (
+            lambda: module._drive_create_doc("T", "b"),
+            lambda: module._drive_create_sheet("T", [["a"]]),
+        ):
+            result = await call()
+            assert result["status"] == "target_shared"
+        assert fake.writes == []
+
+    async def test_unreadable_permission_list_fails_closed(self) -> None:
+        fake = _FakeGoogle()
+        fake.add("sheet-1", _SHEET_MIME)
+        del fake.files["sheet-1"]["permissions"]
+        module = _native_module(fake)
+        result = await module._drive_append_sheet_rows("sheet-1", [["a"]])
+        assert result == {"status": "target_shared", "reach": {"permissions_unreadable": 1}}
+        assert fake.writes == []

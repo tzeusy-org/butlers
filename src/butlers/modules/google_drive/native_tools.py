@@ -152,7 +152,14 @@ class NativeDocsMixin:
     async def _resolve_folder(self, folder_id: str | None) -> tuple[str | None, dict | None]:
         if folder_id is not None:
             return folder_id, None
-        resolved = await self._ensure_butler_folder(self._butler_name)  # type: ignore[attr-defined]
+
+        async def guard(parent: str) -> dict[str, Any] | None:
+            # Nothing is created under a parent the owner has shared.
+            return (await self._private_target(parent, mime=_FOLDER_MIME))[1]
+
+        resolved = await self._ensure_butler_folder(  # type: ignore[attr-defined]
+            self._butler_name, parent_guard=guard
+        )
         if isinstance(resolved, dict):
             return None, resolved
         return resolved, None

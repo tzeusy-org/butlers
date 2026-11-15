@@ -841,7 +841,11 @@ class GoogleDriveModule(NativeDocsMixin, Module):
     # Butler folder hierarchy (spec §4)
     # ------------------------------------------------------------------
 
-    async def _ensure_butler_folder(self, butler_name: str) -> str | dict[str, Any]:
+    async def _ensure_butler_folder(
+        self,
+        butler_name: str,
+        parent_guard: Callable[[str], Awaitable[dict[str, Any] | None]] | None = None,
+    ) -> str | dict[str, Any]:
         """Ensure butlers/{butler_name}/ folder exists and return its Drive ID.
 
         Uses a two-level hierarchy:
@@ -851,6 +855,10 @@ class GoogleDriveModule(NativeDocsMixin, Module):
         Results are cached in ``google_drive_butler_folders`` table and in
         memory. Re-creates the folder if the cached ID refers to a deleted
         folder (spec §4.4).
+
+        ``parent_guard`` (the native Docs and Sheets tools) is awaited with the parent id
+        before any missing folder is created under it; a returned refusal is returned
+        unchanged and nothing is created.
         """
         assert self._client is not None
 
@@ -885,6 +893,7 @@ class GoogleDriveModule(NativeDocsMixin, Module):
         root_id = await self._find_or_create_folder(
             name=self._config.butler_folder_name,
             parent_id=None,
+            parent_guard=parent_guard,
         )
 
         if isinstance(root_id, dict):
@@ -894,6 +903,7 @@ class GoogleDriveModule(NativeDocsMixin, Module):
         folder_id = await self._find_or_create_folder(
             name=butler_name,
             parent_id=root_id,
+            parent_guard=parent_guard,
         )
         if isinstance(folder_id, dict):
             return folder_id
@@ -908,6 +918,7 @@ class GoogleDriveModule(NativeDocsMixin, Module):
         self,
         name: str,
         parent_id: str | None,
+        parent_guard: Callable[[str], Awaitable[dict[str, Any] | None]] | None = None,
     ) -> str | dict[str, Any]:
         """Find an existing folder by name+parent, or create it."""
         assert self._client is not None
@@ -940,6 +951,8 @@ class GoogleDriveModule(NativeDocsMixin, Module):
                 "operation_complete": False,
                 "message": "Default folder path is ambiguous",
             }
+        if parent_guard is not None and (refusal := await parent_guard(parent_id or "root")):
+            return refusal
         result = await self._drive_create_folder(name, parent_id=parent_id or "root")
         if "folder_id" in result:
             return result["folder_id"]
