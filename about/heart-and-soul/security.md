@@ -447,13 +447,18 @@ allowlist names its table, its columns and, where facts are involved, its
 predicates. Absence from the allowlist means not shared. No label, filter or
 model output adds anything to the allowlist; they only remove.
 
-**Labels filter rows and may only narrow.** Within what the allowlist admits,
-deterministic or owner-set labels act as row filters (lifecycle state, deleted
-and placeholder flags, adapter-set privacy). A label chosen by a model, such as
-a memory fact's `sensitivity`, is advisory evidence of risk: it may withhold a
-row (anything other than `normal`), but a model-chosen label never admits a row
-a deterministic rule withholds and never widens an allowlist. Model labels
-default to `normal`, which is why the default cannot be the thing that shares.
+**Labels filter rows; model labels may only narrow.** Within what the allowlist
+admits, deterministic or owner-set labels act as row filters (lifecycle state,
+deleted and placeholder flags, adapter-set privacy). A label chosen by a model,
+such as a memory fact's `sensitivity`, is advisory evidence of risk: where a
+domain's filter reads it, anything other than `normal` withholds the row, but a
+model-chosen label never admits a row a deterministic rule withholds and never
+widens an allowlist. Model labels default to `normal`, which is why the default
+cannot be the thing that shares. The owner's own act is the one thing that may
+lift a label: an owner-set privacy label replaces an adapter-set one (an
+owner override of a chronicler episode's privacy can lower `restricted` to
+`normal`), while any other override can only raise it. That lift stays inside the
+allowlist and the class rules.
 
 ### The axes
 
@@ -463,7 +468,7 @@ default to `normal`, which is why the default cannot be the thing that shares.
 | Subject | the owner, or another entity | fact subject (OD21) | Nothing by itself: facts about other people publish; their contact and identity predicates do not |
 | Provenance | `content_authority` (`owner`, `owner_device`, `third_party`, ...); later the S1 labels | stored on the row | How the row may be used, not whether it is shared |
 | Category | the six S1 categories | not built for rows | Future row filter; see below |
-| Owner withhold | kill switch per domain or whole surface; owner-set privacy | owner acts | Removes data the allowlist would admit |
+| Owner withhold | kill switch per domain or whole surface; owner-set privacy | owner acts | Removes data the allowlist would admit; an owner-set privacy label may also lift an adapter-set one |
 
 - **Data class** is declared once per published column and enforced by the
   manifest loader. `credential` and `third_party_pii` are recognised but never
@@ -487,8 +492,10 @@ default to `normal`, which is why the default cannot be the thing that shares.
 
 ### Precedence
 
-A row or column is shared only if every layer permits it. A refusal at any
-layer is final; no later layer overrides it.
+A row or column is shared only if every layer permits it. A refusal at the
+allowlist, the class or the owner-withhold layer is final, and no model label
+overrides any refusal. The one exception inside the filter layer is the owner's
+own act: an owner-set privacy label may lift an adapter-set one.
 
 1. **Allowlist.** Not in the manifest: not shared.
 2. **Class.** `credential` and `third_party_pii`: never, and a credential
@@ -498,8 +505,10 @@ layer is final; no later layer overrides it.
    every publish rule below.
 4. **Deterministic row filters.** Predicate allowlists, lifecycle and flag
    filters, adapter-set privacy.
-5. **Model-chosen labels.** They may withhold further. They cannot reverse 1
-   to 4.
+5. **Model-chosen labels.** Where a domain's filter reads them they may
+   withhold further. They cannot reverse 1 to 4. In finance and health the
+   memory `sensitivity` is not a filter (OD17 and OD22): only credentials, the
+   allowlist and owner withholds apply there.
 
 Provenance and subject sit beside this order: provenance governs use after
 sharing, and subject only selects which predicates the allowlist names.
@@ -510,9 +519,12 @@ sharing, and subject only selects which predicates the allowlist names.
   `canonical_name` are `personal_record`, published under OD17.
 - `finance.transactions.receipt_url` and `finance.subscriptions.cancellation_url`
   stay published as `third_party_content`.
-- Merchant and payee columns, fact content and search text of the relationship
-  and general domains, and `entity_facts.object` are `third_party_content`,
-  because a person's name or other people's text can sit in them.
+
+Reclassifications applied in the same review (PR #5645), label-only and not
+owner decisions: merchant and payee columns, fact content and search text of the
+relationship and general domains, and `entity_facts.object` are
+`third_party_content`, because a person's name or other people's text can sit in
+them.
 
 ### Not built yet
 
