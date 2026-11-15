@@ -109,6 +109,16 @@ def test_no_other_tool_may_write(tmp_path):
         CapabilityHost(env.settings, tools=tools)
 
 
+def test_the_write_guard_keys_on_the_served_name_not_the_tool_label(tmp_path):
+    # The host dispatches by the mapping key, so a writer served under another name must be
+    # refused even when its own ``.name`` says propose_fact.
+    tools = default_fake_tools()
+    tools["finance_ledger"] = Tool("propose_fact", "proposals", _writer([]), writes=True)
+    env = Env(tmp_path, tools=default_fake_tools())
+    with pytest.raises(ValueError, match="only propose_fact may write"):
+        CapabilityHost(env.settings, tools=tools)
+
+
 def test_no_default_or_served_tool_but_propose_fact_writes():
     from butlers.capability_host import default_tools
     from butlers.mcp_public.server import served_tools

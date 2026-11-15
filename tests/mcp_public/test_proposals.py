@@ -229,6 +229,22 @@ async def test_an_assertion_without_a_client_id_never_writes():
     assert await _code(dict(GOOD), context=replace(CONTEXT, cid="")) == "unavailable"
 
 
+@pytest.mark.parametrize("field", ["sub", "cid"])
+async def test_an_identity_longer_than_the_inbox_bound_is_refused_for_good(field):
+    """The inbox CHECKs length 1..256; an over-long identity must not become a retry loop."""
+    edge = "https://claude.ai/" + "p" * (256 - len("https://claude.ai/"))
+    at_bound = replace(CONTEXT, **{field: edge})
+    accepted = await propose_fact(Recorder(), at_bound, dict(GOOD))  # type: ignore[arg-type]
+    assert accepted["status"] == "received"
+    over = replace(CONTEXT, **{field: edge + "p"})
+    recorder = Recorder()
+    with pytest.raises(ReadError) as refused:
+        await propose_fact(recorder, over, dict(GOOD))  # type: ignore[arg-type]
+    error = refused.value.to_dict()["error"]
+    assert (error["code"], error["retryable"]) == ("blocked", False)
+    assert recorder.calls == [], "a refusal writes nothing"
+
+
 async def test_the_full_inbox_is_unavailable_and_nothing_else_is_mapped():
     full = Recorder(_error(proposals.INBOX_FULL))
     with pytest.raises(ReadError) as refused:

@@ -584,7 +584,10 @@ re-read every pass, so a rotated Secret takes effect without a restart. Egress i
    else sweeps ordinary approvals), then maps each action: `executed` to `applied`, `rejected` to
    `owner_rejected`, `expired` or `cancelled` to `expired`, `abandoned` or an `approved` action with
    an `action_execution_failed` event to `apply_failed`. A failed execution is still retryable in
-   approvals; if the retry executes, `apply_failed` moves on to `applied`.
+   approvals; if the retry executes, `apply_failed` moves on to `applied`. An approval that
+   arrives after the subject or object was merged, deleted or reaped by the enrichment job
+   fails its replay closed (`relationship_assert_fact` re-checks both ids for an `external_mcp:`
+   action), so it is reported `apply_failed` and no fact is written on a tombstone.
 5. *Retention:* 30 days after `decided_at`, a terminal row's `note` and `evidence_url` become
    NULL; ids, state and timestamps stay.
 
@@ -672,9 +675,9 @@ row until the importer (task 5.2, not yet built) pulls it, so a received proposa
   The host refuses to start if any other tool is flagged. The database role, not this flag, is the
   authority bound.
 
-The primary proposal-status prerequisite is Relationship revision `rel_041`, which stores
-caller-assigned proposal IDs, the D13 primary state and decision timestamp, and private
-retention-capable note/evidence fields; `rel_043` adds the payload and bookkeeping columns the
-importer needs (section 9). The manifest exposes only `proposal_id`, `state` and `decided_at` in
-the `proposals` domain. The importer, approval reconciliation and the 30-day text-clearing job
-are delivered (task 5.2): a proposal changes no fact until the owner approves its parked action.
+The primary proposal-status prerequisite is Relationship revision `rel_041`. It
+stores caller-assigned proposal IDs, the D13 primary state and decision timestamp,
+and private retention-capable note/evidence fields. The manifest exposes only
+`proposal_id`, `state` and `decided_at` in the `proposals` domain. `rel_043` adds the
+importer's payload and bookkeeping columns without changing that column list; the importer,
+approval reconciliation and 30-day text clearing are described in section 9.

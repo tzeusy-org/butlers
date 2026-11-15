@@ -5,7 +5,7 @@ Let the owner's external AI clients propose a Relationship fact without gaining 
 ## ADDED Requirements
 
 ### Requirement: propose_fact accepts only proposable relational triples
-`propose_fact` SHALL accept `subject_entity_id`, `predicate`, `object_entity_id`, an optional `evidence_url`, an optional `note` of at most 500 characters and an `idempotency_key` of at most 64 characters, and nothing else. `predicate` SHALL be in the literal allowlist `src/butlers/knowledge_read/proposable.toml`, which in v1 holds only relational-kind predicates whose object is an entity (`knows`, `colleague-of`, `friend-of`, `co-attended`, `visited`, `works-at`, `member-of`). A family-gated, contact-kind or override-kind predicate, or a literal object, SHALL be refused with `invalid_argument` and SHALL write nothing. On acceptance the tool SHALL return `{proposal_id, status: "received"}`.
+`propose_fact` SHALL accept `subject_entity_id`, `predicate`, `object_entity_id`, an optional `evidence_url`, an optional `note` of at most 500 characters and an `idempotency_key` of at most 64 characters, and nothing else. `predicate` SHALL be in the literal allowlist `src/butlers/knowledge_read/proposable.toml`, which in v1 holds only relational-kind predicates whose object is an entity (`knows`, `colleague-of`, `friend-of`, `co-attended`, `visited`, `works-at`, `member-of`). An `evidence_url`, when given, SHALL be an absolute `http` or `https` URL with a host, at most 2048 characters, with no userinfo (user name or password) and no whitespace or control characters. A family-gated, contact-kind or override-kind predicate, a literal object, or an `evidence_url` breaking that rule SHALL be refused with `invalid_argument` and SHALL write nothing. On acceptance the tool SHALL return `{proposal_id, status: "received"}`.
 
 ID: REQ-public-mcp-proposals-001
 Source: RFC 0039 D10 (propose_fact row) and D13 (proposable predicates); owner decision OD4
@@ -25,6 +25,10 @@ Scope: v1-mandatory
 
 #### Scenario: Oversized note is refused
 - **WHEN** a client sends a 501-character `note`
+- **THEN** the result SHALL be `invalid_argument` and no inbox row SHALL be written
+
+#### Scenario: Credential-bearing evidence URL is refused
+- **WHEN** a client sends the `evidence_url` `https://user:secret@example.com/page`
 - **THEN** the result SHALL be `invalid_argument` and no inbox row SHALL be written
 
 ### Requirement: Idempotent receipt
@@ -63,7 +67,7 @@ Scope: v1-mandatory
 - **THEN** no Butlers session, route, goal, schedule or notification SHALL be created before the importer's next scheduled pass
 
 ### Requirement: Deterministic import and validation
-A Relationship daemon job, `public_mcp_proposal_import` (`dispatch_mode = "job"`, every 5 minutes, no LLM), SHALL read at most 100 inbox rows per pass, copy each into `relationship.external_fact_proposals` with no-op-on-conflict semantics, and then delete the copied inbox rows, so that a crash between the two steps loses or duplicates nothing. It SHALL then re-validate each proposal in this order, recording the first failing outcome: schema and predicate allowlist, and the subject and object entities exist, are neither merged nor deleted, and the subject is not the owner (`invalid`); note and evidence URL pass the DLP secret-shape scan (`invalid`); no identical active fact exists (`duplicate`); the proposal is not a later different payload under an already used `(sub, client, idempotency_key)` as defined in REQ-public-mcp-proposals-002 (`conflict`); the submitting `(sub, client)` has fewer than 20 proposals today and fewer than 50 unresolved (`rate_limited`). A proposal passing every check SHALL be parked.
+A Relationship daemon job, `public_mcp_proposal_import` (`dispatch_mode = "job"`, every 5 minutes, no LLM), SHALL read at most 100 inbox rows per pass, copy each into `relationship.external_fact_proposals` with no-op-on-conflict semantics, and then delete the copied inbox rows, so that a crash between the two steps loses or duplicates nothing. It SHALL validate a copied proposal only once its inbox receipt time is at least 30 seconds before the pass, leaving a younger proposal `imported` for a later pass, so that a row committed out of receipt-time order is seen before a later proposal under the same key is decided. It SHALL then re-validate each proposal in this order, recording the first failing outcome: schema and predicate allowlist, and the subject and object entities exist, are neither merged nor deleted, and the subject is not the owner (`invalid`); note and evidence URL pass the DLP secret-shape scan (`invalid`); no identical active fact exists (`duplicate`); the proposal is not a later different payload under an already used `(sub, client, idempotency_key)` as defined in REQ-public-mcp-proposals-002 (`conflict`); the submitting `(sub, client)` has fewer than 20 proposals today and fewer than 50 unresolved (`rate_limited`). A proposal passing every check SHALL be parked.
 
 ID: REQ-public-mcp-proposals-004
 Source: RFC 0039 D13 step 2 and D14 item 5; heart-and-soul/vision.md Rule 4
