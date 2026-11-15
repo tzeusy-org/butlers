@@ -199,6 +199,21 @@ async def test_a_replay_that_rebuilds_and_ends_a_span_closes_its_stored_carry() 
         assert adapter.keys(fix) is None
 
 
+async def test_a_replay_ending_another_span_never_releases_a_stored_open_span() -> None:
+    # A carry is scoped to one span (endpoint and start): the replay ends an earlier span at the
+    # same endpoint, which must not cover members of the still-open span stored before it.
+    adapter = _Adapter()
+    later = [_fix(30), _fix(40)]
+    await adapter.run(*later)
+    assert all(adapter.keys(fix) == [_key(30)] for fix in later)
+
+    earlier = [_fix(0), _fix(10)]
+    await adapter.run(*earlier, _fix(15, None), replay=True)
+    assert all(adapter.record(fix) is not None for fix in earlier)
+    for fix in later:
+        assert adapter.keys(fix) == [_key(30)] and adapter.record(fix) is None
+
+
 async def test_a_replay_that_no_longer_builds_a_stored_span_keeps_it_held() -> None:
     adapter = _Adapter()
     home = [_fix(0), _fix(10)]

@@ -528,6 +528,71 @@ async def test_dwell_meeting_threshold_emits_labeled_episode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_closed_short_stay_is_recorded_as_evaluated_without_output() -> None:
+    """Through ``project``: the adapter evaluates every row, so a stay below the minimum dwell
+    that has closed gets an ``evaluated_no_output`` record, not silence (bu-s11n0s.7)."""
+    from uuid import uuid4
+
+    from tests.chronicler.test_projection_coverage import _Tables
+
+    def _covered_row(minutes: int, lat: float) -> dict:
+        row = _row(_NOW + timedelta(minutes=minutes), lat=lat)
+        row["id"] = uuid4()
+        row["idempotency_key"] = f"owntracks:alice:{minutes}:location"
+        row["retention_at"] = row["ts"]
+        return row
+
+    short = [_covered_row(m, _HOME_LAT) for m in (0, 5)]
+    cafe = [_covered_row(m, _HOME_LAT + 0.01) for m in (10, 20, 30, 40)]  # ~1.1 km away
+    tables = _Tables()
+    conn = AsyncMock(spec=asyncpg.Connection)
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
+
+    async def _fetch(query: str, *args: object) -> list:
+        if "location_projection_open_members" in query:
+            return await tables.fetch(query, *args)
+        return []
+
+    async def _execute(query: str, *args: object) -> str:
+        if query.startswith("DELETE FROM location_projection_open_members"):
+            return await tables.execute(query, *args)
+        return "OK"
+
+    conn.fetch = AsyncMock(side_effect=_fetch)
+    conn.execute = AsyncMock(side_effect=_execute)
+    conn.executemany = AsyncMock(side_effect=tables.executemany)
+    cp = AsyncMock(spec=asyncpg.Pool)
+    cp.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
+
+    async def _upsert(conn: object, episode: Episode) -> Episode:
+        episode.id = uuid4()
+        return episode
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks_place_cluster.get_carryover", return_value={}),
+        patch("butlers.chronicler.adapters.owntracks_place_cluster.save_carryover"),
+        patch("butlers.chronicler.adapters.owntracks_place_cluster.set_cursor"),
+        patch(
+            "butlers.chronicler.adapters.owntracks_place_cluster.upsert_episode",
+            side_effect=_upsert,
+        ),
+        patch("butlers.chronicler.adapters.owntracks_place_cluster.upsert_owner_episode_entity"),
+        patch(
+            "butlers.chronicler.adapters.owntracks_place_cluster.resolve_owner_entity_id",
+            return_value=None,
+        ),
+    ):
+        result = await OwnTracksPlaceClusterAdapter().project(
+            _pool_returning(*short, *cafe), chronicler_pool=cp, since=None
+        )
+
+    assert result.error is None
+    record = tables.coverage.get(short[0]["id"])
+    assert record is not None and record["disposition"] == "evaluated_no_output"
+    assert record["output_episode_ids"] == []
+
+
+@pytest.mark.asyncio
 async def test_no_valid_rows_still_advances_nothing_and_skips_carryover() -> None:
     bad_row = _row(_NOW)
     bad_row["lat"] = float("nan")
