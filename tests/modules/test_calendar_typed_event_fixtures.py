@@ -69,8 +69,10 @@ def test_the_corpus_covers_every_typed_shape_the_projection_keeps() -> None:
     expected = [entry["expect"] for entry in _entries()]
     types = {e["event_type"] for e in expected}
     assert {"default", "outOfOffice", "focusTime", "workingLocation"} <= types
-    assert any(e["event_type"] not in {"default", "outOfOffice", "focusTime",
-                                       "workingLocation"} for e in expected)
+    assert any(
+        e["event_type"] not in {"default", "outOfOffice", "focusTime", "workingLocation"}
+        for e in expected
+    )
     locations = {e["working_location"]["type"] for e in expected if e["working_location"]}
     assert locations == {"homeOffice", "officeLocation", "customLocation"}
     # Some workingLocation fixtures normalize to no location at all.

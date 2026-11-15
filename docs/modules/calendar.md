@@ -221,7 +221,19 @@ owners, without keeping a second engine. Every Calendar package Python file is l
     signal (that maps to `owner.place`) and never enters an owner mode, since automatic entry
     is limited to asleep, in flight and house unattended. Mode entry from it would need an
     owner-confirmed M7 proposal.
-  - Not yet: the working-location signal (S3).
+  - Working location is a typed read, not a signal (S3).
+    `butlers.modules.calendar.working_location.current_working_location(conn, now=, zone=)`
+    runs one SELECT on `calendar_events` and writes nothing.
+    - Eligible: active, confirmed `workingLocation` events with a normalized location, not
+      butler-generated and not self-declined.
+    - Selection: timed over all-day, then the latest start, then the shortest, then the
+      smallest event id.
+    - It returns only `type`, `label` and `until`. `until` is the earlier of the event end
+      and the next owner-local midnight in `zone`, so DST days end at the real midnight.
+    - A naive `now` or an unknown zone is refused before the read.
+    - Nothing calls it yet. Publishing it is deferred to a perception kind
+      (`owner.work_location`) at the M7/.21 switch, so the retiring context bus gets no new
+      writer.
 - `calendar_sync_status` / `calendar_force_sync` report `projection_freshness` (`last_refreshed_at`,
   `staleness_ms`, per-source `fresh|stale|failed`). Dashboard `calendar_force_sync(queue=true)`
   commands are durable `calendar_action_log` rows: the worker starts even with polling disabled,
