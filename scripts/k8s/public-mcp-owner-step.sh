@@ -120,7 +120,11 @@ primary="$(kubectl -n "$PG_NAMESPACE" get pod \
   || fail "expected one primary pod for $PG_CLUSTER, found: ${primary:-none}"
 
 echo "public-mcp owner step: applying owner-sql of $TAG ($pod rolled out) to $DB_NAME on $primary" >&2
+# The pod spools all of stdin before psql starts. Fed straight to `psql -f -`, a guard stop
+# leaves the rest of the program unread and `kubectl exec -i` blocks forever writing it.
+# shellcheck disable=SC2016 # expands in the pod, not here
+PSQL_SPOOL='f=$(mktemp) || exit 2; cat >"$f" || { rm -f "$f"; exit 2; }; psql "$@" -f "$f"; rc=$?; rm -f "$f"; exit $rc'
 printf '%s\n' "$sql" | kubectl -n "$PG_NAMESPACE" exec -i "$primary" -c postgres -- \
-  psql -X -q -v ON_ERROR_STOP=1 -d "$DB_NAME" -f - \
+  sh -c "$PSQL_SPOOL" psql-spool -X -q -v ON_ERROR_STOP=1 -d "$DB_NAME" \
   || fail "psql exited non-zero (a guard stop or a failed statement; see the error above)"
 echo "public-mcp owner step: applied" >&2

@@ -34,7 +34,7 @@ case "$*" in
     printf '%b' "$PODS"; exit "${PODS_RC:-0}" ;;
   *"get pod -l cnpg.io/cluster=postgres-dev,cnpg.io/instanceRole=primary"*)
     printf '%s\n' $PRIMARIES ;;
-  *"-c postgres -- psql"*)
+  *"-c postgres -- sh -c "*)
     cat > "$STDIN_LOG"
     [ "${PSQL_RC:-0}" = 0 ] || { echo "ERROR:  public MCP digest refused" >&2; exit "$PSQL_RC"; }
     ;;
@@ -144,10 +144,11 @@ def test_dev_renders_the_tags_tree_and_pipes_it_to_the_primary_as_superuser(
     assert renders == ["--help", "public-mcp --help", "public-mcp owner-sql"]
     execs = [call for call in calls if " exec " in call]
     assert len(execs) == 1
-    assert execs[0] == (
-        "kubectl -n postgres-dev exec -i pod/postgres-dev-1 -c postgres -- "
-        "psql -X -q -v ON_ERROR_STOP=1 -d butlers -f -"
+    assert execs[0].startswith(
+        "kubectl -n postgres-dev exec -i pod/postgres-dev-1 -c postgres -- sh -c "
     )
+    # The pod spools stdin to a file before psql runs (tests/scripts/test_k8s_psql_spool.py).
+    assert execs[0].endswith(" psql-spool -X -q -v ON_ERROR_STOP=1 -d butlers")
     assert _psql_fed(tools) == _SQL + "\n"
     assert " secret" not in "\n".join(calls)
 

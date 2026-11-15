@@ -94,7 +94,9 @@ def test_dev_pipes_the_tags_bootstrap_into_the_primary_as_superuser(fake_repo: P
     exec_call = next(line for line in calls.splitlines() if " exec " in line)
     assert exec_call.startswith("kubectl -n postgres-dev exec -i pod/postgres-dev-1 -c postgres")
     assert "PGOPTIONS=-c butlers.connecting_user=fixture-login" in exec_call
-    assert "psql -X -q -v ON_ERROR_STOP=1 -d butlers -f -" in exec_call
+    # The pod spools stdin to a file before psql runs (tests/scripts/test_k8s_psql_spool.py).
+    assert " sh -c " in exec_call
+    assert exec_call.endswith(" psql-spool -X -q -v ON_ERROR_STOP=1 -d butlers")
     assert (fake_repo / "stdin.log").read_text(encoding="utf-8").strip() == _SQL
 
 
