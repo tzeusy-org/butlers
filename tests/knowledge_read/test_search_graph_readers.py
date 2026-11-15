@@ -246,6 +246,26 @@ async def test_a_cancelled_statement_is_unavailable(reader, arguments):
     assert caught.value.code == "unavailable"
 
 
+class _OwnerStepPending:
+    """A projection whose owner step has not yet added the episodes' search columns."""
+
+    def is_in_transaction(self):
+        return True
+
+    async def fetchval(self, *args, **kwargs):
+        return "0.3"
+
+    async def fetch(self, *args, **kwargs):
+        raise asyncpg.UndefinedColumnError('column "search_title" does not exist')
+
+
+@pytest.mark.parametrize("reader", [search, search_filtered])
+async def test_missing_search_columns_are_unavailable_until_the_owner_step_runs(reader):
+    with pytest.raises(ReadError) as caught:
+        await reader(_OwnerStepPending(), _context(), {"query": "x"})
+    assert caught.value.code == "unavailable"
+
+
 def test_deep_links_are_the_base_plus_a_fixed_path():
     context = _context()
     assert context.link("/entities/abc") == "https://dash.example.test/entities/abc"

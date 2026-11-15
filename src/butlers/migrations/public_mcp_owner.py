@@ -18,6 +18,12 @@ from butlers.knowledge_read.manifest import (
     qualified,
     quote,
 )
+from butlers.knowledge_read.search_index import (
+    SEARCH_COLUMNS,
+    SearchColumn,
+    index_sql,
+    search_columns,
+)
 
 # Also present verbatim in init-db.sql. Both execution paths must refuse before
 # synchronizing publisher privileges; a source contract checks this equality.
@@ -162,6 +168,8 @@ class SubscriberTable:
     extras: tuple[LocalColumn, ...]
     view_where: str
     read_fields: tuple[ReadField, ...]
+    # Indexed search columns the view appends after ``fields`` (search_index.py).
+    search: tuple[SearchColumn, ...] = ()
 
 
 # An entity leaves the projection when it is forgotten, deleted, archived or unlisted,
@@ -264,7 +272,8 @@ def subscriber_plan(manifest: Manifest) -> tuple[SubscriberTable, ...]:
                 + " ELSE NULL END"
             )
             fields += (ReadField("source_domain", "text", expression),)
-        result.append(SubscriberTable(table, view, extras, where, fields))
+        search = search_columns(table.source, table.columns)
+        result.append(SubscriberTable(table, view, extras, where, fields, search))
     return tuple(result)
 
 
@@ -476,8 +485,15 @@ def _view_sql(plan: SubscriberTable, manifest: Manifest) -> str:
     pairs = [part for field in plan.read_fields for part in (literal(field.name), field.expression)]
     keys = [quote(c) + "::text" for c in table.key]
     key = keys[0] if len(keys) == 1 else "jsonb_build_array(" + ", ".join(keys) + ")::text"
+    # A declared search source always carries its search columns, so the view keeps its shape
+    # (CREATE OR REPLACE VIEW cannot drop a column): typed NULLs while an input is unpublished.
+    active = {c.name for c in plan.search}
+    search = "".join(
+        f", {c.expression if c.name in active else 'NULL::' + c.type} AS {quote(c.name)}"
+        for c in SEARCH_COLUMNS.get(table.source, ())
+    )
     sql = f"""SELECT {key} AS source_id, jsonb_build_object({", ".join(pairs)}) AS
-        fields FROM
+        fields{search} FROM
         {qualified(table.source)}"""
     return sql + (" WHERE " + plan.view_where if plan.view_where else "")
 
@@ -970,8 +986,9 @@ $decode$;
 
 # pg_trgm is a trusted extension, so the projection database owner could create it, own it and
 # add its own functions to it. Only a superuser-owned mcp_ext, extension and member set is
-# accepted, and only similarity(text, text) may be executable by anyone but its owner. Absent
-# objects pass: the superuser step creates them.
+# accepted, and only similarity(text, text) and similarity_op(text, text), the function of the
+# ``%`` operator that the search reader's trigram index scan rechecks, may be executable by
+# anyone but its owner. Absent objects pass: the superuser step creates them.
 _SUPERUSER = "EXISTS(SELECT 1 FROM pg_catalog.pg_roles r WHERE r.oid={} AND r.rolsuper)"
 _TRGM_SAFE = f"""NOT EXISTS(SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname='mcp_ext'
         AND NOT {_SUPERUSER.format("n.nspowner")})
@@ -993,7 +1010,8 @@ _TRGM_SAFE = f"""NOT EXISTS(SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspn
                 AND x.extname='pg_trgm')
           OR EXISTS(SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantee<>p.proowner
               AND NOT (a.grantee='mcp_public_ro'::regrole
-                       AND p.oid=to_regprocedure('mcp_ext.similarity(text,text)')))))
+                       AND p.oid IN (to_regprocedure('mcp_ext.similarity(text,text)'),
+                                     to_regprocedure('mcp_ext.similarity_op(text,text)'))))))
     AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n
             ON n.oid=c.relnamespace
         WHERE n.nspname='mcp_ext')"""
@@ -1144,8 +1162,9 @@ def _trigram_extension() -> str:
     The schema, the extension and every member belong to the superuser, so the projection
     owner can neither add functions nor grant them. The state is checked before anything is
     created (an owner-planted copy is never adopted) and again after the grants, when only
-    ``similarity(text, text)`` is executable by ``mcp_public_ro``. The owner's revoke loop
-    skips this schema because it cannot change superuser-owned ACLs.
+    ``similarity(text, text)`` and ``similarity_op(text, text)`` (the ``%`` operator, which
+    lets ``search`` use its trigram index) are executable by ``mcp_public_ro``. The owner's
+    revoke loop skips this schema because it cannot change superuser-owned ACLs.
     """
     refused = "projection pg_trgm ownership or grants refused"
     return (
@@ -1158,6 +1177,7 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA mcp_ext FROM PUBLIC, mcp_projection_owner,
         mcp_public_ro, mcp_proposals_reader;
 GRANT USAGE ON SCHEMA mcp_ext TO mcp_public_ro;
 GRANT EXECUTE ON FUNCTION mcp_ext.similarity(text, text) TO mcp_public_ro;
+GRANT EXECUTE ON FUNCTION mcp_ext.similarity_op(text, text) TO mcp_public_ro;
 """
         + _do(
             _raise_unless(
@@ -1166,7 +1186,9 @@ GRANT EXECUTE ON FUNCTION mcp_ext.similarity(text, text) TO mcp_public_ro;
     AND EXISTS(SELECT 1 FROM pg_catalog.pg_extension WHERE extname='pg_trgm')
     AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc p WHERE
         p.pronamespace='mcp_ext'::regnamespace AND p.proacl IS NULL)
-    AND has_function_privilege('mcp_public_ro', 'mcp_ext.similarity(text,text)', 'EXECUTE')""",
+    AND has_function_privilege('mcp_public_ro', 'mcp_ext.similarity(text,text)', 'EXECUTE')
+    AND has_function_privilege('mcp_public_ro', 'mcp_ext.similarity_op(text,text)',
+        'EXECUTE')""",
                 refused,
             )
         )
@@ -1216,6 +1238,70 @@ def _identity_guard() -> str:
     )
 
 
+def _declared_search_index(source: str, index: str, relation: str) -> str:
+    """A subscriber index the step may find: a declared search index name on its own source.
+
+    Keyed by every declared source, not the target manifest, so a source leaving the manifest
+    keeps its search indexes until the step drops the table. Only a plain single-key GIN index
+    passes; :func:`_search_indexes` then rebuilds any whose definition differs.
+    """
+    declared = ", ".join(
+        f"({literal(source_name)}, {literal(column.index)})"
+        for source_name, columns in sorted(SEARCH_COLUMNS.items())
+        for column in columns
+    )
+    return f"""(({source}, {relation}.relname::text) IN (VALUES {declared})
+        AND {relation}.relam=(SELECT oid FROM pg_catalog.pg_am WHERE amname='gin')
+        AND NOT {index}.indisunique AND NOT {index}.indisexclusion
+        AND {index}.indpred IS NULL AND {index}.indnatts=1)"""
+
+
+def _search_indexes(plans: tuple[SubscriberTable, ...]) -> str:
+    """Create each declared search index, as the superuser, once ``mcp_ext`` is verified.
+
+    The index on a trigram column needs ``mcp_ext.gin_trgm_ops``, which only the superuser
+    can name. PostgreSQL makes the table owner own every index on its table and builds the
+    expression as that owner, so the projection owner still owns the result. A same-named
+    index whose definition differs from a twin built on a temporary copy of the table is
+    dropped and rebuilt, so a changed expression converges; an unchanged rerun keeps its OID.
+    A declared source whose inputs are not all published keeps none of its search indexes.
+    """
+    body = ""
+    for plan in plans:
+        source = plan.table.source
+        schema = source.split(".", 1)[0]
+        if not plan.search:
+            # Unpublished inputs: no search index may outlive them (a dropped input column
+            # already took the indexes reading it; this removes any that read only survivors).
+            for column in SEARCH_COLUMNS.get(source, ()):
+                body += f"DROP INDEX IF EXISTS {quote(schema)}.{quote(column.index)};\n"
+        for column in plan.search:
+            name = literal(f"{schema}.{column.index}")
+            same = f"""EXISTS(SELECT 1 FROM pg_catalog.pg_index i
+            JOIN pg_catalog.pg_class c ON c.oid=i.indexrelid,
+            pg_catalog.pg_index e JOIN pg_catalog.pg_class t ON t.oid=e.indexrelid
+        WHERE i.indexrelid=to_regclass({name})
+          AND e.indexrelid='pg_temp.mcp_expected_index'::regclass
+          AND i.indrelid={literal(source)}::regclass AND i.indisvalid AND i.indisready
+          AND NOT i.indisunique AND NOT i.indisexclusion AND i.indpred IS NULL
+          AND i.indnatts=1 AND e.indnatts=1 AND c.relam=t.relam
+          AND i.indclass=e.indclass AND i.indcollation=e.indcollation
+          AND pg_catalog.pg_get_indexdef(i.indexrelid, 1, true)=
+              pg_catalog.pg_get_indexdef(e.indexrelid, 1, true))"""
+            body += (
+                f"CREATE TEMP TABLE mcp_expected_index_table (LIKE {qualified(source)});\n"
+                + index_sql(column, "mcp_expected_index", "pg_temp.mcp_expected_index_table")
+                + ";\n"
+                + f"IF to_regclass({name}) IS NOT NULL AND NOT {same} THEN\n"
+                + f"    DROP INDEX {quote(schema)}.{quote(column.index)};\nEND IF;\n"
+                + index_sql(column, quote(column.index), qualified(source))
+                + ";\n"
+                + _raise_unless(same, "subscriber search index readback mismatch")
+                + "DROP TABLE pg_temp.mcp_expected_index_table;\n"
+            )
+    return _do(body) if body else ""
+
+
 def _prior_catalog_sql() -> str:
     body = """PERFORM set_config('butlers.e_catalog_drift', 'false', false);
     FOR item IN SELECT value AS source FROM jsonb_array_elements_text(
@@ -1229,9 +1315,10 @@ def _prior_catalog_sql() -> str:
                OR EXISTS(SELECT 1 FROM pg_constraint WHERE
         conrelid=to_regclass(item.source)
         AND contype<>'p')
-               OR EXISTS(SELECT 1 FROM pg_index WHERE
-        indrelid=to_regclass(item.source) AND
-        NOT indisprimary) THEN
+               OR EXISTS(SELECT 1 FROM pg_index i JOIN pg_class x ON
+        x.oid=i.indexrelid WHERE
+        i.indrelid=to_regclass(item.source) AND
+        NOT i.indisprimary AND NOT __SEARCH_INDEX__) THEN
                 RAISE EXCEPTION
         'subscriber unowned/undeclared relation policy refused'; END
         IF;
@@ -1296,7 +1383,9 @@ def _prior_catalog_sql() -> str:
             PERFORM set_config('butlers.e_catalog_drift', 'true', false);
         END IF;
         DROP TABLE pg_temp.mcp_prior_expected;
-    END LOOP;""".replace("__EXPRESSION__", literal(_ENTITY_OBJECT_EXPRESSION))
+    END LOOP;""".replace("__EXPRESSION__", literal(_ENTITY_OBJECT_EXPRESSION)).replace(
+        "__SEARCH_INDEX__", _declared_search_index("item.source", "i", "x")
+    )
     return (
         _do(body, declare="entry jsonb; definition text; attrs jsonb; expected_attrs jsonb;")
         + """
@@ -1870,6 +1959,7 @@ DROP SUBSCRIPTION butlers_public_sub;
         )
     )
     sql += _trigram_extension()
+    sql += _search_indexes(plans)
     sql += """SELECT EXISTS(SELECT 1 FROM pg_subscription WHERE
         subname='butlers_public_sub' AND
         subdbid=(SELECT oid FROM pg_catalog.pg_database WHERE

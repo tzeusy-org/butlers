@@ -73,8 +73,9 @@ share one transaction, so interruption cannot lose the exact old cleanup identit
 retains them even if the target changes. Final applied write and journal removal share one
 transaction; a journal is never evidence of completion and has no reader/importer grant.
 
-Subscriber-local `mcp_read` views use a fixed `(source_id text, fields jsonb)` output.
-Fields are explicitly declared, never whole-row discovery. Numeric values are represented
+Subscriber-local `mcp_read` views use a fixed `(source_id text, fields jsonb)` output, plus the
+declared search columns of an indexed search source (below). Fields are explicitly declared,
+never whole-row discovery. Numeric values are represented
 as exact decimal text, nulls remain null, composite source IDs use JSON arrays, and graph
 source prefixes map to manifest domains without exposing `publish_key`. Entity deletion,
 unidentified and placeholder flags are excluded from every read view. Finance transactions
@@ -89,7 +90,32 @@ The owner step also installs `pg_trgm` in a projection-only `mcp_ext` schema, as
 the schema, the extension and every member must be superuser-owned, so the projection owner
 cannot plant or grant a function there (pg_trgm is a trusted extension it could otherwise
 create). `mcp_public_ro` may execute only `mcp_ext.similarity(text, text)` (the `entity_lookup`
-trigram match). The step refuses any other state before creating anything.
+and `search` trigram match) and `mcp_ext.similarity_op(text, text)` (the `%` operator, whose
+recheck the `search` trigram index scan runs as the reader). The step refuses any other state
+before creating anything.
+
+Search indexes (bu-y66o00.53). No index can match an expression over a view's `fields` jsonb,
+so a search source too costly to scan declares search columns in
+`butlers.knowledge_read.search_index`. Today only `chronicler.episodes_public` does:
+`search_title` (`left(COALESCE(title, kind), 200)`) and `search_vector` (the English
+`tsvector` of title, kind and category, joined with `||`, because `concat_ws` is not
+immutable; it equals the `concat_ws` vector). Its `mcp_read` view appends both columns after
+`fields`, and the owner step, as the superuser after `mcp_ext` is verified, creates a GIN index
+on each expression over the subscriber table: `chronicler.episodes_public_mcp_search_title`
+(`mcp_ext.gin_trgm_ops`) and `chronicler.episodes_public_mcp_search_vector`. They are expression
+indexes, so the replicated columns do not change. PostgreSQL makes the table owner,
+`mcp_projection_owner`, own them. Each is `CREATE INDEX IF NOT EXISTS` under a stable name; a
+same-named index whose definition differs from a twin built on a temporary copy is dropped and
+rebuilt, and a lost one is recreated on the next run. When title, kind or category leaves the
+manifest, the view keeps both columns as typed NULLs (`CREATE OR REPLACE VIEW` cannot drop a
+column, and the step never drops a view the server reads), the step drops both indexes, and the
+reader ranks the episodes on `fields` again; widening back restores both. The step's catalog guard admits exactly
+these names, on their declared table, as plain single-key GIN indexes; any other non-primary
+index on a subscriber table still refuses the step before mutation. `search` reads the
+episodes through those columns with a necessary-condition prefilter (vector match, or `%` at a
+threshold it pins to 0.3), so the planner answers it from a BitmapOr of both indexes while
+ranking and the exact match condition stay as before. Dropping `pg_trgm` now needs `CASCADE`,
+which takes the trigram index with it; the next owner step rebuilds both.
 
 The first pure readers exist in `butlers.knowledge_read` (`entities`, `chronology`, `finance`):
 `entity_lookup`, `entity_profile`, `timeline`, `time_use` and `finance_ledger`. Each takes an
@@ -572,6 +598,33 @@ and the `pg_hba` lines reverses owner act 2 in homelab.
 
 Rebuild by setting the off switch back to `on` and running sections 1, 3a, 3b and 3c again; the end state is the applied digest equal to
 the manifest digest and both flags at 1.
+
+**Rolling back below the search indexes (bu-y66o00.53).** An owner step from any tag before
+#5867 cannot run over this one's projection:
+
+- its prior-catalog guard refuses the two GIN indexes ("subscriber unowned/undeclared relation
+  policy refused");
+- its `_TRGM_SAFE` refuses the `similarity_op` grant;
+- its `CREATE OR REPLACE VIEW` cannot drop the episodes view's two search columns.
+
+On dev, `make deploy-dev` runs the owner step for the tag it deploys, so redeploying an older tag
+fails at step 3 until the projection is reverted first. As the superuser in `butlers_public` (the
+same `kubectl exec` path as section 1, with `-d butlers_public`), run, in one transaction:
+
+```sql
+BEGIN;
+DROP INDEX IF EXISTS chronicler.episodes_public_mcp_search_title,
+    chronicler.episodes_public_mcp_search_vector;
+DROP VIEW IF EXISTS mcp_read.chronicler__episodes_public;
+REVOKE EXECUTE ON FUNCTION mcp_ext.similarity_op(text, text) FROM mcp_public_ro;
+COMMIT;
+```
+
+Then deploy the older tag at once. Its owner step recreates the view (absent views are created)
+and grants `SELECT` on it. Until it does, a running new public server answers `search`,
+`search_filtered`, `timeline` and `fetch` of an episode with `unavailable` or an error, so
+disable the `time` domain first if the server is serving. Rolling forward again needs nothing:
+the new step appends the columns and recreates the indexes and the grant.
 
 **Restore drill.** CNPG backups include `butlers_public`, but nothing restores from it. A restored
 instance drops `butlers_public` or keeps its subscription disabled, so a restored copy never

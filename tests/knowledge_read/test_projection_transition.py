@@ -232,3 +232,50 @@ def test_entity_facts_cannot_publish_an_object_it_cannot_hide(dropped, refused):
         assert plan.view_where == (
             '("subject" IS NULL OR EXISTS (SELECT FROM public.entities AS e WHERE e.id = "subject"))'
         )
+
+
+def test_episode_search_columns_are_declared_once_for_the_view_the_index_and_the_reader():
+    """bu-y66o00.53: one expression feeds the view column, its GIN index and the reader."""
+    from butlers.knowledge_read.search import index_sources
+    from butlers.knowledge_read.search_index import SEARCH_COLUMNS
+
+    target = load_manifest()
+    plans = {p.table.source: p for p in subscriber_plan(target)}
+    declared = SEARCH_COLUMNS["chronicler.episodes_public"]
+    assert plans["chronicler.episodes_public"].search == declared
+    assert {s for s, p in plans.items() if p.search} == set(SEARCH_COLUMNS)
+    # The search columns are local view columns, never published fields or digest input.
+    assert not {c.name for c in declared} & {
+        f.name for f in plans["chronicler.episodes_public"].read_fields
+    }
+    program = render_owner_program(target)
+    trigram = program.index("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+    for column in declared:
+        assert f'{column.expression} AS "{column.name}"' in program
+        create = (
+            f'CREATE INDEX IF NOT EXISTS "{column.index}" ON "chronicler"."episodes_public" '
+            f"USING gin (({column.expression}){' ' + column.opclass if column.opclass else ''})"
+        )
+        assert program.count(create) == 1 and program.index(create) > trigram
+    episodes = next(s for s in index_sources() if s.table.source == "chronicler.episodes_public")
+    assert (episodes.title_sql, episodes.vector_sql) == ("search_title", "search_vector")
+    assert "OPERATOR(mcp_ext.%)" in episodes.prefilter
+
+    # Without every input column published the source gets no search columns at all.
+    table = next(t for t in target.tables if t.source == "chronicler.episodes_public")
+    narrowed = replace(
+        table,
+        columns=tuple(c for c in table.columns if c != "category"),
+        types=tuple(p for p in table.types if p[0] != "category"),
+        classes=tuple(p for p in table.classes if p[0] != "category"),
+    )
+    manifest = Manifest(tuple(narrowed if t == table else t for t in target.tables))
+    plan = next(p for p in subscriber_plan(manifest) if p.table == narrowed)
+    assert plan.search == ()
+    # The view keeps its shape with typed NULLs, and the step drops the indexes instead.
+    narrow_program = render_owner_program(manifest)
+    for column in declared:
+        assert f'NULL::{column.type} AS "{column.name}"' in narrow_program
+        assert column.expression not in narrow_program
+        assert f'DROP INDEX IF EXISTS "chronicler"."{column.index}";' in narrow_program
+        assert f'"{column.index}" ON' not in narrow_program
