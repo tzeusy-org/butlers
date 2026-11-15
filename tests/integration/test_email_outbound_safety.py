@@ -35,6 +35,7 @@ from butlers.modules.whatsapp import WhatsAppModule
 from butlers.testing.approval_parking_fake import record_pending_action
 from butlers.testing.mcp import tool_fn
 from butlers.testing.tool_host import host_tools
+from tests.core.gate_state import readable_gate_state  # noqa: F401
 
 pytestmark = pytest.mark.unit
 
