@@ -533,13 +533,14 @@ async def test_a_closed_short_stay_is_recorded_as_evaluated_without_output() -> 
     that has closed gets an ``evaluated_no_output`` record, not silence (bu-s11n0s.7)."""
     from uuid import uuid4
 
-    from tests.chronicler.test_projection_coverage import _Tables
+    from tests.chronicler.test_projection_coverage import _Tables, digest_for
 
     def _covered_row(minutes: int, lat: float) -> dict:
         row = _row(_NOW + timedelta(minutes=minutes), lat=lat)
         row["id"] = uuid4()
         row["idempotency_key"] = f"owntracks:alice:{minutes}:location"
         row["retention_at"] = row["ts"]
+        row["content_digest"] = digest_for(row["id"])
         return row
 
     short = [_covered_row(m, _HOME_LAT) for m in (0, 5)]

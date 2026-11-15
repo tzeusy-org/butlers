@@ -33,12 +33,15 @@ is evaluated:
   including those stored earlier.
 - **Projected** once its span closes with a presence episode (two or more observations).
 - **Evaluated without output** for a fix with no SSID or an unmapped one, and for a singleton
-  span that closed. That decision is relative to the owner's mapping at the time; coverage
-  does not yet record the mapping revision, and a mapping change does not invalidate it.
-- A replay from the start (mapping change, rebuilt cursor) drops the carryover. A stored carry
-  the replay rebuilds with the same endpoint and start closes as usual; one it does not
-  rebuild stays held (never covered) until coverage invalidation exists. Malformed fixes get
-  no coverage.
+  span that closed. That decision is relative to the owner's mapping, so every record carries
+  the adapter's config revision (``coverage_revision``), which includes the mapping digest.
+- The carryover keeps the revision its spans were held under. Any revision change voids them
+  (``void_carries_from_other_revisions``): a held fix read again is decided afresh, and one not
+  read again leaves the open table uncovered. A mapping change also makes every earlier record
+  stale and triggers a replay from the start; a grouping-setting change alone does not replay.
+- A replay for a rebuilt cursor (same mapping) drops the carryover too. A stored carry it
+  rebuilds with the same endpoint and start closes as usual; one it does not rebuild stays
+  held, never covered. Malformed fixes get no coverage.
 
 No LLM call — deterministic Tier-1 projection only (RFC 0014 D5).
 """
@@ -67,7 +70,15 @@ from butlers.chronicler.confidence import (
     evidence_refs_from_event_ids,
 )
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
-from butlers.chronicler.projection_coverage import ProjectionCoverage
+from butlers.chronicler.projection_coverage import (
+    COVERAGE_REVISION_CARRYOVER_KEY,
+    SOURCE_UNAVAILABLE,
+    ProjectionCoverage,
+    config_revision,
+    discover_uncovered,
+    raw_row_digest_sql,
+    record_attempt,
+)
 from butlers.chronicler.storage import (
     get_carryover,
     get_checkpoint,
@@ -93,6 +104,8 @@ CLOCK_SKEW_THRESHOLD_HOURS = 4
 _VALID_PLACES = frozenset({"home", "work"})
 _MAPPING_DIGEST_KEY = "_mapping_digest"
 _SOURCE_CURSOR_KEY = "_source_cursor"
+# Carryover entries that are adapter state, not an endpoint's open span.
+_STATE_KEYS = frozenset({_MAPPING_DIGEST_KEY, _SOURCE_CURSOR_KEY, COVERAGE_REVISION_CARRYOVER_KEY})
 # Coverage carry key (see "Projection coverage" in the module docstring).
 PRESENCE_CARRY_PREFIX = "ssid:"
 
@@ -172,7 +185,7 @@ def group_ssid_points(
     new_carryover: dict[str, Any] = {
         endpoint: value
         for endpoint, value in prior_carryover.items()
-        if endpoint not in {_MAPPING_DIGEST_KEY, _SOURCE_CURSOR_KEY}
+        if endpoint not in _STATE_KEYS
     }
 
     for endpoint, endpoint_rows in by_endpoint.items():
@@ -338,7 +351,7 @@ def record_presence_coverage(
             coverage.hold(member, key)
 
     for endpoint, carry in prior_carryover.items():
-        if endpoint in {_MAPPING_DIGEST_KEY, _SOURCE_CURSOR_KEY} or endpoint not in present:
+        if endpoint in _STATE_KEYS or endpoint not in present:
             continue
         start = _carried_start(carry)
         if start is None:
@@ -395,6 +408,16 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
         self.batch_limit = batch_limit
         self.max_gap = timedelta(minutes=max_gap_minutes)
         self.clock_skew_threshold = timedelta(hours=clock_skew_threshold_hours)
+        # The owner's mapping revision plus the grouping settings: a mapping change makes
+        # every earlier record stale (the replay it triggers re-evaluates the rows).
+        self.coverage_revision = config_revision(
+            SOURCE_NAME,
+            {
+                "mapping_digest": _mapping_digest(self.ssid_places),
+                "max_gap_minutes": max_gap_minutes,
+                "clock_skew_threshold_hours": clock_skew_threshold_hours,
+            },
+        )
 
     async def run(
         self,
@@ -434,11 +457,25 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
                             active=False,
                             inactive_reason=result.skipped_reason or "adapter skipped",
                         )
+                        await record_attempt(
+                            conn,
+                            self.source_name,
+                            config_revision=self.coverage_revision,
+                            error_class=SOURCE_UNAVAILABLE,
+                        )
                         return result
 
                     if not result.success:
                         raise RuntimeError(result.error or "SSID presence projection failed")
 
+                    await record_attempt(
+                        conn,
+                        self.source_name,
+                        config_revision=self.coverage_revision,
+                        uncovered=await discover_uncovered(
+                            conn, self.source_name, config_revision=self.coverage_revision
+                        ),
+                    )
                     await mark_source_active(conn, self.source_name, active=True)
                     await upsert_checkpoint(
                         conn,
@@ -462,6 +499,19 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
             except Exception:
                 logger.exception(
                     "Failed recording failure checkpoint for adapter %s",
+                    self.source_name,
+                )
+            try:
+                # The projection transaction rolled back; the attempt commits on its own.
+                await record_attempt(
+                    chronicler_pool,
+                    self.source_name,
+                    config_revision=self.coverage_revision,
+                    error_class=type(exc).__name__,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed recording failed attempt for adapter %s",
                     self.source_name,
                 )
             return AdapterResult(source_name=self.source_name, error=str(exc))
@@ -500,6 +550,8 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
         del since_id  # owntracks_points.id is UUID; watermark on ts only.
         result = AdapterResult(source_name=self.source_name)
         prior_carryover = await get_carryover(chronicler_conn, self.source_name)
+        # Read before a cursor rebuild drops the carryover: the stored carries keep their revision.
+        stored_revision = prior_carryover.get(COVERAGE_REVISION_CARRYOVER_KEY)
         digest = _mapping_digest(self.ssid_places)
         previous_digest = prior_carryover.get(_MAPPING_DIGEST_KEY)
         mapping_changed = previous_digest is not None and previous_digest != digest
@@ -520,13 +572,28 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
             )
             return result
 
+        coverage = ProjectionCoverage(
+            self.source_name,
+            config_revision=self.coverage_revision,
+            evaluates_every_row=True,
+        )
+        # Spans held under another revision are void: a mapping change replays their rows; a
+        # grouping-setting change alone leaves them uncovered for discovery.
+        coverage.void_carries_from_other_revisions(stored_revision, PRESENCE_CARRY_PREFIX)
         if mapping_changed:
             result.warnings.append("SSID place mapping changed; replaying source evidence")
             await self._tombstone_stale_mapping_episodes(chronicler_conn)
             prior_carryover = {}
+            # Void even if the stored revision were somehow current: the mapping moved.
+            coverage.reset_prefix(PRESENCE_CARRY_PREFIX)
 
         if not rows:
-            unchanged_carryover = {**prior_carryover, _MAPPING_DIGEST_KEY: digest}
+            await coverage.flush(chronicler_conn)
+            unchanged_carryover = {
+                **prior_carryover,
+                _MAPPING_DIGEST_KEY: digest,
+                COVERAGE_REVISION_CARRYOVER_KEY: self.coverage_revision,
+            }
             await save_carryover(chronicler_conn, self.source_name, unchanged_carryover)
             result.watermark = effective_since
             return result
@@ -563,7 +630,6 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
                 episodes[span.source_ref()] = episode.id
                 result.rows_projected += 1
                 result.episodes_closed += 1
-            coverage = ProjectionCoverage(self.source_name, evaluates_every_row=True)
             for row in normalized_rows:
                 coverage.observe(row)
             record_presence_coverage(
@@ -574,12 +640,13 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
                 prior_carryover=prior_carryover,
                 present={row["endpoint_identity"] for row in normalized_rows},
             )
-            # Coverage commits with the episodes, carryover and checkpoint (same transaction).
-            await coverage.flush(chronicler_conn)
         else:
             new_carryover = dict(prior_carryover)
+        # Coverage commits with the episodes, carryover and checkpoint (same transaction).
+        await coverage.flush(chronicler_conn)
 
         new_carryover[_MAPPING_DIGEST_KEY] = digest
+        new_carryover[COVERAGE_REVISION_CARRYOVER_KEY] = self.coverage_revision
         last_row = rows[-1]
         new_carryover[_SOURCE_CURSOR_KEY] = {
             "watermark": last_row["ts"].isoformat(),
@@ -662,6 +729,7 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
             # Read only by projection coverage, copied as read (core_340).
             "idempotency_key": _optional_field(row, "idempotency_key"),
             "retention_at": _optional_field(row, "retention_at"),
+            "content_digest": _optional_field(row, "content_digest"),
         }, None
 
     async def _fetch_points(
@@ -708,11 +776,14 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
         )
         if not exists:
             return None
+        columns = (
+            "id, ts, endpoint_identity, raw_payload, recorded_at, idempotency_key, "
+            f"retention_at, {raw_row_digest_sql()} AS content_digest"
+        )
         if since is None or since_uuid is None:
             rows = await conn.fetch(
                 f"""
-                SELECT id, ts, endpoint_identity, raw_payload, recorded_at,
-                       idempotency_key, retention_at
+                SELECT {columns}
                 FROM {_EVIDENCE_TABLE}
                 ORDER BY ts ASC, id ASC
                 LIMIT $1
@@ -722,8 +793,7 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
         else:
             rows = await conn.fetch(
                 f"""
-                SELECT id, ts, endpoint_identity, raw_payload, recorded_at,
-                       idempotency_key, retention_at
+                SELECT {columns}
                 FROM {_EVIDENCE_TABLE}
                 WHERE (ts, id) > ($1, $2)
                 ORDER BY ts ASC, id ASC

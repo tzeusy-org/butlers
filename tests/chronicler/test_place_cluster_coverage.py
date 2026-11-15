@@ -29,7 +29,7 @@ from butlers.chronicler.adapters.owntracks_place_cluster import (
     record_trip_coverage,
 )
 from butlers.chronicler.projection_coverage import ProjectionCoverage
-from tests.chronicler.test_projection_coverage import _Tables
+from tests.chronicler.test_projection_coverage import PLACE_REVISION, _Tables, digest_for
 
 pytestmark = pytest.mark.unit
 
@@ -52,6 +52,7 @@ def _fix(minutes: float, at: tuple[float, float] = _HOME) -> dict[str, Any]:
         "id": raw_id,
         "idempotency_key": f"owntracks:alice:{raw_id.int % 10**9}:location",
         "retention_at": _T0 + timedelta(minutes=minutes),
+        "content_digest": digest_for(raw_id),
         "ts": _T0 + timedelta(minutes=minutes),
         "lat": at[0],
         "lon": at[1],
@@ -106,7 +107,9 @@ class _Adapter:
         self.stays.update(stay_episodes)
         self.trips.update(trip_episodes)
 
-        ledger = ProjectionCoverage("owntracks.place_cluster", evaluates_every_row=True)
+        ledger = ProjectionCoverage(
+            "owntracks.place_cluster", config_revision=PLACE_REVISION, evaluates_every_row=True
+        )
         for row in rows:
             ledger.observe(row)
         present = {row["endpoint_identity"] for row in rows}
@@ -310,7 +313,9 @@ async def test_a_rejected_trail_seed_closes_the_endpoints_carries() -> None:
 async def test_trail_seed_and_pending_candidates_are_held_and_released_when_resolved() -> None:
     tables = _Tables()
     seed, pending, settled = _fix(0), _fix(5), _fix(10)
-    ledger = ProjectionCoverage("owntracks.place_cluster", evaluates_every_row=True)
+    ledger = ProjectionCoverage(
+        "owntracks.place_cluster", config_revision=PLACE_REVISION, evaluates_every_row=True
+    )
     for fix in (seed, pending, settled):
         ledger.observe(fix)
     hold_trail(ledger, {_EP: {"seed_id": str(seed["id"]), "pending_ids": [str(pending["id"])]}})
@@ -319,10 +324,30 @@ async def test_trail_seed_and_pending_candidates_are_held_and_released_when_reso
     assert tables.open[pending["id"]]["carry_keys"] == [f"trail:{_EP}"]
     assert tables.coverage[settled["id"]]["disposition"] == "evaluated_no_output"
 
-    resolved = ProjectionCoverage("owntracks.place_cluster", evaluates_every_row=True)
+    resolved = ProjectionCoverage(
+        "owntracks.place_cluster", config_revision=PLACE_REVISION, evaluates_every_row=True
+    )
     hold_trail(resolved, {_EP: {"seed_id": None, "pending_ids": []}})
     await resolved.flush(tables)
     assert tables.open == {}
     assert {tables.coverage[f["id"]]["disposition"] for f in (seed, pending)} == {
         "evaluated_no_output"
     }
+
+
+def test_the_place_revision_moves_with_a_home_but_not_with_a_relabelled_place() -> None:
+    from butlers.chronicler.adapters.owntracks_place_cluster import OwnTracksPlaceClusterAdapter
+
+    cafe = PlaceReference(label="cafe", lat=_CAFE[0], lon=_CAFE[1], radius_m=100)
+    base = OwnTracksPlaceClusterAdapter(reference_points=_HOMES).coverage_revision
+    assert base == OwnTracksPlaceClusterAdapter(reference_points=_HOMES).coverage_revision
+    moved_home = (PlaceReference(label="home", lat=_CAFE[0], lon=_CAFE[1], radius_m=200),)
+    assert base != OwnTracksPlaceClusterAdapter(reference_points=moved_home).coverage_revision
+    assert base != OwnTracksPlaceClusterAdapter(reference_points=()).coverage_revision
+    assert (
+        base
+        != OwnTracksPlaceClusterAdapter(
+            reference_points=_HOMES, min_dwell_minutes=30
+        ).coverage_revision
+    )
+    assert base == OwnTracksPlaceClusterAdapter(reference_points=(*_HOMES, cafe)).coverage_revision

@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 import asyncpg
 import pytest
 
+from butlers.chronicler.adapters import owntracks_ssid as adapter_module
 from butlers.chronicler.adapters.base import AdapterResult
 from butlers.chronicler.adapters.owntracks_ssid import (
     DEFAULT_MAX_GAP_MINUTES,
@@ -25,6 +26,10 @@ from butlers.chronicler.adapters.owntracks_ssid import (
     parse_ssid_places,
 )
 from butlers.chronicler.models import Confidence, Layer, Precision, Privacy
+from butlers.chronicler.projection_coverage import (
+    COVERAGE_REVISION_CARRYOVER_KEY,
+    ProjectionCoverage,
+)
 from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
@@ -252,6 +257,53 @@ async def test_unavailable_source_does_not_tombstone_mapping_replay_episodes() -
     tombstone.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    ("mapping_changed", "stored_revision", "voided"),
+    [
+        (True, "current", True),
+        (False, "current", False),
+        (False, "other", True),  # only a grouping setting moved: no replay, still void
+        (False, None, True),  # spans stored before the revision was persisted
+    ],
+)
+async def test_a_revision_change_voids_the_held_presence_spans(
+    mapping_changed: bool, stored_revision: str | None, voided: bool
+) -> None:
+    adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "home"})
+    current = adapter_module._mapping_digest(adapter.ssid_places)
+    prior_carryover: dict[str, object] = {
+        "_mapping_digest": "previous-mapping" if mapping_changed else current
+    }
+    if stored_revision is not None:
+        prior_carryover[COVERAGE_REVISION_CARRYOVER_KEY] = (
+            adapter.coverage_revision
+            if stored_revision == "current"
+            else OwnTracksSsidPresenceAdapter(
+                ssid_places={"Corp WiFi": "home"}, max_gap_minutes=DEFAULT_MAX_GAP_MINUTES + 1
+            ).coverage_revision
+        )
+    saved = AsyncMock()
+
+    with (
+        patch(
+            "butlers.chronicler.adapters.owntracks_ssid.get_carryover",
+            new=AsyncMock(return_value=prior_carryover),
+        ),
+        patch.object(adapter, "_fetch_points", new=AsyncMock(return_value=[])),
+        patch.object(adapter, "_tombstone_stale_mapping_episodes", new=AsyncMock()),
+        patch("butlers.chronicler.adapters.owntracks_ssid.save_carryover", new=saved),
+        patch.object(ProjectionCoverage, "reset_prefix", autospec=True) as reset,
+        patch.object(ProjectionCoverage, "flush", new=AsyncMock()) as flush,
+    ):
+        await adapter.project(AsyncMock(), chronicler_pool=AsyncMock(), since=_NOW)
+
+    resets = {call.args[1] for call in reset.call_args_list}
+    assert resets == ({adapter_module.PRESENCE_CARRY_PREFIX} if voided else set())
+    flush.assert_awaited_once()
+    carryover = saved.await_args.args[2]
+    assert carryover[COVERAGE_REVISION_CARRYOVER_KEY] == adapter.coverage_revision
+
+
 async def test_legacy_timestamp_checkpoint_replays_from_start() -> None:
     adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
     conn = AsyncMock()
@@ -340,7 +392,11 @@ async def test_run_uses_one_transactional_chronicler_connection() -> None:
     )
     assert transaction.entered and transaction.exited
     assert acquire.entered and acquire.exited
-    assert conn.execute.await_count == 3
+    # Lock, attempt record, source state, checkpoint: all on the one transaction.
+    assert conn.execute.await_count == 4
+    attempt = next(call.args for call in conn.execute.await_args_list if "attempts" in call.args[0])
+    assert attempt[1:4] == (SOURCE_NAME, adapter.coverage_revision, "succeeded")
+    assert "location_projection_coverage" in conn.fetch.await_args.args[0]  # discovery
     pool.execute.assert_not_awaited()
 
 
@@ -389,7 +445,11 @@ async def test_run_releases_transaction_and_connection_before_reporting_failure(
     assert acquire.exited and acquire.exit_type is RuntimeError
     assert "pg_advisory_xact_lock" in conn.execute.await_args_list[0].args[0]
     assert conn.execute.await_count == 1
-    pool.execute.assert_awaited_once()
+    # The failed checkpoint and the failed attempt, both after the rollback.
+    assert pool.execute.await_count == 2
+    attempt = pool.execute.await_args_list[1].args
+    assert "location_projection_attempts" in attempt[0]
+    assert attempt[1:5] == (SOURCE_NAME, adapter.coverage_revision, "failed", "RuntimeError")
 
 
 async def test_run_preserves_projection_error_when_failure_metadata_write_fails() -> None:
@@ -405,7 +465,30 @@ async def test_run_preserves_projection_error_when_failure_metadata_write_fails(
     result = await adapter.run(pool=pool, chronicler_pool=pool)
 
     assert result.error == "original projection failure"
-    pool.execute.assert_awaited_once()
+    # A failed checkpoint write does not stop the attempt record from being tried.
+    assert pool.execute.await_count == 2
+
+
+async def test_a_skipped_run_records_an_unavailable_source_as_a_failed_attempt() -> None:
+    adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
+    adapter.project = AsyncMock(
+        return_value=AdapterResult(source_name=SOURCE_NAME, skipped=True, skipped_reason="gone")
+    )
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    conn.transaction = MagicMock(return_value=_TrackingAsyncCtx(None))
+    pool = MagicMock()
+    pool.acquire.return_value = _TrackingAsyncCtx(conn)
+
+    await adapter.run(pool=pool, chronicler_pool=pool)
+
+    attempt = next(call.args for call in conn.execute.await_args_list if "attempts" in call.args[0])
+    assert attempt[1:5] == (
+        SOURCE_NAME,
+        adapter.coverage_revision,
+        "failed",
+        "source_unavailable",
+    )
 
 
 async def test_run_cancellation_rolls_back_and_releases_without_failure_write() -> None:
