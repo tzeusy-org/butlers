@@ -18,6 +18,8 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
+from alembic import command
+from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 pytestmark = [
@@ -37,18 +39,25 @@ _INSERT_033 = (
 )
 
 
+def _config(db_url: str):
+    return _build_alembic_config(db_url, chains=["chronicler"], target_schema="chronicler")
+
+
 @pytest.fixture
 def chronicler_032_db(postgres_container):
+    # chronicler_030 refuses to run until the private memory storage exists, so stop before
+    # it, prepare memory, then continue to the seeding revision.
     db_url = create_migrated_test_db(
         postgres_container,
         migration_db_name(),
         chains=["chronicler"],
         schemas={"chronicler": "chronicler"},
-        revisions={"chronicler": "chronicler_032"},
+        revisions={"chronicler": "chronicler_029"},
     )
     from tests.chronicler._private_memory_setup import prepare_chronicler_private_memory_sync
 
     prepare_chronicler_private_memory_sync(db_url)
+    command.upgrade(_config(db_url), "chronicler@chronicler_032")
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
         yield db_url, engine
