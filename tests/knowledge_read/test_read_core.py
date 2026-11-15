@@ -195,3 +195,34 @@ async def test_entity_lookup_without_the_trigram_extension_is_unavailable(missin
     assert caught.value.to_dict()["error"]["code"] == "unavailable"
     assert caught.value.to_dict()["error"]["retryable"] is True
     assert "raw driver" not in json.dumps(caught.value.to_dict())
+
+
+async def test_a_cancelled_write_is_unavailable_and_rolls_back():
+    """``in_write_transaction`` maps the 2 s statement_timeout to D17 ``unavailable``."""
+    import asyncpg
+
+    from butlers.knowledge_read.core import in_write_transaction
+
+    exits: list[type | None] = []
+
+    class Transaction:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, *_rest):
+            exits.append(exc_type)
+            return False
+
+    class Connection:
+        def transaction(self):
+            return Transaction()
+
+    async def write():
+        raise asyncpg.QueryCanceledError("canceling statement due to statement timeout")
+
+    with pytest.raises(ReadError) as caught:
+        await in_write_transaction(Connection(), write)
+    error = caught.value.to_dict()["error"]
+    assert (error["code"], error["retryable"]) == ("unavailable", True)
+    assert "canceling" not in json.dumps(error)
+    assert exits == [asyncpg.QueryCanceledError]  # the transaction saw the error: rollback

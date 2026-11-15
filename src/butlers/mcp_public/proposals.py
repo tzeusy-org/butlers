@@ -42,6 +42,11 @@ ARGUMENTS = frozenset(
 EVIDENCE_URL_MAX = 2048
 NOTE_MAX = 500
 KEY_MAX = 64
+# The inbox's CHECK (length BETWEEN 1 AND 256) on ``sub`` and ``cid``. Both come from the verified
+# assertion, so an over-long one is no argument fault and no transient one: the INSERT would
+# raise a CheckViolation the host maps to a retryable ``unavailable``, and the client would retry
+# forever. ``blocked`` is the one closed D17 code that is final and blames no argument.
+IDENTITY_MAX = 256
 INBOX_FULL = "public MCP inbox full"  # mcp_inbox.cap_proposals() (RFC 0039 D13 hardening)
 INSERT = (
     "INSERT INTO mcp_inbox.proposals (proposal_id, sub, cid, idempotency_key, "
@@ -102,6 +107,8 @@ async def propose_fact(
     context.require("proposals")
     if not context.cid:
         raise ReadError("unavailable")  # the host always sets it; never write an unowned row
+    if len(context.sub) > IDENTITY_MAX or len(context.cid) > IDENTITY_MAX:
+        raise ReadError("blocked")
     values = args.values
     pid = proposal_id(context.sub, context.cid, values["idempotency_key"], payload_of(values))
     try:
