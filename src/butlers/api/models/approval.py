@@ -234,6 +234,14 @@ class ApprovalDetail(BaseModel):
     reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
     proposed_action: dict[str, Any]
     call_preview: ApprovalCallPreview | None = None
+    external_proposal_review: ExternalProposalReview | None = Field(
+        default=None,
+        description=(
+            "Typed review of an external MCP fact proposal (deduplication key "
+            "'external_mcp:'); null for any other action. Its proposed_action carries "
+            "no tool_args."
+        ),
+    )
     goal: ApprovalGoalLineage | None = Field(
         default=None,
         description=(
@@ -404,6 +412,39 @@ class ApprovalCallPreview(BaseModel):
     title: str
     facts: list[dict[str, str]]
     displayed_call: DisplayedApprovalCall
+
+
+class ExternalProposalEntity(BaseModel):
+    """One entity a stored external proposal names, as it stands now."""
+
+    id: str
+    name: str | None = None
+    entity_type: str | None = None
+    status: Literal["live", "missing", "merged", "deleted"]
+
+
+class ExternalProposalReview(BaseModel):
+    """Typed review of an external MCP fact proposal (REQ-dashboard-approvals-904).
+
+    Returned in place of a generic ``call_preview``, which stays null so an older
+    dashboard or a summary surface keeps approval disabled. ``note`` and
+    ``evidence_url`` are outside-authored text read from
+    ``relationship.external_fact_proposals``; the dashboard renders them as inert
+    plain text. ``displayed_call`` is the exact call Approve must echo; it is null
+    whenever approval is unavailable, and ``approve_unavailable_reason`` says why.
+    """
+
+    proposal_id: str | None = None
+    client_label: str | None = None
+    subject: ExternalProposalEntity | None = None
+    predicate: str | None = None
+    object: ExternalProposalEntity | None = None
+    note: str | None = None
+    evidence_url: str | None = None
+    authority_statement: str
+    unresolvable_entity: bool = False
+    approve_unavailable_reason: str | None = None
+    displayed_call: DisplayedApprovalCall | None = None
 
 
 class ApprovalApproveRequest(BaseModel):

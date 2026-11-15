@@ -67,14 +67,19 @@ def test_propose_call_is_the_documented_tool_call() -> None:
     assert call["params"]["arguments"]["predicate"] == "works-at"
 
 
-def test_approve_body_echoes_the_displayed_call() -> None:
+def test_approve_body_echoes_the_typed_review_displayed_call() -> None:
+    """REQ-dashboard-approvals-904: the displayed call lives in the typed review."""
     shown = {"tool_name": "relationship_assert_fact", "args_digest": "d"}
-    assert runner.approve_body({"call_preview": {"displayed_call": shown}}) == {
-        "displayed_call": shown
-    }
-    # No registered preview (Open only): nothing to echo, never an empty-body approve.
-    assert runner.approve_body({"call_preview": None}) is None
+    detail = {"call_preview": None, "external_proposal_review": {"displayed_call": shown}}
+    assert runner.approve_body(detail) == {"displayed_call": shown}
+    # A generic preview is never what an external proposal approves from.
+    assert runner.approve_body({"call_preview": {"displayed_call": shown}}) is None
+    # Approval unavailable (say, a merged entity): nothing to echo, never an empty body.
+    unavailable = {"external_proposal_review": {"displayed_call": None}}
+    assert runner.approve_body(unavailable) is None
     assert runner.approve_body({}) is None
+    unavailable["external_proposal_review"]["approve_unavailable_reason"] = "merged"
+    assert runner.approve_unavailable_reason(unavailable) == "merged"
 
 
 def test_decide_posts_displayed_call_and_steps_are_independent(monkeypatch, tmp_path) -> None:
@@ -100,7 +105,7 @@ def test_decide_posts_displayed_call_and_steps_are_independent(monkeypatch, tmp_
         if "/actions?" in url:
             return {"data": listing}
         if url.endswith("/api/approvals/1"):
-            return {"data": {"call_preview": {"displayed_call": shown}}}
+            return {"data": {"external_proposal_review": {"displayed_call": shown}}}
         return {}
 
     monkeypatch.setattr(runner, "_request", fake)
@@ -122,7 +127,7 @@ def test_decide_posts_displayed_call_and_steps_are_independent(monkeypatch, tmp_
     assert posts["https://d/api/approvals/actions/1/approve"] == {"displayed_call": shown}
     assert posts["https://d/api/approvals/actions/2/reject"] == {}
 
-    # An Open-only approve is BLOCKED, and the reject still runs.
+    # An approve with no displayed call is BLOCKED, and the reject still runs.
     sent.clear()
     monkeypatch.setattr(
         runner,
@@ -130,7 +135,7 @@ def test_decide_posts_displayed_call_and_steps_are_independent(monkeypatch, tmp_
         lambda url, token_file, body=None: (
             {"data": listing}
             if "/actions?" in url
-            else {"data": {"call_preview": None}}
+            else {"data": {"external_proposal_review": {"displayed_call": None}}}
             if url.endswith("/api/approvals/1")
             else sent.append((url, body)) or {}
         ),

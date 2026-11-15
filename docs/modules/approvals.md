@@ -229,6 +229,50 @@ Nothing approves such an action except the owner's own decision. Standing rules
 apply only at gate time, and autonomy policy only feeds suggestions
 (REQ-public-mcp-proposals-008).
 
+### Typed dashboard review (REQ-dashboard-approvals-904)
+
+`relationship_assert_fact` has **no** registered call preview, and none should be
+added: a shared preview would make every internal Relationship fact one-tap
+approvable from a notification card or a summary dialog, and an older dashboard
+would show its plain Approve button. This follows the merge-review precedent
+(REQ-dashboard-approvals-902). Instead, `GET /api/approvals/{id}` returns
+`external_proposal_review` for an `external_mcp:` action only, read by
+`butlers.api.external_proposal_review.read_external_proposal_review`:
+
+- `subject` and `object` (`id`, `name`, `entity_type`, `status` of `live`,
+  `missing`, `merged` or `deleted`, read from `public.entities` now), `predicate`,
+  `client_label` (from the `external_mcp:client=` evidence ref), `proposal_id`;
+- `note` and `evidence_url`, read from `relationship.external_fact_proposals`
+  (the row whose `proposal_id` is the key's and whose `pending_action_id` is the
+  action). They are outside-authored data; the dashboard renders both as plain
+  text, never a link, image or preview;
+- `authority_statement`, the third-party authority text;
+- `unresolvable_entity`, `approve_unavailable_reason` and `displayed_call`
+  (`{tool_name, args_digest}`, the same digest as a card preview).
+
+For such an action `call_preview` is null and `proposed_action` has no
+`tool_args`. `displayed_call` is offered only when the review shows everything the
+stored call carries: exactly the argument shape the importer parks (two entity
+UUIDs, a predicate, `object_kind = 'entity'`, `conf = 1.0`, the action's own
+`approval_action_id`, a null temporal packet), the proposal record backs this
+action with the same subject, predicate and object, it is still `parked`, the
+client label is recorded, and both entities are live. Otherwise it is null and
+`approve_unavailable_reason` says why (an unresolvable entity also sets
+`unresolvable_entity`). Both approve routes re-read the review under the
+pending-row lock: they answer 409 with that reason, or 409 "changed since shown"
+when the submitted `displayed_call` differs, before any decision, audit or
+dispatch. Reject and Defer are unaffected. A connector-authenticated callback
+never approves an external proposal (no card ever showed it). If an entity is
+tombstoned after approval, the approved replay still fails closed
+(`relationship_assert_fact` refuses it and the importer reports `apply_failed`).
+
+The dashboard dossier renders the typed review in place of the stored-call
+preview (`frontend/src/components/approvals/external-proposal-review.tsx`):
+a named region before the decision controls, Approve disabled and described by
+the stated reason when unavailable, no raw arguments, and no "Always allow this
+shape" teaching prompt after approval. Summary surfaces keep requiring a generic
+preview, so they send the owner to the dossier.
+
 ## Risk Tiers
 
 Tools and actions are classified into risk tiers: `low`, `medium`, `high`, `critical`. Higher tiers (`high`, `critical`) require narrower constraints (at least one `exact` or `pattern`) and bounded scope (`expires_at` or `max_uses`) for standing rules.

@@ -615,7 +615,7 @@ Hermetic: `tests/integration/test_public_mcp_proposal_e2e.py` drives `propose_fa
 real host, one importer pass, an owner approval plus the shared executor, an owner rejection and an
 expiry, then reads `applied`, `owner_rejected` and `expired` through `fetch("proposal:<id>")`.
 
-Live dev run, **live leg tracked in `bu-y66o00.48`**, blocked on the `bu-y66o00.6` deploy and on `bu-y66o00.9` (the typed review that provides the displayed call; not run yet): `scripts/k8s/public_mcp_proposal_e2e.py`
+Live dev run, **live leg tracked in `bu-y66o00.48`**, blocked on the `bu-y66o00.6` deploy and on a dashboard deploy that carries the `bu-y66o00.9` typed review (not run yet): `scripts/k8s/public_mcp_proposal_e2e.py`
 with three synthetic entity pairs, tokens read from files:
 
 ```bash
@@ -626,10 +626,11 @@ public_mcp_proposal_e2e.py decide --dashboard-url URL --token-file F --state S
 public_mcp_proposal_e2e.py verify --mcp-url URL --token-file F --state S
 ```
 
-`decide` echoes the action's `call_preview.displayed_call` into the approve body, as the dashboard
-does. A `relationship_assert_fact` action has no registered call preview today, so the dashboard
-approve route refuses it (409) and `decide` reports `BLOCKED` for the applied path; the reject path
-still runs. All URLs must be https. `expired` needs the 14-day window to pass, or the owner setting that one synthetic action's
+`decide` echoes the action's `external_proposal_review.displayed_call` into the approve body, as
+the dashboard does (the generic `call_preview` of an external proposal is always null; see
+[Approvals module § External MCP fact proposals](../modules/approvals.md#external-mcp-fact-proposals)).
+A review without a displayed call, for example after an entity was merged or deleted, makes `decide`
+report `BLOCKED` with the review's stated reason for the applied path; the reject path still runs. All URLs must be https. `expired` needs the 14-day window to pass, or the owner setting that one synthetic action's
 `expires_at` into the past; `verify` reports it `PENDING`, never as a pass, until then.
 
 ## Related

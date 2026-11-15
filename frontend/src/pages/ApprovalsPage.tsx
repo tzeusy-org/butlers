@@ -86,6 +86,10 @@ import {
 } from "@/hooks/use-rule-promotions.ts";
 import { AutonomyPanel } from "@/components/approvals/autonomy-panel.tsx";
 import { ApprovalTeachingDigest } from "@/components/approvals/approval-teaching-digest.tsx";
+import {
+  EXTERNAL_REVIEW_REASON_ID,
+  ExternalProposalReviewPanel,
+} from "@/components/approvals/external-proposal-review.tsx";
 import { AttentionLedgerPanel } from "@/components/approvals/attention-ledger-panel.tsx";
 import { ReplyTemplateDraftsPanel } from "@/components/approvals/reply-template-drafts-panel.tsx";
 import { UnroutableAttentionPanel } from "@/components/approvals/unroutable-attention-panel.tsx";
@@ -313,6 +317,16 @@ interface PredicateDigest {
   subject: string;
   predicate: string;
   object: string;
+}
+
+/**
+ * The exact call Approve may submit for this dossier, or null when approval is
+ * unavailable. An external MCP proposal approves only from its typed review,
+ * never from a generic preview (REQ-dashboard-approvals-904).
+ */
+function approvableCall(detail: ApprovalDetail): DisplayedApprovalCall | null {
+  if (detail.external_proposal_review) return detail.external_proposal_review.displayed_call ?? null;
+  return detail.call_preview?.displayed_call ?? null;
 }
 
 function predicateDigest(detail: ApprovalDetail): PredicateDigest | null {
@@ -626,7 +640,11 @@ function Dossier({
   allowAbandon: boolean;
   /** A Stalled flat row must never reopen ordinary pending decision controls. */
   allowPendingDecisionControls: boolean;
-  onApprove: (displayedCall: DisplayedApprovalCall, ownerDelivery?: OwnerDeliveryCard | null) => void;
+  onApprove: (
+    displayedCall: DisplayedApprovalCall,
+    ownerDelivery: OwnerDeliveryCard | null | undefined,
+    externalProposal: boolean,
+  ) => void;
   onCallShown: (view: ViewedApproval | null) => void;
   onDeny: (reason?: string, ownerDelivery?: OwnerDeliveryCard | null) => void;
   onDefer: (hours: number) => void;
@@ -668,11 +686,13 @@ function Dossier({
     // Query data can survive a hidden loading/error pane. Only hand the
     // keyboard a call whose safe preview is actually rendered in this pane,
     // clearing it before a newly hidden pane can receive another keypress.
-    onCallShown(canApproveShownCall && shownDetail?.call_preview
+    const shownCall = shownDetail ? approvableCall(shownDetail) : null;
+    onCallShown(canApproveShownCall && shownDetail && shownCall
       ? {
           id: actionId,
-          displayed_call: { ...shownDetail.call_preview.displayed_call },
+          displayed_call: { ...shownCall },
           owner_delivery: shownDetail.owner_delivery,
+          external_proposal: !!shownDetail.external_proposal_review,
         }
       : null);
     return () => onCallShown(null);
@@ -722,6 +742,10 @@ function Dossier({
   // down -- the decision cluster below is replaced by a single undo bar.
   const isScheduled = !!pendingVerb;
   const digest = predicateDigest(detail);
+  const externalReview = detail.external_proposal_review ?? null;
+  const approvable = approvableCall(detail);
+  const approveUnavailableReason =
+    isPending && externalReview && !approvable ? externalReview.approve_unavailable_reason : null;
   const refEntities = detail.referenced_entities ?? [];
   const expiryChip = expiryCountdown(detail.expires_at);
 
@@ -730,14 +754,16 @@ function Dossier({
       className={`flex-1 min-w-0 min-h-[20rem] md:min-h-0 overflow-y-auto p-6 relative${paneOrder}`}
       data-testid="approval-dossier-pane"
     >
-      <section aria-label="Stored call preview" className="mb-6 whitespace-pre-wrap break-words">
+      {externalReview ? (
+        <ExternalProposalReviewPanel review={externalReview} pending={isPending} />
+      ) : <section aria-label="Stored call preview" className="mb-6 whitespace-pre-wrap break-words">
         {detail.call_preview ? <>
           <h3 className="font-medium">{detail.call_preview.title}</h3>
           {detail.call_preview.facts.map((fact, index) => <div key={index}>
             <strong>{fact.label}</strong><p>{fact.value}</p>
           </div>)}
         </> : <p>Open only: an exact safe preview is unavailable. Approval is disabled.</p>}
-      </section>
+      </section>}
       {detail.goal ? (
         <section
           aria-labelledby="approval-goal-lineage-title"
@@ -782,8 +808,9 @@ function Dossier({
               <>
                 <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-background/85 backdrop-blur-sm px-2 py-2 shadow-sm">
                   <button
-                    onClick={() => { if (detail.id === actionId && detail.call_preview) onApprove({ ...detail.call_preview.displayed_call }, detail.owner_delivery); }}
-                    disabled={approvePending || detail.id !== actionId || !detail.call_preview}
+                    onClick={() => { if (detail.id === actionId && approvable) onApprove({ ...approvable }, detail.owner_delivery, !!externalReview); }}
+                    disabled={approvePending || detail.id !== actionId || !approvable}
+                    aria-describedby={approveUnavailableReason ? EXTERNAL_REVIEW_REASON_ID : undefined}
                     className={[
                       "py-1.5 px-4 rounded font-medium text-sm max-md:min-h-11 max-md:min-w-11",
                       "bg-foreground text-background",
@@ -1232,9 +1259,13 @@ function Dossier({
                 {detail.proposed_action.agent_summary}
               </div>
             )}
-            <pre className="mt-2 text-[11px] bg-muted/30 rounded px-3 py-2 overflow-x-auto whitespace-pre-wrap">
-              {JSON.stringify(detail.proposed_action.tool_args, null, 2)}
-            </pre>
+            {/* An external proposal has no raw arguments here: its typed review
+                above is the only view of the call (REQ-dashboard-approvals-904). */}
+            {!externalReview && detail.proposed_action.tool_args !== undefined && (
+              <pre className="mt-2 text-[11px] bg-muted/30 rounded px-3 py-2 overflow-x-auto whitespace-pre-wrap">
+                {JSON.stringify(detail.proposed_action.tool_args, null, 2)}
+              </pre>
+            )}
           </div>
         </div>
 
@@ -2048,7 +2079,9 @@ export default function ApprovalsPage() {
     (view: ViewedApproval) => {
       const actionId = view.id;
       approveMut.mutate(view, {
-        onSuccess: () => setTeachingActionId(actionId),
+        // An external MCP proposal never becomes a standing rule, so it gets no
+        // "always allow" prompt (REQ-dashboard-approvals-904, REQ-module-approvals-010).
+        onSuccess: () => { if (!view.external_proposal) setTeachingActionId(actionId); },
       });
     },
     [approveMut],
@@ -2183,6 +2216,7 @@ export default function ApprovalsPage() {
             id,
             displayed_call: { ...shownCall.displayed_call },
             owner_delivery: shownCall.owner_delivery,
+            external_proposal: shownCall.external_proposal,
           };
           scheduleDecision(id, "approve", () => approve(view));
         },
@@ -2453,7 +2487,7 @@ export default function ApprovalsPage() {
             reviewSource={reviewSource}
             allowAbandon={activeLane !== "stalled"}
             allowPendingDecisionControls={activeLane !== "stalled"}
-            onApprove={(displayed_call, owner_delivery) => approve({ id: dossierSelected, displayed_call, owner_delivery })}
+            onApprove={(displayed_call, owner_delivery, external_proposal) => approve({ id: dossierSelected, displayed_call, owner_delivery, external_proposal })}
             onCallShown={setShownCall}
             onDeny={(reason, owner_delivery) => denyMut.mutate({ id: dossierSelected, reason, owner_delivery })}
             onDefer={(hours) => deferMut.mutate({ id: dossierSelected, hours })}
