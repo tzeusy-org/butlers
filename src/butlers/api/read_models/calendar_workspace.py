@@ -1513,11 +1513,12 @@ async def query_calendar_conflicts(
             timezone=row.get("instance_timezone") or row.get("event_timezone") or "UTC",
             status=str(row.get("instance_status") or row.get("event_status") or "confirmed"),
             all_day=bool(row.get("all_day")),
+            # Out of office and working location are statuses: busy time when opaque
+            # (overlap, back to back) but zero day-load hours (bu-s11n0s.4 AC D).
+            counts_toward_day_load=not is_status_event(row.get("event_type")),
         )
         for row in deduped
-        # Out of office and working location are statuses: no overlap, no day-load hours.
-        if not is_status_event(row.get("event_type"))
-        and is_calendar_analysis_candidate(
+        if is_calendar_analysis_candidate(
             metadata=row.get("event_metadata"),
             all_day=row.get("all_day") is True,
             starts_at=row["instance_starts_at"],

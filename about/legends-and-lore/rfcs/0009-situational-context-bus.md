@@ -519,6 +519,25 @@ The renderer MUST omit non-allowlisted values and metadata. It neither confers
 owner authority nor removes RFC0038 exposure. Type vocabulary, confidence
 labels, TTL filtering and empty-input behavior remain unchanged.
 
+### Calendar Event Types (bu-s11n0s.4)
+
+The calendar producer reads Google's stored `event_type` (core_341) and never
+infers a type from a title.
+
+- A `focusTime` event asserts `focused`.
+- Out of office (`outOfOffice`) and working location (`workingLocation`) are
+  declared statuses, not meetings. They never assert `meeting` or `focused`.
+- An active out-of-office event suppresses `focused`. An attended meeting
+  overlapping it keeps `meeting`. Out of office writes no `away` signal (that
+  maps to `owner.place`) and enters no owner mode (bu-u33sb7).
+- Working location is not a context signal. The declaration is persisted and
+  readable through the calendar module's typed read, bounded to the owner-local
+  day. Publishing it waits for a perception kind (`owner.work_location`) at the
+  M7/.21 switch, so this retiring bus gains no signal type or writer.
+- Neither status gets a meeting hold, prep, meeting card, debrief or
+  starting-soon notice. The broker's suppression set, caps and priority are
+  unchanged.
+
 ### Bound Owner Context Mutation
 
 Model-mediated set_context/clear_context MUST require the server-verified

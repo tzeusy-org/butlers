@@ -57,6 +57,9 @@ class ConflictCandidate:
     timezone: str
     status: str = "confirmed"
     all_day: bool = False
+    #: False only for a declared status (out of office, working location): it still
+    #: overlaps and chains back to back, but adds no hours to the overloaded-day sum.
+    counts_toward_day_load: bool = True
 
 
 @dataclass
@@ -272,7 +275,9 @@ def _detect_overloaded_days(
     """Days whose summed meeting duration exceeds the hours budget."""
     by_day: dict[str, list[ConflictCandidate]] = defaultdict(list)
     for c in timed:
-        by_day[_local_date(c.start_at, display_tz, c.timezone)].append(c)
+        # A declared status (out of office, working location) adds no meeting-hours.
+        if c.counts_toward_day_load:
+            by_day[_local_date(c.start_at, display_tz, c.timezone)].append(c)
 
     issues: list[DetectedIssue] = []
     for day in sorted(by_day):
