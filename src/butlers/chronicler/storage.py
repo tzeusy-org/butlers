@@ -39,6 +39,12 @@ from butlers.chronicler.models import (
     RoutineOrigin,
     SourceAdapterState,
 )
+from butlers.chronicler.projection_coverage import (
+    SOURCE_UNAVAILABLE,
+    discover_uncovered,
+    raw_row_digest_sql,
+    record_attempt,
+)
 
 if TYPE_CHECKING:
     from butlers.chronicler.adapters.base import AdapterResult
@@ -85,11 +91,16 @@ async def run_owntracks_projection(
         Awaitable[AdapterResult],
     ],
     probe: Callable[[], None],
+    *,
+    coverage_revision: str,
 ) -> AdapterResult:
     """OwnTracks-only run boundary: lock BEFORE checkpoint read, through outcome.
 
     A savepoint rolls back failed projection writes while retaining the lock
     to record the failure. Cancellation rolls back the entire transaction.
+    Every outcome also commits the adapter's coverage attempt record
+    (``projection_coverage.record_attempt``): a failure or an unavailable
+    source after its savepoint, a success with its discovery count.
     """
     from butlers.chronicler.adapters.base import AdapterResult
 
@@ -105,6 +116,12 @@ async def run_owntracks_projection(
                 )
         except Exception as exc:
             await upsert_checkpoint(conn, source_name, success=False, error=str(exc))
+            await record_attempt(
+                conn,
+                source_name,
+                config_revision=coverage_revision,
+                error_class=type(exc).__name__,
+            )
             return AdapterResult(source_name=source_name, error=str(exc))
         if result.skipped:
             await mark_source_active(
@@ -113,7 +130,21 @@ async def run_owntracks_projection(
                 active=False,
                 inactive_reason=result.skipped_reason or "adapter skipped",
             )
+            await record_attempt(
+                conn,
+                source_name,
+                config_revision=coverage_revision,
+                error_class=SOURCE_UNAVAILABLE,
+            )
             return result
+        await record_attempt(
+            conn,
+            source_name,
+            config_revision=coverage_revision,
+            uncovered=await discover_uncovered(
+                conn, source_name, config_revision=coverage_revision
+            ),
+        )
         await mark_source_active(conn, source_name, active=True)
         await upsert_checkpoint(
             conn,
@@ -240,7 +271,8 @@ async def retained_owntracks_rows(
     async with owntracks_connection(pool) as conn:
         return list(
             await conn.fetch(
-                "SELECT * FROM connectors.owntracks_points WHERE id=ANY($1::uuid[]) ORDER BY ts,id",
+                f"SELECT *, {raw_row_digest_sql()} AS content_digest "
+                "FROM connectors.owntracks_points WHERE id=ANY($1::uuid[]) ORDER BY ts,id",
                 list(identities),
             )
         )

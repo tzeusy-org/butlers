@@ -17,13 +17,15 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 import pytest
 
 from butlers.chronicler.adapters.owntracks_ssid import (
+    PRESENCE_CARRY_PREFIX,
+    OwnTracksSsidPresenceAdapter,
     SsidPresenceSpan,
     group_ssid_points,
     presence_carry_key,
     record_presence_coverage,
 )
-from butlers.chronicler.projection_coverage import ProjectionCoverage
-from tests.chronicler.test_projection_coverage import _Tables
+from butlers.chronicler.projection_coverage import ProjectionCoverage, config_revision
+from tests.chronicler.test_projection_coverage import _Tables, digest_for
 
 pytestmark = pytest.mark.unit
 
@@ -39,10 +41,16 @@ def _fix(minutes: float, ssid: str | None = "home-wifi", endpoint: str = _EP) ->
         "id": raw_id,
         "idempotency_key": f"{endpoint}:{raw_id.int % 10**9}:location",
         "retention_at": _T0 + timedelta(minutes=minutes),
+        "content_digest": digest_for(raw_id),
         "ts": _T0 + timedelta(minutes=minutes),
         "endpoint_identity": endpoint,
         "ssid": ssid,
     }
+
+
+def _revision(places: dict[str, str]) -> str:
+    # Stands in for the adapter's revision (the fixture's "office" is not an adapter place).
+    return config_revision("owntracks.ssid_presence", {"places": dict(places)})
 
 
 def _episode(span: SsidPresenceSpan) -> UUID:
@@ -59,9 +67,11 @@ class _Adapter:
         self.places = dict(_PLACES)
         self.episodes: dict[str, UUID] = {}
 
-    async def run(self, *fixes: dict[str, Any], replay: bool = False) -> None:
+    async def run(
+        self, *fixes: dict[str, Any], replay: bool = False, mapping_changed: bool = False
+    ) -> None:
         rows = sorted(fixes, key=lambda row: row["ts"])
-        prior = {} if replay else dict(self.carry)
+        prior = {} if replay or mapping_changed else dict(self.carry)
         open_spans: dict[str, SsidPresenceSpan] = {}
         spans, carry = group_ssid_points(
             rows,
@@ -72,7 +82,13 @@ class _Adapter:
         )
         episodes = {span.source_ref(): _episode(span) for span in spans}
         self.episodes.update(episodes)
-        ledger = ProjectionCoverage("owntracks.ssid_presence", evaluates_every_row=True)
+        ledger = ProjectionCoverage(
+            "owntracks.ssid_presence",
+            config_revision=_revision(self.places),
+            evaluates_every_row=True,
+        )
+        if mapping_changed:
+            ledger.reset_prefix(PRESENCE_CARRY_PREFIX)
         for row in rows:
             ledger.observe(row)
         record_presence_coverage(
@@ -214,14 +230,54 @@ async def test_a_replay_ending_another_span_never_releases_a_stored_open_span() 
         assert adapter.keys(fix) == [_key(30)] and adapter.record(fix) is None
 
 
-async def test_a_replay_that_no_longer_builds_a_stored_span_keeps_it_held() -> None:
+async def test_a_cursor_replay_that_no_longer_builds_a_stored_span_keeps_it_held() -> None:
     adapter = _Adapter()
     home = [_fix(0), _fix(10)]
     await adapter.run(*home)
 
-    # The owner unmaps the network: the replay evaluates the fixes as unmapped, but the old
-    # carry's members stay held rather than covered; invalidation is a later slice.
-    adapter.places.pop("home-wifi")
-    await adapter.run(*home, replay=True)
+    # Same mapping, rebuilt cursor, but the replay only reaches the network-less fix: the stored
+    # carry was not rebuilt, so its members stay held rather than covered.
+    await adapter.run(_fix(-5, None), replay=True)
     for fix in home:
         assert adapter.keys(fix) == [_key(0)] and adapter.record(fix) is None
+
+
+async def test_a_mapping_change_re_decides_held_fixes_under_the_new_revision() -> None:
+    adapter = _Adapter()
+    home = [_fix(0), _fix(10)]
+    await adapter.run(*home)
+
+    # The owner unmaps the network: the replay reads the fixes again and evaluates them as
+    # unmapped, under the new revision; the old presence episode is not credited.
+    adapter.places.pop("home-wifi")
+    new_revision = _revision(adapter.places)
+    await adapter.run(*home, mapping_changed=True)
+    for fix in home:
+        record = adapter.record(fix)
+        assert adapter.keys(fix) is None
+        assert record is not None and record["disposition"] == "evaluated_no_output"
+        assert record["config_revision"] == new_revision
+
+
+async def test_a_mapping_change_leaves_a_held_fix_the_replay_has_not_reached_uncovered() -> None:
+    adapter = _Adapter()
+    home = [_fix(0), _fix(10)]
+    await adapter.run(*home)
+
+    adapter.places["home-wifi"] = "work"
+    # A batch-limited replay reads only an earlier fix this run.
+    await adapter.run(_fix(-5, "office-wifi"), mapping_changed=True)
+    for fix in home:
+        assert adapter.keys(fix) is None and adapter.record(fix) is None
+
+
+def test_the_adapter_revision_includes_the_owner_mapping_and_the_grouping_settings() -> None:
+    base = OwnTracksSsidPresenceAdapter(ssid_places={"home-wifi": "home"}).coverage_revision
+    same = OwnTracksSsidPresenceAdapter(ssid_places={"home-wifi": "Home "}).coverage_revision
+    assert base == same, "the mapping is compared after normalization"
+    for other in (
+        OwnTracksSsidPresenceAdapter(ssid_places={"home-wifi": "work"}),
+        OwnTracksSsidPresenceAdapter(ssid_places={}),
+        OwnTracksSsidPresenceAdapter(ssid_places={"home-wifi": "home"}, max_gap_minutes=30),
+    ):
+        assert other.coverage_revision != base

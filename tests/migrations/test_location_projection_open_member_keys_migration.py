@@ -1,15 +1,14 @@
 """chronicler_033 turns each open member's single carry key into a set of keys.
 
-Seeds an open member at chronicler_032, applies the real upgrade, and checks that the key is
-carried over as a one-element ``carry_keys``, the old column is gone, and the new check refuses
-an empty set or an empty key.
+Seeds an open member at chronicler_032, applies the real upgrade to chronicler_033, and checks
+that the key is carried over as a one-element ``carry_keys``, the old column is gone, and the
+new check refuses an empty set or an empty key. The downgrade keeps each member's first key.
 
 Issue: bu-s11n0s.7 (slice 2, PR-B)
 """
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -71,9 +70,7 @@ def test_a_single_carry_key_becomes_a_one_element_key_set(chronicler_032_db) -> 
     with engine.connect() as conn:
         conn.execute(text(_INSERT_032), {"raw": raw_id, "at": at, "batch": uuid4()})
 
-    from butlers.migrations import run_migrations
-
-    asyncio.run(run_migrations(db_url, chain="chronicler", schema="chronicler"))
+    command.upgrade(_config(db_url), "chronicler@chronicler_033")
 
     with engine.connect() as conn:
         keys = conn.execute(
@@ -96,8 +93,51 @@ def test_a_single_carry_key_becomes_a_one_element_key_set(chronicler_032_db) -> 
     assert "carry_key" not in columns
 
     for bad in ("{}", '{""}'):
-        with pytest.raises(IntegrityError):
+        with pytest.raises(IntegrityError, match="carry_keys_check"):
             with engine.connect() as conn:
                 conn.execute(
                     text(_INSERT_033), {"keys": bad, "raw": uuid4(), "at": at, "batch": uuid4()}
                 )
+
+
+def test_the_downgrade_keeps_each_members_first_key(chronicler_032_db) -> None:
+    db_url, engine = chronicler_032_db
+    command.upgrade(_config(db_url), "chronicler@chronicler_033")
+    raw_id, at = uuid4(), datetime(2026, 11, 2, 3, 0, tzinfo=UTC)
+    keys = "{away:owntracks:alice,place:owntracks:alice}"
+    with engine.connect() as conn:
+        conn.execute(text(_INSERT_033), {"keys": keys, "raw": raw_id, "at": at, "batch": uuid4()})
+
+    command.downgrade(_config(db_url), "chronicler_032")
+
+    with engine.connect() as conn:
+        key = conn.execute(
+            text(
+                "SELECT carry_key FROM chronicler.location_projection_open_members "
+                "WHERE raw_source_id = :raw"
+            ),
+            {"raw": raw_id},
+        ).scalar_one()
+        indexes = set(
+            conn.execute(
+                text("SELECT indexname FROM pg_indexes WHERE schemaname = 'chronicler'")
+            ).scalars()
+        )
+    assert key == "away:owntracks:alice"
+    assert "location_projection_open_members_carry_idx" in indexes
+    with pytest.raises(IntegrityError, match="carry_key_check"):
+        with engine.connect() as conn:
+            conn.execute(
+                text(_INSERT_032.replace("'movement:owntracks:alice'", "''")),
+                {"raw": uuid4(), "at": at, "batch": uuid4()},
+            )
+
+    command.upgrade(_config(db_url), "chronicler@chronicler_033")
+    with engine.connect() as conn:
+        assert conn.execute(
+            text(
+                "SELECT carry_keys FROM chronicler.location_projection_open_members "
+                "WHERE raw_source_id = :raw"
+            ),
+            {"raw": raw_id},
+        ).scalar_one() == ["away:owntracks:alice"]

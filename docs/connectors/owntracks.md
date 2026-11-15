@@ -151,9 +151,25 @@ Groundwork for that gate is in place, and still deletes nothing:
     fix) is recorded as `evaluated_no_output`.
   - `owntracks.ssid_presence` holds the open presence span or singleton; an unmapped or missing
     network, or a singleton that never grew, is `evaluated_no_output`.
-  - Not yet: coverage does not record the source revision or the owner's SSID mapping, and a
-    mapping change or owner correction does not invalidate it; a replay leaves a span it no
-    longer builds held. No deletion uses coverage yet.
+  - Each record names exactly what it decided (chronicler_034): the raw row's content digest
+    (`v1:` sha256 over its identity, timestamps, coordinates, accuracy, trigger, event and
+    payload, computed in SQL) and the adapter's config revision (`v1:` sha256 over the settings
+    that change its decisions; for SSID presence this includes the owner's mapping, for place
+    clustering only the homes). A record is current only when both match; records from before
+    chronicler_034 read `legacy` and are never current. A changed setting or rewritten row needs a
+    new record; nothing is updated or deleted.
+  - An SSID mapping change voids the spans held under the old mapping: the replay decides their
+    rows again, and a held row it does not reach is released without coverage.
+  - Owner episode corrections do not invalidate coverage: they edit the output, not the
+    decision about the raw row.
+  - Each adapter run upserts one attempt row (`chronicler.location_projection_attempts`): the
+    outcome, the exception class (never its message), consecutive failures, and the last
+    success. An unavailable source is a failed attempt (`source_unavailable`).
+  - A successful run also counts settled raw rows (arrived more than 1 hour and at most 7 days
+    ago) that lack current coverage and are not held open, capped at 1000. The count is
+    reported, not yet re-projected.
+  - Not yet: rows the count finds are not re-projected, role readbacks for place and SSID, and
+    no deletion uses coverage yet.
 
 ## Implementation Notes
 

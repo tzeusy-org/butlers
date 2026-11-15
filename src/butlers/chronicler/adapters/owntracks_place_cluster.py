@@ -82,8 +82,12 @@ carry still holds. Every fix the run reads is evaluated, so a fix is either held
   its episode if it reached the minimum dwell or away duration, and nothing otherwise.
 - **Evaluated without output**: a fix rejected by the trail, a single-fix glitch excluded from a
   stay, a stray departure fix, or a fix whose stay and trip closed below their thresholds.
-- Malformed fixes and fixes without ``retention_at`` get no coverage. Nothing closes a carry by
-  elapsed time: the last stay before tracking stops stays held.
+- Malformed fixes and fixes without ``retention_at`` or a content digest get no coverage.
+  Nothing closes a carry by elapsed time: the last stay before tracking stops stays held.
+- Records carry the adapter's config revision (``coverage_revision``): the clustering and away
+  thresholds, the trail policy and the owner's home places (they decide trip boundaries).
+  Changing a home makes earlier records stale; the rows they cover count as uncovered until
+  re-evaluated. A non-home place only relabels a stay, so it is not part of the revision.
 
 No LLM call — Tier-0 deterministic projection only (RFC 0014 §D5).
 """
@@ -115,6 +119,7 @@ from butlers.chronicler.adapters.base import (
 )
 from butlers.chronicler.adapters.owntracks_trail import (
     TRAIL_ANCHORS_CARRYOVER_KEY,
+    TRAIL_POLICY_SETTINGS,
     TRAIL_STATE_CARRYOVER_KEY,
     classify_trail,
     dump_anchors,
@@ -129,7 +134,11 @@ from butlers.chronicler.confidence import (
     evidence_refs_from_event_ids,
 )
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
-from butlers.chronicler.projection_coverage import ProjectionCoverage
+from butlers.chronicler.projection_coverage import (
+    ProjectionCoverage,
+    config_revision,
+    raw_row_digest_sql,
+)
 from butlers.chronicler.storage import (
     get_cursor,
     owntracks_connection,
@@ -1030,6 +1039,23 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
         self.homes = tuple(
             ref for ref in self.reference_points if ref.label.strip().lower() == HOME_LABEL
         )
+        # Everything that decides which fixes form which episodes: a changed home moves trip
+        # boundaries, so it makes earlier coverage stale. Other places only relabel a stay.
+        self.coverage_revision = config_revision(
+            SOURCE_NAME,
+            {
+                "radius_m": radius_m,
+                "min_dwell_minutes": min_dwell_minutes,
+                "max_gap_minutes": max_gap_minutes,
+                "bridge_max_hours": bridge_max_hours,
+                "clock_skew_threshold_hours": clock_skew_threshold_hours,
+                "homes": sorted([ref.lat, ref.lon, ref.radius_m] for ref in self.homes),
+                "away_radius_km": away_radius_km,
+                "min_away_minutes": min_away_minutes,
+                "away_max_gap_hours": away_max_gap_hours,
+                "trail": TRAIL_POLICY_SETTINGS,
+            },
+        )
 
     async def run(self, *, pool: asyncpg.Pool, chronicler_pool: asyncpg.Pool) -> AdapterResult:
         # Optional owner lookup keeps its original pool/error isolation.
@@ -1046,7 +1072,11 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
             )
 
         return await run_owntracks_projection(
-            chronicler_pool, self.source_name, project, self._llm_probe
+            chronicler_pool,
+            self.source_name,
+            project,
+            self._llm_probe,
+            coverage_revision=self.coverage_revision,
         )
 
     async def project(
@@ -1213,7 +1243,11 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                     result.rows_projected += 1
                     result.episodes_closed += 1
 
-            coverage = ProjectionCoverage(self.source_name, evaluates_every_row=True)
+            coverage = ProjectionCoverage(
+                self.source_name,
+                config_revision=self.coverage_revision,
+                evaluates_every_row=True,
+            )
             for row in valid_rows:
                 coverage.observe(row)
             hold_trail(coverage, state)
@@ -1316,6 +1350,7 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                 # Read only by projection coverage, copied as read (core_340).
                 "idempotency_key": _optional_field(row, "idempotency_key"),
                 "retention_at": _optional_field(row, "retention_at"),
+                "content_digest": _optional_field(row, "content_digest"),
             },
             warnings,
         )
@@ -1377,7 +1412,8 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                     sql, args = keyset_page(
                         columns=(
                             "id, ts, lat, lon, endpoint_identity, recorded_at, raw_payload, "
-                            "idempotency_key, retention_at"
+                            f"idempotency_key, retention_at, {raw_row_digest_sql()} "
+                            "AS content_digest"
                         ),
                         table=_EVIDENCE_TABLE,
                         ts_col="ts",
