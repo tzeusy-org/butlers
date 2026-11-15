@@ -1196,6 +1196,126 @@ async def test_search_reads_episodes_through_their_gin_indexes(projected, primar
         _barrier(projected)
 
 
+def _apply_manifest(projected, manifest):
+    topology, projection = projected
+    with topology.engine.begin() as conn:
+        reconcile_connection(conn, manifest)
+    result = topology.execute(render_owner_program(manifest))
+    assert result.exit_code == 0, repr(result.output)[-4000:]
+    _wait(
+        lambda: _scalar(
+            projection,
+            "SELECT COALESCE(bool_and(copy_complete AND digest=:d), false) "
+            "FROM mcp_read.manifest_applied",
+            {"d": manifest.digest},
+        ),
+        seconds=90,
+    )
+
+
+async def test_narrowing_an_episode_search_input_keeps_the_view_and_drops_the_indexes(
+    projected, primary, reader, monkeypatch
+):
+    """bu-y66o00.53 (#5867 review M1): the view never shrinks, so narrowing cannot wedge the step.
+
+    With ``category`` unpublished the episodes view keeps ``search_title`` and
+    ``search_vector`` as typed NULLs, both indexes are gone and the reader ranks the episodes
+    on ``fields`` again. Widening back restores the expressions and the indexes, all on the
+    same view OID.
+    """
+    from dataclasses import replace
+
+    from butlers.chronicler.public_projection import sweep_public_projection
+    from butlers.knowledge_read import core
+    from butlers.knowledge_read import search as search_module
+    from butlers.knowledge_read.manifest import Manifest
+    from butlers.knowledge_read.search_index import SEARCH_COLUMNS
+
+    topology, projection = projected
+    full = load_manifest()
+    table = next(t for t in full.tables if t.source == "chronicler.episodes_public")
+    narrowed = replace(
+        table,
+        columns=tuple(c for c in table.columns if c != "category"),
+        types=tuple(p for p in table.types if p[0] != "category"),
+        classes=tuple(p for p in table.classes if p[0] != "category"),
+    )
+    narrow = Manifest(tuple(narrowed if t == table else t for t in full.tables))
+    names = sorted(c.index for c in SEARCH_COLUMNS["chronicler.episodes_public"])
+    indexes_sql = (
+        "SELECT COALESCE(array_agg(c.relname::text ORDER BY c.relname), '{}') FROM pg_index i "
+        "JOIN pg_class c ON c.oid=i.indexrelid "
+        "WHERE i.indrelid='chronicler.episodes_public'::regclass AND NOT i.indisprimary"
+    )
+    view_sql = "SELECT to_regclass('mcp_read.chronicler__episodes_public')::oid"
+
+    def reader_manifest(manifest):
+        monkeypatch.setattr(core, "_manifest", lambda: manifest)
+        search_module.index_sources.cache_clear()
+
+    adapter = bool(
+        await primary.fetchval(
+            "INSERT INTO chronicler.source_adapter_state(source_name,chronicler_compatibility) "
+            "VALUES ('google_health.measurements','supported') ON CONFLICT DO NOTHING "
+            "RETURNING true"
+        )
+    )
+    episode = await primary.fetchval(
+        "INSERT INTO chronicler.episodes(source_name,source_ref,episode_type,start_at,end_at,"
+        "title,privacy,layer,payload) VALUES ('google_health.measurements',$1,'sleep_episode',"
+        "$2,$3,'Vexmoralin evening walk','normal','activity','{}'::jsonb) RETURNING id",
+        str(uuid.uuid4()),
+        datetime(2026, 4, 3, 19, 0, tzinfo=UTC),
+        datetime(2026, 4, 3, 20, 0, tzinfo=UTC),
+    )
+    uri = f"butlers://time/episode/{episode}"
+    view = _scalar(projection, view_sql)
+    try:
+        await sweep_public_projection(primary)
+        _barrier(projected)
+        assert _scalar(projection, indexes_sql) == names
+
+        _apply_manifest(projected, narrow)
+        assert _scalar(projection, view_sql) == view
+        assert _scalar(projection, indexes_sql) == []
+        assert _scalar(
+            projection,
+            "SELECT count(*) FILTER (WHERE search_title IS NOT NULL OR search_vector IS NOT NULL)"
+            "=0 AND count(*)>0 FROM mcp_read.chronicler__episodes_public",
+        )
+        reader_manifest(narrow)
+        context = await _context(reader)
+        episodes = next(
+            s
+            for s in search_module.index_sources()
+            if s.table.source == "chronicler.episodes_public"
+        )
+        assert episodes.prefilter == "" and "search_" not in episodes.title_sql
+        for query in ("Vexmoralin walk", "Vexmorlin evning"):
+            found = await search(reader, context, {"query": query})
+            assert uri in [r["id"] for r in found["results"]]
+
+        _apply_manifest(projected, full)
+        assert _scalar(projection, view_sql) == view
+        assert _scalar(projection, indexes_sql) == names
+        reader_manifest(full)
+        context = await _context(reader)
+        found = await search(reader, context, {"query": "Vexmorlin evning"})
+        assert uri in [r["id"] for r in found["results"]]
+    finally:
+        reader_manifest(full)
+        if _scalar(projection, indexes_sql) != names:
+            _apply_manifest(projected, full)
+        await primary.execute("DELETE FROM chronicler.episodes WHERE id=$1", episode)
+        await sweep_public_projection(primary)
+        if adapter:
+            await primary.execute(
+                "DELETE FROM chronicler.source_adapter_state "
+                "WHERE source_name='google_health.measurements'"
+            )
+        _barrier(projected)
+
+
 async def test_search_filtered_filters_pages_and_names_degraded_domains(projected, primary, reader):
     """REQ-public-mcp-surface-006 and -005 (lagging) over the published index."""
     from butlers.knowledge_read.search import search_filtered

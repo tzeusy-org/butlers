@@ -485,7 +485,13 @@ def _view_sql(plan: SubscriberTable, manifest: Manifest) -> str:
     pairs = [part for field in plan.read_fields for part in (literal(field.name), field.expression)]
     keys = [quote(c) + "::text" for c in table.key]
     key = keys[0] if len(keys) == 1 else "jsonb_build_array(" + ", ".join(keys) + ")::text"
-    search = "".join(f", {c.expression} AS {quote(c.name)}" for c in plan.search)
+    # A declared search source always carries its search columns, so the view keeps its shape
+    # (CREATE OR REPLACE VIEW cannot drop a column): typed NULLs while an input is unpublished.
+    active = {c.name for c in plan.search}
+    search = "".join(
+        f", {c.expression if c.name in active else 'NULL::' + c.type} AS {quote(c.name)}"
+        for c in SEARCH_COLUMNS.get(table.source, ())
+    )
     sql = f"""SELECT {key} AS source_id, jsonb_build_object({", ".join(pairs)}) AS
         fields{search} FROM
         {qualified(table.source)}"""
@@ -1258,11 +1264,17 @@ def _search_indexes(plans: tuple[SubscriberTable, ...]) -> str:
     expression as that owner, so the projection owner still owns the result. A same-named
     index whose definition differs from a twin built on a temporary copy of the table is
     dropped and rebuilt, so a changed expression converges; an unchanged rerun keeps its OID.
+    A declared source whose inputs are not all published keeps none of its search indexes.
     """
     body = ""
     for plan in plans:
         source = plan.table.source
         schema = source.split(".", 1)[0]
+        if not plan.search:
+            # Unpublished inputs: no search index may outlive them (a dropped input column
+            # already took the indexes reading it; this removes any that read only survivors).
+            for column in SEARCH_COLUMNS.get(source, ()):
+                body += f"DROP INDEX IF EXISTS {quote(schema)}.{quote(column.index)};\n"
         for column in plan.search:
             name = literal(f"{schema}.{column.index}")
             same = f"""EXISTS(SELECT 1 FROM pg_catalog.pg_index i

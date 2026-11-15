@@ -272,3 +272,10 @@ def test_episode_search_columns_are_declared_once_for_the_view_the_index_and_the
     manifest = Manifest(tuple(narrowed if t == table else t for t in target.tables))
     plan = next(p for p in subscriber_plan(manifest) if p.table == narrowed)
     assert plan.search == ()
+    # The view keeps its shape with typed NULLs, and the step drops the indexes instead.
+    narrow_program = render_owner_program(manifest)
+    for column in declared:
+        assert f'NULL::{column.type} AS "{column.name}"' in narrow_program
+        assert column.expression not in narrow_program
+        assert f'DROP INDEX IF EXISTS "chronicler"."{column.index}";' in narrow_program
+        assert f'"{column.index}" ON' not in narrow_program

@@ -35,7 +35,7 @@ from butlers.knowledge_read.core import (
     tables_for,
 )
 from butlers.knowledge_read.manifest import Table
-from butlers.knowledge_read.search_index import TITLE_CHARS
+from butlers.knowledge_read.search_index import TITLE_CHARS, search_columns
 
 SEARCH_LIMIT = 20
 FILTERED_LIMIT = 50
@@ -79,11 +79,9 @@ _SQL: dict[str, tuple[str, str, str]] = {
         "COALESCE(f->'aliases', '[]'::jsonb)) AS a)))",
         "NULL::timestamptz",
     ),
-    # The view's indexed search columns: left(COALESCE(title, kind), 200) and the vector of
-    # title, kind and category (search_index.SEARCH_COLUMNS).
     "chronicler.episodes_public": (
-        "search_title",
-        "search_vector",
+        "COALESCE(f->>'title', f->>'kind')",
+        _vector("title", "kind", "category"),
         "(f->>'started_at')::timestamptz",
     ),
     "travel.trips": (
@@ -113,9 +111,13 @@ _TEXT_FIELDS = {
     ),
     "travel.documents": ("type", "expiry_date"),
 }
-# Sources ranked on indexed view columns: the columns to read, and a prefilter every match
-# satisfies (the vector matches, or the title's similarity reaches the ``%`` threshold, which
-# _ranked pins to TRIGRAM_THRESHOLD) that the planner answers from the GIN indexes.
+# With every input published (search_index.search_columns), a source is ranked on its view's
+# indexed search columns instead of the title and vector above: equal values
+# (left(COALESCE(title, kind), 200) and the vector of title, kind and category). It reads those
+# columns behind a prefilter every match satisfies (the vector matches, or the title's
+# similarity reaches the ``%`` threshold _ranked pins to TRIGRAM_THRESHOLD), which the planner
+# answers from the GIN indexes. Otherwise the view carries NULLs there and nothing reads them.
+_INDEXED_SQL = {"chronicler.episodes_public": ("search_title", "search_vector")}
 _INDEXED = {
     "chronicler.episodes_public": (
         ", search_title, search_vector",
@@ -196,7 +198,11 @@ def index_sources() -> tuple[Source, ...]:
         _, view = published(table.source, "search")
         kind, prefix = record_uri(table, "")
         shape = _FACT_SQL if table.source.endswith(".facts") else _SQL[table.source]
-        columns, prefilter = _INDEXED.get(table.source, ("", ""))
+        columns, prefilter = "", ""
+        if search_columns(table.source, table.columns):
+            # Indexed: the view's search columns, behind an index-answerable prefilter.
+            shape = (*_INDEXED_SQL[table.source], shape[2])
+            columns, prefilter = _INDEXED[table.source]
         result.append(Source(table, view, kind, prefix, *shape, columns, prefilter))
     return tuple(result)
 

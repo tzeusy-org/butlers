@@ -363,14 +363,18 @@ def test_search_indexes_are_owned_idempotent_rebuilt_and_the_only_admitted_extra
                 applied
             )
             run_sql(f"DROP INDEX {schema}.{name}")
-        # A declared name with another access method is refused too.
-        run_sql(f"DROP INDEX chronicler.{title.index}")
-        run_sql(
+        # A declared name with another access method, or as a partial GIN index, is refused.
+        for planted in (
             f"CREATE INDEX {title.index} ON chronicler.episodes_public (title)",
-            role="mcp_projection_owner",
-        )
-        refused = _run(topology, program, success=False)
-        assert b"undeclared relation policy" in refused.output
+            f"CREATE INDEX {title.index} ON chronicler.episodes_public "
+            f"USING gin (({title.expression}) {title.opclass}) WHERE kind IS NOT NULL",
+        ):
+            run_sql(f"DROP INDEX IF EXISTS chronicler.{title.index}")
+            # As the superuser: only it can name mcp_ext.gin_trgm_ops; the table owner owns
+            # the index either way.
+            run_sql(planted)
+            refused = _run(topology, program, success=False)
+            assert b"undeclared relation policy" in refused.output
         run_sql(f"DROP INDEX chronicler.{title.index}")
     finally:
         for name in ("mcp_planted", "mcp_planted_unique"):

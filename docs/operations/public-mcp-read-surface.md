@@ -106,7 +106,10 @@ on each expression over the subscriber table: `chronicler.episodes_public_mcp_se
 indexes, so the replicated columns do not change. PostgreSQL makes the table owner,
 `mcp_projection_owner`, own them. Each is `CREATE INDEX IF NOT EXISTS` under a stable name; a
 same-named index whose definition differs from a twin built on a temporary copy is dropped and
-rebuilt, and a lost one is recreated on the next run. The step's catalog guard admits exactly
+rebuilt, and a lost one is recreated on the next run. When title, kind or category leaves the
+manifest, the view keeps both columns as typed NULLs (`CREATE OR REPLACE VIEW` cannot drop a
+column, and the step never drops a view the server reads), the step drops both indexes, and the
+reader ranks the episodes on `fields` again; widening back restores both. The step's catalog guard admits exactly
 these names, on their declared table, as plain single-key GIN indexes; any other non-primary
 index on a subscriber table still refuses the step before mutation. `search` reads the
 episodes through those columns with a necessary-condition prefilter (vector match, or `%` at a
@@ -581,6 +584,33 @@ and the `pg_hba` lines reverses owner act 2 in homelab.
 
 Rebuild by setting the off switch back to `on` and running sections 1, 3a, 3b and 3c again; the end state is the applied digest equal to
 the manifest digest and both flags at 1.
+
+**Rolling back below the search indexes (bu-y66o00.53).** An owner step from any tag before
+#5867 cannot run over this one's projection:
+
+- its prior-catalog guard refuses the two GIN indexes ("subscriber unowned/undeclared relation
+  policy refused");
+- its `_TRGM_SAFE` refuses the `similarity_op` grant;
+- its `CREATE OR REPLACE VIEW` cannot drop the episodes view's two search columns.
+
+On dev, `make deploy-dev` runs the owner step for the tag it deploys, so redeploying an older tag
+fails at step 3 until the projection is reverted first. As the superuser in `butlers_public` (the
+same `kubectl exec` path as section 1, with `-d butlers_public`), run, in one transaction:
+
+```sql
+BEGIN;
+DROP INDEX IF EXISTS chronicler.episodes_public_mcp_search_title,
+    chronicler.episodes_public_mcp_search_vector;
+DROP VIEW IF EXISTS mcp_read.chronicler__episodes_public;
+REVOKE EXECUTE ON FUNCTION mcp_ext.similarity_op(text, text) FROM mcp_public_ro;
+COMMIT;
+```
+
+Then deploy the older tag at once. Its owner step recreates the view (absent views are created)
+and grants `SELECT` on it. Until it does, a running new public server answers `search`,
+`search_filtered`, `timeline` and `fetch` of an episode with `unavailable` or an error, so
+disable the `time` domain first if the server is serving. Rolling forward again needs nothing:
+the new step appends the columns and recreates the indexes and the grant.
 
 **Restore drill.** CNPG backups include `butlers_public`, but nothing restores from it. A restored
 instance drops `butlers_public` or keeps its subscription disabled, so a restored copy never
