@@ -419,3 +419,24 @@ The contact card shows reported channels awaiting adoption, protected exact Adop
 controls and receipt-based recovery after an uncertain response. Narrative facts retain their
 existing behavior. Entity merge locks candidate identity slots and all active facts before the
 first write; moving a candidate does not activate it or rewrite its reporter.
+
+### External MCP fact proposals
+
+`tools/external_fact_proposals.park_external_fact_proposal(conn, *, proposal_id, subject,
+predicate, object_entity_id, client_label, evidence_url, received_at)` is the importer's single
+park call for a validated outside proposal (RFC 0039 D13, REQ-relationship-facts-011). In one
+transaction, joined to the caller's when `conn` is inside one, it parks the
+`relationship_assert_fact` action through the approvals module's `park_external_proposal` (no
+push, no standing rule; see [Approvals](../modules/approvals.md#external-mcp-fact-proposals)). It
+then writes `relationship.fact_approval_context` with `src = 'external_mcp:<proposal_id>'`, the
+proposal's receipt time as `observed_at` and a frozen `third_party` report. A repeated call
+returns the existing action as a duplicate and writes no second context row. The stored arguments
+are built here from typed parameters and never carry provenance.
+
+Approval and replay follow the ordinary approved-write rules unchanged. `record_admitted_approval`
+checks the approver's authority, not the frozen report's, so an owner decision passes for a
+third-party report. The replay keeps the frozen authority and adds only the owner confirmation. The
+fact is written `content_authority = 'third_party'`, `src = 'external_mcp:<id>'`,
+`assert_origin = 'approved'`, `confirmation_source = 'approved_action'`, with `confirmed_at` set.
+An owner edit of the object keeps both. Stored arguments that carry `src`, `content_authority` or
+`observed_at` fail at the registered tool's signature before any row is written.

@@ -37,6 +37,11 @@ from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
 from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import _approval_write_transaction
+from butlers.modules.approvals.external_proposals import (
+    EXTERNAL_PROPOSAL_RULE_REFUSAL,
+    is_external_proposal_action,
+    is_external_proposal_key,
+)
 from butlers.modules.approvals.goal_fence import GOAL_EFFECT_REQUIRES_BROKER, is_goal_effect
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.sensitivity import suggest_constraints
@@ -90,6 +95,9 @@ async def create_rule_from_action(
     decision_memory_writer: DecisionMemoryWriter | None = None,
 ) -> dict[str, Any]:
     """Create from the locked current action with one consumed confirmation."""
+    refusal = await _external_rule_refusal(pool, action_id)
+    if refusal is not None:
+        return refusal
     parameters = dict(action_id=action_id, constraint_overrides=constraint_overrides)
     result = await run_rule_write(
         pool,
@@ -111,6 +119,12 @@ async def approve_action(
     promotion_eligible: bool = True,
 ) -> dict[str, Any]:
     """Ordinary approvals stay one-tap; combined authority changes commit once."""
+    if create_rule:
+        # Refused before any step-up is consumed or status changes: an outside
+        # proposal never becomes a standing rule (REQ-module-approvals-010).
+        refusal = await _external_rule_refusal(pool, action_id)
+        if refusal is not None:
+            return refusal
     if not create_rule:
         return await _approve_action_write(
             pool,
@@ -130,6 +144,17 @@ async def approve_action(
     )
     await remember_rule(decision_memory_writer, result)
     return result
+
+
+async def _external_rule_refusal(pool: Any, action_id: str) -> dict[str, Any] | None:
+    """Refuse rule creation from an external MCP proposal; None for other actions."""
+    try:
+        parsed_id = uuid.UUID(action_id)
+    except ValueError:
+        return None  # the owning write reports the malformed id
+    if await is_external_proposal_action(pool, parsed_id):
+        return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +302,8 @@ async def _approve_action_write(
     # Validate transition: only pending → approved is valid
     if action.status != ActionStatus.PENDING:
         return {"error": f"Cannot transition from '{action.status.value}' to 'approved'"}
+    if create_rule and is_external_proposal_key(action.deduplication_key):
+        return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
 
     decided_by = f"human:{actor_id}"
     transition = await transition_pending_action(
@@ -768,6 +795,8 @@ async def _create_rule_from_action_write(
         return {"error": f"Action not found: {action_id}"}
 
     action = PendingAction.from_row(row)
+    if is_external_proposal_key(action.deduplication_key):
+        return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
 
     # Generate suggested constraints via sensitivity analysis
     suggested = suggest_constraints(action.tool_name, action.tool_args)

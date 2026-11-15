@@ -69,6 +69,11 @@ from butlers.modules.approvals.executor import _approval_write_transaction, exec
 from butlers.modules.approvals.executor import (
     list_executed_actions as _list_executed_actions_query,
 )
+from butlers.modules.approvals.external_proposals import (
+    EXTERNAL_PROPOSAL_RULE_REFUSAL,
+    is_external_proposal_action,
+    is_external_proposal_key,
+)
 from butlers.modules.approvals.goal_fence import (
     GOAL_EFFECT_REQUIRES_BROKER,
     goal_effect_refusal,
@@ -808,12 +813,25 @@ class ApprovalsModule(Module):
         constraint_overrides: dict | None = None,
         actor: ActorContext | None = None,
     ) -> dict:
+        refusal = await self._external_rule_refusal(action_id)
+        if refusal is not None:
+            return refusal
         return await self._rule_write(
             "from_action",
             dict(action_id=action_id, constraint_overrides=constraint_overrides),
             "_create_rule_from_action_write",
             actor,
         )
+
+    async def _external_rule_refusal(self, action_id: str) -> dict | None:
+        """An external MCP proposal never becomes a standing rule."""
+        try:
+            parsed_id = uuid.UUID(action_id)
+        except ValueError:
+            return None  # the owning write reports the malformed id
+        if await is_external_proposal_action(self._db, parsed_id):
+            return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
+        return None
 
     async def _approve_action(
         self,
@@ -823,6 +841,10 @@ class ApprovalsModule(Module):
     ) -> dict:
         if not create_rule:
             return await self._approve_action_write(action_id, False, actor)
+        # Refused before any step-up or status change (REQ-module-approvals-010).
+        refusal = await self._external_rule_refusal(action_id)
+        if refusal is not None:
+            return refusal
         result = await self._rule_write(
             "approve_with_rule",
             dict(action_id=action_id, create_rule=True),
@@ -888,6 +910,8 @@ class ApprovalsModule(Module):
             validate_transition(action.status, ActionStatus.APPROVED)
         except InvalidTransitionError as exc:
             return {"error": str(exc)}
+        if create_rule and is_external_proposal_key(action.deduplication_key):
+            return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
 
         transition = await transition_pending_action(
             self._db,
@@ -1280,6 +1304,8 @@ class ApprovalsModule(Module):
             return {"error": f"Action not found: {action_id}"}
 
         action = PendingAction.from_row(row)
+        if is_external_proposal_key(action.deduplication_key):
+            return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
 
         # Generate suggested constraints
         suggested = suggest_constraints(action.tool_name, action.tool_args)
