@@ -15,6 +15,10 @@ import pytest
 
 from butlers.jobs import calendar_prep, meeting_card
 from butlers.modules.calendar import CalendarModule, _google_event_to_calendar_event
+from butlers.modules.calendar.working_location import (
+    CurrentWorkingLocation,
+    current_working_location,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -90,3 +94,16 @@ async def test_meeting_card_and_prep_selectors_skip_status_events(
                 _START + timedelta(hours=1),
             )
         assert {row["event_id"] for row in prep} == {ids["meeting"], ids["focus"]}
+
+        # S3: the working-location read finds only the declaration, through its own SQL.
+        async with pool.acquire() as conn:
+            during = await current_working_location(
+                conn, now=_START + timedelta(minutes=30), zone="Asia/Singapore"
+            )
+            after = await current_working_location(
+                conn, now=_START + timedelta(hours=2), zone="Asia/Singapore"
+            )
+        assert during == CurrentWorkingLocation(
+            type="homeOffice", label="home office", until=_START + timedelta(hours=1)
+        )
+        assert after is None

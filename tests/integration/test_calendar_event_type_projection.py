@@ -7,6 +7,8 @@ projector returned. Payloads are synthetic (shaped after the public Events resou
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -15,6 +17,8 @@ import pytest
 from butlers.modules.calendar import CalendarModule, _google_event_to_calendar_event
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
+
+FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "google_calendar_typed_events"
 
 
 def _payload(**extra: Any) -> dict[str, Any]:
@@ -102,3 +106,18 @@ async def test_typed_fields_are_written_replaced_and_cleared(migrated_core_postg
                 "UPDATE calendar_events SET working_location_type = 'homeOffice' "
                 "WHERE origin_ref = 'ooo-1'"
             )
+
+        # AC B: the synthetic fixture corpus projects exactly as its manifest declares.
+        manifest = json.loads((FIXTURE_DIR / "manifest.json").read_text(encoding="utf-8"))
+        for entry in manifest["fixtures"]:
+            payload = json.loads((FIXTURE_DIR / entry["file"]).read_text(encoding="utf-8"))
+            await _project(module, source, payload)
+            expect = entry["expect"]
+            location = expect["working_location"] or {"type": None, "label": None}
+            assert await _read(pool, payload["id"]) == (
+                expect["event_type"],
+                location["type"],
+                location["label"],
+                expect["all_day"],
+                "google",
+            ), entry["file"]

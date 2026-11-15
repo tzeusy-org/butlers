@@ -9,8 +9,14 @@ The conflict radar and day load already apply the shared attendance rule
 
 This is the attendance slice of bu-s11n0s.4. The typed Google event-type
 slices (persisted `event_type`/working location, out-of-office as calendar
-context, typed focus, working-location signal, and day-load/prep exclusions)
-remain open on that bead.
+context, typed focus, working location, and day-load/prep exclusions) are
+delivered on that bead.
+
+Working location is not a context signal. The declaration is persisted
+(core_341) and readable through a typed read (`current_working_location`).
+Publishing it as a signal is deferred to a perception kind
+(`owner.work_location`) at the M7/.21 switch, so no writer is added to the
+retiring context bus.
 
 Out-of-office is calendar context only (bu-u33sb7): it suppresses `focused`,
 never asserts `meeting` or `focused` itself (an attended overlapping meeting
@@ -37,6 +43,8 @@ only through an owner-confirmed M7 proposal.
 
 ## Impact
 
-- Code: `src/butlers/jobs/context_producers.py`.
-- Tests: `tests/jobs/test_context_producers.py`.
+- Code: `src/butlers/jobs/context_producers.py`; the working-location read in
+  `src/butlers/modules/calendar/working_location.py` (dark, no caller).
+- Tests: `tests/jobs/test_context_producers.py`,
+  `tests/modules/test_calendar_working_location.py`.
 - No schema, migration, provider, or API change.

@@ -10,4 +10,4 @@
 - [x] 2.2 Typed focusTime asserts focused; status events are never meeting candidates
 - [x] 2.3 Status events add no day-load hours or conflicts and are excluded from prep, meeting-card and meeting-debrief selectors
 - [x] 2.4 The Google connector never scans status events as starting soon
-- [ ] 2.5 Working-location signal (deferred to S3)
+- [x] 2.5 Working location is a typed read (`current_working_location`), not a signal; publishing it waits for a perception kind (`owner.work_location`) at the M7/.21 switch

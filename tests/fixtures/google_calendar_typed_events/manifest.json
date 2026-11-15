@@ -1,0 +1,76 @@
+{
+  "provenance": "synthetic",
+  "basis": "Schema-valid payloads shaped after the public Google Calendar API v3 Events resource reference (eventType, outOfOfficeProperties, focusTimeProperties, workingLocationProperties). Not captured from any account.",
+  "owner": "bu-s11n0s.4",
+  "fixtures": [
+    {
+      "file": "default-meeting.json",
+      "sha256": "1d3f2edc0a72c09787e0fca20c02d0f16f612fd88c1f292a68993ad95957c3f7",
+      "expect": {"event_type": "default", "working_location": null, "all_day": false}
+    },
+    {
+      "file": "focus-time.json",
+      "sha256": "175f13a5096b5e6b244d234071af11a3063e6946e14f560c0b2a951171d951e8",
+      "expect": {"event_type": "focusTime", "working_location": null, "all_day": false}
+    },
+    {
+      "file": "future-type.json",
+      "sha256": "1a16cccd0d4e6f32814bcc0d74af46772f6f5c2e8bb0ef91a6bc105da1d7c0c6",
+      "expect": {"event_type": "someFutureType", "working_location": null, "all_day": false}
+    },
+    {
+      "file": "ooo-timed.json",
+      "sha256": "0549f4d2e3dedfbe7082c5236be2669ca35e8f7485635c5f9efc58ae02b63fdf",
+      "expect": {"event_type": "outOfOffice", "working_location": null, "all_day": false}
+    },
+    {
+      "file": "working-location-custom-timed.json",
+      "sha256": "a00b1264e6498c165ef5ef1944581406ee6d13f869ca8e6f8583f1facc855c54",
+      "expect": {
+        "event_type": "workingLocation",
+        "working_location": {"type": "customLocation", "label": "Client site"},
+        "all_day": false
+      }
+    },
+    {
+      "file": "working-location-home-all-day.json",
+      "sha256": "8361b97370135b1670c0be6af9c610a1c47945e3482cac41f34638d450f61dd4",
+      "expect": {
+        "event_type": "workingLocation",
+        "working_location": {"type": "homeOffice", "label": "home office"},
+        "all_day": true
+      }
+    },
+    {
+      "file": "working-location-mismatched-branch.json",
+      "sha256": "ea7d0c83f332df4e3d8c64d4b582f0a88bbd321a8c5d672e2d1f0051c1cea418",
+      "expect": {"event_type": "workingLocation", "working_location": null, "all_day": true}
+    },
+    {
+      "file": "working-location-missing-properties.json",
+      "sha256": "6bf97b8f2f824828ee2e60a2dea51ee2e653840ebbe93c12e89b2befdb6cf776",
+      "expect": {"event_type": "workingLocation", "working_location": null, "all_day": true}
+    },
+    {
+      "file": "working-location-office.json",
+      "sha256": "5ec752c641999ae2221f85aec9a66bf89c66eaae421e28fc6c695d1d624deafa",
+      "expect": {
+        "event_type": "workingLocation",
+        "working_location": {"type": "officeLocation", "label": "Example HQ"},
+        "all_day": true
+      }
+    },
+    {
+      "file": "working-location-overlong-label.json",
+      "sha256": "b2146ea4393242d48a427c96c605ca93e2a9e304044af3456355242bfeb66f1a",
+      "expect": {
+        "event_type": "workingLocation",
+        "working_location": {
+          "type": "customLocation",
+          "label": "Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Cowork"
+        },
+        "all_day": true
+      }
+    }
+  ]
+}
