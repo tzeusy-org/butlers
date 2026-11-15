@@ -649,6 +649,11 @@ class MutationsMixin:
             "status": event.status.value if event.status is not None else None,
             "organizer": event.organizer,
             "visibility": event.visibility.value if event.visibility is not None else None,
+            # Read-side provider truth (bu-s11n0s.4 S1); no create/update input accepts them.
+            "event_type": event.event_type,
+            "working_location": (
+                None if event.working_location is None else dict(event.working_location)
+            ),
             "etag": event.etag,
             "created_at": event.created_at.isoformat() if event.created_at is not None else None,
             "updated_at": event.updated_at.isoformat() if event.updated_at is not None else None,

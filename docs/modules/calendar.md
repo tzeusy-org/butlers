@@ -187,6 +187,19 @@ owners, without keeping a second engine. Every Calendar package Python file is l
   `calendar_sync_cursors` (`provider_sync`, `projection`); each refresh records status in
   `calendar_action_log`. Projection writes hard-gate on `to_regclass(...) IS TRUE`, so pre-migration
   databases no-op.
+- Google's resource `eventType` (not a connector change kind) is kept verbatim on
+  `CalendarEvent.event_type` and `calendar_events.event_type` (core_341): `default`,
+  `outOfOffice`, `focusTime`, `workingLocation`, `fromGmail`, `birthday` or a future value (up to
+  64 printable characters; anything else is `default`, nothing is inferred from titles).
+  A `workingLocation` event's `workingLocationProperties` become `working_location`
+  (`{type: homeOffice, label: "home office"}`, or `officeLocation`/`customLocation` with their own
+  non-empty label, cleaned and bounded to 256 characters), else NULL; building/desk ids, the
+  summary and `location` are never substituted. Every provider sync replaces both fields (a
+  dropped location clears). They are read-side only: tool payloads include them, no create/update
+  input or Google write body carries them, and list/sync requests omit `eventTypes` so every
+  type is returned. Older rows are `default`/NULL; the core_341 downgrade keeps the columns.
+  Nothing consumes them yet: the OOO/focus/location context, day-load and prep exclusions are
+  later slices of bu-s11n0s.4.
 - `calendar_sync_status` / `calendar_force_sync` report `projection_freshness` (`last_refreshed_at`,
   `staleness_ms`, per-source `fresh|stale|failed`). Dashboard `calendar_force_sync(queue=true)`
   commands are durable `calendar_action_log` rows: the worker starts even with polling disabled,

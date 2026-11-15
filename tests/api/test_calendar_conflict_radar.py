@@ -933,6 +933,7 @@ async def test_invitations_admit_explicit_provider_truth_and_earned_conflict(app
                         "has_events_body",
                         "has_events_source_butler",
                         "has_events_source_session_id",
+                        "has_events_typed_fields",
                     ),
                     True,
                 )
