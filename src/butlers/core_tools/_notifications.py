@@ -19,7 +19,7 @@ from butlers.config import ButlerType
 from butlers.conversation_identity import telegram_conversation_id
 from butlers.core.attention_ledger import get_suppressing_context, record_attention_event
 from butlers.core.entity_posture import EGRESS_BLOCKED_POSTURES, fetch_entity_posture
-from butlers.core.permissions import NOTIFY_PERMISSION, check_permission
+from butlers.core.permissions import NOTIFY_PERMISSION, check_permission, denial_message
 from butlers.core.reply_scope import MAX_AWAITS_REPLY_SECONDS, MIN_AWAITS_REPLY_SECONDS
 from butlers.core.scheduler.crud import schedule_create as _schedule_create
 from butlers.core.telemetry import tool_span
@@ -628,17 +628,12 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             # send owner-facing notifications. A cell flipped to granted=false
             # blocks notify() outright (an authorization decision). Mirrors the
             # spawn gate: consult the matrix at the decision point, return an
-            # observable denial. check_permission fails open, so a DB error never
-            # wedges delivery.
+            # observable denial. check_permission fails closed: an unreadable store
+            # refuses the notification (bu-svqpzo.3).
             _perm_pool = daemon.db.pool if daemon.db is not None else None
             _notify_perm = await check_permission(_perm_pool, butler_name, NOTIFY_PERMISSION)
             if not _notify_perm.allowed:
-                _perm_msg = (
-                    f"Permission denied: butler '{butler_name}' is not granted "
-                    f"'{NOTIFY_PERMISSION}'"
-                )
-                if _notify_perm.reason:
-                    _perm_msg += f" (reason: {_notify_perm.reason})"
+                _perm_msg = denial_message(_notify_perm, butler_name, NOTIFY_PERMISSION)
                 logger.warning(
                     "notify() blocked by permissions matrix for butler=%s: %s",
                     butler_name,

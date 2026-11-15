@@ -218,8 +218,10 @@ psql -h localhost -U butlers -d butlers -c \
   `butler_*_rw` roles. Under the receiver cutover `_butler_dispatch_gated()` calls it through the
   butler's own role-verified pool (the daemon wires `eligibility_pool` to `daemon.db.pool` for every
   butler under the cutover, and for the switchboard always). A missing row or any state other than
-  `active` holds dispatch; a refusal, an absent function or a row naming another butler fails open,
-  like other gate errors. Without the cutover only the switchboard gates, because the legacy
+  `active` holds dispatch; a refusal, an absent function or a row naming another butler fails closed:
+  `_butler_dispatch_gated()` returns `eligibility unavailable: registry lookup failed`, logs at ERROR,
+  skips the tick's deadline and cron dispatch and leaves `next_run_at` unchanged, so the work runs
+  on the first tick after the registry is readable. Without the cutover only the switchboard gates, because the legacy
   resolver reads switchboard tables that runtime roles cannot see. Downgrade keeps the function.
 
 - `job_args` JSONB can round-trip through asyncpg as a JSON string: serialize dicts explicitly on

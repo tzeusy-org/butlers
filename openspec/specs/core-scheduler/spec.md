@@ -406,3 +406,20 @@ arguments, or other schedule runtime payload.
 - **THEN** it returns `SCHEDULE_TOML_MANAGED` for TOML or
   `SCHEDULE_MANAGED` for the other source
 - **AND** it leaves the row unchanged
+
+### Requirement: Administrative Hold Gate Fails Closed
+
+A butler under an administrative hold (paused or quarantined eligibility, or a non-active policy row under the receiver cutover) SHALL NOT dispatch scheduled work: `tick()` SHALL skip its deadline and cron dispatch and leave `next_run_at` unchanged. When the gate is given an eligibility pool and the registry or policy lookup fails, the tick SHALL be gated the same way with the reason `eligibility unavailable: registry lookup failed`, SHALL log at ERROR, and the preserved due work SHALL run once on the first tick after the registry is readable. A caller that supplies no eligibility pool opts that butler out of gating.
+
+ID: REQ-core-scheduler-005
+Source: bu-svqpzo.3 fail-closed permission, spend and pause state; RFC 0038 D10
+Scope: v1-mandatory
+
+#### Scenario: Paused butler does not dispatch
+- **WHEN** the butler's eligibility is quarantined or its policy is not active
+- **THEN** the tick dispatches no deadline or cron work and `next_run_at` is unchanged
+
+#### Scenario: Unreadable registry gates the tick
+- **WHEN** the eligibility lookup raises
+- **THEN** the tick dispatches nothing, logs at ERROR, and `next_run_at` stays due
+- **AND** the first tick after the registry is readable dispatches the preserved work once

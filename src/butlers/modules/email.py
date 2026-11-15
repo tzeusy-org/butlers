@@ -433,9 +433,7 @@ class EmailModule(Module):
         (which calls ``module._send_email`` directly).
         """
         _perm_pool = self._pool or self._audit_pool
-        await require_permission(
-            _perm_pool, self._butler_name, EMAIL_SEND_PERMISSION, fail_closed=True
-        )
+        await require_permission(_perm_pool, self._butler_name, EMAIL_SEND_PERMISSION)
         if render_links_inert:
             from butlers.core.delivery_rendering import defang_delivery_text
 

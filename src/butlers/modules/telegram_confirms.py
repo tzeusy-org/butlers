@@ -27,7 +27,7 @@ def messenger_confirm_delivery(service, telegram, *, allowed):
 
     async def edit(row, text):
         await require_permission(
-            telegram._permission_pool(), telegram._butler_name, NOTIFY_PERMISSION, fail_closed=True
+            telegram._permission_pool(), telegram._butler_name, NOTIFY_PERMISSION
         )
         # One literal edit removes the keyboard atomically. A lost successful edit
         # can be retried: Telegram's exact already-current receipt is idempotent.

@@ -176,6 +176,7 @@ class TestNotifyReactIntent:
         assert nr["delivery"]["intent"] == "react"
 
     @_booted
+    @pytest.mark.real_gate_state
     async def test_notify_blocked_when_notify_permission_revoked(
         self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

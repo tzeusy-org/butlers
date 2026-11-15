@@ -167,6 +167,7 @@ async def test_route_to_butler_envelope_behavior(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.real_gate_state
 async def test_route_to_butler_blocked_when_cross_butler_revoked(
     tool_host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

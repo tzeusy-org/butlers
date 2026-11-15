@@ -53,6 +53,7 @@ from butlers.core.failover_classifier import (
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import (
     CEILING_DENIAL_REASON_PREFIX,
+    CEILING_UNAVAILABLE_REASON,
     Complexity,
     apply_spend_routing_rules,
     check_monthly_ceiling,
@@ -315,8 +316,12 @@ async def _ceiling_gate(
     if ceiling.allowed:
         return
     message = (
-        f"{CEILING_DENIAL_REASON_PREFIX}: month-to-date ${ceiling.mtd_usd:.2f} >= ceiling "
-        f"${ceiling.ceiling_usd:.2f}"
+        CEILING_UNAVAILABLE_REASON
+        if ceiling.unavailable
+        else (
+            f"{CEILING_DENIAL_REASON_PREFIX}: month-to-date ${ceiling.mtd_usd:.2f} >= ceiling "
+            f"${ceiling.ceiling_usd:.2f}"
+        )
     )
     logger.warning("%s blocked by monthly spend ceiling: %s", spec.caller, message)
     await sink.attempt(
@@ -326,7 +331,7 @@ async def _ceiling_gate(
         attempt_index=attempt_index,
         failure_reason=message,
         purpose_lane=spec.purpose_lane,
-        produce_fleet_halt=True,
+        produce_fleet_halt=not ceiling.unavailable,
         resolution_receipt=receipt,
     )
     raise SpendCeilingReached(message)
@@ -339,6 +344,12 @@ def _quota_message(candidate: Candidate, quota: Any) -> tuple[str, str]:
     if quota.limit_30d is not None and quota.usage_30d >= quota.limit_30d:
         windows.append(f"30d (used={quota.usage_30d}, limit={quota.limit_30d})")
     bounded_windows = _bounded("; ".join(windows))
+    if quota.unavailable:
+        return (
+            f"Token quota unavailable for catalog entry '{_bounded(candidate.model_id)}': "
+            "the quota state could not be read",
+            "unavailable",
+        )
     return (
         f"Token quota exhausted for catalog entry '{_bounded(candidate.model_id)}': "
         f"{bounded_windows}",
