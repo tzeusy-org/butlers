@@ -14,9 +14,12 @@ from pathlib import Path
 
 import asyncpg
 import pytest
+from sqlalchemy import create_engine, text
 
+from alembic import command
 from butlers.chronicler.adapters.owntracks import CLOCK_SKEW_THRESHOLD_HOURS
-from butlers.migrations import run_migrations
+from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.testing.migration import create_migration_db, migration_db_name
 
 _ROOT = Path(__file__).resolve().parents[2]
 _CORE_340 = _ROOT / "alembic/versions/core/core_340_owntracks_points_retention_at.py"
@@ -157,3 +160,86 @@ async def test_upgrade_backfills_pre_existing_rows_by_the_same_rule(db, pre_340_
         )
         == "NO"
     )
+
+
+# Catalog rows a repeated install would rewrite: trigger oids, function oid and xmin, and the
+# temporary NOT NULL check (which must be gone).
+_SHARED_CATALOG = """
+SELECT
+    (SELECT array_agg(tgname || ':' || oid ORDER BY tgname) FROM pg_trigger
+     WHERE tgrelid = 'connectors.owntracks_points'::regclass AND NOT tgisinternal),
+    (SELECT array_agg(proname || ':' || oid || ':' || xmin ORDER BY proname) FROM pg_proc
+     WHERE pronamespace = 'connectors'::regnamespace AND proname LIKE 'owntracks_points_%'),
+    (SELECT count(*) FROM pg_constraint
+     WHERE conrelid = 'connectors.owntracks_points'::regclass
+       AND conname = 'owntracks_points_retention_at_not_null')
+"""
+
+
+def _shared_catalog(db_url: str):
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as connection:
+            return tuple(connection.execute(text(_SHARED_CATALOG)).one())
+    finally:
+        engine.dispose()
+
+
+@_docker
+@pytest.mark.integration
+def test_first_run_backfills_in_pages_and_later_schema_runs_write_nothing(
+    postgres_container,
+) -> None:
+    """The shared table is installed once; every other schema's core run is a catalog no-op.
+
+    12 001 legacy rows span three backfill pages, so the keyset loop must advance past a page.
+    """
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    first = _build_alembic_config(db_url, chains=["core"], target_schema="general")
+    command.upgrade(first, "core_338")
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO connectors.owntracks_points
+                        (idempotency_key, ts, lat, lon, endpoint_identity, recorded_at)
+                    SELECT 'legacy:' || n,
+                           CASE WHEN mod(n, 2) = 0
+                                THEN CAST(:received AS timestamptz) + interval '5 hours'
+                                ELSE CAST(:received AS timestamptz) - interval '1 day' END,
+                           1.3, 103.8, 'owntracks:alice', CAST(:received AS timestamptz)
+                    FROM generate_series(1, 12001) AS n
+                    """
+                ),
+                {"received": _RECEIVED},
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(first, "core@head")
+
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as connection:
+            counts = connection.execute(
+                text(
+                    """
+                    SELECT count(*) FILTER (WHERE retention_at IS NULL),
+                           count(*) FILTER (WHERE retention_at = recorded_at),
+                           count(*) FILTER (WHERE retention_at = ts AND ts < recorded_at)
+                    FROM connectors.owntracks_points
+                    """
+                )
+            ).one()
+    finally:
+        engine.dispose()
+    assert tuple(counts) == (0, 6000, 6001)
+
+    installed = _shared_catalog(db_url)
+    assert len(installed[0]) == 2 and len(installed[1]) == 2 and installed[2] == 0
+
+    second = _build_alembic_config(db_url, chains=["core"], target_schema="health")
+    command.upgrade(second, "core@head")
+    assert _shared_catalog(db_url) == installed
