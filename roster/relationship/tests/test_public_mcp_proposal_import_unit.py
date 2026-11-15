@@ -146,3 +146,37 @@ def test_password_file_absent_or_empty_reads_as_none(tmp_path) -> None:
     assert settings.read_password() is None
     settings.password_file.write_text("synthetic-value\n")
     assert settings.read_password() == "synthetic-value"
+
+
+@pytest.mark.parametrize(
+    "cid",
+    [
+        "https://claude.ai/some/path",
+        "https://claude.ai/oauth/client-metadata.json?v=1",
+        "opaque-dcr-client-id-0123456789",
+    ],
+)
+def test_the_stored_label_is_the_host_or_digest_never_the_raw_cid(cid):
+    """Only ``client_label(cid)`` may reach an action's evidence; the raw cid is refused."""
+    from butlers.capability_host.assertion import client_label
+    from butlers.modules.approvals.external_proposals import validate_client_label
+
+    label = client_label(cid)
+    assert label is not None
+    assert validate_client_label(label) == label
+    assert label in ("claude.ai",) or label.startswith("dcr:")
+    if cid.startswith("https://"):
+        with pytest.raises(ValueError):
+            validate_client_label(cid)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["claude.ai/x", "a b", "user@claude.ai", "https:x", "dcr:XYZ", "dcr:0123", "x" * 65, ""],
+)
+def test_the_client_label_is_a_host_name_or_a_dcr_digest(bad):
+    from butlers.modules.approvals.external_proposals import validate_client_label
+
+    assert validate_client_label("dcr:0123456789ab") == "dcr:0123456789ab"
+    with pytest.raises(ValueError):
+        validate_client_label(bad)

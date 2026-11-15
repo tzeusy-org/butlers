@@ -17,21 +17,27 @@ import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import asyncpg
 import pytest
+from fastmcp import FastMCP
 from sqlalchemy import make_url, text
 
+from butlers.core.fact_authority import FactWriteContext, _current_report
 from butlers.db import register_jsonb_codec
 from butlers.knowledge_read.manifest import load_manifest
 from butlers.migrations import run_migrations
 from butlers.migrations.public_mcp import reconcile_connection
 from butlers.migrations.public_mcp_owner import render_owner_program
 from butlers.modules.approvals import operations
+from butlers.modules.approvals.module import ApprovalsModule
 from butlers.roster_imports import roster_module
 from butlers.testing.public_mcp import public_mcp_topology
 
 importer = roster_module("relationship", "tools/public_mcp_proposal_import")
+_relationship_modules = roster_module("relationship", "modules")
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -149,7 +155,9 @@ class World:
     def __init__(self, projected, admin):
         self.projection = projected[1]
         self.admin = admin
-        self.cid = f"https://client-{uuid.uuid4().hex[:10]}.example/meta"
+        self.host = f"client-{uuid.uuid4().hex[:10]}.example"
+        # A CIMD client id is a URL with a path; only its host may reach an action.
+        self.cid = f"https://{self.host}/some/path"
 
     async def person(self, *, roles=None, metadata=None) -> uuid.UUID:
         return await self.admin.fetchval(
@@ -298,6 +306,9 @@ async def test_valid_proposal_parks_exactly_one_action(primary, inbox, world) ->
     assert "team page" not in flat and "/team/page" not in flat
     refs = {item["ref"] for item in action["evidence"]}
     assert "external_mcp:url_host=https://example.com" in refs
+    # The client is named by capability_host's label (its host), never by the raw cid.
+    assert f"external_mcp:client={world.host}" in refs
+    assert world.cid not in flat and "/some/path" not in flat
 
 
 async def test_crash_between_copy_and_delete_creates_nothing_twice(primary, inbox, world) -> None:
@@ -620,6 +631,76 @@ async def test_parked_actions_stay_decidable_while_disabled(primary, inbox, worl
     assert await world.states([pid]) == {pid: "owner_rejected"}
 
 
+class _SwitchUnreadable:
+    """The primary pool, except that the kill-switch read raises."""
+
+    def __init__(self, pool):
+        self._pool = pool
+
+    def __getattr__(self, name):
+        return getattr(self._pool, name)
+
+    async def fetch(self, sql, *args):
+        if "mcp_surface.controls" in sql:
+            raise asyncpg.ConnectionDoesNotExistError("connection was closed")
+        return await self._pool.fetch(sql, *args)
+
+
+async def test_a_missing_switch_row_parks_nothing(primary, inbox, world) -> None:
+    """REQ-public-mcp-proposals-007: an absent ``proposals`` row is not an enabled switch."""
+    a, b = await world.person(), await world.person()
+    (pid,) = world.send(world.proposal(a, b))
+    saved = await world.admin.fetchrow(
+        "SELECT * FROM mcp_surface.controls WHERE domain = 'proposals'"
+    )
+    await world.admin.execute("DELETE FROM mcp_surface.controls WHERE domain = 'proposals'")
+    try:
+        report = await _pass(primary, inbox)
+        assert report["switch_enabled"] is False
+        assert await world.states([pid]) == {pid: "imported"}
+        assert await world.actions(pid) == []
+    finally:
+        columns = list(saved.keys())
+        await world.admin.execute(
+            f"INSERT INTO mcp_surface.controls ({', '.join(columns)}) "
+            f"VALUES ({', '.join(f'${i}' for i in range(1, len(columns) + 1))})",
+            *saved.values(),
+        )
+    await _pass(primary, inbox)
+    assert await world.states([pid]) == {pid: "parked"}
+
+
+async def test_an_unreadable_switch_parks_nothing(primary, inbox, world) -> None:
+    """A failed switch read fails closed; the rest of the pass still runs."""
+    a, b = await world.person(), await world.person()
+    (pid,) = world.send(world.proposal(a, b))
+
+    report = await importer.run_public_mcp_proposal_import(
+        _SwitchUnreadable(primary), now=NOW, inbox=inbox
+    )
+
+    assert report["switch_enabled"] is False
+    assert report["errors"].get("switch") == 1
+    assert world.in_inbox([pid]) == 0, "intake does not depend on the switch"
+    assert await world.states([pid]) == {pid: "imported"}
+    assert await world.actions(pid) == []
+
+
+async def test_a_row_inside_the_settling_window_waits_for_a_later_pass(
+    primary, inbox, world
+) -> None:
+    """A row received under 30 s before the pass stays imported, then parks on a later pass."""
+    a, b = await world.person(), await world.person()
+    (pid,) = world.send(world.proposal(a, b, received_at=NOW - timedelta(seconds=10)))
+
+    await _pass(primary, inbox)
+    assert await world.states([pid]) == {pid: "imported"}
+    assert await world.actions(pid) == []
+
+    await _pass(primary, inbox, now=NOW + timedelta(seconds=20))
+    assert await world.states([pid]) == {pid: "parked"}
+
+
 # --- Reconcile and retention (REQ-public-mcp-proposals-006) ------------------------------
 
 
@@ -688,6 +769,104 @@ async def test_reconcile_maps_each_owner_outcome(primary, inbox, world) -> None:
     )
     await _pass(primary, inbox, now=later + timedelta(hours=1))
     assert await world.states([failed]) == {failed: "applied"}
+
+
+async def _approve_and_dispatch(world, pool, action_id: uuid.UUID) -> dict:
+    """The owner's approval, then the Relationship daemon's shared executor (no model).
+
+    The approval runs under an owner-device write context, as the dashboard's authenticated
+    decision does (the same synthetic admission ``fact_authority_fixtures`` uses).
+    """
+    owner = await world.admin.fetchrow(
+        "SELECT id, created_at FROM public.entities WHERE 'owner' = ANY(roles) ORDER BY id LIMIT 1"
+    )
+    if owner is None:
+        owner = await world.admin.fetchrow(
+            "INSERT INTO public.entities (canonical_name, entity_type, roles) "
+            "VALUES ('Synthetic fixture owner', 'person', ARRAY['owner']) "
+            "RETURNING id, created_at"
+        )
+    token = _current_report.set(
+        FactWriteContext("owner_device", owner["id"], owner["created_at"], owner["id"])
+    )
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            approved = await operations.approve_action(conn, str(action_id))
+    finally:
+        _current_report.reset(token)
+    assert "error" not in approved and approved["status"] == "approved"
+    relationship = _relationship_modules.RelationshipModule()
+    mcp = FastMCP("relationship")
+    await relationship.register_tools(mcp, None, SimpleNamespace(pool=pool), "relationship")
+    approvals = ApprovalsModule()
+    await approvals.on_startup({}, pool)
+
+    async def execute(tool_name: str, tool_args: dict):
+        tool: Any = await mcp.get_tool(tool_name)
+        return await tool.fn(**tool_args)
+
+    approvals._tool_executor = execute
+    approvals._butler_name = "relationship"
+    try:
+        return await approvals._dispatch_approved_action_by_id(str(action_id))
+    finally:
+        await approvals.on_shutdown()
+
+
+async def test_a_reaped_entity_fails_the_approved_replay_closed(primary, inbox, world) -> None:
+    """An entity soft-deleted (the enrichment reap) or merged after parking: apply_failed.
+
+    rel_043's entity columns are excused from the reap's reference check, so a parked proposal
+    does not keep a placeholder alive. The replay re-checks both ids and writes no fact on a
+    tombstone; the live control proposal applies through the same executor.
+    """
+    live_pid, live_action = await _parked(world, primary, inbox)
+    reaped_pid, reaped_action = await _parked(world, primary, inbox)
+    merged_pid, merged_action = await _parked(world, primary, inbox)
+    reaped = await world.admin.fetchval(
+        f"SELECT object_entity_id FROM {_TABLE} WHERE proposal_id = $1", reaped_pid
+    )
+    merged = await world.admin.fetchval(
+        f"SELECT subject_entity_id FROM {_TABLE} WHERE proposal_id = $1", merged_pid
+    )
+    # The reap's soft delete and a merge's tombstone, as those writers leave them.
+    await world.admin.execute(
+        "UPDATE public.entities SET metadata = metadata || "
+        "jsonb_build_object('deleted_at', now()::text) WHERE id = $1",
+        reaped,
+    )
+    await world.admin.execute(
+        "UPDATE public.entities SET metadata = metadata || "
+        "jsonb_build_object('merged_into', gen_random_uuid()::text) WHERE id = $1",
+        merged,
+    )
+
+    assert (await _approve_and_dispatch(world, primary, live_action))["status"] == "executed"
+    for action_id in (reaped_action, merged_action):
+        failed = await _approve_and_dispatch(world, primary, action_id)
+        assert "error" in failed, failed
+        assert (
+            await world.admin.fetchval(
+                "SELECT status FROM pending_actions WHERE id = $1", action_id
+            )
+            == "approved"
+        )
+    for entity in (reaped, merged):
+        assert (
+            await world.admin.fetchval(
+                "SELECT count(*) FROM relationship.entity_facts "
+                "WHERE subject = $1 OR object_entity_id = $1",
+                entity,
+            )
+            == 0
+        )
+
+    await _pass(primary, inbox, now=NOW + timedelta(hours=1))
+    assert await world.states([live_pid, reaped_pid, merged_pid]) == {
+        live_pid: "applied",
+        reaped_pid: "apply_failed",
+        merged_pid: "apply_failed",
+    }
 
 
 async def test_silence_expires_and_denies(primary, inbox, world) -> None:
@@ -774,9 +953,19 @@ async def test_rel_043_downgrade_refuses_imported_proposals_then_round_trips(adm
         "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'relationship' "
         "AND table_name = 'external_fact_proposals' AND column_name = 'pending_action_id'"
     )
+    constraints = (
+        "SELECT count(*) FROM pg_constraint "
+        "WHERE conrelid = 'relationship.external_fact_proposals'::regclass "
+        "AND conname LIKE 'external_fact_proposals\\_%' AND contype = 'c'"
+    )
     transaction = admin.transaction()
     await transaction.start()
     try:
+        # Re-run safe: upgrading an upgraded table changes nothing and raises nothing.
+        before = await admin.fetchval(constraints)
+        for statement in upgrade:
+            await admin.execute(statement)
+        assert await admin.fetchval(constraints) == before
         await admin.execute(f"DELETE FROM {_TABLE}")
         for statement in downgrade:
             await admin.execute(statement)

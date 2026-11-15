@@ -745,6 +745,8 @@ async def _resolve_approved_action(
             f"approval_action_id {action_id} has no recorded source; "
             "the write cannot be attributed."
         )
+    if stored_src.startswith(_EXTERNAL_PROPOSAL_SRC_PREFIX):
+        await _require_live_external_entities(conn, action_id, subject, object, object_kind)
 
     mode = row["temporal_request_mode"]
     temporal, temporal_wire = parked_request(stored_args, mode)
@@ -759,6 +761,42 @@ async def _resolve_approved_action(
         frozen=None if mode is None else _FrozenResolution(row["temporal_base_fact_id"]),
         fact_context=report,
     )
+
+
+# ``external_fact_proposals.EXTERNAL_FACT_SRC_PREFIX``; that module imports this one.
+_EXTERNAL_PROPOSAL_SRC_PREFIX = "external_mcp:"
+
+
+async def _require_live_external_entities(
+    conn: asyncpg.Connection,
+    action_id: uuid.UUID,
+    subject: uuid.UUID,
+    object: str,
+    object_kind: str,
+) -> None:
+    """Fail an approved external proposal whose entity is gone, merged or soft-deleted.
+
+    The importer checked both entities when it parked the action, but the owner may approve
+    days later, after a merge or the enrichment reap. The replay then refuses rather than write
+    a fact on a tombstone; the executor records ``action_execution_failed`` and the importer
+    reports ``apply_failed`` (REQ-public-mcp-proposals-006).
+    """
+    ids = {subject}
+    if object_kind == "entity":
+        ids.add(uuid.UUID(object))
+    live = await conn.fetchval(
+        """
+        SELECT count(*) FROM public.entities
+        WHERE id = ANY($1::uuid[])
+          AND metadata->>'merged_into' IS NULL AND metadata->>'deleted_at' IS NULL
+        """,
+        list(ids),
+    )
+    if live != len(ids):
+        raise ValueError(
+            f"approval_action_id {action_id} names an entity that is missing, merged or "
+            "deleted; the external proposal cannot apply."
+        )
 
 
 def _as_json_value(value: Any) -> Any:

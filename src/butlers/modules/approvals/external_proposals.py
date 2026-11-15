@@ -47,7 +47,10 @@ EXTERNAL_PROPOSAL_RULE_REFUSAL = (
     "approve or reject this proposal on its own."
 )
 
-_CLIENT_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._:@/-]{0,63}$")
+# A client label is what ``capability_host.assertion.client_label`` makes of a ``cid``: a CIMD
+# host name, or ``dcr:`` and 12 hex digits. No space, slash, ``@`` or other colon, so a raw cid
+# (a URL with a path) can never pass as a label.
+_CLIENT_LABEL_RE = re.compile(r"(?:dcr:[0-9a-f]{12}|[A-Za-z0-9][A-Za-z0-9._-]{0,63})")
 _PREDICATE_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 
 
@@ -87,7 +90,7 @@ async def is_external_proposal_action(connection: Any, action_id: uuid.UUID) -> 
 def validate_client_label(client_label: str) -> str:
     """Bound the client label, the only client-derived text an action stores."""
     if not isinstance(client_label, str) or not _CLIENT_LABEL_RE.fullmatch(client_label):
-        raise ValueError("client_label must be 1-64 printable label characters")
+        raise ValueError("client_label must be a client host name or a dcr: digest label")
     return client_label
 
 
