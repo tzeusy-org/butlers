@@ -16,7 +16,10 @@
 # audience and allowed owner subjects are site values that are never committed: set
 # BUTLERS_PUBLIC_MCP_AUDIENCE (https URL) and BUTLERS_PUBLIC_MCP_ALLOWED_SUBS (comma-separated);
 # the chart refuses to render without them. BUTLERS_PUBLIC_MCP_CLIENT_DOMAINS and
-# BUTLERS_PUBLIC_MCP_REGISTERED_CLIENTS are optional.
+# BUTLERS_PUBLIC_MCP_REGISTERED_CLIENTS are optional. BUTLERS_PUBLIC_MCP_KEYRING_FILE names the
+# verifier keyring document (public keys only, owner act 4), rendered as keyringJson; without it
+# every upgrade resets the keyring to empty and the server refuses every call. All five may live
+# in the site env file (scripts/site-env.sh exports them).
 set -euo pipefail
 
 [ "$#" -ge 2 ] && [ -n "$1" ] && [ -n "$2" ] || {
@@ -68,6 +71,13 @@ setlist() { args+=(--set-string "$1=${2//,/\\,}"); }
 [ -z "${BUTLERS_PUBLIC_MCP_ALLOWED_SUBS:-}" ] || setlist allowedSubs "$BUTLERS_PUBLIC_MCP_ALLOWED_SUBS"
 [ -z "${BUTLERS_PUBLIC_MCP_CLIENT_DOMAINS:-}" ] || setlist clientDomains "$BUTLERS_PUBLIC_MCP_CLIENT_DOMAINS"
 [ -z "${BUTLERS_PUBLIC_MCP_REGISTERED_CLIENTS:-}" ] || setlist registeredClients "$BUTLERS_PUBLIC_MCP_REGISTERED_CLIENTS"
+if [ -n "${BUTLERS_PUBLIC_MCP_KEYRING_FILE:-}" ]; then
+  [ -r "$BUTLERS_PUBLIC_MCP_KEYRING_FILE" ] || {
+    echo "public-mcp chart FAILED: BUTLERS_PUBLIC_MCP_KEYRING_FILE is not readable" >&2
+    exit 1
+  }
+  args+=(--set-file "keyringJson=$BUTLERS_PUBLIC_MCP_KEYRING_FILE")
+fi
 
 helm "${args[@]}" || {
   echo "public-mcp chart FAILED: helm upgrade of butlers-public-mcp at $TAG" >&2

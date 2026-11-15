@@ -10,13 +10,14 @@ dark**: `PUBLIC_MCP_CHART_dev` in `../butlers/makefile` is `off` until the serve
 scripts/k8s/public-mcp-chart-deploy.sh dev <tag> on   # what `make deploy-dev` runs when switched on
 make -C deploy/helm/butlers lint                      # helm lint, both charts
 scripts/k8s/public-mcp-live-checks.sh dev             # go-live: policy, reachability, isolation
+bws run -- scripts/k8s/public-mcp-smoke.sh dev         # dark smoke + witness, throwaway test key
 ```
 
 ## Runtime contract
 
 | | |
 |---|---|
-| Image, command | the `butlers-app` image at the butlers TAG; `butlers-public-mcp` |
+| Image, command | the `butlers-app` image at the butlers TAG; `python -m butlers.mcp_public.server` (the `butlers-public-mcp` console script's target) through the image's sealed `python_entrypoint.py`, because the image puts no venv on PATH |
 | Port | `8080` (path `/mcp`), TCP liveness and readiness; metrics port `9090` (scraped by `lgtm`) |
 | Env | `MCP_PUBLIC_DB_HOST` (`postgres-<env>-rw`), `_DB_PORT=5432`, `_DB_NAME=butlers_public`, `_DB_USER=mcp_public_ro`, `MCP_PUBLIC_DASHBOARD_BASE`, `MCP_PUBLIC_AUDIENCE` and `MCP_PUBLIC_ALLOWED_SUBS` (required, site values), optional `MCP_PUBLIC_CLIENT_DOMAINS` and `MCP_PUBLIC_REGISTERED_CLIENTS`, `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`. No secret is an env var |
 | Files (read-only directories) | `bearer/digest` (+ optional `digest_next`), `db/password`, `canaries/canaries.json` (Secrets); `keyring/keyring.json`, `switches/disabled_domains` (ConfigMaps), all under `/etc/butlers-public-mcp/` |
@@ -47,9 +48,10 @@ on dev, and a new one would cut off the primary's other clients (D8 item 3).
 
 `values.yaml` holds defaults and requires `env`. The network allows, ports (8080, 9090), `postgres-<env>` names and the single replica are constants: a value that tries to set them (`networkPolicy`, `ports`, `database.host|port|clusterNamespace|clusterName`, `replicas` other than 1) fails the render; `values.dev.yaml` sets dev. There is no prod values
 file (OD18). `audience` and `allowedSubs` are required and never committed: the deploy script passes
-them from `BUTLERS_PUBLIC_MCP_AUDIENCE` and `BUTLERS_PUBLIC_MCP_ALLOWED_SUBS`. `keyringJson` is the
-verifier keyring document, rendered verbatim and empty until owner act 4 (the server then verifies
-nothing and refuses). `disabledDomains` is the break-glass file (one domain or `all` per line, `#`
+them from `BUTLERS_PUBLIC_MCP_AUDIENCE` and `BUTLERS_PUBLIC_MCP_ALLOWED_SUBS` (env or the site env
+file). `keyringJson` is the verifier keyring document, rendered verbatim from the file named by
+`BUTLERS_PUBLIC_MCP_KEYRING_FILE` and empty until owner act 4 (the server then verifies nothing and
+refuses). `disabledDomains` is the break-glass file (one domain or `all` per line, `#`
 comments; default a comment only; edit with `kubectl` or Helm, re-read every 10 s). Image registry
 comes from `BUTLERS_IMAGE_REGISTRY`, `dashboardBase` from `BUTLERS_PUBLIC_HOST`.
 

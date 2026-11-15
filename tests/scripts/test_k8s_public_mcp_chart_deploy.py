@@ -57,6 +57,48 @@ def test_dev_on_upgrades_the_chart_at_the_tag_from_the_butlers_namespace(tmp_pat
     ]
 
 
+def test_a_keyring_file_is_rendered_so_a_redeploy_never_empties_the_keyring(
+    tmp_path: Path,
+) -> None:
+    # Without it every upgrade resets keyringJson to "" and the server refuses every call.
+    keyring = tmp_path / "keyring.json"
+    keyring.write_text('{"version": 1}\n')
+    code, stderr, calls = _run(
+        tmp_path, "dev", _TAG, "on", BUTLERS_PUBLIC_MCP_KEYRING_FILE=str(keyring)
+    )
+    assert code == 0, stderr
+    assert calls[0].endswith(f"--set-file keyringJson={keyring}")
+
+
+def test_an_unreadable_keyring_file_fails_before_helm(tmp_path: Path) -> None:
+    missing = tmp_path / "absent-keyring.json"
+    code, stderr, calls = _run(
+        tmp_path, "dev", _TAG, "on", BUTLERS_PUBLIC_MCP_KEYRING_FILE=str(missing)
+    )
+    assert code == 1
+    assert calls == []
+    assert "BUTLERS_PUBLIC_MCP_KEYRING_FILE" in stderr
+
+
+def test_site_values_can_come_from_the_site_env_file(tmp_path: Path) -> None:
+    # The owner keeps them in the site env file (never committed) so every deploy carries them.
+    keyring = tmp_path / "keyring.json"
+    keyring.write_text("{}\n")
+    site = tmp_path / "site.env"
+    site.write_text(
+        "BUTLERS_PUBLIC_MCP_AUDIENCE=https://mcp.example/mcp\n"
+        "export BUTLERS_PUBLIC_MCP_ALLOWED_SUBS='sub-9'\n"
+        f"BUTLERS_PUBLIC_MCP_KEYRING_FILE={keyring}\n"
+        "UNRELATED_SECRET=never-exported\n"
+    )
+    code, stderr, calls = _run(tmp_path, "dev", _TAG, "on", BUTLERS_SITE_ENV=str(site))
+    assert code == 0, stderr
+    assert "--set-string audience=https://mcp.example/mcp" in calls[0]
+    assert "--set-string allowedSubs=sub-9" in calls[0]
+    assert f"--set-file keyringJson={keyring}" in calls[0]
+    assert "never-exported" not in calls[0]
+
+
 @pytest.mark.parametrize("args", [("dev", _TAG, "off"), ("dev", _TAG), ("prod", _TAG, "on")])
 def test_off_default_and_prod_skip_without_calling_helm(
     tmp_path: Path, args: tuple[str, ...]
@@ -148,7 +190,7 @@ case "$args" in
   *"get crd"*) echo "NotFound" >&2; exit 1 ;;
   *"get svc -o json"*) echo '{"items": []}' ;;
   *" run "*|*" wait "*|*" delete "*) exit 0 ;;
-  *"exec -i srv -- python3 -"*)
+  *"exec -i srv -- /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py python -"*)
     case "${FAKE_ISOLATION:-}" in
       three_verdicts_exit_0) printf 'ok   ISOLATION a\nok   ISOLATION b\nok   ISOLATION c\n'; exit 0 ;;
       four_verdicts_exit_1) printf 'ok   ISOLATION %s\n' a b c d; exit 1 ;;

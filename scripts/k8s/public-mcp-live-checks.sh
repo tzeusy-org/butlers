@@ -15,6 +15,9 @@
 #             pg_hba on butlers/postgres/template1
 # Exit 0 only when every check passes; INCONCLUSIVE counts as not passed. Exit 3: aborted before
 # creating any probe.
+# The image has no venv on PATH and no guaranteed `python3`: stdlib probes run the image
+# interpreter /usr/local/bin/python; the isolation probe (asyncpg) runs through the sealed
+# entrypoint, which selects the venv.
 set -uo pipefail
 ENV_NAME="${1:-dev}"
 [ "$ENV_NAME" = dev ] || { echo "live checks: only dev (OD18)" >&2; exit 2; }
@@ -85,7 +88,7 @@ for f in bearer/digest db/password canaries/canaries.json keyring/keyring.json s
 done
 
 # CANARIES: the list must be non-empty (the host refuses on []). Counts only; no value is printed.
-canary_count="$(kubectl -n "$NS" exec "${server_pod}" -- python3 -c '
+canary_count="$(kubectl -n "$NS" exec "${server_pod}" -- /usr/local/bin/python -I -c '
 import json
 v = json.load(open("/etc/butlers-public-mcp/canaries/canaries.json"))
 print(len(v) if isinstance(v, list) and all(isinstance(x, str) and len(x) >= 8 for x in v) else -1)
@@ -119,7 +122,7 @@ probe() { # name labels
 }
 # Exit 0 connected, 2 refused or timed out (a socket error), anything else: the probe itself broke.
 tcp() { # namespace pod host port
-  kubectl -n "$1" exec "$2" -- python3 -c "
+  kubectl -n "$1" exec "$2" -- /usr/local/bin/python -I -c "
 import socket, sys
 s = socket.socket(); s.settimeout(4)
 try:
@@ -149,7 +152,7 @@ reach closed "server pod has no internet route" "$NS" "$server" 1.1.1.1 443
 
 # ISOLATION: scripts/k8s/public-mcp-isolation-probe.py runs in the server pod over stdin. A non-zero
 # exit, a crash or anything but one verdict per database is a failure, never a pass.
-out="$(kubectl -n "$NS" exec -i "$server" -- python3 - < "$(dirname "${BASH_SOURCE[0]}")/public-mcp-isolation-probe.py" 2>&1)" && iso_rc=0 || iso_rc=$?
+out="$(kubectl -n "$NS" exec -i "$server" -- /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py python - <"$(dirname "${BASH_SOURCE[0]}")/public-mcp-isolation-probe.py" 2>&1)" && iso_rc=0 || iso_rc=$?
 verdicts="$(echo "$out" | grep -cE '^(ok|FAIL|INCONCLUSIVE) ')"
 echo "$out" | grep -E '^(ok|FAIL|INCONCLUSIVE) '
 if [ "$iso_rc" -ne 0 ] || [ "$verdicts" -ne 4 ]; then
