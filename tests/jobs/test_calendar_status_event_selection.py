@@ -1,4 +1,4 @@
-"""Out-of-office and working-location events never reach meeting prep or meeting cards.
+"""Out-of-office and working-location events never reach meeting prep, cards or debriefs.
 
 bu-s11n0s.4 S2: core_341 stores Google's ``eventType``. A declared status
 (:data:`~butlers.core.temporal.calendar_provenance.STATUS_EVENT_TYPES`) is not a meeting, so
@@ -14,7 +14,7 @@ import re
 import pytest
 
 from butlers.core.temporal.calendar_provenance import STATUS_EVENT_TYPES
-from butlers.jobs import calendar_prep, meeting_card
+from butlers.jobs import calendar_prep, meeting_card, meeting_debrief
 
 pytestmark = pytest.mark.unit
 
@@ -35,8 +35,10 @@ def _excluded_types(sql: str) -> list[set[str]]:
         (meeting_card._OCCURRENCE_SQL, 2),
         # Relationship and email prep share one upcoming-event selector.
         (calendar_prep._UPCOMING_LINKED_EVENTS_SQL, 1),
+        # An ended out-of-office block is never asked about as a meeting.
+        (meeting_debrief._OCCURRENCE_SQL, 2),
     ],
-    ids=["meeting_card", "calendar_prep"],
+    ids=["meeting_card", "calendar_prep", "meeting_debrief"],
 )
 def test_every_prep_selector_excludes_exactly_the_status_types(sql: str, branches: int) -> None:
     found = _excluded_types(sql)

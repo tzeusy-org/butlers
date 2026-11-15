@@ -11,7 +11,9 @@ tool (``roster/relationship/tools/meeting_debrief.py``); nothing is created with
 Selection (REQ-butler-relationship "Meeting debrief job")
 ---------------------------------------------------------
 An occurrence is debriefed when it has ended inside the lookback window, is not cancelled,
-not all-day, not butler-generated, not transparent (free time), the owner did not decline
+not all-day, not an out-of-office or working-location status event
+(``calendar_provenance.STATUS_EVENT_TYPES``), not butler-generated, not transparent
+(free time), the owner did not decline
 it, and at least one *other* person remains after removing the owner's own entry, room
 resources, declined guests and anyone whose posture is not ``active``. Recurring series
 are debriefed per occurrence: the unique key is ``(event_id, occurrence_start)``.
@@ -93,6 +95,7 @@ _OCCURRENCE_SQL = """
     WHERE ce.recurrence_rule IS NULL
       AND ce.status <> 'cancelled'
       AND ce.all_day = false
+      AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
       AND ce.ends_at <= $2
       AND ce.ends_at > $1
     UNION ALL
@@ -103,6 +106,7 @@ _OCCURRENCE_SQL = """
       AND ce.status <> 'cancelled'
       AND ci.status <> 'cancelled'
       AND ce.all_day = false
+      AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
       AND ci.ends_at <= $2
       AND ci.ends_at > $1
     ORDER BY ends_at
