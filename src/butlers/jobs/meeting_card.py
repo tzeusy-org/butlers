@@ -10,7 +10,8 @@ belong to the insight broker's timed lane.
 Selection
 ---------
 Same occurrence rules as the meeting debrief: not cancelled, not all-day, not butler-generated,
-not transparent, the owner did not decline, and at least one other attendee remains after the
+not transparent, not a declared status (out of office, working location), the owner did not
+decline, and at least one other attendee remains after the
 owner's own entry, room resources and declined guests are removed. A recurring series is carded
 per occurrence. A meeting whose other attendees are all non-``active`` (memorial, no_contact,
 quiet) still gets a card, but their names and lines are withheld; it carries only the title,
@@ -125,6 +126,7 @@ _OCCURRENCE_SQL = """
     WHERE ce.recurrence_rule IS NULL
       AND ce.status <> 'cancelled'
       AND ce.all_day = false
+      AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
       AND ce.starts_at > $1
       AND ce.starts_at <= $2
     UNION ALL
@@ -135,6 +137,7 @@ _OCCURRENCE_SQL = """
       AND ce.status <> 'cancelled'
       AND ci.status <> 'cancelled'
       AND ce.all_day = false
+      AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
       AND ci.starts_at > $1
       AND ci.starts_at <= $2
     ORDER BY starts_at

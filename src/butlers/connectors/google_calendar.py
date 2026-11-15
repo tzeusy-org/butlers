@@ -75,6 +75,7 @@ from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
+from butlers.core.temporal.calendar_provenance import is_status_event
 from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, should_retry_with_ssl_disable
 from butlers.egress.http_transport import external_async_client
@@ -559,6 +560,14 @@ def _is_event_cancelled(event: dict[str, Any]) -> bool:
     return event.get("status") == "cancelled"
 
 
+def _never_starts_soon(event: dict[str, Any]) -> bool:
+    """A cancelled event or a declared status (out of office, working location).
+
+    A status is not a meeting, so it never earns a starting-soon notice.
+    """
+    return _is_event_cancelled(event) or is_status_event(event.get("eventType"))
+
+
 def scan_starting_soon(
     events: list[dict[str, Any]],
     seen_set: StartingSoonSeenSet,
@@ -598,7 +607,7 @@ def scan_starting_soon(
     window_end = now + timedelta(minutes=lead_minutes)
 
     for event in events:
-        if _is_event_cancelled(event):
+        if _never_starts_soon(event):
             continue
 
         # Skip all-day events — only timed events can have starting-soon notifications
@@ -683,7 +692,7 @@ def scan_starting_soon_on_restart(
     window_end = now + timedelta(minutes=lead_minutes)
 
     for event in events:
-        if _is_event_cancelled(event):
+        if _never_starts_soon(event):
             continue
 
         # Skip all-day events
@@ -1623,6 +1632,8 @@ class CalendarConnectorRuntime:
             del self._upcoming_events[eid]
 
         for event_id, (event, start_dt) in list(self._upcoming_events.items()):
+            if is_status_event(event.get("eventType")):
+                continue
             summary = event.get("summary", "(no title)")
             for lead_minutes in self._config.all_lead_minutes:
                 notify_at = start_dt - timedelta(minutes=lead_minutes)

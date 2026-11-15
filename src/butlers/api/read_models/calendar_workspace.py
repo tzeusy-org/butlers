@@ -48,6 +48,7 @@ from butlers.core.temporal.calendar_provenance import (
     counts_toward_owner_load,
     is_calendar_analysis_candidate,
     is_explicit_butler_generated,
+    is_status_event,
 )
 from butlers.core.temporal.conflicts import (
     ConflictCandidate,
@@ -377,6 +378,7 @@ WORKSPACE_COLUMNS: str = (
     " e.visibility,"
     " e.recurrence_rule,"
     " e.metadata AS event_metadata,"
+    " e.event_type,"
     " e.source_butler,"
     " e.source_session_id,"
     " s.id AS source_id,"
@@ -516,6 +518,8 @@ class CalendarWorkspaceRow:
     full_sync_required: bool
     #: The butler schema this row was fetched from (set by the query function).
     db_butler: str = ""
+    #: The provider event type (core_341), verbatim; ``default`` when unknown.
+    event_type: str = "default"
 
 
 def shallow_asdict(row: Any) -> dict[str, Any]:
@@ -717,6 +721,7 @@ def row_to_workspace(row: asyncpg.Record, *, db_butler: str) -> CalendarWorkspac
         last_error=row["last_error"],
         full_sync_required=bool(row["full_sync_required"] or False),
         db_butler=db_butler,
+        event_type=row.get("event_type") or "default",
     )
 
 
@@ -1510,7 +1515,9 @@ async def query_calendar_conflicts(
             all_day=bool(row.get("all_day")),
         )
         for row in deduped
-        if is_calendar_analysis_candidate(
+        # Out of office and working location are statuses: no overlap, no day-load hours.
+        if not is_status_event(row.get("event_type"))
+        and is_calendar_analysis_candidate(
             metadata=row.get("event_metadata"),
             all_day=row.get("all_day") is True,
             starts_at=row["instance_starts_at"],

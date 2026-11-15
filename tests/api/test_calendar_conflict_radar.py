@@ -726,6 +726,37 @@ async def test_conflicts_endpoint_keeps_accepted_tentative_and_other_attendee_de
     assert len([i for i in data["issues"] if i["kind"] == "overlap"]) == 1
 
 
+@pytest.mark.parametrize("event_type", ["outOfOffice", "workingLocation"])
+async def test_conflicts_endpoint_excludes_status_events_from_every_detector(app, event_type):
+    """bu-s11n0s.4: an out-of-office or working-location block is a status, not busy time."""
+    meeting = _ws_row(entry_id="a", title="Design review", start=_DAY, minutes=3 * 60)
+    status = _ws_row(
+        entry_id="b",
+        title="Out of office" if event_type == "outOfOffice" else "Office",
+        start=_DAY + timedelta(minutes=30),
+        minutes=8 * 60,
+    )
+    status["event_type"] = event_type
+    app, _ = _build_app(app, workspace_rows={"general": [meeting, status]})
+
+    data = (await _get(app)).json()["data"]
+
+    # No overlap with the meeting, and its 8 hours add nothing to day load.
+    assert data["issues_available"] is True
+    assert data["issues"] == []
+
+
+async def test_conflicts_endpoint_keeps_typed_focus_time_as_busy_time(app):
+    meeting = _ws_row(entry_id="a", title="Design review", start=_DAY)
+    focus = _ws_row(entry_id="b", title="Writing", start=_DAY + timedelta(minutes=30))
+    focus["event_type"] = "focusTime"
+    app, _ = _build_app(app, workspace_rows={"general": [meeting, focus]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert len([i for i in data["issues"] if i["kind"] == "overlap"]) == 1
+
+
 async def test_conflicts_endpoint_rejects_inverted_window(app):
     app, _ = _build_app(app)
     resp = await _get(app, params={"start": "2026-07-02T00:00:00Z", "end": "2026-07-01T00:00:00Z"})

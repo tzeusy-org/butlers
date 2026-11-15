@@ -8,9 +8,17 @@ The conflict radar and day load already apply the shared attendance rule
 (`counts_toward_owner_load`); the producer did not.
 
 This is the attendance slice of bu-s11n0s.4. The typed Google event-type
-slices (persisted `event_type`/working location, out-of-office `away`, typed
-focus, working-location signal, and day-load/prep exclusions) remain open on
-that bead.
+slices (persisted `event_type`/working location, out-of-office as calendar
+context, typed focus, working-location signal, and day-load/prep exclusions)
+remain open on that bead.
+
+Out-of-office is calendar context only (bu-u33sb7): it suppresses `focused`,
+never asserts `meeting` or `focused` itself (an attended overlapping meeting
+keeps `meeting`), adds no day-load hours, is never a prep or starting-soon candidate,
+and neither enters an owner mode nor writes the legacy `away` signal (which
+maps to `owner.place`). bu-u33sb7 limits automatic mode entry to asleep, in
+flight and house unattended; an out-of-office block can reach an owner mode
+only through an owner-confirmed M7 proposal.
 
 ## What Changes
 

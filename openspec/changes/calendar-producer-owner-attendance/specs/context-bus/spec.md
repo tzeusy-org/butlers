@@ -30,8 +30,19 @@ decline, an owner `tentative` or `needsAction` answer, and absent or malformed
 attendee metadata SHALL keep the event eligible. Both the projected
 `response_status` and the raw provider `responseStatus` spellings SHALL count.
 
+Typed Google status events are calendar context, not meetings (bu-u33sb7):
+an `outOfOffice` or `workingLocation` event SHALL never be a meeting or focus
+candidate. An active confirmed out-of-office event, timed or all-day and not
+butler-generated, SHALL suppress `focused` and SHALL NOT itself assert
+`meeting` or `focused`. An attended meeting overlapping it SHALL keep
+`meeting`, since the owner's own meeting is the stronger signal; with no such
+meeting the producer clears both. It SHALL NOT write the legacy `away` signal
+(which maps to `owner.place`) and SHALL NOT enter an owner mode; mode entry
+from an out-of-office block is reserved to an owner-confirmed proposal. A
+typed `focusTime` event SHALL assert `focused` regardless of its title.
+
 ID: REQ-context-bus-017
-Source: RFC 0009 §Signal Producers (calendar → meeting/focused); bu-s11n0s.4 attendance outcome
+Source: RFC 0009 §Signal Producers (calendar → meeting/focused); bu-s11n0s.4 attendance and event-type outcomes; bu-u33sb7
 Scope: v1-mandatory
 
 #### Scenario: Butler-generated event does not assert context
@@ -84,3 +95,26 @@ Scope: v1-mandatory
 - **WHEN** an active event's guest declined, or the owner's answer is
   `tentative` or `needsAction`, or its attendee metadata is absent or malformed
 - **THEN** the event remains an eligible meeting candidate
+
+#### Scenario: Out-of-office asserts nothing and suppresses focus
+
+- **WHEN** an active confirmed out-of-office event overlaps only a focus block,
+  a declined meeting, or nothing
+- **THEN** the producer clears `meeting` and `focused`
+- **AND** it writes no `away` signal and enters no owner mode
+
+#### Scenario: An attended meeting keeps meeting during out-of-office
+
+- **WHEN** an active confirmed out-of-office event overlaps an attended meeting
+- **THEN** the producer publishes `meeting` from that meeting, with its end as
+  the expiry, and clears `focused`
+
+#### Scenario: Status events are never meeting candidates
+
+- **WHEN** the only active event is a working-location event
+- **THEN** the producer does not set `meeting` or `focused` from it
+
+#### Scenario: Typed focus time asserts focused
+
+- **WHEN** the active eligible event has `event_type = "focusTime"`
+- **THEN** the producer publishes `focused` whatever its title says
