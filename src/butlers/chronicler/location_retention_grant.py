@@ -19,7 +19,9 @@ A raw row is granted only when all of these hold, checked in one statement:
 * no earlier grant names it (preparation is irreversible, so a row is granted at most once).
 
 The caller passes the adapters' current config revisions, computed by constructing the
-adapters from their configuration (each adapter's ``coverage_revision``). Preparation holds the
+adapters from their configuration (each adapter's ``coverage_revision``). Under the locks they
+must equal each adapter's last recorded run (``location_projection_attempts.config_revision``);
+otherwise :class:`StaleRevisions` is raised and nothing is written. Preparation holds the
 policy row (``FOR SHARE``) and every adapter's projection lock in source-name order for the
 whole transaction, so no projection run, coverage write or policy change interleaves with it.
 
@@ -45,7 +47,7 @@ from butlers.chronicler.projection_coverage import (
 )
 from butlers.chronicler.storage import owntracks_projection_lock_key
 
-__all__ = ["GRANT_LIMIT", "PreparedGrant", "prepare_retention_grant"]
+__all__ = ["GRANT_LIMIT", "PreparedGrant", "StaleRevisions", "prepare_retention_grant"]
 
 #: Rows one preparation run grants at most; the rest wait for the next run.
 GRANT_LIMIT = 500
@@ -53,6 +55,14 @@ GRANT_LIMIT = 500
 _LOCK_POLICY = "SELECT days, version FROM location_retention_policy WHERE id = 1 FOR SHARE"
 _LOCK_ADAPTER = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
 _CUTOFF = "SELECT now() - make_interval(days => $1)"
+_ATTEMPT_REVISIONS = (
+    "SELECT adapter_name, config_revision FROM location_projection_attempts "
+    "WHERE adapter_name = ANY($1::text[])"
+)
+
+
+class StaleRevisions(ValueError):
+    """The caller's revisions are not the ones every adapter last ran with: nothing is granted."""
 
 
 def _eligible_sql() -> str:
@@ -140,6 +150,14 @@ async def prepare_retention_grant(
             raise PolicyUnavailable("location retention policy row is missing")
         for adapter in revisions:  # source-name order
             await conn.execute(_LOCK_ADAPTER, owntracks_projection_lock_key(adapter))
+        # Under the locks, each adapter's last recorded run must be at the revision the caller
+        # computed; otherwise the caller's configuration is not the one the coverage reflects.
+        recorded = {
+            row["adapter_name"]: row["config_revision"]
+            for row in await conn.fetch(_ATTEMPT_REVISIONS, list(revisions))
+        }
+        if recorded != revisions:
+            raise StaleRevisions("config_revisions differ from the adapters' last recorded runs")
         cutoff = await conn.fetchval(_CUTOFF, policy["days"])
         rows = await conn.fetch(
             _eligible_sql(),
