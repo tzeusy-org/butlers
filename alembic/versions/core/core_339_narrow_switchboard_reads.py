@@ -16,9 +16,19 @@ This revision revokes the schema-wide SELECT and the default privileges and gran
 table does not exist yet when the core chain runs, so ``sw_079`` grants it once the Switchboard
 chain has created it.
 
-The core chain runs once per butler schema over shared roles, and every statement is
-idempotent.  Only a role or schema that is absent is skipped.  The revokes are plain REVOKE
-statements, which PostgreSQL only warns about when the grantor holds no privilege to remove, so
+The core chain runs once per butler schema, and those runs can overlap, each in one transaction.
+The grant changes rewrite the ``pg_class`` ACL of every Switchboard table, and the Switchboard
+schema's own core run alters those same rows earlier in its transaction.  Running them from another
+schema's chain therefore waits on the Switchboard run's open transaction while holding that chain's
+serialization locks (core_311's advisory lock), which deadlocks.  Every statement here runs only in
+the Switchboard schema's own core run (``current_schema() = 'switchboard'``), in the transaction
+that already owns those rows; every other schema's run is a no-op.  Until the Switchboard core run
+reaches this revision the wide grants stay, as before it.  core_077 and core_143 get the same
+gate, so a schema whose core chain first runs after this one (a fresh database, a new butler)
+cannot re-grant the schema-wide read from its own run.
+
+Every statement is idempotent.  Only a role or schema that is absent is skipped.  The revokes
+are plain REVOKE statements, which PostgreSQL only warns about when the grantor holds no privilege to remove, so
 a revoke that cannot take effect does not fail the migration; the real-PG tests read the
 resulting grants back instead.  Downgrade restores the core_077 and core_143 grants exactly.
 """
@@ -35,6 +45,8 @@ depends_on = None
 _ROLES = ("butler_relationship_rw", "butler_messenger_rw", "butler_travel_rw")
 _SCHEMA = '"switchboard"'
 _INBOX = '"switchboard"."message_inbox"'
+# Only the Switchboard schema's own core run touches its tables' ACLs.
+_OWNER_RUN = "'switchboard'"
 
 
 def _quote_ident(identifier: str) -> str:
@@ -46,14 +58,19 @@ def _quote_literal(value: str) -> str:
 
 
 def _run(statement: str, role: str, *tolerate: str) -> None:
-    """Run *statement* when *role* exists, skipping only the named absent-object cases."""
+    """Run *statement* in the Switchboard schema's own core run when *role* exists.
+
+    Skips only the named absent-object cases.  Another schema's core run is a no-op (see the
+    module docstring: a cross-schema ACL rewrite there deadlocks against the Switchboard run).
+    """
     handlers = "".join(f"WHEN {condition} THEN NULL;\n" for condition in tolerate)
     exception = f"EXCEPTION\n{handlers}" if handlers else ""
     op.execute(
         f"""
         DO $$
         BEGIN
-            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(role)}) THEN
+            IF current_schema() = {_OWNER_RUN}
+               AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(role)}) THEN
                 EXECUTE {_quote_literal(statement)};
             END IF;
         {exception}END

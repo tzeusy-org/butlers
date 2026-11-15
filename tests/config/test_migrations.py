@@ -616,7 +616,9 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
         scalar=True,
     )
     assert count == 1
-    assert relationship_read_default() is False
+    # core_077 restored the read default; only the Switchboard schema's own core run
+    # (core_339, below) narrows it, so another schema's head leaves it in place.
+    assert relationship_read_default() is True
     check_bootstrap_database(db_url)
     command.upgrade(relationship_core, "core@head")
     command.upgrade(switchboard_core, "core@head")

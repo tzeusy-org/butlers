@@ -41,9 +41,13 @@ def _quote_literal(value: str) -> str:
 
 
 def _execute_best_effort(statement: str, *, role_name: str | None = None) -> None:
-    condition = "TRUE"
+    # Only the Switchboard schema's own core run rewrites its tables' ACLs (bu-svqpzo.13):
+    # from another schema's run, which can overlap it, the rewrite deadlocks (see core_339).
+    condition = f"current_schema() = {_quote_literal(_SWITCHBOARD_SCHEMA)}"
     if role_name is not None:
-        condition = f"EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(role_name)})"
+        condition += (
+            f" AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(role_name)})"
+        )
 
     op.execute(
         f"""

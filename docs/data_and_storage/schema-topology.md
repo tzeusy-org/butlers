@@ -216,7 +216,10 @@ psql -h localhost -U butlers -d butlers -c \
   revokes the `core_077`/`core_143` schema-wide SELECT and default privileges; `sw_079` grants it on a
   fresh database once the Switchboard chain has created the table). They cannot read
   `switchboard.butler_secrets` or any table added later. A new cross-schema read needs its own named
-  grant, in the chain that owns the table.
+  grant, in the chain that owns the table. In the core chain, which runs once per schema and can
+  overlap, only the owning schema's run may rewrite its tables' ACLs: `core_077`, `core_143` and
+  `core_339` act only when `current_schema()` is `switchboard`, because the same rewrite from
+  another schema's run deadlocks against the owner's open transaction.
 - DND mutation authority is bootstrap-only: `scripts/init-db.sql` owns the superuser
   installer/finalizer, and `core_197` may only validate that interface or call its no-argument
   installer. `public.user_context` and its guard, audit and policies belong to

@@ -435,3 +435,37 @@ def test_rerunning_the_bootstrap_after_head_does_not_rewiden_relationship_reads(
     for role in _ROLES:
         assert _readable(db_url, role) == {"message_inbox"}, role
         assert _select_grants(db_url, role)["later_table"] is False, role
+
+
+def test_only_the_switchboard_core_run_rewrites_switchboard_acls(postgres_container) -> None:
+    """Another schema's core run never rewrites Switchboard ACLs, in either direction.
+
+    Overlapping per-schema core runs deadlock when one rewrites another schema's table ACLs
+    (core_311's advisory lock against the Switchboard run's open transaction), so core_077,
+    core_143 and core_339 act only in the Switchboard schema's own run.
+    """
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    core, chain = _configs(db_url)
+    command.upgrade(core, _CORE_BEFORE)
+    command.upgrade(chain, _SWITCHBOARD_BEFORE)
+    wide = {role: _readable(db_url, role) for role in _ROLES}
+    for role in _ROLES:
+        assert {"message_inbox", "butler_secrets"} <= wide[role], role
+
+    # A whole core chain for another schema, core_077 and core_143 included, changes nothing.
+    general = _build_alembic_config(db_url, chains=["core"], target_schema="general")
+    command.upgrade(general, "core@head")
+    assert {role: _readable(db_url, role) for role in _ROLES} == wide
+    assert _relationship_switchboard_default_acl(db_url) is True
+
+    command.upgrade(core, "core@head")
+    for role in _ROLES:
+        assert _readable(db_url, role) == {"message_inbox"}, role
+    assert _relationship_switchboard_default_acl(db_url) is False
+
+    # A schema whose core chain first runs afterwards cannot re-widen the read.
+    health = _build_alembic_config(db_url, chains=["core"], target_schema="health")
+    command.upgrade(health, "core@head")
+    for role in _ROLES:
+        assert _readable(db_url, role) == {"message_inbox"}, role
+    assert _relationship_switchboard_default_acl(db_url) is False
