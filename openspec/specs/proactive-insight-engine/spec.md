@@ -1056,3 +1056,43 @@ Scope: v1-mandatory
 - **AND** a successful protected edit MUST use the same canonical rendering primitive for all replacement text, with every link inert and previews disabled, while preserving authenticated target/message identity and current edit permission
 - **AND** if that trusted edit path cannot enforce protection, it MUST refuse before the provider call and truthfully use the existing rejected-edit/fold path with the full persisted protection union; it MUST NOT mark the raw edit applied or lose protection in the later digest
 - **AND** owner-only independently unexposed edits MUST retain ordinary rendering, and existing amendment CAS, attempt limits, cancellation, ambiguous outcomes and replay accounting MUST remain; no unknown edit becomes a claimed success, duplicate send or invented safe retry
+
+### Requirement: Owner-Declared Break-Through Hits Are Observed At Ingest
+
+The system SHALL evaluate every accepted inbound message against the owner's current break-through clauses at ingest, independent of ingestion rules, and SHALL record each match once as a durable hit and announce it as a metadata-only `switchboard.break_through_hit` event. A clause is owner-authored only (the authenticated dashboard route), never created by a butler or a model tool. Until a later slice enables delivery, a hit is shadow-only: it records and announces and sends nothing.
+
+Source: bu-s11n0s.8 S1 (owner-released intent bu-9zmre6)
+Scope: v1-mandatory
+
+#### Scenario: A matching inbound message yields one hit and one event
+
+- **WHEN** an inbound message is accepted whose resolved sender entity, authenticated sender domain, channel or account-security kind matches a current, unrevoked, unexpired clause
+- **THEN** exactly one row is recorded in `switchboard.break_through_hits` keyed by `(clause_id, source_request_id)` and exactly one `switchboard.break_through_hit` event is published
+- **AND** nothing is sent to the owner and no insight candidate is created
+
+#### Scenario: The event carries metadata only
+
+- **WHEN** the event is published
+- **THEN** its payload contains only the clause id, the channel, the source request id and, when the sender resolved to an entity, that entity's display name
+- **AND** it never contains a message body, subject, snippet, sender address or link, and an unresolved sender is never replaced by its address
+
+#### Scenario: A replay is silent
+
+- **WHEN** the same `(clause_id, source_request_id)` is observed again, such as a connector replay
+- **THEN** the insert conflicts, no second event is published and the first hit is unchanged, including under concurrent replays
+
+#### Scenario: A promoted skip rule does not hide a hit
+
+- **WHEN** an ingestion rule skips or blocks the same sender
+- **THEN** the hit is still recorded and announced, because the evaluator reads only the sender, channel and account-security classification
+
+#### Scenario: Unknown is routine and ingest never fails
+
+- **WHEN** the evaluator is unavailable (the interface is deactivated, the function raises, or the observation exceeds its timeout)
+- **THEN** the message is accepted as if no clause matched, no hit or event is recorded, and the fault is logged by error class at most once per interval rather than once per message
+- **AND** the observation is bounded by a single timeout and never raises into ingest
+
+#### Scenario: Revoking a clause stops new hits and keeps old ones
+
+- **WHEN** the owner revokes a clause
+- **THEN** later messages no longer match it, and hits already recorded remain, because the hit record has no update, delete or truncate path
