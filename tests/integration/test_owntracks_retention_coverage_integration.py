@@ -1,7 +1,8 @@
 """Real-Postgres proofs for OwnTracks projection coverage (bu-s11n0s.7, slice 2).
 
-``owntracks.points`` writes ``chronicler.location_projection_coverage`` and
-``chronicler.location_projection_open_members`` on its projection transaction (chronicler_032),
+``owntracks.points``, ``owntracks.place_cluster`` and ``owntracks.ssid_presence`` write
+``chronicler.location_projection_coverage`` and ``chronicler.location_projection_open_members``
+(chronicler_032, multi-key carries since chronicler_033) on their projection transactions,
 reading each raw row's immutable ``retention_at`` (core_340). Every assertion reads committed
 state through a fresh query after the adapter run returned.
 """
@@ -21,6 +22,20 @@ from butlers.chronicler.adapters.owntracks import (
     MOVEMENT_CARRY_PREFIX,
     SOURCE_NAME,
     OwnTracksPointAdapter,
+)
+from butlers.chronicler.adapters.owntracks_place_cluster import (
+    SOURCE_NAME as PLACE_SOURCE_NAME,
+)
+from butlers.chronicler.adapters.owntracks_place_cluster import (
+    STAY_CARRY_PREFIX,
+    OwnTracksPlaceClusterAdapter,
+)
+from butlers.chronicler.adapters.owntracks_ssid import (
+    SOURCE_NAME as SSID_SOURCE_NAME,
+)
+from butlers.chronicler.adapters.owntracks_ssid import (
+    OwnTracksSsidPresenceAdapter,
+    presence_carry_key,
 )
 from butlers.chronicler.contracts import INITIAL_SOURCES, seed_source_registry
 from butlers.chronicler.models import Layer, PointEvent, Precision, Privacy
@@ -68,7 +83,11 @@ async def _insert_point(
     key: str | None = None,
     recorded_at: datetime | None = None,
     lat: float = _LAT,
+    ssid: str | None = None,
 ) -> UUID:
+    payload: dict[str, object] = {"_type": "location"}
+    if ssid is not None:
+        payload["SSID"] = ssid
     return await target.fetchval(
         """
         INSERT INTO connectors.owntracks_points
@@ -82,7 +101,7 @@ async def _insert_point(
         lat,
         _LON,
         _ENDPOINT,
-        {"_type": "location"},
+        payload,
         recorded_at or ts,
     )
 
@@ -92,18 +111,38 @@ async def _run(target: asyncpg.Pool, **kwargs) -> None:
     assert result.error is None, result.error
 
 
-async def _coverage(target: asyncpg.Pool) -> dict[UUID, asyncpg.Record]:
+_SSID_PLACES = {"home-wifi": "home"}
+
+
+async def _run_place(target: asyncpg.Pool) -> None:
+    result = await OwnTracksPlaceClusterAdapter().run(pool=target, chronicler_pool=target)
+    assert result.error is None, result.error
+
+
+async def _run_ssid(target: asyncpg.Pool) -> None:
+    adapter = OwnTracksSsidPresenceAdapter(ssid_places=_SSID_PLACES)
+    result = await adapter.run(pool=target, chronicler_pool=target)
+    assert result.error is None, result.error
+
+
+async def _coverage(target: asyncpg.Pool, adapter: str = SOURCE_NAME) -> dict[UUID, asyncpg.Record]:
     rows = await target.fetch(
-        "SELECT * FROM location_projection_coverage WHERE adapter_name = $1", SOURCE_NAME
+        "SELECT * FROM location_projection_coverage WHERE adapter_name = $1", adapter
     )
     return {row["raw_source_id"]: row for row in rows}
 
 
-async def _open(target: asyncpg.Pool) -> dict[UUID, asyncpg.Record]:
+async def _open(target: asyncpg.Pool, adapter: str = SOURCE_NAME) -> dict[UUID, asyncpg.Record]:
     rows = await target.fetch(
-        "SELECT * FROM location_projection_open_members WHERE adapter_name = $1", SOURCE_NAME
+        "SELECT * FROM location_projection_open_members WHERE adapter_name = $1", adapter
     )
     return {row["raw_source_id"]: row for row in rows}
+
+
+async def _episode_of(target: asyncpg.Pool, adapter: str, start_at: datetime) -> UUID:
+    return await target.fetchval(
+        "SELECT id FROM episodes WHERE source_name = $1 AND start_at = $2", adapter, start_at
+    )
 
 
 async def _event_id(target: asyncpg.Pool, raw_id: UUID) -> UUID:
@@ -160,7 +199,7 @@ async def test_closed_segment_is_covered_and_open_segment_waits_until_it_closes(
         assert record["retention_at"] == await _retention_at(chronicler_db, raw_id)
         assert record["logical_source_key"].startswith(f"owntracks:{_ENDPOINT}:")
     assert set(members) == set(held)
-    assert {member["carry_key"] for member in members.values()} == {_CARRY}
+    assert {tuple(member["carry_keys"]) for member in members.values()} == {(_CARRY,)}
     # The open segment is already upserted as an episode, which is not terminal.
     open_episode = await _episode_starting(chronicler_db, _T0 + timedelta(minutes=60))
     assert open_episode is not None
@@ -229,7 +268,7 @@ async def test_late_offline_fix_is_covered_by_device_age_on_a_later_run(
     # its trail carry, never covered yet.
     held = await _open(chronicler_db)
     assert late in held
-    assert held[late]["carry_key"].startswith("trail:")
+    assert any(key.startswith("trail:") for key in held[late]["carry_keys"])
     assert late not in await _coverage(chronicler_db)
     # A later fix (arriving after the late one) resolves the trail and closes the old carry.
     await _insert_point(
@@ -404,3 +443,131 @@ async def test_only_the_chronicler_runtime_role_reaches_coverage_and_it_is_appen
             SOURCE_NAME,
             _T0,
         )
+
+
+# -- owntracks.place_cluster and owntracks.ssid_presence (PR-B) -------------------------------
+
+_FAR_LAT = 1.31000  # ~1.1 km north: another stay
+
+
+async def test_place_stay_is_held_while_open_and_covered_once_it_closes(
+    chronicler_db: asyncpg.Pool,
+) -> None:
+    stay = [await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=m)) for m in (0, 10, 25)]
+    await _run_place(chronicler_db)
+
+    members = await _open(chronicler_db, PLACE_SOURCE_NAME)
+    assert set(stay) <= set(members)
+    episode = await _episode_of(chronicler_db, PLACE_SOURCE_NAME, _T0)
+    assert episode is not None
+    for raw_id in stay:
+        assert f"{STAY_CARRY_PREFIX}{_ENDPOINT}" in members[raw_id]["carry_keys"]
+        assert members[raw_id]["output_episode_ids"] == [episode]
+    assert not set(stay) & set(await _coverage(chronicler_db, PLACE_SOURCE_NAME))
+
+    for m in (30, 35):
+        await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=m), lat=_FAR_LAT)
+    await _run_place(chronicler_db)
+
+    coverage = await _coverage(chronicler_db, PLACE_SOURCE_NAME)
+    for raw_id in stay:
+        assert coverage[raw_id]["disposition"] == "projected"
+        assert coverage[raw_id]["output_episode_ids"] == [episode]
+        assert coverage[raw_id]["retention_at"] == await _retention_at(chronicler_db, raw_id)
+    assert not set(stay) & set(await _open(chronicler_db, PLACE_SOURCE_NAME))
+
+
+async def test_place_failed_run_rolls_back_coverage(
+    chronicler_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import butlers.chronicler.adapters.owntracks_place_cluster as place
+
+    for m in (0, 10, 25):
+        await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=m))
+    seen_inside: list[int] = []
+
+    async def _fail_after_coverage(conn, source_name, carryover):
+        seen_inside.append(
+            await conn.fetchval("SELECT count(*) FROM location_projection_open_members")
+        )
+        raise RuntimeError("checkpoint write failed")
+
+    monkeypatch.setattr(place, "save_carryover", _fail_after_coverage)
+    result = await OwnTracksPlaceClusterAdapter().run(
+        pool=chronicler_db, chronicler_pool=chronicler_db
+    )
+
+    assert result.error == "checkpoint write failed"
+    assert seen_inside and seen_inside[0] > 0, "coverage was written inside the failing run"
+    assert await _coverage(chronicler_db, PLACE_SOURCE_NAME) == {}
+    assert await _open(chronicler_db, PLACE_SOURCE_NAME) == {}
+
+
+async def test_ssid_presence_is_held_while_open_and_unmapped_fixes_are_evaluated(
+    chronicler_db: asyncpg.Pool,
+) -> None:
+    home = [
+        await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=m), ssid="home-wifi")
+        for m in (0, 10)
+    ]
+    await _run_ssid(chronicler_db)
+
+    members = await _open(chronicler_db, SSID_SOURCE_NAME)
+    episode = await _episode_of(chronicler_db, SSID_SOURCE_NAME, _T0)
+    assert episode is not None
+    assert set(members) == set(home)
+    for raw_id in home:
+        assert list(members[raw_id]["carry_keys"]) == [presence_carry_key(_ENDPOINT, _T0)]
+        assert members[raw_id]["output_episode_ids"] == [episode]
+
+    unmapped = await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=15), ssid="cafe-wifi")
+    await _run_ssid(chronicler_db)
+
+    coverage = await _coverage(chronicler_db, SSID_SOURCE_NAME)
+    for raw_id in home:
+        assert coverage[raw_id]["disposition"] == "projected"
+        assert coverage[raw_id]["output_episode_ids"] == [episode]
+    assert coverage[unmapped]["disposition"] == "evaluated_no_output"
+    assert coverage[unmapped]["output_episode_ids"] == []
+    assert await _open(chronicler_db, SSID_SOURCE_NAME) == {}
+
+
+async def test_ssid_failed_run_rolls_back_coverage_and_records_the_failure(
+    chronicler_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import butlers.chronicler.adapters.owntracks_ssid as ssid
+
+    for m in (0, 10):
+        await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=m), ssid="home-wifi")
+    seen_inside: list[int] = []
+
+    async def _fail_after_coverage(conn, source_name, carryover):
+        seen_inside.append(
+            await conn.fetchval("SELECT count(*) FROM location_projection_open_members")
+        )
+        raise RuntimeError("checkpoint write failed")
+
+    monkeypatch.setattr(ssid, "save_carryover", _fail_after_coverage)
+    result = await OwnTracksSsidPresenceAdapter(ssid_places=_SSID_PLACES).run(
+        pool=chronicler_db, chronicler_pool=chronicler_db
+    )
+
+    assert result.error == "checkpoint write failed"
+    assert seen_inside == [2], "coverage was written inside the failing transaction"
+    assert await _coverage(chronicler_db, SSID_SOURCE_NAME) == {}
+    assert await _open(chronicler_db, SSID_SOURCE_NAME) == {}
+    assert (
+        await chronicler_db.fetchval(
+            "SELECT count(*) FROM episodes WHERE source_name = $1", SSID_SOURCE_NAME
+        )
+        == 0
+    )
+    # The failure is recorded after the rollback, outside the projection transaction.
+    checkpoint = await chronicler_db.fetchrow(
+        "SELECT watermark, last_error FROM projection_checkpoints "
+        "WHERE source_name = $1 AND subsource = ''",
+        SSID_SOURCE_NAME,
+    )
+    assert checkpoint is not None
+    assert checkpoint["last_error"] == "checkpoint write failed"
+    assert checkpoint["watermark"] is None

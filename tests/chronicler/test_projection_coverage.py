@@ -52,11 +52,12 @@ class _Tables:
         self.writes += 1
         for row in args:
             if command.startswith("INSERT INTO location_projection_open_members"):
-                adapter, key, raw_id, logical, retention, events, episodes, batch = row
+                adapter, keys, raw_id, logical, retention, events, episodes, batch = row
                 assert raw_id not in self.open, "primary key violation"
+                assert keys and all(keys), "carry_keys check violation"
                 self.open[raw_id] = {
                     "adapter_name": adapter,
-                    "carry_key": key,
+                    "carry_keys": list(keys),
                     "raw_source_id": raw_id,
                     "logical_source_key": logical,
                     "retention_at": retention,
@@ -93,6 +94,10 @@ def _row(**overrides: Any) -> dict[str, Any]:
 
 def _ledger() -> ProjectionCoverage:
     return ProjectionCoverage("owntracks.points")
+
+
+def _place_ledger() -> ProjectionCoverage:
+    return ProjectionCoverage("owntracks.place_cluster", evaluates_every_row=True)
 
 
 def test_unknown_adapter_has_no_coverage_contract() -> None:
@@ -153,7 +158,7 @@ async def test_held_row_waits_open_until_its_carry_closes_with_the_carry_episode
     first.hold(row["id"], key)
     await first.flush(tables)
     assert tables.coverage == {}
-    assert tables.open[row["id"]]["carry_key"] == key
+    assert tables.open[row["id"]]["carry_keys"] == [key]
     assert tables.open[row["id"]]["output_event_ids"] == [event]
 
     # A run that neither closes nor releases the carry leaves the member untouched.
@@ -199,7 +204,7 @@ async def test_released_trail_member_is_covered_only_when_not_held_again() -> No
     assert tables.coverage[seed["id"]]["disposition"] == "projected"
 
 
-async def test_movement_carry_wins_over_trail_so_its_closing_episode_is_attached() -> None:
+async def test_a_row_in_two_carries_waits_for_both_and_keeps_each_closing_episode() -> None:
     tables = _Tables()
     movement = f"{MOVEMENT_CARRY_PREFIX}owntracks:alice"
     trail = f"{TRAIL_CARRY_PREFIX}owntracks:alice"
@@ -210,7 +215,7 @@ async def test_movement_carry_wins_over_trail_so_its_closing_episode_is_attached
     first.hold(seed["id"], trail)
     first.hold(seed["id"], movement)
     await first.flush(tables)
-    assert tables.open[seed["id"]]["carry_key"] == movement
+    assert tables.open[seed["id"]]["carry_keys"] == sorted([movement, trail])
 
     episode = uuid4()
     closing = _ledger()
@@ -218,9 +223,97 @@ async def test_movement_carry_wins_over_trail_so_its_closing_episode_is_attached
     closing.hold(seed["id"], trail)  # still the trail seed
     closing.close_carry(movement, episode)
     await closing.flush(tables)
-    assert tables.open[seed["id"]]["carry_key"] == trail
+    assert tables.open[seed["id"]]["carry_keys"] == [trail]
     assert tables.open[seed["id"]]["output_episode_ids"] == [episode]
     assert tables.coverage == {}
+
+    resolved = _ledger()
+    resolved.release_prefix(TRAIL_CARRY_PREFIX)
+    await resolved.flush(tables)
+    assert seed["id"] not in tables.open
+    assert tables.coverage[seed["id"]]["output_episode_ids"] == [episode]
+
+
+async def test_closing_one_of_two_persistent_carries_keeps_the_row_open() -> None:
+    tables = _Tables()
+    stay, trip = "place:owntracks:alice:1", "away:owntracks:alice:1"
+    row = _row()
+    first = _place_ledger()
+    first.observe(row)
+    first.hold(row["id"], stay)
+    first.hold(row["id"], trip)
+    await first.flush(tables)
+
+    stay_episode, trip_episode = uuid4(), uuid4()
+    stay_closes = _place_ledger()
+    stay_closes.close_carry(stay, stay_episode)
+    await stay_closes.flush(tables)
+    assert tables.open[row["id"]]["carry_keys"] == [trip]
+    assert tables.coverage == {}
+
+    trip_closes = _place_ledger()
+    trip_closes.close_carry(trip, trip_episode)
+    await trip_closes.flush(tables)
+    record = tables.coverage[row["id"]]
+    assert record["disposition"] == "projected"
+    assert set(record["output_episode_ids"]) == {stay_episode, trip_episode}
+
+
+async def test_carry_output_reaches_stored_members_while_the_carry_stays_open() -> None:
+    tables = _Tables()
+    key = "place:owntracks:alice:1"
+    early = _row()
+    first = _place_ledger()
+    first.observe(early)
+    first.hold(early["id"], key)
+    await first.flush(tables)
+    assert tables.open[early["id"]]["output_episode_ids"] == []
+
+    episode = uuid4()
+    reached = _place_ledger()
+    reached.carry_output(key, episode)
+    await reached.flush(tables)
+    assert tables.open[early["id"]]["carry_keys"] == [key]
+    assert tables.open[early["id"]]["output_episode_ids"] == [episode]
+    assert tables.coverage == {}
+
+
+async def test_output_for_a_stored_member_applies_only_to_a_stored_member() -> None:
+    tables = _Tables()
+    key = "departure:owntracks:alice"
+    member, stranger = _row(), _row()
+    first = _place_ledger()
+    first.observe(member)
+    first.hold(member["id"], key)
+    await first.flush(tables)
+
+    episode = uuid4()
+    later = _place_ledger()
+    later.record_episode([{"id": member["id"]}, {"id": stranger["id"]}], episode)
+    later.close_carry(key)
+    await later.flush(tables)
+    assert tables.coverage[member["id"]]["output_episode_ids"] == [episode]
+    assert stranger["id"] not in tables.coverage
+
+
+async def test_an_evaluating_adapter_records_a_finished_row_without_output() -> None:
+    tables = _Tables()
+    row, held = _row(), _row()
+    ledger = _place_ledger()
+    ledger.observe(row)
+    ledger.observe(held)
+    ledger.hold(held["id"], "place:owntracks:alice:1")
+    summary = await ledger.flush(tables)
+    record = tables.coverage[row["id"]]
+    assert record["disposition"] == "evaluated_no_output"
+    assert record["output_event_ids"] == [] and record["output_episode_ids"] == []
+    assert held["id"] not in tables.coverage
+    assert summary.evaluated == 1
+
+    closing = _place_ledger()
+    closing.close_carry("place:owntracks:alice:1")
+    await closing.flush(tables)
+    assert tables.coverage[held["id"]]["disposition"] == "evaluated_no_output"
 
 
 async def test_first_terminal_record_wins() -> None:
@@ -263,7 +356,7 @@ def test_points_adapter_closes_an_extended_carry_with_the_extension_episode() ->
     )
     key = f"{MOVEMENT_CARRY_PREFIX}owntracks:alice"
     assert ledger._closed == {key: {extension_episode}}
-    assert ledger._holds == {fresh[0]["id"]: key}
+    assert ledger._holds == {fresh[0]["id"]: {key}}
     assert ledger._rows[late[0]["id"]].episode_ids == {late_episode}
     assert all(ledger._rows[r["id"]].episode_ids == {extension_episode} for r in extension)
 
@@ -276,7 +369,7 @@ def test_points_adapter_keeps_a_still_open_extended_carry_and_closes_a_replaced_
     OwnTracksPointAdapter._record_movement_coverage(
         extended, [_segment(rows, extends=True, episode=uuid4())], {}
     )
-    assert extended._closed == {} and extended._holds == {rows[0]["id"]: key}
+    assert extended._closed == {} and extended._holds == {rows[0]["id"]: {key}}
 
     stored_episode = uuid4()
     replaced = _ledger()

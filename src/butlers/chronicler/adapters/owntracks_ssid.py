@@ -23,6 +23,23 @@ the routine-based occupation adapter.  Both are ``layer=activity``,
 ``precision=minute``, and ``confidence=medium`` because an owner-declared SSID
 mapping is one strong canonical signal, not two independent signals.
 
+**Projection coverage** (bu-s11n0s.7, ``butlers.chronicler.projection_coverage``). Each run
+records, in its projection transaction, which raw fixes it has finished with. Every fix it reads
+is evaluated:
+
+- **Held** while it belongs to the endpoint's open span kept in carryover, presence or
+  singleton (carry key ``ssid:<endpoint>:<start_at>``): a later fix may still extend it. An
+  open presence span is already upserted; its episode is attached to all its members,
+  including those stored earlier.
+- **Projected** once its span closes with a presence episode (two or more observations).
+- **Evaluated without output** for a fix with no SSID or an unmapped one, and for a singleton
+  span that closed. That decision is relative to the owner's mapping at the time; coverage
+  does not yet record the mapping revision, and a mapping change does not invalidate it.
+- A replay from the start (mapping change, rebuilt cursor) drops the carryover. A stored carry
+  the replay rebuilds with the same endpoint and start closes as usual; one it does not
+  rebuild stays held (never covered) until coverage invalidation exists. Malformed fixes get
+  no coverage.
+
 No LLM call — deterministic Tier-1 projection only (RFC 0014 D5).
 """
 
@@ -31,7 +48,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -50,6 +67,7 @@ from butlers.chronicler.confidence import (
     evidence_refs_from_event_ids,
 )
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
+from butlers.chronicler.projection_coverage import ProjectionCoverage
 from butlers.chronicler.storage import (
     get_carryover,
     get_checkpoint,
@@ -75,6 +93,8 @@ CLOCK_SKEW_THRESHOLD_HOURS = 4
 _VALID_PLACES = frozenset({"home", "work"})
 _MAPPING_DIGEST_KEY = "_mapping_digest"
 _SOURCE_CURSOR_KEY = "_source_cursor"
+# Coverage carry key (see "Projection coverage" in the module docstring).
+PRESENCE_CARRY_PREFIX = "ssid:"
 
 
 def parse_ssid_places(value: Any) -> dict[str, str]:
@@ -116,6 +136,8 @@ class SsidPresenceSpan:
     start_at: datetime
     end_at: datetime
     point_count: int
+    # Raw row ids that joined the span in this batch (projection coverage only).
+    member_ids: list[Any] = field(default_factory=list, compare=False, repr=False)
 
     def source_ref(self) -> str:
         return (
@@ -130,12 +152,16 @@ def group_ssid_points(
     ssid_places: dict[str, str],
     max_gap: timedelta,
     prior_carryover: dict[str, Any] | None = None,
+    open_spans: dict[str, SsidPresenceSpan] | None = None,
 ) -> tuple[list[SsidPresenceSpan], dict[str, Any]]:
     """Group mapped same-SSID observations per endpoint.
 
     Missing/unmapped SSIDs are hard boundaries.  A presence span needs at
     least two observations; a singleton remains carryover so a later batch can
     establish duration without fabricating an instantaneous presence episode.
+
+    ``open_spans``, when given, receives each endpoint's span still open at the
+    end of the batch (the one written to carryover), presence or singleton.
     """
     prior_carryover = prior_carryover or {}
     by_endpoint: dict[str, list[dict[str, Any]]] = {}
@@ -178,6 +204,8 @@ def group_ssid_points(
             ):
                 current.end_at = row["ts"]
                 current.point_count += 1
+                if row.get("id") is not None:
+                    current.member_ids.append(row["id"])
                 continue
 
             _append_if_presence(spans, current)
@@ -188,9 +216,12 @@ def group_ssid_points(
                 start_at=row["ts"],
                 end_at=row["ts"],
                 point_count=1,
+                member_ids=[row["id"]] if row.get("id") is not None else [],
             )
 
         _append_if_presence(spans, current)
+        if current is not None and open_spans is not None:
+            open_spans[endpoint] = current
         if current is not None:
             new_carryover[endpoint] = {
                 "ssid": current.ssid,
@@ -264,7 +295,80 @@ def _resume_span(
         start_at=start_at,
         end_at=first_row["ts"],
         point_count=point_count + 1,
+        member_ids=[first_row["id"]] if first_row.get("id") is not None else [],
     )
+
+
+def _optional_field(row: Any, name: str) -> Any:
+    """A column a test double or a legacy reader may not select."""
+    try:
+        return row[name]
+    except (KeyError, IndexError):
+        return None
+
+
+def record_presence_coverage(
+    coverage: ProjectionCoverage,
+    *,
+    spans: list[SsidPresenceSpan],
+    episodes: dict[str, Any],
+    open_spans: dict[str, SsidPresenceSpan],
+    prior_carryover: dict[str, Any],
+    present: set[str],
+) -> None:
+    """Record presence outputs and carries for one run (see "Projection coverage").
+
+    Each endpoint's span still open at the end of the batch (in carryover, presence or
+    singleton) holds its members under its carry key, ``ssid:<endpoint>:<start_at>``. The span
+    carried in from the previous run either continues (same ``start_at``) or has ended; an
+    ended span closes with its episode, if it reached two observations.
+    """
+    open_ids = {id(span) for span in open_spans.values()}
+    for span in spans:
+        episode_id = episodes.get(span.source_ref())
+        coverage.record_episode([{"id": member} for member in span.member_ids], episode_id)
+        if id(span) not in open_ids:
+            # A span that ended in this batch closes a stored carry of the same span, which
+            # only a replay (rebuilding spans already carried before) can have left behind.
+            ended_key = presence_carry_key(span.endpoint_identity, span.start_at)
+            coverage.close_carry(ended_key, episode_id)
+    for span in open_spans.values():
+        key = presence_carry_key(span.endpoint_identity, span.start_at)
+        for member in span.member_ids:
+            coverage.hold(member, key)
+
+    for endpoint, carry in prior_carryover.items():
+        if endpoint in {_MAPPING_DIGEST_KEY, _SOURCE_CURSOR_KEY} or endpoint not in present:
+            continue
+        start = _carried_start(carry)
+        if start is None:
+            # A malformed carry was discarded; its members (if any) stay held, never covered.
+            continue
+        key = presence_carry_key(endpoint, start)
+        continued = next(
+            (s for s in spans if s.endpoint_identity == endpoint and s.start_at == start), None
+        )
+        still_open = open_spans.get(endpoint)
+        episode_id = episodes.get(continued.source_ref()) if continued is not None else None
+        if still_open is not None and still_open.start_at == start:
+            coverage.carry_output(key, episode_id)
+        else:
+            coverage.close_carry(key, episode_id)
+
+
+def presence_carry_key(endpoint: str, start_at: datetime) -> str:
+    """One open span's carry key: a span is identified by its endpoint and start."""
+    return f"{PRESENCE_CARRY_PREFIX}{endpoint}:{start_at.isoformat()}"
+
+
+def _carried_start(carry: Any) -> datetime | None:
+    if not isinstance(carry, dict):
+        return None
+    try:
+        start = datetime.fromisoformat(carry["start_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return start if start.tzinfo is not None else None
 
 
 class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
@@ -443,16 +547,35 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
 
         if normalized_rows:
             entity_id = await resolve_owner_entity_id(pool)
+            open_spans: dict[str, SsidPresenceSpan] = {}
             spans, new_carryover = group_ssid_points(
                 normalized_rows,
                 ssid_places=self.ssid_places,
                 max_gap=self.max_gap,
                 prior_carryover=prior_carryover,
+                open_spans=open_spans,
             )
+            episodes: dict[str, Any] = {}
             for span in spans:
-                await self._upsert_presence_episode(chronicler_conn, span, entity_id=entity_id)
+                episode = await self._upsert_presence_episode(
+                    chronicler_conn, span, entity_id=entity_id
+                )
+                episodes[span.source_ref()] = episode.id
                 result.rows_projected += 1
                 result.episodes_closed += 1
+            coverage = ProjectionCoverage(self.source_name, evaluates_every_row=True)
+            for row in normalized_rows:
+                coverage.observe(row)
+            record_presence_coverage(
+                coverage,
+                spans=spans,
+                episodes=episodes,
+                open_spans=open_spans,
+                prior_carryover=prior_carryover,
+                present={row["endpoint_identity"] for row in normalized_rows},
+            )
+            # Coverage commits with the episodes, carryover and checkpoint (same transaction).
+            await coverage.flush(chronicler_conn)
         else:
             new_carryover = dict(prior_carryover)
 
@@ -536,6 +659,9 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
             "ts": ts,
             "endpoint_identity": endpoint.strip(),
             "ssid": ssid,
+            # Read only by projection coverage, copied as read (core_340).
+            "idempotency_key": _optional_field(row, "idempotency_key"),
+            "retention_at": _optional_field(row, "retention_at"),
         }, None
 
     async def _fetch_points(
@@ -585,7 +711,8 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
         if since is None or since_uuid is None:
             rows = await conn.fetch(
                 f"""
-                SELECT id, ts, endpoint_identity, raw_payload, recorded_at
+                SELECT id, ts, endpoint_identity, raw_payload, recorded_at,
+                       idempotency_key, retention_at
                 FROM {_EVIDENCE_TABLE}
                 ORDER BY ts ASC, id ASC
                 LIMIT $1
@@ -595,7 +722,8 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
         else:
             rows = await conn.fetch(
                 f"""
-                SELECT id, ts, endpoint_identity, raw_payload, recorded_at
+                SELECT id, ts, endpoint_identity, raw_payload, recorded_at,
+                       idempotency_key, retention_at
                 FROM {_EVIDENCE_TABLE}
                 WHERE (ts, id) > ($1, $2)
                 ORDER BY ts ASC, id ASC

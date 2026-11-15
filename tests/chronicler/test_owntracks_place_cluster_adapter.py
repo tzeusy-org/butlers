@@ -429,7 +429,13 @@ def _make_mock_row(r: dict) -> MagicMock:
 def _chronicler_pool(point_event_ids: list | None = None) -> AsyncMock:
     conn = AsyncMock(spec=asyncpg.Connection)
     conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
-    conn.fetch = AsyncMock(return_value=[{"id": i} for i in (point_event_ids or [])])
+    events = [{"id": i} for i in (point_event_ids or [])]
+
+    async def _fetch(query: str, *args: object) -> list:
+        # Projection coverage reads its open members on the same connection: none here.
+        return [] if "location_projection_open_members" in query else events
+
+    conn.fetch = AsyncMock(side_effect=_fetch)
     pool = AsyncMock(spec=asyncpg.Pool)
     pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool

@@ -65,6 +65,26 @@ docstring — the Map/Travel lane needs real coordinates). This adapter follows
 the same precedent: the episode payload stores the cluster centroid
 lat/lon plus the derived label, not a raw point trail.
 
+**Projection coverage** (bu-s11n0s.7, ``butlers.chronicler.projection_coverage``). Each run
+records, in its projection transaction, which raw fixes it has finished with and which an open
+carry still holds. Every fix the run reads is evaluated, so a fix is either held, ``projected``
+(the place and away episodes it belongs to), or ``evaluated_no_output``:
+
+- **Held** while it belongs to the endpoint's open stay (``place:<endpoint>``: the last cluster,
+  kept in carryover, which a later fix may still extend), is the lone fix held as a possible
+  departure (``departure:<endpoint>``), belongs to the endpoint's open away trip
+  (``away:<endpoint>``), or is the trail's bootstrap seed or a pending candidate
+  (``trail:<endpoint>``). A fix can be held by several carries and waits for all of them.
+- An open stay or trip that reaches its threshold is already upserted as an episode; that
+  episode is attached to its members, including those stored from earlier runs, and the members
+  stay held. A carried stay or trip closes when the endpoint is read again and the carry did not
+  continue (the owner left, a gap, a rejected trail seed, malformed carryover); its members gain
+  its episode if it reached the minimum dwell or away duration, and nothing otherwise.
+- **Evaluated without output**: a fix rejected by the trail, a single-fix glitch excluded from a
+  stay, a stray departure fix, or a fix whose stay and trip closed below their thresholds.
+- Malformed fixes and fixes without ``retention_at`` get no coverage. Nothing closes a carry by
+  elapsed time: the last stay before tracking stops stays held.
+
 No LLM call — Tier-0 deterministic projection only (RFC 0014 §D5).
 """
 
@@ -109,6 +129,7 @@ from butlers.chronicler.confidence import (
     evidence_refs_from_event_ids,
 )
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
+from butlers.chronicler.projection_coverage import ProjectionCoverage
 from butlers.chronicler.storage import (
     get_cursor,
     owntracks_connection,
@@ -194,6 +215,13 @@ DEFAULT_AWAY_MAX_GAP_HOURS = 36
 EPISODE_TYPE_AWAY = "away_episode"
 HOME_LABEL = "home"
 AWAY_CARRYOVER_KEY = "_away"
+
+# Coverage carry keys (see "Projection coverage" in the module docstring). The trail key
+# matches ``owntracks.points``; each adapter keeps its own open members.
+STAY_CARRY_PREFIX = "place:"
+DEPARTURE_CARRY_PREFIX = "departure:"
+TRIP_CARRY_PREFIX = "away:"
+TRAIL_CARRY_PREFIX = "trail:"
 
 
 @dataclass(frozen=True)
@@ -304,6 +332,9 @@ class ClusterSpan:
     # It is a departure only once the next batch does not return to the place
     # (one stray fix must not end, or start, a bridged stay).
     pending_departure: dict[str, Any] | None = None
+    # Raw row ids that joined the cluster in this batch (projection coverage only; a carried
+    # cluster's earlier members are tracked by the coverage ledger, not by carryover).
+    member_ids: list[Any] = field(default_factory=list, compare=False, repr=False)
 
     def add_regions(self, regions: Any) -> None:
         for region in regions or ():
@@ -422,6 +453,7 @@ def cluster_points(
                 point_count=1,
             )
             cluster.add_regions(rows[i].get("regions"))
+            _add_member(cluster, rows[i])
             i += 1
 
         while i < n:
@@ -491,8 +523,21 @@ def cluster_points(
                 "lon": pending["lon"],
                 "regions": list(pending.get("regions") or ()),
             }
+            if pending.get("id") is not None:
+                # The held fix's raw id, so coverage can follow it into the next stay.
+                new_carryover[span.endpoint_identity]["pending_departure"]["id"] = str(
+                    pending["id"]
+                )
 
     return spans, new_carryover
+
+
+def _optional_field(row: Any, name: str) -> Any:
+    """A column a test double or a legacy reader may not select."""
+    try:
+        return row[name]
+    except (KeyError, IndexError):
+        return None
 
 
 def _within(cluster: ClusterSpan, row: dict[str, Any], radius_m: float) -> bool:
@@ -502,12 +547,18 @@ def _within(cluster: ClusterSpan, row: dict[str, Any], radius_m: float) -> bool:
     )
 
 
+def _add_member(cluster: ClusterSpan, row: dict[str, Any]) -> None:
+    if row.get("id") is not None:
+        cluster.member_ids.append(row["id"])
+
+
 def _absorb(cluster: ClusterSpan, row: dict[str, Any], *, bridged: bool) -> None:
     cluster.sum_lat += row["lat"]
     cluster.sum_lon += row["lon"]
     cluster.point_count += 1
     cluster.end_at = row["ts"]
     cluster.add_regions(row.get("regions"))
+    _add_member(cluster, row)
     if bridged:
         cluster.bridged = True
 
@@ -582,6 +633,7 @@ def _span_from_fix(endpoint: str, fix: dict[str, Any]) -> ClusterSpan:
         point_count=1,
     )
     span.add_regions(fix.get("regions"))
+    _add_member(span, fix)
     return span
 
 
@@ -596,12 +648,17 @@ def _pending_from_carryover(raw: Any) -> dict[str, Any] | None:
     if ts.tzinfo is None or not (math.isfinite(lat) and math.isfinite(lon)):
         return None
     regions = raw.get("regions")
-    return {
+    pending: dict[str, Any] = {
         "ts": ts,
         "lat": lat,
         "lon": lon,
         "regions": [str(r) for r in regions] if isinstance(regions, list) else [],
     }
+    try:
+        pending["id"] = UUID(raw["id"])
+    except (KeyError, TypeError, ValueError):
+        pass  # carryover written before coverage: the held fix is simply not followed
+    return pending
 
 
 def _span_from_carryover(carry: Any, *, endpoint: str) -> ClusterSpan | None:
@@ -683,6 +740,8 @@ class AwaySpan:
     max_distance_m: float
     farthest_lat: float
     farthest_lon: float
+    # Raw row ids that joined the span in this batch (projection coverage only).
+    member_ids: list[Any] = field(default_factory=list, compare=False, repr=False)
 
     @property
     def duration(self) -> timedelta:
@@ -695,6 +754,8 @@ class AwaySpan:
     def extend(self, row: dict[str, Any], distance_m: float) -> None:
         self.end_at = row["ts"]
         self.point_count += 1
+        if row.get("id") is not None:
+            self.member_ids.append(row["id"])
         if distance_m > self.max_distance_m:
             self.max_distance_m = distance_m
             self.farthest_lat = row["lat"]
@@ -783,12 +844,134 @@ def detect_away_spans(
             max_distance_m=distance_m,
             farthest_lat=row["lat"],
             farthest_lon=row["lon"],
+            member_ids=[row["id"]] if row.get("id") is not None else [],
         )
         spans.append(new_span)
         open_spans[endpoint] = new_span
 
     carryover = {ep: span.to_carryover() for ep, span in open_spans.items() if span is not None}
     return spans, carryover
+
+
+def hold_trail(coverage: ProjectionCoverage, state: dict[str, dict[str, Any]]) -> None:
+    """Trail consensus is recomputed in full each run: hold its seed and pending fixes."""
+    coverage.release_prefix(TRAIL_CARRY_PREFIX)
+    for endpoint, entry in state.items():
+        for identity in (entry["seed_id"], *entry["pending_ids"]):
+            if identity is not None:
+                coverage.hold(identity, f"{TRAIL_CARRY_PREFIX}{endpoint}")
+
+
+def _carried_start(carry: Any) -> datetime | None:
+    if not isinstance(carry, dict):
+        return None
+    try:
+        start = datetime.fromisoformat(carry["start_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return start if start.tzinfo is not None else None
+
+
+def record_stay_coverage(
+    coverage: ProjectionCoverage,
+    *,
+    spans: list[ClusterSpan],
+    episodes: dict[str, Any],
+    prior_carryover: dict[str, Any],
+    present: set[str],
+    rejected: set[str],
+) -> None:
+    """Record place-stay outputs and carries for one run (see "Projection coverage").
+
+    The last span of each endpoint read this run is the open stay kept in carryover: its
+    members stay held under ``place:<endpoint>``, and a lone fix held as ``pending_departure``
+    under ``departure:<endpoint>``. The stay carried in from the previous run either continues
+    (same ``start_at``) or has ended; an ended stay closes with its episode, if it reached the
+    minimum dwell.
+    """
+    open_by_endpoint = {span.endpoint_identity: span for span in spans}
+    for span in spans:
+        episode_id = episodes.get(span.source_ref())
+        coverage.record_episode([{"id": member} for member in span.member_ids], episode_id)
+        if open_by_endpoint[span.endpoint_identity] is span:
+            for member in span.member_ids:
+                coverage.hold(member, f"{STAY_CARRY_PREFIX}{span.endpoint_identity}")
+            pending = span.pending_departure
+            if pending is not None and pending.get("id") is not None:
+                coverage.hold(pending["id"], f"{DEPARTURE_CARRY_PREFIX}{span.endpoint_identity}")
+
+    for endpoint, carry in prior_carryover.items():
+        if endpoint.startswith("_") or (endpoint not in present and endpoint not in rejected):
+            continue  # not read this run: the carried stay is unchanged
+        key = f"{STAY_CARRY_PREFIX}{endpoint}"
+        # A fix held as a possible departure is always resolved once the endpoint is read
+        # again: dropped as a stray, or the start of the next stay (whose members name it).
+        coverage.close_carry(f"{DEPARTURE_CARRY_PREFIX}{endpoint}")
+        start = _carried_start(carry)
+        continued = next(
+            (
+                span
+                for span in spans
+                if endpoint not in rejected
+                and span.endpoint_identity == endpoint
+                and span.start_at == start
+            ),
+            None,
+        )
+        episode_id = episodes.get(continued.source_ref()) if continued is not None else None
+        if continued is not None and open_by_endpoint.get(endpoint) is continued:
+            coverage.carry_output(key, episode_id)
+        else:
+            coverage.close_carry(key, episode_id)
+
+
+def record_trip_coverage(
+    coverage: ProjectionCoverage,
+    *,
+    spans: list[AwaySpan],
+    episodes: dict[str, Any],
+    open_trips: dict[str, Any],
+    prior_trips: dict[str, Any],
+    present: set[str],
+    rejected: set[str],
+) -> None:
+    """Record away-trip outputs and carries for one run, as :func:`record_stay_coverage`.
+
+    A trip still open at the end of the run (in ``open_trips``) holds its members under
+    ``away:<endpoint>``.
+    """
+    open_by_endpoint: dict[str, AwaySpan] = {}
+    for span in spans:
+        if _carried_start(open_trips.get(span.endpoint_identity)) == span.start_at:
+            open_by_endpoint[span.endpoint_identity] = span
+    for span in spans:
+        coverage.record_episode(
+            [{"id": member} for member in span.member_ids], episodes.get(span.source_ref())
+        )
+        if open_by_endpoint.get(span.endpoint_identity) is span:
+            for member in span.member_ids:
+                coverage.hold(member, f"{TRIP_CARRY_PREFIX}{span.endpoint_identity}")
+
+    for endpoint, carry in prior_trips.items():
+        if endpoint not in present and endpoint not in rejected:
+            continue
+        key = f"{TRIP_CARRY_PREFIX}{endpoint}"
+        start = _carried_start(carry)
+        continued = next(
+            (
+                span
+                for span in spans
+                if endpoint not in rejected
+                and span.endpoint_identity == endpoint
+                and span.start_at == start
+            ),
+            None,
+        )
+        episode_id = episodes.get(continued.source_ref()) if continued is not None else None
+        if continued is not None and open_by_endpoint.get(endpoint) is continued:
+            coverage.carry_output(key, episode_id)
+        else:
+            coverage.close_carry(key, episode_id)
 
 
 class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
@@ -970,6 +1153,7 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                 changes=changes,
                 rejected_seeds=rejected_seeds,
             )
+            prior_stays = dict(prior_carryover)
             for endpoint in rejected_seeds:
                 prior_carryover.pop(endpoint, None)
 
@@ -990,13 +1174,16 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                 **{key: value for key, value in prior_carryover.items() if not key.startswith("_")},
                 **new_carryover,
             }
+            stay_episodes: dict[str, Any] = {}
             for span in spans:
                 episode = await self._maybe_emit(chronicler_pool, span, entity_id=entity_id)
                 if episode is not None:
+                    stay_episodes[span.source_ref()] = episode.id
                     result.rows_projected += 1
                     result.episodes_closed += 1
 
             prior_away = prior_carryover.get(AWAY_CARRYOVER_KEY)
+            prior_trips = dict(prior_away) if isinstance(prior_away, dict) else {}
             if isinstance(prior_away, dict):
                 prior_away = {
                     key: value for key, value in prior_away.items() if key not in rejected_seeds
@@ -1018,11 +1205,38 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                     },
                     **away_carryover,
                 }
+            trip_episodes: dict[str, Any] = {}
             for away in away_spans:
                 episode = await self._maybe_emit_away(chronicler_pool, away, entity_id=entity_id)
                 if episode is not None:
+                    trip_episodes[away.source_ref()] = episode.id
                     result.rows_projected += 1
                     result.episodes_closed += 1
+
+            coverage = ProjectionCoverage(self.source_name, evaluates_every_row=True)
+            for row in valid_rows:
+                coverage.observe(row)
+            hold_trail(coverage, state)
+            record_stay_coverage(
+                coverage,
+                spans=spans,
+                episodes=stay_episodes,
+                prior_carryover=prior_stays,
+                present={row["endpoint_identity"] for row in cluster_rows},
+                rejected=rejected_seeds,
+            )
+            record_trip_coverage(
+                coverage,
+                spans=away_spans,
+                episodes=trip_episodes,
+                open_trips=away_carryover,
+                prior_trips=prior_trips,
+                present=accepted_endpoints,
+                rejected=rejected_seeds,
+            )
+            # Coverage commits with the episodes, carryover and cursor (same transaction).
+            async with owntracks_connection(chronicler_pool) as conn:
+                await coverage.flush(conn)
 
             new_carryover[TRAIL_ANCHORS_CARRYOVER_KEY] = dump_anchors(anchors)
             new_carryover[TRAIL_STATE_CARRYOVER_KEY] = {"version": 1, "endpoints": state}
@@ -1099,6 +1313,9 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                 "lon": lon,
                 "endpoint_identity": endpoint_identity.strip(),
                 "regions": self._owner_regions(row),
+                # Read only by projection coverage, copied as read (core_340).
+                "idempotency_key": _optional_field(row, "idempotency_key"),
+                "retention_at": _optional_field(row, "retention_at"),
             },
             warnings,
         )
@@ -1158,7 +1375,10 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                         return None
 
                     sql, args = keyset_page(
-                        columns="id, ts, lat, lon, endpoint_identity, recorded_at, raw_payload",
+                        columns=(
+                            "id, ts, lat, lon, endpoint_identity, recorded_at, raw_payload, "
+                            "idempotency_key, retention_at"
+                        ),
                         table=_EVIDENCE_TABLE,
                         ts_col="ts",
                         key_cols=self.keyset_cols,
