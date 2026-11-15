@@ -22,7 +22,7 @@ import pytest
 from butlers.chronicler.adapters.owntracks import OwnTracksPointAdapter
 from butlers.chronicler.adapters.owntracks_place_cluster import OwnTracksPlaceClusterAdapter
 from butlers.chronicler.adapters.owntracks_ssid import OwnTracksSsidPresenceAdapter
-from butlers.chronicler.location_retention_grant import prepare_retention_grant
+from butlers.chronicler.location_retention_grant import StaleRevisions, prepare_retention_grant
 from butlers.chronicler.projection_coverage import COVERED_ADAPTERS, raw_row_digest_sql
 
 docker_available = shutil.which("docker") is not None
@@ -60,9 +60,25 @@ def grant_url(fresh_db) -> str:
     return url
 
 
+_RECORD_RUN = """
+INSERT INTO location_projection_attempts (adapter_name, config_revision, last_outcome,
+    last_attempt_at, last_success_at)
+VALUES ($1, $2, 'succeeded', now(), now())
+ON CONFLICT (adapter_name) DO UPDATE SET config_revision = EXCLUDED.config_revision
+"""
+
+
+async def _record_runs(target: asyncpg.Pool, revisions: dict[str, str]) -> None:
+    """Each adapter's last recorded run, as its own ``record_attempt`` leaves it."""
+    for adapter, revision in revisions.items():
+        await target.execute(_RECORD_RUN, adapter, revision)
+
+
 @pytest.fixture
 async def chronicler_db(db, grant_url: str) -> asyncpg.Pool:
-    return await db.open(grant_url, schema="chronicler", max_size=5)
+    pool = await db.open(grant_url, schema="chronicler", max_size=5)
+    await _record_runs(pool, _REVISIONS)
+    return pool
 
 
 @pytest.fixture
@@ -194,6 +210,21 @@ async def test_only_rows_covered_exactly_at_the_current_revisions_are_granted(
     assert item["content_digest"] == await chronicler_db.fetchval(
         f"SELECT {raw_row_digest_sql()} FROM connectors.owntracks_points WHERE id = $1", full
     )
+
+
+async def test_revisions_the_adapters_did_not_last_run_with_grant_nothing(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    """S4b (1): a stale caller revision is refused inside the grant transaction."""
+    covered = await _insert_point(chronicler_db, 0)
+    await _cover(chronicler_db, covered, revision={"owntracks.points": _OTHER_REVISION})
+    # The caller asserts the old revision, but points last ran at the current one.
+    stale = {**_REVISIONS, "owntracks.points": _OTHER_REVISION}
+    async with runtime_db.acquire() as conn:
+        with pytest.raises(StaleRevisions):
+            await prepare_retention_grant(conn, config_revisions=stale)
+    assert await _granted(chronicler_db) == set()
+    assert await chronicler_db.fetchval("SELECT count(*) FROM location_retention_grants") == 0
 
 
 async def test_a_granted_row_is_never_granted_twice_and_every_run_leaves_a_receipt(

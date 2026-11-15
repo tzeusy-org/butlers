@@ -53,7 +53,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import asyncpg
@@ -69,6 +69,7 @@ from butlers.chronicler.confidence import (
     derive_confidence,
     evidence_refs_from_event_ids,
 )
+from butlers.chronicler.location_forgetting import drop_forgotten_rows
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.projection_coverage import (
     COVERAGE_REVISION_CARRYOVER_KEY,
@@ -84,6 +85,7 @@ from butlers.chronicler.storage import (
     get_checkpoint,
     mark_source_active,
     owntracks_projection_lock_key,
+    owntracks_transaction,
     save_carryover,
     upsert_checkpoint,
     upsert_episode,
@@ -521,20 +523,17 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
         since: datetime | None,
         since_id: int | None = None,
     ) -> AdapterResult:
-        if isinstance(chronicler_pool, asyncpg.Pool):
-            async with chronicler_pool.acquire() as conn:
-                return await self._project_with_connection(
-                    pool,
-                    chronicler_conn=conn,
-                    since=since,
-                    since_id=since_id,
-                )
-        return await self._project_with_connection(
-            pool,
-            chronicler_conn=chronicler_pool,
-            since=since,
-            since_id=since_id,
-        )
+        # Takes the projection lock itself, so a call outside run() still serializes with
+        # run() and retention preparation (within run() the lock is already held; re-entry).
+        async with owntracks_transaction(chronicler_pool, self.source_name) as proxy:
+            conn = cast(asyncpg.Connection, proxy)  # a pool proxy behaves as its Connection
+            source = conn if pool is chronicler_pool else pool
+            return await self._project_with_connection(
+                source,
+                chronicler_conn=conn,
+                since=since,
+                since_id=since_id,
+            )
 
     async def _project_with_connection(
         self,
@@ -608,6 +607,8 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
                 result.warnings.append(warning)
             if normalized is not None:
                 normalized_rows.append(normalized)
+        # Resurrection floor, before any span, carry or coverage decision.
+        normalized_rows = await drop_forgotten_rows(chronicler_conn, normalized_rows, result)
 
         if normalized_rows:
             entity_id = await resolve_owner_entity_id(pool)

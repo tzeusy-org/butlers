@@ -10,7 +10,7 @@ was evidence for. No coordinates, title, network name or payload.
 in the same transaction as the deletions and summary coarsening it records. Nothing here
 deletes.
 
-:func:`drop_forgotten_rows` is the resurrection floor. The OwnTracks point and place-cluster
+:func:`drop_forgotten_rows` is the resurrection floor. The OwnTracks point, place-cluster and SSID
 projections run it over their batch before classifying the trail, so a replayed webhook, reset
 cursor or wider horizon never restores a forgotten fix into a point event, an episode, a carry
 or a trail anchor. :func:`owntracks_point_forgotten` answers it for one source.

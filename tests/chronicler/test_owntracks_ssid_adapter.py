@@ -58,6 +58,13 @@ class _TrackingAsyncCtx(AsyncCtx):
         self.exit_type = exc_type
 
 
+def _chronicler_conn() -> AsyncMock:
+    """A Chronicler connection whose transaction() is a context, as project() now opens one."""
+    conn = AsyncMock()
+    conn.transaction = MagicMock(return_value=AsyncCtx(None))
+    return conn
+
+
 def _row(
     minute: int,
     *,
@@ -191,7 +198,7 @@ async def test_empty_poll_preserves_endpoint_carryover() -> None:
             new=AsyncMock(),
         ) as save,
     ):
-        await adapter.project(AsyncMock(), chronicler_pool=AsyncMock(), since=_NOW)
+        await adapter.project(AsyncMock(), chronicler_pool=_chronicler_conn(), since=_NOW)
 
     saved = save.await_args.args[2]
     assert saved[_ENDPOINT] == prior_carryover[_ENDPOINT]
@@ -224,7 +231,7 @@ async def test_all_malformed_batch_preserves_endpoint_carryover() -> None:
             new=AsyncMock(),
         ) as save,
     ):
-        result = await adapter.project(AsyncMock(), chronicler_pool=AsyncMock(), since=_NOW)
+        result = await adapter.project(AsyncMock(), chronicler_pool=_chronicler_conn(), since=_NOW)
 
     saved = save.await_args.args[2]
     assert saved[_ENDPOINT] == prior_carryover[_ENDPOINT]
@@ -251,7 +258,7 @@ async def test_unavailable_source_does_not_tombstone_mapping_replay_episodes() -
             new=AsyncMock(),
         ) as tombstone,
     ):
-        result = await adapter.project(AsyncMock(), chronicler_pool=AsyncMock(), since=_NOW)
+        result = await adapter.project(AsyncMock(), chronicler_pool=_chronicler_conn(), since=_NOW)
 
     assert result.skipped
     tombstone.assert_not_awaited()
@@ -295,13 +302,62 @@ async def test_a_revision_change_voids_the_held_presence_spans(
         patch.object(ProjectionCoverage, "reset_prefix", autospec=True) as reset,
         patch.object(ProjectionCoverage, "flush", new=AsyncMock()) as flush,
     ):
-        await adapter.project(AsyncMock(), chronicler_pool=AsyncMock(), since=_NOW)
+        await adapter.project(AsyncMock(), chronicler_pool=_chronicler_conn(), since=_NOW)
 
     resets = {call.args[1] for call in reset.call_args_list}
     assert resets == ({adapter_module.PRESENCE_CARRY_PREFIX} if voided else set())
     flush.assert_awaited_once()
     carryover = saved.await_args.args[2]
     assert carryover[COVERAGE_REVISION_CARRYOVER_KEY] == adapter.coverage_revision
+
+
+async def test_a_forgotten_fix_never_joins_an_ssid_presence_span_again() -> None:
+    """S4b (2): the resurrection floor runs before grouping, carry and coverage."""
+    rows = [
+        {**_row(m), "idempotency_key": f"owntracks:alice:{m}:location"} for m in (0, 10, 20, 30)
+    ]
+    forgotten = "connectors.owntracks_points:owntracks:alice:10:location"
+    adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
+    spans: list[object] = []
+    observed: list[object] = []
+
+    async def _forgotten(_conn: object, source_ref: str) -> bool:
+        return source_ref == forgotten
+
+    async def _upsert(_conn: object, span: object, *, entity_id: object) -> object:
+        spans.append(span)
+        return MagicMock(id=uuid4())
+
+    def _observe(_coverage: object, row: dict) -> None:
+        observed.append(row["id"])
+
+    with (
+        patch(
+            "butlers.chronicler.location_forgetting.owntracks_point_forgotten",
+            side_effect=_forgotten,
+        ),
+        patch(
+            "butlers.chronicler.adapters.owntracks_ssid.get_carryover",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "butlers.chronicler.adapters.owntracks_ssid.resolve_owner_entity_id",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(adapter, "_fetch_points", new=AsyncMock(return_value=rows)),
+        patch.object(adapter, "_upsert_presence_episode", side_effect=_upsert),
+        patch.object(ProjectionCoverage, "observe", autospec=True, side_effect=_observe),
+        patch.object(ProjectionCoverage, "flush", new=AsyncMock()),
+        patch("butlers.chronicler.adapters.owntracks_ssid.save_carryover", new=AsyncMock()) as save,
+    ):
+        result = await adapter.project(AsyncMock(), chronicler_pool=_chronicler_conn(), since=None)
+
+    assert result.rows_refused_forgotten == 1
+    assert rows[1]["id"] not in observed and len(observed) == 3
+    assert [span.point_count for span in spans] == [3]
+    saved = json.dumps(save.await_args.args[2], default=str)
+    assert ":10:location" not in saved
+    assert result.warnings == ["OwnTracks forgotten sources not projected again: 1."]
 
 
 async def test_legacy_timestamp_checkpoint_replays_from_start() -> None:
@@ -366,6 +422,39 @@ def test_invalid_uuid_cursor_requests_fail_safe_replay(cursor: dict[str, str]) -
         )
         is None
     )
+
+
+async def test_project_outside_run_takes_the_projection_lock_first() -> None:
+    """S4b (6): a direct project() call serializes with run() and retention preparation."""
+    adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
+    order: list[str] = []
+    conn = AsyncMock()
+    transaction = _TrackingAsyncCtx(None)
+    conn.transaction = MagicMock(return_value=transaction)
+
+    async def _execute(query: str, *args: object) -> str:
+        order.append("lock" if "advisory" in query and transaction.entered else query)
+        return ""
+
+    async def _carryover(*_: object) -> dict:
+        order.append("read")
+        return {}
+
+    conn.execute = AsyncMock(side_effect=_execute)
+    with (
+        patch("butlers.chronicler.adapters.owntracks_ssid.get_carryover", side_effect=_carryover),
+        patch.object(adapter, "_fetch_points", new=AsyncMock(return_value=[])),
+        patch("butlers.chronicler.adapters.owntracks_ssid.save_carryover", new=AsyncMock()),
+        patch.object(ProjectionCoverage, "flush", new=AsyncMock()),
+    ):
+        await adapter.project(AsyncMock(), chronicler_pool=conn, since=None)
+
+    assert order[:2] == ["lock", "read"]
+    conn.execute.assert_any_await(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        "chronicler.projection:" + SOURCE_NAME,
+    )
+    assert transaction.exited
 
 
 async def test_run_uses_one_transactional_chronicler_connection() -> None:

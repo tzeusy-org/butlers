@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from butlers.chronicler.location_retention import PolicyUnavailable
-from butlers.chronicler.location_retention_grant import prepare_retention_grant
+from butlers.chronicler.location_retention_grant import StaleRevisions, prepare_retention_grant
 from butlers.chronicler.projection_coverage import COVERED_ADAPTERS
 from butlers.chronicler.storage import owntracks_projection_lock_key
 
@@ -99,3 +99,54 @@ async def test_a_missing_policy_fails_closed_and_writes_nothing() -> None:
     with pytest.raises(PolicyUnavailable):
         await prepare_retention_grant(conn, config_revisions=_REVISIONS)
     assert not [s for s in conn.statements if "INSERT" in s.upper()]
+
+
+class _Attempts(_NoPolicy):
+    """A connection with a policy row and the given per-adapter attempt revisions."""
+
+    def __init__(self, attempts: dict[str, str]) -> None:
+        super().__init__()
+        self.attempts = attempts
+
+    async def fetchrow(self, query: str, *args: Any) -> dict[str, int]:
+        self.statements.append(query)
+        return {"days": 30, "version": 1}
+
+    async def fetchval(self, query: str, *args: Any) -> Any:
+        self.statements.append(query)
+        return None
+
+    async def fetch(self, query: str, *args: Any) -> list[Any]:
+        self.statements.append(query)
+        if "location_projection_attempts" in query:
+            return [{"adapter_name": a, "config_revision": r} for a, r in self.attempts.items()]
+        return []
+
+
+@pytest.mark.parametrize(
+    "attempts",
+    [
+        pytest.param({}, id="no-attempts"),
+        pytest.param(
+            {k: v for k, v in _REVISIONS.items() if k != "owntracks.points"},
+            id="an-adapter-never-ran",
+        ),
+        pytest.param({**_REVISIONS, "owntracks.points": "v1:" + "b" * 64}, id="a-stale-revision"),
+    ],
+)
+async def test_a_revision_the_adapters_did_not_last_run_with_is_refused(attempts: dict) -> None:
+    """S4b (1): the caller's revisions are cross-checked inside the grant transaction."""
+    conn = _Attempts(attempts)
+    with pytest.raises(StaleRevisions):
+        await prepare_retention_grant(conn, config_revisions=_REVISIONS)
+    assert not [s for s in conn.statements if "INSERT" in s.upper()]
+    # Checked after the locks, so no projection run can change the record in between.
+    first_attempts = next(i for i, s in enumerate(conn.statements) if "attempts" in s)
+    assert first_attempts > max(i for i, s in enumerate(conn.statements) if "advisory" in s)
+
+
+async def test_matching_attempt_revisions_let_preparation_proceed() -> None:
+    conn = _Attempts(dict(_REVISIONS))
+    grant = await prepare_retention_grant(conn, config_revisions=_REVISIONS)
+    assert grant.item_count == 0
+    assert any("INSERT INTO location_retention_grants" in s for s in conn.statements)
