@@ -12,6 +12,7 @@ other content, and a record under another revision.
 
 from __future__ import annotations
 
+import json
 import shutil
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -24,6 +25,7 @@ from butlers.chronicler.adapters.owntracks_place_cluster import OwnTracksPlaceCl
 from butlers.chronicler.adapters.owntracks_ssid import OwnTracksSsidPresenceAdapter
 from butlers.chronicler.location_retention_grant import StaleRevisions, prepare_retention_grant
 from butlers.chronicler.projection_coverage import COVERED_ADAPTERS, raw_row_digest_sql
+from butlers.chronicler.spatial_precision import coarsen
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -112,6 +114,7 @@ async def _cover(
     skip: str | None = None,
     revision: dict[str, str] | None = None,
     digest: dict[str, str] | None = None,
+    episodes: dict[str, UUID] | None = None,
 ) -> None:
     """Exact coverage for every adapter except ``skip``, with per-adapter overrides."""
     row = await target.fetchrow(
@@ -135,7 +138,7 @@ async def _cover(
             (digest or {}).get(adapter, row["digest"]),
             row["idempotency_key"],
             row["retention_at"],
-            uuid4(),
+            (episodes or {}).get(adapter, uuid4()),
             uuid4(),
         )
 
@@ -267,3 +270,175 @@ async def test_rows_inside_the_horizon_are_not_granted(chronicler_db: asyncpg.Po
         grant = await prepare_retention_grant(conn, config_revisions=_REVISIONS)
     assert grant.item_count == 0
     assert await _granted(chronicler_db) == set()
+
+
+# ── S4b-2: preparation forgets Chronicler's own copies ────────────────────────
+
+_EXACT = (1.2345678, 103.8765432)
+
+
+async def _sources(target: asyncpg.Pool) -> None:
+    for source in COVERED_ADAPTERS:
+        await target.execute(
+            "INSERT INTO source_adapter_state (source_name, chronicler_compatibility) "
+            "VALUES ($1, 'supported') ON CONFLICT DO NOTHING",
+            source,
+        )
+
+
+async def _point_event(target: asyncpg.Pool, raw_id: UUID) -> UUID:
+    return await target.fetchval(
+        """
+        INSERT INTO point_events (source_name, source_ref, event_type, occurred_at, payload)
+        SELECT 'owntracks.points', 'connectors.owntracks_points:' || idempotency_key,
+               'location', ts, jsonb_build_object('lat', $2::float8, 'lon', $3::float8)
+        FROM connectors.owntracks_points WHERE id = $1
+        RETURNING id
+        """,
+        raw_id,
+        *_EXACT,
+    )
+
+
+async def _episode(target: asyncpg.Pool, source: str, payload: dict, *, event: UUID | None) -> UUID:
+    episode = await target.fetchval(
+        """
+        INSERT INTO episodes (source_name, source_ref, episode_type, start_at, end_at, payload)
+        VALUES ($1, $2, 'location_summary', $3, $3, ($4::text)::jsonb)
+        RETURNING id
+        """,
+        source,
+        f"test:{uuid4()}",
+        _T0,
+        json.dumps(payload),
+    )
+    if event is not None:
+        await target.execute(
+            "INSERT INTO episode_event_links (episode_id, event_id) VALUES ($1, $2)",
+            episode,
+            event,
+        )
+    return episode
+
+
+async def _payload(target: asyncpg.Pool, episode: UUID) -> dict:
+    raw = await target.fetchval("SELECT payload FROM episodes WHERE id = $1", episode)
+    return json.loads(raw) if isinstance(raw, str) else dict(raw)
+
+
+async def test_preparation_forgets_point_events_and_coarsens_every_summary_and_anchor(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    await _sources(chronicler_db)
+    granted = await _insert_point(chronicler_db, 0)
+    kept = await _insert_point(chronicler_db, 5)  # uncovered: not granted
+    granted_event = await _point_event(chronicler_db, granted)
+    kept_event = await _point_event(chronicler_db, kept)
+    movement = await _episode(
+        chronicler_db,
+        "owntracks.points",
+        {"start_lat": _EXACT[0], "start_lon": _EXACT[1], "end_lat": 1.31, "end_lon": 103.81},
+        event=granted_event,
+    )
+    place = await _episode(
+        chronicler_db,
+        "owntracks.place_cluster",
+        {"centroid_lat": _EXACT[0], "centroid_lon": _EXACT[1], "label": "Home"},
+        event=None,
+    )
+    untouched = await _episode(
+        chronicler_db,
+        "owntracks.points",
+        {"start_lat": _EXACT[0], "start_lon": _EXACT[1]},
+        event=kept_event,
+    )
+    await _cover(
+        chronicler_db,
+        granted,
+        episodes={"owntracks.points": movement, "owntracks.place_cluster": place},
+    )
+    carryover = {
+        "owntracks:alice": {"start_lat": 1.0, "start_lon": 2.0},
+        "_trail_anchors": {"owntracks:alice": {"ts": _T0.isoformat(), "lat": 1.3, "lon": 103.8}},
+        "_trail_state": {
+            "version": 1,
+            "endpoints": {
+                "owntracks:alice": {"seed_id": None, "pending_ids": [], "anchor_id": str(granted)}
+            },
+        },
+    }
+    await chronicler_db.execute(
+        "INSERT INTO projection_checkpoints (source_name, subsource, carryover) "
+        "VALUES ('owntracks.points', '', ($1::text)::jsonb) "
+        "ON CONFLICT (source_name, subsource) DO UPDATE SET carryover = EXCLUDED.carryover",
+        json.dumps(carryover),
+    )
+
+    async with runtime_db.acquire() as conn:
+        grant = await prepare_retention_grant(conn, config_revisions=_REVISIONS)
+
+    assert (grant.item_count, grant.point_events_forgotten) == (1, 1)
+    assert (grant.episodes_coarsened, grant.anchors_coarsened) == (2, 1)
+    events = await chronicler_db.fetch("SELECT id FROM point_events")
+    assert {row["id"] for row in events} == {kept_event}
+    tombstone = await chronicler_db.fetchrow("SELECT * FROM location_evidence_tombstones")
+    assert tombstone["point_event_id"] == granted_event
+    assert list(tombstone["episode_ids"]) == [movement]
+    receipt = await chronicler_db.fetchrow("SELECT * FROM location_forgetting_receipts")
+    assert (receipt["point_events_forgotten"], receipt["episodes_coarsened"]) == (1, 2)
+    assert receipt["cutoff"] == grant.cutoff
+
+    cell = coarsen(*_EXACT)
+    moved = await _payload(chronicler_db, movement)
+    assert (moved["start_lat"], moved["start_lon"]) == (cell.lat, cell.lon)
+    assert (moved["end_lat"], moved["end_lon"]) == (
+        coarsen(1.31, 103.81).lat,
+        coarsen(1.31, 103.81).lon,
+    )
+    assert moved["spatial_scheme"] == "eqcell-150m-v1"
+    stayed = await _payload(chronicler_db, place)
+    assert (stayed["centroid_lat"], stayed["centroid_lon"], stayed["label"]) == (
+        cell.lat,
+        cell.lon,
+        "Home",
+    )
+    assert await _payload(chronicler_db, untouched) == {
+        "start_lat": _EXACT[0],
+        "start_lon": _EXACT[1],
+    }
+
+    raw = await chronicler_db.fetchval(
+        "SELECT carryover FROM projection_checkpoints "
+        "WHERE source_name = 'owntracks.points' AND subsource = ''"
+    )
+    after = json.loads(raw) if isinstance(raw, str) else dict(raw)
+    anchor = coarsen(1.3, 103.8)
+    assert after["_trail_anchors"]["owntracks:alice"] == {
+        "ts": _T0.isoformat(),
+        "lat": anchor.lat,
+        "lon": anchor.lon,
+    }
+    assert after["owntracks:alice"] == carryover["owntracks:alice"]
+    assert after["_trail_state"] == carryover["_trail_state"]
+
+
+async def test_a_summary_it_cannot_coarsen_rolls_the_whole_preparation_back(
+    chronicler_db: asyncpg.Pool,
+) -> None:
+    await _sources(chronicler_db)
+    granted = await _insert_point(chronicler_db, 0)
+    event = await _point_event(chronicler_db, granted)
+    odd = await _episode(
+        chronicler_db,
+        "owntracks.points",
+        {"start_lat": _EXACT[0], "start_lon": _EXACT[1], "home_lat": 1.0, "home_lon": 2.0},
+        event=event,
+    )
+    await _cover(chronicler_db, granted, episodes={"owntracks.points": odd})
+    async with chronicler_db.acquire() as conn:
+        with pytest.raises(ValueError, match="does not know"):
+            await prepare_retention_grant(conn, config_revisions=_REVISIONS)
+    assert await chronicler_db.fetchval("SELECT count(*) FROM location_retention_grants") == 0
+    assert await chronicler_db.fetchval("SELECT count(*) FROM location_evidence_tombstones") == 0
+    assert await chronicler_db.fetchval("SELECT count(*) FROM point_events") == 1
+    assert (await _payload(chronicler_db, odd))["start_lat"] == _EXACT[0]

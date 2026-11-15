@@ -147,7 +147,7 @@ def test_states_are_appended_once_and_never_changed(chronicler_037_db) -> None:
         assert list(states) == ["ready", "unknown", "unknown", "reconciled"]
 
 
-def test_a_rerun_only_reads_the_catalog_and_the_downgrade_keeps_the_grants(
+def test_a_rerun_only_reads_the_catalog_and_recorded_states_block_the_downgrade(
     chronicler_037_db,
 ) -> None:
     db_url, engine = chronicler_037_db
@@ -161,6 +161,17 @@ def test_a_rerun_only_reads_the_catalog_and_the_downgrade_keeps_the_grants(
         assert tuple(conn.execute(text(_CATALOG)).one()) == installed, "re-run wrote the catalog"
         assert conn.execute(text(f"SELECT count(*) FROM {_TABLE}")).scalar_one() == 1
 
+    # S4b-2: a recorded state is evidence of a privacy decision; the downgrade refuses.
+    with pytest.raises(DBAPIError, match="states are recorded"):
+        command.downgrade(_config(db_url), "chronicler_036")
+    with engine.connect() as conn:
+        assert conn.execute(text(f"SELECT count(*) FROM {_TABLE}")).scalar_one() == 1
+
+
+def test_an_empty_table_downgrades_and_keeps_the_grants(chronicler_037_db) -> None:
+    db_url, engine = chronicler_037_db
+    with engine.begin() as conn:
+        _grant(conn)
     command.downgrade(_config(db_url), "chronicler_036")
     with engine.connect() as conn:
         assert conn.execute(text(f"SELECT to_regclass('{_TABLE}')")).scalar_one() is None

@@ -26,6 +26,8 @@ Pure functions only: no I/O.
 from __future__ import annotations
 
 import math
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -34,8 +36,10 @@ __all__ = [
     "LATITUDE_BANDS",
     "SPATIAL_PRECISION_M",
     "SPATIAL_SCHEME_REVISION",
+    "SUMMARY_COORDINATE_PAIRS",
     "SpatialCell",
     "coarsen",
+    "coarsen_location_payload",
     "longitude_cells",
 ]
 
@@ -100,3 +104,46 @@ def coarsen(lat: float, lon: float) -> SpatialCell:
     column = min(math.floor(wrapped / column_degrees), columns - 1)
     centre_lon = -180.0 + (column + 0.5) * column_degrees
     return SpatialCell(band=band, column=column, lat=_band_centre(band), lon=centre_lon)
+
+
+#: Every coordinate pair an OwnTracks summary payload carries: the plain fix, movement start,
+#: end and path tail, a stay's centroid and an away span's farthest point.
+SUMMARY_COORDINATE_PAIRS = (
+    ("lat", "lon"),
+    ("start_lat", "start_lon"),
+    ("end_lat", "end_lon"),
+    ("path_tail_lat", "path_tail_lon"),
+    ("centroid_lat", "centroid_lon"),
+    ("farthest_lat", "farthest_lon"),
+)
+_KNOWN_COORDINATE_KEYS = frozenset(key for pair in SUMMARY_COORDINATE_PAIRS for key in pair)
+_COORDINATE_LIKE = re.compile(r"(^|_)(lat|lon|lng|latitude|longitude)$")
+
+
+def coarsen_location_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """A copy of ``payload`` with every coordinate pair snapped to its cell centre.
+
+    Records the scheme in ``spatial_precision_m`` / ``spatial_scheme``. An unknown pair (both
+    ``None``) stays unknown. Fails closed with ``ValueError`` on anything it cannot coarsen
+    completely: a coordinate-like key outside :data:`SUMMARY_COORDINATE_PAIRS`, half a pair,
+    or a value :func:`coarsen` refuses. Idempotent.
+    """
+    unknown = sorted(
+        key for key in payload if _COORDINATE_LIKE.search(key) and key not in _KNOWN_COORDINATE_KEYS
+    )
+    if unknown:
+        raise ValueError(f"payload has coordinates the scheme does not know: {unknown}")
+    coarse = dict(payload)
+    for lat_key, lon_key in SUMMARY_COORDINATE_PAIRS:
+        if lat_key not in payload and lon_key not in payload:
+            continue
+        lat, lon = payload.get(lat_key), payload.get(lon_key)
+        if lat is None and lon is None:
+            continue
+        if lat is None or lon is None:
+            raise ValueError(f"payload has half a coordinate pair: {lat_key}/{lon_key}")
+        cell = coarsen(lat, lon)
+        coarse[lat_key], coarse[lon_key] = cell.lat, cell.lon
+    coarse["spatial_precision_m"] = SPATIAL_PRECISION_M
+    coarse["spatial_scheme"] = SPATIAL_SCHEME_REVISION
+    return coarse

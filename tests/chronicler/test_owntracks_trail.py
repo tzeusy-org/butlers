@@ -16,10 +16,12 @@ from butlers.chronicler.adapters.owntracks_trail import (
     TRAIL_STATE_CARRYOVER_KEY,
     TrailAnchor,
     classify_trail,
+    coarsen_trail_anchors,
     dump_anchors,
     load_anchors,
     load_trail_state,
 )
+from butlers.chronicler.spatial_precision import coarsen
 
 _T0 = datetime(2026, 10, 16, 23, 0, tzinfo=UTC)
 _EP = "owntracks:owner"
@@ -219,3 +221,77 @@ def test_replaying_a_batch_reproduces_its_outlier_verdicts() -> None:
     ]
     continued, _ = classify_trail(continuation, prior_anchors=anchors, state=state)
     assert continued == {}
+
+
+# ── Retention coarsening of trail anchors (bu-s11n0s.7 S4b-2, requirement 3) ─────────────────
+
+_GRANTED = str(UUID(int=41))
+_KEPT = str(UUID(int=42))
+_CUTOFF = _T0 + timedelta(days=1)
+
+
+def _carryover(anchors: dict[str, tuple[float, float, str | None]], *, ts=_T0) -> dict:
+    """A points/place-cluster carryover with one anchor (and its anchor id) per endpoint."""
+    return {
+        "owntracks:open": {"start_lat": 1.0, "start_lon": 2.0},
+        "_ingest_cursor": {"version": 1},
+        TRAIL_ANCHORS_CARRYOVER_KEY: {
+            endpoint: TrailAnchor(ts=ts, lat=lat, lon=lon).to_carryover()
+            for endpoint, (lat, lon, _) in anchors.items()
+        },
+        TRAIL_STATE_CARRYOVER_KEY: {
+            "version": 1,
+            "endpoints": {
+                endpoint: {"seed_id": None, "pending_ids": [], "anchor_id": anchor_id}
+                for endpoint, (_, _, anchor_id) in anchors.items()
+            },
+        },
+    }
+
+
+def test_an_anchor_on_a_granted_fix_is_coarsened_and_nothing_else_changes() -> None:
+    prior = _carryover(
+        {"a": (*BEIJING, _GRANTED), "b": (*GUANGZHOU, _KEPT)}, ts=_CUTOFF + timedelta(days=1)
+    )
+    before = json.loads(json.dumps(prior))
+    after, coarsened = coarsen_trail_anchors(prior, granted_ids={_GRANTED}, cutoff=_CUTOFF)
+    assert coarsened == 1
+    cell = coarsen(*BEIJING)
+    assert (
+        after[TRAIL_ANCHORS_CARRYOVER_KEY]["a"]["lat"],
+        after[TRAIL_ANCHORS_CARRYOVER_KEY]["a"]["lon"],
+    ) == (
+        cell.lat,
+        cell.lon,
+    )
+    assert after[TRAIL_ANCHORS_CARRYOVER_KEY]["b"] == prior[TRAIL_ANCHORS_CARRYOVER_KEY]["b"]
+    assert {k: v for k, v in after.items() if k != TRAIL_ANCHORS_CARRYOVER_KEY} == {
+        k: v for k, v in prior.items() if k != TRAIL_ANCHORS_CARRYOVER_KEY
+    }
+    assert prior == before, "the input carryover is not mutated"
+    # The coarse anchor still loads, at the same time.
+    assert load_anchors(after)["a"] == TrailAnchor(
+        ts=_CUTOFF + timedelta(days=1), lat=cell.lat, lon=cell.lon
+    )
+    again, more = coarsen_trail_anchors(after, granted_ids={_GRANTED}, cutoff=_CUTOFF)
+    assert (again, more) == (after, 0)
+
+
+def test_an_anchor_without_an_id_is_coarsened_once_it_is_older_than_the_cutoff() -> None:
+    old = _carryover({"a": (*BEIJING, None)}, ts=_CUTOFF - timedelta(seconds=1))
+    young = _carryover({"a": (*BEIJING, None)}, ts=_CUTOFF)
+    assert coarsen_trail_anchors(old, granted_ids=set(), cutoff=_CUTOFF)[1] == 1
+    assert coarsen_trail_anchors(young, granted_ids=set(), cutoff=_CUTOFF) == (young, 0)
+
+
+def test_a_malformed_anchor_is_cleared_rather_than_kept() -> None:
+    prior = _carryover({"a": (*BEIJING, _KEPT)}, ts=_CUTOFF + timedelta(days=1))
+    prior[TRAIL_ANCHORS_CARRYOVER_KEY]["junk"] = {"lat": 39.9, "lon": "x"}
+    after, coarsened = coarsen_trail_anchors(prior, granted_ids=set(), cutoff=_CUTOFF)
+    assert "junk" not in after[TRAIL_ANCHORS_CARRYOVER_KEY]
+    assert coarsened == 1
+    assert after[TRAIL_ANCHORS_CARRYOVER_KEY]["a"] == prior[TRAIL_ANCHORS_CARRYOVER_KEY]["a"]
+
+
+def test_a_carryover_without_anchors_is_unchanged() -> None:
+    assert coarsen_trail_anchors({"x": 1}, granted_ids={_GRANTED}, cutoff=_CUTOFF) == ({"x": 1}, 0)

@@ -21,7 +21,8 @@ DML, so a grant alone would not hold) and its grant shape: ``REVOKE ALL ... FROM
 from ``butler_chronicler_rw``, then ``SELECT, INSERT`` to that role. A re-run finds the table
 in the catalog and changes nothing.
 
-Downgrade drops the table and keeps chronicler_036's tables and guard.
+Downgrade refuses while any state is recorded (each is evidence of a privacy decision's
+outcome); an empty table is dropped, keeping chronicler_036's tables and guard.
 """
 
 from __future__ import annotations
@@ -78,4 +79,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # A recorded state is evidence of a privacy decision's outcome: refuse to drop it.
+    op.execute(
+        f"""
+        DO $$
+        BEGIN
+            IF to_regclass('{_STATES}') IS NOT NULL
+               AND EXISTS (SELECT 1 FROM {_STATES}) THEN
+                RAISE EXCEPTION 'location retention grant states are recorded; not dropping them'
+                    USING ERRCODE = '55000';
+            END IF;
+        END
+        $$
+        """
+    )
     op.execute(f"DROP TABLE IF EXISTS {_STATES}")
