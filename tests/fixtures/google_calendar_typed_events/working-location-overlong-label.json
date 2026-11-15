@@ -1,0 +1,25 @@
+{
+  "kind": "calendar#event",
+  "etag": "\"3400000000000005\"",
+  "id": "synthwllong0001",
+  "status": "confirmed",
+  "created": "2026-06-20T08:00:00.000Z",
+  "updated": "2026-06-20T08:00:00.000Z",
+  "summary": "Elsewhere",
+  "creator": {"email": "owner@example.com", "self": true},
+  "organizer": {"email": "owner@example.com", "self": true},
+  "start": {"date": "2026-07-06"},
+  "end": {"date": "2026-07-07"},
+  "transparency": "transparent",
+  "visibility": "public",
+  "iCalUID": "synthwllong0001@example.com",
+  "sequence": 0,
+  "reminders": {"useDefault": false},
+  "eventType": "workingLocation",
+  "workingLocationProperties": {
+    "type": "customLocation",
+    "customLocation": {
+      "label": "Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking Coworking "
+    }
+  }
+}

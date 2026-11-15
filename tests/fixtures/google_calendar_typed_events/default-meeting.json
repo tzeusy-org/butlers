@@ -1,0 +1,22 @@
+{
+  "kind": "calendar#event",
+  "etag": "\"3400000000000008\"",
+  "id": "synthdefault0001",
+  "status": "confirmed",
+  "created": "2026-06-20T08:00:00.000Z",
+  "updated": "2026-06-20T08:00:00.000Z",
+  "summary": "Planning sync",
+  "creator": {"email": "colleague@example.com"},
+  "organizer": {"email": "colleague@example.com"},
+  "start": {"dateTime": "2026-07-01T10:00:00+08:00", "timeZone": "Asia/Singapore"},
+  "end": {"dateTime": "2026-07-01T10:30:00+08:00", "timeZone": "Asia/Singapore"},
+  "attendees": [
+    {"email": "colleague@example.com", "organizer": true, "responseStatus": "accepted"},
+    {"email": "owner@example.com", "self": true, "responseStatus": "accepted"}
+  ],
+  "transparency": "opaque",
+  "iCalUID": "synthdefault0001@example.com",
+  "sequence": 0,
+  "reminders": {"useDefault": true},
+  "eventType": "default"
+}

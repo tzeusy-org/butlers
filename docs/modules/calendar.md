@@ -202,6 +202,10 @@ owners, without keeping a second engine. Every Calendar package Python file is l
   dropped location clears). They are read-side only: tool payloads include them, no create/update
   input or Google write body carries them, and list/sync requests omit `eventTypes` so every
   type is returned. Older rows are `default`/NULL; the core_341 downgrade keeps the columns.
+  Test inputs for these shapes live in `tests/fixtures/google_calendar_typed_events/`. They are
+  synthetic, shaped after the public Events resource reference, and hashed in a manifest that
+  declares each file's expected typed fields. They are not captured payloads, so the recorded
+  payload obligation stays open.
 - Consumers of the type (bu-s11n0s.4 S2). `outOfOffice` and `workingLocation` are declared
   statuses, not meetings (`calendar_provenance.STATUS_EVENT_TYPES`, matched case-sensitively):
   - General's calendar context producer: a typed `focusTime` event is `focused` whatever its
