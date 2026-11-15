@@ -996,7 +996,7 @@ async def test_model_attempts_returns_real_rows(app):
         PURPOSE_LANE_PRIVATE_CONTENT,
         DiscretionDispatcher,
     )
-    from butlers.core.model_routing import QuotaStatus, SpendRoutingResult
+    from butlers.core.model_routing import CeilingStatus, QuotaStatus, SpendRoutingResult
 
     entry_id = uuid.uuid4()
     attempt_ts = datetime(2026, 5, 24, 10, 0, 0, tzinfo=UTC)
@@ -1039,6 +1039,10 @@ async def test_model_attempts_returns_real_rows(app):
                     limit_30d=None,
                 )
             ),
+        ),
+        patch(
+            "butlers.core.model_call.check_monthly_ceiling",
+            AsyncMock(return_value=CeilingStatus(allowed=True, mtd_usd=0.0, ceiling_usd=None)),
         ),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch(
