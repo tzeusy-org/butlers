@@ -186,7 +186,8 @@ def decide_one(base: str, token_file: Path, path: str, verb: str, item: dict[str
         if body_or_none is None:
             return (
                 f"BLOCKED approve {path}: action {action_id} has no call preview (Open only), "
-                "so the dashboard approve route refuses it; blocked on bu-y66o00.9, tracked in bu-y66o00.48",
+                "so the dashboard approve route refuses it; blocked on bu-y66o00.9, "
+                "tracked in bu-y66o00.48",
                 False,
             )
         body = body_or_none
