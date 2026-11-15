@@ -49,6 +49,9 @@ class AdapterResult:
     # no episode was written or ended, an existing one changed layer.
     episodes_promoted: int = 0
     point_events: int = 0
+    # Rows the resurrection floor refused because their source was forgotten
+    # (chronicler_035). Never counted in rows_projected or point_events.
+    rows_refused_forgotten: int = 0
     warnings: list[str] = field(default_factory=list)
 
     @property

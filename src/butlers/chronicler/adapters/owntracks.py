@@ -133,6 +133,7 @@ from butlers.chronicler.adapters.owntracks_trail import (
     TrailOutlier,
     classify_trail,
     dump_anchors,
+    haversine_meters,
     load_anchors,
     load_trail_state,
     trail_order_key,
@@ -142,6 +143,7 @@ from butlers.chronicler.confidence import (
     derive_confidence,
     evidence_refs_from_event_ids,
 )
+from butlers.chronicler.location_forgetting import owntracks_point_forgotten
 from butlers.chronicler.models import (
     Episode,
     Layer,
@@ -208,6 +210,39 @@ TRAIL_CARRY_PREFIX = "trail:"
 # transaction's start time, so an insert that commits late can carry a stamp
 # older than rows already visible; the settle window keeps the cursor behind it.
 INGEST_SETTLE_SECONDS = 60
+
+# Cumulative movement path (bu-s11n0s.7 S3): metres travelled so far and the fix the path
+# ends on (``None`` before the first fix). A ``None`` state means the path is unknown.
+PathState = tuple[float, tuple[float, float] | None]
+_FRESH_PATH: PathState = (0.0, None)
+
+
+def _extend_path(prior: PathState | None, rows: list[dict[str, Any]]) -> float | None:
+    """Add each great-circle edge between consecutive fixes once; unknown stays unknown."""
+    if prior is None:
+        return None
+    total, tail = prior
+    for row in rows:
+        here = (float(row["lat"]), float(row["lon"]))
+        if tail is not None:
+            total += haversine_meters(*tail, *here)
+        tail = here
+    return total
+
+
+def _known_path(value: Any) -> float | None:
+    """A stored path length, or ``None`` when absent or malformed (never coerced to 0)."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) and numeric >= 0 else None
+
+
+def _known_coordinate(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) else None
 
 
 @dataclass(frozen=True)
@@ -414,6 +449,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 if identity in pending_ids and identity not in current_ids
             ]
             valid_rows = sorted([*pending_rows, *valid_rows], key=trail_order_key)
+            valid_rows = await self._drop_forgotten(chronicler_pool, valid_rows, result)
             changes = {}
             rejected_seeds: set[str] = set()
             outliers, anchors = classify_trail(
@@ -744,6 +780,34 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             return None
         return IngestCursor(recorded_at=newest_settled["recorded_at"], id=newest_settled["id"])
 
+    @staticmethod
+    async def _drop_forgotten(
+        chronicler_pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+        rows: list[dict[str, Any]],
+        result: AdapterResult,
+    ) -> list[dict[str, Any]]:
+        """Resurrection floor (chronicler_035): drop rows whose source was forgotten.
+
+        Whatever re-delivers a tombstoned source (a replayed webhook, a reset cursor, a wider
+        horizon), it gets no point event, joins no movement or trail decision, and is not
+        observed for coverage, so it is never recorded as projected: it stays uncovered,
+        fail-closed. Refusals are counted in ``rows_refused_forgotten`` and reported as a count
+        only, never a source, key or coordinate; the rest of the batch projects as usual.
+        """
+        kept: list[dict[str, Any]] = []
+        refused = 0
+        for row in rows:
+            source_ref = f"{_EVIDENCE_TABLE}:{row['idempotency_key']}"
+            if await owntracks_point_forgotten(chronicler_pool, source_ref):
+                refused += 1
+            else:
+                kept.append(row)
+        if refused:
+            result.rows_refused_forgotten += refused
+            result.warnings.append(f"OwnTracks forgotten sources not projected again: {refused}.")
+            logger.info("OwnTracks resurrection floor refused %d forgotten sources", refused)
+        return kept
+
     async def _project_point_event(
         self,
         chronicler_pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
@@ -881,6 +945,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             prior_start_lat: float | None = None
             prior_start_lon: float | None = None
             prior_point_count = 0
+            prior_path: PathState | None = _FRESH_PATH
 
             if carry:
                 resolved = self._resolve_carryover_segment(
@@ -897,6 +962,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                         prior_start_lon,
                         prior_point_count,
                     ) = resolved
+                    prior_path = self._carry_path(carry)
 
             current: list[dict[str, Any]] = [first_row]
             current_source_ref: str | None = existing_source_ref
@@ -904,6 +970,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             current_prior_start_lat: float | None = prior_start_lat
             current_prior_start_lon: float | None = prior_start_lon
             current_prior_point_count = prior_point_count
+            current_prior_path = prior_path
 
             for row in rows[1:]:
                 prev = current[-1]
@@ -920,6 +987,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                             "prior_start_lat": current_prior_start_lat,
                             "prior_start_lon": current_prior_start_lon,
                             "prior_point_count": current_prior_point_count,
+                            "prior_path": current_prior_path,
                         }
                     )
                     current = [row]
@@ -928,6 +996,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     current_prior_start_lat = None
                     current_prior_start_lon = None
                     current_prior_point_count = 0
+                    current_prior_path = _FRESH_PATH
                     # Check carryover for this new segment's endpoint too.
                     new_endpoint = row["endpoint_identity"]
                     new_carry = prior_carryover.get(new_endpoint)
@@ -946,6 +1015,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                                 current_prior_start_lon,
                                 current_prior_point_count,
                             ) = new_resolved
+                            current_prior_path = self._carry_path(new_carry)
             segments.append(
                 {
                     "rows": current,
@@ -954,6 +1024,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     "prior_start_lat": current_prior_start_lat,
                     "prior_start_lon": current_prior_start_lon,
                     "prior_point_count": current_prior_point_count,
+                    "prior_path": current_prior_path,
                 }
             )
 
@@ -978,6 +1049,9 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             # Count the whole episode, not just this batch's slice: an
             # extension carrying one new fix is not a "1 point" movement.
             point_count = seg["prior_point_count"] + len(seg_rows)
+            path_m = _extend_path(seg["prior_path"], seg_rows)
+            tail = (float(last["lat"]), float(last["lon"]))
+            last_fix_at = last["ts"]
 
             # Defensive guard: device clock skew can produce an inverted episode
             # even after ts sorting (e.g. when the prior-batch carryover
@@ -1035,6 +1109,11 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 "start_lat": effective_start_lat,
                 "start_lon": effective_start_lon,
                 "point_count": point_count,
+                # Cumulative path so far and the fix it ends on, so the next batch adds
+                # exactly one connecting edge. ``None`` is unknown, never zero.
+                "path_m": path_m,
+                "path_tail_lat": tail[0],
+                "path_tail_lon": tail[1],
             }
             if not seg.get("late"):
                 new_carryover[endpoint_identity] = slot
@@ -1088,6 +1167,13 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 else:
                     # Legacy episode without linked evidence: extend its stored count.
                     point_count += merged["point_count"]
+                # This batch cannot rebuild the stored episode's path. Only an exact replay,
+                # which contributes no new fix, keeps the stored value; anything else is
+                # unknown rather than a guess. The carry continues from that path only when
+                # the stored episode ends on this batch's last fix.
+                replayed = bool(linked) and set(seg_event_ids) <= linked
+                path_m = merged["path_m"] if replayed else None
+                carry_path_m = path_m if merged["end_at"] <= last_fix_at else None
                 slot.update(
                     source_ref=seg_source_ref,
                     start_at=effective_start_at.isoformat(),
@@ -1095,6 +1181,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     start_lat=effective_start_lat,
                     start_lon=effective_start_lon,
                     point_count=point_count,
+                    path_m=carry_path_m,
                 )
 
             title = f"Movement ({point_count} points)"
@@ -1102,6 +1189,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             payload: dict = {
                 "endpoint_identity": endpoint_identity,
                 "point_count": point_count,
+                "path_m": round(path_m, 1) if path_m is not None else None,
                 "start_lat": effective_start_lat,
                 "start_lon": effective_start_lon,
             }
@@ -1230,6 +1318,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 "prior_start_lat": None,
                 "prior_start_lon": None,
                 "prior_point_count": 0,
+                "prior_path": _FRESH_PATH,
                 "late": True,
             }
             for seg in segments
@@ -1295,8 +1384,23 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             "start_lat": start_lat if start_lat is not None else 0.0,
             "start_lon": start_lon if start_lon is not None else 0.0,
             "point_count": stored_count,
+            "path_m": _known_path(payload.get("path_m")),
             "linked_event_ids": set(row["linked_event_ids"] or ()),
         }
+
+    @staticmethod
+    def _carry_path(carry: dict) -> PathState | None:
+        """The path a continued carry ends on, or ``None`` when it is not exactly known.
+
+        A carry written before path tracking has no ``path_m``; its path is unknown and
+        stays unknown for the life of the episode.
+        """
+        path_m = _known_path(carry.get("path_m"))
+        tail_lat = _known_coordinate(carry.get("path_tail_lat"))
+        tail_lon = _known_coordinate(carry.get("path_tail_lon"))
+        if path_m is None or tail_lat is None or tail_lon is None:
+            return None
+        return path_m, (tail_lat, tail_lon)
 
     @staticmethod
     def _carryover_continues(
