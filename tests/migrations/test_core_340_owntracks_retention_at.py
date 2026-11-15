@@ -190,13 +190,21 @@ def _shared_catalog(db_url: str):
 def test_first_run_backfills_in_pages_and_later_schema_runs_write_nothing(
     postgres_container,
 ) -> None:
-    """The shared table is installed once; every other schema's core run is a catalog no-op.
+    """The shared table is installed once; core_340 in every other schema's run is a no-op.
 
     12 001 legacy rows span three backfill pages, so the keyset loop must advance past a page.
+
+    The second schema is brought to core_339 before the first schema installs, so its later run
+    executes core_340 (and only what follows it). From an empty chain it would also run core_001
+    and core_074, whose ``GRANT``/``REVOKE ... ON ALL FUNCTIONS IN SCHEMA connectors`` rewrite the
+    ``pg_proc`` row (ACL) of every ``connectors`` function in every schema's run; that sweep
+    predates core_340 and is not this revision's write.
     """
     db_url = create_migration_db(postgres_container, migration_db_name())
     first = _build_alembic_config(db_url, chains=["core"], target_schema="general")
+    second = _build_alembic_config(db_url, chains=["core"], target_schema="health")
     command.upgrade(first, "core_339")
+    command.upgrade(second, "core_339")
     engine = create_engine(db_url)
     try:
         with engine.begin() as connection:
@@ -240,6 +248,5 @@ def test_first_run_backfills_in_pages_and_later_schema_runs_write_nothing(
     installed = _shared_catalog(db_url)
     assert len(installed[0]) == 2 and len(installed[1]) == 2 and installed[2] == 0
 
-    second = _build_alembic_config(db_url, chains=["core"], target_schema="health")
     command.upgrade(second, "core@head")
     assert _shared_catalog(db_url) == installed
