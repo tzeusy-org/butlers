@@ -1074,6 +1074,13 @@ class TestContextProducersIntegration:
             )
             assert metadata == {"source": "calendar"}
 
+            # bu-s11n0s.4 AC C: the broker reads the real bus and holds for the real meeting.
+            from butlers.tools.switchboard.insight.broker import (
+                get_suppressing_context_signal,
+            )
+
+            assert await get_suppressing_context_signal(pool) == "meeting"
+
             # Attended event ends: the still-live declined/free rows do not hold meeting.
             await pool.execute(
                 "UPDATE calendar_events SET ends_at = now() - interval '1 minute' "
@@ -1087,6 +1094,22 @@ class TestContextProducersIntegration:
                 "AND expires_at > now()"
             )
             assert active == 0
+
+            # An out-of-office-only calendar holds no insight under meeting (AC C).
+            await pool.execute(
+                """
+                INSERT INTO calendar_events
+                    (source_id, source_butler, origin_ref, title, timezone,
+                     starts_at, ends_at, status, event_type)
+                VALUES ($1, 'general', 'ooo', 'Out of office', 'UTC',
+                        now() - interval '1 hour', now() + interval '3 hours',
+                        'confirmed', 'outOfOffice')
+                """,
+                source_id,
+            )
+            result3 = await run_calendar_context_producer(pool)
+            assert result3["signal"] is None and result3["out_of_office"] is True
+            assert await get_suppressing_context_signal(pool) is None
         finally:
             await pool.close()
 

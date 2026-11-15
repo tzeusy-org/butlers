@@ -23,7 +23,7 @@ from uuid import UUID, uuid4
 import asyncpg
 import pytest
 
-from butlers.core.state import state_get
+from butlers.core.state import state_get, state_set
 from butlers.jobs.calendar_prep import (
     MAX_COMMITMENTS_PER_ATTENDEE,
     PREP_KEY_PREFIX,
@@ -265,9 +265,32 @@ async def test_commitments_are_escalation_sorted_and_capped_per_attendee(db):
         fingerprint="decoy-counterparty",
     )
 
-    with patch(f"{_MODULE}.today_sgt", return_value=date(2026, 6, 21)):
-        await run_relationship_calendar_prep_contribution(pool, None)
+    # bu-s11n0s.4 AC C: a linked event that became out of office keeps a prep key from an
+    # earlier run; the real selector skips it and the keep-set prune removes the old key.
+    ooo_id = await pool.fetchval(
+        """
+        INSERT INTO calendar_events
+            (source_id, origin_ref, title, timezone, starts_at, ends_at, source_butler,
+             event_type)
+        SELECT source_id, 'prep-test-ooo', 'Out of office', 'UTC', starts_at, ends_at,
+               'relationship', 'outOfOffice'
+        FROM calendar_events WHERE id = $1
+        RETURNING id
+        """,
+        event_id,
+    )
+    await pool.execute(
+        "INSERT INTO calendar_event_entities (event_id, entity_id) VALUES ($1, $2)",
+        ooo_id,
+        alice,
+    )
+    await state_set(pool, prep_key(str(ooo_id)), {"butler": "relationship"})
 
+    with patch(f"{_MODULE}.today_sgt", return_value=date(2026, 6, 21)):
+        result = await run_relationship_calendar_prep_contribution(pool, None)
+
+    assert result["events_written"] == 1 and result["pruned"] == 1
+    assert await state_get(pool, prep_key(str(ooo_id))) is None
     envelope = await state_get(pool, prep_key(str(event_id)))
     commitments = envelope["attendees"][0]["commitments"]
     assert [commitment["summary"] for commitment in commitments] == [
