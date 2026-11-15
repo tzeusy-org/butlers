@@ -537,6 +537,75 @@ cannot reach the superuser path. The SQL trusts the tag's git objects and the de
 installs for them; the meta-command allowlist keeps `\!` and backticks off it (RFC 0039 D9,
 residual risk).
 
+## 9. Proposal importer
+
+The Relationship job `public_mcp_proposal_import` (RFC 0039 D13 steps 2, 6 and 7; task 5.2) runs
+inside `butlers-up` every 5 minutes (`roster/relationship/butler.toml`, `dispatch_mode = "job"`, no
+model, no session). Code: `roster/relationship/tools/public_mcp_proposal_import.py`; table:
+`relationship.external_fact_proposals` (payload and bookkeeping columns since `rel_043`, all
+private: the publication still carries only `proposal_id`, `state`, `decided_at`).
+
+**Credential.** It logs in to `butlers_public` as `mcp_proposals_reader` with the password from a
+file, never an env var or `butler_secrets`:
+
+| Setting | Default |
+| --- | --- |
+| `BUTLERS_MCP_PROPOSALS_READER_PASSWORD_FILE` | `/etc/butlers/mcp-proposals-reader/password` |
+| `BUTLERS_MCP_PROPOSALS_DB_HOST` | the primary's host (`DATABASE_URL` or `POSTGRES_HOST`) |
+| `BUTLERS_MCP_PROPOSALS_DB_PORT` | the primary's port |
+| `BUTLERS_MCP_PROPOSALS_DB_NAME` | `butlers_public` |
+
+The `butlers` chart mounts Secret `postgres-mcp-proposals-reader-user` (key `password`, in
+`butlers-<env>`; Bitwarden `MCP_PROPOSALS_READER_DB_PASSWORD`) read-only at that path on
+`butlers-up` as an **optional** volume. Without the Secret the pod still starts; each pass logs
+`no mcp_proposals_reader password file is mounted; intake skipped`, counts
+`butlers.public_mcp.proposal_import.intake_skipped`, and still reconciles and clears. The password is
+re-read every pass, so a rotated Secret takes effect without a restart. Egress is the existing
+`butlers-up` database site on 5432 (`scripts/egress-profile-coverage.json`).
+
+**One pass, in order.**
+
+1. *Switch:* the `proposals` and `all` rows of `mcp_surface.controls` on the primary. A missing
+   row or a failed read counts as disabled. The replicated copy, the break-glass ConfigMap and the
+   canary latch do not affect the importer.
+2. *Intake:* up to 100 inbox rows by `received_at`, then `proposal_id`; one primary transaction
+   inserts them as `imported` with `ON CONFLICT DO NOTHING`; after it commits, the importer deletes
+   exactly those ids from the inbox. A crash between the two leaves duplicates in both places that
+   the next pass absorbs. Intake runs while the switch is off: rows are kept, unparked.
+3. *Validate and park* (switch on only): each `imported` row received at least 30 seconds before the
+   pass, oldest first, one transaction each under an advisory lock. First failing check wins:
+   `invalid` (incomplete payload, predicate outside `proposable.toml`, unrepresentable client label
+   or non-`http(s)` evidence URL, a missing, merged or deleted entity, or an owner subject);
+   `invalid` (the response DLP's counted rules match the note or URL); `duplicate` (identical
+   active fact); `conflict` (an earlier proposal used the same `(sub, cid, idempotency_key)`);
+   `rate_limited`. Otherwise `park_external_fact_proposal` parks one action and the row becomes
+   `parked` with its `pending_action_id`, in the same transaction.
+4. *Expire and reconcile:* the importer expires its own parked actions past `expires_at` (nothing
+   else sweeps ordinary approvals), then maps each action: `executed` to `applied`, `rejected` to
+   `owner_rejected`, `expired` or `cancelled` to `expired`, `abandoned` or an `approved` action with
+   an `action_execution_failed` event to `apply_failed`. A failed execution is still retryable in
+   approvals; if the retry executes, `apply_failed` moves on to `applied`.
+5. *Retention:* 30 days after `decided_at`, a terminal row's `note` and `evidence_url` become
+   NULL; ids, state and timestamps stay.
+
+**Rate limits.** Per `(sub, cid)`. *Today* is the UTC calendar day of the proposal's own
+`received_at`: the 21st proposal received that day (any state, ordered by `received_at` then
+`proposal_id`) is `rate_limited`, whenever the pass runs. *Unresolved* is `state = 'parked'`: with
+50 already parked and undecided, the next is `rate_limited`. Both are terminal; the client proposes
+again later.
+
+**Metrics** (OTel meter `butlers`; ids and states only, never notes, URLs or client values):
+`butlers.public_mcp.proposal_import.outcomes{state}`, `.copied`, `.errors{step}`,
+`.intake_skipped{reason}`, `.inbox_depth` (gauge) and `.switch_enabled` (gauge). The D16 rules
+"inbox undrained above 500" and "any `apply_failed`" read the inbox-depth gauge and the
+`state="apply_failed"` outcome; they land with the alert rules in `bu-y66o00.7` (3e).
+
+**Checks.** Inbox depth from the projection owner connection:
+`SELECT count(*) FROM mcp_inbox.proposals`; states on the primary:
+`SELECT state, count(*) FROM relationship.external_fact_proposals GROUP BY 1`. A row stuck in
+`imported` while the switch is on means its park failed: the pass log names the proposal id and the
+error class only.
+
 ## Related
 
 - [RFC 0039](../../about/legends-and-lore/rfcs/0039-public-mcp-read-surface.md): D3 placement and

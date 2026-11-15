@@ -440,3 +440,13 @@ fact is written `content_authority = 'third_party'`, `src = 'external_mcp:<id>'`
 `assert_origin = 'approved'`, `confirmation_source = 'approved_action'`, with `confirmed_at` set.
 An owner edit of the object keeps both. Stored arguments that carry `src`, `content_authority` or
 `observed_at` fail at the registered tool's signature before any row is written.
+
+The caller is the `public_mcp_proposal_import` job (`tools/public_mcp_proposal_import.py`,
+scheduled every 5 minutes, `dispatch_mode = "job"`, no model). It copies the `butlers_public`
+inbox into `relationship.external_fact_proposals` (copy, commit, then delete), validates each
+`imported` row in the REQ-public-mcp-proposals-004 order, parks the valid ones through the call
+above in the same transaction that records `state = 'parked'` and `pending_action_id`, reconciles
+parked actions to `applied`, `owner_rejected`, `expired` or `apply_failed`, and clears `note` and
+`evidence_url` 30 days after a terminal decision. It parks nothing while `mcp_surface.controls`
+disables `proposals` or `all` on the primary. Credential, pass order, rate-limit definitions and
+metrics: [Public MCP runbook § 9](../operations/public-mcp-read-surface.md#9-proposal-importer).

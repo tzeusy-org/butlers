@@ -95,6 +95,7 @@ PINNED_CLOSURE = frozenset(
         "butlers.knowledge_read.graph",
         "butlers.knowledge_read.health",
         "butlers.knowledge_read.manifest",
+        "butlers.knowledge_read.proposable",
         "butlers.knowledge_read.records",
         "butlers.knowledge_read.search",
         "butlers.knowledge_read.travel",

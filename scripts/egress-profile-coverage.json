@@ -5735,6 +5735,26 @@
       "resolver": null,
       "sites": [],
       "workloads": []
+    },
+    "roster/relationship/tools/public_mcp_proposal_import.py::<module>::config::0c6cd6a7f0dc86ea73f4f1332b8caa946102d3c23fda0a2f1be05bdc586bf82f": {
+      "class": "site",
+      "observed": {
+        "path": "roster/relationship/tools/public_mcp_proposal_import.py",
+        "scope": "<module>",
+        "kind": "config",
+        "sha256": "0c6cd6a7f0dc86ea73f4f1332b8caa946102d3c23fda0a2f1be05bdc586bf82f",
+        "authorities": [],
+        "config": "BUTLERS_MCP_PROPOSALS_DB_HOST",
+        "count": 1
+      },
+      "reason": "BUTLERS_MCP_PROPOSALS_DB_HOST locates the existing database peer only (the mcp_proposals_reader login to butlers_public on postgres-<env>:5432, defaulting to POSTGRES_HOST); no arbitrary external endpoint is admitted.",
+      "resolver": null,
+      "sites": [
+        "database"
+      ],
+      "workloads": [
+        "butlers-up"
+      ]
     }
   },
   "local_resolvers": {
@@ -5799,7 +5819,7 @@
       "sha256": "dc093bc68e3f600d419af5950fa85d07f15c69a4441b7a8877184e2a194dd752"
     },
     "deploy/helm/butlers/templates/butlers-up.yaml": {
-      "sha256": "e7cf17cc229d574f47e68fd69e185f90037f4791b92138aeefb1dad3eb49847c"
+      "sha256": "3a705d33726eb549f5c2340a8bc8c6689f897a8b5aecb5d5d5ad0651ce6b87f1"
     },
     "deploy/helm/butlers/templates/connector-podmonitor.yaml": {
       "sha256": "d910cfcf8a4ae5b79dc712e8f050fde764ef37f10d462dd63a2041d391d5c03a"
@@ -5874,7 +5894,7 @@
       "sha256": "1846bef76733ba6f7f800a59fb9131a3a6b38a180727c95bc7f86c30abb61821"
     },
     "roster/relationship/butler.toml": {
-      "sha256": "394fa84df45272ac44ba8a2149bf329bbaafe0e5a619a34e5112aa69a6d77d0f"
+      "sha256": "fe59e506516c39a49c9d9802f972069fd02b511febdb80efc075357dba31ac2e"
     },
     "roster/switchboard/butler.toml": {
       "sha256": "32aa27e2069b9af076099b992a268e2052bd1ec5c7f60a5338d0622ea2af9c6d"
