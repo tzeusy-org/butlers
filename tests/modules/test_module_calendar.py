@@ -1419,7 +1419,7 @@ class TestProjectionPersistence:
             cancelled_ids=[],
         )
 
-        assert _calendar_events_fetchrow_args(pool)[-2] == "health"
+        assert _calendar_events_fetchrow_args(pool)[17] == "health"  # $17 source_butler
 
     async def test_project_provider_changes_persists_butler_generated_events(self):
         """Provider sync has no butler-generated filter: a butler-generated
@@ -1846,6 +1846,7 @@ def _make_home_resolver_pool(*, projected_calendar_id: str | None) -> MagicMock:
             "has_events_body": True,
             "has_events_source_butler": True,
             "has_events_source_session_id": True,
+            "has_events_typed_fields": True,
         }
     )
     lookup_calls: list[tuple] = []
@@ -1991,6 +1992,7 @@ class TestHomeCalendarResolution:
                         "has_events_body": True,
                         "has_events_source_butler": True,
                         "has_events_source_session_id": True,
+                        "has_events_typed_fields": True,
                     }
                 )
             if "ce.origin_ref" in query:
@@ -3215,6 +3217,13 @@ class TestCalendarProjectionSchemaCompatibility:
 
         assert await mod._projection_tables_available() is False
 
+    async def test_projection_tables_unavailable_before_core_341_typed_columns(self):
+        """A schema not yet at core_341 fails closed instead of erroring on every upsert."""
+        pool = self._make_projection_pool(missing_flags={"has_events_typed_fields"})
+        mod = _make_module_with_pool(pool)
+
+        assert await mod._projection_tables_available() is False
+
     async def test_project_scheduler_source_noops_when_required_event_columns_missing(self):
         pool = self._make_projection_pool(
             missing_flags={
@@ -3633,7 +3642,7 @@ class TestProjectionEventHelpers:
 
         assert mock_pool.fetchrow.await_count == 1
         fetchrow_args = mock_pool.fetchrow.await_args.args
-        assert fetchrow_args[-2] == "finance"
+        assert fetchrow_args[17] == "finance"  # $17 source_butler
 
     async def test_upsert_projection_event_uses_default_butler_when_names_are_blank(
         self,
@@ -3656,7 +3665,7 @@ class TestProjectionEventHelpers:
         )
 
         fetchrow_args = mock_pool.fetchrow.await_args.args
-        assert fetchrow_args[-2] == DEFAULT_BUTLER_NAME
+        assert fetchrow_args[17] == DEFAULT_BUTLER_NAME
 
     async def test_upsert_projection_event_normalizes_blank_source_session_id(
         self,
@@ -3680,8 +3689,10 @@ class TestProjectionEventHelpers:
         )
 
         fetchrow_args = mock_pool.fetchrow.await_args.args
-        assert fetchrow_args[-2] == "general"
-        assert fetchrow_args[-1] is None
+        assert fetchrow_args[17] == "general"
+        assert fetchrow_args[18] is None  # $18 source_session_id
+        # Internal writes keep the provider typed fields at their defaults.
+        assert fetchrow_args[19:] == ("default", None, None)
 
 
 class TestCalendarModuleExtraStatusFields:

@@ -18,7 +18,13 @@ from .constants import (
     SOURCE_KIND_PROVIDER,
     logger,
 )
-from .models import CalendarEvent, EventStatus, EventVisibility, _normalize_optional_string
+from .models import (
+    DEFAULT_EVENT_TYPE,
+    CalendarEvent,
+    EventStatus,
+    EventVisibility,
+    _normalize_optional_string,
+)
 
 
 class ProjectionMixin:
@@ -119,7 +125,16 @@ class ProjectionMixin:
                         WHERE table_schema = current_schema()
                           AND table_name = 'calendar_events'
                           AND column_name = 'source_session_id'
-                    ) AS has_events_source_session_id
+                    ) AS has_events_source_session_id,
+                    (
+                        SELECT count(*) = 3
+                        FROM information_schema.columns
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'calendar_events'
+                          AND column_name IN (
+                              'event_type', 'working_location_type', 'working_location_label'
+                          )
+                    ) AS has_events_typed_fields
                 """
             )
         except Exception as exc:
@@ -141,6 +156,8 @@ class ProjectionMixin:
                 "calendar_events.body": row["has_events_body"],
                 "calendar_events.source_butler": row["has_events_source_butler"],
                 "calendar_events.source_session_id": row["has_events_source_session_id"],
+                # core_341: event_type + working_location_type/label.
+                "calendar_events.typed_fields": row["has_events_typed_fields"],
             }
         except KeyError:
             self._projection_tables_available_cache = False
@@ -478,7 +495,15 @@ class ProjectionMixin:
         metadata: dict[str, Any] | None = None,
         source_butler: str | None = None,
         source_session_id: str | None = None,
+        event_type: str = DEFAULT_EVENT_TYPE,
+        working_location: dict[str, str] | None = None,
     ) -> uuid.UUID:
+        """Insert or replace one projected event.
+
+        ``event_type`` and ``working_location`` are replaced on every write (a provider update
+        that drops the location clears it); internal scheduler/reminder writes leave the
+        defaults.
+        """
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None:
             raise RuntimeError("Projection writes require a database pool")
@@ -486,17 +511,25 @@ class ProjectionMixin:
         effective_source_butler = self._resolve_effective_butler_name(source_butler)
         normalized_source_session_id = _normalize_optional_string(source_session_id)
         metadata_json = self._encode_jsonb(metadata or {})
+        # Stored as two scalars, never JSONB (see core_341).
+        location_type, location_label = (
+            (None, None)
+            if working_location is None
+            else (working_location["type"], working_location["label"])
+        )
         row = await pool.fetchrow(
             """
             INSERT INTO calendar_events (
                 source_id, origin_ref, title, description, body, location, timezone,
                 starts_at, ends_at, all_day, status, visibility, recurrence_rule,
-                etag, origin_updated_at, metadata, source_butler, source_session_id
+                etag, origin_updated_at, metadata, source_butler, source_session_id,
+                event_type, working_location_type, working_location_label
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
                 $8, $9, $10, $11, $12, $13,
-                $14, $15, $16, $17, $18
+                $14, $15, $16, $17, $18,
+                $19, $20, $21
             )
             ON CONFLICT (source_id, origin_ref) DO UPDATE SET
                 title = EXCLUDED.title,
@@ -515,6 +548,9 @@ class ProjectionMixin:
                 metadata = EXCLUDED.metadata,
                 source_butler = EXCLUDED.source_butler,
                 source_session_id = EXCLUDED.source_session_id,
+                event_type = EXCLUDED.event_type,
+                working_location_type = EXCLUDED.working_location_type,
+                working_location_label = EXCLUDED.working_location_label,
                 updated_at = now()
             RETURNING id
             """,
@@ -536,6 +572,9 @@ class ProjectionMixin:
             metadata_json,
             effective_source_butler,
             normalized_source_session_id,
+            event_type,
+            location_type,
+            location_label,
         )
         if row is None:
             raise RuntimeError("Projection upsert did not return calendar_events.id")
@@ -911,6 +950,8 @@ class ProjectionMixin:
                 metadata=metadata,
                 source_butler=event.source_butler or event.butler_name or self._butler_name,
                 source_session_id=event.source_session_id,
+                event_type=event.event_type,
+                working_location=event.working_location,
             )
             # Sync cycles preserve links on empty entity sets. A workspace update
             # must opt in with the explicit clear signal before a zero-length set
