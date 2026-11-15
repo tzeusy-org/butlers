@@ -457,7 +457,7 @@ def _switchboard_acl_rows(db_url: str) -> dict[str, str]:
                     "WHERE n.nspname = 'switchboard'"
                 )
             )
-            return dict(rows.tuples())
+            return {str(name): str(xmin) for name, xmin in rows.fetchall()}
     finally:
         engine.dispose()
 
