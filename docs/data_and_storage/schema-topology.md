@@ -211,6 +211,17 @@ psql -h localhost -U butlers -d butlers -c \
   against such tables connect with `butlers.testing.migration.migration_bootstrap_db_url()`
   (superuser; replace `postgresql+psycopg2://` with `postgresql://` for asyncpg); keep `SET ROLE`
   for tests of the policy itself.
+- Cross-schema reads of `switchboard` are by named table, never schema-wide. The relationship,
+  messenger and travel runtime roles hold SELECT on `switchboard.message_inbox` only (`core_339`
+  revokes the `core_077`/`core_143` schema-wide SELECT and default privileges; `sw_079` grants it on a
+  fresh database once the Switchboard chain has created the table). They cannot read
+  `switchboard.butler_secrets` or any table added later. A new cross-schema read needs its own named
+  grant, in the chain that owns the table. In the core chain, which runs once per schema and can
+  overlap, only the owning schema's run may rewrite its tables' ACLs: `core_077`, `core_143` and
+  `core_339`'s narrowing act only when `current_schema()` is `switchboard`, because the same
+  rewrite from another schema's run deadlocks against the owner's open transaction. Every core
+  run then ends `core_339` with a narrow repair (`USAGE` plus the `message_inbox` grant), because
+  `core_001` in a schema whose chain first runs later revokes all cross-schema access.
 - DND mutation authority is bootstrap-only: `scripts/init-db.sql` owns the superuser
   installer/finalizer, and `core_197` may only validate that interface or call its no-argument
   installer. `public.user_context` and its guard, audit and policies belong to

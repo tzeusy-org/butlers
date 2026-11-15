@@ -143,6 +143,10 @@
     "create_table": 1,
     "fixtures": 0
   },
+  "tests/migrations/test_core_339_switchboard_reader_grants.py": {
+    "create_table": 1,
+    "fixtures": 0
+  },
   "tests/migrations/test_drop_backup_tables.py": {
     "create_table": 4,
     "fixtures": 0

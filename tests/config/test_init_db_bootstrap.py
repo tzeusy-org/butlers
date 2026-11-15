@@ -246,7 +246,7 @@ def test_init_db_bootstrap_repairs_connector_function_execute_grant(postgres_con
 def test_init_db_bootstrap_grants_relationship_read_access_to_switchboard_message_inbox(
     postgres_container,
 ):
-    """relationship runtime role can read switchboard.message_inbox after bootstrap."""
+    """Bootstrap grants Switchboard USAGE; migrations own the explicit inbox SELECT."""
     host, port, admin_user, admin_password = _admin_params(postgres_container)
     admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
     engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
@@ -310,7 +310,7 @@ def test_init_db_bootstrap_grants_relationship_read_access_to_switchboard_messag
         engine.dispose()
 
     assert row["schema_usage"] is True
-    assert row["inbox_select"] is True
+    assert row["inbox_select"] is False
 
 
 def test_init_db_bootstrap_repairs_membership_set_option_for_qa(postgres_container):
