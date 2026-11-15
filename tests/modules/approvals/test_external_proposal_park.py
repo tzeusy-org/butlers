@@ -294,6 +294,17 @@ async def _approve_via(path: str, pool, action_id: uuid.UUID, *, create_rule=Fal
         await module.on_shutdown()
 
 
+async def _rule_from_action_via(path: str, pool, action_id: uuid.UUID) -> dict:
+    if path == "operations":
+        return await operations.create_rule_from_action(pool, str(action_id))
+    module = ApprovalsModule()
+    await module.on_startup({}, pool)
+    try:
+        return await module._create_rule_from_action(str(action_id), actor=_ACTOR)
+    finally:
+        await module.on_shutdown()
+
+
 # REQ-module-approvals-010: "Approving outside proposals never suggests a rule".
 @pytest.mark.parametrize("path", ["operations", "mcp_module"])
 async def test_five_external_approvals_leave_no_history_and_no_suggestion(
@@ -345,15 +356,26 @@ async def test_create_rule_on_external_proposal_is_refused(
     )
     assert await approvals_pool.fetchval("SELECT count(*) FROM approval_rules") == 0
     assert await approvals_pool.fetchval("SELECT count(*) FROM autonomy_approval_history") == 0
-    from_action = await operations.create_rule_from_action(approvals_pool, str(admission.action_id))
+    # The same refusal on the create-rule-from-action surface of this path.
+    from_action = await _rule_from_action_via(path, approvals_pool, admission.action_id)
     assert "standing approval rule" in from_action["error"]
     assert await approvals_pool.fetchval("SELECT count(*) FROM approval_rules") == 0
+    assert (
+        await approvals_pool.fetchval(
+            "SELECT status FROM pending_actions WHERE id = $1", admission.action_id
+        )
+        == "pending"
+    )
 
     # Positive control: the same request on an ordinary action creates the rule.
     ordinary = await _ordinary_pending(approvals_pool, {"subject": str(uuid.uuid4())})
     created = await _approve_via(path, approvals_pool, ordinary, create_rule=True)
     assert "error" not in created and created["created_rule"]
     assert await approvals_pool.fetchval("SELECT count(*) FROM approval_rules") == 1
+    other = await _ordinary_pending(approvals_pool, {"subject": str(uuid.uuid4())})
+    derived = await _rule_from_action_via(path, approvals_pool, other)
+    assert "error" not in derived
+    assert await approvals_pool.fetchval("SELECT count(*) FROM approval_rules") == 2
 
 
 # REQ-module-approvals-010: the dashboard route POST /api/approvals/actions/{id}/approve

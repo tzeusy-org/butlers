@@ -5,7 +5,7 @@ Let the owner's external AI clients propose a Relationship fact without gaining 
 ## ADDED Requirements
 
 ### Requirement: propose_fact accepts only proposable relational triples
-`propose_fact` SHALL accept `subject_entity_id`, `predicate`, `object_entity_id`, an optional `evidence_url`, an optional `note` of at most 500 characters and an `idempotency_key` of at most 64 characters, and nothing else. `predicate` SHALL be in the literal allowlist `src/butlers/knowledge_read/proposable.toml`, which in v1 holds only relational-kind predicates whose object is an entity (`knows`, `colleague-of`, `friend-of`, `co-attended`, `visited`, `works-at`, `member-of`). A family-gated, contact-kind or override-kind predicate, or a literal object, SHALL be refused with `invalid_argument` and SHALL write nothing. On acceptance the tool SHALL return `{proposal_id, status: "received"}`.
+`propose_fact` SHALL accept `subject_entity_id`, `predicate`, `object_entity_id`, an optional `evidence_url`, an optional `note` of at most 500 characters and an `idempotency_key` of at most 64 characters, and nothing else. `predicate` SHALL be in the literal allowlist `src/butlers/knowledge_read/proposable.toml`, which in v1 holds only relational-kind predicates whose object is an entity (`knows`, `colleague-of`, `friend-of`, `co-attended`, `visited`, `works-at`, `member-of`). An `evidence_url`, when given, SHALL be an absolute `http` or `https` URL with a host, at most 2048 characters, with no userinfo (user name or password) and no whitespace or control characters. A family-gated, contact-kind or override-kind predicate, a literal object, or an `evidence_url` breaking that rule SHALL be refused with `invalid_argument` and SHALL write nothing. On acceptance the tool SHALL return `{proposal_id, status: "received"}`.
 
 ID: REQ-public-mcp-proposals-001
 Source: RFC 0039 D10 (propose_fact row) and D13 (proposable predicates); owner decision OD4
@@ -25,6 +25,10 @@ Scope: v1-mandatory
 
 #### Scenario: Oversized note is refused
 - **WHEN** a client sends a 501-character `note`
+- **THEN** the result SHALL be `invalid_argument` and no inbox row SHALL be written
+
+#### Scenario: Credential-bearing evidence URL is refused
+- **WHEN** a client sends the `evidence_url` `https://user:secret@example.com/page`
 - **THEN** the result SHALL be `invalid_argument` and no inbox row SHALL be written
 
 ### Requirement: Idempotent receipt
