@@ -414,7 +414,8 @@ async def test_run_locks_source_before_reading_checkpoint() -> None:
 
     lock_sql, lock_key = conn.execute.await_args_list[0].args
     assert "pg_advisory_xact_lock" in lock_sql
-    assert lock_key == SOURCE_NAME
+    # The key the lock has always hashed; retention preparation takes the same one.
+    assert lock_key == "chronicler.projection:" + SOURCE_NAME
     assert conn.fetchrow.await_args_list[0].args == (
         "SELECT * FROM projection_checkpoints WHERE source_name = $1 AND subsource = ''",
         SOURCE_NAME,

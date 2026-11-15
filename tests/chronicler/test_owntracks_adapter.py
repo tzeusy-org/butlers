@@ -1568,7 +1568,7 @@ async def test_a_forgotten_source_is_never_projected_again(
 
     with (
         patch(
-            "butlers.chronicler.adapters.owntracks.owntracks_point_forgotten",
+            "butlers.chronicler.location_forgetting.owntracks_point_forgotten",
             side_effect=_forgotten,
         ),
         patch("butlers.chronicler.adapters.owntracks.ProjectionCoverage", _Ledger),

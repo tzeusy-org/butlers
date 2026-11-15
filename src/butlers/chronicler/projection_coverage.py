@@ -170,8 +170,12 @@ def config_revision(adapter_name: str, settings: Mapping[str, Any]) -> str:
     return f"{DIGEST_VERSION}:{hashlib.sha256(serialized.encode()).hexdigest()}"
 
 
-def _is_digest(value: Any) -> TypeGuard[str]:
+def is_digest(value: Any) -> TypeGuard[str]:
+    """Whether ``value`` is a current-version digest (``v1:<64 hex>``), never ``legacy``."""
     return isinstance(value, str) and _DIGEST_PATTERN.fullmatch(value) is not None
+
+
+_is_digest = is_digest
 
 
 class RunConnection(Protocol):
@@ -627,6 +631,7 @@ __all__ = [
     "UncoveredScan",
     "config_revision",
     "discover_uncovered",
+    "is_digest",
     "raw_row_digest_sql",
     "record_attempt",
 ]

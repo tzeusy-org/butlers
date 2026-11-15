@@ -196,15 +196,29 @@ Groundwork for that gate is in place, and still deletes nothing:
     runtime role may only read and insert. `location_forgetting.record_forgetting` writes a
     run's tombstones and its receipt in one transaction, counting only tombstones it added; no
     code calls it yet.
-  - The point projection never writes a point event for a tombstoned `source_ref`, so a
-    replayed webhook, reset cursor or wider horizon cannot restore a forgotten point. It is
-    inert until raw expiry writes tombstones.
-  - A forgotten fix is dropped before trail classification: it feeds no point event, episode
-    or hold, and gets no projection-coverage record, so coverage never calls it projected. The
-    batch continues. The run counts the dropped fixes in `rows_refused_forgotten`, never in
-    `rows_projected` or `point_events`, and warns with the count only: no source, key or
-    coordinate. The place-cluster adapter has no floor yet; it lands with raw expiry (S4),
-    before any tombstone is written.
+  - The point and place-cluster projections never project a fix whose `source_ref` is
+    tombstoned, so a replayed webhook, reset cursor or wider horizon cannot restore a forgotten
+    point, stay or trip. It is inert until raw expiry writes tombstones.
+  - A forgotten fix is dropped before trail classification: it feeds no point event, episode,
+    carry, trail anchor or hold, and gets no projection-coverage record, so coverage never
+    calls it projected. The batch continues. The run counts the dropped fixes in
+    `rows_refused_forgotten`, never in `rows_projected` or `point_events`, and warns with the
+    count only: no source, key, timestamp or coordinate (warnings persist with the job result).
+    SSID presence reads no coordinates and has no floor.
+- Raw expiry is prepared, still deleting nothing (bu-s11n0s.7 S4a):
+  - chronicler_036 adds `chronicler.location_retention_grants` (one row per preparation run,
+    its receipt: policy version, horizon, cutoff, every adapter's config revision, the count
+    granted and whether the limit stopped it) and `chronicler.location_retention_grant_items`
+    (one row per granted raw row: id, idempotency key, retention clock, content digest). Both
+    are append-only; the runtime role may only read and insert. A raw row is granted at most
+    once.
+  - `location_retention_grant.prepare_retention_grant` grants a raw row only when every covered
+    adapter has an exact current coverage record for it (current config revision, current
+    content digest; a `legacy` or other-revision record does not count), no adapter holds it
+    open, its `retention_at` is strictly older than `now() - days` and it arrived more than an
+    hour ago. It holds the policy row and every OwnTracks projection lock for the run, oldest
+    rows first, at most 500 per run. No code calls it yet, and nothing reads a grant: the
+    connector-side delete and its receipt are the next slice.
 
 ## Implementation Notes
 

@@ -25,6 +25,12 @@
   window-scoped rebuild (rewind to the episode start, tombstone reshaped episodes, replay through
   the real adapter) is a follow-up, not part of this task.
 - [ ] 2.3 Prepared grant, then a connector-owned raw delete with a committed receipt. Lag and failure conditions.
+  Partial (deletes nothing): `chronicler_036` append-only grant receipts and items, and
+  `location_retention_grant.prepare_retention_grant` (no caller yet), which grants only rows
+  with exact current-revision, current-digest coverage from every adapter, no open member, an
+  expired retention clock and a settled arrival. The place-cluster projection shares the
+  point projection's resurrection floor. Remaining: holder readbacks and the ready grant, the
+  connector delete and its receipt, reconciliation, and the lag and failure conditions.
 
 ## 3. Summaries and UI (later slices)
 
@@ -32,7 +38,7 @@
   Partial (deletes nothing): owntracks.points records `path_m` (null when not exactly
   rebuildable); `butlers.chronicler.spatial_precision` scheme `eqcell-150m-v1`;
   `chronicler_035` append-only receipts and tombstones with `location_forgetting.record_forgetting`
-  (no caller yet); the point projection refuses a tombstoned source. Remaining: applying the
+  (no caller yet); the point and place-cluster projections refuse a tombstoned source. Remaining: applying the
   coarsening to place/movement summaries, carryover and caches, and the episode/evidence-chain
   readers of tombstones, all with raw expiry (2.3).
 - [ ] 3.2 Map plaque and source-strip states. Raw-copy cohort coverage.
