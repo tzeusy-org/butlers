@@ -85,7 +85,11 @@ async def owntracks_transaction(
     Transaction-scoped locks release on error/cancellation and pool release;
     the namespace is separate from every other adapter's scheduling contract.
     """
-    if source_name not in {"owntracks.points", "owntracks.place_cluster"}:
+    if source_name not in {
+        "owntracks.points",
+        "owntracks.place_cluster",
+        "owntracks.ssid_presence",
+    }:
         raise ValueError("OwnTracks transaction requires an OwnTracks source")
     async with owntracks_connection(pool) as conn:
         async with conn.transaction():
