@@ -609,6 +609,29 @@ again later.
 `imported` while the switch is on means its park failed: the pass log names the proposal id and the
 error class only.
 
+### End-to-end proposal run (task 5.7)
+
+Hermetic: `tests/integration/test_public_mcp_proposal_e2e.py` drives `propose_fact` through the
+real host, one importer pass, an owner approval plus the shared executor, an owner rejection and an
+expiry, then reads `applied`, `owner_rejected` and `expired` through `fetch("proposal:<id>")`.
+
+Live dev run, **live leg tracked in `bu-y66o00.48`**, blocked on the `bu-y66o00.6` deploy and on `bu-y66o00.9` (the typed review that provides the displayed call; not run yet): `scripts/k8s/public_mcp_proposal_e2e.py`
+with three synthetic entity pairs, tokens read from files:
+
+```bash
+public_mcp_proposal_e2e.py propose --mcp-url URL --token-file F --state S \
+    --applied A:B --rejected C:D --expired E:F
+# wait for an importer pass (every 5 minutes)
+public_mcp_proposal_e2e.py decide --dashboard-url URL --token-file F --state S
+public_mcp_proposal_e2e.py verify --mcp-url URL --token-file F --state S
+```
+
+`decide` echoes the action's `call_preview.displayed_call` into the approve body, as the dashboard
+does. A `relationship_assert_fact` action has no registered call preview today, so the dashboard
+approve route refuses it (409) and `decide` reports `BLOCKED` for the applied path; the reject path
+still runs. All URLs must be https. `expired` needs the 14-day window to pass, or the owner setting that one synthetic action's
+`expires_at` into the past; `verify` reports it `PENDING`, never as a pass, until then.
+
 ## Related
 
 - [RFC 0039](../../about/legends-and-lore/rfcs/0039-public-mcp-read-surface.md): D3 placement and
