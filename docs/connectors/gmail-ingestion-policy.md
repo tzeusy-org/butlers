@@ -117,6 +117,18 @@ Switchboard ingest tool publishes one `switchboard.security_event` regardless of
 decision. The sensor never reads a body, code or link. See `openspec/specs/account-security-perception`
 once the change is archived.
 
+## Owner Break-Through Sensor (shadow)
+
+After an inbound message is accepted, the Switchboard ingest tool asks the private clause evaluator
+whether it matches an owner-declared break-through clause (a person, an authenticated sender domain,
+a channel or an account-security kind). The check reads only the resolved sender, channel and
+account classification, so an ingestion rule, including a promoted `skip`, cannot hide a hit. A
+match is recorded once in `switchboard.break_through_hits` (keyed by clause and source request, so
+a replay is silent) and announced as a metadata-only `switchboard.break_through_hit` event. The
+sensor is shadow-only: it sends nothing, an unavailable evaluator counts as "no match", and it
+never fails or delays ingest beyond a two-second bound. See `openspec/specs/proactive-insight-engine`
+(Owner-Declared Break-Through Hits Are Observed At Ingest).
+
 ## Retention by Tier
 
 | Tier | Retention |

@@ -52,6 +52,7 @@ from butlers.core.account_security_events import (
     publish_security_event,
     sender_authentication_verdict,
 )
+from butlers.core.break_through import observe_inbound as observe_break_through
 from butlers.core.metrics import ButlerMetrics
 from butlers.ingestion_bearer_scrub import (
     BearerArtifact,
@@ -1319,6 +1320,17 @@ async def ingest_v1(
             )
     except Exception:
         logger.warning("account-security sensor failed (non-fatal)", exc_info=True)
+
+    # Break-through sensor (bu-s11n0s.8 S1, shadow-only): does this message match an owner
+    # clause? Independent of the policy decision above, bounded, and never fails ingest.
+    await observe_break_through(
+        pool,
+        channel=envelope.source.channel,
+        sender_identity=str(envelope.sender.identity or ""),
+        normalized_text=normalized_text,
+        raw=envelope.payload.raw,
+        source_request_id=str(request_id),
+    )
 
     # Fan an "ingestion" event onto the multiplexed fleet event bus (bu-86c4c.8,
     # move 5; wired in bu-h8ioq). This is the single choke point where every

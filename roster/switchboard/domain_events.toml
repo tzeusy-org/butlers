@@ -16,3 +16,20 @@ owner; an `unverified` one is a quiet record."""
 permitted_subscribers = []
 required_fields = ["kind", "provider", "sender_verification", "source_request_id"]
 optional_fields = ["provider_domain", "observed_at", "external_event_id"]
+
+[[event]]
+type = "switchboard.break_through_hit"
+schema_version = 1
+summary = "An accepted inbound message matched an owner-declared break-through clause."
+retention_policy = "minimized-derived"
+reaction_expectation = "optional"
+reaction_contract = """
+Decided at ingest by a deterministic evaluator over the sender entity, an authenticated sender \
+domain, the channel and the account-security kind, independent of ingestion rules so a promoted \
+skip rule cannot hide a hit. The payload names the clause, the channel, the resolved sender's \
+display name when known, and the source request id; no message text, subject, snippet, address \
+or link crosses the bus. A hit is announced once per (clause, source request); a connector \
+replay emits nothing. Slice 1 is shadow-only: the event reports a match and sends nothing."""
+permitted_subscribers = []
+required_fields = ["clause_id", "channel", "source_request_id"]
+optional_fields = ["sender_name"]
