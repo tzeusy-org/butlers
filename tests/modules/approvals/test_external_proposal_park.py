@@ -22,8 +22,10 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from butlers.api.routers.approvals import _delivery_truth, _pending_action_to_api
 from butlers.modules.approvals import operations
 from butlers.modules.approvals.gate import match_standing_rule
+from butlers.modules.approvals.models import PendingAction
 from butlers.modules.approvals.module import ApprovalsModule
 from butlers.modules.approvals.park import park_external_proposal, park_pending_action
 
@@ -142,6 +144,11 @@ async def test_external_park_shape_origin_null_and_digest_only_evidence(approval
         "WHERE conname = 'pending_actions_origin_check'"
     )
     assert before == after and "'prepared'" in after and "external" not in after
+    # It projects onto the dashboard approvals list like any pending action.
+    action = PendingAction.from_row(row)
+    item = _pending_action_to_api(action, "relationship", delivery=_delivery_truth(row, action))
+    assert item.status == "pending" and item.origin is None
+    assert [evidence.ref for evidence in item.evidence] == refs
     # Default-off admission: no delivery intent exists to reach a provider.
     assert admission.intent_id is None
     assert not await approvals_pool.fetchval(
