@@ -744,6 +744,7 @@ class _FakeGoogle:
         self.sheets: dict[str, dict[str, list]] = {}
         self.import_formats = {"text/markdown": [_DOC_MIME], "text/plain": [_DOC_MIME]}
         self.sheet_write_status = 200
+        self.folders_by_name: dict[str, str] = {}  # default-folder lookups by name
         self.sheet_write_body: dict = {}
         self._n = 0
 
@@ -776,7 +777,9 @@ class _FakeGoogle:
                 200, json={"id": file_id, "name": "T", "webViewLink": f"https://docs/{file_id}"}
             )
         if path == "/drive/v3/files" and method == "GET":
-            return httpx.Response(200, json={"files": []})  # no default folder exists yet
+            name = query.get("q", "").split("'")[1] if "'" in query.get("q", "") else ""
+            found = self.folders_by_name.get(name)
+            return httpx.Response(200, json={"files": [{"id": found}] if found else []})
         if path == "/drive/v3/files" and method == "POST":
             self._n += 1
             return httpx.Response(
@@ -1141,4 +1144,26 @@ class TestNativeDocsAndSheets:
         module = _native_module(fake)
         result = await module._drive_append_sheet_rows("sheet-1", [["a"]])
         assert result == {"status": "target_shared", "reach": {"permissions_unreadable": 1}}
+        assert fake.writes == []
+
+    async def test_default_subfolder_is_not_created_inside_a_shared_butlers_root(self) -> None:
+        """The realistic case: butlers/ exists and is shared, butlers/<name> is missing."""
+        fake = _FakeGoogle()
+        fake.folders_by_name["butlers"] = "butlers-root"
+        fake.files["butlers-root"] = {
+            "id": "butlers-root",
+            "mimeType": _FOLDER_MIME,
+            "ownedByMe": True,
+            "permissions": [_OWN_GRANT, {"type": "anyone", "role": "reader"}],
+        }
+        fake.files["root"] = {
+            "id": "root",
+            "mimeType": _FOLDER_MIME,
+            "ownedByMe": True,
+            "permissions": [_OWN_GRANT],
+        }
+        module = _native_module(fake)
+        result = await module._drive_create_doc("T", "b")
+        assert result["status"] == "target_shared"
+        assert result["reach"] == {"anyone:reader": 1}
         assert fake.writes == []
