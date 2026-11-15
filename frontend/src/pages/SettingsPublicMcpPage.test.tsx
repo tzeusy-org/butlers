@@ -105,6 +105,12 @@ describe("rows", () => {
     view();
     const travel = await switchFor("Travel");
     expect(screen.getByText("No row")).toBeTruthy();
+    // Neither on nor off: the public server serves a missing row, the importer parks on it.
+    expect(travel.getAttribute("aria-checked")).toBe("mixed");
+    const note = screen.getByTestId("no-row-travel").textContent ?? "";
+    expect(note).toContain("the public server serves it");
+    expect(note).toContain("importer treats a missing proposals or all row as off");
+    expect(note).toContain("Switching off creates the row");
     expect(screen.getByText("No change recorded")).toBeTruthy();
     await userEvent.setup().click(travel);
     expect(api.setPublicMcpControl).toHaveBeenCalledWith("travel", "disabled");
@@ -156,8 +162,26 @@ describe("writes", () => {
     expect(screen.getByTestId("state-finance").textContent).toContain("Enabled");
     // One write in flight: nothing else accepts a second activation.
     expect(
-      screen.getAllByRole("switch").every((el) => (el as HTMLButtonElement).disabled),
+      screen.getAllByRole("switch").every((el) => el.getAttribute("aria-disabled") === "true"),
     ).toBe(true);
+    release({ data: {} });
+  });
+
+  it("keeps focus on the switch during a pending write and ignores a second toggle", async () => {
+    listing(table());
+    let release: (value: unknown) => void = () => {};
+    api.setPublicMcpControl.mockReturnValue(new Promise((resolve) => (release = resolve)));
+    view();
+    const user = userEvent.setup();
+    const finance = await switchFor("Finance");
+    finance.focus();
+    await user.keyboard(" ");
+    await waitFor(() => expect(finance.getAttribute("aria-disabled")).toBe("true"));
+    expect(document.activeElement).toBe(finance);
+    expect((finance as HTMLButtonElement).disabled).toBe(false);
+    await user.keyboard(" ");
+    await user.click(screen.getByRole("switch", { name: "Public MCP Health" }));
+    expect(api.setPublicMcpControl).toHaveBeenCalledTimes(1);
     release({ data: {} });
   });
 
@@ -185,9 +209,13 @@ describe("writes", () => {
     listing(table());
     api.setPublicMcpControl.mockResolvedValue({ data: {} });
     view();
-    await userEvent.setup().click(await switchFor("Time"));
-    const status = await screen.findByRole("status");
-    expect(status.textContent).toContain("within 15 minutes");
+    const time = await switchFor("Time");
+    const status = screen.getByRole("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.className).toContain("sr-only"); // mounted and empty before any change
+    await userEvent.setup().click(time);
+    await waitFor(() => expect(status.textContent).toContain("within 15 minutes"));
+    expect(screen.getByRole("status")).toBe(status); // the same node, not remounted
     expect(status.textContent).not.toMatch(/immediately|right away|instantly/i);
   });
 });
@@ -231,6 +259,7 @@ describe("copy", () => {
     expect(copy).toContain("re-read every 10 seconds");
     expect(copy).toContain("scale the public server to zero");
     expect(copy).not.toMatch(/takes effect immediately|instantly/i);
+    expect(copy).toContain("does not clear a break-glass ConfigMap entry");
   });
 });
 

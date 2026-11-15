@@ -107,6 +107,7 @@ def test_the_output_never_claims_immediate_effect_and_names_the_break_glass(engi
     assert "within 15 minutes" in result.output
     assert "butlers-public-mcp-switches" in result.output and "disabled_domains" in result.output
     assert "scale" in result.output
+    assert "does not clear a break-glass ConfigMap entry" in result.output
     assert "immediately" not in result.output.replace("immediate effect", "")
 
 

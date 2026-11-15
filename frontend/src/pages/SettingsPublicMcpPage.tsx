@@ -83,31 +83,48 @@ function StateWord({ state }: { state: ControlState | null }) {
 
 function Switch({
   name,
-  enabled,
+  checked,
   disabled,
+  pending,
   onToggle,
 }: {
   name: string;
-  enabled: boolean;
+  /** "mixed" is a missing row: neither on nor off, so not announced as either. */
+  checked: boolean | "mixed";
+  /** Not actionable and out of the focus order (loading). */
   disabled: boolean;
+  /** A write is in flight: stays focusable, ignores activation. */
+  pending: boolean;
   onToggle: () => void;
 }) {
   return (
     <button
       type="button"
       role="switch"
-      aria-checked={enabled}
+      aria-checked={checked}
       aria-label={`Public MCP ${name}`}
+      aria-disabled={pending ? true : undefined}
       disabled={disabled}
-      onClick={onToggle}
+      onClick={() => {
+        if (!pending) onToggle();
+      }}
       className={cn(
         "inline-flex h-5 w-9 shrink-0 items-center rounded-full border border-border px-0.5 transition-colors",
         "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
         "disabled:cursor-not-allowed disabled:opacity-50",
-        enabled ? "justify-end bg-[var(--green-text)]/30" : "justify-start bg-muted",
+        checked === true && "justify-end bg-[var(--green-text)]/30",
+        checked === false && "justify-start bg-muted",
+        checked === "mixed" && "justify-center bg-muted",
+        pending && "opacity-50",
       )}
     >
-      <span aria-hidden className="size-3.5 rounded-full bg-foreground" />
+      <span
+        aria-hidden
+        className={cn(
+          "size-3.5 rounded-full",
+          checked === "mixed" ? "bg-muted-foreground/50" : "bg-foreground",
+        )}
+      />
     </button>
   );
 }
@@ -160,6 +177,10 @@ export default function SettingsPublicMcpPage() {
           <code className="font-mono text-xs">disabled_domains</code>, re-read every 10 seconds),
           or scale the public server to zero.
         </p>
+        <p className="text-muted-foreground">
+          Switching a domain back on here does not clear a break-glass ConfigMap entry; remove it
+          from <code className="font-mono text-xs">disabled_domains</code> there too.
+        </p>
       </section>
 
       {failure && (
@@ -183,13 +204,16 @@ export default function SettingsPublicMcpPage() {
         </div>
       )}
 
-      {saved && !failure && (
-        <p role="status" className="text-sm text-muted-foreground">
-          {LABEL[saved.domain]?.name ?? saved.domain} is now {saved.state}. The public server
-          follows by replication within 15 minutes; the break-glass ConfigMap above is the faster
-          path.
-        </p>
-      )}
+      {/* Always mounted so assistive technology registers it before its text changes. */}
+      <p
+        role="status"
+        aria-live="polite"
+        className={saved && !failure ? "text-sm text-muted-foreground" : "sr-only"}
+      >
+        {saved && !failure
+          ? `${LABEL[saved.domain]?.name ?? saved.domain} is now ${saved.state}. The public server follows by replication within 15 minutes; the break-glass ConfigMap above is the faster path.`
+          : ""}
+      </p>
 
       {isError ? (
         <div
@@ -205,7 +229,8 @@ export default function SettingsPublicMcpPage() {
           {DOMAIN_ORDER.map((domain) => {
             const control = byDomain.get(domain);
             const label = LABEL[domain];
-            const enabled = control?.state === "enabled";
+            const checked: boolean | "mixed" =
+              control?.state == null ? "mixed" : control.state === "enabled";
             return (
               <li
                 key={domain}
@@ -228,14 +253,22 @@ export default function SettingsPublicMcpPage() {
                     </div>
                     <div className="col-span-2 text-xs sm:col-span-1">
                       <ChangeCell control={control} />
+                      {control.state === null && (
+                        <p className="mt-1 text-muted-foreground" data-testid={`no-row-${domain}`}>
+                          No row: the public server serves it, because a missing row is not off.
+                          The proposal importer treats a missing proposals or all row as off.
+                          Switching off creates the row.
+                        </p>
+                      )}
                     </div>
                   </>
                 )}
                 <div className="row-start-1 col-start-2 sm:row-start-auto sm:col-start-auto">
                   <Switch
                     name={label.name}
-                    enabled={enabled}
-                    disabled={loading || !control || busy}
+                    checked={checked}
+                    disabled={loading || !control}
+                    pending={busy}
                     // A missing row is not "disabled": the only safe move from it is to switch off.
                     onToggle={() =>
                       change(domain, control?.state === "disabled" ? "enabled" : "disabled")

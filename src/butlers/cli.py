@@ -987,7 +987,8 @@ def _set_public_mcp_control(domain: str, state: str, database: str) -> None:
         f"The public server follows by replication within {REPLICATION_WINDOW_MINUTES} minutes "
         "and the Relationship proposal importer at its next pass. For immediate effect use the "
         f"break-glass ConfigMap {BREAK_GLASS_CONFIGMAP} (key {BREAK_GLASS_KEY}) or scale the "
-        "public server to zero."
+        "public server to zero. Switching on here does not clear a break-glass ConfigMap entry; "
+        f"remove it from {BREAK_GLASS_KEY} there too."
     )
 
 
