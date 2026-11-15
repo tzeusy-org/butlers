@@ -114,6 +114,56 @@ def test_generator_declares_only_the_registered_dashboard_runtime_closures(
         module._shim_runtime_closure(shim)
 
 
+def test_package_native_executables_bring_their_shared_libraries(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """bu-kiuh8v.42: a launcher's native child must load inside the empty root.
+
+    The Codex npm launcher is a Node script that spawns a glibc-linked binary from
+    its package tree. Binding the package directory alone leaves that binary's
+    shared libraries outside the sandbox, so the loader exits 127.
+    """
+    module = _manifest_module()
+    package = tmp_path / "node_modules" / "@openai" / "codex"
+    (package / "bin").mkdir(parents=True)
+    launcher = package / "bin" / "codex.js"
+    launcher.write_bytes(b"// launcher without a shebang in this test\n")
+    native = package / "vendor" / "codex"
+    native.parent.mkdir()
+    native.write_bytes(b"\x7fELF test-only native child")
+    (package / "README.md").write_bytes(b"not an executable")
+    library = tmp_path / "libtest-native.so.3"
+    library.write_bytes(b"\x7fELF test-only library")
+    bundled = package / "vendor" / "libbundled.so"
+    bundled.write_bytes(b"\x7fELF test-only bundled library")
+
+    monkeypatch.setattr(module, "_NETWORK_RUNTIME_FILES", ())
+    monkeypatch.setattr(module, "_safe_regular_or_directory", lambda path: path)
+    examined: list[Path] = []
+
+    def _ldd(path: Path, *, strict: bool = False) -> tuple[object, ...]:
+        examined.append(path)
+        if path == native:
+            return (
+                module.RuntimeInputBinding(source=library, destination=library),
+                module.RuntimeInputBinding(source=bundled, destination=bundled),
+            )
+        return ()
+
+    monkeypatch.setattr(module, "_ldd_dependencies", _ldd)
+
+    closure = module._runtime_closure(launcher, package)
+
+    assert closure == (
+        module.RuntimeInputBinding(source=library, destination=library),
+        module.RuntimeInputBinding(source=package, destination=package),
+        module.RuntimeInputBinding(source=launcher, destination=launcher),
+    )
+    assert native in examined and bundled in examined
+    assert package / "README.md" not in examined
+
+
 def test_generator_writes_a_non_group_or_world_writable_manifest(tmp_path: Path) -> None:
     """REQ-core-credentials-002: image runtime input discovery is immutable at rest."""
     module = _manifest_module()
