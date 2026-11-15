@@ -1650,7 +1650,7 @@ SCHEMA ApprovalDeferRequest 023af4d72529
 SCHEMA ApprovalDeliveryCohort e7e33a20369c
 SCHEMA ApprovalDeliveryTruth 87c19f8ee9d2
 SCHEMA ApprovalDenyRequest 55a7a3a30dfb
-SCHEMA ApprovalDetail 33806132c0a7
+SCHEMA ApprovalDetail 3e5180a8ccae
 SCHEMA ApprovalEvidence a6d1fa38cb99
 SCHEMA ApprovalExecutionFailure 5428028e4931
 SCHEMA ApprovalGatedTool 8fe8094e04a0
@@ -1992,6 +1992,8 @@ SCHEMA ExpiringDocumentModel ea551fdf73b4
 SCHEMA ExpiringDocumentsResponse f72c9027f2e0
 SCHEMA ExportRequest c8aef78925f4
 SCHEMA ExportResponse 18e048fff3c1
+SCHEMA ExternalProposalEntity a765fdff19ef
+SCHEMA ExternalProposalReview b8f9e5b4afa5
 SCHEMA Fact 09aa35aedf1a
 SCHEMA FactReporter f3d0403b438b
 SCHEMA FactVouch 290d06ded71b

@@ -15,7 +15,8 @@ through a running daemon's MCP session. The approve, the dispatch, the writer an
    ``mcp_inbox.proposals`` as ``mcp_public_ro``;
 2. one importer pass, reading the inbox as ``mcp_proposals_reader`` over TCP, parks one
    ``relationship_assert_fact`` action per proposal on the primary;
-3. the owner approves one through the shared approvals operation, and the shared executor
+3. the owner approves one through the shared approvals operation, bound to the call the typed
+   dashboard review displays (REQ-dashboard-approvals-904), and the shared executor
    dispatches the registered ``relationship_assert_fact``; the owner rejects another; a third
    is left until its approval window has passed;
 4. a second importer pass reconciles the three states; logical replication carries them to the

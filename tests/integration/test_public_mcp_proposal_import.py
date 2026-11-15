@@ -35,6 +35,7 @@ from butlers.modules.approvals import operations
 from butlers.modules.approvals.module import ApprovalsModule
 from butlers.roster_imports import roster_module
 from butlers.testing.public_mcp import public_mcp_topology
+from roster.relationship.tests.external_review_fixtures import dashboard_review_binding
 
 importer = roster_module("relationship", "tools/public_mcp_proposal_import")
 _relationship_modules = roster_module("relationship", "modules")
@@ -772,10 +773,17 @@ async def test_reconcile_maps_each_owner_outcome(primary, inbox, world) -> None:
 
 
 async def _approve_and_dispatch(world, pool, action_id: uuid.UUID) -> dict:
-    """The owner's approval, then the Relationship daemon's shared executor (no model).
+    """The owner's approval, then the Relationship daemon's shared executor (no model)."""
+    await _owner_approve(world, pool, action_id)
+    return await _dispatch_approved(pool, action_id)
 
-    The approval runs under an owner-device write context, as the dashboard's authenticated
-    decision does (the same synthetic admission ``fact_authority_fixtures`` uses).
+
+async def _owner_approve(world, pool, action_id: uuid.UUID) -> None:
+    """The owner's approval of the call the typed dashboard review displays.
+
+    It runs under an owner-device write context, as the dashboard's authenticated decision
+    does (the same synthetic admission ``fact_authority_fixtures`` uses), and is bound to the
+    review's displayed call (REQ-dashboard-approvals-904).
     """
     owner = await world.admin.fetchrow(
         "SELECT id, created_at FROM public.entities WHERE 'owner' = ANY(roles) ORDER BY id LIMIT 1"
@@ -791,10 +799,17 @@ async def _approve_and_dispatch(world, pool, action_id: uuid.UUID) -> dict:
     )
     try:
         async with pool.acquire() as conn, conn.transaction():
-            approved = await operations.approve_action(conn, str(action_id))
+            binding = await dashboard_review_binding(conn, action_id)
+            approved = await operations.approve_action(
+                conn, str(action_id), external_review=binding
+            )
     finally:
         _current_report.reset(token)
     assert "error" not in approved and approved["status"] == "approved"
+
+
+async def _dispatch_approved(pool, action_id: uuid.UUID) -> dict:
+    """The Relationship daemon's shared executor on an approved action (no model)."""
     relationship = _relationship_modules.RelationshipModule()
     mcp = FastMCP("relationship")
     await relationship.register_tools(mcp, None, SimpleNamespace(pool=pool), "relationship")
@@ -814,15 +829,19 @@ async def _approve_and_dispatch(world, pool, action_id: uuid.UUID) -> dict:
 
 
 async def test_a_reaped_entity_fails_the_approved_replay_closed(primary, inbox, world) -> None:
-    """An entity soft-deleted (the enrichment reap) or merged after parking: apply_failed.
+    """An entity soft-deleted (the enrichment reap) or merged after approval: apply_failed.
 
     rel_043's entity columns are excused from the reap's reference check, so a parked proposal
-    does not keep a placeholder alive. The replay re-checks both ids and writes no fact on a
-    tombstone; the live control proposal applies through the same executor.
+    does not keep a placeholder alive. The typed review refuses an approval once an entity is
+    gone, so the tombstones land between the owner's approval and the replay; the replay
+    re-checks both ids and writes no fact on a tombstone. The live control proposal applies
+    through the same executor.
     """
     live_pid, live_action = await _parked(world, primary, inbox)
     reaped_pid, reaped_action = await _parked(world, primary, inbox)
     merged_pid, merged_action = await _parked(world, primary, inbox)
+    for action_id in (reaped_action, merged_action):
+        await _owner_approve(world, primary, action_id)
     reaped = await world.admin.fetchval(
         f"SELECT object_entity_id FROM {_TABLE} WHERE proposal_id = $1", reaped_pid
     )
@@ -843,7 +862,7 @@ async def test_a_reaped_entity_fails_the_approved_replay_closed(primary, inbox, 
 
     assert (await _approve_and_dispatch(world, primary, live_action))["status"] == "executed"
     for action_id in (reaped_action, merged_action):
-        failed = await _approve_and_dispatch(world, primary, action_id)
+        failed = await _dispatch_approved(primary, action_id)
         assert "error" in failed, failed
         assert (
             await world.admin.fetchval(

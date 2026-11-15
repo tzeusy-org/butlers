@@ -34,6 +34,7 @@ from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
 from butlers.api.deps import Db, MCPClientManager, get_mcp_manager
+from butlers.api.external_proposal_review import read_external_proposal_review
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
@@ -68,6 +69,7 @@ from butlers.api.models.approval import (
     DisplayedApprovalCall,
     EntityRef,
     ExpireStaleActionsResponse,
+    ExternalProposalReview,
     OwnerDeliveryCard,
     RuleConstraintSuggestion,
     StandingReplyTemplateDraft,
@@ -106,7 +108,10 @@ from butlers.modules.approvals.delivery_lifecycle import (
 from butlers.modules.approvals.delivery_recovery import ApprovalDeliveryRepository
 from butlers.modules.approvals.external_proposals import (
     EXTERNAL_PROPOSAL_RULE_REFUSAL,
+    ExternalReviewBinding,
     is_external_proposal_action,
+    is_external_proposal_key,
+    is_external_proposal_row,
 )
 from butlers.modules.approvals.goal_fence import GOAL_EFFECT_REQUIRES_BROKER, is_goal_effect
 from butlers.modules.approvals.lineage_facts import lineage_facts
@@ -762,14 +767,20 @@ def _pending_action_to_detail(
     denial_reason: str | None = None,
     delivery: ApprovalDeliveryTruth | None = None,
     failed_code: str | None = None,
+    external_review: ExternalProposalReview | None = None,
 ) -> ApprovalDetail:
-    """Convert a PendingAction to the full Dispatch dossier ApprovalDetail."""
+    """Convert a PendingAction to the full Dispatch dossier ApprovalDetail.
+
+    An external MCP proposal is reviewed through *external_review* only: its dossier
+    carries no raw ``tool_args`` and no generic call preview (REQ-dashboard-approvals-904).
+    """
     title = f"{action.tool_name.replace('_', ' ').title()} ({butler_name})"
-    proposed_action = {
+    proposed_action: dict[str, Any] = {
         "tool_name": action.tool_name,
-        "tool_args": redact_tool_args(action.tool_name, action.tool_args),
         "agent_summary": action.agent_summary,
     }
+    if external_review is None:
+        proposed_action["tool_args"] = redact_tool_args(action.tool_name, action.tool_args)
     return ApprovalDetail(
         id=str(action.id),
         title=title,
@@ -781,7 +792,12 @@ def _pending_action_to_detail(
         blast_radius=action.blast_radius,
         reversibility=action.reversibility,
         proposed_action=proposed_action,
-        call_preview=dashboard_call_preview(action.tool_name, action.tool_args),
+        call_preview=(
+            None
+            if external_review is not None
+            else dashboard_call_preview(action.tool_name, action.tool_args)
+        ),
+        external_proposal_review=external_review,
         goal=_goal_lineage(action),
         status=action.status.value,
         decided_by=action.decided_by,
@@ -3550,9 +3566,19 @@ async def get_approval_detail(
                         if pa.status.value == "approved" and pa.execution_result is None
                         else None
                     )
+                    external_review = (
+                        await read_external_proposal_review(conn, action_id=pa.id, row=row)
+                        if is_external_proposal_key(pa.deduplication_key)
+                        else None
+                    )
             if row is not None:
                 target_contact = await _resolve_target_contact(db_mgr, pa)
-                referenced_entities = await _resolve_referenced_entities(db_mgr, pa.tool_args)
+                # The typed review already names an external proposal's entities.
+                referenced_entities = (
+                    []
+                    if external_review is not None
+                    else await _resolve_referenced_entities(db_mgr, pa.tool_args)
+                )
                 detail = _pending_action_to_detail(
                     pa,
                     butler_name,
@@ -3561,6 +3587,7 @@ async def get_approval_detail(
                     denial_reason=denial_reason,
                     delivery=_delivery_truth(row, pa),
                     failed_code=failed_code,
+                    external_review=external_review,
                 )
                 # Only the owner's own dashboard session is a dashboard presentation;
                 # a connector read (apr1 verification) or a review source never is.
@@ -3637,6 +3664,12 @@ async def approve_approval(
 
 # Shared with the Telegram connector, which matches it to answer the tap honestly.
 APPROVAL_CALL_CHANGED_DETAIL = "The stored call changed since shown; nothing was executed."
+EXTERNAL_PROPOSAL_REVIEW_REQUIRED = (
+    "An external proposal is approved only from its dashboard review; nothing was executed."
+)
+EXTERNAL_PROPOSAL_EDIT_REFUSAL = (
+    "An external proposal is decided as reviewed and cannot be edited; nothing was executed."
+)
 
 
 async def _require_presented_call_unchanged(
@@ -3775,10 +3808,12 @@ async def approve_owning_action(
 
     async def decide(conn: Any) -> dict[str, Any]:
         nonlocal action_row
+        external_binding: ExternalReviewBinding | None = None
         # The row lock makes the presented-digest check below atomic with the
         # status transition: the stored call cannot change in between.
         action_row = await conn.fetchrow(
-            "SELECT tool_name, tool_args, goal_id FROM pending_actions WHERE id = $1 FOR UPDATE",
+            "SELECT tool_name, tool_args, goal_id, deduplication_key, evidence "
+            "FROM pending_actions WHERE id = $1 FOR UPDATE",
             parsed_id,
         )
         if is_goal_effect(action_row) and edits:
@@ -3788,7 +3823,29 @@ async def approve_owning_action(
 
         # Before any redemption: a dashboard token binds the stored call, and this binds
         # that call to what the owner actually saw. An open-only call has no display.
-        if require_displayed_call:
+        # An external MCP proposal is approvable only from its typed dashboard review,
+        # re-read here under the row lock; a connector callback never decides one, since
+        # no card ever showed it (REQ-dashboard-approvals-904).
+        # Its call is decided as reviewed: an edit would execute arguments no review
+        # showed, including provenance the importer refuses at park time.
+        if is_external_proposal_row(action_row):
+            if edits:
+                raise HTTPException(status_code=409, detail=EXTERNAL_PROPOSAL_EDIT_REFUSAL)
+            review = await read_external_proposal_review(conn, action_id=parsed_id, row=action_row)
+            if review.displayed_call is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=review.approve_unavailable_reason or APPROVAL_CALL_CHANGED_DETAIL,
+                )
+            if displayed_call is None:
+                raise HTTPException(status_code=409, detail=EXTERNAL_PROPOSAL_REVIEW_REQUIRED)
+            if displayed_call != review.displayed_call:
+                raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
+            # The owning write refuses an external proposal without this binding.
+            external_binding = ExternalReviewBinding(
+                action_id=parsed_id, args_digest=review.displayed_call.args_digest
+            )
+        elif require_displayed_call:
             preview = (
                 dashboard_call_preview(action_row["tool_name"], action_row["tool_args"])
                 if action_row is not None
@@ -3812,6 +3869,7 @@ async def approve_owning_action(
                     actor_id=actor_id,
                     promotion_eligible=promotion_eligible,
                     decision_memory_writer=None,
+                    external_review=external_binding,
                 )
                 if verb != "approve" or "error" in outcome:
                     raise _OwnerDeliveryDecisionRefused(outcome)
@@ -3872,6 +3930,7 @@ async def approve_owning_action(
             # A pool-backed writer uses a separate transaction. Defer it until
             # this approval, optional standing rule and audit have committed.
             decision_memory_writer=None,
+            external_review=external_binding,
         )
         if "error" in result and original_tool_args is not None:
             # A refused decision may still commit its legitimate expiry transition.

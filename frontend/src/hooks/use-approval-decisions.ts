@@ -59,6 +59,8 @@ export interface ViewedApproval {
   displayed_call: DisplayedApprovalCall;
   /** The shown dossier's single-use tokens; absent while the rollout is off. */
   owner_delivery?: OwnerDeliveryCard | null;
+  /** An external MCP proposal: never offered as a standing rule. Not sent to the API. */
+  external_proposal?: boolean;
 }
 
 interface ApprovalReview {

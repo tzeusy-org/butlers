@@ -23,9 +23,9 @@ Scope: v1-mandatory
 - **WHEN** the stored tool arguments are valid and the owner approves
 - **THEN** the written fact's `src`, `content_authority` and `observed_at` SHALL equal the values in `relationship.fact_approval_context`
 
-#### Scenario: Owner edit keeps outside attribution
-- **WHEN** the owner edits the object entity before approving
-- **THEN** the edited triple SHALL be written, still with `content_authority = 'third_party'` and the original `src`
+#### Scenario: An owner edit is refused, not attributed
+- **WHEN** the owner edits the object entity of a parked external proposal before approving
+- **THEN** no fact SHALL be written and no owner decision SHALL be recorded, so an edited triple never carries the outside `src`; the owner rejects the proposal instead (REQ-dashboard-approvals-904)
 
 ## Source References
 

@@ -3697,6 +3697,34 @@ export interface ApprovalCallPreview {
   displayed_call: DisplayedApprovalCall;
 }
 
+/** One entity an external MCP proposal names, as it stands now. */
+export interface ExternalProposalEntity {
+  id: string;
+  name?: string | null;
+  entity_type?: string | null;
+  status: "live" | "missing" | "merged" | "deleted";
+}
+
+/**
+ * Typed review of an external MCP fact proposal (REQ-dashboard-approvals-904).
+ * `note` and `evidence_url` are outside-authored text: render them as inert plain
+ * text, never a link. `displayed_call` is null whenever approval is unavailable,
+ * and `approve_unavailable_reason` then says why.
+ */
+export interface ExternalProposalReview {
+  proposal_id?: string | null;
+  client_label?: string | null;
+  subject?: ExternalProposalEntity | null;
+  predicate?: string | null;
+  object?: ExternalProposalEntity | null;
+  note?: string | null;
+  evidence_url?: string | null;
+  authority_statement: string;
+  unresolvable_entity: boolean;
+  approve_unavailable_reason?: string | null;
+  displayed_call?: DisplayedApprovalCall | null;
+}
+
 /** One dashboard presentation of an owner-delivery subject; its tokens are single-use. */
 export interface OwnerDeliveryCard {
   subject_id: string;
@@ -3721,6 +3749,8 @@ export interface ApprovalExecutionFailure {
 
 export interface ApprovalDetail {
   call_preview?: ApprovalCallPreview | null;
+  /** Present only for an external MCP proposal; its proposed_action has no tool_args. */
+  external_proposal_review?: ExternalProposalReview | null;
   /** RFC 0038 lineage of a broker-parked effect; null for any other action. */
   goal?: ApprovalGoalLineage | null;
   owner_delivery?: OwnerDeliveryCard | null;
@@ -3737,7 +3767,8 @@ export interface ApprovalDetail {
   reversibility?: ApprovalReversibility | null;
   proposed_action: {
     tool_name: string;
-    tool_args: Record<string, unknown>;
+    /** Absent for an external MCP proposal, which is reviewed only through its typed review. */
+    tool_args?: Record<string, unknown>;
     agent_summary?: string | null;
   };
   status: string;

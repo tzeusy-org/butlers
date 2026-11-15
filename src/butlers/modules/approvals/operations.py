@@ -39,6 +39,8 @@ from butlers.modules.approvals.events import ApprovalEventType, record_approval_
 from butlers.modules.approvals.executor import _approval_write_transaction
 from butlers.modules.approvals.external_proposals import (
     EXTERNAL_PROPOSAL_RULE_REFUSAL,
+    ExternalReviewBinding,
+    external_approval_refusal,
     is_external_proposal_action,
     is_external_proposal_key,
 )
@@ -117,8 +119,13 @@ async def approve_action(
     decision_memory_writer: DecisionMemoryWriter | None = None,
     *,
     promotion_eligible: bool = True,
+    external_review: ExternalReviewBinding | None = None,
 ) -> dict[str, Any]:
-    """Ordinary approvals stay one-tap; combined authority changes commit once."""
+    """Ordinary approvals stay one-tap; combined authority changes commit once.
+
+    An external MCP proposal approves only with *external_review*, which the passkey
+    dashboard route alone supplies after its displayed-call check.
+    """
     if create_rule:
         # Refused before any step-up is consumed or status changes: an outside
         # proposal never becomes a standing rule (REQ-module-approvals-010).
@@ -133,6 +140,7 @@ async def approve_action(
             False,
             decision_memory_writer,
             promotion_eligible=promotion_eligible,
+            external_review=external_review,
         )
     result = await run_rule_write(
         pool,
@@ -263,6 +271,7 @@ async def _approve_action_write(
     decision_memory_writer: DecisionMemoryWriter | None = None,
     *,
     promotion_eligible: bool = True,
+    external_review: ExternalReviewBinding | None = None,
 ) -> dict[str, Any]:
     """Approve a pending action without performing its side effect.
 
@@ -302,8 +311,14 @@ async def _approve_action_write(
     # Validate transition: only pending → approved is valid
     if action.status != ActionStatus.PENDING:
         return {"error": f"Cannot transition from '{action.status.value}' to 'approved'"}
-    if create_rule and is_external_proposal_key(action.deduplication_key):
-        return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
+    if is_external_proposal_key(action.deduplication_key):
+        # Before any status change: an outside proposal never becomes a rule, and
+        # approves only as the dashboard review displayed it (REQ-dashboard-approvals-904).
+        if create_rule:
+            return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
+        refusal = external_approval_refusal(parsed_id, action.tool_args, external_review)
+        if refusal is not None:
+            return {"error": refusal}
 
     decided_by = f"human:{actor_id}"
     transition = await transition_pending_action(

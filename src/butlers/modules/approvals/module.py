@@ -70,6 +70,7 @@ from butlers.modules.approvals.executor import (
     list_executed_actions as _list_executed_actions_query,
 )
 from butlers.modules.approvals.external_proposals import (
+    EXTERNAL_PROPOSAL_REVIEW_ONLY,
     EXTERNAL_PROPOSAL_RULE_REFUSAL,
     is_external_proposal_action,
     is_external_proposal_key,
@@ -910,8 +911,13 @@ class ApprovalsModule(Module):
             validate_transition(action.status, ActionStatus.APPROVED)
         except InvalidTransitionError as exc:
             return {"error": str(exc)}
-        if create_rule and is_external_proposal_key(action.deduplication_key):
-            return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
+        if is_external_proposal_key(action.deduplication_key):
+            # A model-driven tool call never approves an outside proposal: only the
+            # owner's passkey dashboard review does (REQ-dashboard-approvals-904).
+            refusal = (
+                EXTERNAL_PROPOSAL_RULE_REFUSAL if create_rule else EXTERNAL_PROPOSAL_REVIEW_ONLY
+            )
+            return {"error": refusal}
 
         transition = await transition_pending_action(
             self._db,

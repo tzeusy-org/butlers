@@ -19,11 +19,16 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
+from butlers.modules.approvals.previews import args_digest
+
 EXTERNAL_PROPOSAL_KEY_PREFIX = "external_mcp:"
+#: The evidence ``ref`` prefix that carries the proposing client's label.
+EXTERNAL_PROPOSAL_CLIENT_REF_PREFIX = "external_mcp:client="
 EXTERNAL_PROPOSAL_TOOL = "relationship_assert_fact"
 EXTERNAL_PROPOSAL_TTL = timedelta(days=14)
 
@@ -47,11 +52,46 @@ EXTERNAL_PROPOSAL_RULE_REFUSAL = (
     "approve or reject this proposal on its own."
 )
 
+EXTERNAL_PROPOSAL_REVIEW_ONLY = (
+    "An external MCP proposal is approved only by the owner from its dashboard review; "
+    "nothing was executed."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalReviewBinding:
+    """The exact call one dashboard review of an external proposal displayed.
+
+    Only the passkey dashboard approve route builds one, after it re-reads the typed
+    review under the pending-row lock and matches the owner's displayed call to it.
+    No model-driven path holds one, so none can approve an external proposal
+    (REQ-dashboard-approvals-904).
+    """
+
+    action_id: uuid.UUID
+    args_digest: str
+
+
+def external_approval_refusal(
+    action_id: uuid.UUID, tool_args: Any, binding: ExternalReviewBinding | None
+) -> str | None:
+    """Refuse approving an external proposal unless *binding* names this exact call."""
+    if (
+        binding is None
+        or binding.action_id != action_id
+        or binding.args_digest != args_digest(tool_args if isinstance(tool_args, dict) else None)
+    ):
+        return EXTERNAL_PROPOSAL_REVIEW_ONLY
+    return None
+
+
 # A client label is what ``capability_host.assertion.client_label`` makes of a ``cid``: a CIMD
 # host name, or ``dcr:`` and 12 hex digits. No space, slash, ``@`` or other colon, so a raw cid
 # (a URL with a path) can never pass as a label.
 _CLIENT_LABEL_RE = re.compile(r"(?:dcr:[0-9a-f]{12}|[A-Za-z0-9][A-Za-z0-9._-]{0,63})")
-_PREDICATE_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+#: A registry predicate name; the only predicate shape an external proposal stores.
+PREDICATE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+_PREDICATE_RE = PREDICATE_NAME_RE
 
 
 def external_proposal_key(proposal_id: uuid.UUID) -> str:
@@ -124,7 +164,7 @@ def external_proposal_evidence(
     evidence: list[dict[str, str]] = [
         {
             "type": "text",
-            "ref": f"external_mcp:client={label}",
+            "ref": f"{EXTERNAL_PROPOSAL_CLIENT_REF_PREFIX}{label}",
             "note": "Label of the external AI client that proposed this fact.",
         }
     ]
@@ -183,12 +223,17 @@ def validate_external_tool_args(action_id: uuid.UUID, tool_args: dict[str, Any])
 
 
 __all__ = [
+    "EXTERNAL_PROPOSAL_CLIENT_REF_PREFIX",
     "EXTERNAL_PROPOSAL_FORBIDDEN_ARGS",
     "EXTERNAL_PROPOSAL_KEY_PREFIX",
+    "EXTERNAL_PROPOSAL_REVIEW_ONLY",
     "EXTERNAL_PROPOSAL_RULE_REFUSAL",
     "EXTERNAL_PROPOSAL_TOOL",
     "EXTERNAL_PROPOSAL_TTL",
+    "PREDICATE_NAME_RE",
+    "ExternalReviewBinding",
     "evidence_url_host",
+    "external_approval_refusal",
     "external_proposal_evidence",
     "external_proposal_key",
     "external_proposal_texts",

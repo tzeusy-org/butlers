@@ -4,8 +4,10 @@ REQ-relationship-facts-011 (every scenario) and the Relationship half of
 REQ-module-approvals-010 ("A matching standing rule does not approve an
 external proposal" with its positive control, and "Owner decision uses the
 shared executor"). The importer parks through
-``tools/external_fact_proposals.py``; the owner approves through the shared
-approvals operation; the approvals module dispatches the stored call to the
+``tools/external_fact_proposals.py`` and records the proposal row; the owner
+approves through the shared approvals operation bound to the call the typed
+dashboard review displayed (REQ-dashboard-approvals-904,
+``external_review_fixtures``); the approvals module dispatches the stored call to the
 registered ``relationship_assert_fact`` tool with no model session. The
 REQ-relationship-facts-005 replay rules apply unchanged.
 
@@ -27,9 +29,18 @@ import pytest
 from fastmcp import FastMCP
 
 from butlers.modules.approvals import operations
+from butlers.modules.approvals.external_proposals import (
+    EXTERNAL_PROPOSAL_REVIEW_ONLY,
+    ExternalReviewBinding,
+)
 from butlers.modules.approvals.gate import admit_standing_rule
 from butlers.modules.approvals.module import ApprovalsModule
+from butlers.modules.approvals.previews import args_digest
 from butlers.roster_imports import roster_module
+from roster.relationship.tests.external_review_fixtures import (
+    dashboard_review_binding,
+    record_external_proposal,
+)
 from roster.relationship.tests.fact_authority_fixtures import synthetic_owner
 
 external = roster_module("relationship", "tools/external_fact_proposals")
@@ -71,7 +82,7 @@ async def _park(pool, people, *, proposal_id=None, conn=None):
     proposal_id = proposal_id or uuid.uuid4()
 
     async def run(connection):
-        return await external.park_external_fact_proposal(
+        admission = await external.park_external_fact_proposal(
             connection,
             proposal_id=proposal_id,
             subject=people.a,
@@ -81,6 +92,16 @@ async def _park(pool, people, *, proposal_id=None, conn=None):
             evidence_url="https://example.com/evidence",
             received_at=_RECEIVED_AT,
         )
+        await record_external_proposal(
+            connection,
+            proposal_id=proposal_id,
+            action_id=admission.action_id,
+            subject=people.a,
+            object_entity_id=people.b,
+            received_at=_RECEIVED_AT,
+            evidence_url="https://example.com/evidence",
+        )
+        return admission
 
     if conn is not None:
         return proposal_id, await run(conn)
@@ -89,8 +110,13 @@ async def _park(pool, people, *, proposal_id=None, conn=None):
 
 
 async def _approve(pool, action_id: uuid.UUID, *, edits: dict | None = None) -> dict:
-    """The owner's dashboard decision: optional edit, then the shared approve operation."""
+    """The owner's dashboard decision, bound to the call its typed review displayed.
+
+    *edits* change the stored call after the review was shown, which the bound
+    approve operation must refuse.
+    """
     async with synthetic_owner(pool), pool.acquire() as conn, conn.transaction():
+        binding = await dashboard_review_binding(conn, action_id)
         if edits:
             args = await conn.fetchval(
                 "SELECT tool_args FROM pending_actions WHERE id=$1", action_id
@@ -98,7 +124,7 @@ async def _approve(pool, action_id: uuid.UUID, *, edits: dict | None = None) -> 
             await conn.execute(
                 "UPDATE pending_actions SET tool_args=$2 WHERE id=$1", action_id, args | edits
             )
-        return await operations.approve_action(conn, str(action_id))
+        return await operations.approve_action(conn, str(action_id), external_review=binding)
 
 
 async def _dispatch(pool, action_id: uuid.UUID) -> dict:
@@ -224,8 +250,10 @@ async def test_owner_approval_writes_verified_third_party_fact(rel_pool, people)
 async def test_approval_without_owner_admission_is_refused(rel_pool, people) -> None:
     """Control for the hook: the same third-party report without an owner decision fails."""
     _, admission = await _park(rel_pool, people)
+    async with rel_pool.acquire() as conn:
+        binding = await dashboard_review_binding(conn, admission.action_id)
     with pytest.raises(PermissionError, match="admitted owner authority"):
-        await operations.approve_action(rel_pool, str(admission.action_id))
+        await operations.approve_action(rel_pool, str(admission.action_id), external_review=binding)
     assert (
         await rel_pool.fetchval(
             "SELECT status FROM pending_actions WHERE id=$1", admission.action_id
@@ -234,26 +262,48 @@ async def test_approval_without_owner_admission_is_refused(rel_pool, people) -> 
     )
 
 
-# REQ-relationship-facts-011: "Owner edit keeps outside attribution".
-async def test_owner_edit_keeps_third_party_and_original_src(rel_pool, people) -> None:
-    proposal_id, admission = await _park(rel_pool, people)
+# REQ-relationship-facts-011: "An owner edit is refused, not attributed"; the owner
+# rejects instead (REQ-dashboard-approvals-904).
+async def test_owner_edit_after_review_is_refused_before_any_fact(rel_pool, people) -> None:
+    _, admission = await _park(rel_pool, people)
     approved = await _approve(rel_pool, admission.action_id, edits={"object": str(people.c)})
-    assert "error" not in approved
+    assert approved == {"error": EXTERNAL_PROPOSAL_REVIEW_ONLY}
 
-    executed = await _dispatch(rel_pool, admission.action_id)
-    assert "error" not in executed and executed["status"] == "executed"
-    (fact,) = await _facts(rel_pool, people.a)
-    assert fact["object"] == str(people.c)
-    assert fact["content_authority"] == "third_party"
-    assert fact["src"] == f"external_mcp:{proposal_id}"
-    assert fact["confirmation_source"] == "approved_action"
+    assert await _facts(rel_pool, people.a) == []
+    assert (await _context(rel_pool, admission.action_id))["decision_report"] is None
+    assert (
+        await rel_pool.fetchval(
+            "SELECT status FROM pending_actions WHERE id=$1", admission.action_id
+        )
+        == "pending"
+    )
+    # The edited call no longer matches its proposal, so no later review offers it.
+    async with rel_pool.acquire() as conn:
+        with pytest.raises(AssertionError, match="no longer matches"):
+            await dashboard_review_binding(conn, admission.action_id)
 
 
 # REQ-relationship-facts-011: "Provenance parameters in stored arguments are refused".
+# The dashboard review shows no approvable call for such a row, and the executor is the
+# second line: a binding to the tampered call (which no review issues) still writes nothing.
 @pytest.mark.parametrize("key", ["src", "content_authority", "observed_at"])
 async def test_stored_provenance_arguments_raise_before_any_fact_row(rel_pool, people, key) -> None:
     _, admission = await _park(rel_pool, people)
-    approved = await _approve(rel_pool, admission.action_id, edits={key: "owner-self"})
+    action_id = admission.action_id
+    args = await rel_pool.fetchval("SELECT tool_args FROM pending_actions WHERE id=$1", action_id)
+    tampered = args | {key: "owner-self"}
+    await rel_pool.execute(
+        "UPDATE pending_actions SET tool_args=$2 WHERE id=$1", action_id, tampered
+    )
+    async with rel_pool.acquire() as conn:
+        with pytest.raises(AssertionError, match="more than this review can show"):
+            await dashboard_review_binding(conn, action_id)
+    async with synthetic_owner(rel_pool), rel_pool.acquire() as conn, conn.transaction():
+        approved = await operations.approve_action(
+            conn,
+            str(action_id),
+            external_review=ExternalReviewBinding(action_id, args_digest(tampered)),
+        )
     assert "error" not in approved
 
     executed = await _dispatch(rel_pool, admission.action_id)

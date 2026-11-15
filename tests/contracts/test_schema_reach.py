@@ -691,6 +691,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{table}>",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
     (
+        "src/butlers/api/external_proposal_review.py",
+        "relationship.external_fact_proposals",
+    ): "sanctioned: RFC 0039 D13 step 4 and REQ-dashboard-approvals-904; the owner's typed approvals review reads the note, evidence URL, payload and state of the one proposal backing a pending action (keyed by proposal_id and pending_action_id) for inert display and the approve-time binding check; read-only, the Relationship importer stays the only writer",
+    (
         "src/butlers/api/read_models/activity.py",
         "<dynamic:{episodes_relation}>",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",

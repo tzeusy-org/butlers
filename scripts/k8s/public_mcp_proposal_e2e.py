@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Live dev run of the three public MCP proposal paths (task 5.7, live half).
 
-NOT run in CI and not run until the public MCP server is deployed (bu-y66o00.6) and the typed review
-provides the displayed call (bu-y66o00.9). The live leg is tracked in bu-y66o00.48.
-The hermetic twin is tests/integration/test_public_mcp_proposal_e2e.py. The only writes are
-synthetic proposals and the owner decisions on them; use synthetic entities, never personal data.
+NOT run in CI and not run until the public MCP server is deployed (bu-y66o00.6) and a dashboard
+with the typed review (bu-y66o00.9) provides the displayed call. The live leg is tracked in
+bu-y66o00.48. The hermetic twin is tests/integration/test_public_mcp_proposal_e2e.py. The only
+writes are synthetic proposals and the owner decisions on them; use synthetic entities, never
+personal data.
 Secrets are read from files named on the command line and never printed or put in a state file.
 
 Three steps, each re-runnable, sharing a state file of proposal ids:
@@ -13,11 +14,10 @@ Three steps, each re-runnable, sharing a state file of proposal ids:
            one propose_fact per path through the public endpoint (SUBJECT:OBJECT entity uuids)
   decide   --dashboard-url U --token-file F --state S
            after an importer pass has parked them (every 5 minutes): approve the `applied` path
-           (echoing the dashboard's call_preview.displayed_call, which the approve route
-           requires), reject the `rejected` path, leave `expired` alone. The two are independent.
-           A relationship_assert_fact action has no registered call preview today (the dashboard
-           shows it as Open only, approval disabled), so `approve` reports BLOCKED until one exists
-           or the owner approves through another path
+           (echoing the dashboard's external_proposal_review.displayed_call, which the approve
+           route requires), reject the `rejected` path, leave `expired` alone. The two are
+           independent. A review without a displayed call (an entity merged or deleted since
+           parking, say) reports BLOCKED with the review's stated reason
   verify   --mcp-url U --token-file F --state S
            fetch("proposal:<id>") per path and compare with the expected state
 
@@ -165,13 +165,24 @@ def run_propose(args: argparse.Namespace) -> int:
 def approve_body(detail: dict[str, Any]) -> dict[str, Any] | None:
     """The approve body for one action: the displayed call the dashboard showed, echoed back.
 
-    The approve route refuses a body without it (409), and an action with no registered
-    preview has none to echo (the dashboard shows it as Open only, approval disabled).
+    An external proposal's displayed call is in its typed review
+    (REQ-dashboard-approvals-904); its generic ``call_preview`` is always null. The approve
+    route refuses a body without the call (409), and a review that cannot be approved (an
+    entity merged or deleted since parking) has none to echo.
     """
-    preview = detail.get("call_preview")
-    if not isinstance(preview, dict) or not isinstance(preview.get("displayed_call"), dict):
+    review = detail.get("external_proposal_review")
+    if not isinstance(review, dict) or not isinstance(review.get("displayed_call"), dict):
         return None
-    return {"displayed_call": preview["displayed_call"]}
+    return {"displayed_call": review["displayed_call"]}
+
+
+def approve_unavailable_reason(detail: dict[str, Any]) -> str:
+    """Why the dashboard offers no approval, as the typed review states it."""
+    review = detail.get("external_proposal_review")
+    if not isinstance(review, dict):
+        return "no external proposal review (is the dashboard at bu-y66o00.9 or later?)"
+    reason = review.get("approve_unavailable_reason")
+    return reason if isinstance(reason, str) and reason else "no displayed call"
 
 
 def decide_one(base: str, token_file: Path, path: str, verb: str, item: dict[str, Any], listing):
@@ -185,9 +196,8 @@ def decide_one(base: str, token_file: Path, path: str, verb: str, item: dict[str
         body_or_none = approve_body(detail)
         if body_or_none is None:
             return (
-                f"BLOCKED approve {path}: action {action_id} has no call preview (Open only), "
-                "so the dashboard approve route refuses it; blocked on bu-y66o00.9, "
-                "tracked in bu-y66o00.48",
+                f"BLOCKED approve {path}: action {action_id} offers no approval: "
+                f"{approve_unavailable_reason(detail)}",
                 False,
             )
         body = body_or_none
