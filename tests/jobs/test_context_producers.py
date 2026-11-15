@@ -333,8 +333,9 @@ def _active_calendar_row(
     timezone: str = "UTC",
     all_day: bool = False,
     metadata: object = None,
+    event_type: str | None = None,
 ) -> dict[str, object]:
-    return {
+    row: dict[str, object] = {
         "title": title,
         "starts_at": starts_at,
         "ends_at": ends_at,
@@ -342,6 +343,112 @@ def _active_calendar_row(
         "all_day": all_day,
         "metadata": metadata,
     }
+    if event_type is not None:
+        row["event_type"] = event_type
+    return row
+
+
+async def _run_calendar(rows: list[dict[str, object]]) -> tuple[dict, AsyncMock, AsyncMock]:
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=rows)
+    set_context_mock = AsyncMock()
+    clear_context_mock = AsyncMock()
+    with (
+        patch("butlers.jobs.context_producers.set_calendar_context", new=set_context_mock),
+        patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
+    ):
+        result = await run_calendar_context_producer(pool)
+    return result, set_context_mock, clear_context_mock
+
+
+_NOW = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+
+
+async def test_typed_focus_time_asserts_focused_whatever_its_title():
+    result, set_context, _ = await _run_calendar(
+        [
+            _active_calendar_row(
+                title="Writing",  # no focus marker in the title
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                event_type="focusTime",
+            )
+        ]
+    )
+    assert result["signal"] == "focused"
+    assert set_context.await_args.args[1] == "focused"
+
+
+async def test_a_working_location_event_is_never_a_meeting():
+    location = _active_calendar_row(
+        title="Office",
+        starts_at=_NOW - timedelta(hours=1),
+        ends_at=_NOW + timedelta(hours=7),
+        event_type="workingLocation",
+    )
+    result, set_context, _ = await _run_calendar([location])
+    assert result == {"signal": None, "cleared": ["meeting", "focused"]}
+    set_context.assert_not_awaited()
+
+    # A real meeting during the working day still asserts.
+    meeting = _active_calendar_row(
+        title="Standup",
+        starts_at=_NOW - timedelta(minutes=5),
+        ends_at=_NOW + timedelta(minutes=10),
+    )
+    result, _, _ = await _run_calendar([location, meeting])
+    assert result["signal"] == "meeting"
+
+
+@pytest.mark.parametrize("all_day", [False, True])
+async def test_an_active_out_of_office_clears_meeting_and_focused(all_day: bool):
+    ooo = _active_calendar_row(
+        title="Vacation",
+        starts_at=_NOW - timedelta(hours=2),
+        ends_at=_NOW + timedelta(days=2),
+        all_day=all_day,
+        event_type="outOfOffice",
+    )
+    attended = _active_calendar_row(
+        title="Standup",
+        starts_at=_NOW - timedelta(minutes=5),
+        ends_at=_NOW + timedelta(minutes=10),
+        metadata=_self_attendee("response_status", "accepted"),
+    )
+    result, set_context, clear_context = await _run_calendar([ooo, attended])
+    assert result == {"signal": None, "cleared": ["meeting", "focused"], "out_of_office": True}
+    set_context.assert_not_awaited()
+    assert {call.args[2] for call in clear_context.await_args_list} == {"meeting", "focused"}
+
+
+async def test_a_generated_out_of_office_does_not_clear_a_meeting():
+    ooo = _active_calendar_row(
+        title="BUTLER: hold",
+        starts_at=_NOW - timedelta(hours=2),
+        ends_at=_NOW + timedelta(hours=2),
+        event_type="outOfOffice",
+        metadata={"butler_generated": True},
+    )
+    meeting = _active_calendar_row(
+        title="Standup",
+        starts_at=_NOW - timedelta(minutes=5),
+        ends_at=_NOW + timedelta(minutes=10),
+    )
+    result, _, _ = await _run_calendar([ooo, meeting])
+    assert result["signal"] == "meeting"
+
+
+async def test_the_calendar_query_reads_the_type_and_all_day_out_of_office():
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[])
+    with (
+        patch("butlers.jobs.context_producers.set_calendar_context", new=AsyncMock()),
+        patch("butlers.jobs.context_producers.clear_context", new=AsyncMock()),
+    ):
+        await run_calendar_context_producer(pool)
+    sql = " ".join(pool.fetch.await_args.args[0].split())
+    assert "event_type" in sql
+    assert "all_day = false OR event_type = 'outOfOffice'" in sql
 
 
 async def test_calendar_context_producer_skips_explicit_butler_generated_event_but_keeps_human_event():
