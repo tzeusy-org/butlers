@@ -261,7 +261,7 @@ async def test_an_mcp_client_handshakes_lists_and_calls(served):
             assert hits, "the seeded entity is searchable"
             fetched = await session.call_tool("fetch", {"id": hits[0]["id"]})
             assert fetched.isError is False, fetched.structuredContent
-            refused = await session.call_tool(
+            proposed = await session.call_tool(  # validated against the outputSchema
                 "propose_fact",
                 {
                     "subject_entity_id": person,
@@ -270,10 +270,9 @@ async def test_an_mcp_client_handshakes_lists_and_calls(served):
                     "idempotency_key": "k",
                 },
             )
-            assert refused.isError is True
-            assert refused.structuredContent is not None
-            assert refused.structuredContent["error"]["code"] == "domain_disabled"
-            assert refused.structuredContent["error"]["retryable"] is False
+            assert proposed.isError is False, proposed.structuredContent
+            assert proposed.structuredContent is not None
+            assert proposed.structuredContent["status"] == "received"
         assert session_id() is None  # stateless: no session to resume or delete
     assert calls["describe"]["manifest_digest"] == load_manifest().digest
     assert "tools/list" in box[0].posts and "notifications/initialized" in box[0].posts

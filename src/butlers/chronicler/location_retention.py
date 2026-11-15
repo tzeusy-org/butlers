@@ -25,7 +25,8 @@ MAX_RETENTION_DAYS = 30
 
 #: How a raw fix's age is measured. Mirrors the OwnTracks point adapter's
 #: clock-skew rule (``CLOCK_SKEW_THRESHOLD_HOURS``), so a device timestamp far
-#: in the future cannot extend retention.
+#: in the future cannot extend retention. ``connectors.owntracks_points.retention_at``
+#: (core_340) stores this age basis per row, immutably.
 RAW_AGE_BASIS = (
     "device timestamp, or server receipt time when the device timestamp is more "
     "than 4 hours after receipt; a fix is expired only when strictly older than "

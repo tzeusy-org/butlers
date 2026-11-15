@@ -77,6 +77,8 @@ class ReadContext:
     ``cursor_key`` is the host's process-lifetime random key, so a restart invalidates every
     cursor. ``disabled_domains`` is the union of every kill-switch layer the host can see.
     ``dashboard_base`` is the configured dashboard origin that ``url`` deep links start with.
+    ``sub`` and ``cid`` are the verified assertion's caller and client id; only ``propose_fact``
+    uses ``cid`` (it keys the proposal id), and never from arguments.
     """
 
     sub: str
@@ -85,6 +87,7 @@ class ReadContext:
     cursor_key: bytes = field(repr=False)
     disabled_domains: frozenset[str] = frozenset()
     dashboard_base: str = ""
+    cid: str = ""
 
     @property
     def freshness(self) -> str:
@@ -135,6 +138,7 @@ async def read_context(
     disabled_domains: frozenset[str] = frozenset(),
     now: datetime | None = None,
     dashboard_base: str = "",
+    cid: str = "",
 ) -> ReadContext:
     """Read the replication time once (D17) and bind it to this request."""
     as_of = await conn.fetchval("SELECT mcp_read.replication_as_of()")
@@ -145,6 +149,7 @@ async def read_context(
         cursor_key=cursor_key,
         disabled_domains=frozenset(disabled_domains),
         dashboard_base=dashboard_base,
+        cid=cid,
     )
 
 
@@ -205,6 +210,21 @@ async def in_snapshot(conn: asyncpg.Connection, read: Callable[[], Any]) -> Any:
             return await read()
         async with conn.transaction(isolation="repeatable_read", readonly=True):
             return await read()
+    except asyncpg.QueryCanceledError:
+        raise ReadError("unavailable") from None
+
+
+async def in_write_transaction(conn: asyncpg.Connection, write: Callable[[], Any]) -> Any:
+    """Run one call in one ordinary read-write transaction: the path of ``propose_fact`` alone.
+
+    The host's own status and kill-switch reads run inside it, so the switch is checked in the
+    transaction that writes. The role's column-limited INSERT is the authority bound; this only
+    chooses the transaction mode. A cancelled statement is ``unavailable``, as in
+    :func:`in_snapshot`, and a raised error rolls the whole transaction back.
+    """
+    try:
+        async with conn.transaction():
+            return await write()
     except asyncpg.QueryCanceledError:
         raise ReadError("unavailable") from None
 

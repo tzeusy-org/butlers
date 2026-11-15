@@ -616,10 +616,43 @@ error class only.
   `init-db.sql`.
 - OpenSpec change `openspec/changes/add-public-mcp-read-surface/` (`tasks.md` is the work map).
 
+## Proposal intake: `propose_fact`
+
+The public server's one write (RFC 0039 D13 step 1, built by `bu-y66o00.8`). It validates a closed
+argument set, then inserts one row into `mcp_inbox.proposals` on `butlers_public`. Nothing reads the
+row until the importer (task 5.2, not yet built) pulls it, so a received proposal has no effect.
+
+- **Arguments:** `subject_entity_id`, `predicate`, `object_entity_id`, optional `evidence_url`
+  (absolute `http` or `https` URL with a host, no credentials or whitespace, at most 2048
+  characters), optional `note` (at most 500) and `idempotency_key` (1 to 64). Anything else is
+  `invalid_argument`. `predicate` must be in `src/butlers/knowledge_read/proposable.toml`:
+  `knows`, `colleague-of`, `friend-of`, `co-attended`, `visited`, `works-at`, `member-of`. Widening
+  that file is a reviewed change; a family-gated, contact or override predicate, or a literal
+  object, is refused and writes nothing. The tool schema's `predicate` enum is generated from it.
+- **Identity:** `proposal_id = uuid5(NS, name)`, where `name` is the RFC 8785 (JCS) text of the JSON
+  array `[sub, cid, idempotency_key, sha256_hex(JCS(payload))]` and `payload` is the object
+  `{subject_entity_id, predicate, object_entity_id, evidence_url, note}` (absent optionals are
+  `null`). `sub` and `cid` come from the verified assertion, never from arguments, so one caller's
+  key cannot collide with another's. `NS` is `91aad1a5-9534-5720-865f-e229e55a3b92`, fixed forever.
+- **Write:** `INSERT ... ON CONFLICT DO NOTHING` with no read: the role has column-limited INSERT and
+  no SELECT, so an identical retry is absorbed by the primary key and returns the same id. A changed
+  payload under a reused key gets a new id; the importer marks it `conflict`.
+- **Full inbox:** at 1,000 undrained rows the cap trigger refuses the insert and the call returns
+  `unavailable` with `retryable: true` and no row. Only that exact trigger error is mapped; any
+  other database error also surfaces as `unavailable` through the host's fail-closed path. A retry
+  of a proposal already in the inbox is still a no-op. Draining is the importer's delete.
+- **Kill switch:** `proposals` (or `all`), replicated or in the break-glass file, returns
+  `domain_disabled` before any write. The check runs inside the write's own transaction.
+- **Transaction:** every other tool runs in a read-only repeatable-read snapshot. `propose_fact`
+  alone is flagged `writes` and runs in an ordinary read-write transaction opened by the same host
+  path, after the same canary probe, budget (20 per `(sub, cid)` per day) and projection checks.
+  The host refuses to start if any other tool is flagged. The database role, not this flag, is the
+  authority bound.
+
 The primary proposal-status prerequisite is Relationship revision `rel_041`. It
 stores caller-assigned proposal IDs, the D13 primary state and decision timestamp,
 and private retention-capable note/evidence fields. The manifest exposes only
 `proposal_id`, `state` and `decided_at` in the `proposals` domain. This migration
-receives or applies no proposals. Intake identity/payload fields, the importer,
-approval reconciliation and the 30-day text-clearing job remain task 5.2 work;
-creating this source does not deliver that pipeline or its authority guarantees.
+receives or applies no proposals. The importer, approval reconciliation and the 30-day
+text-clearing job remain task 5.2 work; creating this source does not deliver that pipeline or
+its authority guarantees.

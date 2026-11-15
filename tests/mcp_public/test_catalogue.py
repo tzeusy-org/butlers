@@ -52,7 +52,10 @@ PINNED = {
     "health_series": "524a4c12a6524214b45829cdb8b9233f1c40ac09d68e0654daf9a2189ecf2f50",
     "health_profile": "acd2bf516151a9fa678109e878ecfa66690c9953df0fd5aa134ce5096e4fa96f",
     "health_records": "326ce4e81dcbc5c9c267edc80454807c16dab637b3b08d96d6deaa0773a7e0a4",
-    "propose_fact": "31e5c63eda2cde1da3ff06c93446bf7b0b516827747d2d169f9c969486aa1e58",
+    # Re-pinned in bu-y66o00.8: idempotentHint flipped to true (RFC 0039 D10 rule: true for every
+    # tool, readOnlyHint alone differs). The proposal id is derived and the insert is
+    # no-op-on-conflict, so an identical repeat has no further effect. Nothing else changed.
+    "propose_fact": "e4e2ef0b2610ae92e6bf24c25b0bde3776e28fc3d1206d7ba98175ae975fb447",
 }
 
 #: REQ-public-mcp-surface-002, in RFC 0039 D10 table order.
@@ -106,7 +109,7 @@ def test_every_tool_carries_the_d10_annotations():
             "title": entry["title"],
             "readOnlyHint": entry["name"] != "propose_fact",
             "destructiveHint": False,
-            "idempotentHint": entry["name"] != "propose_fact",
+            "idempotentHint": True,
             "openWorldHint": False,
         }, entry["name"]
 
@@ -177,25 +180,8 @@ def test_the_served_tools_are_the_catalogue():
     assert set(served_tools()) == set(D10)
 
 
-async def test_propose_fact_refuses_domain_disabled_after_parsing_its_arguments():
-    now = NOW
-    context = ReadContext(sub="1", as_of=now, now=now, cursor_key=b"k" * 32)
-    read = served_tools()["propose_fact"].read
-    conn = cast(asyncpg.Connection, _NoDatabase())
-    good = {
-        "subject_entity_id": "00000000-0000-0000-0000-000000000001",
-        "predicate": "knows",
-        "object_entity_id": "00000000-0000-0000-0000-000000000002",
-        "idempotency_key": "k1",
-    }
-    with pytest.raises(ReadError) as refused:
-        await read(conn, context, good)
-    assert (refused.value.code, refused.value.domain) == ("domain_disabled", "proposals")
-    for bad in (
-        {**good, "predicate": "parent-of"},
-        {**good, "sql": "x"},
-        {**good, "note": "n" * 501},
-    ):
-        with pytest.raises(ReadError) as refused:
-            await read(conn, context, bad)
-        assert refused.value.code == "invalid_argument"
+async def test_propose_fact_is_the_only_writer_and_parses_before_the_database():
+    tool = served_tools()["propose_fact"]
+    assert tool.writes and tool.domain == "proposals"
+    assert [n for n, t in served_tools().items() if t.writes] == ["propose_fact"]
+    assert tool.read.__module__ == "butlers.mcp_public.proposals"

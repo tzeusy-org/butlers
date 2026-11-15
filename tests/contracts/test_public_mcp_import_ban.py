@@ -102,6 +102,7 @@ PINNED_CLOSURE = frozenset(
         "butlers.mcp_public",
         "butlers.mcp_public.app",
         "butlers.mcp_public.catalogue",
+        "butlers.mcp_public.proposals",
         "butlers.mcp_public.server",
     }
 )

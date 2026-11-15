@@ -60,6 +60,7 @@ from butlers.knowledge_read.core import (
     ReadContext,
     ReadError,
     in_snapshot,
+    in_write_transaction,
     read_context,
 )
 from butlers.knowledge_read.manifest import Manifest, load_manifest
@@ -71,6 +72,7 @@ MAX_BODY_BYTES = 1024 * 1024
 # client command_timeout are both raised to this for the probe's own queries.
 PROBE_TIMEOUT_S = 30
 PROBE_TIMEOUT = f"{PROBE_TIMEOUT_S}s"
+WRITE_TOOL = "propose_fact"  # the one tool that may run outside the read-only snapshot
 EXEMPT = frozenset(
     {
         "initialize",
@@ -98,10 +100,11 @@ class Tool:
     domain: str | None  # None: describe and the multi-domain tools
     read: Reader
     dlp: bool = True  # False only for describe, which returns no published data
+    writes: bool = False  # True only for propose_fact: its own read-write transaction (D13)
 
 
 def default_tools() -> dict[str, Tool]:
-    """The 18 knowledge_read tools; ``propose_fact`` registers when its reader lands (5.1)."""
+    """The 18 knowledge_read tools; ``propose_fact`` is added by the server (``mcp_public``)."""
     pairs: list[tuple[Reader, str | None]] = [
         (search.search, None),
         (search.fetch, None),
@@ -211,6 +214,8 @@ class CapabilityHost:
         self.settings = settings
         self.pool = pool
         self.tools = dict(default_tools() if tools is None else tools)
+        if any(t.writes and name != WRITE_TOOL for name, t in self.tools.items()):
+            raise ValueError(f"only {WRITE_TOOL} may write")  # every other tool stays read-only
         self.static = {"ping": lambda _params: {}, **(static or {})}
         self.manifest = manifest or load_manifest()
         self.metrics = metrics or Metrics()
@@ -417,6 +422,7 @@ class CapabilityHost:
                 disabled_domains=disabled | status.disabled,
                 now=datetime.fromtimestamp(now, UTC),
                 dashboard_base=self.settings.dashboard_base,
+                cid=who.cid,
             )
             if tool.domain is not None:
                 context.require(tool.domain)  # defence in depth: the reader checks it too
@@ -427,7 +433,8 @@ class CapabilityHost:
                 conn = cast(asyncpg.Connection, conn)
                 if not probed:
                     await self._probe(conn, cast(tuple[str, ...], canaries))
-                result = await in_snapshot(conn, lambda: read(conn))
+                run = in_write_transaction if tool.writes else in_snapshot
+                result = await run(conn, lambda: read(conn))
         except ReadError:
             raise
         except Exception:
@@ -476,6 +483,7 @@ class CapabilityHost:
         """Run the reader's closed argument parsing with no database (D17 precedence)."""
         context = ReadContext(
             sub=who.sub,
+            cid=who.cid,
             as_of=datetime.fromtimestamp(self.clock(), UTC),
             now=datetime.fromtimestamp(self.clock(), UTC),
             cursor_key=self.cursor_key,
