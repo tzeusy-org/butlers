@@ -92,10 +92,13 @@ async def test_typed_fields_are_written_replaced_and_cleared(migrated_core_postg
         assert (await _read(pool, "ooo-1"))[:3] == ("outOfOffice", None, None)
 
         # The checks refuse what the normalizer never produces.
-        for statement in (
-            "UPDATE calendar_events SET event_type = '' WHERE origin_ref = 'ooo-1'",
-            "UPDATE calendar_events SET working_location_type = 'homeOffice' "
-            "WHERE origin_ref = 'ooo-1'",
-        ):
-            with pytest.raises(Exception, match="check constraint"):
-                await pool.execute(statement)
+        with pytest.raises(Exception, match="calendar_events_event_type_length_check"):
+            await pool.execute(
+                "UPDATE calendar_events SET event_type = '' WHERE origin_ref = 'ooo-1'"
+            )
+        # A type without its label: the pair check must not pass on a NULL result.
+        with pytest.raises(Exception, match="calendar_events_working_location_check"):
+            await pool.execute(
+                "UPDATE calendar_events SET working_location_type = 'homeOffice' "
+                "WHERE origin_ref = 'ooo-1'"
+            )

@@ -104,11 +104,14 @@ def upgrade() -> None:
         clauses.append("ADD COLUMN working_location_label TEXT")
     if "working_location_type" not in existing or "working_location_label" not in existing:
         # Added with the second of the pair, so a partly-present pair is completed, not reused.
+        # A CHECK passes when its expression is NULL, and a half-NULL pair makes the typed
+        # branch NULL (``'homeOffice' IN (...) AND char_length(NULL) ...``), so COALESCE turns
+        # that unknown into a refusal.
         clauses.append(
             f"ADD CONSTRAINT {_WORKING_LOCATION_CHECK} CHECK ("
-            "(working_location_type IS NULL AND working_location_label IS NULL) OR ("
+            "(working_location_type IS NULL AND working_location_label IS NULL) OR COALESCE("
             "working_location_type IN ('homeOffice', 'officeLocation', 'customLocation') "
-            "AND char_length(working_location_label) BETWEEN 1 AND 256))"
+            "AND char_length(working_location_label) BETWEEN 1 AND 256, false))"
         )
     if clauses:
         # One ALTER: a constant default is metadata-only and every check holds trivially on the
