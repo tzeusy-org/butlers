@@ -6,8 +6,14 @@
 
 ## 2. Causal coverage and raw expiry (later slices)
 
-- [ ] 2.1 Immutable per-row retention clock on `connectors.owntracks_points`.
-- [ ] 2.2 Per-row projection coverage committed with projection output.
+- [x] 2.1 Immutable per-row retention clock on `connectors.owntracks_points`: `core_340`
+  `retention_at` (trigger-derived from `ts`/`recorded_at` by the declared raw-age basis,
+  caller value ignored, `ts`/`recorded_at`/`retention_at` updates refused, legacy rows
+  backfilled).
+- [ ] 2.2 Per-row projection coverage committed with projection output. Partial:
+  `chronicler_032` coverage and open-carry tables plus `butlers.chronicler.projection_coverage`;
+  `owntracks.points` writes coverage in its projection savepoint. Remaining:
+  `owntracks.place_cluster` and `owntracks.ssid_presence` adopt the same ledger.
 - [ ] 2.3 Prepared grant, then a connector-owned raw delete with a committed receipt. Lag and failure conditions.
 
 ## 3. Summaries and UI (later slices)

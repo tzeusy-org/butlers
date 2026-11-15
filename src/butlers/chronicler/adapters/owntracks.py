@@ -70,6 +70,35 @@ Clock-skew detection:
   ``_project_movement_episodes`` remains for cross-batch carryover cases.
 - Threshold default: 4 hours — wider than legitimate timezone confusion.
   Override via the ``clock_skew_threshold_hours`` constructor argument.
+
+Projection coverage (bu-s11n0s.7, ``butlers.chronicler.projection_coverage``):
+- Each run records, in its projection savepoint, which raw rows it has finished
+  with (``chronicler.location_projection_coverage``) and which are still held by
+  an open carry (``chronicler.location_projection_open_members``). It reads the
+  row's immutable ``retention_at`` (core_340) and copies it as read.
+- A row is **held** (open, never covered) while it is the endpoint's trail
+  bootstrap seed or a pending trail candidate (carry ``trail:<endpoint>``: the
+  next run re-reads it and may still revise it), or while it belongs to the
+  endpoint's open movement segment kept in carryover (carry
+  ``movement:<endpoint>``). The open segment may already be upserted as an
+  episode; that is not terminal while the segment can still be extended.
+- A row is **projected** once it is in no open carry and has at least one output
+  this adapter wrote for it: its ``location`` point event, plus the movement
+  episode its segment produced. A segment closes when a later fix of the same
+  endpoint falls more than the movement gap after it (in this or a later run),
+  when its carry is discarded (rejected bootstrap seed, malformed carryover), or
+  at once for a late span. A segment that closes below ``MIN_MOVEMENT_POINTS``
+  emits no episode, so its rows are projected with the point event only;
+  likewise a late fix whose span writes no episode.
+- No coverage at all for a malformed row (skipped by ``_normalize_row``), a row
+  with no point event (tombstoned projection, or a missing projection that
+  ``existing_only`` will not recreate), a row without ``retention_at``, or a
+  row the settle window has not let the adapter read. Coverage is written once
+  (first terminal record wins); a later re-read that re-absorbs a covered row
+  into a carry lists it as open again without weakening the record.
+- An open segment is closed only by a later fix, never by elapsed time: a late
+  offline fix can still extend it. The final segment before tracking stops
+  therefore stays held.
 """
 
 from __future__ import annotations
@@ -114,6 +143,10 @@ from butlers.chronicler.models import (
     Precision,
     Privacy,
 )
+from butlers.chronicler.projection_coverage import (
+    PRIORITY_CARRY_PREFIX as MOVEMENT_CARRY_PREFIX,
+)
+from butlers.chronicler.projection_coverage import ProjectionCoverage
 from butlers.chronicler.storage import (
     get_owntracks_carryover as get_carryover,
 )
@@ -156,6 +189,9 @@ CLOCK_SKEW_THRESHOLD_HOURS = 4
 
 # Carryover key of the arrival-order ingestion cursor (see module docstring).
 INGEST_CURSOR_CARRYOVER_KEY = "_ingest_cursor"
+
+# Coverage carry keys (see "Projection coverage" in the module docstring).
+TRAIL_CARRY_PREFIX = "trail:"
 
 # Rows whose ``recorded_at`` is newer than ``now()`` minus this many seconds are
 # left for the next run. ``recorded_at`` defaults to the inserting
@@ -363,8 +399,22 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 changes=changes,
                 rejected_seeds=rejected_seeds,
             )
+            coverage = ProjectionCoverage(self.source_name)
+            for normalized_row in valid_rows:
+                coverage.observe(normalized_row)
+            # Trail consensus is recomputed in full: a bootstrap seed or pending candidate
+            # is re-read next run and may still be revised, so it stays open until it leaves.
+            coverage.release_prefix(TRAIL_CARRY_PREFIX)
+            for endpoint, entry in state.items():
+                for identity in (entry["seed_id"], *entry["pending_ids"]):
+                    if identity is not None:
+                        coverage.hold(identity, f"{TRAIL_CARRY_PREFIX}{endpoint}")
             for endpoint in rejected_seeds:
-                prior_carryover.pop(endpoint, None)
+                popped = prior_carryover.pop(endpoint, None)
+                coverage.close_carry(
+                    f"{MOVEMENT_CARRY_PREFIX}{endpoint}",
+                    popped.get("episode_id") if isinstance(popped, dict) else None,
+                )
 
             # Map each location point event's idempotency_key → its chronicler
             # point-event id, so movement episodes can record their corroborating
@@ -392,6 +442,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     accepted_rows.append(normalized_row)
                 if event is not None and event.id is not None:
                     event_id_by_key[normalized_row["idempotency_key"]] = event.id
+                    coverage.record_event(normalized_row, event.id)
                 result.rows_projected += 1
                 result.point_events += 1
 
@@ -413,11 +464,15 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     prior_carryover,
                     event_id_by_key=event_id_by_key,
                     entity_id=entity_id,
+                    coverage=coverage,
                 )
                 result.episodes_closed += episodes_closed
                 new_carryover.update(movement_carryover)
             new_carryover[TRAIL_ANCHORS_CARRYOVER_KEY] = dump_anchors(anchors)
             new_carryover[TRAIL_STATE_CARRYOVER_KEY] = {"version": 1, "endpoints": state}
+            # Same connection and savepoint as the outputs and the cursor written below.
+            async with owntracks_connection(chronicler_pool) as conn:
+                await coverage.flush(conn)
 
         # Advance arrival-order progress past every fetched row, valid or not,
         # in the same transaction as the projections it covers.
@@ -516,6 +571,8 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             "endpoint_identity": endpoint_identity.strip(),
             "raw_payload": row["raw_payload"],
             "recorded_at": row["recorded_at"],
+            # The immutable retention clock (core_340), carried only into coverage.
+            "retention_at": row.get("retention_at"),
         }
         return normalized, warnings
 
@@ -557,7 +614,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         """
         columns = (
             "id, idempotency_key, ts, lat, lon, accuracy, trigger, event, "
-            "endpoint_identity, raw_payload, recorded_at"
+            "endpoint_identity, raw_payload, recorded_at, retention_at"
         )
         settled = "recorded_at <= now() - make_interval(secs => $1)"
         try:
@@ -725,6 +782,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         *,
         event_id_by_key: dict[str, UUID] | None = None,
         entity_id: UUID | None = None,
+        coverage: ProjectionCoverage | None = None,
     ) -> tuple[int, dict]:
         """Collapse point sequences into movement episodes.
 
@@ -1050,6 +1108,10 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     # Write owner row into episode_entities join table (bu-4c1ks).
                     ep_id = episode.id if episode is not None else None
                     await upsert_owner_episode_entity(conn, ep_id, owner_id=entity_id)
+                if isinstance(ep_id, UUID):
+                    # Coverage attaches only an episode this run actually wrote.
+                    seg["episode_id"] = ep_id
+                    slot["episode_id"] = str(ep_id)
                 # Link each GPS fix into the canonical evidence chain.
                 if ep_id is not None:
                     for event_id in seg_event_ids:
@@ -1061,7 +1123,39 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                         )
             episodes_upserted += 1
 
+        if coverage is not None:
+            self._record_movement_coverage(coverage, segments, prior_carryover)
         return episodes_upserted, new_carryover
+
+    @staticmethod
+    def _record_movement_coverage(
+        coverage: ProjectionCoverage, segments: list[dict], prior_carryover: dict
+    ) -> None:
+        """Feed the coverage ledger the movement outcome of this batch.
+
+        Every segment's rows gain the episode this run wrote for it (if any). Per endpoint,
+        the rows of the last live segment are the open carry and stay held. The prior run's
+        carry is closed unless that last segment extends it; it closes with the episode its
+        extension wrote this run, or else the episode recorded in its carryover slot.
+        """
+        live: dict[str, list[dict]] = {}
+        for seg in segments:
+            coverage.record_episode(seg["rows"], seg.get("episode_id"))
+            if not seg.get("late"):
+                live.setdefault(seg["rows"][0]["endpoint_identity"], []).append(seg)
+        for endpoint, segs in live.items():
+            key = f"{MOVEMENT_CARRY_PREFIX}{endpoint}"
+            for row in segs[-1]["rows"]:
+                coverage.hold(row["id"], key)
+            first = segs[0]
+            if len(segs) == 1 and first["source_ref"] is not None:
+                continue  # the open carry was extended and is still open
+            if first["source_ref"] is not None:
+                closing = first.get("episode_id")
+            else:
+                prior = prior_carryover.get(endpoint)
+                closing = prior.get("episode_id") if isinstance(prior, dict) else None
+            coverage.close_carry(key, closing)
 
     def _carryover_horizons(self, prior_carryover: dict) -> dict[str, tuple[datetime, datetime]]:
         """Map endpoint → readable open-episode span ``(start_at, end_at)``."""
@@ -1306,7 +1400,9 @@ __all__ = [
     "INGEST_SETTLE_SECONDS",
     "IngestCursor",
     "MIN_MOVEMENT_POINTS",
+    "MOVEMENT_CARRY_PREFIX",
     "MOVEMENT_GAP_MINUTES",
     "OwnTracksPointAdapter",
     "SOURCE_NAME",
+    "TRAIL_CARRY_PREFIX",
 ]
