@@ -623,7 +623,10 @@ public_mcp_proposal_e2e.py decide --dashboard-url URL --token-file F --state S
 public_mcp_proposal_e2e.py verify --mcp-url URL --token-file F --state S
 ```
 
-`expired` needs the 14-day window to pass, or the owner setting that one synthetic action's
+`decide` echoes the action's `call_preview.displayed_call` into the approve body, as the dashboard
+does. A `relationship_assert_fact` action has no registered call preview today, so the dashboard
+approve route refuses it (409) and `decide` reports `BLOCKED` for the applied path; the reject path
+still runs. All URLs must be https. `expired` needs the 14-day window to pass, or the owner setting that one synthetic action's
 `expires_at` into the past; `verify` reports it `PENDING`, never as a pass, until then.
 
 ## Related

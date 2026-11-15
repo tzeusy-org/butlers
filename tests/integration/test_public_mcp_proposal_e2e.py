@@ -5,7 +5,11 @@ REQ-public-mcp-proposals-006 (the proposal's state and decision time are readabl
 ``fetch("proposal:<id>")`` as ``parked``, ``applied``, ``owner_rejected`` and ``expired``) and
 -008 (a proposal changes no fact until the owner approves its parked action).
 
-Nothing under test is faked, and the pieces run in the order production runs them:
+The pieces run in the order production runs them. The one seam not exercised is the daemon's
+hop from the executor to the gated tool: ``_dispatch`` (reused from the Relationship tests) builds
+an ``ApprovalsModule`` whose tool executor calls the registered ``relationship_assert_fact`` handler
+directly, then runs ``_dispatch_approved_action_by_id`` on the approved action, instead of going
+through a running daemon's MCP session. The approve, the dispatch, the writer and the rest are real:
 
 1. ``propose_fact`` through the real ``CapabilityHost.handle`` with a signed assertion writes
    ``mcp_inbox.proposals`` as ``mcp_public_ro``;

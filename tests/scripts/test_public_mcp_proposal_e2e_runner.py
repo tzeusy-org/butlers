@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import uuid
 from pathlib import Path
 
@@ -64,3 +65,82 @@ def test_propose_call_is_the_documented_tool_call() -> None:
     call = runner.propose_call(A, B, "k")
     assert call["params"]["name"] == "propose_fact"
     assert call["params"]["arguments"]["predicate"] == "works-at"
+
+
+def test_approve_body_echoes_the_displayed_call() -> None:
+    shown = {"tool_name": "relationship_assert_fact", "args_digest": "d"}
+    assert runner.approve_body({"call_preview": {"displayed_call": shown}}) == {
+        "displayed_call": shown
+    }
+    # No registered preview (Open only): nothing to echo, never an empty-body approve.
+    assert runner.approve_body({"call_preview": None}) is None
+    assert runner.approve_body({}) is None
+
+
+def test_decide_posts_displayed_call_and_steps_are_independent(monkeypatch, tmp_path) -> None:
+    shown = {"tool_name": "relationship_assert_fact", "args_digest": "d"}
+    listing = [
+        {
+            "id": "1",
+            "tool_name": "relationship_assert_fact",
+            "status": "pending",
+            "tool_args": {"subject": A, "object": B},
+        },
+        {
+            "id": "2",
+            "tool_name": "relationship_assert_fact",
+            "status": "pending",
+            "tool_args": {"subject": B, "object": C},
+        },
+    ]
+    sent = []
+
+    def fake(url, token_file, body=None):
+        sent.append((url, body))
+        if "/actions?" in url:
+            return {"data": listing}
+        if url.endswith("/api/approvals/1"):
+            return {"data": {"call_preview": {"displayed_call": shown}}}
+        return {}
+
+    monkeypatch.setattr(runner, "_request", fake)
+    state = tmp_path / "s.json"
+    state.write_text(
+        json.dumps(
+            {
+                "proposals": {
+                    "applied": {"id": "p1", "subject": A, "object": B},
+                    "rejected": {"id": "p2", "subject": B, "object": C},
+                    "expired": {"id": "p3", "subject": C, "object": A},
+                }
+            }
+        )
+    )
+    args = argparse.Namespace(dashboard_url="https://d", token_file=tmp_path, state=state)
+    assert runner.run_decide(args) == 0
+    posts = {url: body for url, body in sent if url.endswith(("/approve", "/reject"))}
+    assert posts["https://d/api/approvals/actions/1/approve"] == {"displayed_call": shown}
+    assert posts["https://d/api/approvals/actions/2/reject"] == {}
+
+    # An Open-only approve is BLOCKED, and the reject still runs.
+    sent.clear()
+    monkeypatch.setattr(
+        runner,
+        "_request",
+        lambda url, token_file, body=None: (
+            {"data": listing}
+            if "/actions?" in url
+            else {"data": {"call_preview": None}}
+            if url.endswith("/api/approvals/1")
+            else sent.append((url, body)) or {}
+        ),
+    )
+    assert runner.run_decide(args) == 1
+    assert [u for u, _ in sent] == ["https://d/api/approvals/actions/2/reject"]
+
+
+def test_request_refuses_non_https_before_reading_the_token(tmp_path) -> None:
+    missing = tmp_path / "never-read"
+    for url in ("http://x/api", "ftp://x", "//x"):
+        with pytest.raises(ValueError, match="non-https"):
+            runner._request(url, missing)

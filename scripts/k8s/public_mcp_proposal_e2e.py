@@ -11,8 +11,12 @@ Three steps, each re-runnable, sharing a state file of proposal ids:
   propose  --mcp-url U --token-file F --state S --applied A:B --rejected C:D --expired E:F
            one propose_fact per path through the public endpoint (SUBJECT:OBJECT entity uuids)
   decide   --dashboard-url U --token-file F --state S
-           after an importer pass has parked them (every 5 minutes): approve the `applied` path,
-           reject the `rejected` path, leave `expired` alone
+           after an importer pass has parked them (every 5 minutes): approve the `applied` path
+           (echoing the dashboard's call_preview.displayed_call, which the approve route
+           requires), reject the `rejected` path, leave `expired` alone. The two are independent.
+           A relationship_assert_fact action has no registered call preview today (the dashboard
+           shows it as Open only, approval disabled), so `approve` reports BLOCKED until one exists
+           or the owner approves through another path
   verify   --mcp-url U --token-file F --state S
            fetch("proposal:<id>") per path and compare with the expected state
 
@@ -28,6 +32,7 @@ import argparse
 import json
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Sequence
@@ -103,6 +108,8 @@ def match_action(actions: Sequence[dict[str, Any]], subject: str, obj: str) -> s
 
 
 def _request(url: str, token_file: Path, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    if urllib.parse.urlsplit(url).scheme != "https":
+        raise ValueError("refusing to send a bearer over a non-https URL")
     token = token_file.read_text(encoding="utf-8").strip()
     data = None if body is None else json.dumps(body).encode()
     request = urllib.request.Request(  # noqa: S310 -- operator-supplied https URL
@@ -154,6 +161,38 @@ def run_propose(args: argparse.Namespace) -> int:
     return 0
 
 
+def approve_body(detail: dict[str, Any]) -> dict[str, Any] | None:
+    """The approve body for one action: the displayed call the dashboard showed, echoed back.
+
+    The approve route refuses a body without it (409), and an action with no registered
+    preview has none to echo (the dashboard shows it as Open only, approval disabled).
+    """
+    preview = detail.get("call_preview")
+    if not isinstance(preview, dict) or not isinstance(preview.get("displayed_call"), dict):
+        return None
+    return {"displayed_call": preview["displayed_call"]}
+
+
+def decide_one(base: str, token_file: Path, path: str, verb: str, item: dict[str, Any], listing):
+    """One path's decision; returns a verdict line and whether it passed."""
+    action_id = match_action(listing, item["subject"], item["object"])
+    if action_id is None:
+        return f"PENDING decide {path}: no single pending action yet (importer not run?)", False
+    body: dict[str, Any] = {}
+    if verb == "approve":
+        detail = _request(f"{base}/api/approvals/{action_id}", token_file)["data"]
+        body_or_none = approve_body(detail)
+        if body_or_none is None:
+            return (
+                f"BLOCKED approve {path}: action {action_id} has no call preview (Open only), "
+                "so the dashboard approve route refuses it; see the runbook",
+                False,
+            )
+        body = body_or_none
+    _request(f"{base}/api/approvals/actions/{action_id}/{verb}", token_file, body)
+    return f"ok   {verb} {path}: action {action_id}", True
+
+
 def run_decide(args: argparse.Namespace) -> int:
     state = json.loads(args.state.read_text(encoding="utf-8"))
     base = args.dashboard_url.rstrip("/")
@@ -164,14 +203,15 @@ def run_decide(args: argparse.Namespace) -> int:
     )["data"]
     failed = 0
     for path, verb in (("applied", "approve"), ("rejected", "reject")):
-        item = state["proposals"][path]
-        action_id = match_action(listing, item["subject"], item["object"])
-        if action_id is None:
-            print(f"PENDING decide {path}: no single pending action yet (importer not run?)")
-            failed += 1
-            continue
-        _request(f"{base}/api/approvals/actions/{action_id}/{verb}", args.token_file, {})
-        print(f"ok   {verb} {path}: action {action_id}")
+        # Independent: one path's refusal never skips the other.
+        try:
+            line, passed = decide_one(
+                base, args.token_file, path, verb, state["proposals"][path], listing
+            )
+        except (urllib.error.URLError, OSError, KeyError, ValueError) as exc:
+            line, passed = f"FAIL {verb} {path}: {type(exc).__name__}", False
+        print(line)
+        failed += not passed
     print("expired path: left undecided on purpose")
     return 1 if failed else 0
 
