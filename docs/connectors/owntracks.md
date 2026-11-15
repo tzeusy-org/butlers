@@ -101,6 +101,13 @@ The point and place-cluster projections share one plausibility policy
   stored one for the same endpoint widens it rather than adding a second chunk.
   Terminal coordinates come from the same fix as the widened end time;
   a later legacy end without a valid coordinate pair stays unknown.
+- Each movement records `payload.path_m`: the cumulative great-circle distance
+  over its ordered accepted fixes, counting each connecting edge once across
+  batches (the carry keeps the path and the fix it ends on). It is `null`,
+  never 0 or the straight-line endpoint distance, when it cannot be rebuilt
+  exactly: an episode carried over from before path tracking, or new fixes
+  widening a stored episode. An exact replay keeps the stored value. Raw expiry
+  needs this metric to survive the fixes it summarises.
   Migration `chronicler_027` applied the same rule once to episodes stored
   before it: each overlapping group keeps its earliest episode, widened, and
   tombstones the rest. Groups holding a user correction are left alone.
@@ -173,6 +180,31 @@ Groundwork for that gate is in place, and still deletes nothing:
     reported only: those rows are not re-projected. They have no current record, so raw expiry
     will never delete them; a window-scoped rebuild that drains them is a later follow-up.
   - No deletion uses coverage yet.
+- Summaries are ready to outlive the fixes they summarise (bu-s11n0s.7 S3), still deleting
+  nothing:
+  - Movement episodes carry their cumulative `path_m` (see "How Chronicler cleans the trail").
+  - `butlers.chronicler.spatial_precision` defines the reduced precision summaries will keep:
+    scheme `eqcell-150m-v1`, the centre of an approximately 150 m cell (equal latitude bands of
+    the 6 371 008.8 m mean-radius sphere, each cut into about 150 m-wide longitude cells, never
+    fewer than one; the antimeridian is one seam). Coarsening is idempotent and keeps nothing
+    of the exact point. It is the nominal cell size, not a sensor accuracy, and makes no
+    anonymity claim. Nothing coarsens stored rows yet.
+  - chronicler_035 adds `chronicler.location_forgetting_receipts` (one row per forgetting run:
+    policy version, cutoff, spatial scheme, counts) and `chronicler.location_evidence_tombstones`
+    (one row per forgotten point event: its former id, `source_ref`, receipt and the episodes it
+    supported; no coordinates, title, network name or payload). Both are append-only, and the
+    runtime role may only read and insert. `location_forgetting.record_forgetting` writes a
+    run's tombstones and its receipt in one transaction, counting only tombstones it added; no
+    code calls it yet.
+  - The point projection never writes a point event for a tombstoned `source_ref`, so a
+    replayed webhook, reset cursor or wider horizon cannot restore a forgotten point. It is
+    inert until raw expiry writes tombstones.
+  - A forgotten fix is dropped before trail classification: it feeds no point event, episode
+    or hold, and gets no projection-coverage record, so coverage never calls it projected. The
+    batch continues. The run counts the dropped fixes in `rows_refused_forgotten`, never in
+    `rows_projected` or `point_events`, and warns with the count only: no source, key or
+    coordinate. The place-cluster adapter has no floor yet; it lands with raw expiry (S4),
+    before any tombstone is written.
 
 ## Implementation Notes
 

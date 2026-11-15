@@ -1,0 +1,24 @@
+{
+  "kind": "calendar#event",
+  "etag": "\"3400000000000001\"",
+  "id": "synthfocus0001",
+  "status": "confirmed",
+  "created": "2026-06-20T08:00:00.000Z",
+  "updated": "2026-06-20T08:00:00.000Z",
+  "summary": "Deep work",
+  "creator": {"email": "owner@example.com", "self": true},
+  "organizer": {"email": "owner@example.com", "self": true},
+  "start": {"dateTime": "2026-07-01T14:00:00+08:00", "timeZone": "Asia/Singapore"},
+  "end": {"dateTime": "2026-07-01T16:00:00+08:00", "timeZone": "Asia/Singapore"},
+  "transparency": "opaque",
+  "visibility": "public",
+  "iCalUID": "synthfocus0001@example.com",
+  "sequence": 0,
+  "reminders": {"useDefault": false},
+  "eventType": "focusTime",
+  "focusTimeProperties": {
+    "autoDeclineMode": "declineOnlyNewConflictingInvitations",
+    "declineMessage": "Focusing",
+    "chatStatus": "doNotDisturb"
+  }
+}

@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -33,7 +36,9 @@ from butlers.chronicler.adapters.owntracks import (  # noqa: E402
     SOURCE_NAME,
     OwnTracksPointAdapter,
 )
+from butlers.chronicler.adapters.owntracks_trail import haversine_meters
 from butlers.chronicler.models import Episode, PointEvent, Precision, Privacy
+from butlers.chronicler.projection_coverage import FlushSummary, ProjectionCoverage
 from butlers.testing.fake_pool import AsyncCtx
 from butlers.testing.records import Record
 
@@ -1402,3 +1407,206 @@ async def test_tied_fixes_have_identical_order_and_verdicts_in_both_adapters() -
             (episode.end_at - episode.start_at) == timedelta(minutes=20) for episode in places
         )
         assert all(episode.start_at == _NOW + timedelta(minutes=5) for episode in places)
+
+
+# ---------------------------------------------------------------------------
+# Cumulative movement path (bu-s11n0s.7 S3)
+# ---------------------------------------------------------------------------
+
+# A walk north-east in ~110 m steps, one fix a minute: every hop is plausible, no hop is
+# straight-line-equivalent to the endpoints (the walk turns at fix 2).
+_WALK = [
+    (1.2345, 103.8765),
+    (1.2355, 103.8765),
+    (1.2355, 103.8775),
+    (1.2365, 103.8775),
+    (1.2365, 103.8785),
+]
+
+
+def _walk_rows(indices: range | list[int]) -> list[dict]:
+    return [
+        _location_row(
+            ts=_NOW + timedelta(minutes=i),
+            lat=_WALK[i][0],
+            lon=_WALK[i][1],
+            idempotency_key=f"walk-{i}",
+        )
+        for i in indices
+    ]
+
+
+def _walk_path(indices: range | list[int]) -> float:
+    points = [_WALK[i] for i in indices]
+    return sum(haversine_meters(*a, *b) for a, b in zip(points, points[1:], strict=False))
+
+
+@pytest.mark.asyncio
+async def test_movement_path_m_sums_every_edge_once() -> None:
+    _, _, episodes, saved = await _project_capturing(_walk_rows(range(3)))
+
+    assert len(episodes) == 1
+    assert episodes[0].payload["path_m"] == round(_walk_path(range(3)), 1)
+    straight = haversine_meters(*_WALK[0], *_WALK[2])
+    assert episodes[0].payload["path_m"] > round(straight, 1)  # never the endpoint chord
+    assert saved[_ENDPOINT]["path_m"] == pytest.approx(_walk_path(range(3)))
+
+
+@pytest.mark.asyncio
+async def test_path_m_across_runs_equals_one_batch() -> None:
+    """Each fix and each connecting edge counts once, wherever the batch boundary falls."""
+    later = _NOW + timedelta(hours=2)
+    rows = _walk_rows(range(5))
+    for row in rows:
+        row["recorded_at"] = row["ts"]
+    for split in (1, 2, 4):
+        table = _ArrivalTable(*rows[:split], now=later)
+        store: dict = {}
+        episodes: list[Episode] = []
+        first, _ = await _project_run(table, store, episodes=episodes)
+        table.rows += rows[split:]
+        await _project_run(table, store, episodes=episodes, since=first.watermark)
+        assert episodes[-1].payload["point_count"] == 5, split
+        assert episodes[-1].payload["path_m"] == round(_walk_path(range(5)), 1), split
+        assert store[_ENDPOINT]["path_m"] == pytest.approx(_walk_path(range(5))), split
+
+
+@pytest.mark.asyncio
+async def test_a_carry_without_path_m_leaves_the_path_unknown_not_zero() -> None:
+    legacy = {
+        _ENDPOINT: {
+            "source_ref": "connectors.owntracks_points:movement:x:1",
+            "start_at": (_NOW - timedelta(minutes=50)).isoformat(),
+            "end_at": (_NOW - timedelta(minutes=5)).isoformat(),
+            "start_lat": 1.2345,
+            "start_lon": 103.8765,
+            "point_count": 6,
+        }
+    }
+    _, _, episodes, saved = await _project_capturing(_walk_rows([0, 1]), carryover=legacy)
+
+    assert episodes[0].payload["point_count"] == 8
+    assert episodes[0].payload["path_m"] is None
+    assert saved[_ENDPOINT]["path_m"] is None
+
+    # Unknown stays unknown on the next extension.
+    rows = [
+        _location_row(ts=_NOW + timedelta(minutes=2), lat=_WALK[2][0], lon=_WALK[2][1]),
+    ]
+    _, _, again, _ = await _project_capturing(rows, carryover=saved)
+    assert again[0].payload["path_m"] is None
+
+
+@pytest.mark.asyncio
+async def test_merging_into_a_stored_episode_keeps_only_a_replayed_path() -> None:
+    rows = _walk_rows(range(3))
+    stored = {
+        "source_ref": "connectors.owntracks_points:movement:stored",
+        "start_at": _NOW - timedelta(minutes=11),
+        "end_at": _NOW + timedelta(hours=3),
+        "payload": {"start_lat": 1.0, "start_lon": 103.0, "point_count": 40, "path_m": 9000.0},
+        "linked_event_ids": [_event_id(f"earlier-{i}") for i in range(40)],
+    }
+    # New fixes widen an episode whose path this batch cannot reconstruct.
+    _, _, widened, saved = await _project_capturing(rows, stored=stored)
+    assert widened[0].payload["path_m"] is None
+    assert saved[_ENDPOINT]["path_m"] is None
+
+    # An exact replay contributes nothing new: the stored path stands.
+    replay = {
+        **stored,
+        "linked_event_ids": [
+            *stored["linked_event_ids"],
+            *(_event_id(r["idempotency_key"]) for r in rows),
+        ],
+    }
+    _, _, replayed, saved = await _project_capturing(rows, stored=replay)
+    assert replayed[0].payload["path_m"] == 9000.0
+    # The stored episode runs past this batch, so its tail is not ours to continue from.
+    assert saved[_ENDPOINT]["path_m"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_forgotten_source_is_never_projected_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A tombstoned raw source (replayed webhook, reset cursor, wider horizon) stays forgotten."""
+    from tests.chronicler.test_projection_coverage import _Tables, digest_for
+
+    forgotten = "connectors.owntracks_points:walk-1"
+
+    async def _forgotten(_conn: object, source_ref: str) -> bool:
+        return source_ref == forgotten
+
+    rows = _walk_rows(range(3))
+    # A fix two hours on closes the first trip, so its rows are covered, not held open.
+    rows.append(
+        _location_row(
+            ts=_NOW + timedelta(hours=2), lat=_WALK[4][0], lon=_WALK[4][1], idempotency_key="later"
+        )
+    )
+    for row in rows:
+        row.update(retention_at=row["ts"], content_digest=digest_for(row["id"]))
+    tables = _Tables()
+    seen: dict[str, list[Any]] = {"observe": [], "record_event": [], "hold": []}
+
+    class _Ledger(ProjectionCoverage):
+        def observe(self, row: Mapping[str, Any]) -> bool:
+            seen["observe"].append(row["id"])
+            return super().observe(row)
+
+        def record_event(self, row: Mapping[str, Any], event_id: Any) -> None:
+            seen["record_event"].append(row["id"])
+            super().record_event(row, event_id)
+
+        def hold(self, raw_source_id: Any, carry_key: str) -> None:
+            seen["hold"].append(raw_source_id)
+            super().hold(raw_source_id, carry_key)
+
+        async def flush(self, conn: Any) -> FlushSummary:
+            return await super().flush(tables)
+
+    with (
+        patch(
+            "butlers.chronicler.adapters.owntracks.owntracks_point_forgotten",
+            side_effect=_forgotten,
+        ),
+        patch("butlers.chronicler.adapters.owntracks.ProjectionCoverage", _Ledger),
+        caplog.at_level(logging.DEBUG),
+    ):
+        result, events, episodes, _ = await _project_capturing(rows)
+
+    assert [e.payload["idempotency_key"] for e in events] == ["walk-0", "walk-2", "later"]
+    # The run's counters count only what it wrote; the refusal has its own counter.
+    assert (result.rows_projected, result.point_events) == (3, 3)
+    assert result.rows_refused_forgotten == 1
+    assert episodes[0].payload["point_count"] == 2
+    assert episodes[0].payload["path_m"] == round(_walk_path([0, 2]), 1)
+
+    # Fail-closed: the refused row is neither covered nor held, so nothing claims it projected,
+    # while the rest of the batch is covered as usual.
+    refused_id = rows[1]["id"]
+    assert all(refused_id not in ids for ids in seen.values())
+    assert seen["record_event"] == [rows[0]["id"], rows[2]["id"], rows[3]["id"]]
+    assert refused_id not in tables.coverage and refused_id not in tables.open
+    assert {tables.coverage[r["id"]]["disposition"] for r in (rows[0], rows[2])} == {"projected"}
+    assert rows[3]["id"] in tables.open
+
+    # Observable as a count only. Warnings are persisted with the job result, so neither they
+    # nor the logs may carry anything that re-identifies the fix: its ref, key, timestamp,
+    # coordinates, or a hash of any of them.
+    (warning,) = [w for w in result.warnings if "forgotten" in w]
+    assert warning == "OwnTracks forgotten sources not projected again: 1."
+    refused_ts = rows[1]["ts"]
+    identifying = (
+        forgotten,
+        "walk-1",
+        str(int(refused_ts.timestamp())),
+        refused_ts.isoformat(),
+        str(_WALK[1][0]),
+        str(_WALK[1][1]),
+        "sha256",
+    )
+    emitted = [*result.warnings, *(r.getMessage() for r in caplog.records)]
+    assert any("refused 1 forgotten" in line for line in emitted)
+    assert not [(t, line) for line in emitted for t in identifying if t in line]

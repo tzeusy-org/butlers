@@ -1,0 +1,23 @@
+{
+  "kind": "calendar#event",
+  "etag": "\"3400000000000004\"",
+  "id": "synthwlcustom0001",
+  "status": "confirmed",
+  "created": "2026-06-20T08:00:00.000Z",
+  "updated": "2026-06-20T08:00:00.000Z",
+  "summary": "Client site",
+  "creator": {"email": "owner@example.com", "self": true},
+  "organizer": {"email": "owner@example.com", "self": true},
+  "start": {"dateTime": "2026-07-03T13:00:00+08:00", "timeZone": "Asia/Singapore"},
+  "end": {"dateTime": "2026-07-03T18:00:00+08:00", "timeZone": "Asia/Singapore"},
+  "transparency": "transparent",
+  "visibility": "public",
+  "iCalUID": "synthwlcustom0001@example.com",
+  "sequence": 0,
+  "reminders": {"useDefault": false},
+  "eventType": "workingLocation",
+  "workingLocationProperties": {
+    "type": "customLocation",
+    "customLocation": {"label": "\u0007 Client\u0000 site "}
+  }
+}

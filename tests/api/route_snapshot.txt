@@ -379,6 +379,8 @@ OP GET /api/settings/models/{entry_id}/failures e5a792046b31
 OP GET /api/settings/models/{entry_id}/usage 13da3e017c84
 OP GET /api/settings/pricing 5077651a7ffc
 OP GET /api/settings/providers 040698b58aad
+OP GET /api/settings/public-mcp 5b7c6a3435a0
+OP GET /api/settings/public-mcp/summary 4f16c8e0034a
 OP GET /api/spend e8f30ea1ab79
 OP GET /api/spend/breakdown 990d588d6f1c
 OP GET /api/spend/by-schedule f07d9521cf50
@@ -677,6 +679,7 @@ OP PUT /api/settings/models/{entry_id} 27ec6d7de044
 OP PUT /api/settings/models/{entry_id}/limits 4399a2a4d43e
 OP PUT /api/settings/models/{entry_id}/priority cb0e609b52f0
 OP PUT /api/settings/providers/{provider_type} 21facfa016dc
+OP PUT /api/settings/public-mcp/{domain} 35fd0bd37831
 OP PUT /api/spend/ceiling 93d1ce5550ad
 OP PUT /api/spend/rules/{rule_id} e73c3f9bd048
 OP PUT /api/steam/accounts/{account_id}/primary cacf4e1dbd8c
@@ -1050,6 +1053,8 @@ ROUTE APIRoute GET '/api/settings/models/{entry_id}/failures' name=get_model_fai
 ROUTE APIRoute GET '/api/settings/models/{entry_id}/usage' name=get_token_usage op=get_token_usage_api_settings_models__entry_id__usage_get tags=model-catalog schema=True
 ROUTE APIRoute GET '/api/settings/pricing' name=get_model_pricing op=get_model_pricing_api_settings_pricing_get tags=pricing schema=True
 ROUTE APIRoute GET '/api/settings/providers' name=list_providers op=list_providers_api_settings_providers_get tags=provider-settings schema=True
+ROUTE APIRoute GET '/api/settings/public-mcp' name=get_public_mcp_controls op=get_public_mcp_controls_api_settings_public_mcp_get tags=settings-public-mcp schema=True
+ROUTE APIRoute GET '/api/settings/public-mcp/summary' name=get_public_mcp_summary op=get_public_mcp_summary_api_settings_public_mcp_summary_get tags=settings-public-mcp schema=True
 ROUTE APIRoute GET '/api/spend' name=get_cost_summary op=get_cost_summary_api_spend_get tags=spend schema=True
 ROUTE APIRoute GET '/api/spend/breakdown' name=get_spend_breakdown op=get_spend_breakdown_api_spend_breakdown_get tags=spend schema=True
 ROUTE APIRoute GET '/api/spend/by-schedule' name=get_costs_by_schedule op=get_costs_by_schedule_api_spend_by_schedule_get tags=spend schema=True
@@ -1346,6 +1351,7 @@ ROUTE APIRoute PUT '/api/settings/models/{entry_id}' name=update_catalog_entry o
 ROUTE APIRoute PUT '/api/settings/models/{entry_id}/limits' name=upsert_token_limits op=upsert_token_limits_api_settings_models__entry_id__limits_put tags=model-catalog schema=True
 ROUTE APIRoute PUT '/api/settings/models/{entry_id}/priority' name=update_model_priority op=update_model_priority_api_settings_models__entry_id__priority_put tags=model-catalog schema=True
 ROUTE APIRoute PUT '/api/settings/providers/{provider_type}' name=update_provider op=update_provider_api_settings_providers__provider_type__put tags=provider-settings schema=True
+ROUTE APIRoute PUT '/api/settings/public-mcp/{domain}' name=set_public_mcp_control op=set_public_mcp_control_api_settings_public_mcp__domain__put tags=settings-public-mcp schema=True
 ROUTE APIRoute PUT '/api/spend/ceiling' name=update_spend_ceiling op=update_spend_ceiling_api_spend_ceiling_put tags=spend schema=True
 ROUTE APIRoute PUT '/api/spend/rules/{rule_id}' name=update_spend_rule op=update_spend_rule_api_spend_rules__rule_id__put tags=spend schema=True
 ROUTE APIRoute PUT '/api/steam/accounts/{account_id}/primary' name=set_primary_steam_account op=set_primary_steam_account_api_steam_accounts__account_id__primary_put tags=steam schema=True
@@ -1520,6 +1526,9 @@ SCHEMA ApiResponse_ProjectDetail_ 41bfd56c3e2e
 SCHEMA ApiResponse_ProjectionView_ 64e8b26cc857
 SCHEMA ApiResponse_PromptVersion_ e180b0cbc1c6
 SCHEMA ApiResponse_ProviderConfig_ 66befccd4e00
+SCHEMA ApiResponse_PublicMcpControl_ 4af904ea5ed5
+SCHEMA ApiResponse_PublicMcpControls_ 867c50184737
+SCHEMA ApiResponse_PublicMcpSummary_ d1f9d23801c4
 SCHEMA ApiResponse_QaCaseDossier_ b5096100962b
 SCHEMA ApiResponse_QaDismissal_ fac40485167b
 SCHEMA ApiResponse_QaFindingRecord_ dc4b99284e9b
@@ -2292,6 +2301,10 @@ SCHEMA ProviderConfig 8a7d5798e252
 SCHEMA ProviderConfigCreate e5aa3f81d511
 SCHEMA ProviderConfigUpdate 309e8397594a
 SCHEMA ProviderMetadata e0380cf70cde
+SCHEMA PublicMcpControl 374c4d5eb11e
+SCHEMA PublicMcpControlWrite 7133d5dbfcc6
+SCHEMA PublicMcpControls 244c8128cc77
+SCHEMA PublicMcpSummary 2b840c550458
 SCHEMA QaActiveBreakdown d40c17eb9585
 SCHEMA QaActiveDismissal 3ff14391ba8c
 SCHEMA QaAllTimeStats 8289d813f2fd

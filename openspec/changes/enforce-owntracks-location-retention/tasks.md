@@ -29,4 +29,10 @@
 ## 3. Summaries and UI (later slices)
 
 - [ ] 3.1 Cumulative movement `path_m`, ~150 m spatial coarsening, tombstones and the forgotten-row receipt.
+  Partial (deletes nothing): owntracks.points records `path_m` (null when not exactly
+  rebuildable); `butlers.chronicler.spatial_precision` scheme `eqcell-150m-v1`;
+  `chronicler_035` append-only receipts and tombstones with `location_forgetting.record_forgetting`
+  (no caller yet); the point projection refuses a tombstoned source. Remaining: applying the
+  coarsening to place/movement summaries, carryover and caches, and the episode/evidence-chain
+  readers of tombstones, all with raw expiry (2.3).
 - [ ] 3.2 Map plaque and source-strip states. Raw-copy cohort coverage.

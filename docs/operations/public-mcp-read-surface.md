@@ -503,6 +503,46 @@ when that deploy's release fails after its migrations; if the deploy prints `pub
 step FAILED`, the purge did not happen, so fix the cause and rerun
 `scripts/k8s/public-mcp-owner-step.sh dev <deployed tag>` before re-enabling.
 
+### Kill-switch layers (task 5.6)
+
+The owner flips the normal switch from the dashboard or the CLI; the rest are break glass. Nothing
+here is instant except the last two rows: **never promise immediate effect from the first two.**
+
+| Layer | Flip | Reaches | Latency |
+| --- | --- | --- | --- |
+| `mcp_surface.controls` row per domain, plus `all` (primary) | Dashboard `/settings/public-mcp` (owner passkey session), or `butlers public-mcp disable <domain\|all>` | The public server by replication; the Relationship proposal importer reads the primary | Public server: within 15 minutes (the D17 stale cutoff). Importer: its next pass |
+| `disabled_domains` key of ConfigMap `butlers-public-mcp-switches` in `butlers-public-<env>` | `kubectl` or Helm | The public server only | Re-read every 10 s; no replication |
+| Canary latch | The detector | Every tool except `describe` | Until the pod restarts |
+| Scale the public Deployment to 0 | `kubectl` | The whole surface | Immediate |
+
+Domains are `all`, `knowledge`, `relationship`, `time`, `travel`, `finance`, `health` and
+`proposals`; `all` turns off every data tool and leaves `describe`. Disabling and enabling are one
+step each, with no unlock.
+
+**Dashboard.** `GET /api/settings/public-mcp` lists the eight rows with state, change time and
+actor; `GET /api/settings/public-mcp/summary` feeds the Settings console panel (how many of the
+seven domains are off, and whether `all` is); `PUT /api/settings/public-mcp/{domain}` with
+`{"state": "enabled"|"disabled"}` writes one row. The write needs the owner's verified dashboard
+session and answers 401 without one, before any database work; an unknown domain is 404. The actor
+recorded is `owner:dashboard` and cannot be supplied by the caller.
+
+**CLI.** `butlers public-mcp disable <domain|all>` and `enable <domain|all>` (optional
+`--database`, default `butlers`) write the same row with actor `owner:cli`. They connect as the
+migration principal from the `POSTGRES_*` / `DATABASE_URL` environment, the same login as
+`public-mcp reconcile` and as the dashboard API. A repeated write changes nothing and keeps the
+original time and actor. Output restates the replication delay and the break-glass path.
+
+**Privilege.** `mcp_surface.controls` is owned by the migration principal, which is the dashboard
+and CLI login, so the write needs no grant and no definer function. No butler runtime role can
+write it, and only `butler_relationship_rw` can read it (importer). `init-db.sql` adds the private
+`changed_by` column (`NOT NULL DEFAULT 'system'`) to an existing table and rechecks the shape;
+`changed_by` is not in the projection manifest and never replicates. The write is an upsert, so
+a deleted seed row can still be switched off during an incident. `init-db.sql` (3a) must run before
+the new API image or CLI is used, because the `changed_by` column comes from it (every
+`make deploy-dev` does this first). The dashboard login being the migration principal is a
+deployment assumption, not something the API checks; a different login gets a closed 503. The
+console summary reports `missing_rows` so an unseeded table never reads as all-enabled.
+
 ## 7. Teardown and rebuild
 
 **Lands with `bu-y66o00.7`** (task 8.1). On dev, first merge a change that sets

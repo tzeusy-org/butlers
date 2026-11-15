@@ -1,0 +1,19 @@
+{
+  "kind": "calendar#event",
+  "etag": "\"3400000000000006\"",
+  "id": "synthwlnone0001",
+  "status": "confirmed",
+  "created": "2026-06-20T08:00:00.000Z",
+  "updated": "2026-06-20T08:00:00.000Z",
+  "summary": "Working",
+  "creator": {"email": "owner@example.com", "self": true},
+  "organizer": {"email": "owner@example.com", "self": true},
+  "start": {"date": "2026-07-07"},
+  "end": {"date": "2026-07-08"},
+  "transparency": "transparent",
+  "visibility": "public",
+  "iCalUID": "synthwlnone0001@example.com",
+  "sequence": 0,
+  "reminders": {"useDefault": false},
+  "eventType": "workingLocation"
+}

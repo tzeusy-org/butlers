@@ -41,6 +41,17 @@ meeting the producer clears both. It SHALL NOT write the legacy `away` signal
 from an out-of-office block is reserved to an owner-confirmed proposal. A
 typed `focusTime` event SHALL assert `focused` regardless of its title.
 
+A working-location declaration is persisted (core_341) and readable through a
+typed read. The producer SHALL NOT publish it as a context signal. Publishing it
+as a signal is deferred to a perception kind (`owner.work_location`) at the
+M7/.21 switch. The typed read (`current_working_location`) SHALL write nothing.
+It SHALL select among active, confirmed, not butler-generated, not self-declined
+working-location events that carry a normalized location. It SHALL prefer timed
+over all-day, then the latest start, then the shortest duration, then the
+smallest event id. It SHALL bound the answer to the owner-local day: the earlier
+of the event end and the next local midnight in the owner's zone, using real
+zone boundaries across daylight-saving changes.
+
 ID: REQ-context-bus-017
 Source: RFC 0009 §Signal Producers (calendar → meeting/focused); bu-s11n0s.4 attendance and event-type outcomes; bu-u33sb7
 Scope: v1-mandatory
@@ -113,6 +124,15 @@ Scope: v1-mandatory
 
 - **WHEN** the only active event is a working-location event
 - **THEN** the producer does not set `meeting` or `focused` from it
+
+#### Scenario: Working location is a typed read, not a signal
+
+- **WHEN** an all-day home-office declaration and a timed custom-location
+  declaration are both active
+- **THEN** the typed read returns the timed declaration's type and label, bounded
+  by its own end
+- **AND** a multi-day declaration is bounded by the next owner-local midnight
+- **AND** no context signal is written for either
 
 #### Scenario: Typed focus time asserts focused
 
