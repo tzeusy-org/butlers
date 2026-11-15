@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -1526,7 +1527,9 @@ async def test_merging_into_a_stored_episode_keeps_only_a_replayed_path() -> Non
 
 
 @pytest.mark.asyncio
-async def test_a_forgotten_source_is_never_projected_again() -> None:
+async def test_a_forgotten_source_is_never_projected_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A tombstoned raw source (replayed webhook, reset cursor, wider horizon) stays forgotten."""
     from tests.chronicler.test_projection_coverage import _Tables, digest_for
 
@@ -1569,6 +1572,7 @@ async def test_a_forgotten_source_is_never_projected_again() -> None:
             side_effect=_forgotten,
         ),
         patch("butlers.chronicler.adapters.owntracks.ProjectionCoverage", _Ledger),
+        caplog.at_level(logging.DEBUG),
     ):
         result, events, episodes, _ = await _project_capturing(rows)
 
@@ -1588,6 +1592,21 @@ async def test_a_forgotten_source_is_never_projected_again() -> None:
     assert {tables.coverage[r["id"]]["disposition"] for r in (rows[0], rows[2])} == {"projected"}
     assert rows[3]["id"] in tables.open
 
-    # Observable as a count only: no source, key or coordinate.
+    # Observable as a count only. Warnings are persisted with the job result, so neither they
+    # nor the logs may carry anything that re-identifies the fix: its ref, key, timestamp,
+    # coordinates, or a hash of any of them.
     (warning,) = [w for w in result.warnings if "forgotten" in w]
     assert warning == "OwnTracks forgotten sources not projected again: 1."
+    refused_ts = rows[1]["ts"]
+    identifying = (
+        forgotten,
+        "walk-1",
+        str(int(refused_ts.timestamp())),
+        refused_ts.isoformat(),
+        str(_WALK[1][0]),
+        str(_WALK[1][1]),
+        "sha256",
+    )
+    emitted = [*result.warnings, *(r.getMessage() for r in caplog.records)]
+    assert any("refused 1 forgotten" in line for line in emitted)
+    assert not [(t, line) for line in emitted for t in identifying if t in line]
