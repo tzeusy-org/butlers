@@ -143,6 +143,7 @@ from butlers.chronicler.confidence import (
     derive_confidence,
     evidence_refs_from_event_ids,
 )
+from butlers.chronicler.location_forgetting import owntracks_point_forgotten
 from butlers.chronicler.models import (
     Episode,
     Layer,
@@ -788,6 +789,10 @@ class OwnTracksPointAdapter(ProjectionAdapter):
     ) -> PointEvent | None:
         idempotency_key = row["idempotency_key"]
         source_ref = f"{_EVIDENCE_TABLE}:{idempotency_key}"
+        # Resurrection floor (chronicler_035): a forgotten source is never written again,
+        # whatever re-delivers it, so it also joins no movement.
+        if await owntracks_point_forgotten(chronicler_pool, source_ref):
+            return None
         existing = await get_owntracks_point(chronicler_pool, source_ref)
         if existing is not None:
             if existing.tombstone_at is not None:

@@ -1520,3 +1520,21 @@ async def test_merging_into_a_stored_episode_keeps_only_a_replayed_path() -> Non
     assert replayed[0].payload["path_m"] == 9000.0
     # The stored episode runs past this batch, so its tail is not ours to continue from.
     assert saved[_ENDPOINT]["path_m"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_forgotten_source_is_never_projected_again() -> None:
+    """A tombstoned raw source (replayed webhook, reset cursor, wider horizon) stays forgotten."""
+    forgotten = "connectors.owntracks_points:walk-1"
+
+    async def _forgotten(_conn: object, source_ref: str) -> bool:
+        return source_ref == forgotten
+
+    with patch(
+        "butlers.chronicler.adapters.owntracks.owntracks_point_forgotten", side_effect=_forgotten
+    ):
+        _, events, episodes, _ = await _project_capturing(_walk_rows(range(3)))
+
+    assert [e.payload["idempotency_key"] for e in events] == ["walk-0", "walk-2"]
+    assert episodes[0].payload["point_count"] == 2
+    assert episodes[0].payload["path_m"] == round(_walk_path([0, 2]), 1)
