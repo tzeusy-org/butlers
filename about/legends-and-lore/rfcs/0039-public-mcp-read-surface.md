@@ -1865,10 +1865,13 @@ state lives on the primary, in `relationship.external_fact_proposals`
    keeps `origin` NULL. It is called with
    `tool_name = 'relationship_assert_fact'`, the stored arguments,
    `deduplication_key = 'external_mcp:<proposal_id>'`, deterministic `why`
-   and `agent_summary` templates, `evidence = [{kind: "external_mcp",
-   client: <cid label>, url_host: <scheme and host of evidence_url>,
-   url_sha256: <SHA-256 of the full URL>}]` and
-   `expires_at = now + 14 days`. The full evidence URL and the note stay only
+   and `agent_summary` templates, `expires_at = now + 14 days` and
+   digest-only evidence as typed `{type: "text", ref, note}` items, the
+   shape both the dashboard dossier and the Relationship evidence ledger
+   accept: `ref = "external_mcp:client=<cid label>"`,
+   `"external_mcp:url_host=<scheme://host of evidence_url>"` and
+   `"external_mcp:url_sha256=<SHA-256 of the full URL>"`. No path, query or
+   userinfo of the URL is stored. The full evidence URL and the note stay only
    in `relationship.external_fact_proposals`, and the dashboard card renders
    them from there. [Observed] The Relationship butler loads the approvals
    module (`roster/relationship/butler.toml:168`), whose

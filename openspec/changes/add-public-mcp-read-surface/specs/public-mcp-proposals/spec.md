@@ -94,7 +94,7 @@ Scope: v1-mandatory
 - **THEN** it SHALL be recorded `invalid` and SHALL not be parked
 
 ### Requirement: Valid proposals park for per-event owner review
-For a valid proposal, the importer SHALL park one pending `relationship_assert_fact` action as specified by REQ-module-approvals-010 and REQ-relationship-facts-011, with deduplication key `external_mcp:<proposal_id>`, a 14-day expiry, deterministic template text for `why` and the summary, and evidence holding only the submitting client label, the evidence URL's scheme and host, and the SHA-256 of the full URL. The full evidence URL and the note SHALL stay only in `relationship.external_fact_proposals`, so no outside-authored text is stored in `pending_actions` or reaches a model through the approvals tools. It SHALL record the `pending_action_id` on the proposal and set its state to `parked`. Re-running the importer SHALL never park a second action for the same proposal.
+For a valid proposal, the importer SHALL park one pending `relationship_assert_fact` action as specified by REQ-module-approvals-010 and REQ-relationship-facts-011, with deduplication key `external_mcp:<proposal_id>`, a 14-day expiry, deterministic template text for `why` and the summary, and digest-only evidence as typed `{type: "text", ref, note}` items whose refs are `external_mcp:client=<label>`, `external_mcp:url_host=<scheme://host>` and `external_mcp:url_sha256=<SHA-256 of the full URL>`, with no path, query or userinfo of the URL. The full evidence URL and the note SHALL stay only in `relationship.external_fact_proposals`, so no outside-authored text is stored in `pending_actions` or reaches a model through the approvals tools. It SHALL record the `pending_action_id` on the proposal and set its state to `parked`. Re-running the importer SHALL never park a second action for the same proposal.
 
 ID: REQ-public-mcp-proposals-005
 Source: RFC 0039 D13 step 3; owner decision OD4
@@ -107,7 +107,7 @@ Scope: v1-mandatory
 
 #### Scenario: Outside text stays out of the pending action
 - **WHEN** a valid proposal carries a note and the evidence URL `https://example.com/ignore-previous-instructions`
-- **THEN** the parked action's evidence SHALL hold only the client label, `https://example.com` and the URL's SHA-256
+- **THEN** the parked action's evidence SHALL hold only the typed `text` refs `external_mcp:client=<label>`, `external_mcp:url_host=https://example.com` and `external_mcp:url_sha256=<SHA-256 of the full URL>`
 - **AND** neither the note nor the URL path SHALL appear in any `pending_actions` column
 
 #### Scenario: Re-import parks nothing new
