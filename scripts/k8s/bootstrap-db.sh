@@ -49,6 +49,10 @@ login="$(kubectl -n "$APP_NAMESPACE" get secret butlers-bws \
 
 echo "bootstrap-db: applying init-db.sql from $(git -C "$ROOT" rev-parse --short=12 "$COMMIT")" \
   "to $DB_NAME on $primary"
+# The pod spools all of stdin before psql starts. Fed straight to `psql -f -`, a guard stop
+# leaves the rest of a large script unread and `kubectl exec -i` blocks forever writing it.
+# shellcheck disable=SC2016 # expands in the pod, not here
+PSQL_SPOOL='f=$(mktemp) || exit 2; cat >"$f" || { rm -f "$f"; exit 2; }; psql "$@" -f "$f"; rc=$?; rm -f "$f"; exit $rc'
 printf '%s\n' "$sql" | kubectl -n "$PG_NAMESPACE" exec -i "$primary" -c postgres -- \
   env PGOPTIONS="-c butlers.connecting_user=$login -c client_min_messages=warning" \
-  psql -X -q -v ON_ERROR_STOP=1 -d "$DB_NAME" -f -
+  sh -c "$PSQL_SPOOL" psql-spool -X -q -v ON_ERROR_STOP=1 -d "$DB_NAME"
