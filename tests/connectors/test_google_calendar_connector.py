@@ -29,6 +29,8 @@ from butlers.connectors.google_calendar import (
     _parse_event_start,
     build_event_envelope,
     build_starting_soon_envelope,
+    scan_starting_soon,
+    scan_starting_soon_on_restart,
 )
 from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.ingestion_policy import PolicyDecision
@@ -244,6 +246,60 @@ async def test_check_starting_soon_emits_spec_envelope(
         await runtime2._check_starting_soon()
         await runtime2._check_starting_soon()
     assert len(again) == 1
+
+
+def _soon_event(event_id: str, event_type: str | None) -> tuple[dict, datetime]:
+    start_dt = datetime.now(UTC) + timedelta(minutes=14)
+    event = {
+        "id": event_id,
+        "summary": event_id,
+        "status": "confirmed",
+        "start": {"dateTime": start_dt.isoformat()},
+        "end": {"dateTime": (start_dt + timedelta(minutes=30)).isoformat()},
+    }
+    if event_type is not None:
+        event["eventType"] = event_type
+    return event, start_dt
+
+
+async def test_check_starting_soon_skips_out_of_office_and_working_location(
+    account_config: CalendarAccountConfig,
+) -> None:
+    """bu-s11n0s.4: a declared status is not a meeting, so it never gets a starting-soon notice."""
+    runtime = CalendarConnectorRuntime(account_config)
+    for event_id, event_type in (
+        ("ooo", "outOfOffice"),
+        ("location", "workingLocation"),
+        ("focus", "focusTime"),
+        ("meeting", None),
+    ):
+        runtime._upcoming_events[event_id] = _soon_event(event_id, event_type)
+    submitted: list[dict] = []
+
+    async def _capture(env: dict) -> None:
+        submitted.append(env)
+
+    with patch.object(runtime, "_submit_to_ingest_api", side_effect=_capture):
+        await runtime._check_starting_soon()
+
+    assert {env["event"]["external_event_id"] for env in submitted} == {
+        "starting_soon:focus",
+        "starting_soon:meeting",
+    }
+
+
+@pytest.mark.parametrize("scan", [scan_starting_soon, scan_starting_soon_on_restart])
+def test_starting_soon_scans_skip_status_events(scan) -> None:
+    events = [
+        _soon_event(event_id, event_type)[0]
+        for event_id, event_type in (
+            ("ooo", "outOfOffice"),
+            ("location", "workingLocation"),
+            ("meeting", "default"),
+        )
+    ]
+    envelopes = scan(events, StartingSoonSeenSet(), lead_minutes=15, endpoint_identity=_ENDPOINT)
+    assert [env["event"]["external_event_id"] for env in envelopes] == ["starting_soon:meeting"]
 
 
 async def test_blocked_event_buffered_not_ingested(
