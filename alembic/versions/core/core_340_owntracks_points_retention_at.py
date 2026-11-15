@@ -1,11 +1,8 @@
 """OwnTracks points: an immutable per-row retention clock (bu-s11n0s.7, slice 2).
 
 Revision ID: core_340
-Revises: core_338
+Revises: core_339
 Create Date: 2026-11-15 00:00:00.000000
-
-Chain note: ``core_339`` is claimed by an unmerged PR. Whichever core head lands first, re-point
-this ``down_revision`` at it before merging so the chain keeps exactly one head.
 
 Raw OwnTracks fixes are promised a declared retention horizon
 (``butlers.chronicler.location_retention``). Expiry needs a per-row age that nobody can move
@@ -58,7 +55,7 @@ from time import monotonic, sleep
 from alembic import op
 
 revision = "core_340"
-down_revision = "core_338"
+down_revision = "core_339"
 branch_labels = None
 depends_on = None
 

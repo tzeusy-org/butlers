@@ -59,7 +59,7 @@ def head_url(fresh_db) -> str:
 
 @pytest.fixture
 def pre_340_url(fresh_db) -> str:
-    return fresh_db("core", revisions={"core": "core_338"})
+    return fresh_db("core", revisions={"core": "core_339"})
 
 
 _CASES = [
@@ -196,7 +196,7 @@ def test_first_run_backfills_in_pages_and_later_schema_runs_write_nothing(
     """
     db_url = create_migration_db(postgres_container, migration_db_name())
     first = _build_alembic_config(db_url, chains=["core"], target_schema="general")
-    command.upgrade(first, "core_338")
+    command.upgrade(first, "core_339")
     engine = create_engine(db_url)
     try:
         with engine.begin() as connection:
