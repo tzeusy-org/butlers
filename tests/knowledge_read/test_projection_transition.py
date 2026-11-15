@@ -251,7 +251,7 @@ def test_episode_search_columns_are_declared_once_for_the_view_the_index_and_the
     program = render_owner_program(target)
     trigram = program.index("CREATE EXTENSION IF NOT EXISTS pg_trgm")
     for column in declared:
-        assert f"{column.expression} AS \"{column.name}\"" in program
+        assert f'{column.expression} AS "{column.name}"' in program
         create = (
             f'CREATE INDEX IF NOT EXISTS "{column.index}" ON "chronicler"."episodes_public" '
             f"USING gin (({column.expression}){' ' + column.opclass if column.opclass else ''})"
