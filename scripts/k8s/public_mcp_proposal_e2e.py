@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Live dev run of the three public MCP proposal paths (task 5.7, live half).
 
-NOT run in CI and not run until the public MCP server is deployed (task 4.x / bu-y66o00.6).
+NOT run in CI and not run until the public MCP server is deployed (bu-y66o00.6) and the typed review
+provides the displayed call (bu-y66o00.9). The live leg is tracked in bu-y66o00.48.
 The hermetic twin is tests/integration/test_public_mcp_proposal_e2e.py. The only writes are
 synthetic proposals and the owner decisions on them; use synthetic entities, never personal data.
 Secrets are read from files named on the command line and never printed or put in a state file.
@@ -185,7 +186,7 @@ def decide_one(base: str, token_file: Path, path: str, verb: str, item: dict[str
         if body_or_none is None:
             return (
                 f"BLOCKED approve {path}: action {action_id} has no call preview (Open only), "
-                "so the dashboard approve route refuses it; see the runbook",
+                "so the dashboard approve route refuses it; blocked on bu-y66o00.9, tracked in bu-y66o00.48",
                 False,
             )
         body = body_or_none

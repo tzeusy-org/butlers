@@ -612,7 +612,7 @@ Hermetic: `tests/integration/test_public_mcp_proposal_e2e.py` drives `propose_fa
 real host, one importer pass, an owner approval plus the shared executor, an owner rejection and an
 expiry, then reads `applied`, `owner_rejected` and `expired` through `fetch("proposal:<id>")`.
 
-Live dev run, **pending the `bu-y66o00.6` deploy** (not run yet): `scripts/k8s/public_mcp_proposal_e2e.py`
+Live dev run, **live leg tracked in `bu-y66o00.48`**, blocked on the `bu-y66o00.6` deploy and on `bu-y66o00.9` (the typed review that provides the displayed call; not run yet): `scripts/k8s/public_mcp_proposal_e2e.py`
 with three synthetic entity pairs, tokens read from files:
 
 ```bash
