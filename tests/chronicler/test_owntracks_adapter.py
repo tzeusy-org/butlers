@@ -1560,6 +1560,8 @@ async def test_a_forgotten_source_is_never_projected_again() -> None:
         result, events, episodes, _ = await _project_capturing(rows)
 
     assert [e.payload["idempotency_key"] for e in events] == ["walk-0", "walk-2", "later"]
+    # The run's counters count only what it wrote.
+    assert (result.rows_projected, result.point_events) == (3, 3)
     assert episodes[0].payload["point_count"] == 2
     assert episodes[0].payload["path_m"] == round(_walk_path([0, 2]), 1)
 
