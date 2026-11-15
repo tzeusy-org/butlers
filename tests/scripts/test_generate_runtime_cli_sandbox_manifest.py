@@ -164,6 +164,52 @@ def test_package_native_executables_bring_their_shared_libraries(
     assert package / "README.md" not in examined
 
 
+@pytest.mark.parametrize("link_kind", ["directory", "file"])
+def test_package_scan_never_follows_symlinks_out_of_the_package(
+    monkeypatch,
+    tmp_path: Path,
+    link_kind: str,
+) -> None:
+    """bu-kiuh8v.42: a symlink in the package cannot pull an outside ELF into the closure."""
+    module = _manifest_module()
+    package = tmp_path / "node_modules" / "@openai" / "codex"
+    (package / "bin").mkdir(parents=True)
+    launcher = package / "bin" / "codex.js"
+    launcher.write_bytes(b"// launcher without a shebang in this test\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_elf = outside / "codex"
+    outside_elf.write_bytes(b"\x7fELF test-only outside native")
+    if link_kind == "directory":
+        (package / "vendor").symlink_to(outside, target_is_directory=True)
+        linked = package / "vendor" / "codex"
+    else:
+        linked = package / "codex"
+        linked.symlink_to(outside_elf)
+
+    monkeypatch.setattr(module, "_NETWORK_RUNTIME_FILES", ())
+    monkeypatch.setattr(module, "_safe_regular_or_directory", lambda path: path)
+    examined: list[Path] = []
+    leaked = tmp_path / "libleaked.so.1"
+
+    def _ldd(path: Path, *, strict: bool = False) -> tuple[object, ...]:
+        examined.append(path)
+        if path.resolve() == outside_elf:
+            return (module.RuntimeInputBinding(source=leaked, destination=leaked),)
+        return ()
+
+    monkeypatch.setattr(module, "_ldd_dependencies", _ldd)
+
+    assert module._package_elf_files(package) == ()
+    closure = module._runtime_closure(launcher, package)
+
+    assert closure == (
+        module.RuntimeInputBinding(source=package, destination=package),
+        module.RuntimeInputBinding(source=launcher, destination=launcher),
+    )
+    assert linked not in examined and outside_elf not in examined
+
+
 def test_generator_writes_a_non_group_or_world_writable_manifest(tmp_path: Path) -> None:
     """REQ-core-credentials-002: image runtime input discovery is immutable at rest."""
     module = _manifest_module()
