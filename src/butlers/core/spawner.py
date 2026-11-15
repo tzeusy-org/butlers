@@ -2190,8 +2190,8 @@ class Spawner:
         # a hard block regardless of which model resolved (switching models would not
         # bring spend back under budget).  Reuses the quota denial path: a
         # ``quota_skip`` dispatch-attempt row (so the denial is observable in
-        # provenance) plus a failed SpawnerResult.  Fails open inside
-        # check_monthly_ceiling, so a DB/pricing error refuses the dispatch (unavailable).
+        # provenance) plus a failed SpawnerResult.  check_monthly_ceiling fails closed: a
+        # DB/pricing error returns ``unavailable`` and refuses the dispatch.
         # ---------------------------------------------------------------------------
         if catalog_entry_id is not None and self._pool is not None:
             # Consume the concurrently-prefetched ceiling result (kicked off right
