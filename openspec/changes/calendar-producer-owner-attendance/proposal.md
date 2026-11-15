@@ -40,6 +40,9 @@ only through an owner-confirmed M7 proposal.
 
 - `context-bus`: Calendar Producer Provenance Candidate Selection gains the
   owner-attendance exclusion and overlap rule.
+- `calendar-conflict-overcommitment-radar`: declared status events add no
+  day-load hours, while an opaque one still overlaps and chains back to back
+  (`ConflictCandidate.counts_toward_day_load`).
 
 ## Impact
 

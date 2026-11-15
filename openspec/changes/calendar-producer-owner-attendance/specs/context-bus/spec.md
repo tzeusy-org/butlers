@@ -52,6 +52,12 @@ smallest event id. It SHALL bound the answer to the owner-local day: the earlier
 of the event end and the next local midnight in the owner's zone, using real
 zone boundaries across daylight-saving changes.
 
+A failed source read is not absence: the producer SHALL raise before any set
+or clear, leaving earlier signals to their own expiry. Running the whole
+transition in one transaction under a scoped lock is superseded on this
+retiring bus. It belongs to the successor perception writer (CAS with a
+per-slot serializer) at the RFC 0038 switch.
+
 ID: REQ-context-bus-017
 Source: RFC 0009 §Signal Producers (calendar → meeting/focused); bu-s11n0s.4 attendance and event-type outcomes; bu-u33sb7
 Scope: v1-mandatory
@@ -133,6 +139,18 @@ Scope: v1-mandatory
   by its own end
 - **AND** a multi-day declaration is bounded by the next owner-local midnight
 - **AND** no context signal is written for either
+
+#### Scenario: An unreadable calendar changes nothing
+
+- **WHEN** the calendar source read fails while `meeting` is active
+- **THEN** the producer run fails without setting or clearing any signal
+- **AND** the `meeting` row reads back unchanged
+
+#### Scenario: Out-of-office alone holds no insight under meeting
+
+- **WHEN** the only active calendar event is out of office
+- **THEN** the producer writes no `meeting`, and the insight broker's
+  suppression read finds no calendar hold
 
 #### Scenario: Typed focus time asserts focused
 

@@ -213,8 +213,11 @@ owners, without keeping a second engine. Every Calendar package Python file is l
     (timed or all-day, not butler-generated) suppresses `focused` and asserts nothing itself.
     An attended meeting overlapping it still holds `meeting`: the owner's own meeting is the
     stronger signal (people take calls while away). No owner mode is entered.
-  - The conflict radar (overlap, back-to-back, overloaded-day hours) skips both, so they add
-    no day-load hours. A `focusTime` block is still busy time.
+  - In the conflict radar both add zero day-load hours. The candidate carries
+    `counts_toward_day_load=False`, and only the overloaded-day sum reads it. An opaque
+    out-of-office block still overlaps and chains back to back, as any busy time does. A free
+    (transparent) one is skipped by the attendance rule. A `focusTime` block is ordinary busy
+    time.
   - Relationship and email meeting prep, the meeting card, the meeting debrief and the
     connector's starting-soon notices skip both. A prep key left from before an event became
     a status is pruned on the next run, because the keep-set holds only selected events.

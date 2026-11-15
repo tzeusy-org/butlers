@@ -13,6 +13,7 @@ Covers the two halves the bead's acceptance criteria require:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -142,6 +143,19 @@ def test_overloaded_day_detected():
     assert len(overloaded) == 1
     assert overloaded[0].severity == "warning"
     assert "7.0 h" in overloaded[0].summary
+
+
+def test_a_no_day_load_candidate_still_overlaps_but_adds_no_hours():
+    """bu-s11n0s.4 AC D: only the overloaded-day sum reads the flag; the default counts."""
+    assert ConflictCandidate("x", "t", _DAY, _DAY, "UTC").counts_toward_day_load is True
+    meetings = [_c(start=_DAY + timedelta(hours=i), minutes=60, entry_id=f"e{i}") for i in range(5)]
+    status = replace(_c(start=_DAY, minutes=8 * 60, entry_id="ooo"), counts_toward_day_load=False)
+    issues = detect_conflict_issues([*meetings, status], overloaded_day_hours=6.0)
+    assert not [i for i in issues if i.kind == "overloaded_day"]
+    assert any(i.kind == "overlap" and "ooo" in {ref.entry_id for ref in i.events} for i in issues)
+    counted = replace(status, counts_toward_day_load=True)
+    issues = detect_conflict_issues([*meetings, counted], overloaded_day_hours=6.0)
+    assert [i for i in issues if i.kind == "overloaded_day"]
 
 
 def test_overloaded_day_under_budget_clean():
@@ -727,8 +741,8 @@ async def test_conflicts_endpoint_keeps_accepted_tentative_and_other_attendee_de
 
 
 @pytest.mark.parametrize("event_type", ["outOfOffice", "workingLocation"])
-async def test_conflicts_endpoint_excludes_status_events_from_every_detector(app, event_type):
-    """bu-s11n0s.4: an out-of-office or working-location block is a status, not busy time."""
+async def test_an_opaque_status_event_still_conflicts_but_adds_no_day_load(app, event_type):
+    """bu-s11n0s.4 AC D: a status adds zero meeting-hours; overlap/back-to-back are kept."""
     meeting = _ws_row(entry_id="a", title="Design review", start=_DAY, minutes=3 * 60)
     status = _ws_row(
         entry_id="b",
@@ -737,11 +751,47 @@ async def test_conflicts_endpoint_excludes_status_events_from_every_detector(app
         minutes=8 * 60,
     )
     status["event_type"] = event_type
+    # Back to back with the end of the status block.
+    after = _ws_row(entry_id="c", title="Wrap-up", start=_DAY + timedelta(minutes=30 + 8 * 60 + 5))
+    app, _ = _build_app(app, workspace_rows={"general": [meeting, status, after]})
+
+    data = (await _get(app)).json()["data"]
+
+    kinds = [issue["kind"] for issue in data["issues"]]
+    overlap = next(issue for issue in data["issues"] if issue["kind"] == "overlap")
+    assert {ref["entry_id"] for ref in overlap["events"]} == {"a", "b"}
+    chain = next(issue for issue in data["issues"] if issue["kind"] == "back_to_back")
+    assert {ref["entry_id"] for ref in chain["events"]} >= {"b", "c"}
+    # 3h + 1h of meetings: the status block's 8 hours never make the day overloaded.
+    assert "overloaded_day" not in kinds
+
+
+@pytest.mark.parametrize("event_type", ["default", "someFutureType"])
+async def test_ordinary_and_unknown_types_still_count_toward_day_load(app, event_type):
+    meeting = _ws_row(entry_id="a", title="Design review", start=_DAY, minutes=3 * 60)
+    other = _ws_row(entry_id="b", title="Workshop", start=_DAY + timedelta(hours=4), minutes=4 * 60)
+    other["event_type"] = event_type
+    app, _ = _build_app(app, workspace_rows={"general": [meeting, other]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert "overloaded_day" in [issue["kind"] for issue in data["issues"]]
+
+
+async def test_a_transparent_working_location_is_neither_busy_nor_day_load(app):
+    meeting = _ws_row(entry_id="a", title="Design review", start=_DAY, minutes=3 * 60)
+    status = _ws_row(
+        entry_id="b",
+        title="Office",
+        start=_DAY + timedelta(minutes=30),
+        minutes=8 * 60,
+        event_metadata={"source_type": "provider_event", "transparency": "transparent"},
+    )
+    status["event_type"] = "workingLocation"
     app, _ = _build_app(app, workspace_rows={"general": [meeting, status]})
 
     data = (await _get(app)).json()["data"]
 
-    # No overlap with the meeting, and its 8 hours add nothing to day load.
     assert data["issues_available"] is True
     assert data["issues"] == []
 
