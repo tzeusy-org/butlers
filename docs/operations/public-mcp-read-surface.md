@@ -606,6 +606,26 @@ again later.
 `imported` while the switch is on means its park failed: the pass log names the proposal id and the
 error class only.
 
+### End-to-end proposal run (task 5.7)
+
+Hermetic: `tests/integration/test_public_mcp_proposal_e2e.py` drives `propose_fact` through the
+real host, one importer pass, an owner approval plus the shared executor, an owner rejection and an
+expiry, then reads `applied`, `owner_rejected` and `expired` through `fetch("proposal:<id>")`.
+
+Live dev run, **pending the `bu-y66o00.6` deploy** (not run yet): `scripts/k8s/public_mcp_proposal_e2e.py`
+with three synthetic entity pairs, tokens read from files:
+
+```bash
+public_mcp_proposal_e2e.py propose --mcp-url URL --token-file F --state S \
+    --applied A:B --rejected C:D --expired E:F
+# wait for an importer pass (every 5 minutes)
+public_mcp_proposal_e2e.py decide --dashboard-url URL --token-file F --state S
+public_mcp_proposal_e2e.py verify --mcp-url URL --token-file F --state S
+```
+
+`expired` needs the 14-day window to pass, or the owner setting that one synthetic action's
+`expires_at` into the past; `verify` reports it `PENDING`, never as a pass, until then.
+
 ## Related
 
 - [RFC 0039](../../about/legends-and-lore/rfcs/0039-public-mcp-read-surface.md): D3 placement and
@@ -649,10 +669,9 @@ row until the importer (task 5.2, not yet built) pulls it, so a received proposa
   The host refuses to start if any other tool is flagged. The database role, not this flag, is the
   authority bound.
 
-The primary proposal-status prerequisite is Relationship revision `rel_041`. It
-stores caller-assigned proposal IDs, the D13 primary state and decision timestamp,
-and private retention-capable note/evidence fields. The manifest exposes only
-`proposal_id`, `state` and `decided_at` in the `proposals` domain. This migration
-receives or applies no proposals. The importer, approval reconciliation and the 30-day
-text-clearing job remain task 5.2 work; creating this source does not deliver that pipeline or
-its authority guarantees.
+The primary proposal-status prerequisite is Relationship revision `rel_041`, which stores
+caller-assigned proposal IDs, the D13 primary state and decision timestamp, and private
+retention-capable note/evidence fields; `rel_043` adds the payload and bookkeeping columns the
+importer needs (section 9). The manifest exposes only `proposal_id`, `state` and `decided_at` in
+the `proposals` domain. The importer, approval reconciliation and the 30-day text-clearing job
+are delivered (task 5.2): a proposal changes no fact until the owner approves its parked action.
